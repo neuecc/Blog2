@@ -1,0 +1,1530 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2011/0209_301.html">Linq to ObjectsとLinq to Xmlを.NET 2.0環境で使う方法</a></h1>
+<ul class="date"><li>2011-02-09</li></ul>
+<div class="entry_body"><p>LinqのないC#なんて信じられない。カレールゥのないカレーライスみたいなものです。しかし.NET Framework 2.0ときたら……。幸いなことに、開発はVisual Studio 2008以降で、ターゲットフレームワークを2.0に、とすることでvarやラムダ式は使うことが可能です。拡張メソッドも小細工をすることで利用可能になります。といったことは、<a href="http://d.hatena.ne.jp/NyaRuRu/20071121/p1" title="C# 3.0 による .NET 2.0 アプリケーション開発 - XNA で LINQ を使おう - NyaRuRuの日記">C# 3.0 による .NET 2.0 アプリケーション開発 - XNA で LINQ を使おう - NyaRuRuの日記</a>に書いてありますねん。あと足りないのはLinqを実現するEnumerableクラス。その辺のことはNyaRuRuさんの日記の追記のほうにもありますが、<a href="http://www.albahari.com/nutshell/linqbridge.aspx" title="C# 4.0 in a Nutshell - LINQBridge">LINQBridge</a>を使うことで拡張メソッドのための小細工なども含めて、全部面倒見てくれます。つまり、Linq to Objectsを.NET 2.0で使いたければLINQBridge使えばいい。以上。</p>
+<p>というだけで終わるのもアレなので、Linq to Objectsが使えるなら、Linq to Xmlも使いたいよね？Linq to Xmlの強力さを一度味わったら二度とXmlDocumentも使いたくないし生のXmlReader/Writerも使いたくないし。でも残念なことにLINQBridgeはto Objectsだけ。となれば自前再実装、は無理なので、そこは.NET Frameworkのオープンソース実装の<a href="http://www.mono-project.com/Main_Page" title="Main Page - Mono">Mono</a>からソースコードをお借りすればいいんじゃなイカ？</p>
+<p>Monoのソースコードは<a href="https://github.com/mono/mono#readme" title="mono/mono - GitHub">mono/mono - GitHub</a>で管理されています。私はGitじゃなくて<a href="http://mercurial.selenic.com/" title="Mercurial SCM">Mercurial</a>派なのでGitは入れてないのでPullは出来ない、ので、普通にDownloadsからzipで落としました。クラスライブラリはmcs\class以下にあります。まずはEnumerableから行きましょう。</p>
+<h2>Linq to Objects</h2>
+<p>新規にクラスライブラリプロジェクトを立てて（プロジェクト名は何が良いでしょうかねえ、私はMono.Linqとしました)、ターゲットフレームワークを2.0に変更。そして<a href="https://github.com/mono/mono/tree/master/mcs/class/System.Core/System.Linq" title="mcs/class/System.Core/System.Linq at master from mono/mono - GitHub">System.Core/System.Linq</a>をフォルダごとドラッグアンドドロップでソリューションエクスプローラに突っ込む。そしてコンパイル！</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/monolinq_compile.jpg">
+</p>
+<p>ふむ。華麗に673件のエラーが出てますね。どうやらExpressionsがないそうで。ふーむ、つまりQueryable関連ですねえ。Enumerableだけだと関係ないので削除してもいいんですが、せっかくなのでIQueryableも使えるようにしましょう！<a href="https://github.com/mono/mono/tree/master/mcs/class/System.Core/System.Linq.Expressions" title="mcs/class/System.Core/System.Linq.Expressions at master from mono/mono - GitHub">System.Core/System.Linq.Expressions</a>もEnumerableと同じようにフォルダごとコピー。更にコンパイル！</p>
+<p>するとまだまだ346件エラー。FuncがないとかExtensionAttributeがないとか。.NET 3.0で追加された拡張メソッド用の属性とかFuncがないわけですね。というわけで、それらも持ってきてやります。ExtensionAttributeは<a href="https://github.com/mono/mono/tree/master/mcs/class/System.Core/System.Runtime.CompilerServices" title="mcs/class/System.Core/System.Runtime.CompilerServices at master from mono/mono - GitHub">mcs/class/System.Core/System.Runtime.CompilerServices</a>にあります。Enumerableだけの場合はExtensionAttributeだけでいいのですが、Queryableも使う場合は他のクラスも必要になるので、ここもフォルダごとコピーしましょう。</p>
+<p>もう一つの、FuncとActionは<a href="https://github.com/mono/mono/tree/master/mcs/class/System.Core/System" title="mcs/class/System.Core/System at master from mono/mono - GitHub">System.Core/System</a>にFuncs.csとActions.csとして定義されているので、これらも持ってきます。なお、FuncとActionは#ifディレクティブにより.NET4以下の場合は4引数までのものしか使えないようになっていますが、.NET4からの16引数までのものも使いたければ、#ifディレクティブを削除すればOK。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/monolinq_4error.jpg">
+</p>
+<p>これでコンパイルするとエラーはたった4つになります！ってまだエラーあるんですか、あるんですねえ。HashSetがないとか。HashSetで、ああ、集合演算系が使ってるもんねえ、とティンと来たら話は早い。こいつは<a href="https://github.com/mono/mono/blob/master/mcs/class/System.Core/System.Collections.Generic/HashSet.cs" title="mcs/class/System.Core/System.Collections.Generic/HashSet.cs at master from mono's mono - GitHub">System.Core/System.Collections.Generic/HashSet.cs</a>にあります。みんなSystem.Core下にあるので捜すの楽でいいですね。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/monolinq_todoattr.jpg">
+</p>
+<p>コンパイルしたらエラーが増えた！HashSet.csのエラーですね。CollectionDebuggerViewとMonoTODOという属性が無いそうだ。よくは分かりませんが、名前からして大したことはなさそうだしたったの5つなので、削除してしまっても問題なく動きます。ので削除してしまいましょう。と言いたいんですが、せっかくなのでこの二つの属性も拾ってきます。この二つはSystem.Coreにはないし、正直見たこともない属性なので何処にあるのか検討付きません。というわけで、まあ検索すれば一発です。</p>
+<p><a href="https://github.com/mono/mono/blob/master/mcs/class/System.Data.Linq/src/DbLinq/MonoTODOAttribute.cs" title="mcs/class/System.Data.Linq/src/DbLinq/MonoTODOAttribute.cs at master from mono's mono - GitHub">System.Data.Linq/src/DbLinq/MonoTODOAttribute.cs</a>、って随分変なとこにありますね、とにかくこれと、<a href="https://github.com/mono/mono/blob/master/mcs/class/corlib/System.Collections.Generic/CollectionDebuggerView.cs" title="mcs/class/corlib/System.Collections.Generic/CollectionDebuggerView.cs at master from mono's mono - GitHub">corlib/System.Collections.Generic/CollectionDebuggerView.cs</a>を持ってくる。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/monolinq_complete.jpg">
+</p>
+<p>これで完成。コンパイル通る。動く。ターゲットフレームワーク2.0でもLinq！何も問題もなくLinq！ラムダもvarも拡張メソッドもある！うー、わっほい！C# 3.0で.NET Framework 2.0という奇妙な感覚が非常に素敵です。</p>
+<h2>Linq to Xml</h2>
+<p>ではLinq to Xmlも用意しましょう。といっても、やることは同じようにmonoのコードから拝借するだけです。<a href="https://github.com/mono/mono/tree/master/mcs/class/System.Xml.Linq" title="mcs/class/System.Xml.Linq at master from mono/mono - GitHub">mcs/class/System.Xml.Linq</a>下にあるSystem.Xml.Linq, System.Xml.Schema, System.Xml.XPathをフォルダごとコピー。そしてコンパイルすると！例によってエラー。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/monolinq_xname.jpg">
+</p>
+<p>XNameが見つからないそうで。んー、あれ、XNameは普通にLinq to Xmlの一部では？と、いうわけで<a href="https://github.com/mono/mono/blob/master/mcs/class/System.Xml.Linq/System.Xml.Linq/XName.cs" title="mcs/class/System.Xml.Linq/System.Xml.Linq/XName.cs at master from mono's mono - GitHub">System.Xml.Linq/XName.cs</a>を見に行くと、あー、#if NET_2_0で.NET2.0環境下では全部消えてる！しょうがないので、ここではソースコードを直に編集して#ifディレクトブを除去しちゃいます。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/monolinq_clscompati.jpg">
+</p>
+<p>コンパイルは通りましたが警告ががが。CLSCompliantがついてないってさ。というわけで、Properties/AssemblyInfo.csにCLSCompliantを付けてやります。</p>
+<pre><code class="language-csharp">[assembly: System.CLSCompliant(true)]
+</code></pre>
+<p>これで完成。Linq to Xmlが使えるようになりました！マジで！マジで。</p>
+<h2>ライセンス</h2>
+<p>ライセンスは大事。<a href="http://www.mono-project.com/Licensing" title="FAQ: Licensing - Mono">FAQ: Licensing - Mono</a>で確認するところ、クラスライブラリはMIT X11 Licenseになるようです。かなり緩めのライセンスなので比較的自由に扱えるのではないかと思いますが、詳細はFAQならびにMIT X11 Licenseの条項を個々人でご確認ください。</p>
+<h2>まとめ</h2>
+<p>Linqがあれば.NET 2.0でも大丈夫。もう何も怖くない。まあ、実際.NET 2.0のプロジェクトを今からやるかといえば、これは最終手段であって、まずやることは全力で反対して.NET 4を採用させることでしょう。既存のプロジェクトに対する改修でLinqを突っ込むのは、うーん、そんなこと許されるんですか！許されるなら平気でやります！大抵は許されない気がしますが！</p>
+<p>さて、.NET 4の人でもこれを用意する利点はあります。学習用に。シームレスにLinqの中へデバッグ実行で突入出来ます。挙動の理解にこれより最適なものはないでしょう。ソースコードを眺めるもよし、ですしね。それと、これを機にMonoに触れる、機会はWindowsな私だとあまりないのですが、ソースコードに触れてみるのも結構幸せ感です。mono独自のクラス(Mono.Xxx)も色々あって面白そう。</p>
+<p>余談ですが、Windows Phone 7やSilverlightであのクラスがない！という状況もMonoの手を借りることで何とかなるケースも。（何とかならないケースは、依存がいっぱいで沢山ソースを持ってこなければならない場合。さすがにそう大量となるとどうかな、と）</p>
+<h2>.NETコードへデバッグ実行でステップインする方法</h2>
+<p>デバッグ実行といえば、Microsoftもソースコードを公開しています。<a href="http://referencesource.microsoft.com/netframework.aspx" title=".NET Framework Libraries">.NET Framework Libraries</a>で公開されてます。.NET 4をDownloadすれば、その中にあります。やたら階層が深くて迷ってしまいますが、EnumerableとQueryableは
+Source.Net\4.0\DEVDIV_TFS\Dev10\Releases\RTMRel\ndp\fx\src\Core\System\Linq にあります。Symbolをモニョッとすれば、Visual Studio内でもステップインでデバッグ出来ますねえ。というわけで、その解説もついでなので。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/monolinq_netoptiongeneral.jpg">
+</p>
+<p>まず、オプション-&gt;デバッグ-&gt;全般で「マイコードのみ設定を有効にする」のチェックを外します。そして、「ソースサーバーサポートを有効にする」のチェックを入れます。この二つだけ（多分）。ちなみに、「.NET Frameworkソースのステッピングを有効にする」というなんともそれっぽいオプションは罠なので無視しておきましょう。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/monolinq_netsymbol.jpg">
+</p>
+<p>あとはデバッグ-&gt;シンボルでダウンロードした先のフォルダを指定すればOK。私はZ:\RefSrc4\Symbolsになってます。これで、F11でめくるめく.NET Frameworkの無限世界にステップインで帰ってこれなくなります！やり過ぎると普通に鬱陶しくなるので、その他のオプション類とかで適度に抑制しながらやりませう。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0126_300.html">Reactive Extensionsを学習するためのリソースまとめ</a></h1>
+<ul class="date"><li>2011-01-26</li></ul>
+<div class="entry_body"><p>1年半ほどDevLabsプロジェクトとして動いていたReactive Extensionsですが、ついに<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896" title="Reactive Extensions for .NET (Rx)">DevLabs</a>を卒業し、<a href="http://msdn.microsoft.com/en-us/data/gg577609" title="Reactive Extensions">Data Developer Center</a>入りを果たしました。まずは、おめでとう！そして、これで安心してプロダクトに突っ込む事ができます。どれだけ有望そうに見えても、DevLabsのままではいつ消滅するか分からない。そういう先例(<a href="http://msdn.microsoft.com/en-us/devlabs/ee334183" title="STM.NET">STM.NET</a>がね、この死骸ページの虚しさ)もあった。また、Rxチームの前身はMicrosoft Live LabsでのVoltaというプロジェクトなわけですが、これは打ち切りでした！その魂はRxの可愛い鰻のアイコンで引き継がれ(Voltaからの継続使用)、ついに復活を遂げたという感動ストーリーがあるかないかは、特にない。それはともかくとして、私はこのアイコン好きです。</p>
+<p>なお、Data Developer Centerは<a href="http://msdn.microsoft.com/en-us/data/default" title="Data Developer Center">en-us</a>と<a href="http://msdn.microsoft.com/ja-jp/data/default" title="データ アクセス,データベース,開発,ADO.NET | MSDN データプラットフォーム">ja-jp</a>の格差が激しいので、日本語情報が充実するかは不透明というか多分しないというか、せめてja-jpからだと辿れないテクノロジが幾つかあるのだけは何とかして欲しい、RxもそうだしStreamInsightなんかも……。</p>
+<h2>学習リソースまとめ</h2>
+<p>Data Developer Centerのページが何だかごちゃごちゃしているので、少し情報を整理します。</p>
+<ul>
+<li><a href="http://msdn.microsoft.com/en-us/data/gg577611">Beginner's Guide to Reactive Extensions for .NET</a></li>
+</ul>
+<p>ここのTutorials &amp; ArticlesにあるCuring the asynchronous blues with the Reactive Extensions。これがハンズオンラボになっていて、基礎からチュートリアル式に触りながら学べるようになっています。まずは、これをこなすとRxではどのようにプログラミングするのか、どのような問題を解決できるのか、というのが見えるはずです。for .NETとfor JavaScriptがありますが、内容は同じです。両方を見ることで、Rxという、Linqという層を設けることで言語を超えた統一的な思考・統一的な記述が可能になっているという世界を垣間見ることができます。</p>
+<p>続いて同ページの左下、Documentation HighlightsにあるDesign Guidelines。このドキュメントは非常に重要で、Rxにおける原理原則注意点実装の詳細が書かれているので、最初から読む必要はないのですが、ある程度Rxに慣れ親しんだら絶対に読むべき代物です。日本マイクロソフトは是非これを和訳してください！</p>
+<ul>
+<li><a href="http://channel9.msdn.com/posts/DC2010T0100-Keynote-Rx-curing-your-asynchronous-programming-blues">DevCamp 2010 Keynote - Rx: Curing your asynchronous programming blues</a></li>
+</ul>
+<p>RxチームのBart De Smetによるプレゼンテーション。Rxチームもあちこちでプレゼンやっていて、色々なビデオが残っているのですが、これが一番お薦め。導入から深いところまで過不足なく説明されていて大変分かりやすいし、グッとくるかと思われます。また、<a href="http://channel9.msdn.com/Tags/rx" title="Rx | Tags | Channel 9">Channel 9のRxタグ</a>には動画がいっぱいあります。新機能を足すたびに動画で説明していたので英語圏のほうでは分かりやすいのだろうけれど、それ以外にとってはむしろ分かりづらいんだよこんちくしょう！を繰り広げてましたので良く分からない機能があったらとりあえず動画見に行くといいのではないかと思われます。</p>
+<ul>
+<li><a href="http://rxwiki.wikidot.com/101samples">(not yet) 101 Rx Samples - Reactive Framework (Rx) Wiki</a></li>
+</ul>
+<p>これは、お薦めしません。ほんと最初期に立てられたWikiで、皆が試行錯誤な段階で例が書かれた感じで、どうもわかってない感漂う今一つな例ばかり。いや、そりゃ初期なのでしょうがないのですが、如何せんそれから以後誰も追加も更新もしない寂れた廃墟なので、これ見て学ぼうとするのは少しシンドイ。（私も含めて）お前ら編集しろよって感じなのですが、どうしてこうなった……。</p>
+<ul>
+<li><a href="http://social.msdn.microsoft.com/Forums/en-US/rx/threads" title="Reactive Extensions for .NET (Rx) Forum">Reactive Extensions for .NET (Rx) Forum</a></li>
+</ul>
+<p>Rxについての情報交換は公式フォーラムで行われています。Rxチームの人も出てきますし、常連みたいな人が何人か張り付いてコードぺたぺた貼ってくれているので、サンプル集的な意味でもお薦め(前述のWikiよりも遥かに！)。何か使い方の分からないメソッドがあれば、検索に入れてみれば、きっと解説とコードが出てくるでしょう。</p>
+<ul>
+<li><a href="http://msdn.microsoft.com/en-us/library/ff707857.aspx">Microsoft.Phone.Reactive Namespace ()</a></li>
+</ul>
+<p>Windows Phone 7にはRxが標準搭載されていますので、当然MSDNにもリファレンスがあります。WP7の開発環境が日本語化してくれれば、念願のRxでの日本語IntelliSenseが！なのですが、まだなのですよね、残念。ちなみに、このWP7版は少し前のものがベースになっているので、必ずしも現在の最新版と一致するとは限りません。WP7版が出てから追加されたものは入っていないし、中には削られたものも……。なお、リファレンス自体はインストールディレクトリ Progam Files\Microsoft Cloud Programmability\Reactive Extensions にchmで転がってます。</p>
+<ul>
+<li><a href="http://neue.cc/category/programming/rx" title="neue cc - Rx">このサイトのRxカテゴリ</a></li>
+</ul>
+<p>あまりお薦めしません(笑) 初期は「メソッド探訪XX回」というフォーマットでやろうとしていましたが今はそれは放棄して完全に好き放題書いてます。壊滅的に整理されておらず、非常に分かりづらい。日本語でのちょっと突っ込んだ情報はここしかないというのは悲しいことです。一応、幾つか並べてみれば</p>
+<blockquote>
+<p><a href="http://neue.cc/2010/07/28_269.html" title="neue cc - Reactive Extensions入門 + メソッド早見解説表">Reactive Extensions入門 + メソッド早見解説表</a><br />
+<a href="http://neue.cc/2010/12/20_290.html" title="neue cc - linq.js &amp; Reactive Extensions for JavaScript(RxJS)入門">linq.js &amp; Reactive Extensions for JavaScript(RxJS)入門</a><br />
+<a href="http://neue.cc/2010/12/09_288.html" title="neue cc - Reactive ExtensionsとAsync CTPでの非同期のキャンセル・プログレス処理">RxとAsync CTPでの非同期のキャンセル・プログレス処理</a><br />
+<a href="http://neue.cc/2010/12/04_287.html" title="neue cc - Reactive Extensionsとエラーハンドリング">Reactive Extensionsとエラーハンドリング</a><br />
+<a href="http://neue.cc/2010/10/09_278.html" title="neue cc - Rxを使って非同期プログラミングを簡単に">Rxを使って非同期プログラミングを簡単に</a><br />
+<a href="http://neue.cc/2010/09/28_277.html" title="neue cc - Reactive Extensionsの非同期周りの解説と自前実装">Reactive Extensionsの非同期周りの解説と自前実装</a><br />
+<a href="http://neue.cc/2010/06/24_263.html" title="neue cc - Reactive Extensions for .NET (Rx) メソッド探訪第7回:IEnumerable vs IObservable">メソッド探訪第7回:IEnumerable vs IObservable</a><br />
+<a href="http://neue.cc/2010/07/05_265.html" title="neue cc - Rx(Reactive Extensions)を自前簡易再実装する">Rx(Reactive Extensions)を自前簡易再実装する</a></p>
+</blockquote>
+<p>といったところでしょうか(全然絞れてないですね、あうあう)。ちょっと非同期にお熱だったので、非同期系に偏りがちな、特に近頃は。重要な○○の解説を出してないので早く書きたい！と思っている事項が、まだかなり沢山残っているので、今年も積極的に更新を続けたいと思っています。あとは私の <a href="http://twitter.com/#!/neuecc" title="neuecc (neuecc) on Twitter">Twitter:@neuecc</a> で小さいコード書いて貼りつけたり、Rx関連な話題が目についたら反応したりはしてます。たまに。答えられることは答えられますが答えられないことは勿論答えられないので、私がダンマリとしてたら、こいつ分かってねーな、ということで、ぐぬぬぬ。もしくは風呂で寝てます。</p>
+<h2>その他のリソース</h2>
+<p><a href="http://en.wikipedia.org/wiki/Reactive_programming" title="Reactive programming - Wikipedia, the free encyclopedia">Reactive programming</a>というパラダイムで見ることが出来るので、他の言語での動きから分かることというのも、いっぱいあります。</p>
+<ul>
+<li><a href="http://tomasp.net/academic/reactive-thesis.aspx">Master Thesis: Reactive Programming with Events | Academic | TomasP.Net</a></li>
+</ul>
+<p>F#から。この論文の著者のTomas Petricekは非常に有名な方で、そもそもSupervisor: Don Syme, Microsoft Research Cambridgeですしね。146ページとボリューム十分。ですが、私は「読んでません」よ。俺、F#を学んだらこの論文読むんだ……。とか思ってはやンヶ月。ようやく重い腰が上がってF#はぢめました。やってみるとF#は非常に面白く、更に教養として身につけておく、的なわけじゃなく今すぐ普通に実用的なので、<a href="http://www.amazon.co.jp/gp/product/4774145165?ie=UTF8&tag=ilsgeometrati-22&linkCode=as2&camp=247&creative=7399&creativeASIN=4774145165">実践 F#</a><img src="http://www.assoc-amazon.jp/e/ir?t=ilsgeometrati-22&l=as2&o=9&a=4774145165" width="1" height="1" border="0" alt="" style="border:none !important; margin:0px !important;" />読んで一緒に学びましょうー。F#お薦め。</p>
+<p>F#はファーストクラスイベントとして、デフォルトでフィルタリング程度なら可能になっているしで、むしろネイティブ対応だぜ的な勢いもありますね。少し触った感じだとmapとfilterぐらいなので、あくまで軽く、程度ではあるようですが。あと非同期ワークフローが実に興味深く有益な機能。</p>
+<ul>
+<li><a href="http://msdn.microsoft.com/en-us/vstudio/async.aspx">Asynchronous Programming for C# and Visual Basic</a></li>
+</ul>
+<p>非同期ワークフローといったら、こちらも。C# 5.0に入るかも、なAsync機能のCTP。残念ながら英語版VSにしか入らないので簡単に触れはしないのですが……。Rx自体にもこのAsync CTP対応(GetAwaiterの実装)や、System.Linq.AsyncとしてAsyncEnumerableの実装などをしていて、Async CTPとは、切っても切れない密接さを見せているのですが、機能的にやはり被りつつあるので、どう上手く切り分けるのか、というのが難しいところです。Async CTPはもう少し突っつきたいのですが中々時間取れずな今現在。</p>
+<ul>
+<li><a href="https://github.com/okomok/hano">okomok/hano - GitHub</a></li>
+</ul>
+<p>ScalaでのReactiveの実装になるようです。Wiki -&gt; Design Guidelines in Japanese は実にためになります。作者はC++でのLinq(酷い形容ですがC#erの戯言なので許して！) である<a href="http://p-stade.sourceforge.net/oven/doc/html/index.html">Oven</a>のかた。Enumerable-Observableみたいなことを感じつつそこはしかしC++もScalaも分からないのでもごもご。</p>
+<ul>
+<li><a href="http://d.hatena.ne.jp/maoe/20100109/1263059731">やさしいFunctional reactive programming（概要編） - maoeのブログ</a></li>
+</ul>
+<p>概要編のほかEvent編、Behavior編が。Haskellはよくわからなくても雰囲気は分かる（ぉ</p>
+<ul>
+<li><a href="http://d.hatena.ne.jp/pokarim/20101226">なぜリアクティブプログラミングは重要か。 - Conceptual Contexture</a></li>
+</ul>
+<p>こうして俯瞰してみても、Rxは実用に踏み出しているという点で、一歩抜けてるのではないかと思います。</p>
+<h2>Rxの入手方法・パッケージ・DLL内容について</h2>
+<p>対応プラットフォームはいっぱいありますが、<a href="http://msdn.microsoft.com/en-us/data/gg577610" title="Get Reactive Extensions for .NET">Get Reactive Extensions for .NET</a>からRx for All Platformsを選択すれば全部インストールされますんで、それでいいと思われます。又は<a href="http://nuget.codeplex.com/" title="NuGet">NuGet</a>に対応しているので、それを使うのも良いでしょう。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/rx_nuget_all.jpg">
+</p>
+<p>画像はNuGetに登録されているRxのもの。多すぎである。NuGetでも多すぎて困るのですが、普通にインストールした場合は、やたら小分けされた大量のDLLをインストールしてくるので、何をどう選べばいいのかさっぱり分かりません。というわけで、それの解説を少し。</p>
+<pre><code class="language-text">System.CoreEx // Scheduler,Disposableなどの必須クラス群
+System.Observable // Silverlightのみ
+</code></pre>
+<p>NuGetだとRx-Core。System.ObservableはIObserver/IObservableのインターフェイス定義で、.NET4なら標準入りしているので不要ですがSilverlightでは、こちらの参照も必要になります。</p>
+<pre><code class="language-text">System.Reactive // Observable拡張メソッド 
+</code></pre>
+<p>NuGetだとRx-Main。Observableの拡張メソッド群が入っているので、CoreExとReactiveがRxを使う際に必須となる参照と考えるといいです。</p>
+<pre><code class="language-text">System.Reactive.ClientProfile // Stream周りをRxで非同期Readする補助拡張メソッド群
+System.Reactive.ExtendedProfile // IHttpHandler使ってモニョモニョなサーバー利用での補助拡張メソッド群
+System.Reactive.Testing // テストでのモックを作ったりする時に使いたいクラス群
+</code></pre>
+<p>この3つはオプション。ClientProfileはstreamにAsyncRead/AsyncReadLineというのが入っていて、そのまんまな挙動です。ちなみにAsyncReadLineはbyteをそのまんま切り出しているだけ(つまり日本語で使うとぶっ壊れる)のでまるっきり実用になってません。ふざけんな。というわけで使わないの推奨。</p>
+<p>ただ、標準のRxだけだと、この辺のReadは自前で書かなければならなくて少々面倒くさいので、こういったあると便利系のものはあったほうがいい。恐らく、今後拡充されてここに追加されていくのではないかと思われます。私も<a href="http://neue.cc/2010/11/26_286.html" title="neue cc - Reactive Extensions用のWebRequest拡張メソッド">Reactive Extensions用のWebRequest拡張メソッド</a>とか書いちゃってますが、標準でそういうの入ってくれれば手間なくて素敵。ExtendedProfileはよくわからないけどClientProfileと同じく作りは適当な気がする。Testingはあとで調べると思って放置中。でも概念は多分有益だと思うので、そのうちしっかり調べておきたい。</p>
+<pre><code class="language-text">System.Interactive // Enumerable拡張メソッド(EnumerableEx)
+</code></pre>
+<p>こちらはRxとは独立していて、IEnumerableへの拡張メソッド群になっています。気の利いたのが色々入っていて便利。<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js</a>にもここからパクッた、じゃなくて名前を統一させて入れたのが幾つかあります。あと、みんなが待望していたForEachがRunという名前で入っていますよ！それだけでもはや必須コンポーネントですね！</p>
+<p>なお、突然Ixという表記を見たら、こちらのこと（もしくはIEnumerable全体）を指します。Interactive Extensions。用語としては、Pull-Enumerable-Interactive-IxとPush-Observable-Reactive-Rx となっています。紛らわしくよくわからなくなっても泣かない。</p>
+<pre><code class="language-text">System.Linq.Async // AsyncCTP - Task連携
+</code></pre>
+<p>これもRxとは微妙に独立していて、中身はIAsyncEnumerable。AsyncCTPのTaskをLinq的に扱おうとするものです。Taskだと1個しか返せないので複数返せるように、という。私はイマイチこれの必要性が分からなかったりします。ぶっちゃけIObservableで良くて、で、IObservableのほうが色々融通が利くので。なんかもう出来るから作ったし入れたよ、といったRxチームのノリがここから伺えます。フットワーク軽くて、その姿勢は大好きだけど、混乱します。</p>
+<p>最後に、Windows Phone 7では標準搭載されていて、System.ObservableとMicrosoft.Phone.Reactiveを参照することで使えるようになります。また、標準搭載とは別に、上記のような最新版も提供されています。標準搭載と最新版の違いですが、安定度は断然標準搭載版です。MSDNにドキュメントがあるのも良い。そして勿論、標準搭載なので配信する際の容量が嵩まない。では最新版のメリットはというと、勿論、機能面では豊富。また、デスクトップ版などとも完全にAPIの互換が取れます。ただ、バグの混入率は残念ながら結構高いので安定性は若干欠けます。</p>
+<h2>Rxの使える局面って？</h2>
+<p>ハンズオンラボやセッションのタイトルがCuring the asynchronous bluesであるように、やはり非同期に対しての適用に強い。クラウド時代のデータプログラミングに非同期は避けられない、それを解決するソリューションとしてのRx。しかしC# 5.0には組み込みAsync入っちゃうしRxJSだって、jQueryに1.5から組み込みでDeferredが入るので、将来的には強い特徴にはならないのですが、未来の前に現実。特にC# 5.0なんていつだよっていう。まあ、jQueryのDeferredよりもずっとセンス良いし（よく知らないで言ってる）、C#5.0 async/awaitよりも遥かに柔軟で強力だという印象を私は持っているので、直接競合するからってoutにはならないと思ってます。</p>
+<p>非同期じゃなくイベントのほうは、様々な側面を見せるので一概に言うのは難しい。とりあえず時間を扱うテクノロジとしてのRxは、ベストな選択です。もはや生Timerなんて使ってられません。一例を出すと</p>
+<pre><code class="language-csharp">// FileSystemWatcherのChangedイベントは一度の変更で複数のイベントが発行される面倒な仕様
+var watcher = new FileSystemWatcher(&quot;C:\\&quot;, &quot;test.txt&quot;) { EnableRaisingEvents = true };
+
+// 1秒以内に連続して発生してきたイベントは無視して通すのは最後一つだけにする
+Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; h.Invoke, h =&gt; watcher.Changed += h, h =&gt; watcher.Changed -= h)
+    .Throttle(TimeSpan.FromSeconds(1)) // Throttleは指定時間、値の通過がなかった場合に最後の一つを通す
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+</code></pre>
+<p>FileSystemWatcherはファイルの変更を監視し、変更があった場合にイベントを飛ばしてくれる便利なクラスですが、例えば一度ファイルを保存する(変更がある)だけで、2,3個のイベントが同時に飛んできたりするなど処理が少し面倒だったりします。ググルとみんな困ってるよ。そういう場合にDateTimeを外部変数に保存しておいて比較を取るとかTimerで発火を調整するとか面倒くさいことをしなければなりません、が、RxならThrottleメソッドで一撃。</p>
+<p>Rxではイベントの発生が時間軸上に並んでいるので、イベントに対して時間系魔法をかけることが出来ます。Throttle！Sample！Delay！TimeInterval！その他色々。未だかつてないほど時間を扱うのが容易になりました。面倒くさい印象のあったポーリングなども楽勝です。</p>
+<p>他にイベントといったらセンサーの感知なども上げられます。Windows Phone 7に標準搭載された理由にもなるかもですが、センサーで飛んでくる大量のイベントのフィルタリング・加工にRxは実に都合が良い。また、物理デバイスがないとテストできない、あってもそもそもテストしにくいセンサー系APIですが、Rxを使うことでイベントのモック生成・差し替えが容易になります。</p>
+<p>最後に挙げるイベント系といったら、GUI。ボタンクリックとか。これは、割とダメ。いや、ダメではないのだけど、GUIの基盤であるWPF/Silverlightががっちりとデータバインド中心に組まれているわけで、ここに無理やり割り込んでも、お互いの良さを消してしまう。フレームワークの根幹でサポートしている仕組みにRxは乗り入れられるほどのメリットを提供出来るか？というと、それは苦しいのではないかとも。Rxが標準入りすることで、WPFのフレームワーク根源からのサポートが入れば、また変わってきそう。これは未来の話。素敵な融合を夢みたい。</p>
+<p>その他にデータの分配配信とか実行コンテキストの選択とか、メリット・特徴は色々あります。というか、なんでもかんでもが突っ込める基盤になってます。それらが渾然一体となって融合出来るというのがRxの本当の強さなのではないかと思っています。あらゆるソースをOrchestrate and Coordinateする。美しい……。</p>
+<h2>まとめ</h2>
+<p>正式になったから、それで何が変わったか、何が変わるかというとまだ不透明ではある。けれど、なにも変わらない気がします、とりあえず当面は。リリースパッケージが分かれるとかいうこともなく、なんか普通にDevLabsから引っ越ししてきました、というだけな雰囲気だし。そして、今まで通りに一月ぐらいの単位で新しいのリリースするサイクルを続けるのではないかなあ。まだ足したりなさそうだし。破壊的変更も、普通にたまにやってくるのではないかなあ。例えばIQbservableなんて、いつ名前が変わってもオカシクない。これは、QueryableObservableの略なのだけど、Observableと対比させるため同程度の長さの名前である必要があって、それでいてQbservableの本質をついた良い代案ってのは、出てこないよねえ。名前は難しい。</p>
+<p>正式なテクノロジとして認められた、として、じゃあ今後どうなる？予想でしかないですが、まず.NET 4 SP1に入るか。これは、入らないんじゃないかなあ……。もし入ったとしても、変わらずData Developer Centerのページで最新版の開発と提供が続いていくでしょう。と、現時点でGetAwaiterが入ってたりするなど、C# 5.0 Asyncとの関係性も避けられない話なので、少なくとも.NET 4 SP1に入ったから開発終了には絶対にならないのではない。はず。.NET 5には入るでしょうが。確実に。</p>
+<p>個人的にはWP7に搭載されている程度のものは.NET 4 SP1に入って欲しい(WP7のものは結構前のもの、リリース時期考えると当然ですが)ところなのですけれど、WP7のものとシグネチャ合わないのが出てきちゃってるのが、少々難しいかもなー、と、思うところ。一度フレームワーク本体に入れると変更が効かなくなるので、Rxチーム的にはもう少し手元に置いて弄りたいと思ってるような気がします。見ててそう思うというだけで、的外れな可能性はありますよ、あくまで私の予想なので悪しからず。</p>
+<p>私としては、これで日本マイクロソフトにも動きが出て翻訳とか出たりしてくれると嬉しいのだけど。Rx Design Guidelinesなどは非常に重要な資料なので……。</p>
+<p>ともあれ、使用に当たっての最大のリスク(テクノロジそのものが消滅する)というのがなくなったので、実プロジェクトに突っ込むことも十分検討できる範囲に入ってきました。実際に使ってみた、の記事が読めるようになってくと嬉しいですねえ。私は、ええと、機会があれば……。もうすぐ実際に突っ込める機会があるかもなので、なにか出せればいいか、な。サイの転がり方次第では分からないけれど。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0123_299.html">ReactiveOAuth ver.0.2.0.0</a></h1>
+<ul class="date"><li>2011-01-23</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://reactiveoauth.codeplex.com/" title="ReactiveOAuth">ReactiveOAuth</a></li>
+</ul>
+<p>ReactiveOAuthを更新しました。今回よりNuGetに対応したのでReactiveOAuth、もしくはReactiveOAuth-WP7で入れられます。あとSilverlightもサポートしました。そして、盛大にバグってたのを修正しました。UrlEncodeをそのまんまの使ったのでRFC2396でRFC3986じゃないから「!」とかが含まれた文章を投稿すると死ぬ、という。あまりにも限りなく初歩ミスで、死ぬほど反省します……。</p>
+<p>おまけに、この辺りがマズいのは出した当初から薄々感づいていたのですが、「あとで直す」とか思って延々と今まで放置していたので、もう本当に本当にごめんなさい。リリース用にzip固めるスクリプトも書いた(fsxで)し、ディレクトリ周りも整理したしで、負担なくリリースしてける態勢を整えたので、もう放置しません、今後他のプロジェクトでも。本当に、今回はあまりにも酷かったのでなんともかんともです。</p>
+<p>一応、通信部分を以前書いた<a href="http://neue.cc/2010/11/26_286.html" title="neue cc - Reactive Extensions用のWebRequest拡張メソッド">Reactive Extensions用のWebRequest拡張メソッド</a>に載せ替えたりしたりなど、中身も変えたんですが、うーん。解説する気力が折れたぽ。</p>
+<p>とりあえずドッグフードな体制を整えるためにXboxInfoほげほげにとっとと積んでしまうかな……。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0122_298.html">NuGetパッケージの作り方、或いはXmlエディタとしてのVisual Studio</a></h1>
+<ul class="date"><li>2011-01-22</li></ul>
+<div class="entry_body"><p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/nuget_reference.jpg">
+</p>
+<p><a href="http://linqjs.codeplex.com/">linq.js 2．2．0．2</a>をリリースし、今回から<a href="http://nuget.codeplex.com/">NuGet</a>でも配信されるようになりました！linq.js、もしくはlinq.js-jQuery、linq.js-Bindingsで入りますので、是非お試しを。ちなみに更新事項はちょっとBugFixとOrderByの微高速化だけです(本格的な変更は次回リリースで)。</p>
+<p>さて、そんなわけでNuGetに対応したので、今回はNuGetのパッケージの作り方、公開のしかたについて解説します。やってみると意外と簡単で、かつNuGetいいよNuGet、と実感出来るので、特に公開するようなライブラリなんてないぜ！という場合でも試してみるのがお薦め(参照先としてローカルフォルダも加えられる)。普通に小さなことでも使いたくなります。そういえばでどうでもいいんですが、私は「ぬげっと」と呼んでます。GeForceを「げふぉーす」と呼ぶようなノリで。ぬげっと！</p>
+<h2>NuGetを使う</h2>
+<p>NuGetとは何ぞやか、大体のとこで言うと、オンラインからDLLとかライブラリをサクッと検索出来て、依存関係(これのインストールにはアレとソレが必要、など)を解決してくれた上で参照に加えてくれて、ついでにアップデートまで管理してくれるものです。Visual Studioの拡張として提供されているので、インストールはCodePlexからでもいいですが、VSの拡張機能マネージャからNuGetで検索しても出てきます。</p>
+<p>インストールすると参照設定の右クリックに「Add Library Package Reference」というのが追加されていて、これを選択すると、トップの画像のようなNuGetの参照ダイアログが出てきます。最初NuGetが喧伝されていたときはPowerShellでのConsoleでしたが、ご覧のようにGUIダイアログもあるので安心。Consoleのほうが柔軟でパワフルな操作が可能なのですが(PowerShellを活かしたパイプやフィルタで一括ダウンロードとか)、普通に参照してーアップデートしてー、程度ならば別にGUIでも全然構いませんし。</p>
+<h2>.nupkg</h2>
+<p>NuGetを通してインストール/参照を行うと、プロジェクトのフォルダにpackages.configが生成されています。しかしこれはどうでもいいのでスルー。.slnのあるディレクトリにpackagesというフォルダも生成されていて、実体はこちらにあります。そこにはパッケージ名のフォルダが並んでいて、中には.nupkgという見慣れないものと、libもしくはContentというフォルダがあるのではないでしょうか……?</p>
+<p>nupkgが最終的に作らなければならないもので、実態はただのzip。nupkgと同フォルダにあるlib/Contentはnupkgが展開された結果というだけです。というわけで、適当なパッケージをダウンロードして(linq.jsとかどうでしょう！)zipにリネームして解凍するとそこには……!</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/nuget_nupkg.jpg">
+</p>
+<p>_relsとか[Content_Types].xmlとか、わけわからないものが転がってます。これらはノイズです。ようするに、<a href="http://msdn.microsoft.com/ja-jp/library/system.io.packaging.aspx">System.IO.ZipPackage</a>を使って圧縮してるというだけの話ですねー、恐らくこれらがある必然性はないです。ただたんに、.NET Framework標準ライブラリだけでZipの圧縮展開をしようとすると、こうしかやりようがなかったという、ただそれだけです。だから早くZipライブラリ入れてください(<a href="http://blogs.msdn.com/b/bclteam/archive/2010/06/28/working-with-zip-files-in-net.aspx">次辺りに入る</a>らしい)。</p>
+<p>大事なのは、.nuspecです。</p>
+<h2>.nuspec</h2>
+<p>.nuspec(中身はXml)に、バージョン情報やID、依存関係などが記載されています。といったわけで、自分で作らなければならないのは.nuspecです。これにパッケージしたいファイルや配置場所などの定義を記述し、それをNuGet.exeというものに通すと.nupkgが出来上がる、といった流れになっています。</p>
+<p>nuspecの記述には、既存のnuspecを見るのが参考になるかもでしょう。但し、既存のnupkgを落として展開した結果のnuspecはNuGet.exeを通された時点で再加工されているものなので(パッケージ用のファイルの場所などの情報は消滅してる←まあ、絶対パスで記述可能だったりするので消滅してないと逆に困るわけですが)、100%そのまんま使える、というわけではないことには少し注意。</p>
+<h2>XmlエディタとしてのVisual Studio</h2>
+<p>では、nuspecを書いていく、つまりXmlを書いていくわけですがエディタ何使います？勿論Visual Studioですよね！Visual Studioは最強のXmlエディタ。異論はない。えー、マジXmlを補完無しで書くなんてシンジラレナーイ！小学生までだよねキャハハ。というわけで、補完全開で書きます。補完さえあればリファレンスなくても書けるし！IntelliSense最強説。</p>
+<p>そのためにはスキーマが必要なわけですが、ちゃんと用意されています。<a href="http://nuget.codeplex.com/documentation">NuGet Documentation</a>の下の方のReferenceの.nuspec File Schemaにスキーマがリンクされています。CodePlexのソースリポジトリに直リンクというのが色々潔いですな。</p>
+<p>さて、適当に新規項目でXmlを作ったら、メニューのXML-&gt;スキーマのダイアログを開き、nuspec.xsdを追加してやりましょう。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/nuget_schema.jpg">
+</p>
+<p>そして、とりあえずは&lt;とでも打ってやると補完に!--とか!DOCTYPEなどなどに並んでpackageというものが。これを選択すると、一気にxmlns=&quot;http...&quot;と名前空間まで補完してくれて！更に更に書き進めれば……。入力補完は効くし、必須要素が足りなければ警告出してくれるしでリファレンスとか何も見なくても書ける。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/nuget_intellixml.jpg">
+</p>
+<p>これなら打ち間違えでエラーなども出ないし、完璧。Xmlなんて普通のテキストエディタで気合で書く、とか思っていた時もありました。もうそんなの無理げ。VSバンザイ。なお、FirefoxのアドオンのGUI定義などに使うXULのSchemaなども当然適用出来る - <a href="http://xulschema.codeplex.com/">XUL Schema</a> ので、まあ、補完のないテキストエディタなんて使ってたら死んでしまうです。</p>
+<p>なお、毎回毎回、スキーマの追加参照するのは面倒くさいという場合は、VSの標準スキーマ参照ディレクトリにxsdを直に突っ込んでおくと、楽になれます。オプション-&gt;テキストエディター-&gt;XMLでスキーマ、で場所が設定出来ます(デフォルトは %VsInstallDir%\xml\Schemas のようで)</p>
+<h2>パッケージング</h2>
+<p>nuspecのリファレンスは<a href="http://nuget.codeplex.com/documentation?title=Nuspec%20Format">.nuspec File Format</a>に。IDとかVersionとかしか書かないし、項目も少ないしネストもないので書き方というほど書き方はないです。参考までにlinq.js-jqueryのnuspecは</p>
+<pre><code class="language-xml">&lt;?xml version=&quot;1.0&quot; encoding=&quot;utf-8&quot; ?&gt;
+&lt;package xmlns=&quot;http://schemas.microsoft.com/packaging/2010/07/nuspec.xsd&quot;&gt;
+    &lt;metadata&gt;
+        &lt;id&gt;linq.js-jQuery&lt;/id&gt;
+        &lt;version&gt;2.2.0.2&lt;/version&gt;
+        &lt;title&gt;linq.js - jQuery Plugin Version&lt;/title&gt;
+        &lt;authors&gt;neuecc&lt;/authors&gt;
+        &lt;owners&gt;neuecc&lt;/owners&gt;
+        &lt;requireLicenseAcceptance&gt;false&lt;/requireLicenseAcceptance&gt;
+        &lt;description&gt;Linq to Objects for JavaScript. This version is plugin integrated with jQuery.&lt;/description&gt;
+        &lt;language&gt;en-US&lt;/language&gt;
+        &lt;licenseUrl&gt;http://linqjs.codeplex.com/license&lt;/licenseUrl&gt;
+        &lt;projectUrl&gt;http://linqjs.codeplex.com/&lt;/projectUrl&gt;
+        &lt;tags&gt;linq javascript jquery&lt;/tags&gt;
+        &lt;dependencies&gt;
+            &lt;dependency id=&quot;jQuery&quot; version=&quot;[1.3.1,]&quot;&gt;&lt;/dependency&gt;
+        &lt;/dependencies&gt;
+    &lt;/metadata&gt;
+    &lt;files&gt;
+        &lt;file src=&quot;../../jquery.*&quot; target=&quot;Content\Scripts&quot; /&gt;
+    &lt;/files&gt;
+&lt;/package&gt;
+</code></pre>
+<p>といった感じ。tagsはスペース区切りで入れておくと検索の時にそのワードで引っかかる。dependenciesは依存関係がある場合に記載。対象バージョンの書き方に関しては<a href="http://nuget.codeplex.com/wikipage?title=Version%20Range%20Specification">Specifying Version Ranges in .nuspec Files</a>を見て書くべし。</p>
+<p>filesは後述するNuGet.exe(コマンドラインツール)でのパッケージング時に参照するファイルを設定。何も記載しない場合はNuGet.exeの実行時引数で解決されるので、どちらでもお好みで、という感じですが、普通はこちらに書いておいたほうが楽な気はします。</p>
+<p>ファイル指定のsrcではワイルドカードとして*が使えます。targetのほうは、nupkgにパッケージングされた時の階層の指定。この階層の指定は非常に重要です。「Content」の下に記載すると、プロジェクト直下に対象を配置します。この例では Scripts 下に「jquery.linq.js, jquery.linq.min.js, jquery.linq-vsdoc.js」が展開されることになっています。Scriptsというフォルダ名はjQueryに合わせてあります。勿論、対象は.csでも.txtでも何でも可。</p>
+<p>では、普通のC#でのdllのように直下には.dllとか置いて欲しくないし参照設定にも加えて欲しい、という場合はどうするかというとtargetを「lib」にします。すると自動で参照設定に加えてくれます。この「Content」とか「lib」とかってのは名前で決め打ちされてますので、そーいうものだと思うことにしませう。</p>
+<p>残るはパッケージ化。まず<a href="http://nuget.codeplex.com/">NuGet</a>のトップからDownloadsタブ(Downloadボタンじゃなく)を選び、NuGet Command Line Toolをダウンロード。このNuGet.exeに対して引数「p ファイル名」でnuspecを指定してやればnupkgが出来上がります。私はnuspecと同じ階層にexeを置いて、ついでにbatファイルに</p>
+<pre><code class="language-bat">nuget p linq.js.nuspec
+nuget p linq.js-jquery.nuspec
+nuget p linq.js-bindings.nuspec
+</code></pre>
+<p>とか書いたのを置いて3個のパッケージを作ってます。この辺は好き好きで。</p>
+<p>以上が基本的な感じです。ただたんに参照設定に加える、ファイルを配置する、以上のことをやりたい場合はインストール時にPowerShellスクリプトを実行、なども出来るので色々柔軟に手を加えられそうです。また、.NET Frameworkのバージョンによって参照させるファイルを変える、といったことはフォルダの構成を変えるだけで対応で可能です。例えば.Net4の場合は lib/Net4 に、Silverlightへは lib/SL4 に、といったような感じ。</p>
+<p>といったルールなどは<a href="http://nuget.codeplex.com/wikipage?title=Creating%20a%20Package">NuGet Creating a Package</a>を見るといいでしょう。また、バージョンのフォルダ分けがワケワカランという場合は既存のnupkgを展開してフォルダ構成を見てしまうのが手っ取り早いかも。Rx-AllやNewtonSoft.Jsonなどなど。</p>
+<h2>ローカル参照としてのNuGet</h2>
+<p>nupkgは別にオフィシャルのサーバーだけではなく、個人で立てたサーバーも参照出来ます。また、それだけでなく、ただたんにフォルダを指定するだけでもOKです。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/nuget_local.jpg">
+</p>
+<p>作ったnupkgはこれでテスト可能です。また、頻繁に参照に加えるものはわざわざOnlineに繋げて取ってくるの重い！という場合では一度落としたnupkgをローカルに配置してしまうのも悪くないかもです。テストというだけじゃなく、これは普通に使えますね？今まで参照設定の共通化というとテンプレート作って、程度しかありませんでしたが、これならばいい具合に自由度の効いたものが出来そうです。社内/俺々フレームワーク置き場として活用できそう。</p>
+<p>なお、現在は、ローカル参照のパッケージは、GUIのパッケージマネージャだとバージョンが上がってもUpdatesに現れなくてアップデート出来ません。Consoleならば現れるので、ふつーにバグのよう。で、報告されていましたし修正もされていた(今リリースされているのには反映されてないもよう)ので、次のリリースでは直ってるんじゃないかと思われます。</p>
+<h2>NuGet gallery</h2>
+<p>せっかく作ったパッケージはOnlineに乗せたいよね！<a href="http://nuget.org/">NuGet gallery</a>でパッケージの閲覧・登録・管理が出来ます。よーし、じゃあパパSign Inしちゃうぞー、Registerして、と。やってもいつまでたってもInvalid Passwordと言われてしまいます。あれれ……。</p>
+<p>現在は管理者の承認が必要なようで <a href="http://blog.davidebbo.com/2011/01/introducing-nuget-gallery.html">David Ebbo: Introducing the NuGet gallery</a> Registerしたら、Twitterの<a href="http://twitter.com/davidebbo">@davidebbo</a>宛てにapproveして！と言わないとダメぽ。私は「Hi. I registered nuget.org,  id is &quot;neuecc&quot; . plaease approve my account.」と、スペルミスしてる適当不躾な@を飛ばしたところ数時間後にSign In出来るようになりました。いつまで認証制なのかは不明ですが、いまんところそんな感じなようです。</p>
+<h2>まとめ</h2>
+<p>オンラインで簡単にDLLをインストール出来て便利！というのは勿論ありますが、ローカルで使ってみても存外便利なものです。ぬげっといいよぬげっと。NuPackからNuGetに名前が変わったときは、事情は分かる(NuPackは名前が被ってたらしい)けど、NuGetはないだろ、いくらなんでも。と、思ってたんですが、今は何かもうすっかり馴染んだ気がします。ぬげっと。ぬぱっけーじ。ぬすぺっく。</p>
+<p>とりあえず私は今後作るのは勿論、今まで出してきたものも、順次対応させてNuGet galleryに登録していくのでよろしくお願いしま。勿論linq.jsもよろしくお願いしま。今回の2．2．0．1は表には何も更新されてない感じですが、裏側の体制を整えてました。</p>
+<p>F#スクリプト(fsx)により、linq.jsからAjaxMinのdllを通し圧縮化と、ついでにjQueryプラグインを生成したり、これまたF#スクリプトでリリース用のZip圧縮をワンクリックで一発で出来るようにしたり。今まで手動でやっていた(そしてミスしまくってた！リリースから10分で撤回して上げなおしとか今まで何度やってきたことか)部分を完全自動化したので、もうミスはありません。そして、自動化されたことによりリリースはミス出すし面倒なので、もう少し色々やってからにするかー、とズルズル後回しにする心理がなくなりました。多分。きっと。NuGet対応したことだしで、当分はアクティブにアップデートしていきます！</p>
+<p>そんなこんなでF#スクリプトはぢめました。素晴らしすぎる。あとVS2010とシームレスに完全統合されたF# Interactiveがヤバい。超凄い。こんなイイものがあったなんて……。というわけでF#書きたい欲とF#について色々書きたい欲が、ので次回は実践F#書評です、多分。いや、次々回かも。とりあえず近日中には。とにかくF#は絶対触るべきですね！</p>
+<h2>おまけ</h2>
+<p>と、いうわけで、生成を自動化します。F#スクリプトでdllのアセンブリ情報を読み込んでnuspecとnupkgを生成するものを書きました。</p>
+<pre><code class="language-fsharp">#r &quot;System.Xml.Linq&quot;
+
+open System
+open System.IO
+open System.Diagnostics
+open System.Reflection
+open System.Xml.Linq
+
+// 同ディレクトリにNuGet.exeを置いておくこと
+// mainにはnuspecへの情報登録に利用するdllを、othersにはその他のものを;区切りで
+// パスはこのスクリプトからの相対パス
+let main = &quot;bin/Release/ClassLibrary4.dll&quot;
+let others = [&quot;bin/Release/System.CoreEx.dll&quot;; &quot;bin/Release/System.Interactive.dll&quot;]
+
+let pass p = Path.Combine(__SOURCE_DIRECTORY__, p)
+let xn s = XName.Get(s)
+
+// Load Assembly
+type AssemblyInfo =
+    { Id:string; Version:string; Description:string; Company:string }
+    
+let getAttr&lt;'a&gt; (asm:Assembly) = 
+    asm.GetCustomAttributes(typeof&lt;'a&gt;, true) |&gt; Seq.head :?&gt; 'a
+
+let info =
+    let asm = Assembly.LoadFrom(pass main)
+    let name = asm.GetName()
+    { Id = name.Name;
+      Version = name.Version.ToString();
+      Description = (getAttr&lt;AssemblyDescriptionAttribute&gt; asm).Description;
+      Company = (getAttr&lt;AssemblyCompanyAttribute&gt; asm).Company }
+
+let filename = info.Id + &quot;.&quot; + info.Version + &quot;.nuspec&quot;
+
+// Build .nuspec
+let nuspec =
+    let file src = XElement(xn &quot;file&quot;, XAttribute(xn &quot;src&quot;, src), XAttribute(xn &quot;target&quot;, &quot;lib&quot;))
+    let delBlank = function &quot;&quot; -&gt; &quot;_&quot; | x -&gt; x
+    XElement(xn &quot;package&quot;,
+        XElement(xn &quot;metadata&quot;,
+            XElement(xn &quot;id&quot;, info.Id),
+            XElement(xn &quot;version&quot;, info.Version),
+            XElement(xn &quot;authors&quot;, delBlank info.Company),
+            XElement(xn &quot;description&quot;, delBlank info.Description)),
+        XElement(xn &quot;files&quot;,
+            file main,
+            others |&gt; Seq.map file))
+
+nuspec.Save(pass filename)
+
+// output .nupkg
+new ProcessStartInfo(
+    FileName = pass &quot;NuGet.exe&quot;,
+    Arguments = &quot;p &quot; + filename,
+    RedirectStandardOutput = true,
+    UseShellExecute = false,
+    WorkingDirectory = __SOURCE_DIRECTORY__)
+|&gt; Process.Start
+|&gt; fun p -&gt; Console.WriteLine(p.StandardOutput.ReadToEnd())
+</code></pre>
+<p>DLLからVersionとかDescriptionとか取れてしまう、.NETのアセンブリがサクッと読み込めるF#いいわー。これだけだと情報は最低限なので、tagとかも入れたければ下の方のXElementを生成している部分に直書きで挟んでやればヨシ。スクリプトの軽快さは良いですね。なので設定というか読み込むファイルも先頭のほうで普通に直書きで指定しちゃっております。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/nuget_buildscript.jpg">
+</p>
+<p>そのまま使ってもいいんですが、ビルド後に実行するコマンドラインに指定してやれば一切の手間暇なく常にフレッシュ。おお、素敵。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0121_297.html">XboxInfoTwit - ver.2.3.0.2</a></h1>
+<ul class="date"><li>2011-01-21</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://neue.cc/software/xboxinfotwit" title="neue cc - XboxInfoTwit">neue cc - XboxInfoTwit</a></li>
+</ul>
+<p>電源OFFなのにONということになって投稿し続けるという酷い暴走していました、ごめんなさい……。というわけで直しました。</p>
+<h2>解説（言い訳とも言う）</h2>
+<p>XboxInfoTwitはスクレイピングという、普通にブラウザで表示する際のページのHTMLを解析してデータを取り出しています。今回は、HTML側でほんのちょびっと変更があって、その影響をモロに被って暴走しました。Ouch！こういう、うまくデータが取れなかった場合を想定してちゃんとエラーにしないとダメなのですね。私は今回はその辺まったく対策取ってなかったので、……といった結果になってしまいました。ほんとすみません。</p>
+<p>一応、次からは今回のようなのが原因の暴走はなくなりました。別の原因がもとに、ってのは、うむむ……。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0117_296.html">l2o.js 世界最速分解解説</a></h1>
+<ul class="date"><li>2011-01-17</li></ul>
+<div class="entry_body"><p>l2o.js、でググっても何も出てきませんね！じゃあl2o.jsって何？って話なのですが、その前に、<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896" title="Reactive Extensions for .NET (Rx)">Reactive Extensions</a>が12/24にChristmas Releaseと称してリリースされたわけで、RxJSにも若干更新が入っていました。</p>
+<pre><code class="language-text">· Fix for scheduling in the Concat, Catch, and OnError operators.
+· If operator can now be used without supplying an “else” case.
+</code></pre>
+<p>特に大したこともないわけでしたが。しかし、インストールディレクトリである Microsoft Cloud Programmability\Reactive Extensions\v1.0.2838.0\RX_JS を見ると、l2o.jsという見慣れないものが……？</p>
+<p>l2o.js、つまり、Linq 2 Objects.js。ええ、ええ……。linq.jsとモロにガチにかちあいそうな匂いがします。RxJS全然更新しないなあ、やる気あんのかよお、JVGoghも辞めちゃったしー、とか思っていたのですが、その裏でこっそりとんでもないものを仕込んでいたようです。いざ出てみると、むしろやらなかったのが不思議なぐらいな。</p>
+<p>では、使ってみましょう。ついでに<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js</a>と比較しましょう。</p>
+<pre><code class="language-javascript">var array = [12, 21, 4, 5, 36, 3, 10];
+
+// l2o.js
+L2O.Enumerable.FromArray(array)
+    .Where(function (x) { return x % 2 == 0 })
+    .Select(function (x) { return x * x })
+    .ForEach(function (x) { alert(x) }); // 144, 16, 1296, 100
+
+// linq.js
+Enumerable.From(array)
+    .Where(function (x) { return x % 2 == 0 })
+    .Select(function (x) { return x * x })
+    .ForEach(function (x) { alert(x) }); // 144, 16, 1296, 100
+</code></pre>
+<p>名前空間はL2Oから。そこにRange, Repeat, FromArrayなどなどの生成子があり、あとはメソッドチェーンでクエリ演算子があり。linq.jsと完全に一致。……これはlinq.jsｵﾜﾀ。</p>
+<p>いや待て。私がlinq.jsを作ったときには既に3つぐらいLinq to Objectsライブラリはあったけれど、それのどれにも不満があったから、自分で作ったわけで、同じように書けるからといって内部のクオリティが保証されているわけではない。Rxチームが作ってるからといって生半可なものだったら許さんぞ、と、いうわけで中身を覗いてみました。</p>
+<p>Minifyされてますが、改行/インデント整形を施すだけで十分読めます。変数難読化が入っても、構造がシンプルなので全然読める。と、いうか、そうして普通に読めるのは、linq.jsと構造がまるっきり一緒だからですが。……。一緒ですが。一緒ですねこれ。そりゃC#の忠実移植を目指して作ったlinq.jsなわけなので、l2o.jsも同じ目標に向かってるだろうから一緒になるのは当然なのですが当然すぎてlinq.jsの存在意義ががが。</p>
+<p>中身をチラッと見てみましょう。Selectを、Minifyされていたので変数名は私の方で付け直しました。</p>
+<pre><code class="language-javascript">// l2o.js
+L2O.Enumerable.prototype.Select = function (selector)
+{
+    var source = this;
+
+    return L2O.Enumerable.Create(function ()
+    {
+        var current, count = 0, enumerator;
+
+        return L2O.Enumerator.Create(
+            function () // MoveNext
+            {
+                if (enumerator === void 0) // initialize
+                {
+                    enumerator = source.GetEnumerator()
+                }
+                if (!enumerator.MoveNext())
+                {
+                    return false
+                }
+                current = selector(enumerator.GetCurrent(), count++);
+                return true
+            },
+            function () { return current }, // GetCurrent
+            function () { enumerator.Dispose() }) // Dispose
+    })
+}
+
+// linq.js
+Enumerable.prototype.Select = function (selector)
+{
+    var source = this;
+    selector = Utils.CreateLambda(selector);
+
+    return new Enumerable(function ()
+    {
+        var enumerator;
+        var index = 0;
+
+        return new IEnumerator(
+            function () { enumerator = source.GetEnumerator(); }, // Initialize
+            function () // MoveNext &amp; Current
+            {
+                return (enumerator.MoveNext())
+                    ? this.Yield(selector(enumerator.Current(), index++))
+                    : false;
+            },
+            function () { Utils.Dispose(enumerator); }) // Dispose
+    });
+}
+</code></pre>
+<p>完全に一致。linq.jsのほうでは、MoveNextのほうに定型句のようにif(enumerator === undefined){初期化処理}を書くのが嫌だったので、そもそも別関数として隔離、Currentはどうせキャッシュを返すだけなのだから省略してMoveNextと統合させてしまえ(this.Yieldというメソッドがその辺を受け持ってる、yield returnっぽく)とか、細々としたのを入れていますが、実質的には一緒です。</p>
+<p>なお、この辺の<a href="http://neue.cc/2011/01/13_295.html" title="neue cc - LINQの仕組みと遅延評価の基礎知識">Linq to Objectsの仕組み</a>は、先日紹介しましたが、JSでも一緒です。Selectなど拡張メソッは、以前の物(this = source)を内包したうえで、新しいオブジェクト(new Enumerable)を返し、GetEnumeratorによりEnumeratorを生成し、最初のMoveNextが呼ばれた時に初めて動作が始まる。</p>
+<h2>アルファ</h2>
+<p>現在l2o.jsはアルファ版というか、それ以前の状態と思われるので、今実践に投げ込むのはダメです。メソッド全然足りないしバグいっぱいあるし。具体的に挙げると、Rangeはこれだとオーバーフローしない？とかReverseが即時評価ですよー、とかDisposeが不徹底で機能してない場合がある、とか、いっぱい。</p>
+<p>メソッドは基本的なのしかありません。OrderByや、それと集合系がごっそり抜けているので、普通に使う分にも困るぐらいなので。まあ、集合系は(Dictionaryがないので)ちょっと実装が面倒ではある……。そのために私はDictionaryを導入しています。<a href="http://neue.cc/2010/05/18_258.html">neue cc - linq.js ver 2.1.0.0 - ToDictionary, Share, Let, MemoizeAll</a> というのはver2.1と、つい最近からで、それまではDictionary導入してないが故にバグ持ちだったんですよね、恐ろしや……。</p>
+<p>まあ、Script#からの生成だろうから、Dictionaryを持ってくるぐらいはお茶の子さいさいかもしれません。</p>
+<h2>まとめ</h2>
+<p>l2o.jsは、今はまだこんな風にやるよ、という骨組みを見せているだけに過ぎませんが、すぐに標準クエリ演算子は実装されるでしょう。勿論、歓迎すべきことです！私の心中が穏やかでないのもしょうがない話です！linq.jsはJSでのLinqライブラリでは最後発ですが、現在CodePlex調べでは、同種のライブラリで月々のDL数が最も多いところまで行きました。地道に続けていれば良いものはいつか認められる、という甘い幻想を少しだけ見させてもらったのですが（3/dayとか微々たるものな世界なのですけどね、そう考えるとLinqでJSというものは、今は需要が……。でも、ASP.NET MVCの普及と共に.NETerにJSでのでのLINQは、まだまだ需要が発生する余地はありますな)、公式で十分なクオリティのものが出てしまった以上は、ただある俺々ライブラリの一つとなる。</p>
+<p>とはいっても、公式では出来ないこと、出来ない付加価値は、まだまだ幾らでも足せるはずです！現時点でも無名関数の文字列ショートカット、WSH対応、vsdoc、大量の拡張メソッド、jQueryプラグイン化とやってきたし、これらは公式では出せないはず。で、まだネタはあります。今思っているのはClosure CompilerのAdvanced Optimizations対応、任意で配列のprototype拡張の追加、ですねえ。特に後者は、ちょっとしたことには大分便利になるはずだと思っています。</p>
+<p>あとは、もしかしたらlinq.jsがRxJSやl2o.jsに影響を与えたのではないか？と考えると、嬉しい話ですかねー。ふむふむ。ま、その辺も含めて今年のRx周りは激しく加速しそうですね。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0113_295.html">LINQの仕組みと遅延評価の基礎知識</a></h1>
+<ul class="date"><li>2011-01-13</li></ul>
+<div class="entry_body"><p>新年明けましておめでとうございます。その第一弾の記事は<a href="http://www.amazon.co.jp/gp/product/4774145165?ie=UTF8&tag=ilsgeometrati-22&linkCode=as2&camp=247&creative=7399&creativeASIN=4774145165">実践 F# 関数型プログラミング入門</a><img src="http://www.assoc-amazon.jp/e/ir?t=ilsgeometrati-22&l=as2&o=9&a=4774145165" width="1" height="1" border="0" alt="" style="border:none !important; margin:0px !important;" />の書評にしようと思っていたのですが、もう少し時間がかかりそうなので、せっかくの年始は基礎から考えようということで、LINQと遅延評価について最初から解説します。まあ、何をもって最初だとか基礎だとか言うのも難しいので私的な適当な基準で。つまり役に立たな（ry。なお、ここではLinq to Objects、IEnumerable&lt;T&gt;の連鎖についてのみ扱いますので、IQueryableについてはまた後日というか実のところ私はQueryableは全然分かってなくてやるやる詐欺が今も続いているといううがががが。</p>
+<h2>メソッドチェーン != return this</h2>
+<p>例によって単純なコードで。</p>
+<pre><code class="language-csharp">var query = Enumerable.Range(1, 10).Select(i =&gt; i * i).Take(5);
+foreach (var item in query)
+{
+    Console.WriteLine(item); // 1, 4, 9, 16, 25
+}
+</code></pre>
+<p>1から10を二乗したうちの先頭5つを出力という、それだけのコードです。foreachする場合のinの右側が長くなるのは個人的に好きじゃないので、わざわざ変数に置いたりするのをよくやるのですが、これは好みですかねえ。なのでリスト内包表記とかあんま好きじゃなかったりはする、記法的に。</p>
+<p>それはともかく、ドットで繋げていると実体が隠れてしまいがちなので、分解します。</p>
+<pre><code class="language-csharp">var rangeEnumerable = Enumerable.Range(1, 10);
+var selectEnumerable = rangeEnumerable.Select(i =&gt; i * i);
+var takeEnumerable = selectEnumerable.Take(5);
+foreach (var item in takeEnumerable)
+{
+    Console.WriteLine(item);
+}
+</code></pre>
+<p>変数だらけでゴチャゴチャして余計に分からない。良く分からないものは、とりま図で。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linq_illustrate_whole.jpg">
+</p>
+<p>こうなってます。中に、一つ前のものを内包している新しいオブジェクトを返しています。メソッドチェーンというと所謂ビルダー的な、もしくはjQueryなんかを想像してしまってチェーン毎に内部の状態が変化して return this するか、もしくは完全に新しいものを生成して返す（array.filter.mapしたら.filterで完全に新しい配列が生成され返って、.mapでも、的な。DeepCopyも同じようなものですか）みたいなのを想像してしまう感もあるのですが、そのどちらでもない。中に仕舞い込んで新しい包を返す。実に副作用レスでピュアい。</p>
+<p>このことはデバッガで確認出来ます。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linq_debugger_whole.jpg">
+</p>
+<p>面白いのはSelectの戻り値の型で、WhereSelectEnumerableIteratorとなっていて、名前のとおりWhereとSelectが統合されていたりします。これは、Where-&gt;Selectが頻出パターンのためパフォーマンス向上のためでしょうねえ。面白いですがユーザー的にはあまり気にすることではないので深追いしないで次へ。</p>
+<p>Takeの戻り値であるTakeIteratorはsourceとして中にSelectの戻り値であるWhereSelectEnumerableIteratorを抱えていて、Selectの戻り値はRangeの戻り値であるRangeIteratorを、中に抱えています。という連鎖が成り立っていることがしっかり確認できました。Visual Studioのデバッガは大変見やすくてよろしい。</p>
+<h2>遅延評価と実行</h2>
+<p>hogeEnumerableに包まれている状態では、まだ何も実行は開始されていません。そう、遅延評価！このままWhereやSkipを繋いでも、新たなhogeEnumerableで包んで返されるだけで実行はされません。ではいつ実行されるかといえば、IEnumerable&lt;T&gt;以外の、何らかの結果を要求した時です。それはToArrayであったり、Maxであったり、foreachであったり。</p>
+<p>foreachを実行した時の動きを、図（但し致命的に分かりづらい）で見ると……</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linq_pull_cycle.jpg">
+</p>
+<p>まず最初は最外周のtakeEnumerableに対しGetEnumeratorを実行し、IEnumerator&lt;T&gt;を取り出します。そして取り出したIEnumerator&lt;T&gt;に対しMoveNextの実行をすると、その先ではまた中に抱えたIEnumerable&lt;T&gt;に対しGetEnumeratorでIEnumerator&lt;T&gt;を取り出し、の連鎖が大元(この場合はrangeEnumerable)に届くまで続きます。</p>
+<p>大元まで届いたら、いよいよMoveNextの結果が返されます。trueか、falseか。trueの場合は、通常は即座に現在値(Current)の取得も行うので、Currentが根本から下まで降りていくイメージとなります。あとは、どこかのMoveNextがfalseを返してくるまで、その繰り返し。今回はRangeが10個出力、Takeが5個出力なので、Rangeが5回分余りますがTakeで列挙は途中打ち切り。falseを流して終了させます。SumやCountなど値を返すものは、falseが届いたら結果を返しますが今回はforeachなのでvoid、何もなしで終了。</p>
+<h2>イテレータの実装</h2>
+<p>ついでなので、動作の実態であるイテレータも実装します。単純な、0から10までを返すだけのものを例として。</p>
+<pre><code class="language-csharp">public class ZeroToTenIterator : IEnumerator&lt;int&gt;
+{
+    private int current = -1;
+
+    public int Current
+    {
+        get { return current; }
+    }
+
+    public bool MoveNext()
+    {
+        return ++current &lt;= 10;
+    }
+
+    // 必要でなければ空でもいいや、という感じ
+    public void Dispose() { }
+
+    // TじゃないほうはTのほうを返すようにするだけでおk
+    object System.Collections.IEnumerator.Current { get { return Current; } }
+
+    // Resetは産廃なのでスルー、実装しなくていいです、Interfaceからも削られて欲しいぐらい
+    public void Reset() { throw new NotImplementedException(); }
+}
+
+// 使うときはこんな感じでしょーか
+// IEnumerator&lt;T&gt;利用時はusingも忘れないように……
+using (var e = new ZeroToTenIterator())
+{
+    while (e.MoveNext())
+    {
+        Console.WriteLine(e.Current);
+    }
+}
+</code></pre>
+<p>IEnumerator&lt;T&gt;ですが、見てきたとおり、中核となるのはMoveNextとCurrentです、といってもCurrentはキャッシュした値を中継するだけなので、実質実装しなければならないのはMoveNextだけ(場合によりDisposeも)。</p>
+<p>見たとおりに一行の超単純な、10超えるまでインクリメントでtrue、超えたらfalse。なんかとってもいい加減な感じで、falseだろうとMoveNext()を呼んだらCurrentの値がどんどん増加していっちゃって大丈夫か？というと、全然問題ない。と、いうのも、そういうのは利用側の問題であって実装側が気にする必要はないから。</p>
+<p>MoveNextする前のCurrentの値は保証されていないので使うな、であり、MoveNextがfalseを返した後のCurrentの値は保証されてないので使うな、です。大事なお約束です。お約束を守れない人は生イテレータを使うべからず。Linqのクエリ演算子やforeachは、そんな他所事を考えないで済むようになっているので、それらを使いましょう。生イテレータを取得したら負けです(拡張メソッド定義時は除く、つまりライブラリ的な局面以外では避けましょう)</p>
+<p>ちなみにStringのイテレータは列挙前/列挙後のCurrentへのアクセスで例外が飛び、List&lt;T&gt;は列挙前は0、列挙後も0にリセットされ、Enumerable.Rangeでは列挙後は最後の値が返る、といったように、実際に挙動はバラバラです。</p>
+<p>実装側が守らなければならないルールは、MoveNextが一度falseを返したら、以後はずっとfalseを返し続けること。で、その観点で、このZeroToTenIteratorを見ると、実のところ全然ダメです。MoveNextがint.MaxValue回呼び出されるとcurrentがオーバーフローしてint.MinValueになって、つまりはMoveNextの結果もfalseからtrueに変わってしまいます。腐ってますね。殺害されるべき。誰がそんなに呼ぶんだよ、という感じに普段はあんま気にしないゆとりな私ですが、いえいえ、こういう時ぐらいは気にしたりします。</p>
+<p>オーバーフローはうっかりで見落としがちなので、ヘラヘラゆとりゆとりと笑ってないで、普段から注意すべきだと自戒するこの頃。</p>
+<p>まあ、今時はイテレータの手実装なんてする必要ないのですがね！シンプルなものならばLinqの組み合わせで実現出来ますし、そうでないものはyield returnを使えばいいので。手実装じゃなきゃダメなシチュエーションってなにかある、かなあ？</p>
+<h2>まとめ</h2>
+<p>「return thisじゃなくて新しいオブジェクトを返してる」「配列的なイメージで扱えるけれど実体はストリームのほうが近い」「デバッガ素晴らしすぎる」「生禁止」の以上四点でした。</p>
+<p>Linq to ObjectsのJavaScript移植である<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js</a>も同じ仕組みでやっているので、そちらのコードのほうがブラックボックスでなく、また、素直に書いているので分かりやすくお薦め、かどうかは、微妙なところですんがー。ブラックボックスになっている部分(yield returnなど)を表に出しているので(というか出さないと実装出来ない)余計分かりにくい感も。</p>
+<p>で、基礎からのLinqといえば紹介したいシリーズが一つ。</p>
+<p>LondonのGooglerでMicrosoft MVPでC# in Depthの著者でStack Overflowで凄まじい解答量を誇るJon Skeet氏が、Blogで<a href="http://msmvps.com/blogs/jon_skeet/archive/tags/Edulinq/default.aspx">Reimplementing LINQ to Objects</a>と称して、これまた凄まじい勢いで再実装&amp;超詳細な解説をやっているので必見です。</p>
+<p>詳細、どころの話じゃなく詳細で大変ヤバ素晴らしすぎる。単純なサンプルコードと結果を貼ってメソッド紹介、などという記事とは一線を画しすぎるクオリティ。私もこういう記事を書いていきたいものです。こんな量とスピードの両立は超人すぎて無理ですが、今年は記事のクオリティは上げたいですね。</p>
+<iframe src="http://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=1935182471" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<iframe src="http://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=0672330792" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<p>C# in Depth 2nd Editionはつい二ヶ月前に出たばかりで、内容も良さそうですね、読んでみたい本です。しかし私の手元には積み本がいっぱいで、とほほ。で、本といえばもう一つ、C# 4.0 Unleashedがもうすぐ(2011/1/14、明日だね)出ます。これは著者がBart De Smet氏なので大注目です。<a href="http://community.bartdesmet.net/blogs/bart/Default.aspx" title="B# .NET Blog">B# .NET Blog</a>でキレキレのLinqコード、だけじゃなくILからSQLからあらゆる領域にエキスパートな凄さを見せているので超楽しみです。こちらは予約してあるので、届くのが本当に楽しみで（洋書なので届くのは月末予定のよう、F#本が読み終えた頃になる予定なのでちょうどいいー）。</p>
+<p>Bart氏は大学時代はベルギーのMicrosoft MVP for Visual C#、その後MicrosoftのWPFチームに入り、現在はCloud Programmability Team、つまりRxを開発しているチームに入ってます。氏が入ってからIQbservableとかヘンテコなのが次々と上がってきて、ますます目が離せない状態に。PDC10では<a href="http://player.microsoftpdc.com/Session/bfa72307-6534-41ad-bcf7-0f4fb9280515">LINQ, Take Two - Realizing the LINQ to Everything Dream</a>というセッションを行ってましたが、これは本当に必見。Linqの過去、そして未来を見る素晴らしいセッションでした。感動しすぎて3回ぐらい見直した。</p>
+<p>LINQは今後「ますます」重要になるので、しっかり土台を固めて、未来へ向かおう！</p>
+</div>
+<h1><a href="http://neue.cc/2010/1231_294.html">2010年を振り返る</a></h1>
+<ul class="date"><li>2010-12-31</li></ul>
+<div class="entry_body"><p>今年もありがとうございました。無事、更新を続けられました。一応毎年、31日は一年間を振り返っていたようなので、今年も振り返ることにします。</p>
+<p>まず言えるのはもはやゲーマーじゃねえ、ということのようで、悲しいことに。ゲサイトじゃなくなったのはしょうがないとしても、プレイすらしなくなっていました……。今年は過去最高潮にゲームしてません。積みまくりです。こんな自分になるとは想像もつかなかったなあ。とか言いながらもこっそりGeometry Wars 2のEvolvedモードで日本3位ぐらい世界50位ぐらいなスコアに更新していたりはしました。全体的にゲームやらなかったぶん、ジオメトリだけはしっかりやったということで、ヨシとしますか。来年はもっとゲーマーでいたいですね。</p>
+<p>なお、去年遊んだ中でのベストゲームは<a href="http://members.jcom.home.ne.jp/wtetsu/irisu/manual.html" title="いりす症候群！">いりす症候群！</a>です。10月頃に初めて知ったのですが、もう激ハマリ。フリーゲームですし、最高に面白いので皆様も是非。ゲームは勿論、ストーリー/演出面でも味わい深かった。大変素晴らしい。来年のゲームはPortal2に大期待、かな。そういえば、年末のついこないだに配信されたXbox LIVE インディーズ ゲームの<a href="http://www.nicovideo.jp/watch/sm13108757" title="【XNA】REVOLVER360【XBLIG】 ‐ ニコニコ動画(原宿)">REVOLVER360</a>は、大変美しい映像と素晴らしいプレイ感覚で非常に面白いので現在プレイ中。</p>
+<p>さて、ゲーム以外ではどんな一年だったかというと、キャッキャウフフ。過去の自分からじゃ全く考えられないぐらいキャッキャウフフした一年でした。そんなに沢山というわけじゃないですがC#系の会に出たりしました。そうやって実際に人と顔を合わせることでTwitter上でのコミュニケーションの輪も広がる、という効果でか、Twitterでの@率も高くなっていきました。おお、キャッキャウフフ。と、いうとアレですが、悪いことではないですよね。人付き合いは相当に苦手なのですが、幾分か何とかなってきたようにも思えます。いや、まだ全然ですが。徐々に徐々に。</p>
+<p>C#erとしての成長度は、うーん。ちょっと鈍いかなあ。さすがに、初めてC#に触れ本格的にプログラミングを始めましたな2008年、ようやくプログラミングが分かってLinq最高ーとどんどん知識を吸収出来た2009年、に比べて鈍化してしまうのもしょうがないのかなー、とは思いつつも、その原因ってジャンルを広げられなかったからなのではないかなあ、と思います。結局今年もLinqですからね。来年もLinqな気がしますが。今年の成果物はlinq.jsをガッと書き換えたりDynamicJson作ったり、そこそこなくはないけれど、しかし1年分の仕事じゃあないのですよねえ。</p>
+<h2>来年</h2>
+<p>継続中の積みタスクの消化がー。DynamicJsonの更新とかReactiveOAuthの更新とかlinq.jsの更新とか。やるべきことは決まっているし、別にやり始めればそんなに時間のかかるものでもないので、とっとと手をつけて終わらせるべきなのである。と、11月頃から思っていたはずが手付かずでここまで来てしまった……。ということは、来年も永遠とこのままではフラグ。</p>
+<p>何か作ると言い続けてやるやる詐欺が続いているのですが、手元にWindows Phone 7があるのが好機なので、それでSilverlightの学習と何か作るの達成を。と思ってますです。クライアントサイドでは。サーバーサイドは、ねえ。C#から離れてnode.jsを触るのが良いかな、とは思っていて。もしくは、Rxチームの次のミッションはサーバーサイドでの応用だと思うので、とりあえず追っかけてればそのうち時流に乗れるのではないかという楽観論。</p>
+<p>というわけで、来年も暫くはReactive Extensionsとその周辺、プラスアルファで何か、といった感じでしょうか。興味あるのことは沢山ありますが、色々なことに手を出せるほどにはキャパシティの限界容量があまりないわけなので、現実を見つつ、着実に成長出来れば良いかな、と。まだあわてるような時間じゃない。と、言いたいところなのですが、私もあまり若いとも言えない年齢なので（一応まだ20台ですがー）、そろそろ焦ったほうがいい感じではある。やっぱ実務的な知識があまりにも欠けてるのよねえ、とほほ。来年は、少しその辺も見据えて動かなきゃいけないかもですね。</p>
+<p>そんな感じですが、来年もよろしくお願いします。</p>
+</div>
+<h1><a href="http://neue.cc/2010/1228_293.html">Linqと総当り</a></h1>
+<ul class="date"><li>2010-12-28</li></ul>
+<div class="entry_body"><p>各所でAdvent Calendarも終了し皆様お疲れさまでした。自分のよく知っている言語はもちろんですが、他の言語を見ていても非常に楽しめて良いですね、特に普段自分の書かない言語で、入門からちょっと突っ込んだものまでまとめて見れるというのは非常に良い機会でした。</p>
+<p>そんな中で見かけたScalaによる <a href="http://d.hatena.ne.jp/mzp/20101225/scala" title="リストモナドを使ってみる - みずぴー日記">リストモナドを使ってみる - みずぴー日記</a> という記事。おお、スッキリかっこよく求まりますね、Scalaカコイイ。さて、総当り。非決定性計算。リストモナド。といったら、Linq、クエリ式。そんな風に反射的に連想が成りたつならもう立派なLinq使いですね！いやまあ、<a href="http://d.hatena.ne.jp/NyaRuRu/20080303/p2" title="クエリ式で総当たり - NyaRuRuの日記">クエリ式で総当たり - NyaRuRuの日記</a>で読んだことがあるから、というだけの話なのですがー。ほとんど直訳でいけるとあるように、Scalaで書かれたsend + more = moneyもまた、直訳で書けました。</p>
+<pre><code class="language-csharp">var digits = Enumerable.Range(0, 10);
+
+var solve = from s in digits
+            from e in digits.Except(new[] { s })
+            from n in digits.Except(new[] { s, e })
+            from d in digits.Except(new[] { s, e, n })
+            from m in digits.Except(new[] { s, e, n, d })
+            from o in digits.Except(new[] { s, e, n, d, m })
+            from r in digits.Except(new[] { s, e, n, d, m, o })
+            from y in digits.Except(new[] { s, e, n, d, m, o, r })
+            where s != 0
+            where m != 0
+            let send = int.Parse(&quot;&quot; + s + e + n + d)
+            let more = int.Parse(&quot;&quot; + m + o + r + e)
+            let money = int.Parse(&quot;&quot; + m + o + n + e + y)
+            where send + more == money
+            select new { send, more, money };
+
+foreach (var item in solve) Console.WriteLine(item);
+</code></pre>
+<p>ちゃんちゃん。こういうの見ると、各言語は同じとこに向かってる感がありますね。微妙に表現は違いますが、同じ発想が通じるし同じように書ける。その点はC#もScalaもF#も同じパラダイム、同じ未来を目指して向かってるのではないかと思います。Javaは微妙に落伍している気がしますが、もう少し何とかなって欲しいものです。</p>
+<p>と、いうだけなのもアレなので、 int.Parse(&quot;&quot; + s + e + n + d) の部分について。数字を文字列的な並びとして解釈したい、というわけですが、手段をまとめるとこんな感じになるかしらん。</p>
+<pre><code class="language-csharp">// という数字があった時に123にしたい
+var x = 1;
+var y = 2;
+var z = 3;
+
+// ダルい
+var xyz1 = int.Parse(x.ToString() + y.ToString() + z.ToString());
+// 複数ある時はこちらで
+var xyz2 = int.Parse(string.Concat(x, y, z));
+// コンパイル後の結果はxyz2と一緒
+var xyz3 = int.Parse(&quot;&quot; + x + y + z);
+// 文字列変換しない
+var xyz4 = x * 100 + y * 10 + z;
+// ↑のは桁数が多い時に泣くのでこうしてやる
+var xyz5 = new[] { x, y, z }.Aggregate((a, b) =&gt; a * 10 + b);
+</code></pre>
+<p>文字列にして並べてintに変換するのがお手軽なわけですが、.ToString()を並べていくのはダルいわけですよね！というわけで、そんな時はstring.Concatを使うと全部まとめて結合出来ます。しかし int.Parse(string.Concat と並ぶのすらダルい、とかいう不届き者は先頭に&quot;&quot;と足し合わせることでstring.Concatで結合したのと同じ結果を得られます。これは、演算子は左から適用されていきますが、文字列と数値を+で足すと文字列として足される、以下繰り返し。の結果。キモチワルイといえばキモチワルイので、積極的に使うかというと悩ましいところですが……。</p>
+<p>そもそも数字を扱うのに文字列に変えてー、とかが邪道だという話も割とある。効率的な意味でも。なので、そういうときは2の桁は10倍、3の桁は100倍……。とかやっていると桁数が多いときはどうするのどうもしないの？という話なので、Aggregateを使うという手もあります。Aggregateは一般的な関数型言語でいうfoldlに相当。左からの畳み込み演算。ところで、では右からの畳み込みはどうすればいいの？つまりはfoldrはどうなのか、というと、これは.Reverse().Aggregate() のようで。右からなら逆にすればいいぢゃない。</p>
+<p>ところで、C#のLinqで出来ることはJavaScriptの<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js - LINQ for JavaScript</a>でも出来ますよ？やってみます？</p>
+<pre><code class="language-javascript">var digits = Enumerable.Range(0, 10);
+
+var solve = digits
+    .SelectMany(function(s){ return digits.Except([s])
+    .SelectMany(function(e){ return digits.Except([s, e])
+    .SelectMany(function(n){ return digits.Except([s, e, n])
+    .SelectMany(function(d){ return digits.Except([s, e, n, d])
+    .SelectMany(function(m){ return digits.Except([s, e, n, d, m])
+    .SelectMany(function(o){ return digits.Except([s, e, n, d, m, o])
+    .SelectMany(function(r){ return digits.Except([s, e, n, d, m, o, r])
+    .Select(function (y) { return { s: s, e: e, n: n, d: d, m: m, o: o, r: r, y: y} })})})})})})})})
+    .Where(&quot;$.s != 0&quot;)
+    .Where(&quot;$.m != 0&quot;)
+    .Select(function(x){ return { 
+        send: parseInt(&quot;&quot; + x.s + x.e + x.n + x.d),
+        more: parseInt(&quot;&quot; + x.m + x.o + x.r + x.e),
+        money: parseInt(&quot;&quot; + x.m + x.o + x.n + x.e + x.y)}})
+    .Where(function (x) { return x.send + x.more === x.money });
+
+solve.ForEach(function (x) { document.writeln(x.send + &quot;:&quot; + x.more + &quot;:&quot; + x.money) });
+</code></pre>
+<p>C#クエリ式からの変換のポイントは、from連鎖をSelectManyの連鎖で、但しカッコは閉じず変数のキャプチャを内包したままで最後にSelectで一旦整形してやるというところです。正確なクエリ式の再現とはなりませんが、この程度ならば、まあ何とか書けなくもないレベルとなります（正確なクエリ式の変形結果の再現をやると手では到底書けないものになる）。</p>
+<p>ちなみに総当りなので結構時間がかかってIEだと泣きます。Chromeなら、まあそれなりな速度で求まるかなー。</p>
+</div>
+<h1><a href="http://neue.cc/2010/1225_292.html">Rx Christmas Release 2010によるPublishの変化解説</a></h1>
+<ul class="date"><li>2010-12-25</li></ul>
+<div class="entry_body"><p>メリークルシミマス。Happyなことに、<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Reactive Extensions for .NET (Rx)</a>が更新されました。なんと、WP7に標準搭載されたことだし安定性・互換性はある程度保証されてきたよねー、とか思った側から完全に互換を崩壊させる素晴らしいBreaking Changesをかましてきました！常識では計り知れない大胆な所業。そこにしびれるあこがれれぅ。</p>
+<p>さて、今回の変化はJoin/GroupJoin/Windowの新規搭載とPublish系の変更です。Joinについてはまた後日ということで、今回はPublishの変更について解説します。で、ですねえ、これはもう100%変わってます。昨日ちょうどPublishによる分配、とか書いたわけですが、出したコードは全部動かないです！素晴らしいタイミング！Ouch！</p>
+<p>端的に言えばPublishは引数にISubjectを受け取るよう変化。Prune/ReplayはPublishに統合されたことにより消滅。何でかというと、元々、分配ソースにSubjectを使うのがPublish、BehaviorSubjectを使うのが初期値付きPublish、AsyncSubjectを使うのがPrune、ReplaySubjectを使うのがReplayでした。分配ソースを任意で受け取るようになったため、メソッドが分かれる意味がなくなったというわけですね。</p>
+<p>ナンタラSubjectの解説は、まあまた後日にでも。簡単に言えばSubjectは普通のイベントと同じで素直な挙動、つまりOnNextしたら値が流れる。AsyncSubjectは非同期を模していて、OnNextされたら値を一つだけキャッシュし、OnCompletedされたらキャッシュした値を流す。以降はSubscribeされるたびにキャッシュした値を即座に流し、OnCompletedも発行。ReplaySubjectはOnNextされる度に値をキャッシュし、それを流す。Subscribeされるとキャッシュした値を全て即座に流す。BehaviorSubjectはOnNextされる度に最新の値一つのみをキャッシュし、それを流す。Subscribeされるとキャッシュした値を即座に流す。</p>
+<p>イマイチ分かりづらいですね:) というわけで本当に詳しいことは後日で。AsyncSubjectだけは、今までにも、そういう挙動であることの意味とかしつこく書いてきましたが。</p>
+<p>そして、IConnectableObservableが戻り値となるものはMulticastというメソッド名になりました。引数は勿論、ISubjectを受け取るという形に。では、<a href="http://neue.cc/2010/12/24_291.html" title="neue cc - Reactive ExtensionsとPublishによるシーケンスの分配">昨日のコード</a>で例を。新旧比較ということで。</p>
+<pre><code class="language-csharp">Observable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()))
+    .Publish(new Subject&lt;int&gt;(), xs =&gt; xs.Min().Zip(xs.Max(), (min, max) =&gt; new { min, max }))
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>Publishの第一引数にSubjectを突っ込みました。第二引数にはそれで分配されたIObservableが渡ってくるという塩梅です。</p>
+<pre><code class="language-csharp">var input = Observable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()))
+    .Multicast(new Subject&lt;int&gt;());
+
+input.Min().Zip(input.Max(), (min, max) =&gt; new { min, max })
+    .Subscribe(Console.WriteLine);
+
+input.Connect();
+</code></pre>
+<p>こちらがMulticastです。まあ、普通にISubjectを受け取るようになったというだけで、今までのPublishでIConnectableObservableが返ってくるのと同じです。さて、ISubjectを受け取るということは、外部のISubjectを渡してもOKです。新しくこんな分配が可能になりました。</p>
+<pre><code class="language-csharp">var input = new ReplaySubject&lt;int&gt;();
+
+Observable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()))
+    .Publish(input) // 流れてくる値をReplaySubjectに保存する
+    .Max()
+    .Subscribe(i =&gt; Console.WriteLine(&quot;Max:&quot; + i));
+
+var inputArray = input.ToEnumerable().ToArray(); // 入力値を配列に変換
+</code></pre>
+<p>といっても、この例は全く意味がなくて、Max()で止めておいて、その戻り値をinputとして受ければいいだけの話なのですが。上手い利用例が浮かばなかったのです！まあ、色々と応用しどころというのは生まれてくるのではないかと思います。</p>
+<h2>まとめ</h2>
+<p>この破壊的変更ですが、私としては好意的に捉えたいです。如何せんPruneというメソッド名は意味不明でしたし、オーバーロードが8つもあるという状況も良くなかった。今回整理されたことで、使いやすくなったと思います。が、しかし、WP7版との互換性が切れてしまったのは相当痛い。今までusingをプリプロセッサディレクティブで#if WINDOWS_PHONE using Microsoft.Phone.Reactive という感じに切り替えてWPF/SL/WP7で互換を取っていたのですが、ここまで派手に互換性なくなるとなあ。</p>
+<p>ちなみにWP7標準搭載&quot;ではない&quot;DevLabs版のRx for WP7というのも用意されているので、そちらを使えばいいわけなのですが、それはそれでどうかなー、どうかなー、困った話で。</p>
+<p>それと、この変更はまだ追随されていませんが、そのうち System.Interactive(Ix.NET/EnumerableEx) や RxJS にも派生してくるような気がするので、再びAPI安定していない状態に戻った感がありますねー。要チェックで要注意で。Rxチームは大変なクリスマスプレゼントを贈ってきました。そして、Rxが.NET 4 SP1に入るの？入らないの？的な希望観測もあったわけですが、私個人の印象としては、SP1入りな可能性はなくなったな、という気がしてます。まだまだ作り替える気満々だもの、これ。</p>
+</div>
+<h1><a href="http://neue.cc/2010/1224_291.html">Reactive ExtensionsとPublishによるシーケンスの分配</a></h1>
+<ul class="date"><li>2010-12-24</li></ul>
+<div class="entry_body"><p>Twitter上で見たお題、10個コンソールから整数の入力を受けて最少と最大を出す。Linqで書くならこうでしょうか。通常は0-10でfor文を回すところはRangeで。あとはMinとMax。int.Parseなので数字以外は例外飛んでしまいますが、その辺は無視で。</p>
+<pre><code class="language-csharp">var input = Enumerable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()));
+
+var max = input.Max();
+var min = input.Min();
+</code></pre>
+<p>はい。これだと20回入力させることになってしまいます。Maxで列挙され、Minでも列挙され。ダメですね。というわけで、配列に一度保存しますか。</p>
+<pre><code class="language-csharp">var input = Enumerable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()))
+    .ToArray();
+
+var max = input.Max();
+var min = input.Min();
+</code></pre>
+<p>よろしい。しかしこれの列挙回数は3回です。ToArrayで一度、Maxで一度、Minで一度。しかもMaxとMinを出したいだけなのに、わざわざ配列に保存してしまっています。もし配列が巨大になる場合はメモリ的な意味でもちょっと嫌ですねえ。さて、そこで出番なのが、プッシュ型シーケンスを持つReactive Extensions。プッシュ型ならば分配が可能です。やってみましょう？</p>
+<pre><code class="language-csharp">Observable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()))
+    .Publish(xs =&gt; xs.Min().Zip(xs.Max(), (min, max) =&gt; new { min, max }))
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>ふむ、これはクールだ……。Rxの格好良さは異常。</p>
+<p>Publishは<a href="http://neue.cc/2010/06/24_263.html" title="neue cc - Reactive Extensions for .NET (Rx) メソッド探訪第7回:IEnumerable vs IObservable">今までにも何度も出してきました</a>が、シーケンスを分配するメソッドです。今までは引数なしにして、IConnectableObservableを変数に受けて、それに対してポコポコ足して、最後にConnect。としていましたが、Publishには引数有り版も用意されています。引数有りの場合は分配されたIObservableが変数として渡ってくるわけです。つまり上のコードは</p>
+<pre><code class="language-csharp">var input = Observable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()))
+    .Publish();
+
+input.Min().Zip(input.Max(), (min, max) =&gt; new { min, max })
+    .Subscribe(Console.WriteLine);
+
+input.Connect();
+</code></pre>
+<p>と等しいということになります。ちなみにPublish内でSubscribeしたって構わないわけなので</p>
+<pre><code class="language-csharp">Observable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()))
+    .Publish(xs =&gt;
+    {
+        xs.Min().Subscribe(x =&gt; Console.WriteLine(&quot;min:&quot; + x));
+        xs.Max().Subscribe(x =&gt; Console.WriteLine(&quot;max:&quot; + x));
+        xs.Sum().Subscribe(x =&gt; Console.WriteLine(&quot;sum:&quot; + x));
+        xs.Average().Subscribe(x =&gt; Console.WriteLine(&quot;avg:&quot; + x));
+        return xs;
+    })
+    .Subscribe();
+</code></pre>
+<p>といったような書き方も可能ですね。では、min,max,sum,avgと4つを返したい場合はどうしよう。Join-And-Thenを使います。</p>
+<pre><code class="language-csharp">Observable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()))
+    .Publish(xs =&gt; Observable.Join(xs
+        .Min().And(xs.Max()).And(xs.Sum()).And(xs.Average())
+        .Then((min, max, sum, avg) =&gt; new { min, max, sum, avg })))
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>この例だと単純に直列に繋いでいるだけなので、Zipと同じようにAndで繋いでThen。というだけですね。ちょいとゴチャッとしていますが。Joinの強力なところはAnd-Thenで作るPlan(Thenの戻り値)を複数受けられるという点にあります。これにより複雑な結合を生成する事ができます。ZipとMergeが混ざったような、でももう少し複雑な何か。といった雰囲気。</p>
+<h2>Publish</h2>
+<p>Publishはオーバーロードが8つもあって最初戸惑ってしまいますが、分類としては二つに分けられます(そしてそれぞれFuncを受け取る/スケジューラを受け取るの組み合わせで4つに分かれて2x4=8のオーバーロード)。一つは引数として初期値を受け取らないもの。もう一つは受け取るもの。今までは全部、受け取らないものを見てきました。内部的にはSubjectを使って分配しています。一方、初期値を受け取るものは内部的にBehaviorSubjectを使って分配します。というわけで、どんな挙動を取るのかよくわからない、という場合はBehaviorSubjectを試してみると良いでしょう！(何だこの解説する気ゼロな投げっぱなしな説明は)</p>
+<h2>ところでな余談</h2>
+<p>注意しないといけないのは、ふつーのシーケンスがあって、それをRxで分配やるとはっきし言って遅いです。列挙数が多くなると、ただ配列舐めるのに比べて数万倍のパフォーマンス差が出たりします。ほとんどのシチュエーションでRxで分配するぐらいなら二度三度舐めたほうが速いです。まあ、分配に限らずRxが普通に遅いということなのですがー。ご利用は計画的に。今回の例のConsole.ReadLineで、というのは、当然Rxのほうが速いですが。入力とリアルタイムに応答していますからね。Reactive！ようするところ、Rxが活きるのってそういうところ、かしらん。</p>
+</div>
+<h1><a href="http://neue.cc/2010/1220_290.html">linq.js & Reactive Extensions for JavaScript(RxJS)入門</a></h1>
+<ul class="date"><li>2010-12-20</li></ul>
+<div class="entry_body"><p>このエントリは<a href="http://atnd.org/events/10497">JavaScript Advent Calendar 2010 : ATND</a>の20日目として書きます。一つ前はsecondlifeさんの<a href="http://subtech.g.hatena.ne.jp/secondlife/20101219/1292717231" title="コマンドラインから JavaScript のシンタックスチェックを行う方法 - って、なんでですか〜 - subtech">コマンドラインから JavaScript のシンタックスチェックを行う方法 - って、なんでですか〜 - subtech</a>でした。</p>
+<p>普段はC#でもしゃもしゃしている、<a href="http://twitter.com/neuecc" title="neuecc (neuecc) on Twitter">@neuecc</a>(twitter)といいます。そんなわけで今回はC#畑からのJavaScriptライブラリを二つほど紹介します。</p>
+<p>ここではC#の中でも、<a href="http://msdn.microsoft.com/ja-jp/library/bb308959.aspx">LINQ: .NET 統合言語クエリ</a>という機能から来ているlinq.jsとRxJSを紹介します。linq.jsはコレクション操作を、RxJSはイベント操作と非同期操作に関するライブラリとなっています。どちらもwindowオブジェクトには一切触らない、DOMやXmlHttpRequestとは全く無関係の中立で地味な、phpspotで紹介されそうもない、それだけで何が出来るかというと別に何もできないけれど、あると便利。また、Enumerable(linq.js)とObservable(RxJS)という枠組みが<a href="http://ja.wikipedia.org/wiki/%E5%8F%8C%E5%AF%BE">双対</a>であるという、面白い影響の与え方をしているため、セットで考えるとより深イイ話になるから、ちょっと長くなりますが二つ一緒に紹介します。</p>
+<h2>linq.js</h2>
+<p>linq.jsはLINQのうち、Linq to ObjectsというものをJavaScriptに移植したものとなります。ダウンロードは下記URLから。ライセンスはMs-PL、というと聞きなれないかもしれませんが、MITライセンスに近い、かなり緩めのものとなっています。</p>
+<p><a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js - LINQ for JavaScript</a></p>
+<p>公式で移植されたものではなく、野良で勝手にやっているだけの話であり、作者は、私です。ん……。あ……。……。さて、LINQとは何ぞや、統合言語クエリがうんちゃらかんちゃら、SQLがどうのこうの、というのはJS的には全く関係ないのでスルーで！Linq to Objectsに絞って何ぞやというと、「関数型っぽいコレクション処理ライブラリ」です。ひとまず簡単な例から。</p>
+<pre><code class="language-javascript">// こんなテキトーな配列があったとして
+var array = [101, 20, 2, 42, 33, 47, 52];
+
+// 偶数だけ二倍して出力 : 40, 4, 84, 104
+Enumerable.From(array)
+   .Where(function(x){ return x % 2 == 0 })
+   .Select(function(x){ return x * 2 })
+   .ForEach(function(x){ document.writeln(x) });
+</code></pre>
+<p>よくある関数を渡してコレクション処理するスタイルです。グローバルに配置される名前空間はEnumerable。そこから、既存の配列に対して適用する場合はFromで包んで(jQueryの$のようなものと考えればOK、数字列の場合はRangeなどもあります)、以降はLinqの専用メソッドをチェーンで繋いでいく、というスタイルを取ります。ちなみにEnumerableはイニュミラボーと読むようです。最後のボーは、私は日本人なのでブルって言いますが。イニュミラブル。</p>
+<p>ところでfilterしてmapしてforeach。そうですFirefoxにあるArrayへのmap/filterです。Whereがfilter、Selectがmap。名前はSQL風味ですが、つまるところ単純な話そういうことです。フィルタぐらいならjQueryにもmap/grep/eachがあるね。他に目を向ければ、コレクション系専用ライブラリでは<a href="http://documentcloud.github.com/underscore/">Underscore.js</a>が有名のようです。</p>
+<p>それらとの違いですが、一つはfunction(){}という、冗長にすぎる関数記述を省く文字列による簡易記法の搭載。もう一つは完全な遅延評価の実現。そのため、適用する関数を自由に追加していくことができます。簡単な例をもう少し。</p>
+<pre><code class="language-javascript">var array = [101, 20, 2, 42, 33, 47, 52];
+
+// この時点ではまだ列挙されていない。
+// $は引数を示すプレースホルダーで、この場合 function(x){ return x%2==0 } と同じ
+var query = Enumerable.From(array).Where(&quot;$%2==0&quot;);
+
+// 更に二乗したうえで配列へ変換するならToArray
+var array2 = query.Select(&quot;$*$&quot;).ToArray(); // [400, 4, 1764, 2704]
+// 昇順に並び替えた上でセパレータをつけて文字列化
+var orderedStr = query.OrderBy().ToString(&quot;:&quot;); // &quot;2:20:42:52&quot;
+// 先頭二つのみを列挙
+query.Take(2).ForEach(&quot;alert($)&quot;); // 20, 2
+</code></pre>
+<p>と、いったように様々なメソッドを繋げてコレクションを変形し、最後に任意の形に変換するというのが基本的な利用法になるわけです。わからん。というわけで図にするとこんな感じです。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linqjs_cycle.jpg">
+</p>
+<p>構図的にはjQueryと同じで、Enumerable.From/Range/etc.. によってEnumerableオブジェクトが生成され、その中でのメソッド(Select/Where/etc..)はEnumerableオブジェクトを返す。そのため幾らでもメソッドチェーンを繋げられる。jQueryと違うのは、繋げた関数が実行されるのは、戻り値がEnumerable以外になるときまで遅延される。Enumerable以外を返すメソッドとは、ToArray(配列に変換)、ToString(文字列に変換)、ToObject（オブジェクトに変換）、Contains（値が含まれていればtrue、含まれていなければfalse）、Max（最大値を返す）、ForEach(列挙する)、etc...(まだまだ大量にあります)。</p>
+<p>遅延評価であることによるメリットとして、無限リストを扱えることが挙げられます。というわけで、無限リストを活用する例を一つ。<a href="http://d.hatena.ne.jp/kmizushima/20080527/1211902448">「nを1から初めてその２乗を足していき、和が2000を初めて超えたとき和はいくつになるかという問題」をScalaで解いてみた</a>から、nを1から（以下略)をlinq.jsで解いてみます。</p>
+<pre><code class="language-javascript">var result = Enumerable.ToInfinity(1) // 1から無限大まで数値をジェネレート [1, 2, 3, 4,...]
+    .Select(&quot;$*$&quot;) // 二乗 [1, 4, 9, 16,...]
+    .Scan(&quot;$+$$&quot;) // 和 [1,5,14,30,...]
+    .First(&quot;$&gt;2000&quot;); // 2000を超えた最初の要素
+</code></pre>
+<p>元がC#/Linq版のコードであるから当然ではありますが、リンク先のScala版のコードと完全に一致、ですね。JavaScriptは関数型言語。無限リストの生成には、今回はToInifinityを使いましたが、関数型言語に馴染みのある人ならばUnfoldなどもありますので、望む物が生成出来るはずです。</p>
+<p>&quot;$+$$&quot;でサクッと和を出せるのは中々強力で便利。やりすぎるとイミフになるので、こういうササッとした部分にだけ限定すれば。任意の識別子を使いたい場合は&quot;sum, x =&gt; sum + x&quot;というように=&gt;の左側は引数、右側は式、という形でも書けます。なお、実装は new Function(&quot;$,$$,$$$,$$$$&quot;, &quot;return &quot; + expression) というだけです。渡す文字列が式でないとダメな非常に単純な理由。</p>
+<p>その他、メソッド類の一覧と、その場で実行/確認可能なLINQ Padは<a href="http://neue.cc/reference.htm" title="linq.js Reference">linq.js Reference</a>で。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linqjs_linqpad.jpg">
+</p>
+<p>といったように、リアルタイムに実行結果を確認しながら試せます。無限リストを停止条件つけないで書いてしまっても、列挙は1000件までにリミッターかかるので一安心。</p>
+<p>メソッド群ですが、LINQにある標準クエリ演算子(と、言うと大仰ですが、ようするにただのメソッドです)を全て実装、その上でHaskellやRubyなどのコレクション用メソッドを眺めて、便利そうなら移植してあります。そのため、コレクションライブラリとしてはとしてこのメソッドが不足してる！と不満を感じることはないはず。また、遅延評価を活かしてメソッドを組み合わせることにより、大抵の操作が可能になっています。</p>
+<p>とはいえ、そのせいで肥大しすぎな感がなきにしもあらず。とりあえず、フィルタ(Where)とマップ(Select)、非破壊的で複数キー連結が可能なソート(OrderBy/ThenBy)、重複した値を取り除く(Distinct)といった辺りだけ押さえておけば良いかなー、と。</p>
+<p>そういえばでドットが前置なのは何で？というと、その方が入力補完に便利だからです。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linqjs_predot.jpg">
+</p>
+<p>この辺の話は<a href="http://neue.cc/2010/05/24_260.html" title="neue cc - JavaScriptエディタとしてのVisual Studioの使い方入門">JavaScriptエディタとしてのVisual Studioの使い方入門</a>で。IDEを使ってJSを書くなら、ドットは前置一択になります。補完のない普通のエディタで書くのならスタイルはお好みで。私としては、入力補完・コードフォーマッタ・デバッガとのシームレスな融合などなどから、JavaScriptであってもIDEを使うのが良いと思ってます。</p>
+<h2>Reactive Extensions for JavaScript</h2>
+<p>続けてReactive Extensions for JavaScript(RxJS)について。Linqという名前は付いていませんがLinqの一味と見なせます。いわばLinq to Events, Linq to Asynchronous。ということで、対象となるのはイベントと非同期。ダウンロードは下記URLの右側、Rx for JavaScriptから。</p>
+<p><a href="http://msdn.microsoft.com/en-us/devlabs/ee794896" title="Reactive Extensions for .NET (Rx)">Reactive Extensions for .NET (Rx)</a></p>
+<p>こちらはlinq.jsと違って公式が提供しています。</p>
+<p>さて、ではこれは何が出来るのでしょう。出来るのは(Functional) Reactive Programmingです。とは何ぞや。というと、既に親切な解説があるので <a href="http://d.hatena.ne.jp/maoe/20100109/1263059731" title="やさしいFunctional reactive programming（概要編） - maoeのブログ">やさしいFunctional reactive programming（概要編） - maoeのブログ</a> そちらを見るといいと思うな！</p>
+<p>とりあえず簡単な例をまず先に。</p>
+<pre><code class="language-javascript">// マウスの動きの座標ストリーム（無限リスト）
+var mousemove = $(&quot;#js_advcal_field&quot;).toObservable(&quot;mousemove&quot;)
+    .Select(function (e) { return { X: e.pageX, Y: e.pageY} });
+
+// 位置をTextに書き出し
+mousemove.Subscribe(function (p) { $(&quot;#js_advcal_status&quot;).text(&quot;X=&quot; + p.X + &quot;:Y=&quot; + p.Y) });
+
+// 1.5秒遅れて四角形を座標位置に出す
+mousemove.Delay(1500)
+    .Subscribe(function (p) { $(&quot;#js_advcal_rect&quot;).css({ left: p.X, top: p.Y }) });
+</code></pre>
+<div id="js_advcal_status">X=0:Y=0</div>
+<div id="js_advcal_field" style="background-color:white;height:200px;"></div>
+<div id="js_advcal_rect" style="position: absolute; background-color: Teal; width: 10px; height: 10px;"></div>
+<script type="text/javascript">
+    // マウスの動きの座標ストリーム（無限リスト）
+    var mousemove = $("#js_advcal_field").toObservable("mousemove")
+            .Select(function (e) { return { X: e.pageX, Y: e.pageY} });
+<pre><code>// 位置をTextに書き出し
+mousemove.Subscribe(function (p) { $(&quot;#js_advcal_status&quot;).text(&quot;X=&quot; + p.X + &quot;:Y=&quot; + p.Y) });
+
+// 1.5秒遅れて四角形を座標位置に出す
+mousemove.Delay(1500).Subscribe(function (p) { $(&quot;#js_advcal_rect&quot;).css({ left: p.X, top: p.Y }) });
+</code></pre>
+</script>
+<p>コード似てませんか？今まで出してきたLinq to Objectsのコードに。RxJSは、イベントをコレクションとして扱うことでフィルタ(Where)やマップ(Select)を可能にします。図にするとこうです。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linqjs_rxevents.jpg">
+</p>
+<p>toObservableすることにより、jQueryでアタッチされるMouseMoveイベントは、時間軸上に無限に発生し続ける「無限リスト:Observable Collections」として変換されます。このコレクションの上では時間軸を自由に扱えるため（そもそもMouseMove自体が、いつ次の値が発生するか不確定な時間の上にのっている）、ごくごく自然に、1．5秒後(Delay)という指示を与えるだけで到達時間を遅らせることが出来ます。</p>
+<p>RxJSもlinq.jsと同じく、基本的にメソッドの戻り値はObservableオブジェクトとなっていてひたすらメソッドチェーンしていきます。違うのは、linq.jsはToArrayやToString、ForEachなどなど、Enumerable外に出るメソッドが複数ありますが、Observableの場合はSubscribeのみです。SubscribeメソッドがForEachのような役割を担っています。何でToArray出来ないの！というと理由は簡単で、扱う対象が時間軸上に流れる無限リストだからです。無限を有限のArrayに変換は出来ませんよねー。本質的にObservable Collectionsは非同期な状態なので、何か戻り値を返すということは出来ません。出来るのは、向こうからやってくる値に対して実行する処理を示すことだけです。</p>
+<p>RxJSは、扱いにくい時間や非同期、複数のイベントが同時に絡む時のイベントの合成を、慣れ親しんだシンプルなコレクション処理のように見た目上落としこんで、foreachするように処理を適用することが出来ます。それが特徴となります。</p>
+<h2>jQuery</h2>
+<p>前のコードに出ていた$(&quot;#hoge&quot;)はjQueryです。脈絡なく出してきているわけですね！解説が前後してれぅー。どういうことなのかというと、RxJSは基本的にwindowとは中立です、が、メインで扱う物はDOM(イベント)だったりXmlHttpRequest(非同期)で、これらは抽出の必要があったりクロスブラウザの必要があったりと、一手間二手間な問題を抱えている。それを解決してくれるのがjQueryだったり他のライブラリだったりするわけですね。そこで取られた手段が、jQueryに乗っかること。ようするにプラグイン。RxJSとjQueryを繋ぐ部分を注入。そうして注入されたのがtoObservableというわけです。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linqjs_bindingcircle.jpg">
+</p>
+<p>linq.jsもjQueryもRxJSも、基本的にメソッドチェーンで自分の世界に閉じっぱなしです。<a href="http://d.hatena.ne.jp/anatoo/20100305/1267801847" title="jQueryはモナドだ - id:anatooのブログ">jQueryはモナドだ</a>という記事がありましたが、linq.jsもモナドです。RxJSもモナドです。いや、本当に。ただそのへんの理屈は割とどうでもいいわけですが、ただ、交互に変換出来ると便利よねー、なところはあるわけで、三者はプラグインを介して上記の図のような形で遷移可能になっています。</p>
+<h2>Asynchronous</h2>
+<p>最後に非同期を。非同期もObservable Collectionsになる、というわけで例から行きましょう。</p>
+<pre><code class="language-javascript">$(&quot;#js_advcal_twbutton&quot;).toObservable(&quot;click&quot;)
+    .Do(function () { $(&quot;#js_advcal_twitter&quot;).empty() })
+    .SelectMany(function () { return $.ajaxAsObservable({ url: &quot;http://twitter.com/statuses/public_timeline.json&quot;, dataType: &quot;jsonp&quot; }) })
+    .SelectMany(function (json) { return Rx.Observable.FromArray(json.data) })
+    .Where(function (status) { return status.user.lang == &quot;ja&quot; })
+    .Select(function (status) { return $(&quot;&lt;p&gt;&quot;).text(status.user.screen_name + &quot;:&quot; + status.text) })
+    .Subscribe(function (q)
+    {
+        $(&quot;#js_advcal_twitter&quot;).append(q);
+    });
+</code></pre>
+<input id="js_advcal_twbutton" type="button" class="button" value="public_timeline" />
+<div id="js_advcal_twitter">statuses...</div>
+<p id="js_advcal_item"></p>
+<script type="text/javascript">
+$("#js_advcal_twbutton").toObservable("click")
+.Do(function () { $("#js_advcal_twitter").empty() })
+.SelectMany(function () { return $.ajaxAsObservable({ url: "http://twitter.com/statuses/public_timeline.json", dataType: "jsonp" }) })
+.SelectMany(function (json) { return Rx.Observable.FromArray(json.data) })
+.Where(function (status) { return status.user.lang == "ja" })
+.Select(function (status) { return $('#js_advcal_item').clone().text(status.user.screen_name + ' - ' + status.text) })
+.Subscribe(function (q)
+{
+    $("#js_advcal_twitter").append(q);
+});
+</script>
+<p>胡散臭い(笑)public_timelineボタンをクリックすると、Twitterのpublic_timelineから日本人のツイート(user.lang==&quot;ja&quot;)のみを表示します。これは、ちょっとメソッドチェーンが多めで微妙にワケワカラン。そんな困ったときはとりあえず図。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linqjs_asynchronous.jpg">
+</p>
+<p>起点はボタンのクリックです。これもまたMouseMoveの時と同じで考え方としては無限リスト状。一回目のクリック、二回目のクリック、と無限に続いていきます。このコレクションに対する処理として、次に流れてくるのはDo。これは副作用で、コレクションの値以外の、流れてきたということをトリガーにして外部に影響を与えたい時に使います。今回はクリックをトリガーとして、一旦DIVの中の要素をクリア(empty())しています。</p>
+<p>そしてSelectMany。SelectManyはSelectと似ていますが、1:多(だからMany)へと分配するのが特徴です。ここでコレクションの流れは非同期へとバトンタッチされます。非同期のリクエスト、今回はjQueryにおんぶに抱っこでajaxAsObservableにより、twitterのpublic_timeline.jsonからデータを取得。特徴的なのは、非同期なので戻り値が得られるまでに若干のタイムラグがあるわけですが、それは以前に扱ったDelayと同じように、時間軸が少し右に移るだけで、流れ自体はそのままで扱えてしまいます。</p>
+<p>1：多ですが、非同期リクエストの戻り値は1なので、見た目上は一個の値が変形しているだけのように見えて、再び次のSelectMany。ここでの値はJSONで、20個分のpublic_timelineのstatusが届いています。それを1:他という形でバラす。RxJS上では「イベント」「非同期」を載せてきましたが、「配列」も問題なく載っかるということです。</p>
+<p>ここまで来たら、あとは普通のコレクション処理と同じようにWhereでフィルタリングし(言語が&quot;ja&quot;のみを通す)、Selectで変形し(jQueryで新しいDOMノードを作成)、Subscribeで実行処理を書く(divの中にappend)。</p>
+<p>というわけで、「イベント」「非同期」「配列」を一本のコレクションへと合成し、統合しました。一見すると、ただそれだけのことに何でわざわざ複雑めいたことを、と思えてしまいますが、複数の非同期を合成したくなったら？待ち合せたくなったら？などなど、シチュエーションが複雑になればなるほどに、威力を発揮します。</p>
+<h2>つまりそれJSDeferredで...</h2>
+<p>です。領域はかなり被ると思います。waitはDelay、nextはSelectまたはSelectManyが相当するでしょう。</p>
+<pre><code class="language-javascript">// Hello -&gt; 5秒後 -&gt; HelloWorld のalertが出るというもの(UIはフリーズしません)
+Rx.Observable.Return(&quot;Hello&quot;) // パイプラインに&quot;Hello&quot;を流し始める
+   .Do(function (x) { alert(x) }) // alertを出す
+   .Delay(5000) // 5秒遅延
+   .Select(function (x) { return x + &quot;World&quot; }) // 値にWorldを結合
+   .Subscribe(function (x) { alert(x) }); // パイプラインの実行開始＋alertを出す
+</code></pre>
+<p>例は<a href="http://cho45.stfuawsc.com/jsdeferred/doc/intro.html">JSDeferred 紹介</a>より、少し違いますが。また、関数のDeferred化のdeferred.call/failはAsyncSubjectのOnNext/OnErrorが相当しそうです。詳しい話はまたそのうち、もしくはC#で良ければ<a href="http://neue.cc/2010/09/28_277.html">Reactive Extensionsの非同期周りの解説と自前実装</a>などを。</p>
+<h2>まとめ</h2>
+<p>なげー。スミマセンスミマセン。Enumerable -&gt; コレクション処理 -&gt; 無限リスト -&gt; Observable -&gt; イベントが無限リスト -&gt; 時間軸が不定 -&gt; 非同期 -&gt; コレクション処理。という流れのつもりでした！分量的にEnumerableかObservableか、どっちかに絞るべきでしたね……。もっとあっさり終えるはずだったのにどうしてこうなった。</p>
+<p>prototype.jsはRubyっぽい色がある。Firefoxで拡張が続いてるJavaScriptはPythonからの影響が濃ゆい感じ。linq.js/RxJSは勿論C#からで、更にLinqの元はSQLは勿論なのですが、Haskellからの影響も濃く(Linqや、そして現在はRxの開発チームを率いている<a href="http://research.microsoft.com/en-us/um/people/emeijer/ErikMeijer.html">Erik Meijer</a>はHaskellの人で、<a href="http://www.sampou.org/haskell/report-revised-j/index.html">The Haskell 98 Language Report</a>にも名前を連ねている)、そうこうして他言語同士が相互に影響を与えてより良くなる。というのはイイ話だなー、って思っていまして。</p>
+<p>そして、他言語の文化を受け入れられる懐の広さと、それでもなお自分の色を持ち続けられるJavaScriptってイイ言語だよね、と思います。</p>
+<p>と、駄エントリを〆て次のAdvent Calendarにタッチ！</p>
+</div>
+<h1><a href="http://neue.cc/2010/1214_289.html">Titanium Mobile + Visual Studio用のAPI入力補完vsdoc自動生成T4 Temlate</a></h1>
+<ul class="date"><li>2010-12-14</li></ul>
+<div class="entry_body"><p>Titanium Mobileをご存知ですか？私はつい最近知ったばかりです。かなりHotみたいで紹介をよく見るし、はてブでも色々な記事がブクマ数百行ってたりしますが、さっぱり意識していなかったせいで右から左に流れていくだけで名前を覚えていませんでした。が、 <a href="http://blog.masuidrive.jp/index.php/2010/12/02/joined-to-appcelerator/" title="【就職先決定】Titanium MobileのAppceleratorに勤めることになりました - @masuidrive blog">【就職先決定】Titanium MobileのAppceleratorに勤めることになりました - @masuidrive blog</a> を見て、ようやくTitanium Mobileの名前と出来ることが一致しました。つまりはJavaScriptでNativeなAndroid/iPhoneアプリケーションが作れて、とってもHotなテクノロジだそうですはい。</p>
+<p>ちょっと触った感じコンパイルというかコード変換というか、な部分だけが提供されてるような雰囲気でIDEとかそーいうのは今のところないようで？かしらん。デバッガとかないのかな、printオンリーかしら……。ともあれ、Javascriptということで何で開発してもいいわけですね。エディタですか？ありえない！入力補完のない環境で開発なんて出来ません。デバッガがなくても生きていけますが入力補完はないと生きていけません。</p>
+<p>というわけでVisual Studioです。以前に<a href="http://neue.cc/2010/05/24_260.html" title="neue cc - JavaScriptエディタとしてのVisual Studioの使い方入門">JavaScriptエディタとしてのVisual Studioの使い方入門</a>という記事を書いたように、Visual StudioはJavaScriptエディタとしても最高なのです。さて、では入力補完だ。というわけで捜すとあった。<a href="http://www.jeremymelton.com/blog/2010/10/appcelerator-titanium-vsdoc-for-visual-studio/" title="Appcelerator Titanium vsdoc for Visual Studio | Jeremy Melton">Appcelerator Titanium vsdoc for Visual Studio</a>。へー、確かに動いてるね、簡単だね。以上。</p>
+<p>と、まあ興味持った当時はそれで一旦終えたのですが、昨日に<a href="http://d.hatena.ne.jp/katsuraghi/20101212/1292180017" title="【追記あり】「Titanium Mobile1.4」の入力支援をMicrosoft Visual Web Developer 2010 Expressで行う。 - 葛城の日記">【追記あり】「Titanium Mobile1.4」の入力支援をMicrosoft Visual Web Developer 2010 Expressで行う。 - 葛城の日記</a>という記事を見て、そもそも元はjsonとして公式にデータが提供されていてそれを加工したものであること、またその加工っぷりはちょっといま一つであることを知りました。</p>
+<p>さて、前置きが長くなりましたが、つまりイマイチなら自分で作ればいいんですね。幸いにもデータは公式で用意してくれているので。</p>
+<h2>T4でjsonからvsdocを生成する</h2>
+<p>いつもならドヤ顔でコード張るんですが、ちょっと長いのとC#の話なのでスルー。というわけでコードはBitbucketに置いておきますのでご自由にどうぞ。<a href="https://bitbucket.org/neuecc/pastebin/src/77f520fcc97f/Pastebin.Web/Titanium/TitaniumMobileApi-vsdoc.tt" title="neuecc / Pastebin / source – Bitbucket">TitaniumMobileApi-vsdoc.tt</a>。使い方は後ほど説明します。そんなの面倒臭いー、という人は生成済みのほうをどうぞ。<a href="https://bitbucket.org/neuecc/pastebin/src/77f520fcc97f/Pastebin.Web/Titanium/TitaniumMobileApi-vsdoc.js" title="neuecc / Pastebin / source – Bitbucket">TitaniumMobileApi-vsdoc.js</a>。2010/12/10のver1.5.0で生成していますが、どうせVS使うならそんな手間でもないので、.ttで自分で生成するほうをお薦めします。</p>
+<h2>.ttの使い方</h2>
+<p>.tt、の前にVisual StudioでのJavaScriptの開発の仕方。ですが<a href="http://neue.cc/2010/05/24_260.html" title="neue cc - JavaScriptエディタとしてのVisual Studioの使い方入門">JavaScriptエディタとしてのVisual Studioの使い方入門</a>で解説しているのでその通りというわけで省略。</p>
+<p>TitaniumMobileApi-vsdoc.ttと、公式サイトにある<a href="http://developer.appcelerator.com/apidoc/mobile/latest" title="Appcelerator Developer Center - API for (version 1.5.0)">APIリファレンスのJSON(api.json)</a>を同じフォルダに入れて、TitaniumMobileApi-vsdoc.ttを開き保存(Ctrl+S)を押します。するとTitaniumMobileApi-vsdoc.jsが生成されます。オシマイ。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/titanium-vsdoc-folder.jpg">
+</p>
+<p>こんな感じに階層が出来て、8000行ほどのjsが生成されているはずです！</p>
+<p>さて、では使ってみましょう。適当な名前のjsを作り、reference pathに先ほど生成されたjsを記述。あとはTitanium名前空間から始まるので、ポンポンと書くだけ。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/titanium-comp1.jpg">
+</p>
+<p>解説付きで引数などなどもバッチシ！</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/titanium-comp2.jpg">
+</p>
+<p>煩わしい大量の定数も、入力補完で一覧が出るので楽ちん！</p>
+<p>海外の、Jeremy Meltonさんの作ったvsdocとの最大の違いは、関数での生成後の戻り値のObjectもある程度補完し続けてくれることです。例えばcreateHogeとか。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/titanium-comp3.jpg">
+</p>
+<p>これ、もとのapi.jsonでは戻り値がobjectとして記載されているため、普通に自動生成するだけだと追随出来ないのです。私はただの機械的な変換ではなく、実用に根ざしたアドホックな対応を施したため、多少は追随するようになっています。</p>
+<p>ただし、一点だけ残念なことがあって、プロパティ名にハイフンがつくものは補完に表示されません。例えばMapViewはfont-familyといったプロパティを持つのですが補完に出てきません。これはVisual Studioの仕様というか不具合というか残念な点というか。直るといいです。要望としての報告が出てなければ報告しよう……。と思って要望を出してしまったのですが、そもそもJavaScript的にハイフンのつくのが動くほうがオカシイ！普通は動かん！ということに要望出して30秒後に気づきました。頭がホカホカだったので全然考えが回ってなかったのでする。こういうのって出した直後に頭が冷えて気づきますよね。というわけで、これはむしろTitanium MobileのAPIがオカシイのでは感。そして私は悲しいほどに赤っ恥を書いてしまった、いや、今更一つや二つ、しょうもない恥が増えてもいいんですけど、いいんですけど、恥ずかしすぎるぅ。泣きたい。</p>
+<h2>余談(T4の話)</h2>
+<p>配布用なので1ファイルにするためJsonReaderWriterFactoryを生で使って書いてる(ためちょっと冗長)のですが、そうでなければ<a href="http://dynamicjson.codeplex.com/" title="DynamicJson">DynamicJson</a>使ってサクッと済ませます。DynamicJsonは楽ですね、ほんと。</p>
+<p>あと、T4で困ったのが末尾カンマ。最後の要素だけカンマ不要なわけなんですよねー、これがどう生成したものか困ってしまって。ただの文字列ならstring.Join(&quot;,&quot;,xs)とかで対応するわけですが、T4だとインデントとかの絡みもあるので、そういうのは使わない方が楽だし綺麗に仕上がる、けれど上手く出来ない！とりあえず今回はこんな対応をしてみました。</p>
+<pre><code class="language-csharp">// こんなコードを吐く、つまり最後の要素の末尾には&quot;,&quot;は不要
+{
+    &quot;anchorPoint&quot;: null,
+    &quot;animate&quot;: true,
+    &quot;animatedCenterPoint&quot;: null
+}    
+
+// こんな拡張メソッド(第二引数のboolは末尾でないか末尾か)
+public static void Each&lt;T&gt;(this T[] source, Action&lt;T, bool&gt; action)
+{
+    for (int i = 0; i &lt; source.Length; i++)
+    {
+        var hasNext = (i &lt; source.Length - 1);
+        action(source[i], hasNext);
+    }
+}
+
+// T4のView側はこんな感じで、最後に&lt;#= hasNext ? &quot;,&quot; : &quot;&quot; #&gt;をつけて対応
+
+&lt;#o.Properties.Each((x, hasNext) =&gt;{#&gt;
+    &quot;&lt;#=x.Name #&gt;&quot;: &lt;#=x.Value #&gt;&lt;#= hasNext ? &quot;,&quot; : &quot;&quot; #&gt;
+&lt;#});#&gt;
+</code></pre>
+<p>微妙に苦しい感じでしたねえ。こういうのは ASP.NET/ASP.NET MVCではどう対応しているものなのかしらん。全然知らないので誰か教えてくれれば嬉しいです。</p>
+<h2>まとめ</h2>
+<p>私はこの手のダミーのvsdoc生成は色々やっていて、linq.jsのvsdocは手作業、RxJSのvsdoc作りはmono.cecilを使ってdllとXMLから結合するConsoleApplicationを作成、などなどで割と手慣れてきました。テンプレートが統合されている点と(printlnってねえ...)更新の楽さ(新しいjsonが出たらそれを放りこんで再セーブするだけ、ある意味T4はC#/VSにおけるLL的スクリプト言語と見ても良いのではないでしょーか)を考えると、T4で作るのがベストな選択に思えます。スタンドアロンで動かしたい場合は&quot;前処理されたテキストテンプレート&quot;も使えますしね。</p>
+<p>さて、こうしてわざわざ手間かけて入力補完作る理由ですが、だって補完ないとやる気出ませんから！IDEで楽が出来ないなら楽が出来るよう苦労すればいいぢゃない。そしてIDEに依存するのもまた美徳です。プログラマの三大美徳。楽で何が悪いって？何も悪くないよ！あと、誰か一人が苦労すれば、お裾分け出来るわけなので、先立って作ってシェアしたいところです。</p>
+<p>というわけで、Visual StudioでiPhone開発もAndroid開発も幸せになりましょー。個人的にはTitaniumは良いと思いますが、C#で開発できるmonotouchやmonodroidに興味津々ではありますが。んで、何で手を出し始めているかというと、<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js</a>を使うシーンを求めてるんですぅー。ふふふ。というわけで、Titanium Mobileな方はlinq.jsもよろしぅお願いします。</p>
+</div>
+<h1><a href="http://neue.cc/2010/1209_288.html">Reactive ExtensionsとAsync CTPでの非同期のキャンセル・プログレス処理</a></h1>
+<ul class="date"><li>2010-12-09</li></ul>
+<div class="entry_body"><p>暫くはAsync CTPを特集していく！と思っていたのですが、何だか随分と間があいてしまいました。じっくり非同期操作に必要なオペレーションは何か、と考えるに「バックグラウンドでの実行」「進捗のUI表示」「結果のUI表示」「キャンセル処理」「エラー時処理」が挙げられる気がします。というわけで、こないだまではRxで<a href="http://neue.cc/2010/11/26_286.html" title="neue cc - Reactive Extensions用のWebRequest拡張メソッド">進捗表示</a>とか<a href="http://neue.cc/2010/12/04_287.html" title="neue cc - Reactive Extensionsとエラーハンドリング">エラー時処理</a>とか見ていたわけです、決してAsync CTPをスルーしていたわけではありません！ホントダヨ？記事の分量的にどうしてもRxだけで埋まってしまったのです。</p>
+<p>さて、ところでこれらってつまり、BackgroundWorkerですよねー。ただたんに裏で実行するだけならThreadPool.QueueUserWorkItemでいいし、結果のUIへの伝達ぐらいならDispatcher.BeginInvoke書けば…… ですが、進捗やキャンセルなどを加えていくとドロドロドロドロしてしまいます。それらが統合された上でポトペタプロパティ設定で使えるBackgroundWorkerは偉大なわけです。</p>
+<p>では、BackgroundWorkerを使った場合とReactive Extensionsを使った場合、そしてAsync CTPのasync/await、つまりはTaskを使った場合とで比較していきます。</p>
+<p>あ、そうそう、Async CTPの本格的な解説はmatarilloさんの訳されているEric Lippertの<a href="http://matarillo.com/general/cps.php">継続渡しスタイル(CPS)と非同期構文(async/await)</a>やufcppさんの<a href="http://ufcpp.net/study/csharp/sp5_async.html">非同期処理 (C# によるプログラミング入門)</a>でがっちりと解説されています。私はがっちりした記事は書けないのでひたすらゆるふわに機能を雑多につまみ食いで。あと、Reactive Extensionsとしつこく比較するのも忘れません。</p>
+<h2>BackgroundWorkerの場合</h2>
+<p>BackgroundWorkerは、DoWorkはバックグラウンドで、ProgressChangedとRunWorkerCompletedはUIスレッド上で動きます。これにより、Dispatcherだとか、そういうことを意識せずに使えます。勿論、DoWork内でDispatcher.BeginInvokeすることも可能ですが、そういう場合はBackgroundWorkerの意味があまりなくなってしまうので、設計には素直に従っておいたほうが良いです。というわけで例など。</p>
+<pre><code class="language-csharp">static string HeavyHeavyHeavyMethod(string s)
+{
+    Thread.Sleep(5000); // 重たい処理をするとする
+    return s + s;
+}
+
+static void Main()
+{
+    var bw = new BackgroundWorker
+    {
+        WorkerReportsProgress = true,
+        WorkerSupportsCancellation = true
+    };
+
+    bw.ProgressChanged += (sender, e) =&gt;
+    {
+        var percentage = e.ProgressPercentage;
+        var state = e.UserState;
+        Console.WriteLine(percentage + &quot;%&quot; + &quot;:&quot; + state);
+    };
+
+    bw.DoWork += (sender, e) =&gt;
+    {
+        var worker = sender as BackgroundWorker; // くろーぢゃな場合はbwが直接取れるので不要ですが
+        var result = (string)e.Argument;
+        if (result == null) throw new ArgumentNullException(&quot;引数よこせゴルァ&quot;);
+        worker.ReportProgress(1, result); // 進捗報告
+
+        // 重たい処理が幾つかあって最終的な結果を出す
+        // キャンセルは随時出来るようにする
+        result = HeavyHeavyHeavyMethod(result);
+        if (worker.CancellationPending) { e.Cancel = true; return; }
+        worker.ReportProgress(33, result); // 進捗報告
+
+        result = HeavyHeavyHeavyMethod(result);
+        if (worker.CancellationPending) { e.Cancel = true; return; }
+        worker.ReportProgress(66, result); // 進捗報告
+
+        result = HeavyHeavyHeavyMethod(result);
+        if (worker.CancellationPending) { e.Cancel = true; return; }
+        worker.ReportProgress(100, result); // 進捗報告
+
+        e.Result = result; // 結果セットして正常完了
+    };
+
+    bw.RunWorkerCompleted += (sender, e) =&gt;
+    {
+        if (e.Cancelled) // // キャンセルした場合
+        {
+            Console.WriteLine(&quot;キャンセルされたー&quot;);
+        }
+        else if (e.Error != null) // 例外発生の場合
+        {
+            Console.WriteLine(&quot;例外出たー&quot;);
+            Console.WriteLine(e.Error);
+        }
+        else // 正常終了の場合
+        {
+            var result = e.Result;
+            Console.WriteLine(&quot;終わった、結果:&quot; + result);
+        }
+    };
+
+    // 以下実行例
+
+    bw.RunWorkerAsync(&quot;hoge&quot;); // 非同期実行開始と初期引数
+
+    Thread.Sleep(6000);
+    bw.CancelAsync(); // 6秒後にキャンセルするなど
+
+    while (bw.IsBusy) Thread.Sleep(1000);
+    bw.RunWorkerAsync(null); // 今度は引数なしで実行するなど
+
+    while (bw.IsBusy) Thread.Sleep(1000);
+    bw.RunWorkerAsync(&quot;hoge&quot;); // 最後まで実行
+
+    Console.ReadLine();
+}
+</code></pre>
+<p>実行結果などは他愛もないものなのでスルーで。さて、コードは見たとおりに、些か冗長なところはありますが一般的に考えられる処理は全て行えます。受け渡しがObjectなのダセーとか、EventArgsに値をセットして受け渡しダセーとか、キャンセルするのにCancellationPendingのチェックだりー、などなど思うところは色々あります。BackgroundWorkerのメリットはポトペタにあったと思われるので、時代背景的に、もうそぐわないかなあという気がかなりしています。</p>
+<h2>Reactive Extensionsの場合</h2>
+<p>Reactive Extensionsは、この手の非同期処理はお手の物。というわけでBackgroundWorkerで行った機能をまんま代替してみます。実行スレッドの切り替えはObserveOnで。</p>
+<pre><code class="language-csharp">static string HeavyHeavyHeavyMethod(string s)
+{
+    Thread.Sleep(5000); // 重たい処理をするとする
+    return s + s;
+}
+
+// WPFで適当なリストボックス(経過表示用)と適当なキャンセルボタンがあるとする
+public MainWindow()
+{
+    InitializeComponent();
+
+    Action&lt;int, string&gt; reportProgress = (i, s) =&gt; listBox1.Items.Add(i + &quot;%:&quot; + s);
+
+    var disposable = Observable.Return(&quot;hoge&quot;, Scheduler.ThreadPool)
+        .ObserveOnDispatcher().Do(s =&gt; reportProgress(1, s))
+        .ObserveOn(Scheduler.ThreadPool).Select(HeavyHeavyHeavyMethod)
+        .ObserveOnDispatcher().Do(s =&gt; reportProgress(33, s))
+        .ObserveOn(Scheduler.ThreadPool).Select(HeavyHeavyHeavyMethod)
+        .ObserveOnDispatcher().Do(s =&gt; reportProgress(66, s))
+        .ObserveOn(Scheduler.ThreadPool).Select(HeavyHeavyHeavyMethod)
+        .ObserveOnDispatcher().Do(s =&gt; reportProgress(100, s))
+        .Subscribe(
+            s =&gt; listBox1.Items.Add(&quot;終わった、結果:&quot; + s),
+            e =&gt; { listBox1.Items.Add(&quot;例外出たー&quot;); listBox1.Items.Add(e); },
+            () =&gt; { });
+
+    // キャンセルボタンクリックでキャンセル
+    CancelButton.Click += (sender, e) =&gt;
+    {
+        listBox1.Items.Add(&quot;キャンセルしたー&quot;);
+        disposable.Dispose();
+    };
+}
+</code></pre>
+<p>んん、あれれ？進捗表示する時はDispatcherに切り替え、重い処理をする時はThreadPoolに流すよう切り替える。理屈は簡単。書くのもそのまま。しかし、しかし、これは、どう見ても非効率的。おまけにコードの見た目もUgly。ダメだこりゃ。そんな時は拡張メソッド。例えばこんなものを用意しよう。</p>
+<pre><code class="language-csharp">public static class ObservableExtensions
+{
+    /// &lt;summary&gt;Report on Dispatcher&lt;/summary&gt;
+    public static IObservable&lt;T&gt; Report&lt;T&gt;(this IObservable&lt;T&gt; source, Action&lt;T&gt; action)
+    {
+        return source.Report(action, Scheduler.Dispatcher);
+    }
+
+    /// &lt;summary&gt;Report on Scheduler&lt;/summary&gt;
+    public static IObservable&lt;T&gt; Report&lt;T&gt;(this IObservable&lt;T&gt; source, Action&lt;T&gt; action, IScheduler scheduler)
+    {
+        return source.Do(x =&gt; scheduler.Schedule(() =&gt; action(x)));
+    }
+}
+</code></pre>
+<p>Doの変形バージョンで、actionをDispatcher.BeginInvoke(デフォルトでは。オーバーロードのISchedulerを渡すものを使えば、任意のスケジューラに変更出来ます)で行う、というものです。これなら進捗表示などにピッタリ合うはず。というわけで、適用してみます。</p>
+<pre><code class="language-csharp">var disposable = Observable.Return(&quot;hoge&quot;, Scheduler.ThreadPool)
+    .Report(s =&gt; reportProgress(1, s))
+    .Select(HeavyHeavyHeavyMethod)
+    .Report(s =&gt; reportProgress(33, s))
+    .Select(HeavyHeavyHeavyMethod)
+    .Report(s =&gt; reportProgress(66, s))
+    .Select(HeavyHeavyHeavyMethod)
+    .Report(s =&gt; reportProgress(100, s))
+    .ObserveOnDispatcher()
+    .Subscribe(
+        s =&gt; listBox1.Items.Add(&quot;終わった、結果:&quot; + s),
+        e =&gt; { listBox1.Items.Add(&quot;例外出たー&quot;); listBox1.Items.Add(e); },
+        () =&gt; { });
+</code></pre>
+<p>無難に仕上がりました。BackgroundWorkerと比べると、随分とすっきりします。受け渡しがオブジェクトではなく、しっかり型がついたままチェーンされること、例外処理もOnErrorの流れに沿ってすっきり記述できること、そして、何よりもキャンセル処理が楽！Disposeを呼ぶだけで、CancellationPendingのようなものをチェックする必要なくサクッとキャンセルすることが可能です。これは、処理単位が小さなメソッド毎に分割される、この場合は進捗報告を抜くとSelectの連打という形になりますが、その連打がちゃんと意味を持つわけです。</p>
+<p>余談ですが、INotifyPropertyChanged経由のデータバインディングは自動でDispatcher経由にしてくれるようなので、その辺楽。UIパーツなんて直接触るもんじゃない、MVVM！ でもObservableCollectionだとダメだったりするんですね、色々んもー。</p>
+<h2>Task(async/await)の場合</h2>
+<p>TaskにおけるキャンセルもBackgroundWorkerと同じく、キャンセル用オブジェクトの状態を確認して自分で挙動を挟む必要があります。ThrowIfCancellationRequested() を呼べばキャンセルされていた時は例外を送出して強制終了。</p>
+<pre><code class="language-csharp">string HeavyHeavyHeavyMethod(string s)
+{
+    Thread.Sleep(5000); // 重たい処理をするとする
+    return s + s;
+}
+
+// 進捗表示用入れ物クラス
+class ProgressResult
+{
+    public int Percentage { get; set; }
+    public string Value { get; set; }
+}
+
+async void DoAsync(string start, CancellationToken token, IProgress&lt;ProgressResult&gt; progress)
+{
+    // 進捗報告はIProgress&lt;T&gt;のReportを呼ぶ
+    progress.Report(new ProgressResult { Percentage = 1, Value = start });
+
+    try
+    {
+        var s = await TaskEx.Run(() =&gt; HeavyHeavyHeavyMethod(start));
+        token.ThrowIfCancellationRequested(); // キャンセルされた場合は例外送出
+        progress.Report(new ProgressResult { Percentage = 33, Value = s });
+
+        s = await TaskEx.Run(() =&gt; HeavyHeavyHeavyMethod(s));
+        token.ThrowIfCancellationRequested(); // キャンセルされた場合は例外送出
+        progress.Report(new ProgressResult { Percentage = 66, Value = s });
+
+        s = await TaskEx.Run(() =&gt; HeavyHeavyHeavyMethod(s));
+        token.ThrowIfCancellationRequested(); // キャンセルされた場合は例外送出
+
+        listBox1.Items.Add(&quot;終わった、結果:&quot; + s);
+    }
+    catch (OperationCanceledException)
+    {
+        listBox1.Items.Add(&quot;キャンセルされたー&quot;);
+    }
+}
+
+public MainWindow()
+{
+    InitializeComponent();
+
+    // プログレスが変化したときの挙動の登録
+    var progress = new EventProgress&lt;ProgressResult&gt;();
+    progress.ProgressChanged += (sender, e) =&gt;
+        listBox1.Items.Add(e.Value.Percentage + &quot;%&quot; + &quot;:&quot; + e.Value.Value);
+
+    // キャンセルボタンを押したとする、時にキャンセルする
+    var ctsSource = new CancellationTokenSource();
+    button1.Click += (_, __) =&gt; ctsSource.Cancel();
+
+    // 非同期実行
+    DoAsync(&quot;hoge&quot;, ctsSource.Token, progress);
+}
+</code></pre>
+<p>例外送出という形なので、BackgroundWorkerよりはキャンセルが楽です。プログレスに関しては、EventProgress&lt;T&gt;を用意して、それのReportメソッドを呼ぶという形になります。これはBackgroundWorkerに非常に近い感じですね。</p>
+<h2>同期→非同期</h2>
+<p>今まで見た「重い処理」であるHeavyHeavyHeavyMethodは同期的なものでした。言うならばWebRequestのGetResponse。もしくはCPU時間を喰う処理。では、BeginGetResponseのような、重い処理が非同期の場合の非同期処理(こんがらがる)はどうなるでしょう。</p>
+<pre><code class="language-csharp">void HeavyMethod2(string s, Action&lt;string&gt; action)
+{
+    ThreadPool.QueueUserWorkItem(_ =&gt;
+    {
+        Thread.Sleep(5000);
+        var result = s + s;
+        action(result);
+    });
+}
+</code></pre>
+<p>こんな、なんちゃって非同期メソッドがあるとして、こいつをどう料理出来るか。</p>
+<h2>非同期とBackgroundWorker</h2>
+<p>元から非同期のものに対し、BackgroundWorkerは無力です。破綻です。さようならです。</p>
+<pre><code class="language-csharp">// DoWorkは実行されるとすぐに抜けて(HeavyMethod2が非同期のため)
+// RunWorkerCompletedが呼ばれることになって全く正常に動かない
+bw.DoWork += (sender, e) =&gt;
+{
+    HeavyMethod2(&quot;hoge&quot;, s1 =&gt;
+    {
+        bw.ReportProgress(33, s1);
+        HeavyMethod2(s1, s2 =&gt;
+        {
+            bw.ReportProgress(66, s2);
+            HeavyMethod2(s2, s3 =&gt;
+            {
+                bw.ReportProgress(100, s3);
+            });
+        });
+    });
+};
+
+bw.RunWorkerCompleted += (sender, e) =&gt;
+{
+    var result = e.Result;
+    listBox1.Items.Add(&quot;終わった、結果:&quot; + result);
+};
+
+bw.RunWorkerAsync(&quot;hoge&quot;);
+</code></pre>
+<p>これはちっとも動きません。というかReportProgressで例外が出ます(実行が完了=RunWorkerCompletedが呼ばれている状態ではReportProgressは呼べない)。なんとも、ならないですねえ。ここでAutoResetEventなどを呼んでDoWorkの完了を待機してやるぜ、という策もありますが、そんなことをやる意味は全くないでしょう。</p>
+<h2>Reactive Extensions</h2>
+<p>補助拡張メソッドとしてXxxAsObservableを定義しましょう。Begin-EndパターンのものならFromAsyncPatternが使えますが、今回のような俺々非同期メソッドには使えないので、AsyncSubjectを使って自前でラップします。</p>
+<pre><code class="language-csharp">IObservable&lt;string&gt; HeavyMethod2AsObservable(string input)
+{
+    var asyncSubject = new AsyncSubject&lt;string&gt;();
+    HeavyMethod2(input, s =&gt;
+    {
+        try
+        {
+            asyncSubject.OnNext(s);
+            asyncSubject.OnCompleted();
+        }
+        catch(Exception e)
+        {
+             asyncSubject.OnError(e);
+        }    
+    });
+    return asyncSubject.AsObservable();
+}
+</code></pre>
+<p>ラップ自体はそんなに難しいものでもないですし、定型なので割と楽です。AsyncSubjectの詳細、もしくは何故AsyncSubjectを使わなければならないのか、非同期ラップの落とし穴、的なものは<a href="http://neue.cc/2010/09/28_277.html" title="neue cc - Reactive Extensionsの非同期周りの解説と自前実装">以前の記事</a>を参照してください。</p>
+<pre><code class="language-csharp">var disposable = Observable.Return(&quot;hoge&quot;)
+    .Report(s =&gt; reportProgress(1, s))
+    .SelectMany(HeavyMethod2AsObservable)
+    .Report(s =&gt; reportProgress(33, s))
+    .SelectMany(HeavyMethod2AsObservable)
+    .Report(s =&gt; reportProgress(66, s))
+    .SelectMany(HeavyMethod2AsObservable)
+    .Report(s =&gt; reportProgress(100, s))
+    .ObserveOnDispatcher()
+    .Subscribe(
+        s =&gt; listBox1.Items.Add(&quot;終わった、結果:&quot; + s),
+        e =&gt; { listBox1.Items.Add(&quot;例外出たー&quot;); listBox1.Items.Add(e); },
+        () =&gt; { });
+</code></pre>
+<p>同期のものと見比べてもらうと分かりますが、ほとんど変わりません。SelectをSelectManyに変えただけです。同期だとか非同期だとか、そんなの全く関係なく同じように取りまとめられてしまう。これはRxの強みの一つです。</p>
+<h2>async/await</h2>
+<p>RxでAsyncSubjectを使ってラップしたように、こちらではTaskCompletationSourceを使ってラップします。詳細は<a href="http://neue.cc/2010/10/09_278.html" title="neue cc - Rxを使って非同期プログラミングを簡単に">Rxを使って非同期プログラミングを簡単に</a>で。そうしたら、後は以前のものと同じように書きます。同じなので割愛。</p>
+<h2>まとめ</h2>
+<p>BackgroundWorkerの成したことは大きいと思います。全く非同期を意識させずにコントロールのポトペタで、UIをブロックしないコードが書ける。でもその反面、受け渡しがobjectであったりと、弊害と限界が見えているように思えます。そしてそれは、非同期APIしかないSilverlightでついに限界を向かえた。もうそろそろ、お役御免。しょうがない。</p>
+<p>では代わりに何を使うかと言ったら、Rxを使えばいいんじゃないでしょうか、いやこれは本気で。見てきたとおり、十分にBackgroundWorkerの機能を代替出来ていますし。TaskはSilverlightにはまだ入ってないし、素のままでは使いやすいとは言い難い。目の前に現実的な解が転がっているのだから、とりあえず使ってみるのもいいんじゃないかな。機能的にはReactive Extensionsがイケてるのは間違いないと思うので(キャンセルの容易さは非常に大きい！)、そして、現実的に使える形で提供されている状態でもあるので、Rx使うといいんぢゃないかな(そればっか)。</p>
+<p>今後。私は、Reactive Extensionsとasync/awaitは共存するものだと思っています。そして、どちらも、必須であると、両者を知れば知るほど思い始めています。なので、もう単純に比較してどうこうはお終い。次は連携を考えていきたいと思います。とりあえず、何で共存するのか、何故に両者が必須であるのか(私であるのならばRxだけじゃダメなんですか！ダメなんです、の理由などなどり)は、そのうち書きます。</p>
+</div>
+<h1><a href="http://neue.cc/2010/1204_287.html">Reactive Extensionsとエラーハンドリング</a></h1>
+<ul class="date"><li>2010-12-04</li></ul>
+<div class="entry_body"><p>例外処理は非常に大事だけれど、非常に難しい。非同期となると、なおのこと難しくなる！一体どう処理したらいいものか。勿論、放置するわけにもいかない避けては通れない話。そのため、<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Reactive Extensions</a>には豊富な例外処理手段が用意されています。決してOnErrorだけではありません。想像を遥かに越える、恐るべき柔軟さがそこにはあります。そして、これもまた、何故Rxを使うべきなのか、の強い理由の一つになるでしょう。</p>
+<h2>OnError</h2>
+<p>まずは基本の例から。なお、DownloadStringAsyncは<a href="http://neue.cc/2010/11/26_286.html" title="neue cc - Reactive Extensions用のWebRequest拡張メソッド">Reactive Extensions用のWebRequest拡張メソッド</a>からです。BeginGetResponseしてStreamをReadToEndしたもの、と思ってください。この辺も書いてると長くなるし本質的には関係ないので。「非同期で文字列(HTML)をダウンロード」程度の意味で。</p>
+<pre><code class="language-csharp">// 存在しないアドレスにアクセスしようとする(当然例外が起こる！)
+// 出力結果は「リモート名が解決出来ませんでした」など。Timeoutを待つ必要はあります。
+WebRequest.Create(&quot;http://goooooogllle.co.jp/&quot;)
+    .DownloadStringAsync()
+    .Subscribe(
+        s =&gt; Console.WriteLine(s), // OnNext
+        e =&gt; Console.WriteLine(e.Message), // OnError
+        () =&gt; Console.WriteLine(&quot;completed!&quot;)); // OnCompleted
+
+// OnNextのみの場合はcatchされずに例外が外にthrowされる
+WebRequest.Create(&quot;http://goooooogllle.co.jp/&quot;)
+    .DownloadStringAsync()
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>存在しないアドレスにアクセスしたため、WebExceptionが発生します。Rxにおける基本の例外処理は、Subscribe時にOnErrorにエラー時処理を書くこと。ここにシーケンス内で発生した例外が集められ、一括で処理出来ます。</p>
+<p>ところで、Subscribeのオーバーロードは多数用意されている、ように見えて実のところ一つしかありません。IObserver&lt;T&gt;を受け取るものただ一つ。では、普段やっているAction&lt;T&gt;を一つだけ渡しているのは何なの？というと、OnNextだけ定義されたIObserver&lt;T&gt;を作るショートカットにすぎません。挙動としては、OnErrorを省略した場合は例外をcatchせずそのままthrowされていきます。OnErrorを定義した場合は、ここでExceptionを丸ごとcatch。</p>
+<p>OnErrorで丸ごとキャッチというのは、try-catch(Exception e)のようかもしれません。例外は何でもキャッチはダメ、なるべく上の階層で処理すべき、というセオリーから考えると違和感も？ただ、同期的に書いた場合は下位層でcatchせず、最上位でcatchしよう、という話が成立しますが、非同期には最上位などというものはなく、OnErrorで掴まなければ集約例外ハンドラ行きとなるので、最上位の呼び出しメソッドなどというものはなく、そんな当てはまるものでもないかもです。というか、つまりはOnErrorが最上位のcatchの役割を担っているわけですね。</p>
+<h2>Catch</h2>
+<p>出てくる例外によって処理内容を変えたかったり、例外の種類によってはCatchしないで欲しかったりするシチュエーションはいっぱいあります。その場合OnErrorでとりあえずExceptionを取ってe is HogeException... などと分岐、というのは格好悪い。というわけで、Catchメソッド。</p>
+<pre><code class="language-csharp">// TwitterのUserTimeLineは認証(OAuth)が必要なので例外が発生する！
+// 出力結果は、以下のレスポンス
+// {&quot;error&quot;:&quot;This method requires authentication.&quot;,&quot;request&quot;:&quot;\/statuses\/user_timeline.json&quot;}
+WebRequest.Create(&quot;http://twitter.com/statuses/user_timeline.json&quot;)
+    .DownloadStringAsync()
+    .Catch((WebException e) =&gt; e.Response.DownloadStringAsync())
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>Catchに渡すメソッドは型が指定出来て、型が一致しない例外はCatchしません。そして、ここで少し面白いのが渡すメソッドの戻り値はIObservable&lt;T&gt;でなければならないということ。例外が発生した場合は、後続に代わりのシーケンスを渡すことが出来ます。</p>
+<p>例えばWebRequestではエラー原因を知るため、WebExceptionからResponseを取ってデータを取得したいわけです。そこで、そのままWebException中のResponseStreamから非同期で読み取ってそのまま流す。という例が上のコードです。WebAPIを試してる間はこうやってエラーメッセージが簡単に読み取れると非常に楽。OAuthとかややこしくて中々認証通せなくて泣きますからね……。</p>
+<h2>Empty/Never</h2>
+<p>Catchしたら例外処理する（ログに書くなどなど）だけで、別に後続に渡したいものなどない。という場合はEmptyを渡してやりましょう。</p>
+<pre><code class="language-csharp">// 5が出たら例外出してみる
+// 出力結果は1,2,3,4,completed
+Observable.Range(1, 10)
+    .Do(i =&gt; { if (i == 5) throw new Exception(); })
+    .Catch((Exception e) =&gt; Observable.Empty&lt;int&gt;())
+    .Subscribe(i =&gt; Console.WriteLine(i), e =&gt; { }, () =&gt; Console.WriteLine(&quot;completed&quot;));
+</code></pre>
+<p>他に同種のものとして、Neverがあります。</p>
+<pre><code class="language-csharp">// Neverは何も返さない物
+// Emptyとの違いは、OnCompletedすら発生しない
+// 余談ですが、FromEventの第一引数は最新情報によると h =&gt; h.Invoke が一番短く書けてお薦めです！
+var collection = new ObservableCollection&lt;int&gt;();
+
+Observable.FromEvent&lt;NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs&gt;(
+        h =&gt; h.Invoke, h =&gt; collection.CollectionChanged += h, h =&gt; collection.CollectionChanged -= h)
+    .Select(e =&gt; (int)e.EventArgs.NewItems[0])
+    .Do(i =&gt; { if (i == -1)  throw new Exception(); })
+    .Catch((Exception e) =&gt; Observable.Never&lt;int&gt;())
+    .Subscribe(Console.WriteLine, e =&gt; { }, () =&gt; Console.WriteLine(&quot;終了&quot;));
+
+// 出力結果は 300
+collection.Add(300);  // 300が出力される
+collection.Add(-1);   // 例外発生
+collection.Add(1000); // デタッチ済みなので何も発生しない
+</code></pre>
+<p>NeverはOnCompletedを発生させないという性質が、Emptyとの使い分けとして面白いかもしれません。</p>
+<h2>OnCompletedとFinallyの違いについて</h2>
+<p>Catchがあるなら、当然Finallyもあります！そこでふと思うFinallyとOnCompletedってどう違うの？というと、OnErrorとの絡みで違います。</p>
+<pre><code class="language-csharp">// 出力結果は 例外発生, ふぁいなりー
+Observable.Throw&lt;int&gt;(new Exception()) // Throwは例外のみを出すというもの
+    .Finally(() =&gt; Console.WriteLine(&quot;ふぁいなりー&quot;))
+    .Subscribe(
+        i =&gt; Console.WriteLine(i),
+        e =&gt; Console.WriteLine(&quot;例外発生&quot;),
+        () =&gt; Console.WriteLine(&quot;こんぷりーてっど&quot;));
+</code></pre>
+<p>Reactive Extensionsにおいて守られている、また、もし自分で拡張メソッドを書く場合などに守らなければならない原則があります。それは「OnErrorとOnCompletedはどちらか一つのみが発生する」「OnError/OnCompleted後はOnNextは発生しない」という点。というわけで、FinallyとOnCompletedの違いですが、例外発生時にも実行されるのがFinally、そうでないのがOnCompletedといったところです。</p>
+<p>また、Finallyは途中で挟むのでメソッドチェーンの並びによっては実行されるタイミングを調整出来るのもポイントです。例えば</p>
+<pre><code class="language-csharp">// 1, 2, 3, ふぁいなりー1, 100, 101, 102, ふぁいなりー2
+Observable.Range(1, 3)
+    .Do(Console.WriteLine)
+    .Finally(() =&gt; Console.WriteLine(&quot;ふぁいなりー1&quot;))
+    .TakeLast(1)
+    .SelectMany(i =&gt; Observable.Range(100, 3))
+    .Finally(() =&gt; Console.WriteLine(&quot;ふぁいなりー2&quot;))
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>TakeLast（1）は最後の1つのみを取得する、そのためにそれ以前のものは「完了」していなければならない。完了したということはFinallyが発動する。というわけで、SelectrMany後の、SubscribeされているOnNextに届く前に一つ目のFinallyが実行されます。二つ目のFinallyに関しては、全てのシーケンスが列挙された最後となります。</p>
+<p>この性質は、Streamなど適切にClose/Disposeしなければならないものの実行タイミングの調整に使えます。</p>
+<h2>OnErrorResumeNext</h2>
+<p>Catchと同じような性質を持つメソッドとして、OnErrorResumeNextがあります。両者の違いは、例外非発生時に現れます。</p>
+<pre><code class="language-csharp">// 実行結果は「1, 2, 3」Catchは例外非発生時は後続を渡さない
+Observable.Range(1, 3)
+    .Catch(Observable.Range(100, 3))
+    .Subscribe(Console.WriteLine);
+
+// 実行結果は「1, 2, 3, 100, 101, 102」OnErrorResumeNextは例外非発生時も後続に繋ぐ
+Observable.Range(1, 3)
+    .OnErrorResumeNext(Observable.Range(100, 3))
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>代わりに渡す後続が、例外非発生時にも渡されるのがOnErrorResumeNext、渡さないのがCatch。つまりOnErrorResumeNextは必ず後続が繋がれるので、Catch().Concat()、で表現できます。</p>
+<h2>Retry/Timeout</h2>
+<p>Webにアクセスする時って失敗したらリトライしたいですよねー、特にTwitterなんて普通にサーバー不調でエラー返してきやがりますからね！という時はRetry。</p>
+<pre><code class="language-csharp">// Access Start x3回のあとに401例外発生
+Observable.Defer(() =&gt;
+    {
+        Console.WriteLine(&quot;Access Start:&quot;);
+        return WebRequest.Create(&quot;http://twitter.com/statuses/user_timeline.json&quot;).DownloadStringAsync();
+    })
+    .Retry(3)
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>再アクセスしているのが分かるようコードが少しゴチャついてしまいましたが……。この例では認証が必要なものにアクセスしているため、100% WebExceptionが発生してます。んが、Retry(3)ということで、3回リトライしています。リトライ処理は必須ではあるものの、面倒くさいものの筆頭でしたが、恐ろしく簡単に書けてしまいました。同様に、タイムアウトもあります。</p>
+<pre><code class="language-csharp">// Timeoutは指定時間以内に値が通過しなければTimeoutExceptionが発生します
+// カウントのタイミングはSubscribeされたらスタート
+// この例では恐らく例外発生します(100ミリ秒で結果を返せる、ことは恐らくないでしょふ)
+var wc = new WebClient();
+Observable.FromEvent&lt;DownloadStringCompletedEventHandler, DownloadStringCompletedEventArgs&gt;(
+        h =&gt; h.Invoke, h =&gt; wc.DownloadStringCompleted += h, h =&gt; wc.DownloadStringCompleted -= h)
+    .Timeout(TimeSpan.FromMilliseconds(100)) // 100ミリ秒
+    .Take(1) // これつけないとTimeoutのチェックが働き続けます←WebClientもWebRequest感覚になるようにしたほうがRx的にはお薦め
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.Result));
+
+wc.DownloadStringAsync(new Uri(&quot;http://bing.com/&quot;));
+</code></pre>
+<p>Web関連だとWebRequestであればTimeoutがありますが、ないもの(WebClient)もありますし、また、こちらのほうがお手軽なので、それなりに重宝すると思います。勿論、Web関連以外のメソッドでも使えますので、例えば一つのボタンが押されて、指定時間内にもう一つのボタンが押されなければTimeoutExceptionを出す、などなども考えられますね。更にそれをTimeoutExceptionをCatchで、指定時間内で二つのボタンが押されなかった場合の処理を追加、などなど、従来面倒くさかったことが恐ろしくスッキリ記述出来ます。</p>
+<h2>まとめ</h2>
+<p><a href="http://reactiveoauth.codeplex.com/" title="ReactiveOAuth">ReactiveOAuth</a>が機能的にスッカラカンなのは手抜きじゃなくて、(Retryとか)Rxに丸投げ出来るからです。ひたすら機能は分解、モジュールは小さく。というのは大変関数型的だと思うのですが、まさにそれです。(ただ、ちょっと、というかかなり手直ししないとマズいところがあるので近いうちに更新します……)</p>
+<p>といったわけで、Rxはかなり柔軟にエラーを処理することが出来るため、もう同期とか非同期とか関係なく、Rx挟まないでネットワーク処理書くのは面倒くさくて嫌です、という勢いだったり。大変素晴らしい。というかもう全ての処理をRx上に載せてしまってもいいんじゃね？ぐらいの勢いだったりしますがそれはやりすぎである。</p>
+<p>なお、この記事は<a href="http://atnd.org/events/10630" title="C# Advent Calendar jp: 2010 : ATND">C# Advent Calendar jp: 2010</a>の12/4分として書きました。リレーが途切れると、寂しいです。最後まで完走させたいですね。JavaScriptなど割とすぐに埋まったのに、こんなところで言語の（日本のネット上での）人気不人気が視覚化されるとしたら、寂しい話です。</p>
+<p>あと、私は<a href="http://atnd.org/events/10497" title="JavaScript Advent Calendar 2010 : ATND">JavaScript Advent Calendar 2010</a>のほうでも12/20に書くので、20日もよろしくどうも。<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js</a>とRxJSについて書きます。</p>
+</div>
+<a href="./publish/16">Prev |</a>
+<a href="./publish/18">| Next</a>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

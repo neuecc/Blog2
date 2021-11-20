@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - Reactive ExtensionsとAsync CTPでの非同期のキャンセル・プログレス処理</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2010/1209_288.html">Reactive ExtensionsとAsync CTPでの非同期のキャンセル・プログレス処理</a></h1>
+<ul class="date"><li>2010-12-09</li></ul>
+<div class="entry_body"><p>暫くはAsync CTPを特集していく！と思っていたのですが、何だか随分と間があいてしまいました。じっくり非同期操作に必要なオペレーションは何か、と考えるに「バックグラウンドでの実行」「進捗のUI表示」「結果のUI表示」「キャンセル処理」「エラー時処理」が挙げられる気がします。というわけで、こないだまではRxで<a href="http://neue.cc/2010/11/26_286.html" title="neue cc - Reactive Extensions用のWebRequest拡張メソッド">進捗表示</a>とか<a href="http://neue.cc/2010/12/04_287.html" title="neue cc - Reactive Extensionsとエラーハンドリング">エラー時処理</a>とか見ていたわけです、決してAsync CTPをスルーしていたわけではありません！ホントダヨ？記事の分量的にどうしてもRxだけで埋まってしまったのです。</p>
+<p>さて、ところでこれらってつまり、BackgroundWorkerですよねー。ただたんに裏で実行するだけならThreadPool.QueueUserWorkItemでいいし、結果のUIへの伝達ぐらいならDispatcher.BeginInvoke書けば…… ですが、進捗やキャンセルなどを加えていくとドロドロドロドロしてしまいます。それらが統合された上でポトペタプロパティ設定で使えるBackgroundWorkerは偉大なわけです。</p>
+<p>では、BackgroundWorkerを使った場合とReactive Extensionsを使った場合、そしてAsync CTPのasync/await、つまりはTaskを使った場合とで比較していきます。</p>
+<p>あ、そうそう、Async CTPの本格的な解説はmatarilloさんの訳されているEric Lippertの<a href="http://matarillo.com/general/cps.php">継続渡しスタイル(CPS)と非同期構文(async/await)</a>やufcppさんの<a href="http://ufcpp.net/study/csharp/sp5_async.html">非同期処理 (C# によるプログラミング入門)</a>でがっちりと解説されています。私はがっちりした記事は書けないのでひたすらゆるふわに機能を雑多につまみ食いで。あと、Reactive Extensionsとしつこく比較するのも忘れません。</p>
+<h2>BackgroundWorkerの場合</h2>
+<p>BackgroundWorkerは、DoWorkはバックグラウンドで、ProgressChangedとRunWorkerCompletedはUIスレッド上で動きます。これにより、Dispatcherだとか、そういうことを意識せずに使えます。勿論、DoWork内でDispatcher.BeginInvokeすることも可能ですが、そういう場合はBackgroundWorkerの意味があまりなくなってしまうので、設計には素直に従っておいたほうが良いです。というわけで例など。</p>
+<pre><code class="language-csharp">static string HeavyHeavyHeavyMethod(string s)
+{
+    Thread.Sleep(5000); // 重たい処理をするとする
+    return s + s;
+}
+
+static void Main()
+{
+    var bw = new BackgroundWorker
+    {
+        WorkerReportsProgress = true,
+        WorkerSupportsCancellation = true
+    };
+
+    bw.ProgressChanged += (sender, e) =&gt;
+    {
+        var percentage = e.ProgressPercentage;
+        var state = e.UserState;
+        Console.WriteLine(percentage + &quot;%&quot; + &quot;:&quot; + state);
+    };
+
+    bw.DoWork += (sender, e) =&gt;
+    {
+        var worker = sender as BackgroundWorker; // くろーぢゃな場合はbwが直接取れるので不要ですが
+        var result = (string)e.Argument;
+        if (result == null) throw new ArgumentNullException(&quot;引数よこせゴルァ&quot;);
+        worker.ReportProgress(1, result); // 進捗報告
+
+        // 重たい処理が幾つかあって最終的な結果を出す
+        // キャンセルは随時出来るようにする
+        result = HeavyHeavyHeavyMethod(result);
+        if (worker.CancellationPending) { e.Cancel = true; return; }
+        worker.ReportProgress(33, result); // 進捗報告
+
+        result = HeavyHeavyHeavyMethod(result);
+        if (worker.CancellationPending) { e.Cancel = true; return; }
+        worker.ReportProgress(66, result); // 進捗報告
+
+        result = HeavyHeavyHeavyMethod(result);
+        if (worker.CancellationPending) { e.Cancel = true; return; }
+        worker.ReportProgress(100, result); // 進捗報告
+
+        e.Result = result; // 結果セットして正常完了
+    };
+
+    bw.RunWorkerCompleted += (sender, e) =&gt;
+    {
+        if (e.Cancelled) // // キャンセルした場合
+        {
+            Console.WriteLine(&quot;キャンセルされたー&quot;);
+        }
+        else if (e.Error != null) // 例外発生の場合
+        {
+            Console.WriteLine(&quot;例外出たー&quot;);
+            Console.WriteLine(e.Error);
+        }
+        else // 正常終了の場合
+        {
+            var result = e.Result;
+            Console.WriteLine(&quot;終わった、結果:&quot; + result);
+        }
+    };
+
+    // 以下実行例
+
+    bw.RunWorkerAsync(&quot;hoge&quot;); // 非同期実行開始と初期引数
+
+    Thread.Sleep(6000);
+    bw.CancelAsync(); // 6秒後にキャンセルするなど
+
+    while (bw.IsBusy) Thread.Sleep(1000);
+    bw.RunWorkerAsync(null); // 今度は引数なしで実行するなど
+
+    while (bw.IsBusy) Thread.Sleep(1000);
+    bw.RunWorkerAsync(&quot;hoge&quot;); // 最後まで実行
+
+    Console.ReadLine();
+}
+</code></pre>
+<p>実行結果などは他愛もないものなのでスルーで。さて、コードは見たとおりに、些か冗長なところはありますが一般的に考えられる処理は全て行えます。受け渡しがObjectなのダセーとか、EventArgsに値をセットして受け渡しダセーとか、キャンセルするのにCancellationPendingのチェックだりー、などなど思うところは色々あります。BackgroundWorkerのメリットはポトペタにあったと思われるので、時代背景的に、もうそぐわないかなあという気がかなりしています。</p>
+<h2>Reactive Extensionsの場合</h2>
+<p>Reactive Extensionsは、この手の非同期処理はお手の物。というわけでBackgroundWorkerで行った機能をまんま代替してみます。実行スレッドの切り替えはObserveOnで。</p>
+<pre><code class="language-csharp">static string HeavyHeavyHeavyMethod(string s)
+{
+    Thread.Sleep(5000); // 重たい処理をするとする
+    return s + s;
+}
+
+// WPFで適当なリストボックス(経過表示用)と適当なキャンセルボタンがあるとする
+public MainWindow()
+{
+    InitializeComponent();
+
+    Action&lt;int, string&gt; reportProgress = (i, s) =&gt; listBox1.Items.Add(i + &quot;%:&quot; + s);
+
+    var disposable = Observable.Return(&quot;hoge&quot;, Scheduler.ThreadPool)
+        .ObserveOnDispatcher().Do(s =&gt; reportProgress(1, s))
+        .ObserveOn(Scheduler.ThreadPool).Select(HeavyHeavyHeavyMethod)
+        .ObserveOnDispatcher().Do(s =&gt; reportProgress(33, s))
+        .ObserveOn(Scheduler.ThreadPool).Select(HeavyHeavyHeavyMethod)
+        .ObserveOnDispatcher().Do(s =&gt; reportProgress(66, s))
+        .ObserveOn(Scheduler.ThreadPool).Select(HeavyHeavyHeavyMethod)
+        .ObserveOnDispatcher().Do(s =&gt; reportProgress(100, s))
+        .Subscribe(
+            s =&gt; listBox1.Items.Add(&quot;終わった、結果:&quot; + s),
+            e =&gt; { listBox1.Items.Add(&quot;例外出たー&quot;); listBox1.Items.Add(e); },
+            () =&gt; { });
+
+    // キャンセルボタンクリックでキャンセル
+    CancelButton.Click += (sender, e) =&gt;
+    {
+        listBox1.Items.Add(&quot;キャンセルしたー&quot;);
+        disposable.Dispose();
+    };
+}
+</code></pre>
+<p>んん、あれれ？進捗表示する時はDispatcherに切り替え、重い処理をする時はThreadPoolに流すよう切り替える。理屈は簡単。書くのもそのまま。しかし、しかし、これは、どう見ても非効率的。おまけにコードの見た目もUgly。ダメだこりゃ。そんな時は拡張メソッド。例えばこんなものを用意しよう。</p>
+<pre><code class="language-csharp">public static class ObservableExtensions
+{
+    /// &lt;summary&gt;Report on Dispatcher&lt;/summary&gt;
+    public static IObservable&lt;T&gt; Report&lt;T&gt;(this IObservable&lt;T&gt; source, Action&lt;T&gt; action)
+    {
+        return source.Report(action, Scheduler.Dispatcher);
+    }
+
+    /// &lt;summary&gt;Report on Scheduler&lt;/summary&gt;
+    public static IObservable&lt;T&gt; Report&lt;T&gt;(this IObservable&lt;T&gt; source, Action&lt;T&gt; action, IScheduler scheduler)
+    {
+        return source.Do(x =&gt; scheduler.Schedule(() =&gt; action(x)));
+    }
+}
+</code></pre>
+<p>Doの変形バージョンで、actionをDispatcher.BeginInvoke(デフォルトでは。オーバーロードのISchedulerを渡すものを使えば、任意のスケジューラに変更出来ます)で行う、というものです。これなら進捗表示などにピッタリ合うはず。というわけで、適用してみます。</p>
+<pre><code class="language-csharp">var disposable = Observable.Return(&quot;hoge&quot;, Scheduler.ThreadPool)
+    .Report(s =&gt; reportProgress(1, s))
+    .Select(HeavyHeavyHeavyMethod)
+    .Report(s =&gt; reportProgress(33, s))
+    .Select(HeavyHeavyHeavyMethod)
+    .Report(s =&gt; reportProgress(66, s))
+    .Select(HeavyHeavyHeavyMethod)
+    .Report(s =&gt; reportProgress(100, s))
+    .ObserveOnDispatcher()
+    .Subscribe(
+        s =&gt; listBox1.Items.Add(&quot;終わった、結果:&quot; + s),
+        e =&gt; { listBox1.Items.Add(&quot;例外出たー&quot;); listBox1.Items.Add(e); },
+        () =&gt; { });
+</code></pre>
+<p>無難に仕上がりました。BackgroundWorkerと比べると、随分とすっきりします。受け渡しがオブジェクトではなく、しっかり型がついたままチェーンされること、例外処理もOnErrorの流れに沿ってすっきり記述できること、そして、何よりもキャンセル処理が楽！Disposeを呼ぶだけで、CancellationPendingのようなものをチェックする必要なくサクッとキャンセルすることが可能です。これは、処理単位が小さなメソッド毎に分割される、この場合は進捗報告を抜くとSelectの連打という形になりますが、その連打がちゃんと意味を持つわけです。</p>
+<p>余談ですが、INotifyPropertyChanged経由のデータバインディングは自動でDispatcher経由にしてくれるようなので、その辺楽。UIパーツなんて直接触るもんじゃない、MVVM！ でもObservableCollectionだとダメだったりするんですね、色々んもー。</p>
+<h2>Task(async/await)の場合</h2>
+<p>TaskにおけるキャンセルもBackgroundWorkerと同じく、キャンセル用オブジェクトの状態を確認して自分で挙動を挟む必要があります。ThrowIfCancellationRequested() を呼べばキャンセルされていた時は例外を送出して強制終了。</p>
+<pre><code class="language-csharp">string HeavyHeavyHeavyMethod(string s)
+{
+    Thread.Sleep(5000); // 重たい処理をするとする
+    return s + s;
+}
+
+// 進捗表示用入れ物クラス
+class ProgressResult
+{
+    public int Percentage { get; set; }
+    public string Value { get; set; }
+}
+
+async void DoAsync(string start, CancellationToken token, IProgress&lt;ProgressResult&gt; progress)
+{
+    // 進捗報告はIProgress&lt;T&gt;のReportを呼ぶ
+    progress.Report(new ProgressResult { Percentage = 1, Value = start });
+
+    try
+    {
+        var s = await TaskEx.Run(() =&gt; HeavyHeavyHeavyMethod(start));
+        token.ThrowIfCancellationRequested(); // キャンセルされた場合は例外送出
+        progress.Report(new ProgressResult { Percentage = 33, Value = s });
+
+        s = await TaskEx.Run(() =&gt; HeavyHeavyHeavyMethod(s));
+        token.ThrowIfCancellationRequested(); // キャンセルされた場合は例外送出
+        progress.Report(new ProgressResult { Percentage = 66, Value = s });
+
+        s = await TaskEx.Run(() =&gt; HeavyHeavyHeavyMethod(s));
+        token.ThrowIfCancellationRequested(); // キャンセルされた場合は例外送出
+
+        listBox1.Items.Add(&quot;終わった、結果:&quot; + s);
+    }
+    catch (OperationCanceledException)
+    {
+        listBox1.Items.Add(&quot;キャンセルされたー&quot;);
+    }
+}
+
+public MainWindow()
+{
+    InitializeComponent();
+
+    // プログレスが変化したときの挙動の登録
+    var progress = new EventProgress&lt;ProgressResult&gt;();
+    progress.ProgressChanged += (sender, e) =&gt;
+        listBox1.Items.Add(e.Value.Percentage + &quot;%&quot; + &quot;:&quot; + e.Value.Value);
+
+    // キャンセルボタンを押したとする、時にキャンセルする
+    var ctsSource = new CancellationTokenSource();
+    button1.Click += (_, __) =&gt; ctsSource.Cancel();
+
+    // 非同期実行
+    DoAsync(&quot;hoge&quot;, ctsSource.Token, progress);
+}
+</code></pre>
+<p>例外送出という形なので、BackgroundWorkerよりはキャンセルが楽です。プログレスに関しては、EventProgress&lt;T&gt;を用意して、それのReportメソッドを呼ぶという形になります。これはBackgroundWorkerに非常に近い感じですね。</p>
+<h2>同期→非同期</h2>
+<p>今まで見た「重い処理」であるHeavyHeavyHeavyMethodは同期的なものでした。言うならばWebRequestのGetResponse。もしくはCPU時間を喰う処理。では、BeginGetResponseのような、重い処理が非同期の場合の非同期処理(こんがらがる)はどうなるでしょう。</p>
+<pre><code class="language-csharp">void HeavyMethod2(string s, Action&lt;string&gt; action)
+{
+    ThreadPool.QueueUserWorkItem(_ =&gt;
+    {
+        Thread.Sleep(5000);
+        var result = s + s;
+        action(result);
+    });
+}
+</code></pre>
+<p>こんな、なんちゃって非同期メソッドがあるとして、こいつをどう料理出来るか。</p>
+<h2>非同期とBackgroundWorker</h2>
+<p>元から非同期のものに対し、BackgroundWorkerは無力です。破綻です。さようならです。</p>
+<pre><code class="language-csharp">// DoWorkは実行されるとすぐに抜けて(HeavyMethod2が非同期のため)
+// RunWorkerCompletedが呼ばれることになって全く正常に動かない
+bw.DoWork += (sender, e) =&gt;
+{
+    HeavyMethod2(&quot;hoge&quot;, s1 =&gt;
+    {
+        bw.ReportProgress(33, s1);
+        HeavyMethod2(s1, s2 =&gt;
+        {
+            bw.ReportProgress(66, s2);
+            HeavyMethod2(s2, s3 =&gt;
+            {
+                bw.ReportProgress(100, s3);
+            });
+        });
+    });
+};
+
+bw.RunWorkerCompleted += (sender, e) =&gt;
+{
+    var result = e.Result;
+    listBox1.Items.Add(&quot;終わった、結果:&quot; + result);
+};
+
+bw.RunWorkerAsync(&quot;hoge&quot;);
+</code></pre>
+<p>これはちっとも動きません。というかReportProgressで例外が出ます(実行が完了=RunWorkerCompletedが呼ばれている状態ではReportProgressは呼べない)。なんとも、ならないですねえ。ここでAutoResetEventなどを呼んでDoWorkの完了を待機してやるぜ、という策もありますが、そんなことをやる意味は全くないでしょう。</p>
+<h2>Reactive Extensions</h2>
+<p>補助拡張メソッドとしてXxxAsObservableを定義しましょう。Begin-EndパターンのものならFromAsyncPatternが使えますが、今回のような俺々非同期メソッドには使えないので、AsyncSubjectを使って自前でラップします。</p>
+<pre><code class="language-csharp">IObservable&lt;string&gt; HeavyMethod2AsObservable(string input)
+{
+    var asyncSubject = new AsyncSubject&lt;string&gt;();
+    HeavyMethod2(input, s =&gt;
+    {
+        try
+        {
+            asyncSubject.OnNext(s);
+            asyncSubject.OnCompleted();
+        }
+        catch(Exception e)
+        {
+             asyncSubject.OnError(e);
+        }    
+    });
+    return asyncSubject.AsObservable();
+}
+</code></pre>
+<p>ラップ自体はそんなに難しいものでもないですし、定型なので割と楽です。AsyncSubjectの詳細、もしくは何故AsyncSubjectを使わなければならないのか、非同期ラップの落とし穴、的なものは<a href="http://neue.cc/2010/09/28_277.html" title="neue cc - Reactive Extensionsの非同期周りの解説と自前実装">以前の記事</a>を参照してください。</p>
+<pre><code class="language-csharp">var disposable = Observable.Return(&quot;hoge&quot;)
+    .Report(s =&gt; reportProgress(1, s))
+    .SelectMany(HeavyMethod2AsObservable)
+    .Report(s =&gt; reportProgress(33, s))
+    .SelectMany(HeavyMethod2AsObservable)
+    .Report(s =&gt; reportProgress(66, s))
+    .SelectMany(HeavyMethod2AsObservable)
+    .Report(s =&gt; reportProgress(100, s))
+    .ObserveOnDispatcher()
+    .Subscribe(
+        s =&gt; listBox1.Items.Add(&quot;終わった、結果:&quot; + s),
+        e =&gt; { listBox1.Items.Add(&quot;例外出たー&quot;); listBox1.Items.Add(e); },
+        () =&gt; { });
+</code></pre>
+<p>同期のものと見比べてもらうと分かりますが、ほとんど変わりません。SelectをSelectManyに変えただけです。同期だとか非同期だとか、そんなの全く関係なく同じように取りまとめられてしまう。これはRxの強みの一つです。</p>
+<h2>async/await</h2>
+<p>RxでAsyncSubjectを使ってラップしたように、こちらではTaskCompletationSourceを使ってラップします。詳細は<a href="http://neue.cc/2010/10/09_278.html" title="neue cc - Rxを使って非同期プログラミングを簡単に">Rxを使って非同期プログラミングを簡単に</a>で。そうしたら、後は以前のものと同じように書きます。同じなので割愛。</p>
+<h2>まとめ</h2>
+<p>BackgroundWorkerの成したことは大きいと思います。全く非同期を意識させずにコントロールのポトペタで、UIをブロックしないコードが書ける。でもその反面、受け渡しがobjectであったりと、弊害と限界が見えているように思えます。そしてそれは、非同期APIしかないSilverlightでついに限界を向かえた。もうそろそろ、お役御免。しょうがない。</p>
+<p>では代わりに何を使うかと言ったら、Rxを使えばいいんじゃないでしょうか、いやこれは本気で。見てきたとおり、十分にBackgroundWorkerの機能を代替出来ていますし。TaskはSilverlightにはまだ入ってないし、素のままでは使いやすいとは言い難い。目の前に現実的な解が転がっているのだから、とりあえず使ってみるのもいいんじゃないかな。機能的にはReactive Extensionsがイケてるのは間違いないと思うので(キャンセルの容易さは非常に大きい！)、そして、現実的に使える形で提供されている状態でもあるので、Rx使うといいんぢゃないかな(そればっか)。</p>
+<p>今後。私は、Reactive Extensionsとasync/awaitは共存するものだと思っています。そして、どちらも、必須であると、両者を知れば知るほど思い始めています。なので、もう単純に比較してどうこうはお終い。次は連携を考えていきたいと思います。とりあえず、何で共存するのか、何故に両者が必須であるのか(私であるのならばRxだけじゃダメなんですか！ダメなんです、の理由などなどり)は、そのうち書きます。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

@@ -1,0 +1,2611 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - 2010</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2010/1014_279.html">XboxInfoTwit - ver.2.2.0.4</a></h1>
+<ul class="date"><li>2010-10-14</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://neue.cc/software/xboxinfotwit" title="neue cc - XboxInfoTwit">neue cc - XboxInfoTwit</a></li>
+</ul>
+<p>未知のエラーが出まくっていたので、暫定というか適当な対処を取ってみました。コードがかなり古くて汚いので、根本的に手を入れたいところなんですが、作業量を考えると中々やる気が沸かないという微妙な状態。機能追加のリクエストも数点頂いているので申し訳ないんですけどね。</p>
+</div>
+<h1><a href="http://neue.cc/2010/1009_278.html">Rxを使って非同期プログラミングを簡単に</a></h1>
+<ul class="date"><li>2010-10-09</li></ul>
+<div class="entry_body"><p>こないだ公開されたMSDNマガジンの記事、<a href="http://msdn.microsoft.com/ja-jp/magazine/ff959203.aspx" title="非同期タスク - タスクを使って非同期プログラミングを簡単に">非同期タスク - タスクを使って非同期プログラミングを簡単に</a>。おお、これは分かりやすく非同期周りについて網羅されてる！あと、私はTask全然知らないので初歩から入る導入はお役立ちです。いやまあ、実際のとこTask周りの導入記事っていっぱいあるのに、未だにお役立ち、とか言ってるのもどうかと思わなくもないところではあるんですが不勉強なもので。</p>
+<p>同期処理でUIをブロックしてしまう、スレッドプールに投げればいいぢゃない、イベントベースのパターンとAPM(IAsyncResultを使うAsynchronous Programming Model)、そしてTask。おお、全部ですね。全部、全部？そう、何か欠けてます、ええ、<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Reactive Extensions</a>が欠けています。というわけで、Taskと対比させながらRxでのコードを見ていきましょう。</p>
+<h2>非同期実行、そして待機</h2>
+<p>MSDNマガジンでは真ん中辺りからのタスクのコードを、Rxでのコードと一緒に並べてみます。</p>
+<pre><code class="language-csharp">// タスクパターン
+Task&lt;double&gt; task = Task.Factory.StartNew(() =&gt;
+{
+    double result = 0;
+    for (int i = 0; i &lt; 10000000; i++)
+        result += Math.Sqrt(i);
+    return result;
+});
+
+Console.WriteLine(&quot;The task is running asynchronously...&quot;);
+task.Wait(); // 実行完了まで待機
+Console.WriteLine(&quot;The task computed: {0}&quot;, task.Result);
+
+// Reactive Extensions
+var obs = Observable.Start(() =&gt;
+{
+    double result = 0;
+    for (int i = 0; i &lt; 10000000; i++)
+        result += Math.Sqrt(i);
+    return result;
+});
+
+Console.WriteLine(&quot;Observable.Start非同期実行中&quot;);
+var r = obs.First(); // 結果が返るまで待機
+Console.WriteLine(&quot;完了 : {0}&quot;, r);
+
+// 余談：タスクはIObservableに変換出来たりする
+task.ToObservable().Run(Console.WriteLine);
+</code></pre>
+<p>どちらもデフォルトではThreadPoolで非同期を実行します。ThreadPoolと違うのは、待機するのも戻り値を取り出すのも簡単。Rxでは長さ1のReactiveシーケンスとして扱われるので、Firstを使うと同期的にブロックして値を取り出せます。ここだけを見ると、Wait() + task.ResultなTaskより扱いやすいのではないかと思います。また、両者ともに似ているので、TaskからIObservable&lt;T&gt;への変換も容易です。System.Reactive.dllを読みこめば、Taskに対してToObservableメソッドが追加され、簡単に変換することが出来ます。</p>
+<h2>自由な変換</h2>
+<p>汎用的に非同期処理をTaskに、Rxに変換しよう。TaskにはTaskCompletionSourceが、RxにはAsyncSubjectがあります。</p>
+<pre><code class="language-csharp">// Construct a TaskCompletionSource and get its 
+// associated Task
+TaskCompletionSource&lt;int&gt; tcs = new TaskCompletionSource&lt;int&gt;();
+Task&lt;int&gt; task = tcs.Task;
+
+// Asynchronously, call SetResult on TaskCompletionSource
+ThreadPool.QueueUserWorkItem(_ =&gt;
+{
+    Thread.Sleep(1000); // Do something
+    tcs.SetResult(123);
+});
+
+Console.WriteLine(&quot;The operation is executing asynchronously...&quot;);
+task.Wait();
+
+// And get the result that was placed into the task by 
+// the TaskCompletionSource
+Console.WriteLine(&quot;The task computed: {0}&quot;, task.Result);
+
+// ---
+
+// TaskCompletionSourceは、RxではAsyncSubjectと対比させられる
+// AsyncSubjectはRxでの非同期表現を自前で実装する場合に使う（Rx内部でも当然使われている）
+var async = new AsyncSubject&lt;int&gt;();
+
+ThreadPool.QueueUserWorkItem(_ =&gt;
+{
+    Thread.Sleep(1000); // 何か重い処理をしてたとする
+    async.OnNext(123); // 値のセット
+    async.OnCompleted(); // 値を確定し非同期実行完了
+});
+
+Console.WriteLine(&quot;重い処理を非同期で実行中...&quot;);
+var r = async.First(); // 同期的に結果を待機し取得
+Console.WriteLine(&quot;処理完了：{0}&quot;, r);
+</code></pre>
+<p>こちらもまた、両者ともに実によく似ています。何らかの任意の非同期処理は、使いやすいようにRxに包んでしまうと素敵な気分になれる。</p>
+<h2>IAsyncResultパターンの変換</h2>
+<p>IAsyncResultパターン。Rxの辺りでは、というか多分.NET周りで言う分には、Asynchronous Programming Model、略してAPMと呼ぶそうです。私がその言葉を見たのは、<a href="http://www.amazon.co.jp/gp/product/4891005238?ie=UTF8&tag=ilsgeometrati-22&linkCode=as2&camp=247&creative=7399&creativeASIN=4891005238">プログラミングMicrosoft .NET Framework 第2版 (マイクロソフト公式解説書)</a><img src="http://www.assoc-amazon.jp/e/ir?t=ilsgeometrati-22&l=as2&o=9&a=4891005238" width="1" height="1" border="0" alt="" style="border:none !important; margin:0px !important;" />でした。Richterはリッチャーと呼ぶべきかリヒターと呼ぶべきなのか謎という話ががが。この本は.NET3種の良書のうちの一冊だと思うので（もう一冊は<a href="http://www.amazon.co.jp/gp/product/4891006765?ie=UTF8&tag=ilsgeometrati-22&linkCode=as2&camp=247&creative=7399&creativeASIN=4891006765">.NETのクラスライブラリ設計 開発チーム直伝の設計原則、コーディング標準、パターン (Microsoft.net Development Series)</a><img src="http://www.assoc-amazon.jp/e/ir?t=ilsgeometrati-22&l=as2&o=9&a=4891006765" width="1" height="1" border="0" alt="" style="border:none !important; margin:0px !important;" />、もう一冊は未定というか将来のために取っておくというか)だと思うので未読の人は是非是非。と思ったら絶版じゃないですか！いや、amazonで偶然品切れなだけかもしれませんが、どうなんでしょう。これが手に入らないのは損失です！海外では既に.NET 4に対応したThird Editionが出ています。ということは、であり、風のウワサによると―― らしいですので、まあ、ですね！</p>
+<p>今読み返したら20ページほど費やされて色々書いてありました。ぶっちゃけ面倒くさいと思って半分以上流し読みしてたという事実に気づいてしまったり。おおぉ。まあ、その辺はThird Editionの時に拾い直せば……。そんなわけで、その面倒くささを緩和するFromAsync/FromAsyncPatternをどうぞ。</p>
+<pre><code class="language-csharp">// FromAsyncで包むとその場で実行
+Task&lt;IPAddress[]&gt; task = Task&lt;IPAddress[]&gt;.Factory.FromAsync(
+    Dns.BeginGetHostAddresses, Dns.EndGetHostAddresses, &quot;www.microsoft.com&quot;, null);
+
+task.Wait();
+foreach (var item in task.Result) Console.WriteLine(item);
+
+// RxのFromAsyncPatternの型指定は引数と戻り値の二つを指定する
+// FromAsyncPatternで包んだら即実行ではなく、funcをInvokeするまでは開始されない
+var obs = Observable.FromAsyncPattern&lt;string, IPAddress[]&gt;(Dns.BeginGetHostAddresses, Dns.EndGetHostAddresses)
+    .Invoke(&quot;www.microsoft.com&quot;); // 即実行なら変数に代入せずメソッドチェーン、実行を遅らせたい場合はfuncで持っておくと良いかも
+
+var r = obs.First();
+foreach (var item in r) Console.WriteLine(item);
+</code></pre>
+<h2>イベントベースのパターンの変換</h2>
+<p>残念なことに、Taskには組み込みの変換パターンがないので、TaskCompletionSourceを使って自前で作る必要があるようです。RxではAsyncSubjectを使って自前で用意するまでもなく、そもそもイベントのLinq化として売り出されたので、イベントベースのパターンの変換はお手の物です。見てみましょう。</p>
+<pre><code class="language-csharp">var client = new WebClient();
+
+Observable.FromEvent&lt;DownloadStringCompletedEventArgs&gt;(client, &quot;DownloadStringCompleted&quot;)
+    .Select(e =&gt; e.EventArgs.Result)
+    .Subscribe(s =&gt; Console.WriteLine(s));
+
+client.DownloadStringAsync(new Uri(&quot;http://www.microsoft.com/&quot;));
+Console.ReadKey(); // 完了待ち
+
+// こういう風に書くとリフレクションを使わないので軽くて望ましい、けど結構面倒くさい（ので事前に自動生成しておくといいよ）
+var obs = Observable.FromEvent&lt;DownloadStringCompletedEventHandler, DownloadStringCompletedEventArgs&gt;(
+    h =&gt; new DownloadStringCompletedEventHandler(h),
+    h =&gt; client.DownloadStringCompleted += h,
+    h =&gt; client.DownloadStringCompleted -= h);
+
+client.DownloadStringAsync(new Uri(&quot;http://www.bing.com/&quot;));
+var result = obs.Select(e =&gt; e.EventArgs.Result).First(); // 同期で待機＆受け取り
+Console.WriteLine(result);
+</code></pre>
+<p>FromEvent。実に美しい！Linq！Linq！おっと、興奮してしまった。とはいえ、stringでイベント名を指定するのも、h=&gt;hoge+=の連打も、どちらも悲しくダサい。そこでT4 TemplateでFromEventに包んだのを一気に自動生成してしまうのをお薦めします。そのためのT4は以前に書きましたので、<a href="http://neue.cc/2010/08/19_272.html" title="neue cc - Reactive ExtensionsのFromEventをT4 Templateで自動生成する">Reactive ExtensionsのFromEventをT4 Templateで自動生成する</a> 是非どうぞ。割と頑張ったし便利だと思ったけれど、はてブ数がああああ。まあ、そんなわけで、Rxをガリガリ使う分には必需品です。</p>
+<h2>しかし、それで大丈夫か？</h2>
+<p>FromEventの後者の書き方は問題を残しています。DownloadStringAsyncの後にFirst。これは、危険です。どう危険かというと……。</p>
+<pre><code class="language-csharp">// T4自動生成を使うとFromEventがこんなスッキリ！
+var client = new WebClient();
+var obs = client.DownloadStringCompletedAsObservable();
+
+// ところで、実行を開始した後にSubscribe(Firstもそうです)したら？
+// それも、超速で非同期実行が完了したとしたら？
+client.DownloadStringAsync(new Uri(&quot;http://www.bing.com/&quot;));
+Thread.Sleep(5000); // ダウンロードが完了した後にSubscribeする、をシミュレート
+
+// 次の値は（完了済みなので）永遠にやってこない、つまり永久フリーズ
+var result = obs.Select(e =&gt; e.EventArgs.Result).First(); 
+</code></pre>
+<p>Firstだと同期で延々と待つのでフリーズ。Subscribeならフリーズはありませんが、結果がこないので意図した結果ではないでしょう。これは大変マズい。そんな時はTake-Prune-Connectパターン、なんてものはなく今思いつきました。今思いついたのでこれがベストなやり方なのか、ちょっとよく分からないのであとでForumとか見て調べておきます。挙動的には全然問題ない。</p>
+<pre><code class="language-csharp">// Take(1).Prune and ConnectでAsyncSubjectっぽい挙動に変換
+var client = new WebClient();
+var obs = client.DownloadStringCompletedAsObservable()
+    .Select(e =&gt; e.EventArgs.Result) // Selectはどこに書いてもいいので自分がスッキリと思うところへ
+    .Take(1)
+    .Prune();
+obs.Connect();
+
+client.DownloadStringAsync(new Uri(&quot;http://www.bing.com/&quot;));
+Thread.Sleep(5000); // ダウンロードが完了した後にSubscribeする、をシミュレート
+
+var result = obs.First(); // 大丈夫だ、問題ない
+Console.WriteLine(result);
+
+var result2 = obs.First(); // 何度でも取り出せる
+Console.WriteLine(result2);
+</code></pre>
+<p>わけわかんなくなってきました？失望のため息が聞こえます。どうしたものかねえ、これ。PruneはキャッシュとしてAsyncSubjectを持って後続に渡します。また、値を流すタイミングを自由に調整出来ます(Connectしたら流す、それまでは値が来ていても堰止める)。今回はFromAsyncPatternをなぞらえるため、即座にConnectしました。やっていることは、上の方で出したAsyncSubjectのパターンのシミュレーションです。つまり、OnNextが一回来て、OnCompletedが来る。そうでないと、AsyncSubjectが完了しない。FromEventはそのままだと無限リスト状態で完了の状態がこないので、Take(1)で長さ1のReactiveシーケンスとする。こうすることで、後ろに非同期結果の値が流れ出します。</p>
+<p>といったイミフな話は<a href="http://neue.cc/2010/09/28_277.html" title="neue cc - Reactive Extensionsの非同期周りの解説と自前実装">Reactive Extensionsの非同期周りの解説と自前実装</a>で少し、それと、それに関連してufcppさんが分かりやすいスライドにしてまとめてくれていますので、必見 =&gt; <a href="http://ufcpp.wordpress.com/2010/09/28/%e3%81%95%e3%81%a6%e3%80%81wordpress-%e3%81%ab%e3%81%aa%e3%81%a3%e3%81%9f%e3%81%a8%e3%81%93%e3%82%8d%e3%81%a7%e5%86%8d%e5%ba%a6%e3%80%81powerpoint-%e8%b2%bc%e3%82%8a%e4%bb%98%e3%81%91%e3%83%86/" title="さて、WordPress になったところで再度、PowerPoint 貼り付けテスト « ++C++; // 未確認飛行 C ブログ">さて、WordPress になったところで再度、PowerPoint 貼り付けテスト « ++C++; // 未確認飛行 C ブログ</a>。貼りつけテストという実に分かりにくいタイトルでサラッと流してしまうところが漢らしい（謎）</p>
+<h2>タスクの操作と構成</h2>
+<p>一つの非同期実行程度なら、APMだろうがイベントモデルだろうが、素のまま扱っても別にそこまで面倒なわけではない。Taskが、Rxが真価を発揮するのは複数の操作を行うとき。まずは、待機を。</p>
+<pre><code class="language-csharp">Task&lt;int&gt; task1 = new Task&lt;int&gt;(() =&gt; ComputeSomething(0));
+Task&lt;int&gt; task2 = new Task&lt;int&gt;(() =&gt; ComputeSomething(1));
+Task&lt;int&gt; task3 = new Task&lt;int&gt;(() =&gt; ComputeSomething(2));
+
+task1.Start(); task2.Start(); task3.Start(); // 実行しとかないと永遠待機しちゃうよ
+task1.Wait();
+Console.WriteLine(&quot;Task 1 is definitely done.&quot;);
+
+Task.WaitAny(task2, task3); // どっちかが完了するまで待機
+Console.WriteLine(&quot;Task 2 or task 3 is also done.&quot;);
+
+Task.WaitAll(task1, task2, task3); // 全部完了するまで待機
+Console.WriteLine(&quot;All tasks are done.&quot;);
+
+// ---
+
+// Observable.Startは即時実行だけど、ToAsyncはInvokeまで実行開始されない
+var async1 = Observable.ToAsync(() =&gt; ComputeSomething(0));
+var async2 = Observable.ToAsync(() =&gt; ComputeSomething(1));
+var async3 = Observable.ToAsync(() =&gt; ComputeSomething(2));
+var io1 = async1(); // Invokeってのはデリゲートのなので()でもおk
+var io2 = async2();
+var io3 = async3();
+
+io1.Run(); // 引数なしRunで実行結果も受けずただの待機になる
+
+// WaitAnyはどちらか先に完了したほうを1つだけ流す Merge().Take(1) して待機
+io2.Merge(io3).Take(1).Run();
+
+Observable.Concat(io1, io2, io3).Run(); // WaitAllは全部連結して待機
+Observable.ForkJoin(io1, io2, io3).Run(); // こちらは並列実行で待機
+</code></pre>
+<p>複数を同時に走らせて待機がいとも簡単に。で、面白いのがRx。Rxは非同期特化というわけではないので直接的にアレとコレのどっちかが来るまで待ってね、なんていうメソッドはないのですが、豊富な結合系メソッドで余裕でシミュレート出来てしまいます。WaitAnyはMerge.Takeで。WaitAllはConcatで。素晴らしい。凄い。と同時に、若干パズル的な気がしなくもない。が、しかし、面白い。Reactiveモデルの何でもできるという底力を感じる。</p>
+<h2>継続・継続・継続</h2>
+<p>今までは待機してたという、おいおい、非同期でやってるのに同期かよ、って感じだったので本領発揮で非同期のままの流るような実行を。TaskではContinueWith、Rxでは、72通りあるから何を言えばいいのか。</p>
+<pre><code class="language-csharp">// ほう、メソッドチェーンが生きたな
+Task&lt;IPAddress[]&gt;.Factory.FromAsync(Dns.BeginGetHostAddresses, Dns.EndGetHostAddresses, &quot;www.microsoft.com&quot;, null)
+    .ContinueWith(t =&gt;
+    {
+        foreach (var item in t.Result) // IPAddress[]なので。
+        {
+            Console.WriteLine(item);
+        }
+    });
+
+// しかしRxはそれどころじゃない
+Observable.FromAsyncPattern&lt;string, IPAddress[]&gt;(Dns.BeginGetHostAddresses, Dns.EndGetHostAddresses)
+    .Invoke(&quot;www.microsoft.com&quot;)
+    .SelectMany(xs =&gt; xs) // xsはIPAddress[]、つまりIEnumerableとIObservableを区別なくバラしているという狂気の融合！
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>ContinueWithは、まあごく普通に結果が流れてきてるんだなー、程度。しかしRxのほうはヤバい。この場合のContinueWithに該当するのはSubscribeで、まあそれは普通なのですが、それよりしかし流れてくるIPAddress[]の[]がウザいので、Linq的に扱うならフラットにしたいよね。というわけで、IObservable&lt;IPAddress[]&gt;をSelectManyでIObservable&lt;IPAddress&gt;に変換しています。SelectManyはIObservableだろうとIEnumerableだろうと、平等にバラします。これは実にヤバい。狂気すら感じるパワー。皆も是非Rxを使ってこのヤバさを知って欲しい。</p>
+<h2>実行・待機</h2>
+<p>同時実行して、その結果を一辺に受けたい場合ってありますよね。そんな場合はForkJoinで。ForkJoinよく出てくるなあ。</p>
+<pre><code class="language-csharp">string[] urls = new[] { &quot;www.microsoft.com&quot;, &quot;www.msdn.com&quot; };
+Task&lt;IPAddress[]&gt;[] tasks = new Task&lt;IPAddress[]&gt;[urls.Length];
+
+for (int i = 0; i &lt; urls.Length; i++)
+{
+    tasks[i] = Task&lt;IPAddress[]&gt;.Factory.FromAsync(
+        Dns.BeginGetHostAddresses,
+        Dns.EndGetHostAddresses,
+        urls[i], null);
+}
+
+Task.WaitAll(tasks);
+
+Console.WriteLine(
+    &quot;microsoft.com resolves to {0} IP addresses. msdn.com resolves to {1}&quot;,
+    tasks[0].Result.Length,
+    tasks[1].Result.Length);
+
+
+// WaitAll? ああ、ForkJoinで並行実行のことですか
+Observable.ForkJoin(urls.Select(url =&gt;
+        Observable.FromAsyncPattern&lt;string, IPAddress[]&gt;(Dns.BeginGetHostAddresses, Dns.EndGetHostAddresses)(url)))
+    .Run(xs =&gt; Console.WriteLine(
+        &quot;microsoft.com resolves to {0} IP addresses. msdn.com resolves to {1}&quot;,
+        xs[0].Length, xs[1].Length));
+</code></pre>
+<p>そろそろマンネリ気味で疲れてきた。あ、最後にデッカイのがありますね。TaskではContinueWhenAllが初お目見え。でもRxでは別に変わらずForkJoinなんだよねえ。</p>
+<pre><code class="language-csharp">// Task要の定義
+static Task&lt;string&gt; DownloadStringAsTask(Uri address)
+{
+    TaskCompletionSource&lt;string&gt; tcs = new TaskCompletionSource&lt;string&gt;();
+    WebClient client = new WebClient();
+    client.DownloadStringCompleted += (sender, args) =&gt;
+    {
+        if (args.Error != null) tcs.SetException(args.Error);
+        else if (args.Cancelled) tcs.SetCanceled();
+        else tcs.SetResult(args.Result);
+    };
+    client.DownloadStringAsync(address);
+    return tcs.Task;
+}
+
+// Rx用の定義
+public static IObservable&lt;IEvent&lt;DownloadStringCompletedEventArgs&gt;&gt; DownloadStringAsObservable(Uri address)
+{
+    var client = new WebClient();
+    var con = Observable.FromEvent&lt;DownloadStringCompletedEventHandler, DownloadStringCompletedEventArgs&gt;(
+            h =&gt; new System.Net.DownloadStringCompletedEventHandler(h),
+            h =&gt; client.DownloadStringCompleted += h,
+            h =&gt; client.DownloadStringCompleted -= h)
+        .Take(1).Prune();
+    con.Connect();
+    client.DownloadStringAsync(address);
+    return con;
+}
+
+static int CountParagraphs(string s)
+{
+    return Regex.Matches(s, &quot;&lt;p&gt;&quot;).Count;
+}
+
+static void Main(string[] args)
+{
+    Task&lt;string&gt; page1Task = DownloadStringAsTask(new Uri(&quot;http://www.microsoft.com&quot;));
+    Task&lt;string&gt; page2Task = DownloadStringAsTask(new Uri(&quot;http://www.msdn.com&quot;));
+
+    Task&lt;int&gt; count1Task = page1Task.ContinueWith(t =&gt; CountParagraphs(t.Result));
+    Task&lt;int&gt; count2Task = page2Task.ContinueWith(t =&gt; CountParagraphs(t.Result));
+
+    /// 全てが完了したら、Actionを実行
+    Task.Factory.ContinueWhenAll(new[] { count1Task, count2Task },
+        tasks =&gt;
+        {
+            // tasks引数使わないのね(笑)
+            Console.WriteLine(&quot;&lt;P&gt; tags on microsoft.com: {0}&quot;, count1Task.Result);
+            Console.WriteLine(&quot;&lt;P&gt; tags on msdn.com: {0}&quot;, count2Task.Result);
+        });
+
+    // Rxではこうなる
+    Observable.ForkJoin(
+            DownloadStringAsObservable(new Uri(&quot;http://www.microsoft.com&quot;)),
+            DownloadStringAsObservable(new Uri(&quot;http://www.msdn.com&quot;)))
+        .Select(xs =&gt; xs.Select(e =&gt; CountParagraphs(e.EventArgs.Result)).ToArray())
+        .Subscribe(xs =&gt;
+        {
+            Console.WriteLine(&quot;&lt;P&gt; tags on microsoft.com: {0}&quot;, xs[0]);
+            Console.WriteLine(&quot;&lt;P&gt; tags on msdn.com: {0}&quot;, xs[1]);
+        });
+
+    Console.ReadKey(); // 非同期実行なので終了しないように
+}
+</code></pre>
+<p>ふむ（何がふむだ）</p>
+<h2>非同期とUIスレッド</h2>
+<p>Dispatcher.BeginInvokeさようなら！ですね。ObserveOnはRxだけの専売特許じゃない。Taskにだってあるもん。</p>
+<pre><code class="language-csharp">void Button_Click(object sender, RoutedEventArgs e)
+{
+    // ContinueWithの引数にTaskSchedulerを入れると非同期実行結果からUIを触れる
+    TaskScheduler uiTaskScheduler = TaskScheduler.FromCurrentSynchronizationContext();
+    DownloadStringAsTask(new Uri(&quot;http://www.microsoft.com&quot;))
+        .ContinueWith(t =&gt; { textBox1.Text = t.Result; }, uiTaskScheduler);
+
+    // Rxではすっかりお馴染みなObserveOnで(WPFの場合は省略形としてObserveOnDispatcherがある)
+    DownloadStringAsObservable(new Uri(&quot;http://www.microsoft.com&quot;))
+        .ObserveOnDispatcher()
+        .Subscribe(ev =&gt; { textBox1.Text = ev.EventArgs.Result; });
+}
+</code></pre>
+<p>真面目に、このObserveOnDispatcherは死ぬほど役立ちです。</p>
+<h2>まとめ</h2>
+<p>機能的には十分被る。そして、より汎用的なはずのRxが専用のはずのTaskでの処理を十分に代替出来てしまうという事実に驚く。Rx始まりすぎてる。今更言うのもアレですが、これは確実にヤバい。ビッグウェーブはもう既に来てる。乗り遅れてもいいんで乗ろう！</p>
+<p>それにしてもMSDNマガジン素晴らしいなあ。この記事は実に入門向けに満遍なくも濃密で、素敵な時間を過ごせた。いやあ、一時期は機械翻訳のみになってたけれど、再び翻訳に戻って大変ありがたい。そして、そろそろRxもMSDNマガジンに記事が来てもいいのでは？もしくはMSKKの人がですね。どうでしょう。どうなんでしょう。どうなってるんでしょう。</p>
+<p>あ、そういえば私は10月期のMicrosoft MVPに応募してたんですがそれはやっぱりダメだったよ。言うことを聞かないからね。これを見てるそこの君、以下略。来年の1月にretryしようかなー。それまでには記事増量、ってやること変わってないんじゃ結果は同じじゃないのというのががが。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0928_277.html">Reactive Extensionsの非同期周りの解説と自前実装</a></h1>
+<ul class="date"><li>2010-09-28</li></ul>
+<div class="entry_body"><p>最近<a href="http://d.hatena.ne.jp/okazuki/" title="かずきのBlog@Hatena">id:okazuki</a>さんが凄い勢いでRx解説を書いていて凄い！そして、刺激を受けますねー。というわけで、今回はRxの非同期周りの解説をします。今日の昼に<a href="http://d.hatena.ne.jp/okazuki/20100927/1285553227" title="非同期処理を行うメソッドの戻り値は全てIObservable&lt;T&gt;にしてしまえばいいんじゃないんだろうか - かずきのBlog@Hatena">非同期処理を行うメソッドの戻り値は全てIObservable&lt;T&gt;にしてしまえばいいんじゃないんだろうか</a>を読んで、Twitterで少しAsyncSubjectについて書いたのでそれをまとめて……、と思ったら<a href="http://d.hatena.ne.jp/okazuki/20100927/1285590312" title="Reactive Extensions入門 11「非同期処理用のSubject」 - かずきのBlog@Hatena">Reactive Extensions入門 11「非同期処理用のSubject」</a>ですって！早！私なんて一年かけて何も書いていやしなかったりするのに、この早さは本当に見習いたい、ごほごほ。</p>
+<p>そんなわけかで、色々と被ってしまっているのですが、Rxの非同期実行についてまとめます。まず、Rxの非同期の起点はStart, ToAsync, FromAsyncPatternの3つ。Start,ToAsyncはFromAsyncPatternの簡易化みたいなものなので、実質は1つです。これらを使うと長さ1のIObservable&lt;T&gt;として非同期処理が扱えるわけです。ところで非同期処理が完了するまでの間に複数Subscribeしたらどうなるのだろう、または非同期処理が完了してしまった後にSubscribeしたらどうなるのだろう？ Silverlightで実際に触って試してみてください。</p>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="300px">
+<param name="source" value="http://neue.cc/wp-content/uploads/silverlight/RxConsoleAsyncSubject.xap"/>
+<param name="background" value="white" />
+<param name="minRuntimeVersion" value="4.0.50401.0" />
+<param name="initparams" value="Start=1" />
+<a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=4.0.50401.0" style="text-decoration:none">
+ 	<img src="http://go.microsoft.com/fwlink/?LinkId=161376" alt="Microsoft Silverlight の取得" style="border-style:none"/>
+</a>
+</object>
+</p>
+<p>ボタンだらけでイミフ？ 解説します……。Rxの非同期系処理は全てAsyncSubjectを通ります。AsyncSubjectのOnNextが非同期で実行された値の戻り値を、OnCompletedが非同期処理の完了を示します。通常はOnNextとOnCompletedはワンセットで非同期処理です。というわけで、例えばSubscribeを二回押す→OnNextを一回押す→OnCompletedを一回押すで、非同期のIObservable&lt;int&gt;に対して二つSubscribe(Console.WriteLine)したということになり、1が二つ右側のログに表示されたはずです。続けてSubscribeを押す（非同期処理が完了した後にSubscribeした場合）とどうなるか？というと、1が追加されたはずです。</p>
+<p>以前に<a href="http://neue.cc/2010/06/24_263.html" title="neue cc - Reactive Extensions for .NET (Rx) メソッド探訪第7回:IEnumerable vs IObservable">Hot vs Cold</a>としてIObservableの性質を少し取り上げました。ColdはSubscribeするとすぐに実行される。HotはSubscribeしても値が流れてくるまで待機する。非同期におけるIObservable&lt;T&gt; = AsyncSubjectは、つまり、両方の性質を持ちます。OnCompleted以前はHotで、値が流れてくる（非同期処理が完了する）まで待機される。OnCompleted以後はColdとなって、Subscribeするとすぐに値を流す。</p>
+<p>何となくAsyncSubjectの中身が想像付いてきました？そう、非同期の実行結果である値をキャッシュしています。もし複数回OnNextされたらどうなるか、というと、これは最後の値だけが残ります。(一度Resetしてから)OnNextを連打してからOnCompletedを押して、Subscribeしてみてください。</p>
+<p>非同期というとキャンセルはどうするの？というと、ありますよ！Subscribeの戻り値はIDisposable。イベントのRx化、FromEventの場合はイベントのデタッチでしたが、非同期で使う場合はキャンセルになります。例えばSubscribeを押してから、Disposeを押して（キャンセル！）、OnNext→OnCompleted(非同期処理完了)を押してみてください。ログに何も出てきません。非同期処理が完了する前にDisposeしたということで、Subscribeがキャンセルされた、ということです。では、続けて(OnCompleted完了後)Subscribeを押すと……、ログに値が表示されます。Disposeは処理自体をキャンセルするわけではなく、 Subscribeのキャンセルということですね。</p>
+<p>そうそう、ResetボタンはSubscribeやDispose、AsyncSubjectの状態をリセットして初期化します。Clearボタンはログの消去になります。</p>
+<h2>AsyncSubjectの簡易実装</h2>
+<p>AsyncSubjectの実態が大体分かったので、次は自分で実装してみましょう！その前にSubjectって何ぞや、というと、IObservable&lt;T&gt;かつIObserver&lt;T&gt;。これはRxネイティブのイベントだと思ってください。<a href="http://neue.cc/2010/07/28_269.html" title="neue cc - Reactive Extensions入門 + メソッド早見解説表">詳しくはReactive Extensions入門 + メソッド早見解説表</a>をどうぞ。</p>
+<p>とりあえず実装したコードを。</p>
+<pre><code class="language-csharp">public class MyAsyncSubject&lt;T&gt; : IObservable&lt;T&gt;, IObserver&lt;T&gt;
+{
+    bool isCompleted = false;
+    T lastValue = default(T);
+    readonly List&lt;IObserver&lt;T&gt;&gt; observers = new List&lt;IObserver&lt;T&gt;&gt;();
+
+    // OnCompleted済みなら即座にOnNext呼び出し、そうでないならListへAdd
+    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
+    {
+        if (isCompleted)
+        {
+            observer.OnNext(lastValue);
+            observer.OnCompleted();
+            return Disposable.Empty;
+        }
+        else
+        {
+            observers.Add(observer);
+            // 正しくはキャンセルが可能なように、Disposeが呼ばれた際にListからremoveされるよう
+            // ラップした特別なIDisposableを返す必要があるけれど、簡略化した例ということでその辺は省きます
+            return Disposable.Empty;
+        }
+
+    }
+
+    // 初回呼び出しの場合は最後の値で全てのobserverのOnNextとOnCompletedを呼ぶ
+    public void OnCompleted()
+    {
+        if (isCompleted) return;
+        isCompleted = true;
+        observers.ForEach(o =&gt;
+        {
+            o.OnNext(lastValue);
+            o.OnCompleted();
+        });
+        observers.Clear();
+    }
+
+    // OnCompletedと同じ。これも呼ばれたらCompleted済みとなる
+    public void OnError(Exception error)
+    {
+        if (isCompleted) return;
+        isCompleted = true;
+        observers.ForEach(o =&gt;
+        {
+            o.OnError(error);
+        });
+        observers.Clear();
+    }
+
+    // Completed済みでなければキャッシュを置き換える
+    public void OnNext(T value)
+    {
+        if (isCompleted) return;
+        lastValue = value;
+    }
+}
+</code></pre>
+<p>あくまでこれは簡易化したものです。実際はこれより、もう少し複雑です。あとlockを省いているのにも注意。まあ、ちゃんとしたのが知りたい場合はリフレクタとキャッキャウフフしてくださいということで。コードの中身ですが、Silverlightのデモで見てきた通りの、比較的単純な作りになっています。OnCompleted前後のSubscribeの挙動なんて、コードで見たほうが一目瞭然で早いですね。</p>
+<p>これの挙動がRxの非同期系の挙動です。もしAsyncSubjectではなくSubject(値のキャッシュなし)を使った場合は、非同期開始からSubscribeまでの間に完了してしまった場合、何も起きないことになってしまいます。キャッシュを取るというのは、非同期に最適な理に叶った、というか、少なくとも不都合は起きないような挙動になります。もし自前で非同期でIObservable&lt;T&gt;を返すようなメソッドを実装する場合は、必ずAsyncSubjectを使いましょう。ユーザーの期待する挙動を取らなければならないという、義務として。</p>
+<h2>FromAsyncPatternの簡易実装</h2>
+<p>ここまで来たら、ついでなのでFromAsyncPatternも実装してしまいましょう！AsyncSubjectがあれば簡単です。あ、こちらでも断っておくと、あくまで簡易実装であって実際のものとは若干異なります。</p>
+<pre><code class="language-csharp">static class Program
+{
+    static Func&lt;T, IObservable&lt;TR&gt;&gt; MyFromAsyncPattern&lt;T, TR&gt;(Func&lt;T, AsyncCallback, object, IAsyncResult&gt; begin, Func&lt;IAsyncResult, TR&gt; end)
+    {
+        return arg =&gt;
+        {
+            var asyncSubject = new AsyncSubject&lt;TR&gt;(Scheduler.ThreadPool); // おや、引数に……
+
+            // 引数を渡されたら、Subscribeを待たずBeginInvokeで非同期実行が始まります
+            begin.Invoke(arg, ar =&gt;
+            {
+                TR result;
+                try
+                {
+                    result = end.Invoke(ar); // EndInvokeで結果を得て
+                }
+                catch (Exception error)
+                {
+                    asyncSubject.OnError(error);
+                    return;
+                }
+                asyncSubject.OnNext(result); // OnNext!
+                asyncSubject.OnCompleted();
+            }, null);
+
+            return asyncSubject.AsObservable(); // SubjectのOnNextなどを隠す(なので昔はHideというメソッド名でした)
+        };
+    }
+
+    // ToAsyncはFunc/ActionのBeginInvoke,EndInvoke簡略化版です
+    // というのは少し嘘です、実際はSchedulerを使うのであってBeginInvokeは使いません、詳しくはまたそのうち
+    static Func&lt;T, IObservable&lt;TR&gt;&gt; MyToAsync&lt;T, TR&gt;(this Func&lt;T, TR&gt; func)
+    {
+        return MyFromAsyncPattern&lt;T, TR&gt;(func.BeginInvoke, func.EndInvoke);
+    }
+
+    // StartはToAsyncの引数無しのものを即時実行というものです
+    // Func&lt;T&gt;のみのFromAsyncPatternを作っていないので、Rx本来のToAsyncで書きます
+    static IObservable&lt;T&gt; MyStart&lt;T&gt;(Func&lt;T&gt; func)
+    {
+        return Observable.ToAsync(func).Invoke(); // ここで即座にInvoke
+    }
+
+    static void Main(string[] args)
+    {
+        // *が引数の分だけ並ぶという関数があったとする
+        Func&lt;int, string&gt; repeat = i =&gt; new String('*', i);
+
+        var obs = MyFromAsyncPattern&lt;int, string&gt;(repeat.BeginInvoke, repeat.EndInvoke)
+            .Invoke(3); // Subscribe時ではなく、Invokeした瞬間に非同期の実行は開始されていることに注意
+
+        obs.Subscribe(Console.WriteLine); // ***
+        Console.ReadKey();
+    }
+}
+</code></pre>
+<p>FromAsyncPatternは引数の多さや引数のイミフさにビビりますが、デリゲートのBeginInvoke, EndInvokeに合わせてやるだけです。こんなの私もソラでは書けませんよー。さて、今回は引数を一つ取るFromAsyncPatternを定義してみました。戻り値がFunc&lt;T, IObservable&lt;TR&gt;&gt;なのは、引数を一つ取ってIObservable&lt;T&gt;にする、ということです。</p>
+<p>中身は割と簡単で、とりあえずBeginInvokeして、EndInvokeを待たずに（そりゃ非同期なので当然だ）とりあえずAsyncSubjectを戻します。つまり、これでIObservableとしてはHotの状態。そして何らかの処理が終えたらEndInvokeで戻り値を得て、AsyncSubjectのOnNext, OnCompletedを呼んでやる。これでSubscribeされていたものが実行されて、ついでにIObservableとしてColdになる。これだけ。意外とシンプル。</p>
+<p>ついでのついでなのでObservable.ToAsyncとObservable.Startも定義してみました。ToAsyncはFunc/Actionを簡単にRx化するもの。FromAsyncPatternだとジェネリックの引数を書いたりと、何かと面倒くさいですから。StartはToAsyncを更に簡略化したもので、引数なしのものならInvoke不要で即時実行するというもの。</p>
+<h2>実行開始タイミングについて</h2>
+<p>FromAsyncPatternは(ToAsync/Startも)Invokeした瞬間に非同期実行が始まります。　FromAsyncPattern().Invoke().Subscribe() といったように、直接繋げる場合は気にする必要も特にないかもですが、一時変数などに置いたりする場合などは、Subscribeされたときに初めて非同期実行が開始されて欲しい、と思ったりあるかもですね。そんな場合はDeferを使います。</p>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="300px">
+<param name="source" value="http://neue.cc/wp-content/uploads/silverlight/RxConsoleAsyncSubject.xap"/>
+<param name="background" value="white" />
+<param name="minRuntimeVersion" value="4.0.50401.0" />
+<param name="initparams" value="Start=2" />
+<a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=4.0.50401.0" style="text-decoration:none">
+ 	<img src="http://go.microsoft.com/fwlink/?LinkId=161376" alt="Microsoft Silverlight の取得" style="border-style:none"/>
+</a>
+</object>
+</p>
+<pre><code class="language-csharp">// 100を返すだけのどうでもいい関数
+Func&lt;int&gt; func = () =&gt;
+{
+    Console.WriteLine(&quot;fire&quot;);
+    return 100;
+};
+
+var start = Observable.Start(func);
+var defer = Observable.Defer(() =&gt; Observable.Start(func));
+var prune= Observable.Defer(() =&gt; Observable.Start(func)).Prune();
+
+StartButton.Click += (sender, e) =&gt;
+{
+    start.Subscribe(Console.WriteLine);
+};
+
+DeferButton.Click += (sender, e) =&gt;
+{
+    defer.Subscribe(Console.WriteLine);
+};
+
+var isConnected = false;
+ReplayButton.Click += (sender, e) =&gt;
+{
+    if (!isConnected) { prune.Connect(); isConnected = true; }
+    prune.Subscribe(Console.WriteLine);
+};
+</code></pre>
+<p>何もボタンを押さなくてもログにfireと出てしまっています。Observable.Startのせいなわけですががが。そんなわけで、Deferを使うとSubscribeまで実行を遅延することができます。ところで注意なのが、どちらもIObservable&lt;T&gt;なのですが、StartはColdとしてキャッシュされた値を返し続けるのに対して、Deferは中の関数を再度実行します。もしキャッシュしたい場合は、Pruneを使うといいでしょう。Pruneはこのブログでも延々と出してきた値の分配のためのPublishの親戚で、Connect後は最後の値をキャッシュして返し続けるという、AsyncSubjectと同じ動作をします（というか中身がAsyncSubjectなのですが）。この辺の使い分けというのもヤヤコシイところですねえ、そもそもPruneっていうメソッド名がイミフ……。</p>
+<h2>まとめ</h2>
+<p>Linq to Objectsで、最初分からなかったんですよ、yield returnなどで返される遅延評価としてのIEnumerable&lt;T&gt;と、配列(これもIEnumerable&lt;T&gt;ではある)の違いが。初めてLinqを知った後、半年ぐらいは分からないままだった（C#歴も半年でしたが）。同じインターフェイスなのに、状態としては、ちょっと違う。こういうのって結構分かりづらくて、躓いてしまうところです。</p>
+<p>Rxの厄介なところは、IObservable&lt;T&gt;が一つで色々な状態を持ちすぎ。HotとColdの違いもある上に、更には混じり合った状態まである、Deferと非Deferも、外からだけだと全く区別がつかない。もう分かりづらいったらない。これに関しては一個一個丁寧に見ていくしかない、かな。今回はRxにおける非同期を徹底的に解剖してみました。一つ一つ、丁寧に。Rxも徐々に盛り上がりつつあるようなので、これからも、私なりに出来る限りに情報を発信していけたらと思います。</p>
+<p>ところで、凄くシンプルなんですよね、Rxって。何を言ってるんだ？って話ですが、ええと、ほら、あくまでも「簡易」だからってのもありますが、実装のコード行数も少ないし全然難しいことやってないという。Linq to Objectsもそれ自体は凄くシンプルで、シンプルなのにとんでもなく強力という。それと同じで。Rx触ってて、内部をリフレクタでちょろちょろと見てて、本当に驚く。シンプルなのだけど、自分じゃ絶対書けないし思いつけないしっていう。悔しいし、そして、憧れるところですねえ。</p>
+<p>特に魔法もなく、素直に中間層厚めな実装は、パフォーマンスは（もがもがもがもが）。何か言いました？</p>
+</div>
+<h1><a href="http://neue.cc/2010/0912_276.html">ReactiveOAuth - Windows Phone 7対応のOAuthライブラリ</a></h1>
+<ul class="date"><li>2010-09-12</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://reactiveoauth.codeplex.com/" title="ReactiveOAuth">CodePlex - ReactiveOAuth</a></li>
+</ul>
+<p>Windows Phone 7用のOAuth認証ライブラリを作成し、公開しました。他のライブラリに比べての特徴は、非同期APIしか用意されていないWindows Phone 7での利用を念頭に置き、<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Reactive Extensions(Rx)</a>をフル活用しているという点です。そもそもWindows Phone 7対応のOAuthライブラリが少ないので、特にWindows Phone 7開発者は是非どうぞ。</p>
+<p>Windows Phone 7専用というわけでもないですが(Console/WPFで使えるよう、DLLとサンプルコードを用意してあります)、Windows Phone 7以外では別途Rxのインストールが必要です。Windows Phone 7環境では最初から入っているのでRxのインストール不要。Silverlight用は、コードコピペで別プロジェクト立てるだけで動くと思うんですが、確認取るのが面倒だった（クロスドメインがー）ので、そのうちに。</p>
+<p>ところでそもそもRxって何、という人は <a href="http://neue.cc/2010/07/28_269.html" title="neue cc - Reactive Extensions入門 + メソッド早見解説表">Reactive Extensions入門 + メソッド早見解説表</a> をどうぞ。</p>
+<h2>何故Rxを使うのか</h2>
+<p>ReactiveOAuthの説明に入る前に、何故Rxを使うのかということを少し。理由は簡単で、非同期プログラミングは大変だから。論より証拠で、WebRequestのPOSTを全てBegin-Endパターンで構築してみましょう。</p>
+<pre><code class="language-csharp">var req = (HttpWebRequest)WebRequest.Create(&quot;http://google.co.jp/&quot;); // dummy
+req.Method = &quot;POST&quot;;
+req.BeginGetRequestStream(ar =&gt;
+{
+    var stream = req.EndGetRequestStream(ar);
+    stream.BeginWrite(new byte[10], 0, 10, _ar =&gt;
+    {
+        stream.EndWrite(_ar);
+        req.BeginGetResponse(__ar =&gt;
+        {
+            var res = req.EndGetResponse(__ar);
+            var resStream = res.GetResponseStream();
+            var s = new StreamReader(resStream).ReadToEnd();
+            Console.WriteLine(s);
+        }, null);
+    }, null);
+}, null);
+</code></pre>
+<p>コールバックの連鎖とはこういうことであり、大変酷い。冗談のようだ。こんなに面倒なら、こんなに苦しいのなら、非同期などいらぬ！しかし現実問題、Silverlightには、Windows Phone 7には、非同期APIしか搭載されていません。Begin-Endが強要される世界。理由は分かる。ユーザーエクスペリエンスの為でしょう。モバイル機器は性能が貧弱だから重い処理はいけない、と言うけれど、大事なのは処理が重いか否かではなく、体感。UIを止めさえしなければ、不快感を与えることはない。だから、強制的に非同期操作のみとした。</p>
+<p>けれど、それで開発難しくなったり面倒になってしまってはいけない。非同期処理が簡単に出来れば……。その答えが、Rx。「簡単に出来るから」「開発者が幸せで」「全てが非同期になり」「ユーザーも幸せになる」。楽しい開発って大事だよね。本当にそう思っていて。開発者が不幸せで、コードに愛がなければ良いものなんて生まれやしないんだって、本当に思っていて。</p>
+<pre><code class="language-csharp">// Rxならこう書ける（...AsObservableは拡張メソッドとして別途定義）
+req.GetRequestStreamAsObservable()
+    .SelectMany(stream =&gt; stream.WriteAsObservable(new byte[10], 0, 10))
+    .SelectMany(_ =&gt; req.GetResponseAsObservable())
+    .Select(res =&gt; new StreamReader(res.GetResponseStream()).ReadToEnd())
+    .Subscribe(Console.WriteLine);
+
+// SelectManyが苦手ならばクエリ構文という手もあります
+var query = from stream in req.GetRequestStreamAsObservable()
+            from _ in stream.WriteAsObservable(new byte[10], 0, 10)
+            from res in req.GetResponseAsObservable()
+            select new StreamReader(res.GetResponseStream()).ReadToEnd();
+query.Subscribe(Console.WriteLine);
+</code></pre>
+<p>ネストが消滅して、メソッドチェーンの形をとって非同期が同期的のように書けるようになります。利点は他にもあって、様々な操作（合成・射影・抽出・待機などなど）が可能になる、ということもありますが、それはまたそのうち。</p>
+<p>ところで、最初のコールバックの連鎖って何だか見覚えのあるような雰囲気ありませんか？JavaScriptで。そう、XmlHttpRequestであったりsetTimeoutであったりの連鎖と同じです。RxのJavaScript版、RxJSではJavaScriptでのそれらのネストを殺害することが可能です。興味があれば、そちらも是非試してみてくださいな。</p>
+<h2>ReactiveOAuthとは?</h2>
+<p>OAuthであっても、ようするにWebRequestなわけです。GET/POSTしてResponseを取ってくるということにかわりはない。そんなわけで、ネットワーク通信してResponseを取ってくる部分を片っ端から全てIObservableにしたのがReactiveOAuthです。Rxにべったり依存したことで、良くも悪くも、他のOAuthライブラリとは全く毛色の違う仕上がりになっています。</p>
+<p>とはいっても、とにかく「簡単に書けること」にこだわりを持ってデザインしたので、利用自体は簡単ですし、Rxの知識もそんなに必要ありません。普通に取得するなら、SelectとSubscribeしか使わないので、全然安心です！まあ、できれば、これが入り口になってRxの世界を知ってもらえると嬉しいなあ、という皮算用もあったりですが。</p>
+<h2>使いかた1. AccessToken取得</h2>
+<p>デスクトップアプリケーション上でのOAuthの仕組みを簡単に説明すると、RequestToken取得→認証URL表示→PINコード入力→PINコード＋RequestTokenを使ってAccessToken取得。という形になっています。まず、ユーザー名・パスワードの代わりとなるものはAccessTokenです。これを取得して、API呼び出しの時に使い、また、パスワード代わりに保存するわけです。そのRequestTokenやPINコードはAccessTokenを取得するための一時的な認証用キーということです。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/rxoauth_gettoken.jpg">
+</p>
+<p>AccessToken取得までにはOAuthAuthorizerクラスを使います。</p>
+<pre><code class="language-csharp">// グローバル変数ということで。
+const string ConsumerKey = &quot;consumerkey&quot;;
+const string ConsumerSecret = &quot;consumersecret&quot;;
+RequestToken requestToken;
+AccessToken accessToken;
+
+private void GetRequestTokenButton_Click(object sender, RoutedEventArgs e)
+{
+    var authorizer = new OAuthAuthorizer(ConsumerKey, ConsumerSecret);
+    authorizer.GetRequestToken(&quot;http://twitter.com/oauth/request_token&quot;)
+        .Select(res =&gt; res.Token)
+        .ObserveOnDispatcher()
+        .Subscribe(token =&gt;
+        {
+            requestToken = token;
+            var url = authorizer.BuildAuthorizeUrl(&quot;http://twitter.com/oauth/authorize&quot;, token);
+            webBrowser1.Navigate(new Uri(url)); // navigate browser
+        });
+} 
+</code></pre>
+<p>GetRequestTokenとBuildAuthorizeUrlを使い、RequestTokenの取得と、内蔵ブラウザに認証用URLを表示させました。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/rxoauth_authorized.jpg">
+</p>
+<pre><code class="language-csharp">private void GetAccessTokenButton_Click(object sender, RoutedEventArgs e)
+{
+    var pincode = PinCodeTextBox.Text; // ユーザーの入力したピンコード
+
+    var authorizer = new OAuthAuthorizer(ConsumerKey, ConsumerSecret);
+    authorizer.GetAccessToken(&quot;http://twitter.com/oauth/access_token&quot;, requestToken, pincode)
+        .ObserveOnDispatcher()
+        .Subscribe(res =&gt;
+        {
+            // Token取得時のレスポンスには、Token以外に幾つかのデータが含まれています
+            // Twitterの場合はuser_idとscreeen_nameがついてきます
+            // ILookup&lt;string,string&gt;なので、First()で取り出してください
+            UserIdTextBlock.Text = res.ExtraData[&quot;user_id&quot;].First();
+            ScreenNameTextBlock.Text = res.ExtraData[&quot;screen_name&quot;].First();
+            accessToken = res.Token; // AccessToken
+        });
+}
+</code></pre>
+<p>画像は認証が全て終わった時の図になっています。RequestTokenとPinCodeをGetAccessTokenメソッドに渡すだけです。これでAccessTokenが取得できたので、全ての認証が必要なAPIにアクセス出来るようになりました。</p>
+<h2>使いかた2. APIへのGet/Post</h2>
+<p>ここからはConsoleApplicationのサンプルコードで説明。</p>
+<pre><code class="language-csharp">var client = new OAuthClient(ConsumerKey, ConsumerSecret, accessToken)
+{
+    Url = &quot;http://api.twitter.com/1/statuses/home_timeline.xml&quot;,
+    Parameters = { { &quot;count&quot;, 20 }, { &quot;page&quot;, 1 } },
+    ApplyBeforeRequest = req =&gt; { req.Timeout = 1000; req.UserAgent = &quot;ReactiveOAuth&quot;; }
+};
+client.GetResponseText()
+    .Select(s =&gt; XElement.Parse(s))
+    .Run(x =&gt; Console.WriteLine(x.ToString()));
+</code></pre>
+<p>IObservable&lt;T&gt;連鎖の最後のメソッドとしてRunを使うと、同期的になります。通常はSubscribeで非同期にすると良いですが、コンソールアプリケーションなどでは、同期的な動作のほうが都合が良いでしょう。</p>
+<p>OAuthClientを作成し、オブジェクト初期化子でURL、パラメータ（コレクション初期化子が使えます）を設定したら、GetResponseTextを呼ぶだけ。あとはIObservable&lt;string&gt;になっているので、Linqと同じように操作していけます。</p>
+<p>ApplyBeforeRequestではリクエストが発行される前に、生のHttpWebRequestが渡されるので（！）、TimeoutやUserAgentなど細かい設定がしたい場合は、ここにラムダ式を埋めてください。</p>
+<p>では、POSTは？</p>
+<pre><code class="language-csharp">new OAuthClient(ConsumerKey, ConsumerSecret, accessToken)
+{
+    MethodType = MethodType.Post,
+    Url = &quot;http://api.twitter.com/1/statuses/update.xml&quot;,
+    Parameters = { { &quot;status&quot;, &quot;PostTest from ReactiveOAuth&quot; } }
+}.GetResponseText()
+    .Select(s =&gt; XElement.Parse(s))
+    .Run(x =&gt; Console.WriteLine(&quot;Post Success:&quot; + x.Element(&quot;text&quot;)));
+</code></pre>
+<p>POSTの場合はMethodTypeにMethodType.Postを指定します(デフォルトがGETなので、GETの場合は指定の省略が可)。それ以外はGETと同じです。Urlとパラメータ指定して、GetResponse。</p>
+<h2>ストリーミングもいけます</h2>
+<p>OAuthClientには3つのメソッドがあります。GetResponseは生のWebResponseを返すもので細かい制御をしたい時にどうぞ。GetResponseTextはStreamReaderのReadToEndで応答をテキストに変えたものを返してくれるもので、お手軽です。そのままXElement.Parseとかに流すと楽ちん。そして、GetResponseLinesはReadLineで一行ずつ返してくれるもの、となっています。GetResponseTextとGetResponseLinesは型で見ると両方共IObservable&lt;string&gt;なため戸惑ってしまうかもですが、前者は流れてくるのは一つだけ、後者は行数分だけ、となります。</p>
+<p>GetResponseLinesはStreamingAPIで使うことを想定しています。とりあえず、WPF用のサンプルを見てください。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/rxoauth_streaming.jpg">
+</p>
+<pre><code class="language-csharp">var client = new OAuthClient(ConsumerKey, ConsumerSecret, accessToken)
+{
+    Url = &quot;http://chirpstream.twitter.com/2b/user.json&quot;
+};
+// streamingHandleはIDisposableで、これのDisposeを呼べばストリーミング停止
+streamingHandle = client.GetResponseLines()
+    .Where(s =&gt; !string.IsNullOrWhiteSpace(s)) // filter invalid data
+    .Select(s =&gt; DynamicJson.Parse(s))
+    .Where(d =&gt; d.text()) // has text is status
+    .ObserveOnDispatcher()
+    .Subscribe(
+        d =&gt; StreamingViewListBox.Items.Add(d.user.screen_name + &quot;:&quot; + d.text),
+        ex =&gt; MessageBox.Show(ReadWebException(ex))); // エラー処理
+</code></pre>
+<p>ストリーミングAPIを使うにあたっても、何の面倒くささもなく、至って自然に扱えてしまいます！Dynamicを使ったJsonへの変換には<a href="http://neue.cc/2010/04/30_256.html" title="neue cc - DynamicJson - C# 4.0のdynamicでスムーズにJSONを扱うライブラリ">DynamicJson - C# 4.0のdynamicでスムーズにJSONを扱うライブラリ</a>を、また、RxとStreamingAPIとの相性については過去記事<a href="http://neue.cc/2010/04/29_255.html" title="neue cc - C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions">C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions</a>を見てください。</p>
+<p>そうそう、それとネットワーク通信で起こったエラーのハンドリングが、SubscribeのOnErrorに書くだけで済むというのもRxを使って嬉しいことの一つです。</p>
+<h2>実装について</h2>
+<p>構造は全体的に<a href="http://twitter.com/ugaya40" title="尾上 雅則 (ugaya40) on Twitter">@ugaya40</a>さんの<a href="http://oauthaccess.codeplex.com/" title="OAuthAccess">OAuthAccess</a>がベースになっています(パク……)。そもそもにTwitterTL to HTMLのOAuth対応した時に、OAuthAccessを使って、あー、OAuth周りってRxに乗せると快適になるなー、とか思ったのが作ろうとした最初の動機だったりもして。非常に感謝。</p>
+<p>WebClient風の、認証がOAuthなだけのベタなWebRequestラッパーという感じなので、特別なところはありません。インターフェイスとかなくて、本当にただのベタ書き。特に奇をてらってるところはないんですが、ストリーミングAPIで使うために用意したGetResponseLinesは個人的には笑えたり。</p>
+<pre><code class="language-csharp">var req = WebRequest.Create(Url);
+return Observable.Defer(() =&gt; req.GetRequestStreamAsObservable())
+    .SelectMany(stream =&gt; stream.WriteAsObservable(postData, 0, postData.Length))
+    .SelectMany(_ =&gt; req.GetResponseAsObservable());
+    .Select(res =&gt; res.GetResponseStream())
+    .SelectMany(s =&gt; Observable.Using(() =&gt; new StreamReader(s), sr =&gt; Observable.Repeat(sr)))
+    .TakeWhile(sr =&gt; !sr.EndOfStream)
+    .Select(sr =&gt; sr.ReadLine());
+</code></pre>
+<p>うわー……。利用者としては、ただのIObservable&lt;string&gt;としか見えないので、前段階でこんなにチェーンが繋がってるだなんてこと、気にする必要は全くないんですけどねー。これがベストな書き方だとは全然思えないので、誰かアドバイス欲すぃです。</p>
+<h2>まとめ</h2>
+<p>RxというとLinq to Events、イベントのLinq化という方向が目につきますが、今回は非同期のLinq化のほうにフォーカスしました。何というか、実に、素晴らしい！asynchronus programming is hard、と、思っていた時もありました。今や私達にはRxがある。恐れることはなにもない。</p>
+<p>今回WPFとWindows Phone 7(Silverlight)でサンプルを作ったのですが、コードがコピペで、完全な互換性もって動いちゃうんですね。WPFで書いてSilverlightに持っていく時に、ああ、BeginGetResponseに書き換えなきゃ…… みたいなことが起こらない。最初から非同期で統一することで、全部ライブラリがネットワーク周りを吸収してくれる。非同期→同期にするのも簡単だし(RunやToEnumerableを使えばいい)、そもそも、Rxの土台に乗っている方が、普通に同期的に書くよりもむしろ楽だったりします。</p>
+<p>個人的には、Windows Phone 7のローンチに粗製乱造Twitterアプリを送り込むという野望があるんですがねえー。いや、粗製乱造にするつもりはないんですが、機能をザックリと削って、一般性を無視して「私が使うシチュエーションで私が使いやすいような」アプリを出したいなーと思ってます。構想はあって、そこそこ尖った個性ある内容になる予定なので一部の人がフィットしてくれればいいな、と。多くの人に目に触れては欲しいのでローンチのタイミングは外したくない。問題はWorldのローンチタイミングに合わせてもJapanだと実機がないってことですね！開発機欲しい(お金は払いますからどうかー)。</p>
+<p>と、思ってたのですがサンプル作りで、あきらかーなXAML知識のなさ（ていうか何も知りません）が露呈したので、ローンチに間にあわせるとか寝言すぎるのですが。せめてJapanのローンチまでにはそれなりな技量を身につけたいところです。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0909_275.html">C#から使うMicrosoft Ajax MinifierでのJavaScriptコード圧縮</a></h1>
+<ul class="date"><li>2010-09-09</li></ul>
+<div class="entry_body"><p>いつのまにか独立してCodePlex入りしている<a href="http://ajaxmin.codeplex.com/">Microsoft Ajax Minifier</a>。その名の通り、Microsoft謹製のJavaScript/CSSの圧縮/整形ツールです。発表からすぐに、GoogleのClosure Compilerが出てしまったのですっかり影も薄く、ていうか名前悪いよね、Ajax関係ないじゃん……。CodePlexのプロジェクトページも何だか活気ない寂れた感じで、あーあ、といった趣。良いツールなんですけどねえ。</p>
+<p>コマンドライン版とDLL版が用意されていて、コマンドラインの、単体で実行可能なexeの解説は<a href="http://journal.mycom.co.jp/articles/2010/05/21/minifier/index.html">【ハウツー】Microsoft Ajax MinifierでJavaScriptを縮小化しよう</a>で解説されているので、DLL版の使い方を簡単に解説します。</p>
+<p>C#が使える人ならばDLL版のほうが遥かに使いやすかったりして。設定をダラダラと引数を連ねるのではなく、オブジェクト初期化子とenumで出来るので、そう、IntelliSenseが効くわけです。ヘルプ要らずで書けるのは快適。Visual Studioは偉大だなぁ。コマンドライン, PowerShellを捨て、VSのConsoleApplicationを常に立ち上げよう。実際、ちょっとしたテキスト処理とかC#で書いちゃうんですよねえ、私。Linqが楽だから。</p>
+<p>Minifierオブジェクトを作ってMinifyJavaScript(CSSの場合はMinifyStyleSheet)メソッドを実行するだけなので、コード見たほうが早いかな。例として<a href="http://linqjs.codeplex.com/">linq.js</a>をlinq.min.jsに圧縮します。そして、解析されたWarningをコンソールに表示します。ただの圧縮だけでなく、このコード分析機能が実にありがたい。</p>
+<pre><code class="language-csharp">using System;
+using System.IO;
+using Microsoft.Ajax.Utilities;
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        var minifier = new Minifier
+        {
+            WarningLevel = 3, // 最大4。4はウザいのが多いので3がいいね。
+            FileName = &quot;linq.js&quot; // エラー表示用に使うだけなので、なくてもいい
+        };
+
+        var settings = new CodeSettings // CSSの場合はCSSSettings
+        {
+            LocalRenaming = LocalRenaming.CrunchAll,
+            OutputMode = OutputMode.SingleLine, // MultiLineにすると整形
+            IndentSize = 4, // SingleLineの時は意味なし
+            CollapseToLiteral = true,
+            CombineDuplicateLiterals = true
+            // その他いろいろ(それぞれの意味はIntelliSenseのsummaryを読めば分かるね！)
+        };
+
+        var load = System.IO.File.ReadAllText(@&quot;linq.js&quot;); // 読み込み
+
+        // 最後の引数はグローバル領域に何の変数が定義されてるか指定するもの
+        // 別になくても構わないんだけど、warningに出るので多少は指定しておく
+        var result = minifier.MinifyJavaScript(load, settings, &quot;Enumerable&quot;, &quot;Enumerator&quot;, &quot;JSON&quot;, &quot;console&quot;, &quot;$&quot;, &quot;jQuery&quot;);
+
+        // Warningで発見されたエラーはErrorsに格納されてる
+        foreach (var item in minifier.Errors)
+        {
+            Console.WriteLine(item);
+        }
+
+        File.WriteAllText(&quot;linq.min.js&quot;, result); // 書き出し
+        Console.WriteLine();
+        Console.WriteLine(&quot;Original:&quot; + new FileInfo(&quot;linq.js&quot;).Length / 1024 + &quot;KB&quot;);
+        Console.WriteLine(&quot;Minified:&quot; + new FileInfo(&quot;linq.min.js&quot;).Length / 1024 + &quot;KB&quot;);
+    }
+}
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/microsoftajaxmin.jpg">
+</p>
+<p>二つエラー出てますね。変数がvarで宣言されてないそうです。つまり、コードがその行通ると変数がグローバルに置かれてしまいます。確認したら、OrderBy実行したらsortContextという変数がグローバルに飛んでしまってました。ええ、つまりバグと言っていいです。……。あうあう、すみません、直します。これからは必ずAjax Minifierの分析を通してから公開しよう。どうでもよくどうでもよくないんですがlinq.jsもアップデートすべきことが結構溜まってるので近いうちには……。</p>
+<p>というわけで、Ajax Minifierの偉大さが分かりました。素晴らしい！みんな使おう！DLLの形になっているので、T4 Templateと混ぜたりなどもしやすく、夢が膨らむ。minifyだけでなく、JSのパーサーとして抽象構文木を取り出したりなども出来ます。</p>
+<p>WebでGUIでサクッと実行できる環境とかあるといいと思うんですよね。それこそDLLになっているので、Silverlightならすぐ作れるわけですし。誰か作ればいいのに。いや、お前が作れよって話なんですが。Ajax Minifierが出てすぐの頃に作ろうとしてお蔵入りしちゃったんだよね、ふーみぅ。そうそう、あと、VSと統合されて欲しい！このWarningは大変強力なので、その場でVSのエラー一覧に表示して欲しいぐらい。今のVSのエラー表示はWarningLevelで言うところの1ぐらいで警告出してくれて、それはそれで良い感じなんですが、やっぱこう、もっとビシッと言って欲しいわけですよ。</p>
+<p>ワンクリックで整形/圧縮してくれるのとエラー一覧表示が出来るようなVisual Studio拡張を誰か作って欲しいなあ。いやー、本気で欲しいので、とりあえず私も自分で作ってみようと思い、VS2010 SDKは入れてみた。気力が折れてなければ来月ぐらいには公開、したい、です、予定は未定のやるやる詐欺ですががが。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0902_274.html">TwitterTLtoHTML ver.0.2.0.0</a></h1>
+<ul class="date"><li>2010-09-02</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://neue.cc/software/twittertltohtml" title="neue cc - TwitterTL to HTML">TwitterTL to HTML</a></li>
+</ul>
+<p>TwitterのBasic認証の有効期限が8月いっぱいだったのですよね。それは知っていて動かなくなるのも知っておきながら、実際に動かなくなるまで放置していたという酷い有様。結果的に自分で困ってました（普通に今も使っていたので）。というわけで、TwitterTL to HTMLをOAuth対応にしました。認証時のアプリケーション名がTL to HTMLなのですが、これは「Twitter」という単語名をアプリケーション名に入れられないためです。面倒くさいねえ。</p>
+<p>OAuth認証は<a href="http://twitter.com/ugaya40" title="尾上 雅則 (ugaya40) on Twitter">@ugaya40</a>さんの<a href="http://oauthaccess.codeplex.com/" title="OAuthAccess">OAuthAccess</a>を利用しています。XboxInfoTwitでは自前のものを使っていたのですが、どうしょうもなく酷いので自分で作り直すかライブラリを使うか、でズルズル悩んで締切りを迎えたのでライブラリ利用に決定ー。使いやすくて良いと思います。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0830_273.html">T4による不変オブジェクト生成のためのテンプレート</a></h1>
+<ul class="date"><li>2010-08-30</li></ul>
+<div class="entry_body"><p>不変欲しい！const欲しい！readonlyをローカル変数にもつけたい！という要望をたまに見かけるこの頃。もし、そういった再代入不可というマークがローカル変数に導入されるとしたら、readonlyの使い回しだけは勘弁です。何故って、ローカル変数なんて大抵は再代入しないので、readonly推奨ということになるでしょう、そのうちreadonly付けろreadonly付けろというreadonly厨が出てくるのは目に見えています。</p>
+<p>良いことなら付ければいいじゃない、というのはもっともですが、Uglyですよ、視覚的に。readonly var hoge = 3 だなんて、見たくはない。頻繁に使うほうがオプションで醜く面倒くさいってのは、良くないことです。let hoge = 3 といったように、let、もしくはその他のキーワード(valとか？)を導入するならば、いいかな、とは思いますが。</p>
+<p>それに、ただ単にマークしただけじゃあ不変を保証するわけでもない……。例えばListなんてClearしてAddRangeしたのと再代入とは、どう違うの？的な。難しいねえ。そんなimmutableの分類に関しては<a href="http://ufcpp.spaces.live.com/blog/cns!5C622397E11C979D!931.entry">ufcppさんのimmutable</a>という記事が、コメント欄含め参考になりました。</p>
+<p>そうはいっても、そんなにガチに捉えなくても、不変にしたいシチュエーションはいっぱいあります。<a href="http://d.hatena.ne.jp/zecl/20100531/p1">実はオブジェクト指向ってしっくりきすぎるんです！ 不変オブジェクトのすゝめ。 - Bug Catharsis</a>。おお、すすめられたい。ところでしかし、こういう時にいつも疑問に思っているのは、生成どうすればいいのだろう、ということ。今のところ現実解としてあるのはreadonly、つまり、コンストラクタに渡すしかないのですが……</p>
+<pre><code class="language-csharp">public Hoge(int a, int b, int c, string d, string e, DateTime f, .....
+</code></pre>
+<p>破綻してる。こんなクソ長いコンストラクタ見かけたら殺していいと思う。全くもって酷い。さて、どうしましょう。こういう場合はビルダーを使いましょう、とはEffective Javaが言ってますので(私、この本あんま好きじゃないんだよねー、とかはどうでもいいんですがー)とりあえずストレートに従ってみます。</p>
+<pre><code class="language-csharp">// あまり行数使うのもアレなので短くしますが、実際は10行ぐらいあると思ってください
+Hoge hoge = new HogeBuilder()
+  .Age(10)
+  .Name(&quot;hogehoge&quot;)
+  .Build();
+</code></pre>
+<p>まあ、悪くない、ですって？いえいえ、これはBuilder作るの面倒くさいし、第一Java臭い。メソッドチェーンだからモダンで素敵、と脳が直結してる人は考えが一歩足らない。むしろ古臭い。最近は流れるようなインターフェイスとかも割と懐疑的で、私は。頂くのはアイディアだけであって、書き方に関しては、各言語にきっちり馴染ませるべき。先頭の大文字小文字だけ整えて移植だとか、愚かな話。というわけで、C#ならオブジェクト初期化子を使おう。</p>
+<pre><code class="language-csharp">var hoge = new HogeBuilder
+{
+    Age = 10,
+    Name = &quot;hogehoge&quot;
+}.Build();
+
+// 暗黙的な型変換を使えばBuildメソッドも不要になる(私はvarのほうが好みですが)
+Hoge hoge = new HogeBuilder
+{
+    Age = 10,
+    Name = &quot;hogehoge&quot;
+};
+</code></pre>
+<p>ええ、これなら悪くない。オブジェクト初期化子は大変素晴らしい(本当にそろそろModern C# Designをですね……)。ビルダーを作る手間もJava方式に比べ大幅に軽減されます(set専用の自動プロパティを用意するだけ)。それにIntelliSenseのサポートも効きます。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/objectinitializer_intellisense.jpg">
+</p>
+<p>未代入のもののみリストアップしてくれる(Ctrl+Space押しだと全部出てきたりする、バグですかね、困った困った)。そういえばで、これは、不変である匿名型の記法とも似ています。余分なのは.Build()だけで、書く手間的にはそんな変わらない。</p>
+<p>前説が長ったらしくなりました。本題は「匿名型のような楽な記法で不変型を生成したい」が目標です。C#の現在の記法では、それは無い。欲しいなあ。名前付き引数使えば似たような雰囲気になると言えばなるんですが、アレ使うと「省略可」な雰囲気が出てダメ。ビルダーで作りたいのは、原則「省略不可」なので。</p>
+<p>なければ作ればいいじゃない、オブジェクト初期化子を使って.Buildで生成させるビルダーを作れば似たような感じになる。あとは、手動でそれ定義するの非常に面倒なので、そう、T4で自動生成しちゃえばいいぢゃない。</p>
+<p>以下コード。例によってパブリックドメインで。別にブログにベタ貼りなコードは自明でいいんじゃないかって気もするんですが、宣言は一応しておいたほうがいいのかなー、と。</p>
+<pre><code class="language-csharp">&lt;#@ assembly Name=&quot;System.Core.dll&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Linq&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Collections.Generic&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Text.RegularExpressions&quot; #&gt;
+&lt;#@ output extension=&quot;Generated.cs&quot; #&gt;
+&lt;#
+    // 設定：クラス名はそのまま文字列で入力
+    // クラスの持つ変数は、コンストラクタに書くみたいにdeffinesに
+    // &quot;string hoge&quot;,&quot;int huga&quot; といった形で並べてください
+    // usingとnamespaceは、直下の出力部を直に弄ってください
+    // partial classなので、これをベースにメソッドを足す場合は別ファイルにpartialで定義することを推奨します
+    // Code Contractsに関わる部分は(ContractVerification属性とContract.EndContractBlock())は、
+    // 対象がWindows Phone 7などContractが入っていない環境下では削除してください（通常の.NET 4環境では放置で大丈夫）
+
+    var className = &quot;Person&quot;;
+    var deffines = new DeffineList {
+        &quot;string name&quot;,
+        &quot;DateTime birth&quot;,
+        &quot;string address&quot;
+    };
+#&gt;
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Diagnostics.Contracts;
+
+namespace Neue.Test
+{
+    [DebuggerDisplay(@&quot;&lt;#= deffines.DebuggerDisplay #&gt;&quot;, Type = &quot;&lt;#= className #&gt;&quot;)]
+    public partial class &lt;#= className #&gt; : IEquatable&lt;&lt;#= className #&gt;&gt;
+    {
+&lt;# foreach(var x in deffines) {#&gt;
+        [DebuggerBrowsable(DebuggerBrowsableState.Never)]
+        private readonly &lt;#= x.TypeName #&gt; &lt;#= x.FieldName #&gt;;
+        public &lt;#= x.TypeName #&gt; &lt;#= x.PropName #&gt; { get { return &lt;#= x.FieldName #&gt;; } }
+&lt;# } #&gt;
+
+        private &lt;#= className #&gt;(&lt;#= deffines.Constructor #&gt;)
+        {
+&lt;# foreach(var x in deffines) {#&gt;
+            this.&lt;#= x.FieldName #&gt; = &lt;#= x.FieldName #&gt;;
+&lt;# } #&gt;
+        }
+        
+        [ContractVerification(false)]
+        public static implicit operator Person(Builder builder)
+        {
+            return builder.Build();
+        }
+
+        public bool Equals(&lt;#= className #&gt; other)
+        {
+            if (other == null || GetType() != other.GetType()) return false;
+            if (ReferenceEquals(this, other)) return true;
+            return EqualityComparer&lt;&lt;#= deffines.First().TypeName #&gt;&gt;.Default.Equals(&lt;#= deffines.First().FieldName #&gt;, other.&lt;#= deffines.First().FieldName #&gt;)
+&lt;# foreach(var x in deffines.Skip(1)) {#&gt;
+                &amp;&amp; EqualityComparer&lt;&lt;#= x.TypeName #&gt;&gt;.Default.Equals(&lt;#= x.FieldName #&gt;, other.&lt;#= x.FieldName #&gt;)
+&lt;# } #&gt;
+                ;
+        }
+
+        public override bool Equals(object obj)
+        {
+            var other = obj as &lt;#= className #&gt;;
+            return (other != null) ? Equals(other) : false;
+        }
+
+        public override int GetHashCode()
+        {
+            var hash = 0xf937b6f;
+&lt;# foreach(var x in deffines) {#&gt;
+            hash = (-1521134295 * hash) + EqualityComparer&lt;&lt;#= x.TypeName #&gt;&gt;.Default.GetHashCode(&lt;#= x.FieldName #&gt;);
+&lt;# } #&gt;
+            return hash;
+        }
+
+        public override string ToString()
+        {
+            return &quot;{ &quot; + &quot;&lt;#= deffines.First().PropName #&gt; = &quot; + &lt;#= deffines.First().FieldName #&gt; +
+&lt;# foreach(var x in deffines.Skip(1)) {#&gt;
+                &quot;, &lt;#= x.PropName #&gt; = &quot; + &lt;#= x.FieldName #&gt; +
+&lt;# } #&gt;
+                &quot; }&quot;;
+        }
+
+        public class Builder
+        {
+&lt;# foreach(var x in deffines) {#&gt;
+            public &lt;#= x.TypeName #&gt; &lt;#= x.PropName #&gt; { private get; set; }
+&lt;# } #&gt;
+
+            public &lt;#= className #&gt; Build()
+            {
+&lt;# foreach(var x in deffines) {#&gt;
+                if ((object)&lt;#= x.PropName #&gt; == null) throw new ArgumentNullException(&quot;&lt;#= x.PropName #&gt;&quot;);
+&lt;# } #&gt;
+                Contract.EndContractBlock();
+                return new &lt;#= className #&gt;(&lt;#= string.Join(&quot;, &quot;, deffines.Select(d =&gt; d.PropName)) #&gt;);
+            }
+        }
+    }
+}
+&lt;#+
+    class Deffine
+    {
+        public string TypeName, FieldName, PropName;
+
+        public Deffine(string constructorParam)
+        {
+            var split = constructorParam.Split(' ');
+            this.TypeName = split.First();
+            this.FieldName = Regex.Replace(split.Last(),  &quot;^(.)&quot;, m =&gt; m.Groups[1].Value.ToLower());
+            this.PropName = Regex.Replace(FieldName, &quot;^(.)&quot;, m =&gt; m.Groups[1].Value.ToUpper());
+        }
+    }
+
+    class DeffineList : IEnumerable&lt;Deffine&gt;
+    {
+        private List&lt;Deffine&gt; list = new List&lt;Deffine&gt;();
+
+        public void Add(string constructorParam)
+        {
+            list.Add(new Deffine(constructorParam));
+        }        
+        
+        public string DebuggerDisplay
+        {
+            get
+            {
+                return &quot;\\{ &quot; + string.Join(&quot;, &quot;, list.Select(d =&gt;
+                    string.Format(&quot;{0} = {{{1}}}&quot;, d.PropName, d.FieldName))) + &quot; }&quot;;
+            }
+        }
+
+        public string Constructor
+        {
+            get { return string.Join(&quot;, &quot;, list.Select(d =&gt; d.TypeName + &quot; &quot; + d.FieldName)); }
+        }
+
+        public IEnumerator&lt;Deffine&gt; GetEnumerator()
+        {
+            return list.GetEnumerator();
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+        {
+            return GetEnumerator();
+        }
+    }
+#&gt;
+</code></pre>
+<p>以下のようなのが出力されます（長いねー）</p>
+<pre><code class="language-csharp">using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Diagnostics.Contracts;
+
+namespace Neue.Test
+{
+    [DebuggerDisplay(@&quot;\{ Name = {name}, Birth = {birth}, Address = {address} }&quot;, Type = &quot;Person&quot;)]
+    public partial class Person : IEquatable&lt;Person&gt;
+    {
+        [DebuggerBrowsable(DebuggerBrowsableState.Never)]
+        private readonly string name;
+        public string Name { get { return name; } }
+        [DebuggerBrowsable(DebuggerBrowsableState.Never)]
+        private readonly DateTime birth;
+        public DateTime Birth { get { return birth; } }
+        [DebuggerBrowsable(DebuggerBrowsableState.Never)]
+        private readonly string address;
+        public string Address { get { return address; } }
+
+        private Person(string name, DateTime birth, string address)
+        {
+            this.name = name;
+            this.birth = birth;
+            this.address = address;
+        }
+        
+        [ContractVerification(false)]
+        public static implicit operator Person(Builder builder)
+        {
+            return builder.Build();
+        }
+
+        public bool Equals(Person other)
+        {
+            if (other == null || GetType() != other.GetType()) return false;
+            if (ReferenceEquals(this, other)) return true;
+            return EqualityComparer&lt;string&gt;.Default.Equals(name, other.name)
+                &amp;&amp; EqualityComparer&lt;DateTime&gt;.Default.Equals(birth, other.birth)
+                &amp;&amp; EqualityComparer&lt;string&gt;.Default.Equals(address, other.address)
+                ;
+        }
+
+        public override bool Equals(object obj)
+        {
+            var other = obj as Person;
+            return (other != null) ? Equals(other) : false;
+        }
+
+        public override int GetHashCode()
+        {
+            var hash = 0xf937b6f;
+            hash = (-1521134295 * hash) + EqualityComparer&lt;string&gt;.Default.GetHashCode(name);
+            hash = (-1521134295 * hash) + EqualityComparer&lt;DateTime&gt;.Default.GetHashCode(birth);
+            hash = (-1521134295 * hash) + EqualityComparer&lt;string&gt;.Default.GetHashCode(address);
+            return hash;
+        }
+
+        public override string ToString()
+        {
+            return &quot;{ &quot; + &quot;Name = &quot; + name +
+                &quot;, Birth = &quot; + birth +
+                &quot;, Address = &quot; + address +
+                &quot; }&quot;;
+        }
+
+        public class Builder
+        {
+            public string Name { private get; set; }
+            public DateTime Birth { private get; set; }
+            public string Address { private get; set; }
+
+            public Person Build()
+            {
+                if ((object)Name == null) throw new ArgumentNullException(&quot;Name&quot;);
+                if ((object)Birth == null) throw new ArgumentNullException(&quot;Birth&quot;);
+                if ((object)Address == null) throw new ArgumentNullException(&quot;Address&quot;);
+                Contract.EndContractBlock();
+                return new Person(Name, Birth, Address);
+            }
+        }
+    }
+}
+</code></pre>
+<p>これで、どれだけ引数の多いクラスであろうとも、簡単な記述でイミュータブルオブジェクトを生成させることが出来ます。しかも、普通にクラス作るよりも楽なぐらいです、.ttをコピペって、先頭の方に、コンストラクタに並べる型を書くだけ。後は全部自動生成任せ。もし積極的に使うなら、Generated.csのほうを消して.ttのみにした状態で、ファイル→テンプレートのエクスポートで項目のエクスポートをすると使い回しやすくて素敵と思われます、項目名はImmutableObjectとかで。</p>
+<pre><code class="language-csharp">// 書くときはこんな風にやります
+var person1 = new Person.Builder
+{
+    Name = &quot;hoge&quot;,
+    Birth = new DateTime(1999, 12, 12),
+    Address = &quot;Tokyo&quot;
+}.Build();
+
+// 暗黙的な型変換も実装されているので、.Buildメソッドの省略も可
+Person person2 = new Person.Builder
+{
+    Name = &quot;hoge&quot;,
+    Birth = new DateTime(1999, 12, 12),
+    Address = &quot;Tokyo&quot;
+};
+
+// 参照ではなく、全てのフィールドの値の同値性で比較される
+Console.WriteLine(person1.Equals(person2)); // true
+</code></pre>
+<p>匿名型の再現なので、EqualsやGetHashCodeもオーバーライドされて、フィールドの値で比較を行うようになっています。この辺はもう手動だと書いてられないですよね。ReSharperなどを入れて生成をお任せする、という手はありますが。</p>
+<p>==はオーバーライドされていません。これもまた匿名型の再現なので……。Tupleもされてないですしね。これは、フィールドをreadonlyで統一しようと「変更可能」な可能性が含まれるので==は不適切、というガイドライン的なもの(と解釈しました)に従った結果です。変更可能云々は、下の方で解説します。</p>
+<h2>Code Contracts</h2>
+<p>更に、<a href="http://msdn.microsoft.com/en-us/devlabs/dd491992.aspx" title="Code Contracts">Code Contracts</a>を入れれば、値の未代入に対するコンパイラからの静的チェックまで得られます！下記画像のは、Addressが未入力で、通常は実行時に例外が飛ぶことで検出するしかないですが、Code Contractsが静的チェックで実行前にnullだと警告してくれています。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/codecontracts_build.jpg">
+</p>
+<p>ビルダーの欠点は未代入の検出が実行時まで出来なかったりすること。インターフェイスで細工することで、順番を規定したり、必ず代入しなければならないものを定義し終えるまでは.BuildメソッドがIntelliSenseに出てこないようにする。などが出来ますが、手間がかかりすぎて理想論に留まっている気がします。</p>
+<p>簡単であることってのはとても大事で、過剰な手間暇や複雑な設計だったりってのは、必ず無理が生じます。手間がかかること、複雑であることは、それ自体が良くない性質の一つであり、メリットがよほど上回らない限りは机上の空論にすぎない。</p>
+<p>今回、Code Contractsのパワーにより、シンプルなオブジェクト初期化子を使ったビルダーでも未代入の静的チェックをかませる、という素敵機構が実現しました。残念ながらCode Contractsは要求環境が厳しいです。アドインを入れてない/入れられない(Express)場合はどうなるのか、というと、.NET 4にクラス群は入っているので、コンパイル通らないということはありません。普通にArgumentNullExceptionがthrowされるという形になります。</p>
+<p>私が考えるに、.NET 4でクラスが入ったのって、Code Contractsのインストールの有無に関係なくコードが共有出来るように、という配慮でしかない予感。ExpressでContractクラスを使う意味は、あまりなさそうですね。Windows Phone 7環境など、Contractクラスそのものがないような場合では、T4のBuilderクラスBuildメソッドのContract.EndContractBlock();の一行とimplict operatorのContractVerification属性を削除してください。自分で好きに簡単に書き換えられるのもT4の良さです。</p>
+<p>今回はnullチェックしかしていないので、つまり値型の未代入には無効です。何とかして入れたいとは思ったんですが、例えば対策として値型をNullableにするにせよType情報が必要で、そのためにはAssembly参照が必要で、と設定への手間が増えてしまうので今回は止めました(このT4はただ文字列を展開しているだけで、完全にリフレクション未使用)</p>
+<p>Code Contractsに関しては、事前条件のnullチェックにしか使っていなくて真価の1%も発揮されていないので、詳しくは<a href="http://d.hatena.ne.jp/zecl/20100131/p1">とある契約の備忘目録。契約による設計(Design by Contract)で信頼性の高いソフトウェアを構築しよう。 - Bug Catharsis</a>などなどを。不変オブジェクトに関してもそうだけれど、zeclさんの記事は素晴らしいです。</p>
+<p>Code Contracts自体は、メソッド本体の上の方で、コントラクトの記述が膨れ上がるのは好きでないかも。従来型の、if-then-throwでの引数チェックも、5行を超えるぐらいになるとウンザリしますね。ご丁寧に{で改行して、if-then-throwの一個のチェックに4行も使って、それが5個ぐらい連なって20行も使いやがったりするコードを見ると発狂します。そういう場合に限ってメソッド本体は一行で他のメソッド呼んでるだけで、更にその、他のメソッドの行頭にも大量の引数チェックがあったりすると、死ねと言いたくなる。コードは視覚的に、横領域の節約も少しは大事だけど、縦も大事なんだよ、分かってよね……。メソッド本体が1000行とか書く人じゃなく、100行超えたら罰金(ｷﾘｯ とか言ってる人だけど、それならガード句が10行超えたら罰金だよこっちとしては。</p>
+<p>話が脱線した。つまるところ、コントラクトはライブラリレベルで頑張るよりも、言語側でのサポートが必要な概念ですね、ということで。実際rewriterとか、ライブラリレベル超えて無茶しやがって、の領域に踏み込んでいますし＜Code Contracts。</p>
+<h2>プラスアルファ</h2>
+<p>partial classで生成されるので(デフォルトではクラス名.Generated.cs)、別ファイルにクラスを作ることで、フィールドの増減などでT4を後で修正しても、影響を受けることなくメソッドを追加することができます。</p>
+<pre><code class="language-csharp">// Person.csという形で別ファイルで追加
+using System;
+
+namespace Neue.Test
+{
+    public partial class Person
+    {
+        public int GetAge(DateTime target)
+        {
+            return (target.Year - birth.Year);
+        }
+    }
+}
+</code></pre>
+<p>それと、nullチェックだけじゃなくきっちりBuildに前提条件入れたい(もしくはnullを許容したい)場合は、T4のBuildメソッドの部分に直に条件を書いてしまうか、それも何だか不自然に感じる場合は生成後のファイルをT4と切り離してしまうのも良いかもですね。自由なので好きにどうぞですます。</p>
+<h2>で、本当に不変なの？</h2>
+<p>何をもってどこまでを不変というのかはむつかしいところですが、Equalsが、GetHashCodeが変化するなら、可変かしら？ 単純に全ての含まれる型のゲッターが常に同一の値を返さなければ不変ではない、でも良いですが。冒頭でも言いましたが、そう見るとreadonlyだけでは不変を厳密には保証しきれていません。匿名型で例を出すと</p>
+<pre><code class="language-csharp">class MyClass
+{
+   public int i;
+
+   public override int GetHashCode()
+   {
+       return i;
+   }
+}
+
+static void Main(string[] args)
+{
+   var anon = new { MC = new MyClass { i = 100 } };
+   var hashCode1 = anon.GetHashCode();
+
+   anon.MC.i = 1000; // 変更
+   var hashCode2 = anon.GetHashCode();
+
+   Console.WriteLine(hashCode1 == hashCode2); // false
+   Console.WriteLine(hashCode1);
+   Console.WriteLine(hashCode2);
+}
+</code></pre>
+<p>参照しているMyClassのインスタンスの中身が変化可能で、それが変化してしまえば、違う値になってしまいます。厳密に不変であるためには、中のクラス全てが不変でなければなりません。これは今の言語仕様的には制限かけるのは無理かなー、といったところ。T4なのでリフレクションで全部バラして、参照している型が本当の意味で不変なのかどうか検証して、可変の型を含む場合はジェネレートしない、という形でチェックかけるのは原理的には可能かもしれません、が、やはり色々無理があるかなあ。</p>
+<h2>まとめ</h2>
+<p>プログラミングの楽しさの源は、書きやすく見た目が美しいことです。私はLinq to Objects/Linq to Xmlでプログラミングを学んだようなものなので、Linqの成し遂げたこと(究極のIntelliSenseフレンドリーなモデル・使いづらいDOMの大破壊)というのが、設計の理想と思っているところが相当あります。C#は言語そのものが素晴らしいお手本。匿名型素晴らしいよ(一年ぐらい前は匿名型も可変ならいいのに、とか口走っていた時期があった気がしますが忘れた、いやまあ、可変だと楽なシチュエーションってのもそれなりにいっぱいあるんですよね)。</p>
+<p>T4の標準搭載はC#にとって非常に大きい。T4標準搭載によって、出来る事の幅がもう一段階広がった気がします。partial class素晴らしい。自動生成って素敵。T4はただのテキストテンプレートじゃなくて「VSと密接に結びついていて」「なおかつ標準搭載」「もはやC#の一部といってもいい」ことが、全く違った価値をもたらしていると思います。自動生成前提のパターンを作っても/使ってもいいんだよ、と。言語的に足らない部分の迂回策が、また一つ加わった。</p>
+<p>見た目上若干Uglyになっても自動生成でなんとかする、というのはJava + Eclipseもそうですが、それと違うのはpartialでUglyな部分を隔離出来る(隔離によって自動生成の修正が容易になることも見逃せない)ことと、自動生成部分をユーザーが簡単に書けること、ですね。Eclipseの自動生成のプラグインを書くのは敷居が高すぎですが、T4を書く、書くまではしなくても修正する、というのは相当容易でしょう。</p>
+<p>最近本当にT4好きですねー。色々と弄ってしまいます。こーどじぇねれーと素晴らしい。あとは、T4自体のUglyさが少し軽減されればな、といったところでしょうか。テンプレートエンジンとしてRazorに切り替えられたりを望みたいなあ。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0819_272.html">Reactive ExtensionsのFromEventをT4 Templateで自動生成する</a></h1>
+<ul class="date"><li>2010-08-19</li></ul>
+<div class="entry_body"><p><a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Rx</a>で面倒くさいのが、毎回書かなければならないFromEvent。F#ならイベントがファーストクラスで、そのままストリーム処理に流せるという素敵仕様なのですが、残念ながらC#のeventはかなり雁字搦めな感があります。しかし、そこは豊富な周辺環境で何とか出来てしまうのがC#というものです。F#では form.MouseMove |&gt; Event.filter と書けますが、 form.MouseMoveAsObservable().Where と書けるならば、似たようなものですよね？</p>
+<p>というわけで、T4です。FromEventを自動生成しましょう！と、いうネタは散々既出で海外のサイトにも幾つかあるし、日本にもid:kettlerさんが<a href="http://d.hatena.ne.jp/kettler/20100424">FromEventが面倒なので自動生成させてみた2</a>として既に書かれているのですが、私も書いてみました。書くにあたってid:kettlerさんのコードを大変参考にさせていただきました、ありがとうございます。</p>
+<p>私の書いたもののメリットですが、リフレクションを使用しないFromEventで生成しているため、実行コストが最小に抑えられています。リフレクションを使わないFromEventは書くのが面倒でダルいのですが、その辺自動生成の威力発揮ということで。それと、命名規則をGetEventではなくEventAsObservableという形にしています。これは、サフィックスのほうがIntelliSenseに優しいため。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/rxclickasobservable.jpg">
+</p>
+<p>んね？この命名規則は、RxJSのほうで公式に採用されているものなので(例えばrx.jQuery.jsのanimateAsObservable)、俺々規則というわけじゃないので普通に従っていいと思われます。</p>
+<p>以下コード。利用改変その他ご自由にどうぞ、パブリックドメインで。</p>
+<pre><code class="language-csharp">&lt;#@ assembly Name=&quot;System.Core.dll&quot; #&gt;
+&lt;#@ assembly Name=&quot;System.Windows.Forms.dll&quot; #&gt;
+&lt;#@ assembly Name=&quot;C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.0\Profile\Client\System.Xaml.dll&quot; #&gt;
+&lt;#@ assembly Name=&quot;C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.0\Profile\Client\PresentationCore.dll&quot; #&gt;
+&lt;#@ assembly Name=&quot;C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.0\Profile\Client\PresentationFramework.dll&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Linq&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Collections.Generic&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Text.RegularExpressions&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Reflection&quot; #&gt;
+&lt;#
+    // 設定：ここに生成したいクラス(のTypeをFullNameで)を足してください(以下の4つは例)
+    // クラスによってはassemblyの増減が必要です、WPF/Silverlightなどはフルパス直書きしてください
+    var types = new[] {
+        typeof(System.Collections.ObjectModel.ObservableCollection&lt;&gt;),
+        typeof(System.Windows.Forms.Button),
+        typeof(System.Windows.Controls.Primitives.TextBoxBase),
+        typeof(System.Windows.Controls.Primitives.ButtonBase)
+    };
+#&gt;
+using System.Linq;
+using System.Collections.Generic;
+
+&lt;# foreach(var x in GenerateTemplates(types)) {#&gt;
+
+namespace &lt;#= x.Namespace #&gt;
+{
+    &lt;# foreach(var ct in x.ClassTemplates) {#&gt;
+
+    internal static class &lt;#= ct.Classname #&gt;EventExtensions
+    {
+        &lt;# foreach(var ev in ct.EventTemplates) {#&gt;
+		
+        public static IObservable&lt;IEvent&lt;&lt;#= ev.Args #&gt;&gt;&gt; &lt;#= ev.Name #&gt;AsObservable&lt;#= ct.GenericArgs #&gt;(this &lt;#= ct.Classname #&gt;&lt;#= ct.GenericArgs #&gt; source)
+        {
+            return Observable.FromEvent&lt;&lt;#= ev.Handler + (ev.IsGeneric ? &quot;&lt;&quot; + ev.Args + &quot;&gt;&quot; : &quot;&quot;) #&gt;, &lt;#= ev.Args #&gt;&gt;(
+                h =&gt; &lt;#= ev.IsGeneric ? &quot;h&quot; : &quot;new &quot; + ev.Handler + &quot;(h)&quot; #&gt;,
+                h =&gt; source.&lt;#= ev.Name #&gt; += h,
+                h =&gt; source.&lt;#= ev.Name #&gt; -= h);
+        }
+        &lt;# } #&gt;
+    }
+    &lt;# }#&gt;
+}
+&lt;# }#&gt;
+&lt;#+
+    IEnumerable&lt;T&gt; TraverseNode&lt;T&gt;(T root, Func&lt;T, T&gt; selector)
+    {
+        var current = root;
+        while (current != null)
+        {
+            yield return current;
+            current = selector(current);
+        }
+    }
+
+    IEnumerable&lt;ObservableTemplate&gt; GenerateTemplates(Type[] types)
+    {
+        return types.SelectMany(t =&gt; TraverseNode(t, x =&gt; x.BaseType))
+            .Distinct()
+            .GroupBy(t =&gt; t.Namespace)
+            .Select(g =&gt; new ObservableTemplate
+            {
+                Namespace = g.Key,
+                ClassTemplates = g.Select(t =&gt; new ClassTemplate(t))
+                    .Where(t =&gt; t.EventTemplates.Any())
+                    .ToArray()
+            })
+            .Where(a =&gt; a.ClassTemplates.Any())
+            .OrderBy(a =&gt; a.Namespace);
+    }
+
+    class ObservableTemplate
+    {
+        public string Namespace;
+        public ClassTemplate[] ClassTemplates;
+    }
+
+    class ClassTemplate
+    {
+        public string Classname, GenericArgs;
+        public EventTemplate[] EventTemplates;
+
+        public ClassTemplate(Type type)
+        {
+            Classname = Regex.Replace(type.Name, &quot;`.*$&quot;, &quot;&quot;);
+            GenericArgs = type.IsGenericType
+                ? &quot;&lt;&quot; + string.Join(&quot;,&quot;, type.GetGenericArguments().Select((_, i) =&gt; &quot;T&quot; + (i + 1))) + &quot;&gt;&quot;
+                : &quot;&quot;;
+            EventTemplates = type.GetEvents(BindingFlags.Public | BindingFlags.InvokeMethod | BindingFlags.DeclaredOnly | BindingFlags.Instance)
+                .Select(ei =&gt; new { EventInfo = ei, Args = ei.EventHandlerType.GetMethod(&quot;Invoke&quot;).GetParameters().Last().ParameterType })
+                .Where(a =&gt; a.Args == typeof(EventArgs) || a.Args.IsSubclassOf(typeof(EventArgs)))
+                .Select(a =&gt; new EventTemplate
+                {
+                    Name = a.EventInfo.Name,
+                    Handler = Regex.Replace(a.EventInfo.EventHandlerType.FullName, &quot;`.*$&quot;, &quot;&quot;),
+                    Args = a.Args.FullName,
+                    IsGeneric = a.EventInfo.EventHandlerType.IsGenericType
+                })
+                .ToArray();
+        }
+    }
+
+    class EventTemplate
+    {
+        public string Name, Args, Handler;
+        public bool IsGeneric;
+    }
+#&gt;
+</code></pre>
+<pre><code class="language-csharp">// こんなのが生成されます
+
+namespace System.Collections.ObjectModel
+{
+    internal static class ObservableCollectionEventExtensions
+    {
+        public static IObservable&lt;IEvent&lt;System.Collections.Specialized.NotifyCollectionChangedEventArgs&gt;&gt; CollectionChangedAsObservable&lt;T1&gt;(this ObservableCollection&lt;T1&gt; source)
+        {
+            return Observable.FromEvent&lt;System.Collections.Specialized.NotifyCollectionChangedEventHandler, System.Collections.Specialized.NotifyCollectionChangedEventArgs&gt;(
+                h =&gt; new System.Collections.Specialized.NotifyCollectionChangedEventHandler(h),
+                h =&gt; source.CollectionChanged += h,
+                h =&gt; source.CollectionChanged -= h);
+        }
+    }
+}
+
+namespace System.ComponentModel
+{
+    internal static class ComponentEventExtensions
+    {
+        public static IObservable&lt;IEvent&lt;System.EventArgs&gt;&gt; DisposedAsObservable(this Component source)
+        {
+            return Observable.FromEvent&lt;System.EventHandler, System.EventArgs&gt;(
+                h =&gt; new System.EventHandler(h),
+                h =&gt; source.Disposed += h,
+                h =&gt; source.Disposed -= h);
+        }
+    }
+
+    // 以下略
+</code></pre>
+<p>使い方ですが、RxGenerator.ttとか、名前はなんでもいいのですがコピペって、上の方のvar typesに設定したい型を並べてください。一緒に並べたものの場合は、全て継承関係を見て重複を省くようになっています。WPFとかSilverlightのクラスから生成する場合は、assembly Nameに直にDLLのパスを書いてやってくださいな。コード的には、例によってLinq大活躍というかLinqなかったら死ぬというか。リフレクションxLINQxT4は鉄板すぎる。</p>
+<p>一つ難点があって、名前空間をそのクラスの属している空間にきっちりと分けたせいで、例えばWPFのbutton.ClickAsObservableはSystem.Windows.Controls.Primitivesをusingしないと出てこないという、微妙に分かりづらいことになっちゃっています……。これ普通にHogeHogeExtensionsとかいう任意の名前空間にフラットに配置したほうが良かったのかなあ。ちょっと悩ましいところ。</p>
+<h2>T4の書き方</h2>
+<p>漠然と書いてると汚いんですよね、T4。読みにくくてダメだし読みにくいということは書きにくいということでダメだ。というわけで、今回からは書き方を変えました。ASP.NETのRepeater的というかデータバインド的にというかで、入れ物クラスを作って、パブリックフィールド(自動プロパティじゃないのって？そんな大袈裟なものは要りません)を参照させるという形にしました。foreachや閉じカッコ(&quot;}&quot;)は一行にする。&lt;% %&gt;で囲まれる範囲を最小限に抑えることで、ある程度の可読性が確保出来ているんじゃないかと思います。</p>
+<p>といったようなアイディアは</p>
+<blockquote>
+<p>よく訓練されたT4使いは　「何を元に作るか」　「何を作るか」　だけを考える。<br />
+何を元に作るかはきっと from ... select になるでしょう。 何を作るかの中では　&lt;#=o.Property#&gt; で値を出力する事ができます。<br />
+<a href="http://aka-kazuk.spaces.live.com/blog/cns!EB33514F53BAF4B3!259.entry">csproj.user を作るための T4 テンプレート</a></p>
+</blockquote>
+<p>からです。「何を元に作るか」　「何を作るか」　。聞いてみれば当たり前のようだけれど、本当にコロンブスの卵というか(前も同じこと書いた気がする)、脳みそガツーンと叩かれた感じで、うぉぉぉぉぉ、と叫んで納得でした。はい。それと、T4は書きやすいと言っても書きにくい（？）ので、囲む範囲を最小にするってことは、普通のコードでじっくり書いてからT4に移植しやすいってことでもあるんですね。</p>
+<h2>まとめ</h2>
+<p>最近F#勉強中なのです。Expert F# 2.0買ったので。と思ったらプログラミングF#が翻訳されて発売されるだとー！もうすぐ。あと一週間後。くぉ、英語にひいこらしながら読んでいるというのにー。</p>
+<iframe src="http://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=1430224312" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<iframe src="http://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=4873114667" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<p>F#すげーなー、と知れば知るほど確かに思うわけですが、しかし何故か同時に、C#への期待感もまた高まっていきます。必ずや「良さ」を吟味して取り込んでくれるという信頼感があります、C#には。そしてまた、ライブラリレベルで強烈に何とか出来る地力がある、例えばイベントをストリームに見立てた処理には、Reactive Extensionsが登場してC#でも実現出来ちゃったり。Scalaと対比され緩やかに死んでいくJavaと比べると、F#と対比しても元気に対抗していくC#の頼もしさといったらない。</p>
+<p>といっても、F#も全然まだ表面ぐらいしか見えてないし、突っつけば突っつくほど応えてくれる奥の深い言語な感じなので、今の程度の知識で比較してどうこうってのはないです。Java7のクロージャにたいし、Javaにそんなものはいらない、とか頑な態度を取っている人を見るとみっともないな、と思うわけですが、いつか私もC#に拘泥してC#にそんなものはいらない、的なことを言い出すようだと嫌だなー、とかってのは思ってます。進化を受け入れられなくなったら、終わり。</p>
+<p>マルチパラダイム言語の勝利→C++/CLI大勝利ですか？→いやそれは多分違う。的なこともあるので何もかもを受け入れろ、ひたすら取り込んで鈍重な恐竜になれ(最後に絶滅する)、とは言いません。この辺のバランス感覚が、きっと言語設計にとって難しいことであり、そして今のC#は外から見れば恐竜のようにラムダ式だのdynamicだのを取り入れてるように見えるでしょうが、決してそうではなく、素晴らしいバランスに立っています。機能の追加が恐竜への道になっていない。むしろ追加によって過去の機能を互換性を保ちつつ捨てているんですよね、例えば、もうdelegateというキーワードは書くどころか目にすることもほとんどない←なのでC#を学習する場合、C#1.0-&gt;2.0-&gt;3.0-&gt;4.0という順番を辿るのは良くなくて、最新のものから降りていったほうがいい。</p>
+<p>何が言いたいかっていったらC#愛してるってことですな。うはは。5.0にも当然期待していますし、Anders Hejlsbergの手腕には絶対的に信頼を寄せています。4.0は言語的な飛躍はあまりなかっただけに、5.0は凄いことになるに違いない。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0811_271.html">linq.jsやRxJSのベンチマーク</a></h1>
+<ul class="date"><li>2010-08-11</li></ul>
+<div class="entry_body"><p>どうも、定期的<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js - LINQ for JavaScript</a>宣伝の会がやってまいりました。最近はページビューも絶好調、なのだけどDL数はそこまで伸びない（でも同種のライブラリよりもDL数多かったりするので需要が限界値と思われる）などなどな近況ですがこんばんわ。乱立するLinqのJavaScript実装……。などと言うほどに乱立はしてないし、そもそも2009/04に最後発で私が出したのが最後で、それ以降の新顔は見かけないのですが(しいて言えばRxJS)、ちょうどjLinqを実装した人が、<a href="http://somewebguy.wordpress.com/2010/08/08/jlinq-reloaded/">ベンチ結果がボロボロだった、作り直してる</a>という記事を出したので、ほぅほぅとそのベンチマークを見て、ちょっと改良して色々なLinq実装で比較してみました。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/jorderbench.jpg">
+</p>
+<blockquote>
+<p><a href="http://act.neue.cc/bench/" title="jOrder benchmark page">jOrderのベンチに色々足したもの</a></p>
+</blockquote>
+<p>左のがIE8、重ねて後ろ側のがChrome。この画像は77件のJSONをGroupIDが107か185のもののみをフィルタして配列を返すという処理を1000回試行したもの。毎度思いますが、V8恐ろしく速い。そりゃnode.jsとか普通に現実的な話ですよね、大変素晴らしい。</p>
+<h2>jOrderについて</h2>
+<p>このベンチマークは、もとは<a href="http://wiki.github.com/danstocker/jorder/" title="Home - jorder - GitHub">jOrder</a>という、Linq……ではなくてSQL風のもので(SQLっぽいのは結構いっぱいあります)、巨大なJSONを効率よく抽出するために、先にインデックス的なのを作ってそれから処理すれば速くなるよ！というライブラリが先々月ぐらいに出来たばっからしいのですが、それがjLinqと比較してこれだけ速いぜ！とやっていたようです。結果見る限りはjLinqクソ遅くてjOrderクソ速くて凄ー、となったのですが、なんかどーにも胡散臭さが拭えないわけですよ、ベンチ詐欺に片足突っ込んでいるというか。</p>
+<p>jOrderは初回にインデックスっぽいものを作成するので、二回目以降の抽出は爆速、というのがウリ（っぽい）ようで、ベンチは確かに速い。で、その初回のインデックス生成は何時やってるんでしょうか？このベンチのソースを見ると、ボタンを押してからじゃなくて、ページのロード時にやってますね……。あの、それも立派なコストなのですが、無視ですか？無視ですか？そりゃあ試行回数を1000でベンチ取るならば無視出来るほどに小さいかもですね？でも、Test Cycles 1とか用意しているわけですが、どうなんでしょうね、インデックス作成時間を無視するのは、ちょっと卑怯すぎやしませんか？そもそも対象にひぢょーに遅いjLinq「だけ」を選んでいるというところがやらしい。</p>
+<p>というわけで、オリジナルのベンチにはないのですがwith create indexというボタン押してからインデックスを作成する項目を足しました。1000回の試行では、コンセプトに乗っ取るなら1回のインデックス作成にすべきなんでしょうが、普通に1000回インデックス作成に走るのでクソ遅いです。あ、いや、別にアンチキャンペーン張ろうってわけじゃあないんですが、単純に面倒なので……。インデックス作成コストは試行回数1にすれば分かる。</p>
+<p>ベンチ結果を見ると、まず、インデックス的なものの作成には非常にコストがかかってる。そして、わざわざコストをかけて生成したところで、Small table(77件のJSON)では、フィルタリングに関してはjQueryの$.grep、つまりは何も手をかけてないシンプルなフィルタリングと同じ速度でしかなくて、あまり意味が無い。Large table（1000件のJSON）ではそれなりな効果が出ているようですが、インデックス作成コストをペイするまでの試行回数を考えると、やはりあまり意味がなさそうな……。コンセプトは面白いんですが、それ止まりかなあ。機能的には、このインデックス生成一点勝負なところがあるので、他のLinq系ライブラリのような多機能なクエリ手段があるわけでもないし。</p>
+<h2>その他のライブラリについて</h2>
+<p>どれも似たり寄ったりで同じことが出来ますが、処理内容は全然違います。linq.jsは遅延評価であることと、列挙終了時にDisposeすることを中心に据えているので、シンプルにフィルタするだけのもの(jQueryの$.grepとか)よりも遥かに遅くなっています。JSINQも同じく遅延評価で、実装も大体似てます。なので、計測結果もほぼ同じですが、linq.jsのほうが遅い。これは、jsinqはDisposeがないため、その分の速度差が出ています（それ以外にも、単純にlinq.jsのほうが色々処理挟んでて遅め）。</p>
+<p>LINQ to JavaScript(JSLINQ)はLINQの名を冠していますが、即時評価で、中身はただの配列のラッパーです。その分だけ単純な実装になっているので、単純なことをこなすには速い。jQueryの$.grepも同じく、普通に配列をグルッとループ回してifで弾いて、新しい配列にpushして、新しい配列を返すもの。というわけで、両者はほとんど同じ速度です。ただ、若干jQueryのほうが速いようで。これは、JSLINQはthis.itemsという形で対象の配列にアクセスしていて、それが速度差になってる模様。var items = this.itemsと列挙の前に置いてやれば、jQueryとほぼ同じ速度になる。1000回の試行だと20msecぐらいの差にはなるようですね。これが気にするほどかは、どうでしょう……。私は全く気にしません。</p>
+<p>残念なことにめっちゃ遅いjLinqは、うーん、中はevalだらけだそうで、それが響いたそうです。と、作者が言ってるのでそうなのでしょう（適当）。RxJSも割と遅いんですが、これはしょうがないね！C#でもToObservableで変換かけたものの速度は割と遅くなるし。構造的に中間にいっぱい処理が入るので、そういうものだということで。</p>
+<h2>速度ねえ……</h2>
+<p>jLinqはさすがにアレゲなのですが、それ以外は別に普通に使う範囲ではそんな致命的に低速ってわけでもないんで、あまり気にしなくても良くね？と、かなり思ってます。linq.jsは速度を犠牲にして遅延評価だのDisposeだの入れてるわけですが、勿論、犠牲にしたなりのメリットはある（表現できる幅がとっても広がる）し。その辺はトレードオフ。配列をSelectしてToArrayするだけ、とかWhereしてToArrayするだけならば、、どうせjQueryも一緒に使うでしょ？的に考えて、jQueryの$.map, $.grepを使えば精神衛生上良いかもしれません。これは、C#で言うところのArray.ConvertAllは化石メソッドだけど、SelectしてToArrayならばConvertAllのほうが高効率なんだぜ(内心はどうでもいーんだけど)、といったようなノリで補えば良いでしょう。</p>
+<p>それにしても、何でjQueryは$.eachの引数がmapやgrepと逆(eachだけindexが第一引数で値が第二引数)なんですかね。これ、統一してたほうが良いし、だいたいがして値が第一引数のほうが使いやすいのに。もう今更変えられない、ということなのかしらん。</p>
+<p>そういえばで、せっかくなので「表現できる幅」の例として、ベンチには第一ソートキーにCurrency、それが重複してた場合の第二ソートキーにTotalを指定してみた例(OrderBy.ThenBy)とか（linq.js無しで書くとちょびっと面倒だよ！）、GroupIDでグルーピングした後にTotal値を合計といった集計演算（これもlinq.js無しだと面倒だよ！）とかを入れておいたので、良ければ見といてください。はい。まあ、別にこの辺はeager evaluationでも出来るというかソートもグルーピングも一度バッファに貯めちゃってるんですけどね！</p>
+<h2>まとめ</h2>
+<p>JSINQは良く出来てると思うのよ。ほんと（私はただのLinqマニアなので、基本的に他の実装は割と読んでますですよ）。ベンチ的にもlinq.jsより速いし(Disposeないからね、でもDispose使うシーンがそもそもあんまないという)、文字列クエリ式も(使わないけど)使えるし。じゃあ、JSINQじゃなくてlinq.jsがイイ！というような押しは、そこまであるかないか、どうなんでしょうね。1.メソッドの数が全然違う 2.ラムダ式的な文字列セレクターが使える 3.Dispose対応 4.RxJSにも対応 5.jQueryにも対応 6.WSHにも対応 7.VS用IntelliSense完備。ふむ、結構ありますね。というわけでlinq.jsお薦め。冒頭でも言いましたが最近のCodePlex上でのページビュー/ダウンロード数を見ると、競合のlinq移植ライブラリの中でもトップなんですよ、えへへ。まあ、4DL/dayとかいうショボい戦いなのですが。</p>
+<p>jLinqの人が、パフォーマンス改善のついでにLinqという名前をやめてブランディングやり直すって言ってますが、きっと正しいと思う。「Linq」という名前がつく限りは「.NETの～」という印象が避けられないし、そのせいで敬遠されるというのは、間違いなくある。jLinqは、中身全然Linqじゃない独特な感じのなので、名前変えるのは、きっと良い選択。</p>
+<p>linq.jsは100% Linqなので名前がどうこうってのはないですが、しかし、RxJSもそうなのだけど、.NET以外の人にも使って欲しいなって気持ちはとてもあります。やれる限りは頑張ってるつもりなんですが、中々どうして。<a href="http://neue.cc/2010/05/24_260.html">JavaScriptエディタとしてのVisual Studioの使い方入門</a>は100ブクマまであとちょい！な感じで、そういうとこに混ぜて宣伝とかいうセコい策を取ってはいるものの(いや、別にそういうつもりでやったわけでもないですが)色々と難すぃー。海外へも少しは知名度伸ばせたようなのだけど、そこでも基本的には.NET圏のみって雰囲気で、どうしたものかしらん。</p>
+<p>つまるところ、そろそろ御託はどうでもいいから、RealWorldな実例出せよって話ですね！</p>
+</div>
+<h1><a href="http://neue.cc/2010/0802_270.html">テストを簡単にするほんの少しの拡張メソッド</a></h1>
+<ul class="date"><li>2010-08-02</li></ul>
+<div class="entry_body"><p>テストドリブンしてますか？私は勿論してません。え……。別に赤が緑になっても嬉しくないし。コード先でテスト後のほうが書きやすくていいなあ。でもそうなると、テスト書かなくなってしまって、溜まるともっと書かなくなってしまっての悪循環。</p>
+<p>そんな普段あまりテスト書かないクソッタレな人間なわけですが(レガシーコード殺害ガイドが泣いている)、普段テスト書かないだけに書こうとすると単純なものですらイライライライラしてしまって大変よくない。しかし、それはそもそもテストツールが悪いんじゃね？という気だってする。言い訳じゃなく、ふつーにバッチイですよ、テストコード。こんなの書くのはそりゃ苦痛ってものです。</p>
+<h2>Before</h2>
+<p>例えば、こういうどうでもいいクラスがあったとします。</p>
+<pre><code class="language-csharp">public class MyClass
+{
+    public string GetString(string unya)
+    {
+        return (unya == &quot;unya&quot;) ? null : &quot;hoge&quot;;
+    }
+    public IEnumerable&lt;int&gt; GetEnumerable()
+    {
+        yield return 1;
+        yield return 2;
+        yield return 3;
+    }
+}
+</code></pre>
+<p>ウィザードで生成されたのをベースに書くとこうなる(MSTestを使っています)</p>
+<pre><code class="language-csharp">[TestMethod()] 
+public void GetStringTest() 
+{ 
+    MyClass target = new MyClass(); 
+    string unya = &quot;unya&quot;; 
+    string expected = null; 
+    string actual; 
+    actual = target.GetString(unya); 
+    Assert.AreEqual(expected, actual); 
+
+    expected = &quot;hoge&quot;; 
+    actual = target.GetString(&quot;aaaaa&quot;); 
+    Assert.AreEqual(expected, actual); 
+} 
+
+[TestMethod()] 
+public void GetEnumerableTest() 
+{ 
+    MyClass target = new MyClass(); 
+    IEnumerable&lt;int&gt; expected = new[] { 1, 2, 3 }; 
+    IEnumerable&lt;int&gt; actual; 
+    actual = target.GetEnumerable(); 
+    CollectionAssert.AreEqual(expected.ToArray(), actual.ToArray()); 
+}
+</code></pre>
+<p>何だこりゃ。超面倒くさい。むしろテストがレガシーすぎて死にたい。CollectionAssertはIEnumerableに対応してないし。泣きたい。こんなの書いてられない。吐き気がする。</p>
+<h2>After</h2>
+<p>JavaScriptのQUnitは、大抵EqualとDeepEqualで済む簡単さで、それがテストへの面倒くささを大いに下げてる。見習いたい。シンプルイズベスト。ごてごてしたAssert関数なんて悪しき伝統にすぎないのではなかろうか？と思ったので、もうアサート関数なんてIsだけでいいぢゃん、ついでにactualの後ろに拡張メソッドでそのままexpected書けると楽ぢゃん、と開き直ることにしました。</p>
+<pre><code class="language-csharp">[TestMethod()]
+public void GetStringTest()
+{
+    // 1. 全オブジェクトに対して拡張メソッドIsが定義されててAssert.AreEqualされる
+    // 2. ラムダ式も使えるので、andやorや複雑な比較などはラムダ式でまかなえる
+    // 3. nullはIs()で（本当はIs(null)でやりたかったのだけど、都合上断念)
+    new MyClass().GetString(&quot;aaaaa&quot;).Is(&quot;hoge&quot;);
+    new MyClass().GetString(&quot;aaaaa&quot;).Is(s =&gt; s.StartsWith(&quot;h&quot;) &amp;&amp; s.EndsWith(&quot;e&quot;));
+    new MyClass().GetString(&quot;unya&quot;).Is();
+}
+
+[TestMethod()]
+public void GetEnumerableTest()
+{
+    // 対象がIEnumerableの場合はCollectionAssert.Equalsで比較されます
+    // 可変長配列を受け入れることが出来るので直書き可
+    new MyClass().GetEnumerable().Is(1, 2, 3);
+}
+</code></pre>
+<p>すんごく、すっきり。メソッドはIsだけ、ですがそれなりのオーバーロードが仕込まれているので、ほとんどのことが一つだけで表現出来ます。IsNullはIs()でいいし（表現的には分かりにくくて嫌なのですが、Is(null)だとオーバーロードの解決ができなくてIs((型)null)と書かなくて面倒くさいので、泣く泣く引数無しをIsNullとしました）し、IsTrueはIs(true)でいい。複雑な条件で比較したいときはラムダ式を渡せばいい。Is.EqualTo().Within().And() とか、全然分かりやすくないよね。流れるようなインターフェイスは悪くないけれど、別に自然言語的である必要なんて全然なくて、ラムダ一発で済ませられるならそちらのほうがずっと良い。<a href="http://sharptestex.codeplex.com/">.Should().Not.Be.Null()</a>なんてまで来ると、もう馬鹿かと思った。</p>
+<p>大事なのはシンプルに気持良く書けることであって、形式主義に陥っちゃいけないのさあ。</p>
+<p>コレクション比較もIsだけですませます。IEnumerableを渡すことも出来るし、可変長引数による値の直書きも出来る。なお、Isのみなのでコレクション同士の参照比較はありません。コレクションだったら有無をいわさず要素比較にします。だって、別に参照比較したいシーンなんてほとんどないでしょ？そういう例外的な状況は素直にAssert.AreEqual使えばいい。また、CollectionAssertには色々なメソッドがありますが、それ全部Linqで前処理すればいいよね？例えばCollectionAsert.IsEmptyはAny().Is(false)で済ませられるので不要。他のも大体はLinqで何とかできるので大概不要です。</p>
+<p>ところで、このぐらいだとウィザードが冗長というだけで</p>
+<pre><code class="language-csharp">Assert.AreEqual(new MyClass().GetString(&quot;aaaaa&quot;), &quot;hoge&quot;);
+</code></pre>
+<p>って書けるじゃないかって突っ込みは、そのとおり。でも、少し長くなると、引数に押し込めるの大変になってきますよね。そうなると</p>
+<pre><code class="language-csharp">var expected = &quot;hoge&quot;;
+var actual = new MyClass().GetString(&quot;aaaaa&quot;)
+Assert.AreEqual(expected, actual);
+</code></pre>
+<p>といった具合に、変数名が必要になって大変かったるい。ので、余計な一時変数なしで流し込める方が圧倒的に楽です。そもそもに、Assert.AreEqualだと、毎回どっちがactualでどっちがexpectedだか悩むのがイライラしてしまって良くない。まあ、逆でもいいんですが。よくないんですが。</p>
+<h2>パラメータ違いのテストケース</h2>
+<p>ついでに面倒くさいのは、パラメータが違うだけにすぎない、同じようなAssertの量産。テストなんてとっとと書いてナンボなので大体コピペで取り回しちゃうわけですが、どう考えてもクソ対応です本当にありがとうございました。そういうことやると、テストの書き直しが出来なくなって身重になってしまって良くない。コードはサクッと書き直せるべきだし、テストもサクッと書き直せるべきだ。といったわけで、NUnitには属性を足すだけでパラメータ違いのテストを実行出来るそうですがMSTestにはなさそう。うーん、でも、Linqがあれば何でも出来るよ？Linq万能神理論。ということで、Linqをベースにしてパラメータ違いを渡せるクラスを書いてみました。</p>
+<pre><code class="language-csharp">// コレクション初期化子を使ってパラメータを生成します
+new Test.Case&lt;int, int, int&gt;
+{
+    {1, 2, 3},
+    {100, 200, 500},
+    {10000, 20, 30}
+}
+.Select(t =&gt; t.Item1 + t.Item2 + t.Item3)
+.Is(6, 800, 10050);
+</code></pre>
+<p>複数の値はTupleに突っ込めばいい。あとはSelectでactualを作って、最後にIsの可変長引数使って期待値と比較させれば出来上がり。Tupleは、C#には匿名型があるため、あまり活用のシーンがないのですが、こういうところでは便利。このTest.Caseは7引数のTupleまで対応しています(それ以上？そもそも標準のTupleの限界がそれまでなので)。使い方はnewしてコレクション初期化子でパラメータを並べるだけ。</p>
+<p>つまるところTest.CaseクラスはただのTupleCollectionです。Tupleの配列を作るには、普通だと new[]{Tuple.Create, Tuple.Create...} と書かなければならず、死ぬほど面倒。そこで出てくるのがコレクション初期化子。これなら複数引数を受け入れるのが楽に記述できる。というわけで、コレクション初期化子を使いたいがためだけに、クラスを立てました。唯一の難点はnewしなければならない、つまりジェネリクスの型引数を書かなければならない、ということでしょうか。</p>
+<p>そうそう、コレクション初期化子のおさらいをすると、IEnumerable&lt;T&gt;かつAddメソッド(名前で決め打ちされてる)があると呼び出せます。複数引数時も、波括弧で要素をくくることで対応できます(Dictionaryなどで使えるね)。</p>
+<h2>ソースコード</h2>
+<p>長々と長々してましたがソースを。Test.CaseのTupleの量産が面倒なのでT4 Templateにしました。Test.ttとかって名前にしてテストプロジェクトに突っ込んでください。中は完全に固定だから、取り回すなら生成後のTest.csを使っていくと良いかもですね。ご利用はご自由にどうぞ。パブリックドメインで。</p>
+<pre><code class="language-csharp">&lt;#@ assembly Name=&quot;System.Core.dll&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Linq&quot; #&gt;
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace Microsoft.VisualStudio.TestTools.UnitTesting
+{
+    public static class Test
+    {
+        // extensions
+
+        /// &lt;summary&gt;IsNull&lt;/summary&gt;
+        public static void Is&lt;T&gt;(this T value)
+        {
+            Assert.IsNull(value);
+        }
+
+        public static void Is&lt;T&gt;(this T actual, T expected, string message = &quot;&quot;)
+        {
+            Assert.AreEqual(expected, actual, message);
+        }
+
+        public static void Is&lt;T&gt;(this T actual, Func&lt;T, bool&gt; expected, string message = &quot;&quot;)
+        {
+            Assert.IsTrue(expected(actual), message);
+        }
+
+        public static void Is&lt;T&gt;(this IEnumerable&lt;T&gt; actual, IEnumerable&lt;T&gt; expected, string message = &quot;&quot;)
+        {
+            CollectionAssert.AreEqual(expected.ToArray(), actual.ToArray(), message);
+        }
+
+        public static void Is&lt;T&gt;(this IEnumerable&lt;T&gt; actual, params T[] expected)
+        {
+            Is(actual, expected.AsEnumerable());
+        }
+
+        public static void Is&lt;T&gt;(this IEnumerable&lt;T&gt; actual, IEnumerable&lt;Func&lt;T, bool&gt;&gt; expected)
+        {
+            var count = 0;
+            foreach (var cond in actual.Zip(expected, (v, pred) =&gt; pred(v)))
+            {
+                Assert.IsTrue(cond, &quot;Index = &quot; + count++);
+            }
+        }
+
+        public static void Is&lt;T&gt;(this IEnumerable&lt;T&gt; actual, params Func&lt;T, bool&gt;[] expected)
+        {
+            Is(actual, expected.AsEnumerable());
+        }
+
+        // generator
+
+&lt;#
+for(var i = 1; i &lt; 8; i++)
+{
+#&gt;
+
+        public class Case&lt;#= MakeT(i) #&gt; : IEnumerable&lt;Tuple&lt;#= MakeT(i) #&gt;&gt;
+        {
+            List&lt;Tuple&lt;#= MakeT(i) #&gt;&gt; tuples = new List&lt;Tuple&lt;#= MakeT(i) #&gt;&gt;();
+ 
+            public void Add(&lt;#= MakeArgs(i) #&gt;)
+            {
+                tuples.Add(Tuple.Create(&lt;#= MakeParams(i) #&gt;));
+            }
+ 
+            public IEnumerator&lt;Tuple&lt;#= MakeT(i) #&gt;&gt; GetEnumerator() { return tuples.GetEnumerator(); }
+            IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+        }
+&lt;#
+}
+#&gt;
+    }
+}
+&lt;#+
+     string MakeT(int count)
+     {
+          return &quot;&lt;&quot; + String.Join(&quot;, &quot;, Enumerable.Range(1, count).Select(i =&gt; &quot;T&quot; + i)) + &quot;&gt;&quot;;
+     }
+
+     string MakeArgs(int count)
+     {
+          return String.Join(&quot;, &quot;, Enumerable.Range(1, count).Select(i =&gt; &quot;T&quot; + i + &quot; item&quot; + i));
+     }
+
+     string MakeParams(int count)
+     {
+          return String.Join(&quot;, &quot;, Enumerable.Range(1, count).Select(i =&gt; &quot;item&quot; + i));
+     }
+#&gt;
+</code></pre>
+<p>オプション引数のお陰で、こういうちょっとしたのが書くの楽になりましたね(C#4.0 からの新機能)。あとは、可変長引数が配列だけじゃなくてIEnumerableも受け付けてくれれば、AsEnumerableで渡すだけの余計なオーバーロードを作らないで済むんだよね。C# 5.0に期待しますか。</p>
+<h2>まとめ</h2>
+<p>テストのないコードはレガシーコード。と、名著が言ってる(1/4ぐらいしかまだ読んでませんが！)のでテストは書いたほうがいいっす。</p>
+<iframe src="http://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=4798116831" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<p>でも、コード書きってのは気持良くなければならない。気持ち良ければ自然に書くんです。書かない、抵抗感があるってのは、環境が悪いんです。「テスト書きは苦痛だけど良いことだから、赤が緑に変わると嬉しいから書こうぜ！」とかありえない。そんな自己啓発っぽいのは無理。というわけで、拡張メソッドで環境を変えて、気持よく生きましょうー。</p>
+<p>JsUnit（非常にイマイチ）もそうだったんだけど、Java由来(xUnitはSmalltalkのー、とかって話は分かってます）のライブラリとかは、Java的な思考に引き摺られすぎ。もっと言語に合わせたしなやかなAPIってものがあると思うんですよね。MSTestはVS2010で、色々刷新してLinqや拡張メソッドを生かしたものを用意すべきだったと思います。C#2.0的なコードは読むのも書くのも、もう苦痛。レガシーコードとは何か？C#2.0的なコードです。いやほんと。生理的な問題で。</p>
+<h2>追記</h2>
+<p>ここで例として出したものを、より洗練させてライブラリとしてまとめました。<a href="http://chainingassertion.codeplex.com/" title="Chaining Assertion for MSTest">Chaining Assertion for MSTest</a> よければこちらもどうぞ。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0728_269.html">Reactive Extensions入門 + メソッド早見解説表</a></h1>
+<ul class="date"><li>2010-07-28</li></ul>
+<div class="entry_body"><p>Silverlight Toolkitに密かに隠された宝石&quot;System.Reactive.dll&quot;が発見されてから1年。Reactive FrameworkからReactive Extensionsに名前が変わりDevLabsでプロジェクトサイトが公開され、何度となく派手にAPIが消滅したり追加されたりしながら、JavaScript版まで登場して、ここまで来ました。IObservable&lt;T&gt;とIObserver&lt;T&gt;インターフェイスは.NET Framework 4に搭載されたことで、将来的なSP1での標準搭載は間違いなさそう。Windows Phone 7にはベータ版の開発キットに搭載されているように、間違いなく標準搭載されそう。</p>
+<p>現在はAPIもかなり安定したし、Windows Phone 7の登場も迫っている。学ぶならまさに今こそベスト！そんなわけで、Rxの機能の簡単な紹介と導入コード、重要そうなエッセンス紹介、そして(ほぼ)全メソッド一行紹介をします。明日から、いや、今日からRxを使いましょう。</p>
+<p>その前にRxとは何ぞや？ですが、Linq to EventsもしくはLinq to Asynchronus。イベントや非同期処理をLinqっぽく扱えます。</p>
+<h2>Rxの出来る事</h2>
+<p>まず<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx">Reactive Extensions for .NET (Rx)</a>からインストール。そして、System.CoreEx、System.Reactiveを参照に加え(Rxにはもう一つ、System.Interactiveが含まれていて、これはEnumerableの拡張メソッド群になります)れば準備は終了。</p>
+<pre><code class="language-csharp">// Rxの出来る事その1. イベントのLinq化 
+var button = new Button(); // WPFのButton
+Observable.FromEvent&lt;RoutedEventArgs&gt;(button, &quot;Click&quot;)
+   .Subscribe(ev =&gt; Debug.WriteLine(ev.EventArgs));
+
+// Rxの出来る事その2. 非同期のLinq化
+Func&lt;int, int&gt; func = i =&gt; i * 100; // intを100倍する関数
+Observable.FromAsyncPattern&lt;int, int&gt;(func.BeginInvoke, func.EndInvoke)
+   .Invoke(5) // Invokeで非同期関数実行開始(Invokeは任意のタイミングで可)
+   .Subscribe(i =&gt; Debug.WriteLine(i)); // 500
+
+// Rxの出来る事その3. 時間のLinq化
+Observable.Timer(TimeSpan.Zero, TimeSpan.FromSeconds(5))
+   .Subscribe(l =&gt; Debug.WriteLine(l)); // 5秒毎に発火
+
+// Rxの出来る事その4. Pull型のPush型への変換
+var source = new[] { 1, 10, 100, 1000 };
+source.ToObservable()
+   .Subscribe(i =&gt; Debug.WriteLine(i));
+</code></pre>
+<p>それぞれ一行でIObservable&lt;T&gt;に変換出来ます。あとは、LinqなのでSelectやWhereなどお馴染みのメソッドが、お馴染みなように使えます。そして最後にSubscribe。これは、まあ、foreachのようなものとでも捉えてもらえれば（今はね！）。</p>
+<h2>イベントをLinq化して何が嬉しいの？</h2>
+<p>合成出来るのが嬉しいよ！クリックしてクリックイベントが発動する、程度なら別にうまみはありません。でも、イベントは切り目をつけられないものも多数あります。例えばドラッグアンドドロップは「マウスダウン→マウスムーブ→マウスアップ」の連続的なイベント。従来は各関数の「外」で状態管理する変数を持ってやりくりしていましたが、Rxならば、スムーズにこれらを結合して一本の「ドラッグアンドドロップ」ストリームとして作り上げることが出来ます。逆に言えば、ただたんにイベントをLinq化しても嬉しいことはあまりありません。合成して初めて真価を発揮します。そのためには合成系のメソッド(SelectMany, Merge, Zip, CombineLatest, Join)を知る必要がある、のですがまだ当サイトのブログでは記事書いてません。予定は未定じゃなくて近日中には必ず紹介します……。</p>
+<h2>非同期をLinq化して何が嬉しいの？</h2>
+<p>それはもう自明で、単純にBeginInvoke/EndInvokeで待ち合わせるのは面倒くさいから。たった一行でラッピング出来る事の素晴らしさ！でも、同期的に書いてBackgroundWorkerで動かせばいいぢゃない。というのは、一面としては正しい。正しくないのは、Silverlightや、JavaScriptは非同期APIしか用意されていません。なので、クラウド時代のモダンなウェブアプリケーションでは、非同期と付き合うより道はないのです。</p>
+<p>RxではBeginXxx/EndXxxという形で.NETの各メソッドにある非同期のパターンが簡単にラップ出来るようになっています。ジェネリクスの型として、引数と戻り値の型を指定して、あとはBeginInvokeとEndInvokeを渡すだけ。あの面倒くさい非同期処理がこんなにも簡単に！それだけで嬉しくありませんか？</p>
+<h2>Pull型をPush型に変えると何が嬉しいの？</h2>
+<p>分配出来るようになります。え？具体的には、<a href="http://neue.cc/2010/04/29_255.html" title="neue cc - C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions">C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions</a>という記事で紹介しました。そもそもPullとPushって何？という場合は<a href="http://neue.cc/2010/06/24_263.html" title="neue cc - Reactive Extensions for .NET (Rx) メソッド探訪第7回:IEnumerable vs IObservable">メソッド探訪第7回:IEnumerable vs IObservable</a>をどうぞ。</p>
+<h2>Rxを使うのに覚えておきたい大切な3つのこと</h2>
+<p>あまり深く考えなくても使えるけれど、少しポイントを押さえると、驚くほど簡単に見えてくる。「HotとColdの概念を掴むこと」「Schedulerが実行スレッドを決定すること」「Subjectでテストする」。この3つ。まあ、後の二つは実際のとここじつけみたいなもので、本当に大事なのはHotとColdです。あまりにも大事なのだけど、それに関して書くには余白が狭すぎる。ではなくて、以前に<a href="http://neue.cc/2010/06/24_263.html" title="neue cc - Reactive Extensions for .NET (Rx) メソッド探訪第7回:IEnumerable vs IObservable">メソッド探訪第7回:IEnumerable vs IObservable</a>として書いたのでそちらで。とりあえず、ColdはSubscribeしたら即座に実行される、HotはSubscribeしても何もしないでイベント待ち。ぐらいの感覚でOKです。</p>
+<h2>Scheduler</h2>
+<p>Schedulerを使うと「いつ」「どこで」実行するかを決定することが出来ます。Rx内部でのメソッド実行は大抵このSchedulerの上に乗っかっています。</p>
+<pre><code class="language-csharp">// 大抵の生成メソッドはISchedulerを受けるオーバーロードを持つ
+// それに対してSchedulerを渡すと、実行スレッドを決定出来る
+Observable.Range(1, 10, Scheduler.CurrentThread);
+Observable.Interval(TimeSpan.FromSeconds(1), Scheduler.ThreadPool);
+</code></pre>
+<p>基本的には引数に渡すだけ。「いつ」「どこで」ですが、「いつ」に関してはRxの各メソッドが受け持つので、基本的には「どのスレッドで」実行するかを決めることになります。なお、当然デフォルト値もあるわけですが、RangeはCurrentThreadでTimerはThreadPoolだったりと、各メソッドによって若干違ったりすることに注意(但しTimerでCurrentThreadを選ぶと完全にブロックされてTimerというかSleepになるので、挙動として当然といえば当然のこと)</p>
+<p>生成メソッドに渡す以外に、まだ使う場所があります。</p>
+<pre><code class="language-csharp">// WPFでbutton1というボタンとtextBlock1というtextBlockがあるとする
+Observable.FromEvent&lt;RoutedEventArgs&gt;(button1, &quot;Click&quot;)
+    .ObserveOn(Scheduler.ThreadPool) // 重い処理をUIスレッドでするのを避けるためThreadPoolへ対比
+    .Do(_ =&gt; Thread.Sleep(3000)) // 猛烈に重い処理をすることをシミュレート
+    .ObserveOnDispatcher() // Dispatcherに戻す
+    .Subscribe(_ =&gt; textBlock1.Text = &quot;clickした&quot;); // UIスレッドのものを触るのでThreadPool上からだと例外
+</code></pre>
+<p>UIスレッドのコントロールに他のスレッドから触れると例外が発生します。でも、重たい処理をUIスレッド上でやろうものなら、フリーズしてしまいます。なので、重たい処理は別スレッドに退避し、コントロールの部品を弄る時だけUIスレッドに戻したい。という場合に、ObserveOnを使うことで簡単に実行スレッドのコントロールが可能になります。もうDispatcher.BeginInvokeとはサヨナラ！</p>
+<h2>Subjectって何？</h2>
+<p>SubjectはIObservableでありIObserverでもあるもの。というだけではさっぱり分かりません。これは、イベントのRxネイティブ表現です。なので、C#におけるeventと対比させてみると理解しやすいはず。eventはそのクラス内部からはデリゲートとして実行出来ますが、外からだと追加/削除しか出来ませんよね？Subjectはこれを再現するために、外側へはIObservableとして登録のみ出来るようにし、内部からのみ登録されたものへ実行(OnNext/OnError/OnCompleted)して値を渡します。なお、ただキャストしただけでは、外からダウンキャストすればイベントを直接実行出来るということになってしまうので、Subjectを外に公開する時は AsObservableメソッド(IObservableでラップする)を使って隠蔽します。</p>
+<p>どんな時に使うかというとRx専用のクラスを作るとき、もしくはObservableの拡張メソッドを作る時、に有効活用出来るはずです。もしくは、メソッドを試すときの擬似的なイベント代わりに使うと非常に便利です。</p>
+<pre><code class="language-csharp">// Buttonのイベントをイメージ
+var buttonA = new Subject&lt;int&gt;();
+var buttonB = new Subject&lt;int&gt;();
+
+// Zipの動きを確認してみる……
+buttonA.Zip(buttonB, (a, b) =&gt; new { a, b })
+   .Subscribe(a =&gt; Console.WriteLine(a));
+
+buttonA.OnNext(1); // ボタンClickをイメージ
+buttonA.OnNext(2); // Subscribeへ値が届くのはいつ？
+buttonB.OnNext(10); // デバッグのステップ実行で一行ずつ確認
+
+buttonA.OnCompleted(); // 片方が完了したら
+buttonB.OnNext(3); // もう片方にClickが入ったときZipはどういう挙動する？
+</code></pre>
+<p>動きがよくわからないメソッドも、この方法で大体何とか分かります。Subjectには他に非同期実行を表現したAsyncSubjectなど、幾つか亜種があるのでそちらも見ると、Rxのメソッドの動きがよりイメージしやすくなります。例えばFromAsyncPatternは中ではAsyncSubjectを使っているので、AsyncSubjectの動き(OnCompletedの前後でHotとColdが切り替わる、OnNextはOnCompletedが来るまで配信されず、OnCompleted後に最後の値をキャッシュしてColdとして配信し続ける)を丁寧に確認することで、FromAsyncPatternの挙動の理解が簡単になります。</p>
+<h2>メソッド分類早見表</h2>
+<p>決して全部というわけではなく、幾つか飛ばしていますが簡単に各メソッドを分類して紹介。</p>
+<p>生成系メソッド雑多分類</p>
+<pre><code class="language-text">イベント(hot)
+   FromEvent - 文字列で与える以外のやり方もありますよ
+
+非同期系(hot/cold)
+   Start - ToAsync().Invoke()の省略形
+   ToAsync - 拡張メソッドとしてじゃなくそのまま使うのが型推論効いて素敵
+   FromAsyncPattern - ToAsyncも結局これの省略形なだけだったりする
+   ForkJoin - 非同期処理が全て完了するのを待ち合わせて結果をまとめて返す
+
+Enumerableっぽいの系(cold)
+   Range - いつもの
+   Return - ようするにRepeat(element, 1)
+   Repeat - 無限リピートもあるよ
+   ToObservable - pull to push
+   Generate - ようするにUnfold(と言われても困る？)
+   Using - 無限リピートリソース管理付き
+
+Timer系(cold)
+   Timer - 実はcold
+   Interval - Timer(period, period)の省略形なだけだったり
+   GenerateWithTime - 引数地獄
+
+空っぽ系(cold)
+   Empty - OnCompletedだけ発動
+   Throw - OnErrorだけ発動
+   Never - 本当に何もしない
+
+その他
+   Defer - 生成の遅延
+   Create - 自作したい場合に(戻り値はDispose時の実行関数を返す)
+   CreateWithDisposable - 同じく、ただし戻り値はIDisposableを返す
+</code></pre>
+<p>こうしてみるとColdばかりで、Hotなのってイベントだけ？的だったりしますねー。では、IObservableの拡張メソッドも。</p>
+<pre><code class="language-text">合成系
+   SelectMany - Enumerableと同じ感じですが、Rxでは合成のように機能する
+   Zip - 左右のイベントが揃ったらイベント発行（揃うまでQueueでキャッシュしてる）
+   CombineLatest - 最新のキャッシュと結合することで毎回イベント発行
+   Merge - Y字みたいなイメージで、左右の線を一本に連結
+   Join(Plan/And/Then) - Joinパターンとかいう奴らしいですが、Zipの強化版みたいな
+   Concat - 末尾に接続
+   StartWith - 最初に接続
+
+時間系
+   Delay - 値を一定時間遅延させる、coldに使うと微妙なことになるので注意
+   Sample - 一定時間毎に、通過していた最新の値だけを出す
+   Throttle - 一定時間、値が通過していなければ、その時の最新の値を出す
+   TimeInterval - 値と前回の時間との差分を包んだオブジェクトを返す
+   RemoveTimeInterval - 包んだオブジェクトを削除して値のみに戻す
+   Timestamp - 値と通過した時間で包んだオブジェクトを返す
+   RemoveTimestamp - 包んだオブジェクトを削除して値のみに戻す
+   Timeout - 一定時間値が来なければTimeoutExceptionを出す
+
+Connectable系(ColdをHotに変換する、細部挙動はSubjectでイメージするといい)
+   Publish - Subjectを使ったもの(引数によってはBehaviorSubject)
+   Prune - AsyncSubjectを使ったもの
+   Replay  - ReplaySubjectを使ったもの
+
+Enumerableに変換系(Push to Pull、使い道わかりません)
+   Next - MoveNext後に同期的にブロックして値が来るまで待機
+   Latest - 値を一つキャッシュするNext(キャッシュが切れると待機)
+   MostRecent - ブロックなしでキャッシュを返し続ける
+
+例外ハンドリング系
+   OnErrorResumeNext - 例外来たら握りつぶして予備シーケンスへ移す
+   Catch - 対象例外が来たら握りつぶして次へ
+   Finally - 例外などで止まっても最後に必ず実行するのがOnCompletedとの違い
+
+実行スレッド変更系
+   SubscribeOn - メソッド全体の実行スレッドを変える
+   ObserveOn - 以降に流れる値の実行スレッドを変える
+
+クエリ系
+   Select - 射影(SelectManyはこっちじゃないのって話ももも)
+   Where - フィルタリング
+   Scan - Aggregateの経過も列挙するバージョン、一つ過去の値を持てるというのが重要
+   Scan0 - seed含む
+   GroupBy - グルーピング、なのだけどIGroupedObservableは扱いが少し面倒かなあ
+   BufferWithCount - 個数分だけListにまとめる
+   BufferWithTime - 一定時間内の分だけListにまとめる
+   BufferWithTimeOrCount - そのまんま、上二つが合わさったの
+   DistinctUntilChanged - 連続して同じ値が来た場合は流さない
+
+すっとばす系
+   Skip - N個飛ばす
+   SkipWhile - 条件に引っかかる間は飛ばす
+   SkipLast - 最後N個を飛ばす(Lastを除いたTakeという趣向)
+   SkipUntil - 右辺のOnNextを察知する「まで」は飛ばす
+   Take - N個取る
+   TakeWhile - 条件に引っかかる間は取る
+   TakeLast - 最後N個だけを取る
+   TakeUntil - 右辺のOnNextを察知する「まで」は取る
+
+Aggregate系
+   AggregateとかAllとかSumとかEnumerableにもある色々 - 値が確定したとき一つだけ流れてくる
+
+変換系
+   ToEnumerable - 同期的にブロックしてIEnumerableに変換する、Hotだと一生戻ってこない
+   ToQbservable - IQueryableのデュアルらしい、完全にイミフすぎてヤバい
+   Start - ListなんだけどObservableという微妙な状態のものに変換する
+
+その他
+   Materiallize - OnNext,OnError,OnCompletedをNotificationにマテリア化
+   Dematerialize - マテリア化解除
+   Repeat - OnCompletedが来ると最初から繰り返し
+   Let - 一時変数いらず
+   Switch - SelectMany書かなくていいよ的なの
+   AsObservable - IObservableにラップ、Subjectと合わせてどうぞ
+</code></pre>
+<p>疲れた。間違ってるとかこれが足りない（いやまあ、実際幾つか出してないです）とか突っ込み希望。</p>
+<h2>JavaScript版もあります</h2>
+<p>RxJSというJavaScript版のReactive Extensionsもあったりします。ダウンロードは.NET版と同じところから。何が出来るかというと、若干、というかかなりメソッドが少なくなってはいるものの、大体.NETと同じことが出来ます。SchedulerにTimeout(JavaScriptにはスレッドはないけどsetTimeoutがあるので、それ使って実行を遅らせるというもの)があったりと、相違も面白い。</p>
+<p>JavaScriptは、まずAjaxが非同期だし、イベントだらけなのでRxが大変効果を発揮する。強力なはず、なのですが注目度はそんなに高くない。うむむ？jQueryと融合出来るバインディングも用意されていたりと、かなりイケてると思うのですがー。日本だとJSDeferredがあるね、アレの高機能だけど重い版とかとでも思ってもらえれば。</p>
+<p>ところでObservableがあるということはEnumerableもありますか？というと、もちろんありますよ！<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js - LINQ for JavaScript</a>とかいうライブラリを使えばいいらしいです！最近Twitterの英語圏でも話題沸騰（で、ちょっと浮かれすぎて頭がフワフワタイムだった）。RxJSと相互に接続できるようになっていたり、jQueryプラグインになるバージョンもあったりと、jQuery - linq.js - RxJSでJavaScriptとは思えない素敵コードが書けます。</p>
+<p>JavaScriptはIEnumerableとIObservableが両方そなわり最強に見える。</p>
+<h2>Over the Language</h2>
+<p>Linqとは何ぞや。というと、一般にはLinq=クエリ構文=SQLみたいなの、という解釈が依然として主流のようで幾分か残念。これに対する異論は何度か唱えているけれど、では実際何をLinqと指すのだろう。公式の見解はともあれ勝手に考えると、対象をデータソースとみなし、Whereでフィルタリングし、Selectで射影するスタイルならば、それはLinqではないだろうか。</p>
+<p>Linq to ObjectsはIEnumerableが、Linq to XmlではXElementが、Linq to SqlではExpression Treeが、Reactive ExtensionsにはIObservableの実装が必要であり、それぞれ中身は全く違う。昔はExpression Treeを弄ること、QueryProviderを実装することがLinq to Hogeの条件だと考えていたところがあったのだけど、今は、Linqの世界(共通のAPIでの操作)に乗っていれば、それはLinqなのだと思っている。</p>
+<p>だからLinqは言語にも.NET Frameworkにも依存していない。Linqとは考え方にすぎない。例えば、Linq to Objectsはクロージャさえあればどの言語でも成り立つ(そう……JavaScriptでもね？)。むしろ重要なのは「Language INtegrated」なことであり、表面的なスタイル(SQLライクなシンタックス！)は全く重要ではない。言語に統合されていれば、異物感なく自然に扱え、IDEやデバッガなど言語に用意されているツールのサポートが得られる。(例えば……<a href="http://neue.cc/2010/04/23_254.html" title="neue cc - linq.js ver 2.0 / jquery.linq.js - Linq for jQuery">JavaScriptでガリガリと入力補完効かせてみたり</a>ね？)</p>
+<p>言語を超えて共有される、より高い次元の抽象化としてのLinq。私はそんな世界に魅せられています。RxはLinqにおけるデータソースの概念をイベントや非同期にまで拡張(まさにExtension)して、更なる可能性を見せてくれました。次なる世界は<a href="http://research.microsoft.com/en-us/projects/dryad/">Dryad</a>？ まだまだLinqは熱い！</p>
+<h2>まとめ</h2>
+<p>ていうか改めてHaskellは偉大。でも、取っ付きやすさは大事。難しげなことを簡単なものとして甘く包んで掲示したLinqは、凄い。Rxも、取っ付きづらいFunctional Reactive Programmingを、Linqというお馴染みの土台に乗せたことで理解までの敷居を相当緩和させた。素晴らしい仕事です。</p>
+<p>難しいことが簡単に出来る、というのがLinqのキモで、Rxも同じ。難しかったこと(イベントの合成/非同期)が簡単にできる。それが大事だし、その事をちゃんと伝えていきたいなあ。そして、Realworldでの実践例も。そのためにはアプリケーション書かなければ。アプリケーション、書きたいです……。書きます。</p>
+<p>そういえばついでに、Rx一周年ということで、大体一年分の記事が溜まった(そしてロクに書いてないことが判明した)のと、少し前にlinq.jsのRT祭りがあった熱に浮かされて、応募するだけならタダ理論により10月期のMicrosoft MVPに応募しちゃったりなんかしました。恥ずかしぃー。分野にLinqがあれば！とか意味不明なことを思ったのですが、当然無いのでC#です、応募文句は、linq.js作った(DL数累計たった1000)と、Rx紹介書いてる、の二つだけって無理ですね明らかに。これから割と詳細に活動内容を書いて、送らなきゃいけないのですが、オール空白状態。応募したことに泣きたくなってきたよ、とほほ。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0719_268.html">Windows Phone 7 + Reactive ExtensionsによるXml取得</a></h1>
+<ul class="date"><li>2010-07-19</li></ul>
+<div class="entry_body"><p>Windows Phone 7にはReactive Extensionsが標準搭載されていたりするのだよ！なんだってー！と、いうわけで、Real World Rx。じゃないですけれど、Rxを使って非同期処理をゴニョゴニョとしてみましょう。ネットワークからデータ取って何とかする、というと一昔前はRSSリーダーがサンプルの主役でしたが、最近だとTwitterリーダーなのでしょうね。というわけで、Twitterリーダーにします。といっても、ぶっちゃけただたんにデータ取ってリストボックスにバインドするだけです。そしてGUI部分は<a href="http://www.atmarkit.co.jp/fdotnet/scottgublog/20100324phone7app/phone7app.html" title="Silverlightを使用してWindows Phone 7でTwitterアプリケーションを構築 － ＠IT">Silverlightを使用してWindows Phone 7でTwitterアプリケーションを構築 － ＠IT</a>のものを丸ごと使います。手抜き！というわけで、差分としてはRxを使うか否かといったところしかありません。</p>
+<p>なお、別に全然Windows Phone 7ならでは！なことはやらないので、WPFでもSilverlightでも同じように書けます。ちょっとしたRxのサンプルとしてどうぞ。今回は出たばかりの<a href="http://developer.windowsphone.com/" title="Windows Phone for Developers | Windows Phone: Developer Home">Windows Phone Developer Tools Beta</a>を使います。Windows Phone用のBlendがついていたりと盛り沢山。</p>
+<h2>Xmlを読み込む</h2>
+<p>とりあえずLinq to XmlなのでXElement.Load(string uri)ですね。違います。そのオーバーロードはSilverlightでは使えないのであった。えー。なんでー。とはまあ、つまり、同期系APIの搭載はほとんどなくて、全部非同期系で操作するよう強要されているわけです。XElement.Loadは同期でネットワークからXMLを引っ張ってくる→ダウンロード時間中はUI固まる→許すまじ！ということのようで。みんな大好きBackgroundWorkerたん使えばいいぢゃない、みたいなのは通用しないそうだ。</p>
+<p>MSDNにお聞きすれば<a href="http://msdn.microsoft.com/ja-jp/library/cc645034(VS.95).aspx" title="方法 : LINQ to XML で任意の URI の場所から XML ファイルを読み込む">方法 : LINQ to XML で任意の URI の場所から XML ファイルを読み込む</a>とあります。ネットワークからデータを取ってくるときはWebClient/HttpWebRequest使えというお話。</p>
+<p>では、とりあえず、MainPage.xamlにペタペタと書いて、MessageBox.Showで確認していくという原始人な手段を取っていきましょう。XElementの利用にはSystem.Xml.Linqの参照が別途必要です。</p>
+<pre><code class="language-csharp">public MainPage()
+{
+    InitializeComponent();
+    
+    var wc = new WebClient();
+    wc.OpenReadCompleted += (sender, e) =&gt;
+    {
+        var elem = XElement.Load(e.Result); // e.ResultにStreamが入ってる
+        MessageBox.Show(elem.ToString()); // 確認
+    };
+    wc.OpenReadAsync(new Uri(&quot;http://twitter.com/statuses/public_timeline.xml&quot;)); // 非同期読み込み呼び出し開始
+}
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/winphone7_emulator.jpg">
+</p>
+<p>別に難しいこともなくすんなりと表示されました。簡単なことが簡単に書けるって素晴らしい。で、WebClientのプロパティをマジマジと見ていると<a href="http://msdn.microsoft.com/ja-jp/library/system.net.webclient.allowreadstreambuffering(v=VS.95).aspx" title="WebClient.AllowReadStreamBuffering プロパティ (System.Net)">AllowReadStreamBuffering</a>なんてものが。trueの場合はメモリにバッファリングされる。うーん、せっかくなので完全ストリーミングでやりたいなあ。これfalseならバッファリングなしってことですよね？じゃあ、バッファリング無しにしてみますか。</p>
+<pre><code class="language-csharp">var wc = new WebClient();
+wc.AllowReadStreamBuffering = false; // デフォはtrueでバッファリングあり、今回はfalseに変更
+wc.OpenReadCompleted += (sender, e) =&gt;
+{
+    try
+    {
+        var elem = XElement.Load(e.Result); // ここで例外出るよ！
+    }
+    catch (Exception ex)
+    {
+        // Read is not supporeted on the main thread when buffering is disabled.
+        MessageBox.Show(ex.ToString());
+    }
+};
+</code></pre>
+<p>例外で死にました。徹底して同期的にネットワーク絡みの処理が入るのは許しません、というわけですね、なるほど。じゃあ別スレッドでやるよ、ということでとりあえずThreadPoolに突っ込んでみた。</p>
+<pre><code class="language-csharp">wc.OpenReadCompleted += (sender, e) =&gt;
+{
+    ThreadPool.QueueUserWorkItem(_ =&gt;
+    {
+        try
+        {
+            var elem = XElement.Load(e.Result);
+            MessageBox.Show(elem.ToString()); // 今度はここで例外！
+        }
+        catch(Exception ex)
+        {
+            // Invalid cross-thread access.
+            Debug.WriteLine(ex.ToString());
+        }
+    });
+};
+</code></pre>
+<p>読み込みは出来たけど、今度はMessageBox.Showのところで、Invalid Cross Thread Accessで死んだ。そっか、MessageBoxもUIスレッドなのか。うーむ、世の中難しいね！というわけで、とりあえずDispatcher.BeginInvokeしますか。</p>
+<pre><code class="language-csharp">wc.OpenReadCompleted += (sender, e) =&gt;
+{
+    ThreadPool.QueueUserWorkItem(_ =&gt;
+    {
+        var elem = XElement.Load(e.Result);
+        Dispatcher.BeginInvoke(() =&gt; MessageBox.Show(elem.ToString()));
+    });
+};
+</code></pre>
+<p>これで完全なストリームで非同期呼び出しでのXmlロードが出来たわけですね。これは面倒くさいし、Invoke系の入れ子が酷いことになってますよ、うわぁぁ。</p>
+<h2>Rxを使う</h2>
+<p>というわけで、非Rxでやると大変なのがよく分かりました。そこでRxの出番です。標準搭載されているので、参照設定を開きMicrosoft.Phone.ReactiveとSystem.Observableを加えるだけで準備完了。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/winphone7_reactive_ref.jpg">
+</p>
+<pre><code class="language-csharp">var wc = new WebClient { AllowReadStreamBuffering = false };
+
+Observable.FromEvent&lt;OpenReadCompletedEventArgs&gt;(wc, &quot;OpenReadCompleted&quot;)
+    .ObserveOn(Scheduler.ThreadPool) // ThreadPoolで動かすようにする
+    .Select(e =&gt; XElement.Load(e.EventArgs.Result))
+    .ObserveOnDispatcher() // UIスレッドに戻す
+    .Subscribe(x =&gt; MessageBox.Show(x.ToString()));
+
+wc.OpenReadAsync(new Uri(&quot;http://twitter.com/statuses/public_timeline.xml&quot;));
+</code></pre>
+<p>非常にすっきり。Rxについて説明は、必要か否か若干悩むところですが説明しますと、イベントをLinq化します。今回はOpenReadCompletedイベントをLinqにしました。Linq化すると何が嬉しいって、ネストがなくなることです。非常に見やすい。更にRxの豊富なメソッド群を使えば普通ではやりにくいことがいとも簡単に出来ます。今回はObserveOnを使って、どのスレッドで実行するかを設定しました。驚くほど簡単に、分かりやすく。メソッドの流れそのままです。</p>
+<h2>FromAsyncPattern</h2>
+<p>WebClientだけじゃなく、ついでなのでHttpWebRequestでもやってみましょう。(HttpWebRequest)WebRequest.Create()死ね、といつも言ってる私ですが、SilverlightにはWebRequest.CreateHttpでHttpWebRequestが作れるじゃありませんか。何ともホッコリとします。微妙にこの辺、破綻した気がしますがむしろ見なかったことにしよう。</p>
+<pre><code class="language-csharp">var req = WebRequest.CreateHttp(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
+req.AllowReadStreamBuffering = false;
+req.BeginGetResponse(ar =&gt;
+{
+    using (var res = req.EndGetResponse(ar))
+    using (var stream = res.GetResponseStream())
+    {
+        var x = XElement.Load(res.GetResponseStream());
+        Dispatcher.BeginInvoke(() =&gt; MessageBox.Show(x.ToString()));
+    }
+}, null);
+</code></pre>
+<p>非同期しかないのでBeginXxx-EndXxxを使うのですが、まあ、結構面倒くさい。そこで、ここでもまたRxの出番。BeginXxx-EndXxx、つまりAPM(Asynchronus Programming Model:非同期プログラミングモデル)の形式の非同期メソッドをラップするFromAsyncPatternが使えます。</p>
+<pre><code class="language-csharp">var req = HttpWebRequest.CreateHttp(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
+req.AllowReadStreamBuffering = false;
+
+Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)
+    .Invoke() // 非同期実行開始(Invoke()じゃなくて()でもOKです、ただのDelegateなので)
+    .Select(res =&gt; XElement.Load(res.GetResponseStream()))
+    .ObserveOnDispatcher()
+    .Subscribe(x =&gt; MessageBox.Show(x.ToString()));
+</code></pre>
+<p>ラップは簡単で型として戻り値を指定してBeginXxxとEndXxxを渡すだけ。あとはそのまま流れるように書けてしまいます。普通だと面倒くさいはずのHttpWebRequestのほうがWebClientよりも素直に書けてしまう不思議！FromAsyncPatter、恐ろしい子。WebClient+FromEventは先にイベントを設定してURLで発動でしたが、こちらはURLを指定してから実行開始という、より「同期的」と同じように書ける感じがあって好き。WebClient使うのやめて、みんなHttpWebRequest使おうぜ！（ふつーのアプリのほうでは逆のこと言ってるのですががが）</p>
+<p>ところで、非同期処理の実行開始タイミングはInvokeした瞬間であって、Subscribeした時ではありません。どーなってるかというと、ぶっちゃけRxは実行結果をキャッシュしてます。細かい話はまた後日ちゃんと紹介するときにでも。</p>
+<h2>バインドする</h2>
+<p>GUIはScottGu氏のサンプルを丸々頂いてしまいます。リロードボタンを押したらPublicTLを呼ぶだけ、みたいなのに簡略化してしまいました。</p>
+<pre><code class="language-xml">&lt;Grid x:Name=&quot;LayoutRoot&quot; Background=&quot;Transparent&quot;&gt;
+    &lt;Grid.RowDefinitions&gt;
+        &lt;RowDefinition Height=&quot;Auto&quot;/&gt;
+        &lt;RowDefinition Height=&quot;*&quot;/&gt;
+    &lt;/Grid.RowDefinitions&gt;
+
+    &lt;Button Grid.Row=&quot;0&quot; Height=&quot;72&quot; Width=&quot;200&quot; Content=&quot;Reload&quot; Name=&quot;Reload&quot;&gt;&lt;/Button&gt;
+    &lt;ListBox Grid.Row=&quot;1&quot; Name=&quot;TweetList&quot; DataContext=&quot;{Binding}&quot;&gt;
+        &lt;ListBox.ItemTemplate&gt;
+            &lt;DataTemplate&gt;
+                &lt;StackPanel Orientation=&quot;Horizontal&quot;&gt;
+                    &lt;Image Source=&quot;{Binding Image}&quot; Height=&quot;73&quot; Width=&quot;73&quot; VerticalAlignment=&quot;Top&quot; /&gt;
+                    &lt;StackPanel Width=&quot;350&quot;&gt;
+                        &lt;TextBlock Text=&quot;{Binding Name}&quot; Foreground=&quot;Red&quot; /&gt;
+                        &lt;TextBlock Text=&quot;{Binding Text}&quot; TextWrapping=&quot;Wrap&quot; /&gt;
+                    &lt;/StackPanel&gt;
+                &lt;/StackPanel&gt;
+            &lt;/DataTemplate&gt;
+        &lt;/ListBox.ItemTemplate&gt;
+    &lt;/ListBox&gt;
+&lt;/Grid&gt;
+</code></pre>
+<p>あとは、ボタンへのイベント設定と、Twitterのクラスを作る必要があります。</p>
+<pre><code class="language-csharp">public class TwitterStatus
+{
+    public long Id { get; set; }
+    public string Text { get; set; }
+    public string Name { get; set; }
+    public string Image { get; set; }
+
+    public TwitterStatus(XElement element)
+    {
+        Id = (long)element.Element(&quot;id&quot;);
+        Text = (string)element.Element(&quot;text&quot;);
+        Name = (string)element.Element(&quot;user&quot;).Element(&quot;screen_name&quot;);
+        Image = (string)element.Element(&quot;user&quot;).Element(&quot;profile_image_url&quot;);
+    }
+}
+
+public partial class MainPage : PhoneApplicationPage
+{
+    public MainPage()
+    {
+        InitializeComponent();
+        Reload.Click += new RoutedEventHandler(Reload_Click); // XAMLに書いてもいいんですけど。
+    }
+
+    void Reload_Click(object sender, RoutedEventArgs e)
+    {
+        var req = HttpWebRequest.CreateHttp(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
+        req.AllowReadStreamBuffering = false;
+
+        Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)
+            .Invoke()
+            .Select(res =&gt; XElement.Load(res.GetResponseStream()))
+            .Select(x =&gt; x.Descendants(&quot;status&quot;).Select(xe =&gt; new TwitterStatus(xe)))
+            .ObserveOnDispatcher()
+            .Subscribe(ts =&gt; TweetList.ItemsSource = ts);
+    }
+}
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/winphone7_tweet.jpg">
+</p>
+<p>実行するとこんな具合に表示されます。簡単ですねー。ただ、これだとリロードで20件しか表示されないので、リロードしたら継ぎ足されるように変更しましょう。</p>
+<h2>イベントを合成する</h2>
+<p>継ぎ足しの改善、のついでに、一定時間毎に更新も加えよう。基本は一定時間毎に更新だけど、リロードボタンしたら任意のタイミングでリロード。きっとよくあるパターン。Reload.Click+=でハンドラ足すのはやめて、その部分もFromEventでObservable化してしまいましょう。そして一定時間毎のイベント発動はObservable.Timerで。</p>
+<pre><code class="language-csharp">// 30秒毎もしくはリロードボタンクリックでPublicTimeLineを更新
+Observable.Merge(
+        Observable.Timer(TimeSpan.Zero, TimeSpan.FromSeconds(30), Scheduler.NewThread).Select(_ =&gt; (object)_),
+        Observable.FromEvent&lt;RoutedEventArgs&gt;(Reload, &quot;Click&quot;).Select(_ =&gt; (object)_))
+    .SelectMany(_ =&gt;
+    {
+        var req = HttpWebRequest.CreateHttp(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
+        req.AllowReadStreamBuffering = false;
+        return Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)();
+    })
+    .Select(res =&gt; XStreamingReader.Load(res.GetResponseStream()))
+    .SelectMany(x =&gt; x
+        .Descendants(&quot;status&quot;)
+        .Select(xe =&gt; new TwitterStatus(xe))
+        .Reverse()) // 古い順にする
+    .Scan((before, current) =&gt; before.Id &gt; current.Id ? before : current) // 最後に通した記事よりも古ければ通さない(で、同じ記事を返す)
+    .DistinctUntilChanged(t =&gt; t.Id) // 同じ記事が連続して来た場合は何もしないでreturn
+    .ObserveOnDispatcher()
+    .Subscribe(t =&gt; TweetList.Items.Insert(0, t)); // Insertだって...
+</code></pre>
+<p>流れるようにメソッド足しまくるの楽しい！楽しすぎて色々足しすぎて悪ノリしている感が否めません、とほほ。解説しますと、まず一行目のMerge。これは複数本のイベントを一本に統一します。統一するためには型が同じでなければならないのですが、今回はTimer(long)と、Click(RoutedEventArgs)なのでそのままでは合成出来ません。どちらも発火タイミングが必要なだけでlongもRoutedEventArgsも不必要なため、Objectにキャストしてやって合流させました。</p>
+<p>こういう場合、Linq to Objectsなら.Cast&lt;object&gt;()なんですよね。Castないんですか？というと、一応あるにはあるんですが、実質無いようなもので。というわけで、今のところキャストしたければ.Select(<em>=&gt;(object)</em>)を使うしかありません。多分。もっとマシなやり方がある場合は教えてください。</p>
+<p>続いてSelectMany。TimerもしくはClickは発火のタイミングだけで、後ろに流すのはFromAsyncPatternのデータ。こういった、最初のイベントは発火タイミングにだけ使って、実際に流すものは他のイベントに摩り替える（例えばマウスクリックで発動させて、あとはマウスムーブを使うとか）というのは定型文に近い感じでよく使うことになるんじゃないかと思います。SelectMany大事。</p>
+<p>XMLの読み込み部は、せっかくなので、こないだ作ったバッファに貯めこむことなくXmlを読み込める<a href="http://neue.cc/2010/07/16_267.html" title="neue cc - XStreamingReader - Linq to Xml形式でのストリーミングXml読み込み">XStreamingReader</a>を使います。こんな風に、XMLを読み取ってクラスに変換する程度ならXElement.Loadで丸々全体のツリーを作るのも勿体無い。XStreamingReaderなら完全ストリーミングでクラスに変換出来ますよー。という実例。</p>
+<p>その下は更にもう一個SelectMany。こっちはLinq to Objectsのものと同じ意味で、IEnumerableを平たくしています。で、ScanしたDistinctUntilChangedして（解説が面倒になってきた）先頭にInsert（ちょっとダサい）。これで古いものから上に足される = 新しい順番に表示される、という形になりました。XAML側のListBoxを直に触ってInsertとか、明らかにダサい感じなのですが、まあ今回はただのサンプルなので見逃してください。</p>
+<p>RxのMergeに関しては、後日他のイベント合流系メソッド(CombineLatest, Zip, And/Then/Plan/Join)と一緒に紹介したいと思っています。合流系大事。</p>
+<h2>まとめ</h2>
+<p>驚くほどSilverlightで開発簡単。っぽいような印象。C#書ける人ならすぐにとっかかれますねー。素晴らしい開発環境だと思います。そして私は同時に、Silverlight全然分かってないや、という現実を改めて突きつけられて参ってます。XAMLあんま書けない。Blend使えない。MVVM分からない。モバイル開発云々の前に、基本的な技量が全然欠けているということが良く分かったし、それはそれで良い収穫でした。この秋なのか冬なのかの発売までには、ある程度は技術を身につけておきたいところです。</p>
+<p>そしてそれよりなにより開発機欲すぃです。エミュレータの起動も速いし悪くないのですが、やっぱ実機ですよ、実機！配ってくれぇー。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0716_267.html">XStreamingReader - Linq to Xml形式でのストリーミングXml読み込み</a></h1>
+<ul class="date"><li>2010-07-16</li></ul>
+<div class="entry_body"><p><a href="http://xstreamingreader.codeplex.com/" title="XStreamingReader - Streaming for Linq to Xml">CodePlex : XStreamingReader - Streaming for Linq to Xml</a></p>
+<p>1クラスライブラリシリーズ。もしくはストリーミングをIEnumerableに変換していこうシリーズ。またはシンプルだけど小粒でピリッと隙間にぴったりはまるシリーズ(を、目指したい)。といったわけで、100行程度ではあるのですが、表題の機能を持つコードをCodePlexに公開しました。それとおまけとして、XMLファイルからC#クラス自動生成T4 Templateも同梱。</p>
+<p>Linq to Xml風にXmlを読み込めるけれど、ツリーを構築せずストリームで、完全遅延評価で実行します。Linq to Xmlには、書き込み用にXStreamingElementというものがあるため、それと対比した読み込み用という位置付けのつもりです。メモリの厳しいモバイル機器や、巨大なXMLを読み込む際に使えるんじゃないかと思っています。</p>
+<h2>利用例</h2>
+<p>ぶっちゃけまるっきりXElementと同じです。例として<a href="http://weather.yahoo.co.jp/weather/public/rss.html">Yahoo!天気情報</a>のRSSから京都と東京を取り出し。</p>
+<pre><code class="language-csharp">// XElement
+var kyoto = XElement.Load(@&quot;http://rss.weather.yahoo.co.jp/rss/days/6100.xml&quot;)
+    .Descendants(&quot;item&quot;)
+    .Select(x =&gt; new
+    {
+        Title = (string)x.Element(&quot;title&quot;),
+        Description = (string)x.Element(&quot;description&quot;),
+        PubDate = (DateTime)x.Element(&quot;pubDate&quot;)
+    })
+    .Where(a =&gt; !a.Title.StartsWith(&quot;[PR]&quot;)) // itemが広告の場合は除外
+    .ToArray();
+
+// XStreamingReader
+var tokyo = XStreamingReader.Load(@&quot;http://rss.weather.yahoo.co.jp/rss/days/4410.xml&quot;)
+    .Descendants(&quot;item&quot;)
+    .Select(x =&gt; new
+    {
+        Title = (string)x.Element(&quot;title&quot;),
+        Description = (string)x.Element(&quot;description&quot;),
+        PubDate = (DateTime)x.Element(&quot;pubDate&quot;)
+    })
+    .Where(a =&gt; !a.Title.StartsWith(&quot;[PR]&quot;)) // itemが広告の場合は除外
+    .ToArray();
+</code></pre>
+<p>Load/Parseで生成し、ElementsやDescendantsで抽出。あとは、IEnumerable&lt;XElement&gt;となっているので、SelectしたりWhereしたり。完全にLinq to Xmlと同じAPIです。同じすぎてこれだけだと利点がさっぱり見えませんが、100%遅延評価＋ストリーミング読み込みで逐次生成という違いがあります。詳しくは次のセクションで。</p>
+<h2>バックグラウンド</h2>
+<p>Androidでは性能のためにDOMじゃなくてSAXでXML扱うんだ。という話を良く聞いて、確かにただデータ取るためだけにDOM構築ってのは嫌だし、そりゃ避けたい。対象がDOMなら素直にそう思いますが、しかし、もしそれがLinq to Xmlならどうだろう？Windows Phone 7だったらLinq to Xml使うに決まってるよ、と言いたいのですが、これってDOMと同じく、すぐに(LoadなりParseなりした直後)ツリーを構築しています。Elements()なりDescendants()なりの戻り値がIEnumerableなため、遅延評価かと思ってしまうわけですが、遅延評価されるのはツリーの探索が、というだけであって、構築自体は即時でされています。</p>
+<p>DOMに比べて軽量(という謳い文句)であることと、非常に軽々と書けるため抵抗感がないわけですが、考えてみれば Load.Descendants.Select みたいな、API叩いて何らかのクラスなり匿名型なりに変換するという程度の、しかしよくある定型作業は、わざわざツリー作る必要はなくストリーミングで取れるし、それならばストリーミングで取るべきではある。しかし、今時XmlReaderを直で触るなんて、時代への逆行のようなことはやりたくない。</p>
+<p>ストリームはIEnumerableに変換するのがLinq以降のC#の常識。というのを日々連呼しているので、今回はXmlReaderをIEnumerable&lt;T&gt;に変換しなければなりません。しかし、困ったのが、&lt;T&gt;のTを何にすればいいのか、ということ。ファイル読み込みなら一行のString。データベースなら、IDataRecord(<a href="http://neue.cc/2010/04/07_250.html">DbExecutorというライブラリ</a>としてCodePlexに公開しています)を用いましたが、XmlReaderだと適当なのが見当たらない。XmlReaderを直接渡すのは危なっかしいし、そもそも渡したところで面倒くさいことにかわりなくてダメだ。何か適切なコンテナが……。</p>
+<p>と、考えたり考えなかったりで、Twitterでもにょもにょと言っていたら</p>
+<blockquote>
+<p>@neuecc Linq to Xml を使うにしても XmlReaderからReadSubtreeで切り出した断片に対してかなー、XML全体をオンメモリさせる必然性がなければStreamから読んで処理した端からGCに捨てて貰えるようにしておきたいだけだけど<br />
+<a href="http://twitter.com/kazuk/status/18193188205">http://twitter.com/kazuk/status/18193188205</a></p>
+</blockquote>
+<p>うぉ！うぉぉぉぉぉ！なるほど、断片をXElementに変換してそれを渡せば、操作しやすいし感覚的にもXElement.Loadなどと変わらないしでベストだ！言われてみればそりゃそうだよねー、ですが全然頭になかった、まさにコロンブスの卵。こういうことがサラッと出てくることこそが、凄さだよね。</p>
+<p>と、感嘆しつつ、それそのまま頂き、というわけで、TをXElementにするという形で解決しました。</p>
+<pre><code class="language-csharp">public IEnumerable&lt;XElement&gt; Descendants(XName name)
+{
+    using (var reader = readerFactory())
+    {
+        while (reader.ReadToFollowing(name.LocalName, name.NamespaceName))
+        {
+            yield return XElement.Load(reader.ReadSubtree());
+        }
+    }
+}
+</code></pre>
+<p>Descendantsの実装はこんな感じで、断片から都度XElement生成しているという、それだけの単純明快な代物です。そのため挙動はXElement.Load.Descendantsと完全同一というわけじゃありません。例えばサブツリー中に同名の要素がある場合、XElementでDescendantsの場合はサブツリー中の要素も列挙しますが、XStreamingReaderではトップ要素のものだけが拾われます。</p>
+<p>他に注意点としては、それぞれのXElementは完全に独立しているため、ParentやNextNodeなどは全てnullです。よってAncestorsで先祖と比較しながらの複雑な抽出、などといったことも出来ません。TwitterのAPIのような、ウェブサービスとして用意されているXMLなら素直な構造なので問題はありませんが、<a href="http://neue.cc/2010/03/02_244.html">SGMLReaderでLinq to HTML</a>などといった場合は、結構複雑なクエリで抽出することになるため使えないでしょう。その場合は素直にXElement.Loadを使うのが良いと思います。</p>
+<h2>おまけ(Xml→自動クラス生成)</h2>
+<p>Xmlから人力でClass作るのって定型作業で面倒だよねー。ということで、自動生成するT4 Templateも同梱しました。プロパティ定義だけではなく(ちゃんとPascalCaseに直します)、コンストラクタにXElementを投げるとマッピングもしてくれます。つまりは、XStreamingReaderの仕様に合わせたものです。</p>
+<p>.ttの上の方にある3つの項目を適当に書き換えると</p>
+<pre><code class="language-csharp">string XmlString = new WebClient().DownloadString(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
+const string DescendantsName = &quot;status&quot;; // select class root
+const string Namespace = &quot;Twitter&quot;; // namespace
+</code></pre>
+<pre><code class="language-csharp">namespace Twitter
+{
+    public class Status
+    {
+        public string CreatedAt { get; set; }
+        public string Id { get; set; }
+        // snip...
+        public User User { get; set; }
+        public string Geo { get; set; }
+
+        public Status(XElement element)
+        {
+            this.CreatedAt = (string)element.Element(&quot;created_at&quot;);
+            this.Id = (string)element.Element(&quot;id&quot;);
+            this.User = new User(element.Element(&quot;user&quot;));
+            this.Geo = (string)element.Element(&quot;geo&quot;);
+        }
+    }
+    
+    public class User
+    {
+        public string Id { get; set; }
+        public string Name { get; set; }
+        public string ScreenName { get; set; }
+        // snip...
+        public string FollowRequestSent { get; set; }
+
+        public User(XElement element)
+        {
+            this.Id = (string)element.Element(&quot;id&quot;);
+            this.Name = (string)element.Element(&quot;name&quot;);
+            this.ScreenName = (string)element.Element(&quot;screen_name&quot;);
+            this.FollowRequestSent = (string)element.Element(&quot;follow_request_sent&quot;);
+        }
+    }
+}
+</code></pre>
+<p>こんなのが生成されます。型は全部stringになるので、手動で直してください。半自動生成。T4で生成→新しいクラスファイル作って生成結果をコピペ→型を直す。みたいな使い方をイメージしています。完全自動生成じゃないと変更に対する自動追随ってのが出来ないので、自動生成する意味が半減。しかし、型かあ、スキーマないと無理ですな。まあ、ウェブサービスのAPIなどは基本的には固定で変化がないでしょうから、ある程度は手間を省けるんじゃないかと思われます。</p>
+<h2>まとめ</h2>
+<p>断片とはいえ、XElement作るのは無駄じゃないの？というと、無駄ではあります。抽出したらすぐ用済みでポイなわけなので、純粋にパフォーマンスの観点から言えばXmlReaderを直で触ったほうが良いに決まっています。しかし、さすがにそこまで来ると無視して良いと思うわけです。例えばLinqで一時的な匿名型は使わないって？ああ、むしろLinqなんてやめて全部forループにでもします？言いだいたらキリがない。</p>
+<p>今回で大事なのは、ストリーミング化しても、決して使いやすさは損なわれていないということです。ツリー構築型と全く同じように快適に書ける。それが何より大切。「性能のために書きやすさが犠牲になるぐらいなら性能なんていらない！」と、現実は言えなくても心では言ってしまいます。ユーザー視点だと逆ですが……。ただ、中長期的には、スパゲティコードは開発者を幸せにしない→機能追加速度低下/洗練が鈍る→ユーザーも不幸せになる、のループが回るので綺麗さは重要。勿論、そこが性能上本当にボトルネックになっているならば気合入れて叩く必要がありますが、気分的に、もしくはマイクロベンチマーク的にちょっと性能Downな程度でパフォーマンスチューニングとか言い出すのならシバいてよし。</p>
+<p>といったわけかで、私なりにWindows Phone 7プログラミングへの準備を進めています。これで、準備になってる？……だと？ご冗談を。ですね、はい、すみません。開発キットのベータ版が出たので、次回はWindows Phone 7で何か作ろう紹介でも書く予定は未定。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0707_266.html">IEnumerableのCastを抹殺するためのT4 Templateの使い方</a></h1>
+<ul class="date"><li>2010-07-07</li></ul>
+<div class="entry_body"><p>.NET Framework 1.0の負の遺産、HogeCollection。それらの大半はIEnumerable&lt;T&gt;を実装していない、つまるところ一々Cast&lt;T&gt;しなければLinqが使えない。ほんとどうしょうもない。大抵のHogeCollectionは実質Obsoleteみたいなもので、滅多に使わないのだけれど、ただ一つ、RegexのMatchCollectionだけは頻繁に使うわけで、Castにイラつかされるので殺害したい。RegexにはMatchCollection、GroupCollection、CaptureCollectionという恐怖の連鎖が待っているので余計に殺したい。(ところで全く本題とは関係ないのですが、Captureは今ひとつ使い道がわからな……)</p>
+<pre><code class="language-csharp">// わざとらしい例ですが
+var q = Regex.Matches(&quot;aag0 hag5 zag2&quot;, @&quot;(.)ag(\d)&quot;)
+    .Cast&lt;Match&gt;()
+    .SelectMany(m =&gt; m.Groups.Cast&lt;Group&gt;().Skip(1).Select(g =&gt; g.Value))
+    .ToArray(); // a0h5z2
+</code></pre>
+<p>おお、何というCast地獄！つーか.NET 4でBCL書き直したとか言うんなら、その辺も少し融通聞かせてIEnumerable&lt;T&gt;にしてくれてもさー。あ、要望出さないのが悪いとかなのでしょうか……。それなら自己責任ですね、ちゃんと出していかないと。なのはともかく、自己責任ならば自己責任なりに、文句だけ言っててもしょうがないので自前で何とかしましょう。</p>
+<p>ようするに.Cast&lt;Hoge&gt;()を自動で挟めばいいわけですよね。んー、ぴこーん！T4でジェネレートすればいいんじゃね？というわけで、T4 Templateを使ってみました。実際のところT4試してみたかったんだけどネタがなかったので、ネタが出てきて万歳！が本音だったりはします。</p>
+<p>何もないところからテンプレートじゃあ作りようもないので、ひとまず完成系を書いてみる。</p>
+<pre><code class="language-csharp">public static class MatchCollectionExtensions
+{
+    public static IEnumerable&lt;TResult&gt; Select&lt;TResult&gt;(this MatchCollection source, Func&lt;Match, TResult&gt; selector)
+    {
+        return source.Cast&lt;Match&gt;().Select(selector);
+    }
+    
+    // Where, Aggregate, ....
+}
+</code></pre>
+<p>こんな形。グッとイメージしやすくなります。型引数のTSourceを消して、Castを挟んで……。やるべき事が大体見えてきました。まずは、Enumerableの拡張メソッドの抽出を。</p>
+<pre><code class="language-csharp">var extMethods = typeof(Enumerable)
+    .GetMethods()
+    .Where(mi =&gt; Attribute.IsDefined(mi, typeof(ExtensionAttribute)));
+</code></pre>
+<p>特にBindingFlagsは設定しませんが、ExtensionAttributeが指定されているものがあれば拡張メソッド、という判定で問題なく取り出すことが出来ます。続いて戻り値を抽出。</p>
+<pre><code class="language-csharp">var returnType = extMethods
+    .Select(mi =&gt; mi.ReturnType)
+    .Select(mi =&gt; Regex.Replace(mi.Name, &quot;`.*$&quot;, &quot;&quot;)
+        + (mi.IsGenericType ? (&quot;&lt;&quot; + string.Join(&quot;, &quot;, mi.GetGenericArguments().Select(t =&gt; t.Name)) + &quot;&gt;&quot;) : &quot;&quot;));
+</code></pre>
+<p>IEnumerable&lt;T&gt;のNameはIEnumerable<code>1になっているので</code>1を正規表現で削除。そして引数を並べる。ただまあ、これだけだとジェネリック引数がネストしたものに対応出来ていなかったりTSourceが除去できてなかったりダメなのですが、それはそれ(最終的なコードは下記の実例のほうを見てください)。</p>
+<p>といったわけで、相変わらずリフレクション＋Linqは鉄板ですね。というかLinqなしのリフレクションとかやりたくない……。こんな感じにポチポチと素材集めをしたら、T4化します。</p>
+<pre><code class="language-csharp">&lt;#@ template language=&quot;C#&quot; #&gt;
+&lt;#@ output extension=&quot;cs&quot; #&gt;
+&lt;#@ assembly Name=&quot;System.Core.dll&quot; #&gt;
+&lt;#@ import namespace=&quot;System&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Collections.Generic&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Linq&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Text&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Runtime.CompilerServices&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Text.RegularExpressions&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Reflection&quot; #&gt;
+&lt;#
+    var target = new Dictionary&lt;string, string&gt;
+    {
+        {&quot;MatchCollection&quot;, &quot;Match&quot;},
+        {&quot;GroupCollection&quot;, &quot;Group&quot;},
+        {&quot;CaptureCollection&quot;, &quot;Capture&quot;}
+    };
+#&gt;
+&lt;#
+    var ignoreMethods = new HashSet&lt;string&gt;
+    {
+        &quot;Max&quot;, &quot;Min&quot;, &quot;Average&quot;, &quot;Sum&quot;, &quot;Zip&quot;, &quot;OfType&quot;, &quot;Cast&quot;,
+        &quot;Join&quot;, &quot;GroupJoin&quot;, &quot;ThenBy&quot;, &quot;ThenByDescending&quot;, &quot;LongCount&quot;
+    };
+#&gt;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace System.Text.RegularExpressions
+{
+&lt;#
+foreach (var kvp in target)
+{
+#&gt;
+    public static class &lt;#= kvp.Key.Replace(&quot;.&quot;,&quot;&quot;) #&gt;Extensions
+    {
+&lt;#
+foreach (var methodInfo in typeof(Enumerable).GetMethods().Where(mi =&gt; Attribute.IsDefined(mi, typeof(ExtensionAttribute))))
+{
+    if(ignoreMethods.Contains(methodInfo.Name)) continue;
+#&gt;
+        public static &lt;#= MakeReturnType(methodInfo, kvp.Value) #&gt; &lt;#= methodInfo.Name #&gt;&lt;#= MakeGenericArguments(methodInfo) #&gt;(this &lt;#= kvp.Key #&gt; source&lt;#= MakeParameters(methodInfo, kvp.Value) #&gt;)
+        {
+            return source.Cast&lt;&lt;#= kvp.Value #&gt;&gt;().&lt;#= MakeMethodBody(methodInfo) #&gt;;
+        }
+
+&lt;#}#&gt;
+    }
+&lt;#}#&gt;
+}
+&lt;#+
+    const string TSource = &quot;TSource&quot;;
+
+    static string ConstructTypeString(Type type, string castType)
+    {
+        var result = type.Name.Contains(TSource)
+            ? type.Name.Replace(TSource, castType)
+            : Regex.Replace(type.Name, &quot;`.*$&quot;, &quot;&quot;);
+        
+        if (type.IsGenericType)
+        {
+            result += string.Format(&quot;&lt;{0}&gt;&quot;, string.Join(&quot;, &quot;, type.GetGenericArguments().Select(t =&gt; ConstructTypeString(t, castType))));
+        }
+        return result;
+    }
+    
+    static string MakeReturnType(MethodInfo info, string castType)
+    {
+        return ConstructTypeString(info.ReturnType, castType);
+    }
+    
+    static string MakeGenericArguments(MethodInfo info)
+    {
+        var types = info.GetGenericArguments().Select(t =&gt; t.Name).Where(s =&gt; s != TSource);
+        return types.Any() ? string.Format(&quot;&lt;{0}&gt;&quot;, string.Join(&quot;, &quot;, types)) : &quot;&quot;;
+    }
+    
+    static string MakeParameters(MethodInfo info, string castType)
+    {
+        var param = info.GetParameters()
+            .Skip(1)
+            .Select(pi =&gt; new { pi.Name, ParameterType = ConstructTypeString(pi.ParameterType, castType) });
+        
+        return param.Any()
+            ? &quot;, &quot; + string.Join(&quot;, &quot;, param.Select(a =&gt; a.ParameterType + &quot; &quot; + a.Name))
+            : &quot;&quot;;
+    }
+    
+    static string MakeMethodBody(MethodInfo info)
+    {
+        var args = info.GetParameters().Skip(1).Select(pi =&gt; pi.Name);
+        return string.Format(&quot;{0}({1})&quot;, info.Name, args.Any() ? string.Join(&quot;, &quot;, args) : &quot;&quot;);
+    }
+#&gt;
+</code></pre>
+<p>上のほうの、ディクショナリ(target)の初期化子を弄ることで対象の型を増減できます。namespaceはテンプレートに埋め込みなので変える場合は適当に変えてください。ハッシュセット(ignoreMethods)はその名の通り、除外したい拡張メソッドを指定します。今回はMax,Minなどと、Zip,Join,GroupJoin(これらは若干弄らないと対応出来ないので見送り)を除外しています。あとLongCountも外してます、理由はRxのSystem.InteractiveがLongCountで競合するから（多分、Rxチームのミスだと思うのでそのうち直ると思います）。</p>
+<p>どんなクラスにも対応出来る（はず）ので、もしキャストが必要なウザいHogeCollectionがあったら、このテンプレートを使ってみると良いかもしれません。WinFormsのControl.ControlCollectionとかWPFのUIElementCollectionとか(そういうのは、元よりごった煮で詰め込むの前提なので、UIElementでSelect出来ても嬉しくはないかなー)。ともあれ、利用はご自由にどうぞ。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/regexgenerated.jpg">
+</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/regexgroupintellisense.jpg">
+</p>
+<p>こんな感じに、MatchCollection, GroupCollection, CaptureCollectionだと合計1100行ぐらいのコードが生成されます。これで、CastいらずにLinqが書けるようになりました。メデタシメデタシ。</p>
+<h2>T4 Template</h2>
+<p>T4 Templateはかなり良いですね。VisualStudioと密接に動作して、生成出来ないようならエラーですぐ知らせてくれるのが嬉しい。これ大事。超大事。それがないと書けません。C#もそうだけれど、とりあえず書く→コンパイラエラー→直す、をリアルタイムで繰り返せるのは素晴らしい。現代のプログラミング環境はこうでないと、な良さに溢れてます。アドインを入れれば入力補完やシンタックスハイライトも付いてくるので非常に快適。</p>
+<p>T4 Templateは標準搭載の機能だし実に強力なので、積極的に使っていきたいものです。MSDNだと<a href="http://msdn.microsoft.com/ja-jp/library/bb126445.aspx" title="コード生成とテキスト テンプレート">コード生成とテキスト テンプレート</a>辺りかな。例によって、読んでもさっぱり意味がわかりません(笑) 今のところオフィシャルだとこんなドキュメントしかないのかなあ、少し厳しめ。いやまあ、T4自体は構文がシンプルなので、ただ書くだけならサンプル改変で何とかなる、というか、私もサンプル改変以上の機能は知らないのですががが。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0705_265.html">Rx(Reactive Extensions)を自前簡易再実装する</a></h1>
+<ul class="date"><li>2010-07-05</li></ul>
+<div class="entry_body"><p>という表題でUstreamやりました。<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx">Reactive Extensions for .NET (Rx)</a>のSelect, Where, ToObservable, FromEventを実装することで、挙動を知ろうという企画。結果？酷いものです！</p>
+<p class="noindent">
+<object classid="clsid:d27cdb6e-ae6d-11cf-96b8-444553540000" width="640" height="514" id="utv853786" name="utv_n_38025"><param name="flashvars" value="autoplay=false&locale=ja_JP" /><param name="allowfullscreen" value="true" /><param name="allowscriptaccess" value="always" /><param name="src" value="http://www.ustream.tv/flash/video/8028536" /><embed flashvars="autoplay=false&locale=ja_JP" width="640" height="514" allowfullscreen="true" allowscriptaccess="always" id="utv853786" name="utv_n_38025" src="http://www.ustream.tv/flash/video/8028536" type="application/x-shockwave-flash" /></object>
+</p>
+<p>Shift+Alt+F10はお友達。それにしたってぐだぐだ。想像以上に頭が真っ白。セッションやライブコーディングしてる人は凄いね、と実感する。プレゼンどころか人と話すのも苦手です、な私には敷居が高かった。とにかく説明ができない。デバッガで動かせば分かりやすいよねー、なんてやる前は思ってたんですが、人がデバッガ動かしてるの見ててもさっぱり分かりやすくないよ！ということに途中で気づいて青ざめる。</p>
+<p>まあ、こういうのも経験積まないとダメよね、と考えると、リスクゼロ(見てくれた人には申し訳ないですが)で練習出来るので、これからもネタがあればやっていきたいとは思います。反省は活かして。ネタはあまりないのでリクエストあればお願いします。Ustreamの高画質配信については、去年に書いた<a href="http://neue.cc/2009/06/21_169.html">高画質配信するためのまとめ</a>記事が自分で役に立ったぜ、経験が活きたな、的な。私自身の環境はちょっと、というかかなり変わったのですが、配信の基本的部分に関しては今も昔も(といっても1年前か)変わってなかったね。</p>
+<p>さて、そんなUstreamはともかくとして、Rxの基本的な拡張メソッド「Select, Where」と、基本的な生成メソッド「ToObservable, FromEvent」を自前で実装してみる/デバッガで追ってみましょう。自分の手で動かして追うと理解しやすくなります。なので、以下に出すソースはコピペでもいいので、実際にVisualStudio上で動かしてもらえればと思います。</p>
+<h2>IEnumerableで考える</h2>
+<p>IObservableの拡張メソッド実装、の前に復習を兼ねてIEnumerableの拡張メソッドを実装してみましょう。</p>
+<pre><code class="language-csharp">public static IEnumerable&lt;TR&gt; Select&lt;T, TR&gt;(IEnumerable&lt;T&gt; source, Func&lt;T, TR&gt; selector)
+{
+    foreach (var item in source)
+    {
+        yield return selector(item);
+    }
+}
+</code></pre>
+<p>恐ろしく簡単です。こんなにも簡単に書けるのは、yield returnのお陰。裏では、コンパイラが自動で対応するIEnumerable, IEnumeratorを生成してくれます。もしこれを教科書通りに自前で書くとしたら</p>
+<pre><code class="language-csharp">public static IEnumerable&lt;TR&gt; Select&lt;T, TR&gt;(IEnumerable&lt;T&gt; source, Func&lt;T, TR&gt; selector)
+{
+    return new SelectEnumerable&lt;TR&gt;(); // 本当は引数も必要ですが省略
+}
+
+class SelectEnumerable&lt;T&gt; : IEnumerable&lt;T&gt;
+{
+    public IEnumerator&lt;T&gt; GetEnumerator()
+    {
+        return new SelectEnumerator&lt;T&gt;();
+    }
+    // 以下略
+    // IEnumerator IEnumerable.GetEnumerator()
+}
+
+class SelectEnumerator&lt;T&gt; : IEnumerator&lt;T&gt;
+{
+    // Current, Dispose, MoveNextが必要ですが略
+}
+</code></pre>
+<p>ああ、長い。やってられない。こんなものがオブジェクト指向だなどと言うならば、クソったれだと唾を吐きたくなる。そこで、AnonymousHogeパターンを用いれば……</p>
+<pre><code class="language-csharp">public static IEnumerable&lt;TR&gt; Select&lt;T, TR&gt;(this IEnumerable&lt;T&gt; source, Func&lt;T, TR&gt; selector)
+{
+    return new AnonymousEnumerable&lt;TR&gt;(() =&gt;
+    {
+        var enumerator = source.GetEnumerator();
+        return new AnonymousEnumerator&lt;TR&gt;(
+            () =&gt; enumerator.MoveNext(),
+            () =&gt; selector(enumerator.Current),
+            () =&gt; enumerator.Dispose()
+        );
+    });
+}
+</code></pre>
+<p>驚くほどスッキリ。デザインパターンの本はC#でラムダ式全開でやり直すと、考え方はともかく、コードは全然違った内容になるんじゃないかなあ、とか思いつつ。この突然出てきたAnonymousEnumerableに関しては<a href="http://neue.cc/2009/09/07_198.html">.NET Reactive Framework メソッド探訪第二回:AnonymousEnumerable</a>を参照にどうぞ。去年の9月ですか……。AnonymousObservableも紹介する、といって10ヶ月後にようやく果たせている辺りが、やるやる詐欺すぎて本当にごめんなさい。</p>
+<p>簡単に説明すれば、コンストラクタにラムダ式で各メソッドの本体を与えてあげることで、その場でクラスを作ることが出来るという代物です。クロージャによる変数キャプチャにより、引数を渡し回す必要もないため非常にすっきり書く事ができます。</p>
+<p>これってようするにJavaの無名クラスでしょ？と言うと、その通り。おお、Java、大勝利。なんてこたぁーない。大は小を兼ねない、むしろこれは、小は大を兼ねる事の証明。</p>
+<h2>AnonymousObservable</h2>
+<p>IObservableはIEnumerableのようなコンパイラサポートはないので、自前で書かなければなりません。が、普通に書くと面倒なので、AnonymousObservableを使って書くことにしましょう。</p>
+<pre><code class="language-csharp">public class AnonymousObservable&lt;T&gt; : IObservable&lt;T&gt;
+{
+    Func&lt;IObserver&lt;T&gt;, IDisposable&gt; subscribe;
+
+    public AnonymousObservable(Func&lt;IObserver&lt;T&gt;, IDisposable&gt; subscribe)
+    {
+        this.subscribe = subscribe;
+    }
+
+    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
+    {
+        return subscribe(observer);
+    }
+}
+
+public class AnonymousObserver&lt;T&gt; : IObserver&lt;T&gt;
+{
+    Action&lt;T&gt; onNext;
+    Action&lt;Exception&gt; onError;
+    Action onCompleted;
+
+    public AnonymousObserver(Action&lt;T&gt; onNext, Action&lt;Exception&gt; onError, Action onCompleted)
+    {
+        this.onNext = onNext;
+        this.onError = onError;
+        this.onCompleted = onCompleted;
+    }
+
+    public void OnCompleted()
+    {
+        onCompleted();
+    }
+
+    public void OnError(Exception error)
+    {
+        onError(error);
+    }
+
+    public void OnNext(T value)
+    {
+        onNext(value);
+    }
+}
+
+public class AnonymousDisposable : IDisposable
+{
+    Action dispose;
+    bool isDisposed = false;
+
+    public AnonymousDisposable(Action dispose)
+    {
+        this.dispose = dispose;
+    }
+
+    public void Dispose()
+    {
+        if (!isDisposed)
+        {
+            isDisposed = true;
+            dispose();
+        }
+    }
+}
+</code></pre>
+<p>そのまま書き出すだけなので、難しいことは何一つありませんが、面倒くさい……。なお、今回はRx抜きでの実装のためこうして自前で定義していますが、RxにはObservable.Create/CreateWithDisposable、Observer.Create、Disposable.Createというメソッドが用意されていて、それらは今回定義したAnonymousHogeと同一です。new ではなくCreateメソッドで生成するため型推論が効くのが嬉しい。</p>
+<h2>Observable.Select/Where</h2>
+<p>下準備が済んだので実装していきましょう。まずはSelect。</p>
+<pre><code class="language-csharp">public static IObservable&lt;R&gt; Select&lt;T, TR&gt;(this IObservable&lt;T&gt; source, Func&lt;T, TR&gt; selector)
+{
+    return new AnonymousObservable&lt;TR&gt;(observer =&gt; source.Subscribe(
+        new AnonymousObserver&lt;T&gt;(
+            t =&gt; observer.OnNext(selector(t)),
+            observer.OnError,
+            observer.OnCompleted)));
+}
+</code></pre>
+<p>Enumerableと似ているようで非常に分かりにくい。AnonymousObservableの引数のラムダ式は、Subscribeされた時に実行されるもの。というわけで、突然出てきているかのような引数のobserverは、Subscribeによって一つ後ろのメソッドチェーンから渡されるものとなります。</p>
+<pre><code class="language-csharp">Observable.Range(1, 10) // これがsource
+    .Select(i =&gt; i * i)
+    .Subscribe(i =&gt; Console.WriteLine(i)); // これがobserver
+</code></pre>
+<p>こんな前後関係の図式になっています。ドットの一つ前のメソッドがsource、一つ後ろのメソッドがobserver。
+最終的な目的としては元ソースからOnNext-&gt;OnNext-&gt;OnNextと値を伝搬させる必要があるわけですが、元ソースは末端どころか次に渡す先すら知りません。そのため、まず最初(Subscribeされた時)にsource.Subscribeの連鎖で元ソースまで遡ってやる必要がある、というわけです。非常に説明しづらいのでデバッガで追ってみてください。</p>
+<pre><code class="language-csharp">public static IObservable&lt;T&gt; Where&lt;T&gt;(this IObservable&lt;T&gt; source, Func&lt;T, bool&gt; predicate)
+{
+    return new AnonymousObservable&lt;T&gt;(observer =&gt; source.Subscribe(
+        new AnonymousObserver&lt;T&gt;(
+            t =&gt; { if (predicate(t)) observer.OnNext(t); },
+            observer.OnError,
+            observer.OnCompleted)));
+}
+</code></pre>
+<p>WhereはSelectのOnNext部分が違うだけのもの。コピペ量産体制。</p>
+<h2>ToObservable</h2>
+<p>Selectなどと同じくreturn new AnonymousObservableですが、もうSubscribeはしません(そもそもIObservable sourceがないので出来ないですが)。ここからは、末端から伝達されてきたobserverに対して値をPushしてやります。</p>
+<pre><code class="language-csharp">public static IObservable&lt;T&gt; ToObservable&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    return new AnonymousObservable&lt;T&gt;(observer =&gt;
+    {
+        var isErrorOccured = false;
+        try
+        {
+            foreach (var item in source)
+            {
+                observer.OnNext(item);
+            }
+        }
+        catch (Exception e)
+        {
+            isErrorOccured = true;
+            observer.OnError(e);
+        }
+        if (!isErrorOccured) observer.OnCompleted();
+
+        return new AnonymousDisposable(() =&gt; { });
+    });
+}
+</code></pre>
+<p>Subscribeされると即座にforeachが回ってOnNext呼びまくる。ToObservableはHot or ColdのうちColdで、Subscribeされるとすぐに値が列挙されるわけです。Coldってのは、なんてことはなく、ようはすぐforeachされるからってだけの話でした。</p>
+<p>戻り値のIDisposableは、FromEventではイベントのデタッチなどの処理がありますが、ToObservableでは何もする必要がないので何も無し。</p>
+<h2>FromEvent徹底解剖</h2>
+<p>Coldだけでは、別にEnumerbaleと全然変わらなくて全く面白くないので、Hot Observableも見てみます。Hotの代表格はFromEvent。そんなFromEventには4つのオーバーロードがあります。せっかくなので、細かく徹底的に見てみましょう。</p>
+<pre><code class="language-csharp">public class EventSample
+{
+    public event EventHandler BlankEH;
+    public event EventHandler&lt;SampleEventArgs&gt; GenericEH;
+    public event SampleEventHandler SampleEH;
+}
+
+public class SampleEventArgs : EventArgs { }
+public delegate void SampleEventHandler(object sender, SampleEventArgs e);
+
+static void Main(string[] args)
+{
+    var sample = new EventSample();
+    // 1. EventHandlerに対応するもの
+    Observable.FromEvent(
+        h =&gt; sample.BlankEH += h, h =&gt; sample.BlankEH -= h);
+    // 2. EventHandler&lt;EventArgs&gt;に対応するもの
+    Observable.FromEvent&lt;SampleEventArgs&gt;(
+        h =&gt; sample.GenericEH += h, h =&gt; sample.GenericEH -= h);
+    // 3. 独自EventHandlerに対応するもの
+    Observable.FromEvent&lt;SampleEventHandler, SampleEventArgs&gt;(
+        h =&gt; new SampleEventHandler(h),
+        h =&gt; sample.SampleEH += h, h =&gt; sample.SampleEH -= h);
+    // 4. リフレクション
+    Observable.FromEvent&lt;SampleEventArgs&gt;(sample, &quot;GenericEH&quot;);
+    Observable.FromEvent&lt;SampleEventArgs&gt;(sample, &quot;SampleEH&quot;);
+}
+</code></pre>
+<p>FromEventと言ったら文字列で渡して―― という感じだったりですが、むしろそれのほうが例外的なショートカットで、基本はeventをadd/removeする関数を渡します。3つもありますが、基本的には三番目、conversionが必要なものが最も多く出番があるでしょうか。ただのEventHandlerなんて普通は使わないし、ジェネリクスのEventHandlerもほとんど見かけないしで、どうせみんな独自のEventHandlerなんでしょ、みたいな。もしEventHandler&lt;T&gt;で統一されていれば、こんな面倒くさいconversionなんて必要なかったのに！もしくは、みんなAction&lt;object, TEventArgs&gt;で良かった。名前付きデリゲートの氾濫の弊害がこんなところにも……。</p>
+<p>実際のとこ文字列渡しで良いよねー、と思います。リフレクションのコストはどうせ最初の一回だけだし。リファクタリング効かないといっても、別にイベントの名前なんて変更しないっしょっていうか、フレームワークに用意されてるイベントは固定だし、って話ですし。</p>
+<h2>FromEventの作成</h2>
+<p>そんなわけで、今回は3引数のFromEventを作ります。FromEventの戻り値はIEventなので、IEventの定義も一緒に。</p>
+<pre><code class="language-csharp">public interface IEvent&lt;TEventArgs&gt; where TEventArgs : EventArgs
+{
+    object Sender { get; }
+    TEventArgs EventArgs { get; }
+}
+
+public class AnonymousEvent&lt;TEventArgs&gt; : IEvent&lt;TEventArgs&gt; where TEventArgs : EventArgs
+{
+    readonly object sender;
+    readonly TEventArgs eventArgs;
+
+    public AnonymousEvent(object sender, TEventArgs eventArgs)
+    {
+        this.sender = sender;
+        this.eventArgs = eventArgs;
+    }
+
+    public object Sender
+    {
+        get { return sender; }
+    }
+
+    public TEventArgs EventArgs
+    {
+        get { return eventArgs; }
+    }
+}
+
+public static IObservable&lt;IEvent&lt;TEventArgs&gt;&gt; FromEvent&lt;TDelegate, TEventArgs&gt;(
+    Func&lt;EventHandler&lt;TEventArgs&gt;, TDelegate&gt; conversion,
+    Action&lt;TDelegate&gt; addHandler,
+    Action&lt;TDelegate&gt; removeHandler) where TEventArgs : EventArgs
+{
+    return new AnonymousObservable&lt;IEvent&lt;TEventArgs&gt;&gt;(observer =&gt;
+    {
+        var handler = conversion((sender, e) =&gt;
+        {
+            observer.OnNext(new AnonymousEvent&lt;TEventArgs&gt;(sender, e));
+        });
+        addHandler(handler);
+        return new AnonymousDisposable(() =&gt; removeHandler(handler));
+    });
+}
+</code></pre>
+<p>感覚的にはToObservableの時と一緒。Subscribeされたら実行される関数を書く。Subscribe時に実際に実行されるのはaddHandlerだけ。つまりイベント登録。そしてイベントが発火した場合は、conversionのところのラムダ式に書いたものが呼び出される、つまり次のobserverに対してOnNextでIEventを送る。そして、DisposeされたらremoveHandlerの実行。</p>
+<p>これが、Hotなわけですね。つまりSubscribeだけではOnNextが呼ばれず、もう一段階、奥から実行される。</p>
+<pre><code class="language-csharp">// 実行例としてObservableCollectionなどを用意。
+var collection = new ObservableCollection&lt;int&gt;();
+
+var collectionChanged = Observable.FromEvent&lt;NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs&gt;(
+            h =&gt; new NotifyCollectionChangedEventHandler(h),
+            h =&gt; collection.CollectionChanged += h,
+            h =&gt; collection.CollectionChanged -= h)
+        .Select(e =&gt; (int)e.EventArgs.NewItems[0]);
+
+// attach
+collectionChanged.Subscribe(new AnonymousObserver&lt;int&gt;(i =&gt; Console.WriteLine(i), e =&gt; { }, () =&gt; { }));
+collectionChanged.Subscribe(new AnonymousObserver&lt;int&gt;(i =&gt; Console.WriteLine(i * i), e =&gt; { }, () =&gt; { }));
+
+collection.Add(100); // 100, 10000
+collection.Add(200); // 200, 40000
+</code></pre>
+<p>利用時は大体こんな感じになります。いたって普通。</p>
+<h2>まとめ</h2>
+<p>というわけで実装を見ていきましたが、意外と簡単です。リフレクタでToObservable見たけどこんな簡単じゃなかったぞ！と言われると、そうですね、実際のRxはScheduler(カレントスレッドで実行するかスレッドプールで実行するか、などなどが選べる)が絡むので実装はもう少し、というかもうかなり複雑です。だからこそ惑わされてしまうというわけで、基本的な骨格部分にのみ絞ってみれば十二分にシンプル、というのを掴むのが肝要じゃないかと思います。</p>
+<p>次回は前回予告の通りに、後回しにしちゃってるけれど結合周りを紹介できればいいなあ。あと、FromAsyncか、Timer周辺か、Schedulerか……。RxJSもちゃんと例を出したいし、例を出したいといえば、そう、メソッド紹介だけじゃなく実例も出していきたいなあ、だし。うーん。まあ、ボチボチとやっていきます。最近ほんとRxの知名度・注目度が高まってるような気がしてます。ぐぐる検索で私のへっぽこ記事が上位に出てしまうという現状なので、申し訳ない、じゃなくて、それ相応の責任を果たすという方向で頑張りたいと思います。つまりは記事をちゃんと充実させよう。</p>
+</div>
+<a href="./publish/2010/">Prev |</a>
+<a href="./publish/2010/3">| Next</a>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

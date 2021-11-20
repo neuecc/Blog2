@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - .NETの標準シリアライザ(XML/JSON)の使い分けまとめ</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2011/1210_357.html">.NETの標準シリアライザ(XML/JSON)の使い分けまとめ</a></h1>
+<ul class="date"><li>2011-12-10</li></ul>
+<div class="entry_body"><p>今年もAdvent Calendarの季節がやってきましたね。去年は私はC#とJavaScriptで書きましたが、今年はC#とSilverlightでやります。というわけで、この記事は<a href="http://atnd.org/events/22001">Silverlight Advent Calendar 2011</a>用のエントリです。前日は<a href="https://twitter.com/#!/Posaune">@posaune</a>さんの<a href="http://d.hatena.ne.jp/posaunehm/20111209/1323443047">SilverlightのListBoxでつくるいんちきHorizontalTextBlock </a>でした。</p>
+<p>今回の記事中のサンプルはSilverlight 4で書いています。が、Silverlight用という体裁を持つためにDebug.WriteLineで書いているというだけで、Silverlightらしさは皆無です！えー。.NET 4でもWindows Phone 7でも関係なく通じる話ですねん。</p>
+<h2>シリアライザを使う場面</h2>
+<p>概ね3つではないでしょうか。外部で公開されているデータ(APIをネット経由で叩くとか)をクラスに変換する。これは 自分の管理外→プログラム での片方向です。内部で持っているデータ(クラスのインスタンス)を保存用・復元用に相互変換する。これは プログラム←→自分の管理内 での双方向です。最後に、内部で持っているデータを公開用に変換する。これは プログラム→外部 での片方向。</p>
+<p>目的に応じてベストな選択は変わってきます。こっから延々と長ったらしいので、まず先に結論のほうを。</p>
+<ul>
+<li>外部APIを叩く→XML/XmlSerializer, JSON/DataContractJsonSerializer</li>
+<li>オブジェクトの保存・復元用→DataContractSerializer</li>
+<li>外部公開→さあ？</li>
+</ul>
+<p>外部公開のは、Silverlightの話じゃないので今回はスルーだ！<a href="http://msdn.microsoft.com/ja-jp/library/system.xml.linq.xstreamingelement.aspx">XStreamingElement</a>で組み上げてもいいし、何でもいいよ！WCFのテンプレにでも従えばいいんぢゃないでしょーか。</p>
+<h2>XmlSerializer</h2>
+<p>古くからあるので、シリアライザといったらこれ！という印象な方も多いのではないでしょうか。その名の通り、素直にXMLの相互変換をしてくれます。</p>
+<pre><code class="language-csharp">// こんなクラスがあるとして
+// (以降、断り書きなくPersonが出てきたらこいつを使ってると思ってください)
+public class Person
+{
+    public string Name { get; set; }
+    public int Age { get; set; }
+}
+</code></pre>
+<pre><code class="language-csharp">// データ準備
+var data = new Person { Name = &quot;山本山&quot;, Age = 99 };
+
+var serializer = new XmlSerializer(typeof(Person));
+using (var ms = new MemoryStream())
+{
+    serializer.Serialize(ms, data); // シリアライズ
+
+    // 結果確認出力
+    var xml = Encoding.UTF8.GetString(ms.ToArray(), 0, (int)ms.Length);
+    Debug.WriteLine(xml);
+
+    ms.Position = 0; // 巻き戻して……
+    var value = (Person)serializer.Deserialize(ms); // デシリアライズ
+    Debug.WriteLine(value.Name + &quot;:&quot; + value.Age); // 山本山:99
+}
+</code></pre>
+<pre><code class="language-xml">// 出力結果のXML
+﻿&lt;?xml version=&quot;1.0&quot; encoding=&quot;utf-8&quot;?&gt;
+&lt;Person xmlns:xsi=&quot;http://www.w3.org/2001/XMLSchema-instance&quot; xmlns:xsd=&quot;http://www.w3.org/2001/XMLSchema&quot;&gt;
+  &lt;Name&gt;山本山&lt;/Name&gt;
+  &lt;Age&gt;99&lt;/Age&gt;
+&lt;/Person&gt;
+</code></pre>
+<p>素直な使い勝手、素直な出力。いいですね。さて、しかし特に外部APIを叩いて手に入るXMLは名前PascalCaseじゃねーよ、とか属性の場合どうすんだよ、という場合も多いでしょう。細かい制御にはXmlAttributeを使います。</p>
+<pre><code class="language-csharp">[XmlRoot(&quot;people&quot;)]
+public class People
+{
+    [XmlElement(&quot;count&quot;)]
+    public int Count { get; set; }
+    [XmlArray(&quot;persons&quot;)]
+    [XmlArrayItem(&quot;person&quot;)]
+    public Person[] Persons { get; set; }
+}
+
+[XmlRoot(&quot;person&quot;)]
+public class Person
+{
+    [XmlElement(&quot;name&quot;)]
+    public string Name { get; set; }
+    [XmlAttribute(&quot;age&quot;)]
+    public int Age { get; set; }
+}
+</code></pre>
+<pre><code class="language-csharp">// データ準備
+var data = new People
+{
+    Count = 2,
+    Persons = new[]
+{
+    new Person { Name = &quot;山本山&quot;, Age = 99 },
+    new Person { Name = &quot;トマト&quot;, Age = 19 }
+}
+};
+var xml = @&quot;
+    &lt;people&gt;
+        &lt;count&gt;2&lt;/count&gt;
+        &lt;persons&gt;
+            &lt;person age=&quot;&quot;14&quot;&quot;&gt;
+                &lt;name&gt;ほむ&lt;/name&gt;
+            &lt;/person&gt;
+            &lt;person age=&quot;&quot;999&quot;&quot;&gt;
+                &lt;name&gt;いか&lt;/name&gt;
+            &lt;/person&gt;
+        &lt;/persons&gt;
+    &lt;/people&gt;&quot;;
+
+var serializer = new XmlSerializer(typeof(People));
+
+// シリアライズ
+using (var ms = new MemoryStream())
+{
+    serializer.Serialize(ms, data);
+    Debug.WriteLine(Encoding.UTF8.GetString(ms.ToArray(), 0, (int)ms.Length));
+}
+
+// デシリアライズ
+using (var sr = new StringReader(xml))
+{
+    var value = (People)serializer.Deserialize(sr);
+    foreach (var item in value.Persons)
+    {
+        Debug.WriteLine(item.Name + &quot;:&quot; + item.Age);
+    }
+}
+
+// 出力結果のXMLは↑に書いたXMLと同じようなものなので割愛
+</code></pre>
+<p>ちょっと属性制御が面倒ですが、それなりに分かりやすく書けます。他によく使うのは無視して欲しいプロパティを指定するXmlIgnoreかしら。さて、そんな便利なXmlSerializerですが、XML化するクラスに制限があります。有名所ではDictionaryがシリアライズできねえええええ！とか。小細工して回避することは一応可能ですが、そんな無理するぐらいなら使うのやめたほうがいいでしょう、シリアライザは別にXmlSerializerだけじゃないのだから。</p>
+<p>というわけで、XmlSerializerの利用シーンのお薦めは、ネットワークから外部APIを叩いて手に入るXMLをクラスにマッピングするところです。柔軟な属性制御により、マッピングできないケースは(多分)ないでしょう。いや、分かりませんが。まあ、ほとんどのケースでは大丈夫でしょう！しかし、LINQ to XMLの登場により、手書きで変換するのも十分お手軽なってしまったので、こうして分かりにくい属性制御するぐらいならXElement使うよ、というケースのほうが多いかもしれません。結局、XML構造をそのまま映すことしかできないので、より細かく変換できたほうが良い場合もずっとあって。</p>
+<p>実際、私はもう長いことXmlSerializer使ってない感じ。LINQ to XMLは偉大。</p>
+<h2>DataContractSerializer</h2>
+<p>割と新顔ですが、もう十分古株と言ってよいでしょう(どっちだよ)。XmlSerializerと同じくオブジェクトをXMLに変換するのですが、その機能はずっと強力です。Dictionaryだってなんだってシリアライズできますよ、というわけで、現在では.NETの標準シリアライザはこいつです。</p>
+<pre><code class="language-csharp">// データ準備
+var data = new Person { Name = &quot;山本山&quot;, Age = 99 };
+
+var serializer = new DataContractSerializer(typeof(Person));
+using (var ms = new MemoryStream())
+{
+    serializer.WriteObject(ms, data); // シリアライズ
+
+    // 結果確認出力
+    var xml = Encoding.UTF8.GetString(ms.ToArray(), 0, (int)ms.Length);
+    Debug.WriteLine(xml);
+
+    ms.Position = 0; // 巻き戻して……
+    var value = (Person)serializer.ReadObject(ms); // デシリアライズ
+    Debug.WriteLine(value.Name + &quot;:&quot; + value.Age); // 山本山:99
+}
+</code></pre>
+<pre><code class="language-xml">&lt;Person xmlns:i=&quot;http://www.w3.org/2001/XMLSchema-instance&quot; xmlns=&quot;http://schemas.datacontract.org/2004/07/SilverlightApplication34&quot;&gt;&lt;Age&gt;99&lt;/Age&gt;&lt;Name&gt;山本山&lt;/Name&gt;&lt;/Person&gt;
+</code></pre>
+<p>とまあ、使い勝手はXmlSerializerと似たようなものです。おお、出力されるXMLは整形されていません。整形して出力したい場合は</p>
+<pre><code class="language-csharp">// 出力を整形したい場合はXmlWriter/XmlWriterSettingsを挟む
+using (var ms = new MemoryStream())
+using (var xw = XmlWriter.Create(ms, new XmlWriterSettings { Indent = true }))
+{
+    serializer.WriteObject(xw, data);
+
+    xw.Flush();
+    var xml = Encoding.UTF8.GetString(ms.ToArray(), 0, (int)ms.Length);
+    Debug.WriteLine(xml);
+}
+</code></pre>
+<pre><code class="language-xml">﻿&lt;?xml version=&quot;1.0&quot; encoding=&quot;utf-8&quot;?&gt;
+&lt;Person xmlns:i=&quot;http://www.w3.org/2001/XMLSchema-instance&quot; xmlns=&quot;http://schemas.datacontract.org/2004/07/SilverlightApplication34&quot;&gt;
+  &lt;Age&gt;99&lt;/Age&gt;
+  &lt;Name&gt;山本山&lt;/Name&gt;
+&lt;/Person&gt;
+</code></pre>
+<p>さて、結果をXmlSerializerと見比べてみるとどうでしょう。名前空間が違います。SilverlightApplication34ってありますね。これは、私がこのXMLを出力するのに使ったSilverlightプロジェクトの名前空間です。ワシのConsoleApplicationは221まであるぞ（整理しろ）。さて、ではこのXMLをデシリアライズするのに、別のアプリケーション・別のクラスで使ってみるとどうでしょう？</p>
+<pre><code class="language-csharp">namespace TestSilverlightApp
+{
+    public class Person
+    {
+        public string Name { get; set; }
+        public int Age { get; set; }
+    }
+
+    public partial class MainPage : UserControl
+    {
+        public MainPage()
+        {
+            InitializeComponent();
+
+            var xml = @&quot;&lt;?xml version=&quot;&quot;1.0&quot;&quot; encoding=&quot;&quot;utf-8&quot;&quot;?&gt;
+            &lt;Person xmlns:i=&quot;&quot;http://www.w3.org/2001/XMLSchema-instance&quot;&quot; xmlns=&quot;&quot;http://schemas.datacontract.org/2004/07/SilverlightApplication34&quot;&quot;&gt;
+                &lt;Age&gt;99&lt;/Age&gt;
+                &lt;Name&gt;山本山&lt;/Name&gt;
+            &lt;/Person&gt;&quot;;
+
+            var serializer = new DataContractSerializer(typeof(Person));
+            using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(xml)))
+            {
+                // System.Runtime.Serialization.SerializationExceptionが起こってデシリアライズできない
+                // 名前空間 'http://schemas.datacontract.org/2004/07/TestSilverlightApp' の要素 'Person' が必要です。
+                // 名前が 'Person' で名前空間が 'http://schemas.datacontract.org/2004/07/SilverlightApplication34' の 'Element' が検出されました。
+                var value = (Person)serializer.ReadObject(ms);
+            }
+        }
+    }
+}
+</code></pre>
+<p>デシリアライズ出来ません。対象オブジェクトが名前空間によって厳密に区別されるからです。じゃあどうするのよ！というと、属性で名前空間を空、という指示を与えます。</p>
+<pre><code class="language-csharp">// DataContract属性をクラスにつけた場合は
+// そのクラス内のDataMember属性をつけていないプロパティは無視される
+[DataContract(Namespace = &quot;&quot;, Name = &quot;person&quot;)]
+public class Person
+{
+    [DataMember(Name = &quot;name&quot;)]
+    public string Name { get; set; }
+    [DataMember(Name = &quot;age&quot;)]
+    public int Age { get; set; }
+}
+</code></pre>
+<pre><code class="language-csharp">// こんなプレーンなXMLも読み込める
+var xml = @&quot;
+    &lt;person&gt;
+        &lt;age&gt;99&lt;/age&gt;
+        &lt;name&gt;山本山&lt;/name&gt;
+    &lt;/person&gt;&quot;;
+
+var serializer = new DataContractSerializer(typeof(Person));
+using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(xml)))
+{
+    var value = (Person)serializer.ReadObject(ms);
+    Debug.WriteLine(value.Name + &quot;:&quot; + value.Age);
+}
+</code></pre>
+<p>属性面倒くせー、ですけれど、まあしょうがない。そうすれば外部からのXMLも読み込めるし、と思っていた時もありました。以下のようなケースではどうなるでしょうか？Personクラスは↑のものを使うとして。</p>
+<pre><code class="language-csharp">// こんなさっきと少しだけ違うXMLがあるとして
+var xml = @&quot;
+    &lt;person&gt;
+        &lt;name&gt;山本山&lt;/name&gt;
+        &lt;age&gt;99&lt;/age&gt;
+    &lt;/person&gt;&quot;;
+
+var serializer = new DataContractSerializer(typeof(Person));
+using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(xml)))
+{
+    var value = (Person)serializer.ReadObject(ms);
+    Debug.WriteLine(value.Name + &quot;:&quot; + value.Age); // 結果は？？？
+}
+</code></pre>
+<p>これは出力結果は「山本山:0」になります。Ageが0、つまり復元されませんでした。なぜかというと、XMLを見てください。nameが先で、ageが、後。DataContractSerializerは規程された順序に強く従います。DataMember属性のOrderプロパティで順序を与えるか、与えない場合はアルファベット順(つまりAgeが先でNameが後)となります。この辺は<a href="http://msdn.microsoft.com/ja-jp/library/ms729813.aspx">データ メンバーの順序</a>に書かれています。</p>
+<p>と、いうような事情から、DataContractSerializerを外部XMLからの受け取りに使うのはお薦めしません。XmlSerializerなら順序無視なので大丈夫です。いや、普通は順序が変わったりなどしないだろう！と思わなくもなくもないけれど、意外とデタラメなのじゃないか、基本的にはお外からのデータが何もかも信用できるわけなどないのだ、とうがってしまい(TwitterのAPIとか胡散臭さいのを日常的に触っていると！)、厳しいかなって、思ってしまうのです。</p>
+<p>しかし、オブジェクトの保存・復元用にはDataContractSerializerは無類の強さを発揮します。例えば設定用のクラスを丸ごとシリアライズ・デシリアライズとかね。iniにして、じゃなくてフツーはXMLにすると思いますが、それです、それ。Dictionaryだってシリアライズできるし、引数なしコントラクタがないクラスだってシリアライズできちゃうんですよ？</p>
+<pre><code class="language-csharp">// とある引数なしコンストラクタがないクラス
+[DataContract]
+public class ToaruClass
+{
+    [DataMember]
+    public string Name { get; set; }
+
+    public ToaruClass(string name)
+    {
+        Name = name;
+    }
+}
+</code></pre>
+<pre><code class="language-csharp">var toaru = new ToaruClass(&quot;たこやき&quot;);
+
+var serializer = new DataContractSerializer(typeof(ToaruClass));
+using (var ms = new MemoryStream())
+{
+    serializer.WriteObject(ms, toaru); // シリアライズできるし
+
+    ms.Position = 0;
+    var value = (ToaruClass)serializer.ReadObject(ms); // デシリアライズできる
+
+    Debug.WriteLine(value.Name); // たこやき
+}
+</code></pre>
+<p>ただし、対象クラスにDataContract属性をつけてあげる必要はあります。つけてないとシリアライズもデシリアライズもできません。</p>
+<p>ちなみに何でコンストラクタがないのにインスタンス化出来るんだよ！というと、<a href="http://msdn.microsoft.com/ja-jp/library/system.runtime.serialization.formatterservices.getuninitializedobject.aspx">System.Runtime.Serialization.FormatterServices.GetUninitializedObject</a>を使ってインスタンス化しているからです（Silverlightの場合はアクセス不可能）。こいつはコンストラクタをスルーしてオブジェクトを生成する反則スレスレな存在です、というか反則です。チートであるがゆえに、対象クラスにはDataContract属性をつける必要があります。コンストラクタ無視してもいいよ、ということを保証してあげないとおっかない、というわけです。(GetUninitializedObjectメソッド自体は別に属性は不要で何でもインスタンス化できます、typeof(void)ですらインスタンス化できます、無茶苦茶である)</p>
+<p>なお、このGetUninitializedObjectが使われるのはDataContract属性がついているクラスのみです。DataContract属性がついていなければ、普通のコンストラクタが呼ばれるし、逆にDataContract属性がついていると、例え引数をうけないコンストラクタがあったとしても、GetUninitializedObject経由となりコンストラクタは無視されます。DataContract属性を付ける時はコンストラクタ内でシリアライズで復元できない副作用のある処理をすべきではない。ということに注意してください。</p>
+<p>また、.NET 4版ではprivateプロパティの値も復元できるのですが、Silverlightの場合は無理のようです。ということでフル.NETなら不変オブジェクトでもサクサク大勝利、と思ってたのですが、Silverlightでの不変オブジェクトのシリアライズ・デシリアライズは不可能のようです。保存したいなら、保存専用の代理のオブジェクトを立ててやるしかない感じでしょうかね。</p>
+<p>そんなわけで微妙な点も若干残りはしますが、オブジェクトを保存するのにはDataContractSerializerがお薦めです。</p>
+<h2>DataContractとSerializable</h2>
+<p>シリアライズ可能なクラス、の意味でDataContract属性をつけているわけですが、じゃあSerializable属性は？というと、えーと、SerializableはSilverlightでは入っていなかったりするとおり、過去の遺物ですね。なかったということで気にしないようにしましょう。</p>
+<h2>DataContractJsonSerializer</h2>
+<p>今時の言語はJSONが簡単に扱えなきゃダメです。XMLだけ扱えればいい、なんて時代は過ぎ去りました。しかしC#は悲しいことに標準では……。いや、いや、Silverlightには<a href="http://msdn.microsoft.com/ja-jp/library/system.json.aspx">System.Json</a>がありますね。しかし.NET 4にはありません(.NET 4.5とWinRTには入ります)。いや、しかし.NET 4には<a href="http://dynamicjson.codeplex.com/">DynamicJson</a>があります(それ出していいならJSON.NETがあるよ、で終わりなんですけどね)。が、Windows Phone 7には何もありません。ああ……。</p>
+<p>とはいえ、シリアライザならば用意されています。DataContractJsonSerializerです。</p>
+<pre><code class="language-csharp">// データ準備
+var data = new Person { Name = &quot;山本山&quot;, Age = 99 };
+
+var serializer = new DataContractJsonSerializer(typeof(Person));
+using (var ms = new MemoryStream())
+{
+    serializer.WriteObject(ms, data); // シリアライズ
+
+    // 結果確認出力
+    var xml = Encoding.UTF8.GetString(ms.ToArray(), 0, (int)ms.Length);
+    Debug.WriteLine(xml); // {&quot;Age&quot;:99,&quot;Name&quot;:&quot;山本山&quot;}
+
+    ms.Position = 0; // 巻き戻して……
+    var value = (Person)serializer.ReadObject(ms); // デシリアライズ
+    Debug.WriteLine(value.Name + &quot;:&quot; + value.Age); // 山本山:99
+}
+</code></pre>
+<p>使い勝手はDataContractSerializerと完全に一緒です。ただし、違う点が幾つか。名前空間が（そもそもJSONで表現不可能なので）なくなったのと、順序も関係なく復元可能です。</p>
+<pre><code class="language-csharp">var json1 = @&quot;{&quot;&quot;Name&quot;&quot;:&quot;&quot;山本山&quot;&quot;,&quot;&quot;Age&quot;&quot;:99}&quot;;
+var json2 = @&quot;{&quot;&quot;Age&quot;&quot;:99,&quot;&quot;Name&quot;&quot;:&quot;&quot;山本山&quot;&quot;}&quot;;
+
+var serializer = new DataContractJsonSerializer(typeof(Person));
+using (var ms1 = new MemoryStream(Encoding.UTF8.GetBytes(json1)))
+using (var ms2 = new MemoryStream(Encoding.UTF8.GetBytes(json2)))
+{
+    var value1 = (Person)serializer.ReadObject(ms1);
+    var value2 = (Person)serializer.ReadObject(ms2);
+
+    Debug.WriteLine(value1.Name + &quot;:&quot; + value2.Age);
+    Debug.WriteLine(value2.Name + &quot;:&quot; + value2.Age);
+}
+</code></pre>
+<p>というわけで、随分とDataContractSerializerよりも使い勝手が良い模様。いい話だなー。さて、難点は出力されるJSONの整形が不可能です。DataContractSerializerではXmlWriterSettingsで行えましたが、DataContractJsonSerializerではそれに相当するものがありません。というわけでヒューマンリーダブルな形で出力、とはならず、一行にドバーっとまとめて吐かれるのでかなり苦しい。</p>
+<p>もう一つ、これは本当に大したことない差なのでどうでもいいのですが、DataContractSerializerのほうが速いです。理由は単純でDataContractSerializerに一枚被せる形でDataContractJsonSerializerが実装されているから。その辺の絡みで.NET 4には<a href="http://msdn.microsoft.com/ja-jp/library/system.runtime.serialization.json.jsonreaderwriterfactory.aspx">JsonReaderWriterFactory</a>などがあって、これを直に触ってJSON→XML変換をするとLINQ to XMLを通したJSONの直接操作が標準ライブラリのみで可能なのですが、Silverlight/Windows Phone 7では残念なことに触ることができません。</p>
+<p>外部APIを叩いて変換する際に、シリアライズはお手軽で便利であると同時に、完全に同一の形のオブジェクトを用意しなければならなくて、かったるい側面もあります。LINQ to XML慣れしていると特に。そういった形でJSONを扱いたい場合、WP7では<a href="http://json.codeplex.com/">Json.NET</a>を使う、しかありません。使えばいいんぢゃないかな、どうせNuGetでサクッと入れられるのだし。</p>
+<p>とはいえまあ、そう言うほど使いづらいわけでもないので、標準のみでJSONを扱いたいという場合は、DataContractJsonSerializerが第一にして唯一の選択肢になります。</p>
+<h2>JavaScriptSerializer</h2>
+<p>.NET Framework 4.0 Client Profileでは使えないのですが、FullならばSystem.Web.Extensionを参照することでJavaScriptSerializerが使えます。もはや完全にSilverlightと関係ないのでアレですが、少し見てみましょう。</p>
+<pre><code class="language-csharp">var serializer = new JavaScriptSerializer();
+
+var target = new { Name = &quot;ほむほむ&quot;, Age = 14 };
+var json = serializer.Serialize(target); // stringを返す
+</code></pre>
+<p>Serializeで文字列としてのJSONを返す、というのがポイントです。それと、シリアライザ作成時にtypeを指定しません。また、匿名型もJSON化することが可能です（これはDataContractSerializerでは絶対無理）。ただし、コンストラクタのないクラスのデシリアライズは不可能です。</p>
+<p>中々使い勝手がいいですね！で、これは、リフレクションベースの非常に素朴な実装です。だから匿名型でもOKなんですねー。ちょっとした用途には非常に楽なのですが、Client Profileでは使えないこともありますし(ASP.NETで使うために用意されてる)、あまり積極的に使うべきものではないと思います。ちなみに、一時期ではObsoleteになっていてDataContractJsonSerializer使え、と出ていたのですが、またObsoleteが外され普通に使えるようになりました。やはり標準シリアライザとしてはDataContractJsonSerializerだけだと重すぎる、ということでしょうか。</p>
+<h2>バイナリとか</h2>
+<p>別にシリアライズってXMLやJSONだけじゃあないのですね。サードパーティ製に目を向ければ、色々なものがあります。特に私がお薦めなのは<a href="http://code.google.com/p/protobuf-net/">protobuf-net</a>。これはGoogleが公開しているProtocol Buffersという仕様を.NETで実装したものなのですが、とにかく速い。めちゃくちゃ速い。稀代のILマスターが書いているだけある恐ろしい出来栄えです。SilverlightやWP7版もあるので、Protocol Buffersの本来の用途というだけなく、幅広く使えるのではかとも思います。</p>
+<p>もう一つは国内だと最近目にすることの多い<a href="http://msgpack.org/">MessagePack</a>。以前に<a href="http://neue.cc/2010/05/29_261.html">.NET(C#)におけるシリアライザのパフォーマンス比較</a>を書いたときは振るわないスコアでしたが、最近別のC#実装が公開されまして、それは作者によるベンチ<a href="https://oikw.org/memo/2011/04/23/0">MessagePack for .NET (C#) を書いた</a>によると、protobuf-netよりも速いそうです。</p>
+<h2>Next</h2>
+<p>というわけでSilverlight枠でいいのか怪しかったですが、シリアライザの話でした。次は<a href="https://twitter.com/#!/ugaya40">@ugaya40</a>さんのWeakEventの話です。引き続きチェックを。あ、あと、Silverlight Advent Calendarはまだ埋まってない（！）ので、是非是非参加して、埋めてやってください。申し込みは<a href="http://atnd.org/events/22001">Silverlight Advent Calendar 2011</a>から。皆さんのエントリ、待ってます。どうやらちょうど今日Silverlight 5がリリースされたようなので、SL5の新機能ネタとかいいんじゃないでしょうか。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

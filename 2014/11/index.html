@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - 2014-11</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2014/1120_485.html">VS2015のRoslynでCode Analyzerを自作する(ついでにUnityコードも解析する)</a></h1>
+<ul class="date"><li>2014-11-20</li></ul>
+<div class="entry_body"><p><a href="http://www.visualstudio.com/downloads/visual-studio-2015-downloads-vs">Visual Studio 2015 Preview</a>が発表されました！この中にはC# 6.0やRoslynも含まれていて、今から試すことができます。C#の言語機能は他の人が適当にまとめてくれるので私はノータッチということで、新機能である<a href="https://roslyn.codeplex.com/">Roslyn</a>で拡張を作っていきましょう。</p>
+<p>Roslynによる拡張は、ン年前に最初のPreviewが出た時は、Visual Studioの解析エンジン自体がRoslynになるから簡単にアレもコレも出来るぜ！と夢いっぱいのこと言ってましたが、実のところ最終的に現在(VS2015 Preview)ではかなり萎んでしまいました。「Code Refactoring」と「Diagnostic with Code Fix」だけです。何ができるかは、まぁ名前から察しということで、あんま大したことはできないです。がっくし。とはいえ、しかし全然使いドコロはあるし簡単に作れはするので、とにかく見て行きましょう。</p>
+<p>下準備としてVS2015 Previewのインストールの他に、<a href="http://www.visualstudio.com/downloads/visual-studio-2015-downloads-vs">Visual Studio 2015 Preview SDK</a>と<a href="https://visualstudiogallery.msdn.microsoft.com/849f3ab1-05cf-4682-b4af-ef995e2aa1a5">.NET Compiler Platform SDK Templates</a>、そして<a href="https://visualstudiogallery.msdn.microsoft.com/70e184da-9b3a-402f-b210-d62a898e2887">.NET Compiler Platform Syntax Visualizer</a>を入れてください。</p>
+<h2>Diagnostic with Code Fix</h2>
+<p>今回は「Diagnostic with Code Fix」を作ります。まずテンプレートのVisual C#→Extensibilityから「Diagnostic with Code Fix(NuGet + VSIX)」を選んでください。NuGet + VSIXというのが面白いところなんですが、とりあえずこのテンプレート（はサンプルになってます）をビルドしましょう(Testプロジェクトは無視していいです)。そして、ReferencesのAnalyzers（ここがVS2015から追加されたものです！）からAdd Analyzerを選び、さっきビルドしたdllを追加してみてください。</p>
+<img src='http://neue.cc/wp-content/uploads/2014/11/add_analyzer.jpg' />
+<p>するとコード解析が追加されて、クラス名のところにQuick Fixが光るようになります。</p>
+<img src='http://neue.cc/wp-content/uploads/2014/11/analyzer_window1.jpg' />
+<p>サンプルコードのものはMakeUpperCaseということで、クラス名に小文字が含まれていたら警告を出す＆全部大文字に修正するQuickFixが有効になります。</p>
+<p>つまりDiagnostic with Code Fixは、よーするに今までもあったCode Analysis、FxCopです。ただし、Roslynによって自由に解析でき、追加できます。また、ReferencesのAnalyzersに追加できるということで、ユーザーのVisual Studio依存ではなく、プロジェクト内に直接含めることができます。追加/インストールはdllをNuGetで配ることが可能（だからVSIX + NuGetなんですね、もちろんVSIXでも配れます）。より気軽に、よりパワフルにコード解析が作れるようになったということで、地味に中々革命的に便利なのではないでしょうか？</p>
+<p>このまま、そのサンプルコードのMakeUpperCaseの解説、をしてもつまらないので、続けて実用的（？）なものを一個作りました。</p>
+<h2>namespaceの修正</h2>
+<p>うちの会社ではUnityを使ってモバイルゲーム開発を行っていますが、LINQもガリガリ使います。その辺のことは<a href="http://neue.cc/2014/11/11_482.html">LINQ to GameObjectによるUnityでのLINQの活用</a>にも書いたのですが、困ったことに標準UnityではLINQ to Objectsを使うとAOTで死にます。<a href="http://neue.cc/2014/07/01_474.html">Unity + iOSのAOTでの例外の発生パターンと対処法</a>で書いたように対処事態は可能なんですが、最終的に標準LINQを置き換える独自実装をSystem.LinqExネームスペースに用意することになりました。で、それを使うには「using System.LinqEx;」する必要があります。「using System.Linq;」のかわりに。むしろ「using System.Linq;」はAOTで死ぬので禁止したいし、全面的に「using System.LinqEx;」して欲しい。すみやかに。どうやって……？</p>
+<p>そこでDiagnostic with Code Fixなんですね。既存コードの全てに検査をかけることもできるし（ソリューションエクスプローラーから対象プロジェクトを右クリックしてAnalyze→Run Code Analysis）、書いてる側からリアルタイムに警告も出せるし、ワンポチでSystem.LinqExに置き換えてくれる。このぐらいなら全ファイルから「using System.Linq;」を置換すりゃあいいだけなんですが、リアルタイムに警告してくれるとうっかり忘れもなくなるし（CIで警告すればいいといえばいいけど、その前に自分で気づいて欲しいよね）、もっと複雑な要件でも、RoslynでSyntaxTreeを弄って置き換えるので、テキスト置換のような誤爆の可能性があったり、そもそも複雑で警告/置換不能、みたいなことがなくなるので、とても有益です。</p>
+<p>というわけで「using System.Linq;」を見つけたら「using System.LinqEx;」に書き換える拡張を作りましょう！（うちの会社にとっては）実用的で有益で、かつ、はぢめての拡張のテーマとしてもシンプルで作りやすそうでちょうどいいですね！</p>
+<h2>DiagnosticAnalyzer</h2>
+<p>コード解析はDiagnosticAnalyzer、コード置換はCodeFixProviderが担当します。必要なファイルはこの2ファイルだけ（シンプル！）、コード置換が不要ならDiagnosticAnalyzerだけ用意すればOK。というわけで、以下がDiagnosticAnalyzerのコードです。</p>
+<pre><code class="language-csharp">using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Diagnostics;
+using System.Collections.Immutable;
+
+namespace UseLinqEx
+{
+    [DiagnosticAnalyzer(LanguageNames.CSharp)]
+    public class UseLinqExAnalyzer : DiagnosticAnalyzer
+    {
+        // この辺はテンプレートのままに適当に書き換え
+        public const string DiagnosticId = &quot;UseLinqEx&quot;;
+        internal const string Title = &quot;System.Linq is unsafe in Unity. Must use System.LinqEx.&quot;;
+        internal const string MessageFormat = &quot;System.Linq is unsafe in Unity. Must use System.LinqEx.&quot;; // 同じの書いてる(テキトウ)
+        internal const string Category = &quot;Usage&quot;; // Categoryの適切なのってナンダロウ
+
+        internal static DiagnosticDescriptor Rule = new DiagnosticDescriptor(DiagnosticId, Title, MessageFormat, Category, DiagnosticSeverity.Warning, isEnabledByDefault: true);
+
+        public override ImmutableArray&lt;DiagnosticDescriptor&gt; SupportedDiagnostics { get { return ImmutableArray.Create(Rule); } }
+
+        // namespaceを引っ掛ける
+        public override void Initialize(AnalysisContext context)
+        {
+            // なにをRegisterすればいいのか問題、テンプレではRegisterSymbolActionですが、
+            // SymbolActionにはなさそうだなー、と思ったら他のRegisterHogeを使いましょう
+            // ここではRegisterSyntaxNodeActionでSyntaxKind.UsingDirectiveを呼びます
+            // SyntaxKindの判定はRoslyn Syntax Visualizerに助けてもらいましょう
+            context.RegisterSyntaxNodeAction(Analyze, SyntaxKind.UsingDirective);
+        }
+
+        static void Analyze(SyntaxNodeAnalysisContext context)
+        {
+            // Nodeの中身はSyntaxKindで何を選んだかで変わるので適宜キャスト
+            var syntax = (UsingDirectiveSyntax)context.Node;
+            if (syntax.Name.NormalizeWhitespace().ToFullString() == &quot;System.Linq&quot;)
+            {
+                var diagnostic = Diagnostic.Create(Rule, syntax.GetLocation());
+                context.ReportDiagnostic(diagnostic);
+            }
+        }
+    }
+}
+</code></pre>
+<p>SupportedDiagnosticsより上のものは見た通りのコンフィグなので、まぁ見たとおりに適当に弄っておけばいいでしょう。コード本体はInitializeです。ここで、対象のノードの変更があったら起こすアクションを登録します。で、まずいきなり難しいのは、何をRegisterすればいいのか！ということだったりして。そこで手助けになるのがSyntax Visualizerです。入れましたか？入れましたよね？View -&gt; Other Window -&gt; Roslyn Syntax Visualizerを開くと、あとはエディタ上で選択している箇所のSyntaxTreeを表示してくれます。例えば、今回の対象であるusingの部分を選択すると「using System.Linq;」は……</p>
+<img src='http://neue.cc/wp-content/uploads/2014/11/roslynsyntaxvis.jpg' />
+<p>と、いうわけで、たかがusingの一行ですが、めっちゃいっぱい入ってます。Node(でっかいの), Token（こまかいの）, Trivia（どうでもいいの）というぐらいに覚えておけばいいでしょう（適当）。さて、というわけでusingの部分はUsingDirectiveであることが大判明しました。これ以外にもとにかくSyntaxTreeの操作は、何がどこに入ってて何を置換すればいいのかを見極める作業が必要なので、Syntax Visualizerはマストです。めっちゃ大事。めっちゃ助かる。超絶神ツール。</p>
+<p>あとは、まぁ、見たまんまな感じで、これで警告は出してくれます。WarningじゃなくてErrorにしたいとか、Infoにしたいとかって場合はRuleからDiagnosticSeverityを変えればOK。</p>
+<h2>CodeFixProvider</h2>
+<p>続いてCodeFixProviderに行きましょう。まずはコード全体像を。</p>
+<pre><code class="language-csharp">using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CodeActions;
+using Microsoft.CodeAnalysis.CodeFixes;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using System.Collections.Immutable;
+using System.Composition;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace UseLinqEx
+{
+    [ExportCodeFixProvider(&quot;UseLinqExCodeFixProvider&quot;, LanguageNames.CSharp), Shared]
+    public class UseLinqExCodeFixProvider : CodeFixProvider
+    {
+        public sealed override ImmutableArray&lt;string&gt; GetFixableDiagnosticIds()
+        {
+            // このDiagnosticIdでAnalyzerと起動するCodeFixProviderが紐付けられてる
+            return ImmutableArray.Create(UseLinqExAnalyzer.DiagnosticId);
+        }
+
+        public sealed override FixAllProvider GetFixAllProvider()
+        {
+            return WellKnownFixAllProviders.BatchFixer;
+        }
+
+        public sealed override async Task ComputeFixesAsync(CodeFixContext context)
+        {
+            // ドキュメントのルート
+            var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
+
+            var diagnostic = context.Diagnostics.First(); // 警告だしてるとこ
+            var diagnosticSpan = diagnostic.Location.SourceSpan; // の、ソース上の位置みたいなの
+
+            // ↑を使って、目的のモノを見つける独自コードを書く！
+            // 何が何だか分からないので、ウォッチウィンドウで手探るに書きまくって探し当てるといいでしょふ
+
+            // &quot;UsingDirectiveSyntax UsingDirective using System.Linq;&quot; が見つかる
+            var usingDirective = root.FindNode(diagnosticSpan);
+
+            // で、作って登録する
+            var codeAction = CodeAction.Create(&quot;ReplaceTo System.LinqEx&quot;, c =&gt; ReplaceToLinqEx(context.Document, root, usingDirective, c));
+            context.RegisterFix(codeAction, diagnostic);
+        }
+
+        static Task&lt;Document&gt; ReplaceToLinqEx(Document document, SyntaxNode root, SyntaxNode usingDirective, CancellationToken cancellationToken)
+        {
+            // たんなるusingDirectiveでも、中にはキーワード・スペース、;や\r\nが含まれているので、
+            // 純粋に新しいusingを作って置換するだけだと、付加情報がうまく置換できない可能性が高い
+            // ので、（面倒くさくても）既存ノードからReplaceしていったほうが無難
+            var linqSyntax = usingDirective.DescendantNodes().OfType&lt;IdentifierNameSyntax&gt;().First(x =&gt; x.ToFullString() == &quot;Linq&quot;);
+            var linqEx = usingDirective.ReplaceNode(linqSyntax, SyntaxFactory.IdentifierName(&quot;LinqEx&quot;));
+
+            // ルートのほうにリプレースリプレース
+            var newRoot = root.ReplaceNode(usingDirective, linqEx);
+            var newDocument = document.WithSyntaxRoot(newRoot); // ルート差し替えでフィニッシュ
+
+            return Task.FromResult(newDocument);
+        }
+    }
+}
+</code></pre>
+<p>ここでの作業は、変更対象のノードを見つけることと、差し替えることです。ノードを見つけるための下準備に関しては、とりあえずサンプルコードのまんま(diagnostic/diagnosticSpan)でいいかな、と。そこから先は独自に探し出す必要があります。今回はUsingDirectiveを見つけたかったんですが、幸いルートからのFindNode一発で済みました、楽ちん。あとは置換するだけです。</p>
+<p>置換に関しては、コード上に書いたように、大きい単位で新しいSyntaxNodeを作って差し替える、のはやめたほうがいいです。そうするとトリビアを取りこぼす可能性が高く、うまく修正かけられなかったりします。面倒くさくても、置き換えたいものをピンポイントに絞って置換かけましょう。ノードを探索するにはLINQ to XMLスタイルでのDescendantsやAncestors、ChildNodesとかがあります。LINQ to SyntaxTreeってところで、この辺はまさに<a href="http://neue.cc/2014/11/11_482.html">LINQ to XMLとは何であるのか。ツリー構造に対するLINQ的操作のリファレンスデザインだと捉えることができる</a>って感じですね。</p>
+<p>さて、置換といっても、Roslynのコードは全てイミュータブル（不変）なので、戻り値をうまく使ってルートに伝えていく必要があります。Replace一発では済まないのです。これは面倒くさいんですが、まぁ慣れればこんなものかなー、と思えるでしょう、多分きっと。</p>
+<p>ともあれ、これで出来上がりました！ちなみにデバッグはVsixプロジェクトをデバッグ実行すれば、拡張ロード済みの新しいVSが立ち上がる＆アタッチされているので、サクッとデバッグできます。これは相当楽だし助かる（いかんせん慣れないRoslynプログラムは試行錯誤しまくるので！）。また、生成物に関してはAnalyzersにdllを手配置もいいですが、ビルドプロジェクト自体に.nupkg生成が含まれているので、そいつを使ってもいいでせう。その辺のことはテンプレートに入ってるReadMe.txtに書いてあるので一回読んでおくといいかな。</p>
+<h2>Unityで使う</h2>
+<p>新しいVSが出ると拡張が対応してくれるか、が最大の懸念になるのですが、なんとVisual Studio Tools for Unity(VSTU/旧UnityVS)は初日から対応してくれました！まさにMicrosoft買収のお陰という感じで、非常に嬉しい。遠慮無く<a href="https://visualstudiogallery.msdn.microsoft.com/8d26236e-4a64-4d64-8486-7df95156aba9">Visual Studio 2015 Preview Tools for Unity</a>を入れましょう。VSTUについては<a href="http://neue.cc/2014/04/10_450.html">Visual Studio Tools for Unity(UnityVS) - Unity開発におけるVisual Studioのすすめ</a>を見てね。</p>
+<p>基本的にはUnityのプロジェクトにも全く問題なくAnalyzerを追加できて解析できます。素晴らしい！んですが、問題が一点だけあります。それはVSTUはUnity側に何か変更があった時に.csprojを自動生成するんですが、その自動生成によってせっかく追加したAnalyzerも吹っ飛びます。Oh……。</p>
+<p>という時のためにVSTUは<a href="http://unityvs.com/documentation/api/project-file-generation/">Project File Generation</a>という仕組みを用意してくれています。これによってプロジェクトとソリューションの自動生成をフックできます（ちなみに実例として、うちの会社ではソリューションにサーバーサイドとか色々なプロジェクトをぶら下げてるのでソリューション自動生成を抑制したり、Unityプロジェクト側に<a href="http://msdn.microsoft.com/ja-jp/library/bb126445.aspx">T4テンプレート</a>を使った自動生成コードを入れているので、VSTUのcsprojの自動生成時に.ttファイルを復元してやったり、とか色々な処理を入れてます）</p>
+<p>今回は自動生成で消滅するAnalyzerを復元してやる処理を書きましょう。Editor拡張として作るので、Editorフォルダ以下にProjectFileHook.csを追加し、以下のコードを追加。</p>
+<pre><code class="language-csharp">using System.IO;
+using System.Linq;
+using System.Text;
+using System.Xml.Linq;
+using UnityEditor;
+
+[InitializeOnLoad]
+public class ProjectFileHook
+{
+    // necessary for XLinq to save the xml project file in utf8
+    private class Utf8StringWriter : StringWriter
+    {
+        public override Encoding Encoding
+        {
+            get { return Encoding.UTF8; }
+        }
+    }
+
+    static ProjectFileHook()
+    {
+        SyntaxTree.VisualStudio.Unity.Bridge.ProjectFilesGenerator.ProjectFileGeneration += (string name, string content) =&gt;
+        {
+            // ファイルがない場合はスルー（初回生成時）
+            if (!File.Exists(name)) return content;
+
+            // 現在のcsprojをnameから引っ張ってきてAnalyzerを探す
+            var currentContent = XDocument.Load(name);
+            var ns = currentContent.Root.Name.Namespace;
+            var analyzers = currentContent.Descendants(ns + &quot;Analyzer&quot;).ToArray();
+
+            // content(VSTUが生成した新しいcsprojにAnalyzerを注入)
+            var newContent = XDocument.Parse(content);
+            newContent.Root.Add(new XElement(ns + &quot;ItemGroup&quot;, analyzers));
+
+            // したのを返す
+            using (var sw = new Utf8StringWriter())
+            {
+                newContent.Save(sw);
+
+                return sw.ToString();
+            }
+        };
+    }
+}
+</code></pre>
+<p>nameにファイルパス、contentにVSTUが生成した新しいcsprojのテキストが渡ってくるので、それを使ってモニョモニョ処理。csprojはXMLなので、LINQ to XML使ってゴソゴソするのが楽ちんでしょう。</p>
+<p>これでUnityでもRoslynパワーを100%活かせます！やったね！</p>
+<h2>まとめ</h2>
+<p>あんだけ盛大に吹聴してたわりには、コード解析とリファクタリングだけかよ……、という感はなきにしも非ずですが、そのかわりすっごく簡単に作れる、追加できる仕組みを用意してくれたのは評価できます（えらそう）。かなり便利なので、早速是非是非遊んでみるといいんじゃないかな、とオモイマス。</p>
+<p>ところで今回の例、CodeFixProviderはナシにしてAnalyzerだけにして、AnalyzerのレベルをWarningではなくDiagnosticSeverity.Errorにすることで、「LINQ禁止」を暗黙のルールじゃなくコンパイル不可能レベルで実現できます。拡張メソッドを明示的に呼び出せば回避できますが、ルールにプラスしてEnumerableの静的メソッドも殺せば、もう完全に死亡！恐ろしい恐ろしい。あ、勿論やらないでくださいね！</p>
+</div>
+<h1><a href="http://neue.cc/2014/1111_482.html">LINQ to GameObjectによるUnityでのLINQの活用</a></h1>
+<ul class="date"><li>2014-11-11</li></ul>
+<div class="entry_body"><p>Unityで、LINQは活用されているようでされていないようで、基本的にはあまりされていない気配を非常に感じます。もったいない！というわけじゃないんですが、以前に私の勤務先と別の会社さんとで勉強会/交流会したのですが、そこで作ったスライドがあるので（若干手直ししたものを）公開します。LINQについて全くの初心者の人向けにLINQの良さを説明しようー、みたいな感じです、でもちょびっとだけ踏み込んだ内容もね、みたいな。勉強会自体は5月ぐらいにやったので、ずいぶんと公開まで開いてしまった……。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/41364443" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/linq-in-unity" title="LINQ in Unity" target="_blank">LINQ in Unity</a> </strong> from <strong><a href="//www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>その私の勤務先（まどろっこしい言い方だ……）<a href="http://grani.jp/">グラニ</a>では会社間での勉強会は大歓迎なので、もし、やりたい！という人がいらっしゃいましたら是非是非私のほうまでー。オフィスは六本木にあるのでその周囲ほげkmぐらいまでなら出張りますです（他のオフィスを見てみたい野次馬根性）。私の持ちネタとしてはC#, LINQ, Rxぐらいならなんでもどこまでもいけます。</p>
+<p>さて、そんなわけでLINQは有益です、という話なんですが(AOT問題はスライドに書きましたが頑張れば解決できる！）、LINQを活用するためにはデータソースを見つけなきゃいけません。逆にデータソースさえ見つかれば幾らでも使えます。今回（本題）着目したのはGameObjectのヒエラルキーで、これを丸々とLINQと親和性の高い形で探索/操作できるアセット「LINQ to GameObject」を作りました。GitHubでソースコード、Unity Asset StoreではFREEで公開しています。</p>
+<ul>
+<li><a href="https://github.com/neuecc/LINQ-to-GameObject-for-Unity">GitHub - LINQ to GameObject</a></li>
+<li><a href="http://u3d.as/content/neuecc/linq-to-game-object">AssetStore(FREE) - LINQ to GameObject</a></li>
+</ul>
+<p>実際のトコロ、多分、みんな絶対に作って手元に持ってるちょっとしたユーティリティ、です。これもまた一つの俺々ユーティリティ。ちょっと違うところがあるとしたら、このライブラリは、ツリー階層構造へのLINQスタイルの操作ということで、<a href="http://msdn.microsoft.com/ja-jp/library/bb387098.aspx">LINQ to XML</a>からインスパイアされていて、API体系を寄せています。既に実績があり、そして実際に良さが保証されている(LINQ to XMLは非常に良いのです！問題はXMLを操作する機会がJSONに奪われてしまって近年少なくなってしまっただけでLINQ to XML自体は非常に良い！）APIとほぼ同一なので、ある程度のクオリティが担保されている、ということでしょうか。</p>
+<h2>ツリー探索とLINQ</h2>
+<p>探索のAPIは図にすると、以下の様な形になっています。</p>
+<img src='http://neue.cc/wp-content/uploads/2014/11/linq_to_gameobject_axis.jpg' alt='' />
+<p>起点を元に親方向(Parent/Ancestors)か、子孫方向(Child/Children/Descendants)か、兄弟方向(ObjectsBeforeSelf/ObjectsAfterSelf)かに並んでいるGameObjectをIEnumerable&lt;GameObject&gt;として列挙します。</p>
+<pre><code class="language-csharp">// 以下の様な形に抽出される
+origin.Ancestors();   // Container, Root
+origin.Children();    // Sphere_A, Sphere_B, Group, Sphere_A, Sphere_B
+origin.Descendants(); // Sphere_A, Sphere_B, Group, P1, Group, Sphere_B, P2, Sphere_A, Sphere_B
+origin.ObjectsBeforeSelf(); // C1, C2
+origin.ObjectsAfterSelf();  // C3, C4
+</code></pre>
+<p>これは<a href="http://ja.wikipedia.org/wiki/XML_Path_Language">XPath</a>(今となっては懐かしい響き！)の「軸」と同じもので、考えられる全ての列挙方向/方法を満たしています。特徴的なのは全てがIEnumerable&lt;GameObject&gt;になることで、LINQ to Objectsとシームレスに繋がり、フィルタやコレクションの変形を連続して行うことができます。</p>
+<pre><code class="language-csharp">// 子孫方向のゲームオブジェクトの近いものトップ5を配列に固める(ただforeachするだけなら配列にしなくていい/しないほうがいいよ！)
+var nearObjects = origin.Descendants()
+    .OrderBy(x =&gt; (x.transform.position - this.transform.position).sqrMagnitude)
+    .Take(5)
+    .ToArray();
+
+// 子孫方向の全ゲームオブジェクトのうちtagが&quot;foobar&quot;のオブジェクトを破壊
+origin.Descendants().Where(x =&gt; x.tag == &quot;foobar&quot;).Destroy();
+
+// 自分を含む子ノードからBoxCollider2Dを抽出
+var colliders = origin.ChildrenAndSelf().OfComponent&lt;BoxCollider2D&gt;();
+
+// 全ての方法を組み合わせで満たせる、例えば兄弟方向に下のノードの全子孫はObjectsAfterSelf + Descendants
+// これは ObjectsAfterSelf().SelectMany(x =&gt; x.Descendants()) のシンタックスシュガー
+origin.ObjectsAfterSelf().Descendants();
+</code></pre>
+<p>SelectしてOrderByして、あれやこれや、なども自由に幾らでも行えます。また、繋がった状態での定形操作ということで、LINQ to GameObjectでは更にIEnumerable&lt;GameObject&gt;に対してDestoryとOfComponentという拡張メソッドを用意しています。それとちなみに性能面でも余計な中間コレクションを作らないため、（理屈上は）優位です。この理屈上ってのが、まぁ、あんまり踏み込みません:）</p>
+<h2>階層へのオブジェクトの追加</h2>
+<p>ところで利用法ですが、全てのメソッドはGameObjectへの拡張メソッドとして実装しています！暴力的に大雑把に！なので</p>
+<pre><code class="language-csharp">using Unity.Linq;
+</code></pre>
+<p>としてもらえれば、全部のメソッドがにょきにょきっと生えます。メソッド一覧は<a href="https://github.com/neuecc/LINQ-to-GameObject-for-Unity#reference">リファレンス</a>にあります。</p>
+<p>オブジェクトを追加する、というのは階層を意識して追加していくわけですが、素でやるとparentにアタッチしてsiblingを弄って、というのは非常にカッタルイ話で絶対にみんな何とかゆーてぃりてぃを持っているとは思うのですが、LINQ to GameObjectにもあります。これも同様にLINQ to XMLと同じAPIを採用し、全ての方向/方法を網羅しています。</p>
+<pre><code class="language-csharp">var root = GameObject.Find(&quot;root&quot;); 
+var cube = Resources.Load(&quot;Prefabs/PrefabCube&quot;) as GameObject; 
+
+// Addは子の末尾に追加
+// Parentの設定の他にレイヤーの統一とlocalPosition/Scale/Rotationを調整します
+// 追加された子はCloneされていて、戻り値はそのCloneされたものを返します
+var clone = root.Add(cube);
+
+// 兄弟方向、自分の下に追加
+// オブジェクトを追加する際は配列で渡せば複数一気に追加され、クローンされたオブジェクトをListで受け取れます
+var clones = root.AddAfterSelf(new[] { cube, cube, cube });  
+
+// 他にAddFirst（子の先頭に追加）とAddBeforeSelf（兄弟方向、自分の上）がある
+// 追加の向きとしてはこれで全パターンでしょう！
+
+// ついでに（？）Destoryの拡張メソッドもあり
+// nullかどうかのチェック + 一旦階層から外してDestoryします
+root.Destroy();
+</code></pre>
+<p>Addなんていう超汎用的くさい名前をGameObjectへの拡張メソッドにするってのがすっごく極悪なんですが、まぁいっか、みたいな。いいんですかね、いや、いいでしょう、はい、多分、うん。</p>
+<h2>LINQ to XMLはツリーへのLINQ的操作のリファレンスデザイン</h2>
+<p><a href="http://neue.cc/2014/09/24_479.html">LINQ to BigQuery - C#による型付きDSLとLINQPadによるDumpと可視化</a>で、LINQの定義を</p>
+<blockquote>
+<p>LINQがLINQであるためにはクエリ構文はいらない。Query Providerもいらない。LINQ to XMLがLINQなのは何故？Parallel LINQがLINQであるのは何故？Reactive ExtensionsがLINQであるのは何故？linq.jsがLINQであるのは何故？そこにあるのは……、空気と文化。</p>
+</blockquote>
+<blockquote>
+<p>LINQと名乗ること自体はマーケティングのようなもので、形はない。使う人が納得さえすれば、LINQでしょう。そこにルールを求めたがる人がいても、ないものはないのだから規定しようがないよ？LINQらしく感じさせる要素をある程度満たしてればいい。FuncもしくはExpressionを使ってWhereでフィルタしSelectで射影する（そうすればクエリ構文もある程度は使えるしね）。OrderBy系の構文はOrderBy/OrderByDescending/ThenBy/ThenByDescendingで適用される。基本的な戻り値がシーケンスっぽい何かである。うん、だんだん満たせてくる。別に100%満たさなくても、70%ぐらい満たせばLINQらしいんだよ。</p>
+</blockquote>
+<blockquote>
+<p>極論言えば私がLINQだって言ってるんだからLINQなのですが（何か文句ある？）、多くの人には十分納得してもらえると考えています</p>
+</blockquote>
+<p>と、かなり乱暴な感じに「勝手に」定義しましたが（つまり今回のLINQ to GameObjectも私がLINQだって言ってるんだからLINQなのだ！）、実際、LINQ to GameObjectからはLINQらしさを感じ取れるんじゃないかと思います。何故か？当然理由はあるし、そうなるように意識してデザインしてます。</p>
+<p>LINQ to XMLとは何であるのか。ツリー構造に対するLINQ的操作のリファレンスデザインだと捉えることができます。ツリー構造はLINQになる、そのガイドライン。LINQ to Objectsと非常に相性の良い探索の抽象化。もちろん、それ自体はXML向けだけど、「軸」を意識すればJSONにも適用できるし、そして、LINQ to GameObjectにも適用できた。</p>
+<p>もしツリーを見かけたら、そこにLINQがなかったら、同じように作ることができるし、そうすればLINQの全てのメリットを甘受できる。データソースを発見していくこと。これは視点の問題で、そう捉えれば見えるようになる。それがLINQをただ漠然と使うことから一歩踏み出せるんじゃないのかな。</p>
+<h2>ユニットテスト</h2>
+<p>今回はじめて<a href="http://u3d.as/65h">Unity Test Tools</a>をちょろっとだけ使ってみました。UniRxではファイルをリンクとしてコピーして普通の.NET上、Visual Studio上のMSTestで動かすという荒っぽいことをしてて、それはそれで楽ちんでいいんですけど、GameObjectへの操作とかUnityEngineに依存するものはさすがに無理で、今回のライブラリは100%それなので困ったなー、と。で、そこで、Unity Test Toolsの出番だったわけですね。</p>
+<img src='http://neue.cc/wp-content/uploads/2014/11/unittestsrunr.jpg' alt='' />
+<p>うん、まあ、普通ですね！いや、普通で、普通に悪くないです。ロジックのテストには全然いい。便利だよ。で、アサーションは普通にNUnitなんですが、私はAssert.AreEqualとかAssert.Thatとか嫌いなのです！嫌いなのでふつーのC#用には<a href="http://neue.cc/2011/02/24_306.html">Chaining Assertion</a>というライブラリを作って/公開しているんですが、それのUnity版を用意しました。</p>
+<p>AssetStoreに投稿するほどのものかなーってことで、とりあえずLINQ to GameObjectのリポジトリ内にあるだけなんですが、気になる人は<a href="https://github.com/neuecc/LINQ-to-GameObject-for-Unity/blob/master/Assets/Editor/ChainingAssertion.cs">Editor/ChainingAssertion.cs</a>をどうぞ。この.csファイル一個だけです。これで</p>
+<pre><code class="language-csharp">[Test]
+public void Children()
+{
+    Origin.Children().Select(x =&gt; x.name)
+        .IsCollection(&quot;Sphere_A&quot;, &quot;Sphere_B&quot;, &quot;Group&quot;, &quot;Sphere_A&quot;, &quot;Sphere_B&quot;);
+
+    Origin.Children(&quot;Sphere_B&quot;).Select(x =&gt; x.name)
+        .IsCollection(&quot;Sphere_B&quot;, &quot;Sphere_B&quot;);
+
+    Origin.ChildrenAndSelf().Select(x =&gt; x.name)
+        .IsCollection(&quot;Origin&quot;, &quot;Sphere_A&quot;, &quot;Sphere_B&quot;, &quot;Group&quot;, &quot;Sphere_A&quot;, &quot;Sphere_B&quot;);
+
+    Origin.ChildrenAndSelf(&quot;Sphere_A&quot;).Select(x =&gt; x.name)
+        .IsCollection(&quot;Sphere_A&quot;, &quot;Sphere_A&quot;);
+}
+</code></pre>
+<p>みたいな感じにテスト書けます/書きました。</p>
+<h2>まとめ</h2>
+<p>LINQは良い。LINQを使うにはIEnumerableが必要。LINQ to GameObjectはそのIEnumerableを作り出すので、UnityでよりLINQを活用できる！ので使いましょう。</p>
+<p>（ところでObjectsAfterSelfはAfterSelfのほうが良いですね……すっごく失敗した……次のバージョンで変更するかも、というかします、はい……)。</p>
+<p>あとLINQ to XMLの大きな要素として<a href="http://msdn.microsoft.com/ja-jp/library/bb387019.aspx">関数型構築</a>があるんですが、勿論LINQ to GameObjectにも用意しました！ただ、実用性は(LINQ to XMLと違ってUnityの性質上)ビミョーなので、ここでは紹介しません。とりあえずとにかく、「ツリーを上下左右に探索できて」「ツリーの上下左右に追加できて」「関数型構築できれば」ツリーへのLINQ。と言えます、きっと。</p>
+<p>それと<a href="https://github.com/neuecc/UniRx">UniRx</a>なんですが、スライドで少し触れましたが、<a href="https://www.assetstore.unity3d.com/en/#!/content/14381">uFrame</a>というUnity用のフレームワークに採用されて同梱されるようになりました。結構いい具合に躍進してきてるんで、UniRxも是非是非チェックを。ブログは全然書いてないんですが（！）機能拡充はずっと続けているんで、また近いうちに何か書きませう。</p>
+</div>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

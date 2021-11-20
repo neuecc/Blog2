@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - LINQの仕組みと遅延評価の基礎知識</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2011/0113_295.html">LINQの仕組みと遅延評価の基礎知識</a></h1>
+<ul class="date"><li>2011-01-13</li></ul>
+<div class="entry_body"><p>新年明けましておめでとうございます。その第一弾の記事は<a href="http://www.amazon.co.jp/gp/product/4774145165?ie=UTF8&tag=ilsgeometrati-22&linkCode=as2&camp=247&creative=7399&creativeASIN=4774145165">実践 F# 関数型プログラミング入門</a><img src="http://www.assoc-amazon.jp/e/ir?t=ilsgeometrati-22&l=as2&o=9&a=4774145165" width="1" height="1" border="0" alt="" style="border:none !important; margin:0px !important;" />の書評にしようと思っていたのですが、もう少し時間がかかりそうなので、せっかくの年始は基礎から考えようということで、LINQと遅延評価について最初から解説します。まあ、何をもって最初だとか基礎だとか言うのも難しいので私的な適当な基準で。つまり役に立たな（ry。なお、ここではLinq to Objects、IEnumerable&lt;T&gt;の連鎖についてのみ扱いますので、IQueryableについてはまた後日というか実のところ私はQueryableは全然分かってなくてやるやる詐欺が今も続いているといううがががが。</p>
+<h2>メソッドチェーン != return this</h2>
+<p>例によって単純なコードで。</p>
+<pre><code class="language-csharp">var query = Enumerable.Range(1, 10).Select(i =&gt; i * i).Take(5);
+foreach (var item in query)
+{
+    Console.WriteLine(item); // 1, 4, 9, 16, 25
+}
+</code></pre>
+<p>1から10を二乗したうちの先頭5つを出力という、それだけのコードです。foreachする場合のinの右側が長くなるのは個人的に好きじゃないので、わざわざ変数に置いたりするのをよくやるのですが、これは好みですかねえ。なのでリスト内包表記とかあんま好きじゃなかったりはする、記法的に。</p>
+<p>それはともかく、ドットで繋げていると実体が隠れてしまいがちなので、分解します。</p>
+<pre><code class="language-csharp">var rangeEnumerable = Enumerable.Range(1, 10);
+var selectEnumerable = rangeEnumerable.Select(i =&gt; i * i);
+var takeEnumerable = selectEnumerable.Take(5);
+foreach (var item in takeEnumerable)
+{
+    Console.WriteLine(item);
+}
+</code></pre>
+<p>変数だらけでゴチャゴチャして余計に分からない。良く分からないものは、とりま図で。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linq_illustrate_whole.jpg">
+</p>
+<p>こうなってます。中に、一つ前のものを内包している新しいオブジェクトを返しています。メソッドチェーンというと所謂ビルダー的な、もしくはjQueryなんかを想像してしまってチェーン毎に内部の状態が変化して return this するか、もしくは完全に新しいものを生成して返す（array.filter.mapしたら.filterで完全に新しい配列が生成され返って、.mapでも、的な。DeepCopyも同じようなものですか）みたいなのを想像してしまう感もあるのですが、そのどちらでもない。中に仕舞い込んで新しい包を返す。実に副作用レスでピュアい。</p>
+<p>このことはデバッガで確認出来ます。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linq_debugger_whole.jpg">
+</p>
+<p>面白いのはSelectの戻り値の型で、WhereSelectEnumerableIteratorとなっていて、名前のとおりWhereとSelectが統合されていたりします。これは、Where-&gt;Selectが頻出パターンのためパフォーマンス向上のためでしょうねえ。面白いですがユーザー的にはあまり気にすることではないので深追いしないで次へ。</p>
+<p>Takeの戻り値であるTakeIteratorはsourceとして中にSelectの戻り値であるWhereSelectEnumerableIteratorを抱えていて、Selectの戻り値はRangeの戻り値であるRangeIteratorを、中に抱えています。という連鎖が成り立っていることがしっかり確認できました。Visual Studioのデバッガは大変見やすくてよろしい。</p>
+<h2>遅延評価と実行</h2>
+<p>hogeEnumerableに包まれている状態では、まだ何も実行は開始されていません。そう、遅延評価！このままWhereやSkipを繋いでも、新たなhogeEnumerableで包んで返されるだけで実行はされません。ではいつ実行されるかといえば、IEnumerable&lt;T&gt;以外の、何らかの結果を要求した時です。それはToArrayであったり、Maxであったり、foreachであったり。</p>
+<p>foreachを実行した時の動きを、図（但し致命的に分かりづらい）で見ると……</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linq_pull_cycle.jpg">
+</p>
+<p>まず最初は最外周のtakeEnumerableに対しGetEnumeratorを実行し、IEnumerator&lt;T&gt;を取り出します。そして取り出したIEnumerator&lt;T&gt;に対しMoveNextの実行をすると、その先ではまた中に抱えたIEnumerable&lt;T&gt;に対しGetEnumeratorでIEnumerator&lt;T&gt;を取り出し、の連鎖が大元(この場合はrangeEnumerable)に届くまで続きます。</p>
+<p>大元まで届いたら、いよいよMoveNextの結果が返されます。trueか、falseか。trueの場合は、通常は即座に現在値(Current)の取得も行うので、Currentが根本から下まで降りていくイメージとなります。あとは、どこかのMoveNextがfalseを返してくるまで、その繰り返し。今回はRangeが10個出力、Takeが5個出力なので、Rangeが5回分余りますがTakeで列挙は途中打ち切り。falseを流して終了させます。SumやCountなど値を返すものは、falseが届いたら結果を返しますが今回はforeachなのでvoid、何もなしで終了。</p>
+<h2>イテレータの実装</h2>
+<p>ついでなので、動作の実態であるイテレータも実装します。単純な、0から10までを返すだけのものを例として。</p>
+<pre><code class="language-csharp">public class ZeroToTenIterator : IEnumerator&lt;int&gt;
+{
+    private int current = -1;
+
+    public int Current
+    {
+        get { return current; }
+    }
+
+    public bool MoveNext()
+    {
+        return ++current &lt;= 10;
+    }
+
+    // 必要でなければ空でもいいや、という感じ
+    public void Dispose() { }
+
+    // TじゃないほうはTのほうを返すようにするだけでおk
+    object System.Collections.IEnumerator.Current { get { return Current; } }
+
+    // Resetは産廃なのでスルー、実装しなくていいです、Interfaceからも削られて欲しいぐらい
+    public void Reset() { throw new NotImplementedException(); }
+}
+
+// 使うときはこんな感じでしょーか
+// IEnumerator&lt;T&gt;利用時はusingも忘れないように……
+using (var e = new ZeroToTenIterator())
+{
+    while (e.MoveNext())
+    {
+        Console.WriteLine(e.Current);
+    }
+}
+</code></pre>
+<p>IEnumerator&lt;T&gt;ですが、見てきたとおり、中核となるのはMoveNextとCurrentです、といってもCurrentはキャッシュした値を中継するだけなので、実質実装しなければならないのはMoveNextだけ(場合によりDisposeも)。</p>
+<p>見たとおりに一行の超単純な、10超えるまでインクリメントでtrue、超えたらfalse。なんかとってもいい加減な感じで、falseだろうとMoveNext()を呼んだらCurrentの値がどんどん増加していっちゃって大丈夫か？というと、全然問題ない。と、いうのも、そういうのは利用側の問題であって実装側が気にする必要はないから。</p>
+<p>MoveNextする前のCurrentの値は保証されていないので使うな、であり、MoveNextがfalseを返した後のCurrentの値は保証されてないので使うな、です。大事なお約束です。お約束を守れない人は生イテレータを使うべからず。Linqのクエリ演算子やforeachは、そんな他所事を考えないで済むようになっているので、それらを使いましょう。生イテレータを取得したら負けです(拡張メソッド定義時は除く、つまりライブラリ的な局面以外では避けましょう)</p>
+<p>ちなみにStringのイテレータは列挙前/列挙後のCurrentへのアクセスで例外が飛び、List&lt;T&gt;は列挙前は0、列挙後も0にリセットされ、Enumerable.Rangeでは列挙後は最後の値が返る、といったように、実際に挙動はバラバラです。</p>
+<p>実装側が守らなければならないルールは、MoveNextが一度falseを返したら、以後はずっとfalseを返し続けること。で、その観点で、このZeroToTenIteratorを見ると、実のところ全然ダメです。MoveNextがint.MaxValue回呼び出されるとcurrentがオーバーフローしてint.MinValueになって、つまりはMoveNextの結果もfalseからtrueに変わってしまいます。腐ってますね。殺害されるべき。誰がそんなに呼ぶんだよ、という感じに普段はあんま気にしないゆとりな私ですが、いえいえ、こういう時ぐらいは気にしたりします。</p>
+<p>オーバーフローはうっかりで見落としがちなので、ヘラヘラゆとりゆとりと笑ってないで、普段から注意すべきだと自戒するこの頃。</p>
+<p>まあ、今時はイテレータの手実装なんてする必要ないのですがね！シンプルなものならばLinqの組み合わせで実現出来ますし、そうでないものはyield returnを使えばいいので。手実装じゃなきゃダメなシチュエーションってなにかある、かなあ？</p>
+<h2>まとめ</h2>
+<p>「return thisじゃなくて新しいオブジェクトを返してる」「配列的なイメージで扱えるけれど実体はストリームのほうが近い」「デバッガ素晴らしすぎる」「生禁止」の以上四点でした。</p>
+<p>Linq to ObjectsのJavaScript移植である<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js</a>も同じ仕組みでやっているので、そちらのコードのほうがブラックボックスでなく、また、素直に書いているので分かりやすくお薦め、かどうかは、微妙なところですんがー。ブラックボックスになっている部分(yield returnなど)を表に出しているので(というか出さないと実装出来ない)余計分かりにくい感も。</p>
+<p>で、基礎からのLinqといえば紹介したいシリーズが一つ。</p>
+<p>LondonのGooglerでMicrosoft MVPでC# in Depthの著者でStack Overflowで凄まじい解答量を誇るJon Skeet氏が、Blogで<a href="http://msmvps.com/blogs/jon_skeet/archive/tags/Edulinq/default.aspx">Reimplementing LINQ to Objects</a>と称して、これまた凄まじい勢いで再実装&amp;超詳細な解説をやっているので必見です。</p>
+<p>詳細、どころの話じゃなく詳細で大変ヤバ素晴らしすぎる。単純なサンプルコードと結果を貼ってメソッド紹介、などという記事とは一線を画しすぎるクオリティ。私もこういう記事を書いていきたいものです。こんな量とスピードの両立は超人すぎて無理ですが、今年は記事のクオリティは上げたいですね。</p>
+<iframe src="http://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=1935182471" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<iframe src="http://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=0672330792" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<p>C# in Depth 2nd Editionはつい二ヶ月前に出たばかりで、内容も良さそうですね、読んでみたい本です。しかし私の手元には積み本がいっぱいで、とほほ。で、本といえばもう一つ、C# 4.0 Unleashedがもうすぐ(2011/1/14、明日だね)出ます。これは著者がBart De Smet氏なので大注目です。<a href="http://community.bartdesmet.net/blogs/bart/Default.aspx" title="B# .NET Blog">B# .NET Blog</a>でキレキレのLinqコード、だけじゃなくILからSQLからあらゆる領域にエキスパートな凄さを見せているので超楽しみです。こちらは予約してあるので、届くのが本当に楽しみで（洋書なので届くのは月末予定のよう、F#本が読み終えた頃になる予定なのでちょうどいいー）。</p>
+<p>Bart氏は大学時代はベルギーのMicrosoft MVP for Visual C#、その後MicrosoftのWPFチームに入り、現在はCloud Programmability Team、つまりRxを開発しているチームに入ってます。氏が入ってからIQbservableとかヘンテコなのが次々と上がってきて、ますます目が離せない状態に。PDC10では<a href="http://player.microsoftpdc.com/Session/bfa72307-6534-41ad-bcf7-0f4fb9280515">LINQ, Take Two - Realizing the LINQ to Everything Dream</a>というセッションを行ってましたが、これは本当に必見。Linqの過去、そして未来を見る素晴らしいセッションでした。感動しすぎて3回ぐらい見直した。</p>
+<p>LINQは今後「ますます」重要になるので、しっかり土台を固めて、未来へ向かおう！</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

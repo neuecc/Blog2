@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - 2015-02</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2015/0216_505.html">LightNode 1.0、或いはWeb APIでのGlimpseの使い方</a></h1>
+<ul class="date"><li>2015-02-16</li></ul>
+<div class="entry_body"><p>こないだ、Redisクライアントの<a href="http://neue.cc/2015/02/06_504.html">CloudStructuresを1.0にしたばかり</a>ですが、今回は大昔に作った自作Web APIフレームワークのLightNodeを1.0にしました。なんでドタバタやってるのかというと、<a href="https://github.com/aspnet/XRE">.NET XRE</a>(ASP.NET vNext)を様子見してたんですが、そろそろ今年一年どうしていくかの態度を決めなければならなくて、結論としては、OWINで行くことにしたからです。ちゃんちゃん。その辺の理由なんかは後ほど。</p>
+<p>さて、<a href="http://getglimpse.com/">Glimpse</a>です。なにはなくともGlimpseです。イマドキでC#でウェブ作るんなら、まずはGlimpse入れましょう。絶対必須です。使ったことないんなら今すぐ使ってください。圧倒的なVisual Profiling！ボトルネックが一目瞭然。コンフィグも一覧されるので、普段気にしていなかったところも丸見え。データアクセスが何やってるかも一発で分かる。ちなみに、競合としては昔あったMiniProfilerは窓から投げ捨てましょう。ASP.NET開発はもはやGlimpse以前と以後で分けられると言っても過言ではない。</p>
+<p>で、LightNode 1.0です。変更点はGlimpseにフル対応させたことで、ついでに細かいとこ直しまくりました、と。ともあれGlimpse対応が全てです。</p>
+<ul>
+<li><a href="https://github.com/neuecc/LightNode">GitHub - LightNode</a></li>
+<li><a href="https://www.nuget.org/packages/LightNode.Server/">NuGet- PM&gt; Install-Package LightNode.Server</a></li>
+</ul>
+<p>で、作ってる間にGlimpseをWeb API(ASP.NET Web APIとは言ってない)系で使ったり、Owinと合わせて使ったりすることのノウハウも溜まったので、LightNodeの話というかは、そっちのことを放出したいな、というのがこの記事の趣旨ですね！</p>
+<h2>OwinでGlimpseを使う</h2>
+<p>Glimpse自体はOwinに対応していません。勿論、vNextへの対応も含めてSystem.Webへの依存を断ち切ろうとしたGlimpse v2の計画は随分前から始まっているんですが、Issueをずっと見ている限り、かなり進捗は悪く、難航しているようです。正直、いつ完了するか全く期待持てない感じで、残念ながら待っていても使えるようにはなりません。</p>
+<p>しかし、そもそもGlimpseのシステムはただのHttpModuleとHttpHandlerで動いています。つまり、Microsoft.Owin.Host.SystemWebでホストしている限りは、Owinであろうと関係なく動きます。動くはずです。実際Glimpse.axdにアクセスすれば表示されるし、一見動いています。そしてGlimpseにはページ埋め込みの他、Standaloneでの起動が可能(Glimpse.axdでの右側)なのでそこから起動すると……</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/glimpse_standalone_launch.jpg" />
+</p>
+<p>いくらOwinでページ作ってアクセスしても何も表示されません、データがHistoryに蓄積されません。これにめっちゃハマって以前は諦めたんですが、今回LightNodeをOwinに何が何でも対応させたくて改めて調べた結果、対策分かりました。原因としては、Glimpseはリクエストの完了をPostReleaseRequestStateで受け止めているんですが、Microsoft.Owin.Host.SystemWebでホストしてOwinによるリクエストハンドリングでは、完了してもPostReleaseRequestStateが呼ばれません。結果的にOwinでふつーにやってる限りではGlimpseでモニタできない。</p>
+<p>対策としては、単純に手動でEndRequestを叩いてやればいいでしょう。Middlewareを作るなら</p>
+<pre><code class="language-csharp">public Task Invoke(IDictionary&lt;string, object&gt; environment)
+{
+    return next(environment).ContinueWith((_, state) =&gt;
+    {
+        ((state as HttpContext).Application[&quot;__GlimpseRuntime&quot;] as IGlimpseRuntime).EndRequest();
+    }, System.Web.HttpContext.Current);
+}
+</code></pre>
+<p>ということになります。このMiddlewareを真っ先に有効にしてやれば、全てのOwinパイプラインが完了した際にEndRequestが叩かれる、という構造が出来上がります。System.Webをガッツリ使ったMiddlewareなんて気持ち悪いって？いやいや、まぁいーんですよ、そもそもGlimpseがSystem.Webでしか現状動かないんだから、ガタガタ言うでない。</p>
+<p>さて、LightNodeのGlimpse対応DLLにはこのMiddlewareを最初から同梱してあります。LightNodeでGlimpse対応のConfigurationを書く場合は、以下のようになります。</p>
+<pre><code class="language-csharp">public void Configuration(Owin.IAppBuilder app)
+{
+    app.EnableGlimpse();
+    app.MapWhen(x =&gt; !x.Request.Path.Value.StartsWith(&quot;/glimpse.axd&quot;, StringComparison.OrdinalIgnoreCase), x =&gt;
+    {
+        x.UseLightNode(new LightNodeOptions()
+        {
+            OperationCoordinatorFactory = new GlimpseProfilingOperationCoordinatorFactory()
+        });
+    });
+}
+</code></pre>
+<p>まずEnableGlimpse、これが先のEndRequestを手動で叩くものになってます。次にMapWhenで、Glimpse.axdだけOwinパイプラインから外してやることで、LightNodeと共存させられます！ついでに、LigthNodeでのGlimpseモニタリングを有効にする場合はGlimpseProfilingOperationCoordinatorFactoryをOptionに渡してあげれば全部完了。</p>
+<h2>LightNode+GlimpseによるWeb APIモニタリング</h2>
+<p>何ができるようになるの？何が嬉しいの？というと、勿論当然まずはTimelineへの表示。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/glimpse_lightnode_timeline.jpg" width="640" />
+</p>
+<p>フィルター(Before/After)とメソッド本体がTimeline上で見えるようになります。これは中身何もないですが、勿論DatabaseやRedis、Httpアクセスなどがあれば、それらもGlimpseは全部乗っけることができるし、それらをWeb APIでも見ることができる。圧倒的に捗る。</p>
+<p>そしてもう一つがLightNodeタブ。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/lightnode_glimpse_infotab.jpg" width="640" />
+</p>
+<p>一回のリクエストのパラメータと、戻り値が表示されます。API開発の辛さって、戻り値が見えない（クライアント側でハンドリングして何か表示したりするも、領域的に見づらかったりする）のが結構あるなーって私は思っていて、それがこのLightNodeタブで解消されます。ちなみにもし例外があった場合は、ちゃんと例外を表示します。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/glimpse_infotab_exception.jpg" width="640" />
+</p>
+<p>また、ExecutionのPhaseが以降はすべてExceptionになってるので、フィルターが遠ったパスも確認しやすいはずです。</p>
+<h2>Web APIのためのGlimpseコンフィグ</h2>
+<p>Web APIのためにGlimpseを使う場合、ふつーのWeb用のコンフィグだと些か不便なところがあるので、調整したほうがいいでしょう。私のお薦めは以下の感じです。</p>
+<pre><code class="language-xml">&lt;!-- GlimpseはHUDディスプレイ表示のためなどでレスポンスを書き換えることがありますが、勿論APIには不都合です。
+     デフォルトはPersistResults（結果のHistory保存のみ）にしましょう --&gt;
+&lt;glimpse defaultRuntimePolicy=&quot;PersistResults&quot; endpointBaseUri=&quot;~/Glimpse.axd&quot;&gt;
+    &lt;tabs&gt;
+        &lt;ignoredTypes&gt;
+            &lt;!-- OWINで使うならこれらは不要でしょう、出てるだけ邪魔なので消します --&gt;
+            &lt;add type=&quot;Glimpse.AspNet.Tab.Cache, Glimpse.AspNet&quot; /&gt;
+            &lt;add type=&quot;Glimpse.AspNet.Tab.Routes, Glimpse.AspNet&quot; /&gt;
+            &lt;add type=&quot;Glimpse.AspNet.Tab.Session, Glimpse.AspNet&quot; /&gt;
+        &lt;/ignoredTypes&gt;
+    &lt;/tabs&gt;
+    &lt;runtimePolicies&gt;
+        &lt;ignoredTypes&gt;
+            &lt;!-- クライアントがクッキー使うとは限らないので、無視しましょう、そうしないとHistoryに表示されません --&gt;
+            &lt;add type=&quot;Glimpse.Core.Policy.ControlCookiePolicy, Glimpse.Core&quot; /&gt;
+            &lt;!-- 404とかもAPIならハンドリングして表示したい --&gt;
+            &lt;add type=&quot;Glimpse.Core.Policy.StatusCodePolicy, Glimpse.Core&quot; /&gt;
+            &lt;!-- Ajaxじゃないなら --&gt;
+            &lt;add type=&quot;Glimpse.Core.Policy.AjaxPolicy, Glimpse.Core&quot; /&gt;
+            &lt;!-- リモートで起動（APIならそのほうが多いよね？）でも有効にする --&gt;
+            &lt;add type=&quot;Glimpse.AspNet.Policy.LocalPolicy, Glimpse.AspNet&quot; /&gt;
+        &lt;/ignoredTypes&gt;
+    &lt;/runtimePolicies&gt;
+&lt;/glimpse&gt;
+</code></pre>
+<p>defaultRuntimePolicyと、そして特にControlCookiePolicyが重要です。利用シチュエーションとしてStandalone Glimpseで起動してHistoryから結果を見る、という使い方になってくるはずなので（というかWeb APIだとそうしか方法ないし）、Cookieで選別されても不便すぎるかな、ブラウザからのAjaxならともかくモバイル機器から叩かれてる場合とかね。</p>
+<p>さて、それは別として、様々なクライアントからのリクエストが混ざって判別できないというのも、それはそれで不便です。これを区別する手段は、あります。それは、クッキーです（笑） 判別用にクッキーでID振ってやるとわかりやすくていいでしょう。例えば以下の様な感じです。</p>
+<pre><code class="language-csharp">var req = WebRequest.CreateHttp(&quot;http://localhost:41932/Member/Random?seed=13&quot;);
+// &quot;glimpseid&quot; is Glimpse's client grouping key
+req.CookieContainer = new CookieContainer();
+req.CookieContainer.Add(new Uri(&quot;http://localhost:41932&quot;), new Cookie(&quot;glimpseid&quot;, &quot;UserId:4&quot;));
+</code></pre>
+<p>glimpseidというのがキーなので、例えばそこにユーザーIDとか振っておくと見分けがついてすごく便利になります。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/glimpse_history_clientgrouping.jpg" />
+</p>
+<p>こんな感じです。これはデバッグビルド時のみといった形で、クライアントサイドで埋め込んであげたいですね。</p>
+<h2>LightNodeを使う利点</h2>
+<p>というわけでGlimpseとの連携が超強力なわけですが、LightNode自体はまず言っておくと、誰にでも薦めはしません。この手のフレームワークで何より大事なのが標準に乗っかることです。C#での大正義はASP.NET Web APIです、そこは揺るぎません。その上でLightNodeの利点は「シンプルなAPIがシンプルに作れる」「Glimpseによる強力なデバッグ支援」「クライアントコード自動生成」です。特に非公開のインターナルなWeb API層向けですね。反面お薦めしないのは、RESTfulにこだわりたい人です。LightNodeは設計思想として徹底的にRESTfulを無視してるんで、準拠するつもりは1ミリもありません。例えば、インターナルなAPIでRESTfulのために1つのURIを決めるのに3日議論するとか、凄まじく馬鹿げているわけで。LightNodeは悩みを与えません、そもそもメソッド書くしかできないという制約を与えているから。</p>
+<p>凝ったルーティングもアホくさい。インターナルなWeb APIで、モバイル機器からのアクセスを前提にすると、クライアントサイドでのAPIライブラリを書くことになりますが、ルーティングが凝っていれば凝っているほど対応が面倒くさいだけ、という。嬉しさなんて0.1ミリもない。結局、ルールはある程度固定のほうが良いんですよ。さすがにパブリックAPIなら長いものに適当に巻かれて適当に誤魔化しますが。</p>
+<p>というわけで、どういう人に薦めるかというと「とりあえずサクッとWeb API作りたい人」「モバイルクライアントからアクセスするインターナルなWeb APIを作りたい人」ですかねー。別にパブリックなのも作れないことはないですけど、別にそこまで違和感あるURLになるわけでもないですしね。</p>
+<p>ちなみに、MVCとの共存は可能です。例えば</p>
+<pre><code class="language-csharp">public void Configuration(IAppBuilder app)
+{
+    app.Map(&quot;/api&quot;,  x =&gt;
+    {
+        x.UseLightNode();
+    });
+}
+</code></pre>
+<p>といった感じにapi以下をLightNodeのパスってことにすればOK。それ以外のパスではASP.NET MVCが呼ばれます。ルートが変わるだけなので、他のコンフィグは不要です。あんまり細かくゴチャゴチャやると辛いだけなので、このぐらいにしておくのがいいですね。ちなみに、Owinで困るのはHttpModuleとの共存だったりします。実行順序もグチャグチャになるし(一応、少しはOwin側でコントロールかけられますが、辛いしね)同じようなものが複数箇所にあるというのは、普通にイけてない。これはMiddlewareのほうに寄せていきたいところ。脱HttpModule。</p>
+<h2>まとめ</h2>
+<p>あ、で、OWINな理由って言ってませんでしたっけ。なんかねー、XREは壮大すぎて危険な香りしかしないんですよ。少なくとも、今年の頭（今）に、今年に使う分のテクノロジーを仕込むには、賭けられないレベルで危なっかしい。Previewで遊びながら生暖かく見守るぐらいがちょうどいいです。まあ、アタリマエだろっていえばアタリマエ(ベータすら出てないものを実運用前提で使い出すとかマジキチである)ですけどね、だから別にXREがダメとかそういう話じゃないですよ。むしろXREはまだ評価できる段階ですらないし。</p>
+<p>で、今は過渡期で宙ぶらりんなのが凄く困る話で、そのブリッジとしてOWINはアリかな、と。OWIN自体の未来は、まぁ<a href="http://blog.xin9le.net/entry/2015/01/18/161631">ASP.NET 5はどうしてOWIN上に乗らなかったのか</a>にあるように、Deadでしょう。しかし、今から来年の分(XREが実用になった世代)を仕込むには、System.Webへの依存の切り離しや、Owin的なパイプラインシステムへの適用は間違いなく重要。OWINならコーディングのノリもASP.NET 5と変わらないしコードの修正での移行も容易になる、最悪互換レイヤーを挟んで適用できるので、「今」の選択としては、消極的にアリです。</p>
+<p>ASP.NET Web APIは、うーん、ASP.NET MVCとの統合が見えてる今、改めて選びたくない感半端ないんだよねぇ。GlimpseはASP.NET Web API対応しないの？というと、そういう話もあるにはあったようですが、色々難航していて、PullRequestで物凄く時間かけて（70レス以上！一年近く！）、それでも結局取り込まれてないんですよ。ここまで来るともはやGlimpse v2でのvNext対応でMVC統合されてるんだからそれでいいじゃん、に落ち着きそうで、恐らくもう動きはないでしょう。とか、そういう周辺のエコシステムの動きも今のASP.NET Web APIは鈍化させる状況にあるわけで、あんまポジティブにはなれないなぁ。とはいえ、現状のスタンダードなWeb API構築フレームワークとして消極的にアリ、と言わざるをえないけれど。ちなみにNancyは個人的には全くナシです、あれのどこがいいのかさっぱりわからない。</p>
+<p>Glimpseの拡張は、ちょうど社内用拡張も全部書き換えたりして、ここ数日でめちゃくちゃ書きまくったんで、完全に極めた！うぉぉぉぉ、というわけで拡張ガイダンスはいつかそのうち書くかもしれませんし、多分書きません。つーかGlimpseちゃんと日本の世の中で使われてます？大丈夫かなー、さすがにGlimpseは圧倒的に良いので標準レベルで使われなければならないと思うのですけれど。</p>
+<p>あー、で、LightNodeは、まあ良く出来てますよ、用途の絞り方というか課題設定が明確で、実装もきっちりしてありますし。うん、私は好きですけど（そりゃそうだ）、人に薦めるかといったら、Microsoftの方針がOwin的なオープンの流れから、やっぱり大Microsoft的なところに一瞬で戻ったりしてるんで(Hanselmanには少し幻滅している)、まぁ長いものには巻かれておきましょう。</p>
+</div>
+<h1><a href="http://neue.cc/2015/0206_504.html">CloudStructures 1.0 - StackExchange.Redis対応、RedisInfoタブ(Glimpse)</a></h1>
+<ul class="date"><li>2015-02-06</li></ul>
+<div class="entry_body"><p>CloudStructures、というRedisライブラリを以前に作ってたわけなのですが(<a href="http://neue.cc/2013/04/05_403.html">CloudStructures - ローカルとクラウドのデータ構造を透過的に表現するC# + Redisライブラリ</a>)、2013年末にGlimpseプラグインを追加してから一切音沙汰がなかった。私お得意の作るだけ作って放置パターンか！と思いきや、ここにきて突然の大更新。APIも破壊的大変更祭り。バージョンもどどーんと上げて1.0。ほぅ……。</p>
+<ul>
+<li>GitHub - <a href="https://github.com/neuecc/CloudStructures">neuecc/CloudStructures</a></li>
+<li>NuGet - <a href="https://nuget.org/packages/CloudStructures/">CloudStructures</a></li>
+</ul>
+<p>一番大きいのが、ベースにしてるライブラリが<a href="https://code.google.com/p/booksleeve/">BookSleeve</a>から<a href="https://github.com/StackExchange/StackExchange.Redis">StackExchange.Redis</a>になりました。StackExchange.RedisはBookSleeveの後継で、そして<a href="http://azure.microsoft.com/ja-jp/documentation/articles/cache-dotnet-how-to-use-azure-redis-cache/">Azure Redis Cacheのドキュメント</a>でもマニュアルに使用されているなど、今どきの.NETにおけるRedisクライアントのデファクトの位置にあると言ってよいでしょう。当然、移行する必要があったんですが腰が重くて……。</p>
+<p>APIを変えた理由は、以前は「ローカルとクラウドのデータ構造を透過的に表現」というのに拘ってIAsyncCollection的に見せるのに気を配ってたんですが、Redis本来のコマンド表現と乖離があって、かなり使いづらかったんでやめたほうがいーな、と。メソッド名が変わっただけで使い方は一緒なんですが、とりあえずRedisのコマンド名が露出するようになりました。ま、このほうが全然イイですね。抽象化なんて幻想だわさ、特に名前の。</p>
+<h2>CloudStructuresの必要性</h2>
+<p>こんな得体のしれない野良ライブラリなんて使いたくねーよ、StackExchange.Redisを生で使えばいいじゃん。と、思う気持ちは至極当然でまっとうな感覚だと思います。私もそう思う。そして、単純なStringGet/Setぐらいしか使わないならそれでOKです、本当にただのキャッシュストアとして使うだけならば。しかし、本気でRedisを使い倒す、本気でRedisの様々なデータ構造を活用していこうとすると、StackExchange.Redisを生で使うのは限界が来ます。戻り値のオブジェクトへのマッピングすらないので、そこら中にSeiralize/Deserializeしなければならなくなる。ADO.NETのDbDataReaderを生で使うようなもので、そうなったら普通はなんかラップするよね？ADO.NETにはDapperのようなMicro ORMからEntity FrameworkのようなフルセットのORMまである。StackExchange.Redisが生ADO.NETを志向するならば（これは作者も言明していて、付随機能は足さない方針のようです）ならば、そこにO/R(Object/Redis)マッパーが必要なのは自然のことで、それがCloudStructuresです。</p>
+<p>CloudStructuresが提供するのは自動シリアライズ/デシリアライズ、キーからの分散コネクション（シャーディング）、コマンドのロギング、Web.configからの接続管理、そしてGlimpse用の各種可視化プロファイラーです。元々、というか今もCloudStructuresはうちの会社でかなりヘヴィに使ってて（このことは何度か記事でも推してます、技評の<a href="http://gihyo.jp/dev/serial/01/grani/0001">グラニがC#にこだわる理由</a>とか)、コマンドのロギングとかは執拗に拘ってます。今回はそうした長い利用経験から、やっぱイケてない部分も沢山あったので徹底的に見直しました。</p>
+<p>シャーディングは、StackExchange.RedisはそもそもConnectionMultiplexerという形で内部で複数の台への接続を抱えられるんですが、これはどちらかというと障害耐性的な機能(Master/Slaveや障害検知時の自動昇格など)が主なので、Memcached的なクライアントサイドでの分散はBookSleeveの時と変わらず持っていません。なので引き続きシャーディングはCloudStructures側の機能として提供しています。</p>
+<p>そもそも<a href="http://redis.io/">Redis</a>が必要かどうかだと、んー、私としては規模に関わらず絶対に入れたほうがいいと思ってます。RDBMSの不得意なところを綺麗に補完できるので、RDBMSだけで頑張るよりも、ちょっとしたとこに使ってやると物凄く楽になると思います。導入も<a href="http://azure.microsoft.com/ja-jp/services/cache/">Azure Redis Cache</a>やAWSの<a href="http://aws.amazon.com/jp/elasticache/">ElastiCache for Redis</a>のようにマネージドのキャッシュサービスが用意されているので、特にクラウド環境ならば簡単に導入できますしね。</p>
+<h2>使い方の基本</h2>
+<p>RedisSettingsまたはRedisGroupを保持して、各データ構造用のクラスをキー付きで作って、メソッド（全部async）を呼ぶ、です。</p>
+<pre><code class="language-csharp">// 設定はスタティックに保持しといてください
+public static class RedisServer
+{
+    public static readonly RedisSettings Default = new RedisSettings(&quot;127.0.0.1&quot;);
+}
+
+// こんなクラスがあるとして
+public class Person
+{
+    public string Name { get; set; }
+    public int Age { get; set; }
+}
+
+// RedisStringという型を作って... (RedisSettings.Default.String&lt;Person&gt;(&quot;key&quot;)でも作れます)
+var redis = new RedisString&lt;Person&gt;(RedisServer.Default, &quot;test-string-key&quot;);
+
+// コマンドをがしがし呼ぶ、何があるかはIntelliSenseで分かる
+await redis.Set(new Person { Name = &quot;John&quot;, Age = 34 });
+
+// 取得もそのまま呼ぶ 
+var copy = await redis.Get();
+
+// Listも同じ感じ
+var list = new RedisList&lt;Person&gt;(RedisServer.Default, &quot;test-list-key&quot;);
+await list.LeftPush(new[] { new Person { Name = &quot;Tom&quot; }, new Person { Name = &quot;Mary&quot; } });
+
+var persons = await list.Range(0, 10);
+</code></pre>
+<p>難しいところはなく、割と直感的。StackExchange.Redisのままだと、特にListが辛かったりするんで、相当楽になれるかな。</p>
+<p>メソッド名は基本的にStackExchange.Redisのメソッド名からデータ構造名のプリフィックスとAsyncサフィックスを抜いたものになってます。例えばSetAddAsync()はRedisSet.Add()になります。SetAddなんて最悪ですからね、そのまんま扱いたくない名前。Asyncをつけるかどうかはちょっと悩ましかったんですが、まぁ全部Asyncだしいっか、と思ったんで抜いちゃいました。</p>
+<p>他の特徴としては全てのセット系のメソッドにRedisExpiryという引数を足してます。これは、SetのついでにExpireを足すって奴ですね。標準だとStringSetぐらいにしかないんですが、元々Redisは個別にExpireを呼べば自由につけれるので、自動でセットでつけてくれるような仕組みにしました。なんだかんだでExpireはつける必要があったりして、今までは毎回Task.WhenAllでまとめててたりしてたんですがすっごく面倒だったので、これで相当楽になれる、かな？</p>
+<p>RedisExpiryはTimeSpanかDateTimeから暗黙的変換で生成されるので、明示的に作る必要はありません。</p>
+<pre><code class="language-csharp">var list = new RedisList&lt;int&gt;(settings);
+await list.LeftPush(1, expiry: TimeSpan.FromSeconds(30));
+await list.LeftPush(10, expiry: DateTime.Now.AddDays(1));
+</code></pre>
+<p>こんな感じ。これは、StackExchange.RedisがRedisKey(stringかbyte[]から暗黙的に変換可能)やRedisValue(基本型に暗黙的/明示的に変換可能)な仕組みなので、それに似せてみました。違和感なく繋がるのではないかな。</p>
+<h2>コンフィグ</h2>
+<p>Web.configかapp.cofingから設定情報を引っ張ってこれます。トランスフォームとかもあるので、なんのかんのでWeb.configは重宝しますからねー、あると嬉しいんじゃないでしょうか。</p>
+<pre><code class="language-xml">&lt;configSections&gt;
+    &lt;section name=&quot;cloudStructures&quot; type=&quot;CloudStructures.CloudStructuresConfigurationSection, CloudStructures&quot; /&gt;
+&lt;/configSections&gt;
+
+&lt;cloudStructures&gt;
+    &lt;redis&gt;
+        &lt;group name=&quot;Cache&quot;&gt;
+            &lt;!-- Simple Grouping(key sharding) --&gt;
+            &lt;add connectionString=&quot;127.0.0.1,allowAdmin=true&quot; db=&quot;0&quot; /&gt;
+            &lt;add connectionString=&quot;127.0.0.1,allowAdmin=true&quot; db=&quot;1&quot; /&gt;
+        &lt;/group&gt;
+        &lt;group name=&quot;Session&quot;&gt;
+            &lt;!-- Full option --&gt;
+            &lt;add connectionString=&quot;127.0.0.1,allowAdmin=true&quot; db=&quot;2&quot; valueConverter=&quot;CloudStructures.GZipJsonRedisValueConverter, CloudStructures&quot;  commandTracer=&quot;Glimpse.CloudStructures.Redis.GlimpseRedisCommandTracer, Glimpse.CloudStructures.Redis&quot; /&gt;
+        &lt;/group&gt;
+    &lt;/redis&gt;
+&lt;/cloudStructures&gt;
+</code></pre>
+<p>こんな感じに定義して、</p>
+<pre><code class="language-csharp">public static class RedisGroups
+{
+    // load from web.config
+    static Dictionary&lt;string, RedisGroup&gt; configDict = CloudStructures.CloudStructuresConfigurationSection
+        .GetSection()
+        .ToRedisGroups()
+        .ToDictionary(x =&gt; x.GroupName);
+
+    // setup group
+    public static readonly RedisGroup Cache = configDict[&quot;Cache&quot;];
+    public static readonly RedisGroup Session = configDict[&quot;Session&quot;];
+
+    static RedisGroups()
+    {
+        // 後述しますがGlimpseのRedisInfoを有効にする場合はここで登録する
+        Glimpse.CloudStructures.Redis.RedisInfoTab.RegisiterConnection(new[] { Cache, Session });
+    }
+}
+</code></pre>
+<p>こんな風にstatic変数に詰めてやると楽に扱えます。</p>
+<h2>シリアライズ</h2>
+<p>CloudStructuresは基本型（int, double, string, etc）はそのまま格納し、オブジェクトはシリアライザを通します。シリアライザとして標準ではJSONシリアライザの<a href="https://github.com/kevin-montrose/Jil">Jil</a>を使っています。理由は、速いから。JilはJSON.NETと違って、JsonReader/Writerも提供しないし、複雑なカスタムオプションもフォールバックもありません（多少の（特にDateTime周りの）オプションはありますが）。単純にJSONをシリアライズ/デシリアライズする、もしくはdynamicで受け取る。それだけです。まぁ、CloudStructuresの用途には全然合ってる。</p>
+<p>以前は<a href="https://code.google.com/p/protobuf-net/">protobuf-net</a>を使っていたんですが、今後はやめようと思ってます。理由は、DataMemberをつけて回るのが面倒だから、ではなくて、空配列/空文字列/nullのハンドリングが凄く大変だったり（ネストしたオブジェクトの空配列がデシリアライズしたらnullになってた、とかね……これは正直ヤバすぎた）、バージョニング（特にEnumの！）が辛かったり、型がないとデシリアライズできないのでちょっとしたDumpすらできなかったりと、実運用上クリティカルすぎる案件が多くてそろそろもう無理。</p>
+<p>かわりに、ではないですが圧縮することを提案します。CloudStructuresは標準でGZipJsonRedisValueConverterというものも用意していまして、それに差し替えることでJSONをGZipで圧縮して格納/展開します。圧縮は、特にデカい配列を突っ込んだりするときに物凄く効きます。めちゃくちゃ容量縮みます。protobufにせよmsgpackにせよ、シリアライザは圧縮、ではないんで、バイナリフォーマットとして小さくはなっても、配列にたいしてめちゃくちゃ縮むとかそういうことは起こり得ません（勿論、別にmsgpack+GZipとか併用するのは構わないけれど）。</p>
+<p>圧縮の欠点は圧縮なんで、圧縮/解凍にそれなりにパフォーマンスを取られること。と、いうわけでCloudStructuresでは<a href="https://code.google.com/p/lz4/">LZ4</a>で圧縮するものも用意しました。LZ4はfastest compression algorithmということで、GZipと比べて数倍、圧縮/解凍が速い、です（ただしサイズ自体はGZipよりは縮まない)。この手の用途ではかなり適しているかなー、と。LZ4のライブラリは<a href="http://lz4net.codeplex.com/">LZ4 for .NET</a>を用いてます。</p>
+<ul>
+<li>NuGet - <a href="https://nuget.org/packages/CloudStructures.LZ4/">CloudStructures.LZ4</a></li>
+</ul>
+<p>インストールはNuGetから入れてもらった後に、LZ4JsonRedisValueConverterに差し替えるだけ。</p>
+<p>ふつーはそのまま生JSON、気にしたいけど色々入れたくない人はGZip、エクストリームに頑張ってみたい人はLZ4を選べばいいと思います。更にもっとやりたい人はObjectRedisValueConverterBaseを継承して、自作のRedisValueConverterを作ってみてくださいな。</p>
+<h2>Glimpseプラグイン</h2>
+<p>もはやASP.NET開発で<a href="http://getglimpse.com/">Glimpse</a>は絶対に欠かせません。使わないのはありえないレベル。あ、<a href="http://miniprofiler.com/">MiniProfiler</a>はもういらないので投げ捨てましょう。というわけでCloudStructuresはGlimpse用のプラグインをしっかり用意してあります。相当気合入れて作りこんであるので、これのためにもRedis使うならCloudStructuresで触るべき、と言えます。マジで。</p>
+<ul>
+<li>NuGet - <a href="https://nuget.org/packages/Glimpse.CloudStructures.Redis/">Glimpse.CloudStructures.Redis</a></li>
+</ul>
+<p>インストールはNuGetから本体とは別に。それとGlimpseを使う場合は、commandTracerにGlimpseRedisCommandTracerを渡しておいてあげてください。またRedisInfoで情報を出す場合、接続文字列でallowAdminをtrueにしておく必要があります。</p>
+<pre><code class="language-xml">&lt;add connectionString=&quot;127.0.0.1,allowAdmin=true&quot; db=&quot;0&quot; commandTracer=&quot;Glimpse.CloudStructures.Redis.GlimpseRedisCommandTracer, Glimpse.CloudStructures.Redis&quot; /&gt;
+</code></pre>
+<p>まず、Timeline。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/RedisTimeline.png" width="640" />
+</p>
+<p>コマンドの並列実行具合がしっかりタイムラインで確認できます。</p>
+<p>Redisタブ。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/RedisTab.png" width="640" />
+</p>
+<p>コマンド名、キー名、送受信オブジェクトのダンプとサイズ、Expire時間と処理にかかった時間、そしてキーとコマンドで重複して発行してたら警告。これを見れば一回のページリクエストの中でどうRedisを使ったかが完全に分かるようになってます。不足してる情報は一切なし、とにかく全部出せる仕組みにしました。</p>
+<p>最後にRedisInfoタブ。RedisInfoタブを使うには、最初に言ったallowAdmin=trueにすることと、もう一つ、最初に情報表示に使うRedisGroupを登録しておく必要があります。</p>
+<pre><code class="language-csharp">Glimpse.CloudStructures.Redis.RedisInfoTab.RegisiterConnection(new[] { Cache, Session });
+</code></pre>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/RedisInfoTab.png" width="640" />
+</p>
+<p>ServerInfoからCmdStat、コンフィグ、クライアント側のコンフィグやコネクションの状態を全部表示します。全部。全部。出せそうな情報は全部収集してきてます。こういうの何気に結構地味に相当大事だったりしますのよ、特にRedisサーバーの情報やコンフィグなんて普段は見ないですからね、こうして超絶カジュアルに見れるっての、かなりありがたい。</p>
+<h2>まとめ</h2>
+<p>そんなわけで凄く良くなったんで、かなりお薦めデス。ネーミングが直球なものしか付けないことの多い私にしては、CloudStructuresってライブラリ名はかなりカッコイイという点でもお薦めですね！</p>
+<p>問題は旧CloudStructuresとの互換性が、かなり無いので既に使ってる場合は移行が大変ってことデスネ。うちはどうしたんだって？移行してないよ！どーしようかなぁ、うーん、そこはちょっとかなり悩ましい……。</p>
+<p>まぁCloudStructuresを使うかどうかはともかくとして、RedisはC#界隈でももっとばんばん使われて欲すぃですねー、そして使うならStringGet/Setだけじゃもったいない。</p>
+</div>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

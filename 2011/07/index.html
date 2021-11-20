@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - 2011-07</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2011/0727_335.html">Deep Dive AsEnumerable</a></h1>
+<ul class="date"><li>2011-07-27</li></ul>
+<div class="entry_body"><p>AsEnumerable、といったらLINQのAsEnumerableです。その挙動は、IEnumerable&lt;T&gt;へと型変換をします。それだけ、なので実に影が薄いのですが、それでいて奥深く使いこなしが求められる、はずなのですが陰が薄いので無視されている感がなきにしもあらずなので、しっかりと紹介したいと思います。</p>
+<h2>AsEnumerableの実装</h2>
+<p>実装は非常に単純明快で、中身ほとんど空っぽです。</p>
+<pre><code class="language-csharp">public static IEnumerable&lt;T&gt; AsEnumerable&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    return source;
+}
+</code></pre>
+<p>ようするにアップキャストです。どういう時に使えばいいかというと、例えば可変長引数とIEnumerable&lt;T&gt;の両方を受けたいオーバーロードを作る場合。</p>
+<pre><code class="language-csharp">public void Show(params string[] values)
+{
+    Show(values.AsEnumerable());
+}
+
+public void Show(IEnumerable&lt;string&gt; values)
+{
+    foreach (var item in values)
+    {
+        Console.WriteLine(item);
+    }
+}
+</code></pre>
+<p>foreachでグルグル値を取り出すだけなので、IEnumerable&lt;T&gt;で受けるようにしたい。でも利便性のため可変長引数も用意しておきたい。という場合はよくあります。なので毎回このオーバーロードを用意するんですが、その時に、こうしてAsEnumerableを使います。なお、AsEnumerableを忘れると無限に再帰してStackOverflowしてしまいます……。</p>
+<p>AsEnumerableがラップするのではなく、ただのアップキャストにすぎないということは重要です。以前に<a href="http://neue.cc/2009/07/21_178.html" title="neue cc - LinqとCountの効率">LinqとCountの効率</a>でも書きましたが、LINQの一部のメソッドはIList&lt;T&gt;であったりICollection&lt;T&gt;であるとき、asやisを使って最適化を図ります。foreachするだけだとあまり関係ないですが、受け取ったIEnumerable&lt;T&gt;を使ってLINQで処理する場合だと、このことが効いてきます。</p>
+<p>ならば常にアップキャストでよくて、ラップなど必要ないのではないか？というと必ずしもそうではありません。アップキャストは、ダウンキャストを可能にします。</p>
+<pre><code class="language-csharp">// アップキャストされている状態というのは
+var numbers = new List&lt;int&gt;().AsEnumerable();
+
+// ダウンキャストが可能にするということ、そして、ダウンキャストは危険
+var list = (List&lt;int&gt;)numbers;
+</code></pre>
+<p>ダウンキャストが危険だ、やるな、というのなら、そもそもアップキャストをすべきではない。抽象で受けることこそがオブジェクト指向だとか、形だけのパターンにはまってるとそうなる。原則は比較的シンプルで。メソッドのシグネチャにおいて、引数の型は最大に受け入れるため出来る限り抽象で、戻り値の型は最大に利用出来るようにするため具象にすればいい。ローカル変数に関しては、原則varでよし。どうしても必要ならば、ローカル変数側、つまりメソッドの利用側が安全なアップキャストで適宜、抽象で受ければよいでしょう。</p>
+<p>ダウンキャストはダメ基本的に。そして、ダウンキャストは可能な状態にすること自体がダメなので、アップキャストも最小限に。というのがメソッド定義の基本だと思っていますが、プロパティだと少し事情は変わってくるかも。一々ラップすることのパフォーマンスロスや手間を考えると、しかたがなくアップキャストで提供するのも、ありかなー、とは。</p>
+<h2>Hide</h2>
+<p>そんなわけで、具象型を消去して、完全にラップしてIEnumerable&lt;T&gt;として提供したいという場合もあるかと思います。そこで、Ix(Interactive Extensions、<a href="http://msdn.microsoft.com/en-us/data/gg577609" title="Reactive Extensions">Reactive Extensions</a>のオマケで提供されているEnumerableの拡張メソッド群、NuGetの<a href="http://nuget.org/List/Packages/Ix_Experimental-Main" title="NuGet gallery">Ix_Experimental-Main</a>で入れるのが手っ取り早い。Experimentalのとおり、まだ実験的な代物で保証されていないことは注意)にはHideというものがあります。これも実装は単純明快で</p>
+<pre><code class="language-csharp">public static IEnumerable&lt;T&gt; Hide&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    foreach (var item in source)
+    {
+        yield return item;
+    }
+}
+</code></pre>
+<p>といった形。Hideというメソッド名は具体的な型を隠す、といった意味合いで付けられているのでしょうね。</p>
+<h2>Rx(AsObservable)の場合</h2>
+<p>Enumerableと関連性の深いObservable、Rxにも同様に型変換をするAsObservableというメソッドが用意されています。主に使うシチュエーションは、Subjectの隠蔽をするときでしょうか。</p>
+<pre><code class="language-csharp">// 5秒後に非同期で値を返すというだけのもの
+public static IObservable&lt;T&gt; SendValueAfter5Seconds&lt;T&gt;(T value)
+{
+    var asyncSubject = new AsyncSubject&lt;T&gt;();
+
+    ThreadPool.QueueUserWorkItem(_ =&gt;
+    {
+        Thread.Sleep(TimeSpan.FromSeconds(5)); // とりまsleep
+
+        asyncSubject.OnNext(value); // AsyncSubjectのキャッシュへ値送信
+        asyncSubject.OnCompleted(); // 非同期処理完了の合図（ここでObserverに値が送られる）
+    });
+
+    return asyncSubject.AsObservable();
+}
+</code></pre>
+<p>このコード自体には何の意味もありません、非同期処理を模して、スレッドプールで5秒待って値を送る、というだけです。大事なのはAsyncSubjectをAsObservableして返していること。このAsObservableはただのアップキャストではなく、新しい型でラップして具象型(AsyncSubject)を隠しています。つまり、AsEnumerableではなくHideに等しい挙動です。ここで、もしAsObservableを書いていないと</p>
+<pre><code class="language-csharp">// return時にAsObservableが書かれていないとダウンキャスト可能になる
+var subject = (AsyncSubject&lt;int&gt;)SendValueAfter5Seconds(100);
+
+subject.Subscribe(Console.WriteLine);
+
+// なので、外側から発火可能になってしまう、これは最悪
+subject.OnNext(-1);
+subject.OnCompleted(); 
+</code></pre>
+<p>Subject（標準だと4種類ある）は、Rxにおけるイベントの表現です。C#でのイベントは、内部からは発火可能、外側からは購読しかできない。というようになっていると思います。その挙動にするために、また、純粋に安全性のために、Subjectを購読させるために外側に出す場合は、AsObservableでラップして型を消さなければなりません。</p>
+<p>※極初期(RxがReactive Frameworkと言われていた頃なぐらいに前)は、このAsObservableはHideというメソッド名でした。AsObservableのほうが分かりやすくて良いとは思いますが、Enumerableでの挙動と合わせるなら、キャストするだけのAsObservableとHideに分けるべきだったのでは？と思わなくは全くないです←Rxにおいてはただのキャストしただけのものは使う機会ないと思うので、現在の形で正解</p>
+<h2>IQueryableにおけるAsEnumerableの重要性</h2>
+<p>Enumerable、Observableと来たので、QueryableでのAsEnumerableも見てみましょう。QueryableにおけるAsEnumerableは、クエリ構築の終了です。IQueryableでのクエリ構築をそこで打ち切るというスイッチです。どういうことか、というと</p>
+<pre><code class="language-csharp">// とあるContextによるQueryableはSkipWhileとCountをサポートしていなかったとします
+var count = toaru.createContext() // IQueryeable&lt;T&gt;とする
+    .Where(x =&gt; x % 2 == 0)
+    .SkipWhile(x =&gt; x &lt; 100)
+    .Count(); // 未サポートなのでExceptionが来る！
+
+// そういう場合、ToListするといい、というアドバイスがよく上がります
+var count = toaru.createContext()
+    .Where(x =&gt; x % 2 == 0)
+    .ToList() // ここまでの式でクエリ生成+List化
+    .SkipWhile(x =&gt; x &lt; 100) // ここからはIEnumerable&lt;T&gt;
+    .Count();
+
+// でも、それならAsEnumerableでいいんだよ？
+var count = toaru.createContext()
+    .Where(x =&gt; x % 2 == 0)
+    .AsEnumerable() // 後続がGetEnumeratorを呼んだ時にここまででクエリ生成
+    .SkipWhile(x =&gt; x &lt; 100) // ここからはIEnumerable&lt;T&gt;
+    .Count();
+</code></pre>
+<p>Queryableの連鎖で、例えばLinq to SqlだったらSQL文を作っていきます。で、foreachであったりToListであったりをすると、SQLが作られて発行されてデータベースと通信されて。それって、どのタイミングでQueryableの中の式木がSQL文に変換されるかというと、GetEnumeratorが呼ばれた時、です。それはいつ呼ばれるの？というと、foreachされたりToListされたり、AsEnumerableしてその後のEnumerableのメソッドがGetEnumeratorを呼んだ、その時。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/quaryable_getenumerator_enumerable.jpg">
+</p>
+<p>こんな感じです。ToArrayやToListは、そこで実体化するので、メソッドチェーンの後続がIEnumerable&lt;T&gt;なのは当然のことですが、AsEnumerableがただのキャストにすぎないのに意味合いが変化するのは、拡張メソッドの解決の優先度のため。型がIQueryable&lt;T&gt;の状態だとWhereやSelectはQueryableのWhereやSelectが選択されますが、型がIEnumerable&lt;T&gt;の状態だとEnumerableのWhereやSelectが選択される、ということです。Enumerable自体は遅延評価なので、後続のIEnumerable&lt;T&gt;がGetEnumeratorを呼び出したときに評価が開始されるのは変わらず。</p>
+<p>AsEnumerableやToArray、ToListは実はQueryableクラスにはありません。なので、素の状態で拡張メソッドの解決がIEnumerable&lt;T&gt;側を呼び出すようになっています。</p>
+<p>ところでクエリ文の構築はGetEnumeratorが呼ばれた時と言いましたが、GetEnumeratorを呼ばないとき、例えばQueryableでのFirstやSumはどうなっているのかというと、内部でExecuteが呼ばれた時です。IQueryProviderはこんなインターフェイス。</p>
+<pre><code class="language-csharp">public interface IQueryProvider
+{
+    IQueryable&lt;TElement&gt; CreateQuery&lt;TElement&gt;(Expression expression);
+    TResult Execute&lt;TResult&gt;(Expression expression);
+    // 非ジェネリックなものもありますが省略
+}
+</code></pre>
+<p>FirstやSumなど、単独の結果を返すものは内部でExecuteを呼びます。なので、クエリプロバイダの実装次第ですが、通常はこのExecuteが呼ばれた時にクエリ文の構築と実行を同時に行うものと思われます。SelectやWhereなど、後続にIQueryableのチェーンを繋げるものは、内部でCreateQueryのほうを呼びます。そして最終的に複数の結果(IEnumerable&lt;T&gt;)を返す場合は、GetEnumeratorが呼ばれた時にクエリ文の構築と実行を行うものと思われます。</p>
+<h2>まとめ</h2>
+<p>AsEnumerableは、ようするにただのキャストなだけですが、その果たしている役割というものを考えると非常に深い。その割には(QueryableでToListばかり使われたりと)今ひとつ知名度に欠ける気もしますので、ドサッと紹介を書いてみました。ただのキャストだって語ろうと思えば幾らでも語れるLINQは素敵ですね！</p>
+</div>
+<h1><a href="http://neue.cc/2011/0725_334.html">DynamicObjectでより沢山の型情報を取る方法</a></h1>
+<ul class="date"><li>2011-07-25</li></ul>
+<div class="entry_body"><p><a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>のAsDynamicに少し不具合があったので、ver.1.5.0.0として更新しました。今まではメソッドの引数にnullを渡すと死んでました。ぬるぽ！まあしかし、引数そのもののからしかTypeが取れなかったので、nullだと、どのみちメソッドを特定するための型情報がないからオーバーロードの解決は不可能なので、仕様ですよ仕様、という言い訳。</p>
+<p>などとふざけたことを思っていたのですけれど、コンパイル時に決定される引数の型を取り出す方法が判明したので、そのへんも含めて完全に解決しました。やったね。その方法は、というと</p>
+<pre><code class="language-csharp">public override bool TryInvokeMember(InvokeMemberBinder binder, object[] args, out object result)
+{
+    var csharpBinder = binder.GetType().GetInterface(&quot;Microsoft.CSharp.RuntimeBinder.ICSharpInvokeOrInvokeMemberBinder&quot;);
+    if (csharpBinder == null) throw new ArgumentException(&quot;is not csharp code&quot;); // CSharpコードではない
+
+    // ジェネリックの型引数の取得(Hoge&lt;T&gt;(1, t)とかでのTのこと)
+    var typeArgs = (csharpBinder.GetProperty(&quot;TypeArguments&quot;).GetValue(binder, null) as IList&lt;Type&gt;).ToArray();
+    // コンパイル時に決定されているパラメータの型の取得
+    var parameterTypes = (binder.GetType().GetField(&quot;Cache&quot;, BindingFlags.NonPublic | BindingFlags.Instance).GetValue(binder) as Dictionary&lt;Type, object&gt;)
+        .First()
+        .Key
+        .GetGenericArguments()
+        .Skip(2)
+        .Take(args.Length)
+        .ToArray();
+    
+    // それらの情報からMethodInfoを特定する
+    var method = MatchMethod(binder.Name, args, typeArgs, parameterTypes);
+    // 呼び出し
+    result = method.Invoke(target, args);
+
+    return true; // 呼べてれば必ずTrueなので。
+}
+</code></pre>
+<p>……。ひどそうな匂いが！まず、素のままでは情報が足りなすぎるので、基本的にリフレクション全開です。その中でも、parameterTypesが今回追加したところです。binderのCacheに、CallSiteのデリゲート(dynamicを使って呼び出すと、コンパイル時にこの辺のものが自動生成される)があるので、そこから型情報を持ってこれることに気づいたのだ(ｷﾘｯ</p>
+<p>もう少し詳しく説明しますと</p>
+<pre><code class="language-csharp">// このヘンテツもないどうでもいいコードは
+dynamic d = null;
+var result = d.Hoge&lt;string, int&gt;(100, (string)null, (ICollection&lt;int&gt;)null);
+
+// コンパイル後はこんな結果に化けちゃいますあら不思議！
+object d = null;
+if (Program.&lt;Main&gt;o__SiteContainer0.&lt;&gt;p__Site1 == null)
+{
+	Program.&lt;Main&gt;o__SiteContainer0.&lt;&gt;p__Site1 = CallSite&lt;Func&lt;CallSite, object, int, string, ICollection&lt;int&gt;, object&gt;&gt;.Create(Binder.InvokeMember(CSharpBinderFlags.None, &quot;Hoge&quot;, new Type[]
+	{
+		typeof(string), 
+		typeof(int)
+	}, typeof(Program), new CSharpArgumentInfo[]
+	{
+		CSharpArgumentInfo.Create(CSharpArgumentInfoFlags.None, null), 
+		CSharpArgumentInfo.Create(CSharpArgumentInfoFlags.UseCompileTimeType | CSharpArgumentInfoFlags.Constant, null), 
+		CSharpArgumentInfo.Create(CSharpArgumentInfoFlags.UseCompileTimeType | CSharpArgumentInfoFlags.Constant, null), 
+		CSharpArgumentInfo.Create(CSharpArgumentInfoFlags.UseCompileTimeType | CSharpArgumentInfoFlags.Constant, null)
+	}));
+}
+object result = Program.&lt;Main&gt;o__SiteContainer0.&lt;&gt;p__Site1.Target(Program.&lt;Main&gt;o__SiteContainer0.&lt;&gt;p__Site1, d, 100, null, null);
+</code></pre>
+<p>細かい部分はどうでもいいので、良く分からないFuncが生成されてるんだな、というとこだけ見てもらえれば。さて、これを頭に入れた上で、DynamicObjectのTryInvokeMemberでbinderの奥底のCacheを探してみると、</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/binder_cache.jpg">
+</p>
+<p>このFunc6というものが、Func&lt;CallSite, object, int, string, ICollection&lt;int&gt;, object&gt;です、発見出来ました！これの型引数が、コード上での呼び出し時の型引数になるわけです。なお、第一引数はCallSite、第二引数はインスタンスなので無視してSkip(2)、そして引数の個数分だけTake(まあ、ようするに最後が戻り値の型なわけですが)。</p>
+<p>というわけで、実際に改善されたAsDynamicを使ってみますと、</p>
+<pre><code class="language-csharp">// こんな何のヘンテツもないオーバーロードのあるクラスがあるとして
+public class PrivateClass
+{
+    private string Hoge(IEnumerable&lt;int&gt; xs)
+    {
+        return &quot;enumerable&quot;;
+    }
+
+    private string Hoge(List&lt;int&gt; xs)
+    {
+        return &quot;list&quot;;
+    }
+}
+
+// 型はdynamicです←意地でもvarで書きたい人
+var mock = new PrivateClass().AsDynamic();
+
+// 型でオーバーロード分けが出来るようになった！
+List&lt;int&gt; list = new List&lt;int&gt;();
+IEnumerable&lt;int&gt; enumerable = new List&lt;int&gt;();
+
+(mock.Hoge(list) as string).Is(&quot;list&quot;);
+(mock.Hoge(enumerable) as string).Is(&quot;enumerable&quot;);
+</code></pre>
+<p>というわけで、より正確なオーバーロードの解決が図れるようになりました。何をアタリマエのことを言ってるんだお前は、と思うかもしれませんが、TryInvokeMemberに渡ってくる情報はobject[] argsなのです。args[0]の型はobjectなわけで、それをGetTypeしたら、出てくるのはList&lt;int&gt;なのです。何をどうやっても、.csファイルではIEnumerable&lt;int&gt;と書かれているという情報を得ることは出来なかったわけです、今までは。ましてやnullだったら型もヘッタクレもなかったわけです。でもこれからは違う。コード上のデータが取れる！</p>
+<p>などとツラツラと書いてみましたが、利用者的にはどうでもいい話ですね、はい。それに、リフレクションはいいとしても、Cacheって何よ？CacheのFirstが決め打ちなのって何よ？などなどは、ぶっちゃけよくわかっていなくて(だって全部internalだしね……)若干怖いのですが、まあ、多分、大丈夫でしょう、多分……。それと、まだ完璧じゃあなくてサポートしてないオーバーロードのケースが幾つかあります。とはいえ、ほとんどのシチュエーションでは問題ないのではかと思います。</p>
+<h2>まとめ</h2>
+<p>この<a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>ですが、私は結構普通に使いまくっていて、ないと死にます。激しく便利。そうそう、紹介しますと、 actual.Is(expected) と、メソッドチェーン形式で流れるようにアサーションが書けます。ラムダ式での指定やコレクションへの可変長引数など、ちょうどかゆいところに手が届く拡張を施してあって、随分とテストを書くのが楽になります。</p>
+<p>AsDynamicは、オマケ機能というか。privateなメソッドやプロパティ、フィールドにもdynamicを通してアクセス出来るように変換します。たまにしか使いませんが（MSTestにはPrivate Accessorがあるので）、あると便利よね、という時もそこそこあり。</p>
+<p>MSTestだけではなく、NUnitやMbUnit、xUnit.NETでも使えますので＆NuGet経由でも入れられますので、一度是非お試しを。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0709_333.html">非同期の再帰的な辿り方、或いはRxとC# 5.0 Asyncの連携について</a></h1>
+<ul class="date"><li>2011-07-09</li></ul>
+<div class="entry_body"><p>例えば、ページを辿る。何度もアクセスを繰り返して、辿る。非同期で。単純なようで、やってみると何気にこれが結構難しい。例としてコードレシピの<a href="http://code.msdn.microsoft.com/Reactive-ExtensionsTwitter-b8238b51">Reactive Extensionsを使用してTwitterから非同期にデータを取得し表示する</a>がありました。MVVMも絡めて、素晴らしいサンプルですね！</p>
+<p>というわけで、お題を拝借して、Twitter ApiのGET statuses/friendsを使わせて頂きます。んが、今回は、手を抜いてフォロワーのscreen_name(@hogehogeのhogehogeの部分)だけを取れれば良い、ということにします。JSON解析やデシリアライズも面倒だし話の本題でもないので省略するため、<a href="http://dynamicjson.codeplex.com/">DynamicJson</a>を使って、JSONを生のまんまっぽく扱うことにします。DynamicJsonは便利だなあ（棒）</p>
+<p>さて、まずTwitter APIのcursorですが、大体こんな風になっています。目的はカーソルを辿って全てのuser(に含まれるscreen_name)を集めること。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/twitter_nextcursor.jpg">
+</p>
+<p>JSON取得毎にnext_cursor_strという、次のページへのIDが取れるので、それを辿っていって、0が出たらページ末尾。といった具合です。next_cursor_strの値は一見ランダムに見える整数(2121409421とかそんな値になっている)であり、next_cursorという数字のものもあるのに、_strという文字列として得られるほうを使っています。何故かというと、<a href="http://d.hatena.ne.jp/tmyt/20101201/1291166929">TwitterのステータスIDが53bitを越えたお話 - tmytのらくがき</a>を参照ください。DynamicJsonでは数字(Number)はdoubleとして扱うので、_strのほうを使わないと、危ういわけです。</p>
+<p>まあ、ただのお題で本題な話ではないので、その辺は深く考えずそういうものなのだなあ、ぐらいで。</p>
+<h2>同期とyield returnと非同期</h2>
+<p>コードレシピのサンプルを見させて頂いたのですが、ネットワークアクセス部分がOpenReadなので、非同期&quot;ではない&quot;です。でも挙動は非同期だよ？というのは、Scheduler.ThreadPoolを使っているからなわけですが、つまるところ挙動的にはBackgroundWorkerを使って非同期にするのと同じことです。その場合ですと、Generateも確かに良いのですが、APIへのアクセスがそもそも同期であるならば、難しく考える必要はなく、yield returnを使ったほうが簡単です。単純なものは演算子の組み合わせで、複雑なものは素直に偉大なるコンパイラ生成(yield return)に頼る。そういう切り分けがLINQ的には大事かなって。</p>
+<pre><code class="language-csharp">static IEnumerable&lt;string&gt; EnumerateFriends(string screenName)
+{
+    var cursor = &quot;-1&quot;; // 初期値は-1から
+    while (cursor != &quot;0&quot;) // 0が出たら終了
+    {
+        var url = string.Format(&quot;http://api.twitter.com/1/statuses/friends.json?screen_name={0}&amp;cursor={1}&quot;,
+            screenName, cursor);
+        using (var stream = new WebClient().OpenRead(url))
+        {
+            var json = DynamicJson.Parse(stream); // 面倒くさいんでDynamicJson使いますよ:)
+            foreach (var item in json.users)
+            {
+                yield return item.screen_name; // screen_nameを列挙
+            }
+            cursor = json.next_cursor_str; // 次のカーソルにセット
+        }
+    }
+}
+
+static void Main()
+{
+    var friends = EnumerateFriends(&quot;neuecc&quot;).ToArray();
+}
+</code></pre>
+<p>すっきりと書けるのが分かると思います。え、これだとブロックしてしまって良くない？その通り。じゃあ非同期にしましょう。いえ、<a href="http://msdn.microsoft.com/en-us/data/gg577609" title="Reactive Extensions">Reactive Extensions</a>で簡単にできてしまいます。yield returnで生成されたEnumerableをObservableに変換するのは、ToObservableです。</p>
+<pre><code class="language-csharp">static void Main()
+{
+    EnumerateFriends(&quot;neuecc&quot;)
+        .ToObservable(Scheduler.ThreadPool) // ThreadPoolで実行！
+        .Subscribe(Console.WriteLine);
+        
+    Console.ReadLine(); // 終了してしまうからね
+}
+</code></pre>
+<p>ToObservableはデフォルトでは Scheduler.CurrentThread 上で実行されるため、同期的にブロックしますが(※Push型シーケンスだからといって必ずしも非同期とは限らない)、任意のものに変更することも可能です。今回はScheduler.ThreadPoolを指定したので、ThreadPool上で動くようになっています。そのため、ブロックされません。</p>
+<p>こういった書き方のほうが、コードがクリアになるし、IEnumerable&lt;T&gt;とIObservable&lt;T&gt;に両対応できてる、という柔軟性の点でも良いかと思います。また、BackgroundWorkerを使うよりも遥かに簡単ですよね。プログレス通知もなく、ただ処理をバックグラウンドでやりたい、というだけならば、Rxを使ったほうが楽チンです。プログレスが必要な場合は、Rxだとその辺の処理を作りこまなければならないので、素直にBackgroundWorkerを用いるのもいいかもしれません。私だったらRxをちょっと拡張してプログレス処理を作り込むほうを選ぶかな？その辺の話は<a href="http://neue.cc/2010/12/09_288.html" title="neue cc - Reactive ExtensionsとAsync CTPでの非同期のキャンセル・プログレス処理">Reactive ExtensionsとAsync CTPでの非同期のキャンセル・プログレス処理</a>を参照ください。</p>
+<p>また、Observable化するとPublishによる分配 - <a href="http://neue.cc/2010/04/29_255.html" title="neue cc - C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions">C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions</a>など、色々と応用な使い方が広がるのもメリットの一つと言えるでしょう。</p>
+<h2>Async CTP</h2>
+<p>今回は例がWPFなため、WebClientで同期的(OpenRead)に取ってしまいましたし、それでも全然問題ないわけですが、SilverlightとかWP7だったらこの手(同期でJSON取ってきてyield returnで返す)は使えません。同期のOpenReadがそもそもなくて、非同期のOpenReadAsyncしかないからね。どうしましょう？それだとyield returnが使えないのはモチロンのこと、Generateでもうまく動きません。もしページ番号がカーソルのように不定ではなく1,2,3...といった形で辿れたとしても、Observable.Rangeでやると、うまくいきません。非同期なので結果が帰ってくる時間が不定だからです。結果を取得してから次の結果を取得する、という形式にしないとダメなのです。</p>
+<p>ところでそもそも、同期的に書いたとしても、本来は書くのは大変なはずなのです。それが、yield returnというコンパイラ生成があるから簡単に書ける。ということは、そうです、非同期もコンパイラ生成してしまえばいいのです、ということで<a href="http://msdn.microsoft.com/en-us/vstudio/gg316360">Async CTP</a>で書きましょう。Async CTPはC# 5.0で入る、かもしれない、async/await構文を使えるようにするためのものです。コミュニティテクノロジープレビュー。ようするにベータ版ですね。</p>
+<pre><code class="language-csharp">// このコードはAsync CTP (SP1 Refresh)によるもので、将来的にも同じコードで動作することは保証しません
+async static Task&lt;List&lt;string&gt;&gt; EnumerateFriends(string screenName)
+{
+    var list = new List&lt;string&gt;();
+
+    var cursor = &quot;-1&quot;;
+    while (cursor != &quot;0&quot;)
+    {
+        var url = string.Format(&quot;http://api.twitter.com/1/statuses/friends.json?screen_name={0}&amp;cursor={1}&quot;,
+            screenName, cursor);
+        using (var stream = await new WebClient().OpenReadTaskAsync(url)) // await!
+        {
+            var json = DynamicJson.Parse(stream);
+            foreach (var item in json.users)
+            {
+                list.Add(item.screen_name); // yield returnの代わりに……
+            }
+            cursor = json.next_cursor_str;
+        }
+    }
+
+    return list;
+}
+</code></pre>
+<p>Async CTPは簡単に解説すると、awaitキーワードを使うと、本来非同期のものが同期のように書けるようになります。詳しくは<a href="http://ufcpp.net/study/csharp/sp5_async.html">非同期処理 (C# によるプログラミング入門)</a>を参照のこと。コード的にも見たように、差異はWebClientのOpenReadの部分を、await OpenReadTaskAsyncに変更しただけで、あとはまるっきり一緒です。非同期なんて簡単なものだね。と、言いたかったのですが、全部読み込んでListで返してるぢゃん……。これじゃEnumerateじゃないよ、yield returnじゃないの？これだと結果取得に時間かかるし、Takeなどを用いて、途中で止めることもできないし。あまりよくない。</p>
+<p>結論としては今のところどうやら無理ということで。asyncの返すものはTaskもしくはTask&lt;T&gt;でなければならない。いや、Task&lt;IEnumerable&lt;T&gt;&gt;を返してくれればいいぢゃん、await yield returnとか出来たら素敵ぢゃないのん？と思わなくもないというか、<a href="http://social.msdn.microsoft.com/Forums/en-ZW/async/thread/f7a42c29-4ee6-4a3c-b346-b3718e253dc0">普通にそういうリクエストも上がっている</a>のですが、それにはIAsyncEnumerable&lt;T&gt;のようなものと、それに対するコンパイラサポートが必要だよね、という返しでした。</p>
+<h2>Rx + Async</h2>
+<p>IAsyncEnumerable&lt;T&gt;、それってIObservable&lt;T&gt;で代替出来る話だよね。IObservable&lt;T&gt;は連続的な非同期を内包しているから。（※IObservable&lt;T&gt;は一つのインターフェイスであまりにも多くのものを表現出来てしまい、内部の状態が読みづらく(同期なのか非同期なのか、遅延なのか即時なのか)混乱を生みがちという問題もありますが……）。なので、Rxでやってみましょう。といっても、Rxで完全に自前でやるのは相当大変なので、Async CTPのサポートも併用します。これにより非同期の待機が同期的に書けるようになり、yield returnであったりlist.Addであったりの部分を、OnNextに置き換えるだけになります。</p>
+<p>Stable版のRxにはAsync CTP連携は入っていないのですが、Experimental(実験的)版には、awaitで待機出来る、というだけはなく、幾つかAsync CTPと連携できるメソッドが入っています。</p>
+<pre><code class="language-csharp">// ExperimentalのRxのため、将来的にもこのコードが動作し続けることは保証しません
+static IObservable&lt;string&gt; EnumerateFriends(string screenName)
+{
+    // ラムダ式の中でasync書けることがポイント
+    return Observable.Create&lt;string&gt;(async (observer, cancelToken) =&gt;
+    {
+        try
+        {
+            var cursor = &quot;-1&quot;;
+            while (cursor != &quot;0&quot;)
+            {
+                if (cancelToken.IsCancellationRequested) return; // cancelをチェック
+
+                var url = string.Format(&quot;http://api.twitter.com/1/statuses/friends.json?screen_name={0}&amp;cursor={1}&quot;,
+                    screenName, cursor);
+                using (var stream = await new WebClient().OpenReadTaskAsync(url)) // await!
+                {
+                    var json = DynamicJson.Parse(stream);
+                    foreach (var item in json.users)
+                    {
+                        observer.OnNext(item.screen_name); // yield returnのかわりに
+                    }
+                    cursor = json.next_cursor_str;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            observer.OnError(ex);
+            return; // 例外発生時はOnErrorを呼んで終了
+        }
+
+        observer.OnCompleted(); // 例外発生もキャンセルもなく完了したなら、OnCompletedを呼ぶ
+    });
+}
+
+static void Main()
+{
+    EnumerateFriends(&quot;neuecc&quot;)
+        .Take(350) // 350件後にDisposeされてtokenがcancelになる
+        .Subscribe(
+            s =&gt; Console.WriteLine(s),
+            e =&gt; Console.WriteLine(&quot;error:&quot; + e),
+            () =&gt; Console.WriteLine(&quot;完了&quot;)); // Takeのほうから呼び出されるので、cancel扱いになっても表示される
+
+    Console.ReadLine();
+}
+</code></pre>
+<p>Observable.Create(RangeやGenerateなどの生成子、WhereやSelectなどの演算子の全てが使っている、本当のプリミティブの生成子)を使って、生のobserverでOnNext, OnError, OnCompletedの3つを制御してやります。Createやtry-catchの分、ネストが深くなってしまっていますが、コード自体は同期的に、yield returnを使って書いていたものとほとんど変わってないのが分かると思います。yield returnの部分にOnNextを置いた、それだけでそのまま置き換えられています。</p>
+<p>これならIObservable&lt;T&gt;でも十分に自動生成のサポートが効いていると言えなくもないですね。やってみて、結構満足できてしまった。パフォーマンス的にも、演算子をベタベタ組み合わせるのはあまり良くはならないので、こうしてasync/awaitと連携させて作れると、素直に書けるうえに、パフォーマンス向上も狙えるのが嬉しい。ただ、OnErrorやOnCompleted、キャンセル(Dispose)をどうするか。考慮する事項が多いので、ある程度分かっていないと大変かもしれません。全て考えておかないと、正しく動作しません。既存演算子の組み合わせだけで済ませられるなら、そういった考慮事項は演算子が受け持ってくれるので、考えなくて済むのですが……。どうしても演算子の組み合わせじゃうまく出来ない、逆に複雑になりすぎる、そういった時の奥の手、ぐらいに考えておくと良さそう。</p>
+<p>ところでasyncはメソッドの宣言だけでなく、ラムダ式の部分でも宣言できてawaitすることが出てきてしまうんですよね、ならば、同じようなコンパイラ生成であるyield returnも、現状は外部メソッドでしか使えないわけですが、以下のようにインラインでも使えるようになってくれると嬉しいなって。思ってしまうのです。</p>
+<pre><code class="language-csharp">// 妄想なので、現状はこれは出来ませんが！
+var infinity = Enumerable.Create(()=&gt;
+{
+    var num = 0;
+    while(true)
+    {
+        yield return num++;
+    }
+});
+</code></pre>
+<p>そんなもの散々突っ込み受けたですって？<a href="http://blogs.msdn.com/b/ericlippert/archive/2009/08/24/iterator-blocks-part-seven-why-no-anonymous-iterators.aspx">Iterator Blocks Part Seven: Why no anonymous iterators? - Fabulous Adventures In Coding</a>。ええ、知ってます。しかし、awaitなどで必要さの要請を受けて、コストとベネフィットが逆転するときが来た、と、思うのです。それに、VBでも、いや、なんでもない。</p>
+<h2>Expand</h2>
+<p>さて、ともかくAsync CTPは未来の話であり、現状手元にあるもので何とかする方法はないのだろうかというと、あります。ようするところ、再帰的に辿ってるわけですよね、cursorを。じゃあ、Expandです。Expandは<a href="http://neue.cc/2011/06/30_331.html">Reactive Extensions v1.0安定版リリース</a>でEnumerableバージョンのものを説明しましたが、Observableバージョンもあります。</p>
+<pre><code class="language-csharp">// 補助メソッド、Async CTPにはOpenReadTaskAsyncとか、そういうのがデフォで用意されてますが、
+// Rxにはないので、自前で用意しなきゃあいけないという、それだけの話です(ダウンロードしてストリングを返すだけのもの)
+public static class WebRequestExtensions
+{
+    public static IObservable&lt;string&gt; DownloadStringAsync(this WebRequest request)
+    {
+        return Observable.Defer(() =&gt; Observable.FromAsyncPattern&lt;WebResponse&gt;(
+                request.BeginGetResponse, request.EndGetResponse)())
+            .Select(res =&gt;
+            {
+                using (var stream = res.GetResponseStream())
+                using (var sr = new StreamReader(stream))
+                {
+                    return sr.ReadToEnd();
+                }
+            });
+    }
+}
+
+// ExpandはStable版にはまだ搭載されていないので、Experimental版を使ってください
+static IObservable&lt;string&gt; EnumerateFriends(string screenName)
+{
+    Func&lt;string, IObservable&lt;dynamic&gt;&gt; downloadJson = cursor =&gt;
+    {
+        var url = string.Format(&quot;http://api.twitter.com/1/statuses/friends.json?screen_name={0}&amp;cursor={1}&quot;,
+            screenName, cursor);
+        return WebRequest.Create(url).DownloadStringAsync().Select(DynamicJson.Parse);
+    };
+
+    return downloadJson(&quot;-1&quot;)
+        .Expand(d =&gt; (d.next_cursor_str == &quot;0&quot;)
+            ? Observable.Empty&lt;dynamic&gt;() // TakeWhileで判定すると最後の一つを取りこぼすので
+            : downloadJson(d.next_cursor_str))
+        .SelectMany(d =&gt; (dynamic[])d.users)
+        .Select(d =&gt; (string)d.screen_name);
+}
+</code></pre>
+<p>そこそこ直感的ではないでしょうか？最初 Expand().TakeWhile(next_cursor_str != &quot;0&quot;) と書いたのですが、それだと最後のページを取りこぼしてしまうのに気づいて、Emptyを投げる方針に変更しました。その辺、境界については注意を払わなきゃですね。</p>
+<p>そして、残念ながら、ExpandはRxのStable版にはまだない。ということはWP7にもないわけで。</p>
+<h2>再帰とRx</h2>
+<p>Stable版でもやりましょう。awaitなし、Expandなし。では、どうやって作りましょうか。うーん、再帰的というのなら、本当に再帰させてしまえばいいのではないか？</p>
+<pre><code class="language-csharp">static IObservable&lt;string&gt; EnumerateFriends(string screenName)
+{
+    Func&lt;string, IObservable&lt;dynamic&gt;&gt; downloadJson = null; // 再帰するにはこーして最初にnull代入
+    downloadJson = cursor =&gt;
+    {
+        var url = string.Format(&quot;http://api.twitter.com/1/statuses/friends.json?screen_name={0}&amp;cursor={1}&quot;,
+            screenName, cursor);
+        return WebRequest.Create(url)
+            .DownloadStringAsync()
+            .Select(DynamicJson.Parse) // ここまでExpandと共通
+            .SelectMany(json =&gt;
+            {
+                // Expandメソッドの中でやってることを大幅簡易化、ということです、つまるところ。
+                var next = (json.next_cursor_str == &quot;0&quot;)
+                    ? Observable.Empty&lt;dynamic&gt;()
+                    : downloadJson((string)json.next_cursor_str);
+                return (IObservable&lt;dynamic&gt;)Observable.StartWith(next, json);
+            });
+    };
+
+    return downloadJson(&quot;-1&quot;)
+        .SelectMany(d =&gt; (dynamic[])d.users) // ここからもExpandと共通
+        .Select(d =&gt; (string)d.screen_name);
+}
+</code></pre>
+<p>これを再帰というには、あまり再帰してないのですが、まあ雰囲気雰囲気。Expandと大体共通です。つまるところ、Expandを自前で作る、のは結構大変なので、Expandのように汎用的ではなく、特化したものをその場で作る、といった程度の代物。そうすれば、少しは簡単に用意できます。</p>
+<h2>まとめ</h2>
+<p>同期でListに格納するだけなら簡単。遅延でやるのもyield returnのお陰で簡単。非同期で辿るのは難しい。awaitで複数の値をyield的に列挙するのは現状難しい。Rxとawaitの連携は大変素晴らしい。Expandは便利。なければないで何とかなる。でもやっぱ大変。</p>
+<p>一見簡単なことが存外難しいってのはいくないですね。一見簡単なら、簡単なままでできないと。Expandも悪くはないんですけど、中々どうして慣れてないと分かりづらい。しかし、将来のC#には十分期待できそう。と、思いました、まる。あとRxとAsyncは全然仲良しなんですよ～、というところです。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0706_332.html">Rxでのイベント変換まとめ - FromEvent vs FromEventPattern</a></h1>
+<ul class="date"><li>2011-07-06</li></ul>
+<div class="entry_body"><p><a href="http://msdn.microsoft.com/en-us/data/gg577609">Reactive Extensions</a>の機能の一つに.NETにおけるイベントをIObservable&lt;T&gt;に変換する、というものがあります。<a href="http://msdn.microsoft.com/en-us/library/hh242978(v=VS.103).aspx">Bridging with Existing .NET Events</a>。そして、そのためのメソッドがFromEventでした。ところが最近のRxでは二つ、FromEventとFromEventPatternが用意されています。この差異は何なのでしょうか？</p>
+<p>結論としては、過去のRx(このサイトの古い記事や他のサイトの過去の記事などで触れられている)やWindows Phone 7でのFromEventはFromEventPatternに改名されました。後続にEventPatternという(object Sender, TEventArgs EventArgs)を持つ.NETのイベントの引数そのものを渡すものです。そして、空席になったFromEventに新しく追加されたFromEvent(紛らわしい！)は、EventArgsだけを送ります。それ以外の差異はありません。</p>
+<p>つまるところFromEventは FromEventPattern.Select(e =&gt; e.EventArgs) ということになります。なら、それでいいぢゃん、何も混乱を生む(WP7のFromEventがFromEventPatternである、というのは致命的よねえ)ことはないよ、とは思うのですが、パフォーマンスの問題でしょうかね。確かに、Senderは必要なく使うのはEventArgsだけの場合が多い。それなのに、毎回EventPatternを生成していたり、Selectというメソッド呼び出しが入るのは無駄です。</p>
+<p>そもそもインスタンスに対してFromEventで包むということは、クロージャでsenderは変数としていつでもどこでも使えてしまうのですよね、そもそも、そもそも。そういう意味でも送られてくるのはEventArgsだけでいいのであった。というわけで、基本的にはFromEventでいいと思います。</p>
+<h2>FromEventPatternについて</h2>
+<p>では、改めてFromEventPatternを復習します(WP7の人はFromEventで考えてください)。<a href="http://msdn.microsoft.com/en-us/library/hh229705(v=VS.103).aspx">Observable.FromEventPattern(TEventArgs) Method (Object, String) (System.Reactive.Linq)</a>にサンプルコードがあるのですけれどね。そうそう、MSDNのリファレンスには、一部のメソッド/一部のオーバーロードにはサンプルコードがあります。全部ではないのがミソです、見て回って発掘しましょう。まあ、というわけで、とりあえずそのFileSystemWatcherで。</p>
+<pre><code class="language-csharp">// FileSystemWatcherは指定フォルダを監視して、変化があった場合にイベントを通知します
+// 例えばCreatedイベントはファイルが作成されたらイベントが通知されます
+var fsw = new FileSystemWatcher(@&quot;C:\&quot;, &quot;*.*&quot;) { EnableRaisingEvents = true };
+
+// FromEventPatternその1、文字列でイベント名指定
+Observable.FromEventPattern&lt;FileSystemEventArgs&gt;(fsw, &quot;Created&quot;)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+
+// FromEventPatternその2、静的なイベントをイベント名指定(WP7にはない)
+Observable.FromEventPattern&lt;ConsoleCancelEventArgs&gt;(typeof(Console), &quot;CancelKeyPress&quot;)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.SpecialKey));
+</code></pre>
+<p>一番馴染み深いと思うのですが、文字列でイベント名を指定するものです。その2のほうはあまり見ないかもしれませんが、静的イベントに対しての指定も可能です。これら文字列指定によるメリットは、比較的シンプルであること。デメリットは、リフレクションを使うので若干遅い・スペルミスへの静的チェックが効かない・リファクタリングが効かない、といった、リフレクション系のデメリットそのものとなります。</p>
+<p>リフレクションしかないの？というと、勿論そんなことはありません。</p>
+<pre><code class="language-csharp">// FromEventPatternその3、EventHandlerに対する変換
+var current = AppDomain.CurrentDomain;
+Observable.FromEventPattern(h =&gt; current.ProcessExit += h, h =&gt; current.ProcessExit -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs));
+
+// FromEventPatternその4、EventHandler&lt;T&gt;に対する変換
+Observable.FromEventPattern&lt;ContractFailedEventArgs&gt;(
+        h =&gt; Contract.ContractFailed += h, h =&gt; Contract.ContractFailed -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.Message));
+
+// FromEventPatternその5、独自イベントハンドラに対する変換
+Observable.FromEventPattern&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; new FileSystemEventHandler(h),
+        h =&gt; fsw.Created += h,
+        h =&gt; fsw.Created -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+</code></pre>
+<p>イベントの登録と削除を行うためのラムダ式を渡してやります。その3とその4は比較的分かりやすいのではないでしょうか。その5の第一引数が謎いのですが、これはconversionです。C#の型システムの都合上、そのまんまだと独自イベントハンドラを処理出来ないので、型を変換してやる必要があるという定型句。</p>
+<p>数あるFromEventPatternのオーバーロードの中で、一番多く使うのはその5だと思います。何故なら、C#のイベントは独自イベントハンドラになっていることが多いから。はっきしいって、最低です。EventHandler&lt;T&gt;を使ってくれてさえいれば、こんな苦労はしなくて済むというのに。独自イベントハンドラは100害あって一利なし。え、WPFとか.NET標準がイベントハンドラは独自のものを使ってる？それは、WPFが悪い、.NET設計の黒歴史、悪しき伝統。</p>
+<p>それと、もはや独自デリゲートも最低です。FuncやActionを使いましょう。C#のデリゲートはメソッドの引数や戻り値が一致していようが、型が違ったら別のものとして扱われます。そのことによる不都合は、↑で見たように、あるんです。極力ジェネリックデリゲートを使いましょう。そうすれば、こんな腐った目に合わなくても済みます。</p>
+<p>ところで、その5は、もう少しだけ記述が短くなります。</p>
+<pre><code class="language-csharp">// FromEventPatternその5、第一引数別解、こう書くと短くて素敵
+Observable.FromEventPattern&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; h.Invoke,
+        h =&gt; fsw.Created += h,
+        h =&gt; fsw.Created -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+</code></pre>
+<p>h.Invoke。というのは、割とhそのものなわけですが、しかしInvokeと書くことで型が変換されます。この辺はコンパイラの都合上のマジックというか何というか。そういうものだと思えばいいのではかと。その5のスタイルで書くときは、この書き方をすると良いと思います。で、まだオーバーロードがあって</p>
+<pre><code class="language-csharp">// その6
+Observable.FromEventPattern&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; fsw.Created += h, h =&gt; fsw.Created -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+</code></pre>
+<p>conversionが不要で書けたりもします。一見素晴らしい、のですが、これ、中でなにやってるかというとconversionに相当するものをリフレクションで生成してるだけだったりして。そのため、なるべくconversionを使うオーバーロードのほうを使ったほうがよいでしょう。h =&gt; h.Invokeを書くだけですしね。このオーバーロードは紛らわしいだけで存在意義が不明すぎる。</p>
+<h2>FromEventについて</h2>
+<p>と、長々と見てきましたが、ではFromEventのほうも。</p>
+<pre><code class="language-csharp">// FromEvent
+Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; (sender, e) =&gt; h(e),
+        h =&gt; fsw.Created += h,
+        h =&gt; fsw.Created -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.FullPath));
+
+// FromEventPatternその5(比較用)
+Observable.FromEventPattern&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; (sender, e) =&gt; h(sender, e),
+        h =&gt; fsw.Created += h,
+        h =&gt; fsw.Created -= h)
+    .Select(e =&gt; e.EventArgs)
+    .Subscribe(e =&gt; Console.WriteLine(e.FullPath));
+</code></pre>
+<p>というわけで、FromEventPatternのその5に近いわけですが、conversionでEventArgsしか渡していない、という点が差異ですね。なので、後続にはsenderが伝わってこず、EventArgsしか通りません。まあ、senderは、↑の例ですとfswでどこでも使えるので、そもそも不要なわけで、これで良いかと思います。</p>
+<p>ところでFromEventも色々なオーバーロードがあるにはあるんですが、私の頭では存在意義が理解できなかったので無視します。挙動とかは理解したんですが、なんというか、存在する必要性、有効な利用法がさっぱり分からなかったのです……。まあ、多分、あんま意味ないと思うので気にしないでもいいかと。</p>
+<h2>拡張メソッドに退避させよう</h2>
+<p>FromEventにせよFromEventPatternにせよ、長いです。長い上に定型句です。なので、拡張メソッドに退避させると、スッキリします。例えば、今まで見てきたFileSystemWatcherだったら</p>
+<pre><code class="language-csharp">// .NETのFromEventなら IObservable&lt;TEventArgs&gt;
+// .NETのFromEventPatternなら IObservable&lt;EventPattern&lt;TEventArgs&gt;&gt;
+// WP7のFromEventなら IObservable&lt;IEvent&lt;TEventArgs&gt;&gt;
+// を返す拡張メソッド群を用意する。
+// 命名規則はイベント名AsObservableがIntelliSenseの順序的にお薦め
+public static class FileSystemWatcherExtensions
+{
+    public static IObservable&lt;FileSystemEventArgs&gt; CreatedAsObservable(this FileSystemWatcher watcher)
+    {
+        return Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; watcher.Created += h, h =&gt; watcher.Created -= h);
+    }
+
+    public static IObservable&lt;FileSystemEventArgs&gt; DeletedAsObservable(this FileSystemWatcher watcher)
+    {
+        return Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; watcher.Deleted += h, h =&gt; watcher.Deleted -= h);
+    }
+
+    public static IObservable&lt;RenamedEventArgs&gt; RenamedAsObservable(this FileSystemWatcher watcher)
+    {
+        return Observable.FromEvent&lt;RenamedEventHandler, RenamedEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; watcher.Renamed += h, h =&gt; watcher.Renamed -= h);
+    }
+
+    public static IObservable&lt;FileSystemEventArgs&gt; ChangedAsObservable(this FileSystemWatcher watcher)
+    {
+        return Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; watcher.Changed += h, h =&gt; watcher.Changed -= h);
+    }
+}
+</code></pre>
+<pre><code class="language-csharp">var fsw = new FileSystemWatcher(@&quot;C:\&quot;, &quot;*.*&quot;) { EnableRaisingEvents = true };
+
+// 例えば、ただ変更をロギングしたいだけなんだよ、という場合の結合
+// FromEventを外出ししていることによって、すっきり書ける
+Observable.Merge(
+        fsw.CreatedAsObservable(),
+        fsw.DeletedAsObservable(),
+        fsw.ChangedAsObservable(),
+        fsw.RenamedAsObservable())
+    .Subscribe(e =&gt; Console.WriteLine(e.ChangeType + &quot;:&quot; + e.Name));
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/fsw_intellisense.jpg">
+</p>
+<p>といった形です。また、普通に+-でのイベント以外のものへの登録も可能です。例えば</p>
+<pre><code class="language-csharp">// LayoutRootはWPFの一番外枠の&lt;Grid Name=&quot;LayoutRoot&quot;&gt;ということで。
+Observable.FromEvent&lt;MouseButtonEventHandler, MouseButtonEventArgs&gt;(
+        h =&gt; (sender, e) =&gt; h(e),
+        h =&gt; LayoutRoot.AddHandler(UIElement.MouseDownEvent, h),
+        h =&gt; LayoutRoot.RemoveHandler(UIElement.MouseDownEvent, h))
+    .Subscribe(e =&gt; Debug.WriteLine(e.ClickCount));
+</code></pre>
+<p>こんな形のものもObservable化が可能です。</p>
+<h2>イベントの解除</h2>
+<p>Subscribeの戻り値はIDisposableで、Disposeを呼ぶことでイベントが解除されます。</p>
+<pre><code class="language-csharp">// アタッチ
+var events = Observable.Merge(
+        fsw.CreatedAsObservable(),
+        fsw.DeletedAsObservable(),
+        fsw.ChangedAsObservable(),
+        fsw.RenamedAsObservable())
+    .Subscribe(e =&gt; Console.WriteLine(e.ChangeType + &quot;:&quot; + e.Name));
+
+// デタッチ(合成などをしていて、元ソースが複数ある場合も、すべて解除されます)
+events.Dispose();
+</code></pre>
+<p>Rxのこの仕組みは、従来に比べて圧倒的にイベントの解除がやりやすくなっていると思います。</p>
+<h2>まとめ</h2>
+<p>非同期の説明ばかりしてきていて、イベントはすっかり置き去りだったことを、まずはゴメンナサイ。少し前からFromEvent周りは大きな仕様変更が入ったわけですが、ようやくまともに解説できました。基本中のキの部分であるここが、過去のリソースがそのまま適用出来ないという最悪の自体に陥っていたので、とりあえずこれで何とか、でしょうかどうでしょうか。</p>
+<p>小さなこととはいえ、WP7との互換性が絶えているのが痛いのですが、その辺どうにかならなかったのかねー、とは思います。けれど、このEventArgsだけ送るFromEvent自体は良いと思います。 .Select(e =&gt; e.EventArgs) が定型句だったので、こういった変更は喜ばしい限り。それと、今まで思っていた、ぶっちゃけラムダ式とかRxでイベント登録するならsenderって不要じゃね？に対する答え(その通りで、完全に不要)を出してくれたのが嬉しい。</p>
+<p>さて、変換できるのはいいけれど、じゃあどこで使うのがいいの？という話がいつもありません。次回は、時間周りと絡めて、その辺のお話が出来ればと思いますが、いつも次回予告が達成されたことはないので、別のことを書くでしょう←ダメぢゃん。</p>
+</div>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

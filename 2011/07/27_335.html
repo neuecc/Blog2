@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - Deep Dive AsEnumerable</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2011/0727_335.html">Deep Dive AsEnumerable</a></h1>
+<ul class="date"><li>2011-07-27</li></ul>
+<div class="entry_body"><p>AsEnumerable、といったらLINQのAsEnumerableです。その挙動は、IEnumerable&lt;T&gt;へと型変換をします。それだけ、なので実に影が薄いのですが、それでいて奥深く使いこなしが求められる、はずなのですが陰が薄いので無視されている感がなきにしもあらずなので、しっかりと紹介したいと思います。</p>
+<h2>AsEnumerableの実装</h2>
+<p>実装は非常に単純明快で、中身ほとんど空っぽです。</p>
+<pre><code class="language-csharp">public static IEnumerable&lt;T&gt; AsEnumerable&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    return source;
+}
+</code></pre>
+<p>ようするにアップキャストです。どういう時に使えばいいかというと、例えば可変長引数とIEnumerable&lt;T&gt;の両方を受けたいオーバーロードを作る場合。</p>
+<pre><code class="language-csharp">public void Show(params string[] values)
+{
+    Show(values.AsEnumerable());
+}
+
+public void Show(IEnumerable&lt;string&gt; values)
+{
+    foreach (var item in values)
+    {
+        Console.WriteLine(item);
+    }
+}
+</code></pre>
+<p>foreachでグルグル値を取り出すだけなので、IEnumerable&lt;T&gt;で受けるようにしたい。でも利便性のため可変長引数も用意しておきたい。という場合はよくあります。なので毎回このオーバーロードを用意するんですが、その時に、こうしてAsEnumerableを使います。なお、AsEnumerableを忘れると無限に再帰してStackOverflowしてしまいます……。</p>
+<p>AsEnumerableがラップするのではなく、ただのアップキャストにすぎないということは重要です。以前に<a href="http://neue.cc/2009/07/21_178.html" title="neue cc - LinqとCountの効率">LinqとCountの効率</a>でも書きましたが、LINQの一部のメソッドはIList&lt;T&gt;であったりICollection&lt;T&gt;であるとき、asやisを使って最適化を図ります。foreachするだけだとあまり関係ないですが、受け取ったIEnumerable&lt;T&gt;を使ってLINQで処理する場合だと、このことが効いてきます。</p>
+<p>ならば常にアップキャストでよくて、ラップなど必要ないのではないか？というと必ずしもそうではありません。アップキャストは、ダウンキャストを可能にします。</p>
+<pre><code class="language-csharp">// アップキャストされている状態というのは
+var numbers = new List&lt;int&gt;().AsEnumerable();
+
+// ダウンキャストが可能にするということ、そして、ダウンキャストは危険
+var list = (List&lt;int&gt;)numbers;
+</code></pre>
+<p>ダウンキャストが危険だ、やるな、というのなら、そもそもアップキャストをすべきではない。抽象で受けることこそがオブジェクト指向だとか、形だけのパターンにはまってるとそうなる。原則は比較的シンプルで。メソッドのシグネチャにおいて、引数の型は最大に受け入れるため出来る限り抽象で、戻り値の型は最大に利用出来るようにするため具象にすればいい。ローカル変数に関しては、原則varでよし。どうしても必要ならば、ローカル変数側、つまりメソッドの利用側が安全なアップキャストで適宜、抽象で受ければよいでしょう。</p>
+<p>ダウンキャストはダメ基本的に。そして、ダウンキャストは可能な状態にすること自体がダメなので、アップキャストも最小限に。というのがメソッド定義の基本だと思っていますが、プロパティだと少し事情は変わってくるかも。一々ラップすることのパフォーマンスロスや手間を考えると、しかたがなくアップキャストで提供するのも、ありかなー、とは。</p>
+<h2>Hide</h2>
+<p>そんなわけで、具象型を消去して、完全にラップしてIEnumerable&lt;T&gt;として提供したいという場合もあるかと思います。そこで、Ix(Interactive Extensions、<a href="http://msdn.microsoft.com/en-us/data/gg577609" title="Reactive Extensions">Reactive Extensions</a>のオマケで提供されているEnumerableの拡張メソッド群、NuGetの<a href="http://nuget.org/List/Packages/Ix_Experimental-Main" title="NuGet gallery">Ix_Experimental-Main</a>で入れるのが手っ取り早い。Experimentalのとおり、まだ実験的な代物で保証されていないことは注意)にはHideというものがあります。これも実装は単純明快で</p>
+<pre><code class="language-csharp">public static IEnumerable&lt;T&gt; Hide&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    foreach (var item in source)
+    {
+        yield return item;
+    }
+}
+</code></pre>
+<p>といった形。Hideというメソッド名は具体的な型を隠す、といった意味合いで付けられているのでしょうね。</p>
+<h2>Rx(AsObservable)の場合</h2>
+<p>Enumerableと関連性の深いObservable、Rxにも同様に型変換をするAsObservableというメソッドが用意されています。主に使うシチュエーションは、Subjectの隠蔽をするときでしょうか。</p>
+<pre><code class="language-csharp">// 5秒後に非同期で値を返すというだけのもの
+public static IObservable&lt;T&gt; SendValueAfter5Seconds&lt;T&gt;(T value)
+{
+    var asyncSubject = new AsyncSubject&lt;T&gt;();
+
+    ThreadPool.QueueUserWorkItem(_ =&gt;
+    {
+        Thread.Sleep(TimeSpan.FromSeconds(5)); // とりまsleep
+
+        asyncSubject.OnNext(value); // AsyncSubjectのキャッシュへ値送信
+        asyncSubject.OnCompleted(); // 非同期処理完了の合図（ここでObserverに値が送られる）
+    });
+
+    return asyncSubject.AsObservable();
+}
+</code></pre>
+<p>このコード自体には何の意味もありません、非同期処理を模して、スレッドプールで5秒待って値を送る、というだけです。大事なのはAsyncSubjectをAsObservableして返していること。このAsObservableはただのアップキャストではなく、新しい型でラップして具象型(AsyncSubject)を隠しています。つまり、AsEnumerableではなくHideに等しい挙動です。ここで、もしAsObservableを書いていないと</p>
+<pre><code class="language-csharp">// return時にAsObservableが書かれていないとダウンキャスト可能になる
+var subject = (AsyncSubject&lt;int&gt;)SendValueAfter5Seconds(100);
+
+subject.Subscribe(Console.WriteLine);
+
+// なので、外側から発火可能になってしまう、これは最悪
+subject.OnNext(-1);
+subject.OnCompleted(); 
+</code></pre>
+<p>Subject（標準だと4種類ある）は、Rxにおけるイベントの表現です。C#でのイベントは、内部からは発火可能、外側からは購読しかできない。というようになっていると思います。その挙動にするために、また、純粋に安全性のために、Subjectを購読させるために外側に出す場合は、AsObservableでラップして型を消さなければなりません。</p>
+<p>※極初期(RxがReactive Frameworkと言われていた頃なぐらいに前)は、このAsObservableはHideというメソッド名でした。AsObservableのほうが分かりやすくて良いとは思いますが、Enumerableでの挙動と合わせるなら、キャストするだけのAsObservableとHideに分けるべきだったのでは？と思わなくは全くないです←Rxにおいてはただのキャストしただけのものは使う機会ないと思うので、現在の形で正解</p>
+<h2>IQueryableにおけるAsEnumerableの重要性</h2>
+<p>Enumerable、Observableと来たので、QueryableでのAsEnumerableも見てみましょう。QueryableにおけるAsEnumerableは、クエリ構築の終了です。IQueryableでのクエリ構築をそこで打ち切るというスイッチです。どういうことか、というと</p>
+<pre><code class="language-csharp">// とあるContextによるQueryableはSkipWhileとCountをサポートしていなかったとします
+var count = toaru.createContext() // IQueryeable&lt;T&gt;とする
+    .Where(x =&gt; x % 2 == 0)
+    .SkipWhile(x =&gt; x &lt; 100)
+    .Count(); // 未サポートなのでExceptionが来る！
+
+// そういう場合、ToListするといい、というアドバイスがよく上がります
+var count = toaru.createContext()
+    .Where(x =&gt; x % 2 == 0)
+    .ToList() // ここまでの式でクエリ生成+List化
+    .SkipWhile(x =&gt; x &lt; 100) // ここからはIEnumerable&lt;T&gt;
+    .Count();
+
+// でも、それならAsEnumerableでいいんだよ？
+var count = toaru.createContext()
+    .Where(x =&gt; x % 2 == 0)
+    .AsEnumerable() // 後続がGetEnumeratorを呼んだ時にここまででクエリ生成
+    .SkipWhile(x =&gt; x &lt; 100) // ここからはIEnumerable&lt;T&gt;
+    .Count();
+</code></pre>
+<p>Queryableの連鎖で、例えばLinq to SqlだったらSQL文を作っていきます。で、foreachであったりToListであったりをすると、SQLが作られて発行されてデータベースと通信されて。それって、どのタイミングでQueryableの中の式木がSQL文に変換されるかというと、GetEnumeratorが呼ばれた時、です。それはいつ呼ばれるの？というと、foreachされたりToListされたり、AsEnumerableしてその後のEnumerableのメソッドがGetEnumeratorを呼んだ、その時。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/quaryable_getenumerator_enumerable.jpg">
+</p>
+<p>こんな感じです。ToArrayやToListは、そこで実体化するので、メソッドチェーンの後続がIEnumerable&lt;T&gt;なのは当然のことですが、AsEnumerableがただのキャストにすぎないのに意味合いが変化するのは、拡張メソッドの解決の優先度のため。型がIQueryable&lt;T&gt;の状態だとWhereやSelectはQueryableのWhereやSelectが選択されますが、型がIEnumerable&lt;T&gt;の状態だとEnumerableのWhereやSelectが選択される、ということです。Enumerable自体は遅延評価なので、後続のIEnumerable&lt;T&gt;がGetEnumeratorを呼び出したときに評価が開始されるのは変わらず。</p>
+<p>AsEnumerableやToArray、ToListは実はQueryableクラスにはありません。なので、素の状態で拡張メソッドの解決がIEnumerable&lt;T&gt;側を呼び出すようになっています。</p>
+<p>ところでクエリ文の構築はGetEnumeratorが呼ばれた時と言いましたが、GetEnumeratorを呼ばないとき、例えばQueryableでのFirstやSumはどうなっているのかというと、内部でExecuteが呼ばれた時です。IQueryProviderはこんなインターフェイス。</p>
+<pre><code class="language-csharp">public interface IQueryProvider
+{
+    IQueryable&lt;TElement&gt; CreateQuery&lt;TElement&gt;(Expression expression);
+    TResult Execute&lt;TResult&gt;(Expression expression);
+    // 非ジェネリックなものもありますが省略
+}
+</code></pre>
+<p>FirstやSumなど、単独の結果を返すものは内部でExecuteを呼びます。なので、クエリプロバイダの実装次第ですが、通常はこのExecuteが呼ばれた時にクエリ文の構築と実行を同時に行うものと思われます。SelectやWhereなど、後続にIQueryableのチェーンを繋げるものは、内部でCreateQueryのほうを呼びます。そして最終的に複数の結果(IEnumerable&lt;T&gt;)を返す場合は、GetEnumeratorが呼ばれた時にクエリ文の構築と実行を行うものと思われます。</p>
+<h2>まとめ</h2>
+<p>AsEnumerableは、ようするにただのキャストなだけですが、その果たしている役割というものを考えると非常に深い。その割には(QueryableでToListばかり使われたりと)今ひとつ知名度に欠ける気もしますので、ドサッと紹介を書いてみました。ただのキャストだって語ろうと思えば幾らでも語れるLINQは素敵ですね！</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

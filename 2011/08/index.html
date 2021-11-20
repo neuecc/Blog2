@@ -1,0 +1,1322 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - 2011-08</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2011/0826_341.html">ReactiveProperty : Rx + MVVMへの試み</a></h1>
+<ul class="date"><li>2011-08-26</li></ul>
+<div class="entry_body"><p><a href="http://msdn.microsoft.com/en-us/data/gg577609" title="Reactive Extensions">Reactive Extensions</a>といったら非同期、じゃなくて、その前にイベントですよ！イベント！というわけで、随分手薄になっていたイベント周りの話を増強したいこの頃です。イベントと一口に言っても色々あります。UI(クリックやマウスムーブ)、センサー、変更通知(INotifyPropertyChanged)などなど。中でも一番よく使うのは、UI周りのイベントでしょう。</p>
+<p>しかし、UIの持つTextChangedイベントだのから直接FromEventPatternで変換してしまったら、Viewと密接に結びついてしまってよろしくない。ここはMVVM的にやりましょう。でも、どうやって？</p>
+<p>View(UI)が持つネイティブなイベントを、ViewModelの持つ更新通知付きのプロパティに変換します。これはバインディングにより可能です。そこはWPF/SLの仕組みに任せましょう。ということで、RxでUIに対してプログラミングするというのは、ViewModelの通知に対してプログラミングするという形になります。</p>
+<p>テキストボックスの変更に反応して、1秒ディレイをかけた後に表示する、という簡単な例を(何の面白みもありません、すみません)</p>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="50px">
+  <param name="source" value="http://neue.cc/wp-content/uploads/silverlight/ReactiveProperty.SL4.xap"/>
+  <param name="background" value="white" />
+  <param name="minRuntimeVersion" value="3.0.40624.0" />
+  <param name="autoUpgrade" value="true" />
+  <a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=3.0.40624.0" style="text-decoration:none">
+      <img src="http://go.microsoft.com/fwlink/?LinkId=108181" alt="Microsoft Silverlight を入手" style="border-style:none"/>
+  </a>
+</object>
+</p>
+<pre><code class="language-csharp">public class ToaruViewModel : INotifyPropertyChanged
+{
+    private string input;
+    public string Input
+    {
+        get { return input; }
+        set { input = value; RaiseEvent(&quot;Input&quot;); }
+    }
+
+    private string output;
+    public string Output
+    {
+        get { return output; }
+        set { output = value; RaiseEvent(&quot;Output&quot;); }
+    }
+
+    public ToaruViewModel()
+    {
+        Observable.FromEvent&lt;PropertyChangedEventHandler, PropertyChangedEventArgs&gt;(
+                h =&gt; (sender, e) =&gt; h(e),
+                h =&gt; this.PropertyChanged += h, h =&gt; this.PropertyChanged -= h)
+            .Where(e =&gt; e.PropertyName == &quot;Input&quot;) // Inputが更新されたら
+            .Select(_ =&gt; Input) // Inputの値を
+            .Delay(TimeSpan.FromSeconds(1)) // 1秒遅らせて
+            .ObserveOnDispatcher() // Dispatcherで(Silverlightではこれ必要・WPFでは不要)
+            .Subscribe(s =&gt; Output = &quot;入力が1秒後に表示される:&quot; + s); // Outputへ代入
+    }
+
+    // この辺は別途、ライブラリを使って持ってくるほうが良いかも
+    public void RaiseEvent(string propertyName)
+    {
+        var handler = PropertyChanged;
+        if (handler != null) handler(this, new PropertyChangedEventArgs(propertyName));
+    }
+
+    public event PropertyChangedEventHandler PropertyChanged;
+}
+
+// xaml.csはInitializeだけ、xamlのバインディングは各プロパティへ当てるだけ。
+// ただしSL/WP7はUpdateSourceTrigger=PropertyChangedに対応してないので別途Behaviorの適用が必要
+// 詳しくは、最後にソース配布(WPF/SL/WP7全て含む)URLを置いているのでそちらを見てください
+</code></pre>
+<p>……実にダサい。はい。全くいけてないです。バインディング可能なのはプロパティなので、そういった中間レイヤへの中継が発生していて、冗長だし、美味しさがかなり損なわれています。わかりきったINotifyPropertyChangedのWhere, Selectは無駄そのもので。勿論、簡単にDelayを混ぜられるといった時間の扱いの容易さはRxならでは、ではあるのですけれど。</p>
+<h2>ReactiveProperty</h2>
+<p>中継が手間ならば、中間レイヤだけを抜き出してやればいい。通知処理を内包したIObservable&lt;T&gt;があれば解決する。というわけで、ReactivePropertyと名付けたものを作りました。それを使うと、こうなります。</p>
+<pre><code class="language-csharp">public class SampleViewModel : INotifyPropertyChanged
+{
+    public ReactiveProperty&lt;string&gt; ReactiveIn { get; private set; }
+    public ReactiveProperty&lt;string&gt; ReactiveOut { get; private set; }
+
+    public SampleViewModel()
+    {
+        // UIから入力されるものはnewで作成、デフォルト値も同時に指定出来る。
+        ReactiveIn = new ReactiveProperty&lt;string&gt;(_ =&gt; RaiseEvent(&quot;ReactiveIn&quot;), &quot;でふぉると&quot;);
+
+        // UIへ出力するIO&lt;T&gt;はToReactivePropertyで、初期値での発火も自動的にされます。
+        ReactiveOut = ReactiveIn
+            .Delay(TimeSpan.FromSeconds(1))
+            .Select(s =&gt; &quot;入力が1秒後に表示される:&quot; + s)
+            .ToReactiveProperty(_ =&gt; RaiseEvent(&quot;ReactiveOut&quot;));
+    }
+
+    // 通常は、他のMVVMフレームワークなりを使い、それの更新通知システムを利用するといいでしょう
+    // Rxを使ったからって、決してMVVMフレームワークと競合するわけではなく、むしろ協調すると考えてください
+    public void RaiseEvent(string propertyName)
+    {
+        var handler = PropertyChanged;
+        if (handler != null) handler(this, new PropertyChangedEventArgs(propertyName));
+    }
+
+    public event PropertyChangedEventHandler PropertyChanged;
+}
+</code></pre>
+<pre><code class="language-xml">// これはWPF版のもの
+&lt;Window x:Class=&quot;ReactiveProperty.MainWindow&quot;
+        xmlns=&quot;http://schemas.microsoft.com/winfx/2006/xaml/presentation&quot;
+        xmlns:x=&quot;http://schemas.microsoft.com/winfx/2006/xaml&quot;
+        xmlns:l=&quot;clr-namespace:ReactiveProperty&quot;
+        Title=&quot;MainWindow&quot; Height=&quot;350&quot; Width=&quot;525&quot;&gt;
+    &lt;Window.DataContext&gt;
+        &lt;l:SampleViewModel /&gt;
+    &lt;/Window.DataContext&gt;
+    &lt;StackPanel&gt;
+        &lt;TextBox Text=&quot;{Binding ReactiveIn.Value, UpdateSourceTrigger=PropertyChanged}&quot; /&gt;
+        &lt;TextBlock Text=&quot;{Binding ReactiveOut.Value}&quot; /&gt;
+    &lt;/StackPanel&gt;
+&lt;/Window&gt;
+</code></pre>
+<p>XAMLではPathに必ず.Valueまで指定します。これによりGetが求められれば最新の値を返し、値をSetされればPushするようになります。</p>
+<p>今回はUI-&gt;ReactiveProperty-&gt;クエリ演算-&gt;ReactiveProperty-&gt;UIという風に戻してやりましたが、勿論、UIからの入力をModelに流してそれで止めてもいいし、Modelからの値をUIに流すだけでもいいし、トリガーはタイマーであってもいいし、その辺は完全に自由です。普通の通知プロパティと何も変わりません。また普通のプロパティとして使いたい時は.Valueで値を取り出す/セットできます。</p>
+<p>かなりシンプルに仕上がります。通知付きプロパティは、本質的に値の変更毎に通知される無限長のIObservable&lt;T&gt;と見なせるので、そのことにより表現がより自然になっています。書き味も、リアクティブプログラミング(といわれてパッと浮かばれる値が自動更新されるという奴)にかなり近い感じの風合い。XAMLでのバインドも簡単ですし、VMの実装も自動実装プロパティだけで書けるので記述が楽チン。</p>
+<p>そして、Rxを使うことによる最大の利点である、他のイベント(他の変更通知プロパティ)と合成しやすかったり、時間が扱いやすくなったり、非同期と混ぜても同じように扱えたり、スレッドの切り替えが簡単であったり、などを最大限に甘受できます。VMとして独立している、かつ全てがRxに乗っているため、単体テストも非常に作成しやすい状態です(時間軸を扱う処理のテストは通常難しいのですが、Rxの場合は自分で時間をコントロール可能なSchedulerを中間に挟むと、好きなように時間を進められるようになります、イベントのテストも、この状態ならばプロパティを変更するだけで生成されますし)。また、決して他のMVVMフレームワークと競合が起こるわけではない(多分……)のも見逃せない利点です。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/ReactivePropertyModel.jpg">
+</p>
+<p>単純な例なのでModelがありませんが、まあこんな感じ？(それと今はコマンドがないので単純なデータバインドのみの図です)。Modelへのアクセスは通常恐らくRx:Query内で行い、Modelの形態は色々だと思いますが、通信してデータを処理して返す、みたいなものはRxになっているとVMのReactiveProperty側での合成処理が容易なので、非同期にしてIObservable&lt;T&gt;で返すと良いのではかと思います。自身が通知を持つReactivePropertyになっていてもいいですね。そうなると、コードのほとんどがLINQになるという素敵な夢が見れる気がしますが気のせいです。</p>
+<h2>実装</h2>
+<p>ReactivePropertyの実装はこんな感じです。ご自由にコピペって使ってみてください。</p>
+<pre><code class="language-csharp">using System;
+#if WINDOWS_PHONE
+using Microsoft.Phone.Reactive;
+#else
+using System.Reactive.Linq;
+using System.Reactive.Subjects;
+#endif
+
+public class ReactiveProperty&lt;T&gt; : IObservable&lt;T&gt;, IDisposable
+{
+    T latestValue;
+    IObservable&lt;T&gt; source;
+    Subject&lt;T&gt; anotherTrigger = new Subject&lt;T&gt;();
+    IDisposable sourceDisposable;
+
+    public ReactiveProperty(Action&lt;T&gt; propertyChanged, T initialValue = default(T))
+        : this(Observable.Never&lt;T&gt;(), propertyChanged, initialValue)
+    { }
+
+    public ReactiveProperty(IObservable&lt;T&gt; source, Action&lt;T&gt; propertyChanged, T initialValue = default(T))
+    {
+        this.latestValue = initialValue;
+
+        var merge = source.Merge(anotherTrigger)
+            .DistinctUntilChanged()
+            .Publish(initialValue);
+        this.sourceDisposable = merge.Connect();
+
+        // PropertyChangedの発火はUIスレッドで行うことにする
+        // UIへの反映の際に、WPFでは問題ないが、SL/WP7ではUIスレッドから発行しないと例外が出るため
+        merge.ObserveOnDispatcher().Subscribe(x =&gt;
+        {
+            latestValue = x;
+            propertyChanged(x);
+        });
+
+        this.source = merge;
+    }
+
+    public T Value
+    {
+        get
+        {
+            return latestValue;
+        }
+        set
+        {
+            latestValue = value;
+            anotherTrigger.OnNext(value);
+        }
+    }
+
+    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
+    {
+        return source.Subscribe(observer);
+    }
+
+    public void Dispose()
+    {
+        sourceDisposable.Dispose();
+    }
+}
+
+// 拡張メソッド
+public static class ObservableExtensions
+{
+    public static ReactiveProperty&lt;T&gt; ToReactiveProperty&lt;T&gt;(this IObservable&lt;T&gt; source, Action&lt;T&gt; propertyChanged, T initialValue = default(T))
+    {
+        return new ReactiveProperty&lt;T&gt;(source, propertyChanged, initialValue);
+    }
+}
+</code></pre>
+<p>Valueで値の中継をしているという、それだけです。Publish(value)はBehaviorSubjectというものを使った分配で、必ず最新の値一つをキャッシュとして持っていて、Subscribeされると同時に、まずその値で通知してくれます。これにより「初期値での自動発火」が自然に行える、という仕組みになっています。また、プロパティの変更時に同値の場合は変更通知をしない、というよくあるほぼ必須処理も、ここでDistinctUntilChangedを挟んで行っています(オプションで選択制にしてもいいかもしれない)。</p>
+<h2>それReactiveUI？</h2>
+<p><a href="http://www.reactiveui.net/">ReactiveUI</a>というRxを前提にしたMVVMフレームワークがあって、それに用意されているObservableAsPropertyHelperと、ReactivePropertyはかなり近いです(ということにプロトタイプ作ってから気づいた、ReactiveUIはこれまで名前は知ってたけど中身完全ノーチェックだったので)。ただ、機能的にはOAPHは双方向バインディングに対応していないので、ReactivePropertyのほうが上です。また、OAPHは使い勝手もあまり良くないし、名前がダサい(ObservableAsPropertyHelperは長すぎるし型名として宣言させるにはイマイチに思える……)などなどで、あまり気に入るものではなかったです。</p>
+<p>ReactiveUIは全体的には軽く眺めた程度なのですが、今ひとつ私には合わない。ちょっと、いや、かなり気にいらない。なので、私としてはそのうち他のMVVMライブラリをベースに置いた上での拡張として、Rx用のUI周りライブラリを作りたい。独自に上から下まで面倒を見るフレームワーク、という指針は今一つに思えるので、Rxならではの特異な部分だけを、最初から他のMVVMフレームワークの拡張として用意していく、という方向性のほうが良いものが作れると思っています。素のままのRxでは辛いので、何かしらの中間層が必要なのは間違いないので。</p>
+<p>次は、ReactiveCommandを！あー、あとReactiveCollectionも必要かしら。Validationとかも……。まあ、そういうところは普通に書けばいいんですよ、何も全部Rxでやる必要はないですからね。</p>
+<h2>まとめ</h2>
+<p>WPFのバインディングの美味しさをRxで更に美味しくする、ということでした。世の中的には弱参照が～などなどというお話もありますが、それには全然追いついてませんので、おいおいちかぢかそのうち。</p>
+<p>今回のコードの全体(WPF/SL/WP7)は<a href="https://bitbucket.org/neuecc/reactiveproperty" title="neuecc / ReactiveProperty / overview — Bitbucket">neuecc / ReactiveProperty /Bitbucket</a>に置いてありますので、好きに見てください。例が単純すぎると美味しさもよくわからないので、もう少し複雑な例で、サンプル準備中なのでしばしお待ちを。</p>
+<p>ところで9/15にいよいよRx本が出ます。</p>
+<iframe src="http://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as4&m=amazon&f=ifr&ref=ss_til&asins=1430237473" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<p>オライリーで出ているProgramming C#の著者と、ReactiveUIの作者(元Microsoft Office Labs、つい最近Githubに転職した模様)の共著です。私も買いますので、うーん、読書会とかやったら来てくれる方います？</p>
+</div>
+<h1><a href="http://neue.cc/2011/0822_340.html">linq.js LT資料</a></h1>
+<ul class="date"><li>2011-08-22</li></ul>
+<div class="entry_body"><p>LTで簡単に<a href="http://linqjs.codeplex.com/">linq.js</a>の紹介をしましたので、その資料を。といっても、資料は全く使わないでLTの場では完全にデモ一本にしました。ええ、こういう場では、やっぱデモ優先のほうがいいかなー、と。資料は資料で、要素がきっちりまとまって紹介という感じなので、見てもらえればと思います。</p>
+<div style="width:595px" id="__ss_8930196"> <strong style="display:block;margin:12px 0 4px"><a href="http://www.slideshare.net/neuecc/linqjs-linq-to-objects-for-javascript" title="linq.js - Linq to Objects for JavaScript" target="_blank">linq.js - Linq to Objects for JavaScript</a></strong> <iframe src="http://www.slideshare.net/slideshow/embed_code/8930196" width="595" height="497" frameborder="0" marginwidth="0" marginheight="0" scrolling="no"></iframe> <div style="padding:5px 0 12px"> View more <a href="http://www.slideshare.net/" target="_blank">presentations</a> from <a href="http://www.slideshare.net/neuecc" target="_blank">neuecc</a> </div> </div>
+<p>スライドのテンプレは同じの使っていてそろそろ飽きたので、新しいのに変えたいところ。基本的にはテンプレのテーマまんまですが、やっぱ細かいところでスライドマスタの調整は必要なので、面倒くさー、と思ってしまい中々に気力が。むしろデザイン変更は一年に一回でいいかしらいいかしら？</p>
+<p>そういえばどうでもよくないのですが、SlideshareをBlogに埋め込む時はlargeサイズを選んで欲しい。文字潰れてしまうもの、わざわざ小さいサイズで埋め込む必要はどこにもなくて。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0819_339.html">文字列を先頭から見て同じところまで除去をlinq.jsとC#で解いてみた</a></h1>
+<ul class="date"><li>2011-08-19</li></ul>
+<div class="entry_body"><p><a href="http://blog.livedoor.jp/okashi1/archives/51778281.html">JavaScript で「文字列を先頭から見て同じところまで除去」をやってみました。</a>という記事を見て、「linq.js を使いたかったのですが使いどころがパッと思い浮かびませんでした」とのことなので、<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js - LINQ for JavaScript</a>で答えてみます。お題の元は<a href="http://d.hatena.ne.jp/fumokmm/20110812/1313138407">お題：文字列を先頭から見て同じところまで除去</a>からです。解き方も色々あると思いますが、最長の一致する文字を見つけて、それを元に文字列を削除していく、という方法を取ることにしました。</p>
+<pre><code class="language-javascript">function dropStartsSame(array)
+{
+    var seq = Enumerable.From(array);
+    return Enumerable.From(seq.First())
+        .Scan(&quot;$+$$&quot;)
+        .TakeWhile(function (x) { return seq.All(function (y) { return y.indexOf(x) == 0 }) })
+        .Insert(0, [&quot;&quot;]) // 一つもマッチしなかった場合のため
+        .TakeFromLast(1)
+        .SelectMany(function (x) { return seq.Select(function (y) { return y.substring(x.length) }) });
+}
+
+dropStartsSame([&quot;abcdef&quot;, &quot;abc123&quot;]).WriteLine();
+dropStartsSame([&quot;あいうえお&quot;, &quot;あいさんさん&quot;, &quot;あいどる&quot;]).WriteLine();
+dropStartsSame([&quot;12345&quot;, &quot;67890&quot;, &quot;12abc&quot;]).WriteLine();
+</code></pre>
+<p>はい、ワンライナーで書けました、って何だか意味不明ですね！まず、例えば&quot;abcdef&quot;から[&quot;a&quot;,&quot;ab&quot;,&quot;abc&quot;,&quot;abcd&quot;,&quot;abcde&quot;,&quot;abcdef&quot;]を作ります。これはものすごく簡単で、Scanを使うだけです。</p>
+<pre><code class="language-javascript">// [&quot;a&quot;,&quot;ab&quot;,&quot;abc&quot;,&quot;abcd&quot;,&quot;abcde&quot;,&quot;abcdef&quot;]
+Enumerable.From(&quot;abcdef&quot;).Scan(&quot;$+$$&quot;)
+</code></pre>
+<p>素晴らしい！そうして比較のタネができたら、あとは全てのindexOfが0(先頭に一致する)の間だけ取得(TakeWhile)します。[&quot;abcdef&quot;,&quot;abc123&quot;]だとシーケンスは[&quot;a&quot;,&quot;ab&quot;,&quot;abc&quot;]に絞られます。必要なのは最長のもの一つだけなのでTakeFromLast(1)で最後のものだけを取得。もし一つもマッチしなかった場合は代わりに&quot;&quot;が通るようにInsertで事前に先頭にさしてやってます。あとは、その&quot;abc&quot;を元にして文字列を置換したシーケンスを返してやるようにすればいい、というわけです、はい。</p>
+<h2>少し修正</h2>
+<p>SelectManyで繋げるのは悪趣味なので、ちょっと変えましょう。</p>
+<pre><code class="language-javascript">function dropStartsSame(array)
+{
+    var seq = Enumerable.From(array);
+    var pre = Enumerable.From(seq.First())
+        .Scan(&quot;$+$$&quot;)
+        .TakeWhile(function (x) { return seq.All(function (y) { return y.indexOf(x) == 0 }) })
+        .LastOrDefault(&quot;&quot;);
+
+    return seq.Select(function (x) { return x.substring(pre.length) });
+}
+</code></pre>
+<p>変数を一つ置いてやるだけで随分とすっきり。無理に全部繋げるのはよくないね、という当たり前の話でした。</p>
+<h2>C# + Ix</h2>
+<p>C#とIxで書くとこうなるかな？基本的には同じです。(Ixって何？という人は<a href="http://neue.cc/2011/08/10_337.html" title="neue cc - LINQ to Objects &amp; Interactive Extensions &amp; linq.js 全メソッド概説">neue cc - LINQ to Objects &amp; Interactive Extensions &amp; linq.js 全メソッド概説</a>を参照ください)</p>
+<pre><code class="language-csharp">static IEnumerable&lt;string&gt; DropStartsSame(params string[] args)
+{
+    var pre = args.First()
+        .Scan(&quot;&quot;, (x, y) =&gt; x + y)
+        .TakeWhile(x =&gt; args.All(y =&gt; y.StartsWith(x)))
+        .LastOrDefault() ?? &quot;&quot;;
+    return args.Select(x =&gt; x.Substring(pre.Length));
+}
+
+static void Main()
+{
+    var x = DropStartsSame(&quot;abcdef&quot;, &quot;abc123&quot;).SequenceEqual(new[] { &quot;def&quot;, &quot;123&quot; });
+    var y = DropStartsSame(&quot;あいうえお&quot;, &quot;あいさんさん&quot;, &quot;あいどる&quot;).SequenceEqual(new[] { &quot;うえお&quot;, &quot;さんさん&quot;, &quot;どる&quot; });
+    var z = DropStartsSame(&quot;12345&quot;, &quot;67890&quot;, &quot;12abc&quot;).SequenceEqual(new[] { &quot;12345&quot;, &quot;67890&quot;, &quot;12abc&quot; });
+
+    Console.WriteLine(x == y == z == true);
+}
+</code></pre>
+<p>Ixで使ってるのはScanだけですけれど。</p>
+<h2>Deferの使い道</h2>
+<p>ところで、上のコードは遅延評価なのか遅延評価でないのか、微妙な感じです。preの計算までは即時で、その後は遅延されています。まるごと遅延したい場合はIxのDeferというメソッドが使えます。</p>
+<pre><code class="language-csharp">// Deferで生成を遅延する
+static IEnumerable&lt;string&gt; DropStartsSame2(params string[] args)
+{
+    return EnumerableEx.Defer(() =&gt;
+    {
+        var pre = args.First()
+            .Scan(&quot;&quot;, (x, y) =&gt; x + y)
+            .TakeWhile(x =&gt; args.All(y =&gt; y.StartsWith(x)))
+            .LastOrDefault() ?? &quot;&quot;;
+        return args.Select(x =&gt; x.Substring(pre.Length));
+    });
+}
+
+// もしくはyield returnを使ってしまうという手も私はよく使っていました
+static IEnumerable&lt;string&gt; DropStartsSame3(params string[] args)
+{
+    var pre = args.First()
+        .Scan(&quot;&quot;, (x, y) =&gt; x + y)
+        .TakeWhile(x =&gt; args.All(y =&gt; y.StartsWith(x)))
+        .LastOrDefault() ?? &quot;&quot;;
+    var query = args.Select(x =&gt; x.Substring(pre.Length));
+    
+    foreach (var item in query) yield return item;
+}
+
+// 勿論、全部LINQで組んでしまってもOK
+static IEnumerable&lt;string&gt; DropStartsSame4(params string[] args)
+{
+    return args.First()
+        .Scan(&quot;&quot;, (x, y) =&gt; x + y)
+        .TakeWhile(x =&gt; args.All(y =&gt; y.StartsWith(x)))
+        .StartWith(&quot;&quot;) // linq.jsではInsert(0, [])でした
+        .TakeLast(1) // linq.jsではTakeFromLastでした
+        .SelectMany(x =&gt; args.Select(y =&gt; y.Substring(x.Length)));
+}
+</code></pre>
+<p>私はIx以前はyield returnを結構よく使ってました。今は、Deferのほうが、例えば if(args == null) throw new ArgumentNullException(); とかがそのまま書けるのでDeferを選びたいかも。この辺の評価タイミングの話は前回、<a href="http://neue.cc/2011/08/15_338.html" title="neue cc - 詳説Ix Share/Memoize/Publish編(もしくはyield returnの注意点)">詳説Ix Share/Memoize/Publish編(もしくはyield returnの注意点)</a>で書きました。</p>
+<h2>まとめ</h2>
+<p>というわけで、Scanの使い方でした。Scan可愛いよScan。ようするにAggregateの計算途中も列挙する版なわけなので、これ、標準クエリ演算子にも入って欲しかったなあ。結構使えるシーン多いです。</p>
+<p>ああ、あとJavaScriptでもforなんて使いません(ｷﾘｯ。<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js</a>は真面目に普通に多機能なので遅い、じゃなくて、いや、それはまあ事実なんですが、便利には違いないです。他の普通のコレクションライブラリじゃ出来ないことも平然と出来ます。でもかわりに（ry</p>
+</div>
+<h1><a href="http://neue.cc/2011/0815_338.html">詳説Ix Share/Memoize/Publish編(もしくはyield returnの注意点)</a></h1>
+<ul class="date"><li>2011-08-15</li></ul>
+<div class="entry_body"><p><a href="http://neue.cc/2011/08/10_337.html" title="neue cc - LINQ to Objects &amp; Interactive Extensions &amp; linq.js 全メソッド概説">LINQ to Objects &amp; Interactive Extensions &amp; linq.js 全メソッド概説</a>でのIxのPublishの説明がおざなりだったので、一族について詳しく説明したいと思います(Ixの詳細・入手方法などは先の全メソッド概説のほうを参照ください)。ええ、これらはIBuffer&lt;T&gt;を返すという一族郎党だという共通点があります。なので、並べてみれば分かりやすい、かも？挙動を検証するためのコードは後で出しますので、ひとまず先に図をどうぞ。星がGetEnumerator、丸がMoveNext(+Current)、矢印線が二つ目の列挙子を取得したタイミングを表しています。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/ShareMemoizePublish.jpg">
+</p>
+<p>これだけじゃよく分かりません。と、いうわけで、少しだけ上の図を頭に入れて、以下の解説をどうぞ。</p>
+<h2>Memoize</h2>
+<p>Memoizeはメモ化。メモイズ。メモライズじゃないっぽいです。二度目三度目の列挙時は値をキャッシュから返すので、前段がリソースから取得したり複雑な計算処理をしていたりで重たい場合に有効、という使い道が考えられます。とりあえずEnumeratorを取ってきて、それでじっくり動きを観察してみましょう。</p>
+<pre><code class="language-csharp">// ShareやMemoizeやPublishの戻り値の型はIBuffer&lt;T&gt;で、これはIDisposableです。
+// もしリソースを抱えるものに適用するなら、usingしたほうがいいかも？
+using (var m = Enumerable.Range(1, int.MaxValue)
+    .Do(x =&gt; Console.WriteLine(&quot;spy:&quot; + x)) // 元シーケンスが列挙される確認
+    .Memoize())
+{
+    var e1 = m.GetEnumerator();
+    e1.MoveNext(); e1.MoveNext(); e1.MoveNext(); // spy:1,spy:2,spy:3
+    Console.WriteLine(e1.Current); // 3
+
+    var e2 = m.GetEnumerator();
+    e2.MoveNext(); // キャッシュから返されるので元シーケンスは不動
+    Console.WriteLine(e2.Current); // 1
+
+    e2.MoveNext(); e2.MoveNext(); e2.MoveNext(); // spy:4
+    Console.WriteLine(e2.Current); // 4
+
+    e1.MoveNext(); // 今度はe2が先行したので、こちらもキャッシュから
+    Console.WriteLine(e1.Current); // 4
+}
+</code></pre>
+<p>特に考える必要もなく分かりやすい内容です。オーバーロードにはreaderCountを受けるものがありますが、それの挙動は以下のようになります。</p>
+<pre><code class="language-csharp">// Memoizeの第二引数はreaderCount(省略した場合は無限個)
+using (var m = Enumerable.Range(1, int.MaxValue).Memoize(2))
+{
+    // readerCountはEnumeratorの取得可能数を表す
+    var e1 = m.GetEnumerator();
+    e1.MoveNext(); // MoveNextするとMemoizeに登録される
+    var e2 = m.GetEnumerator();
+
+    var e3 = m.GetEnumerator();
+    e3.MoveNext();
+
+    e2.MoveNext(); // 3つめはNGなので例外が飛んで来る
+}
+</code></pre>
+<p>これを使うと、キャッシュから値が随時削除されていくので、メモ化しつつ巨大なシーケンスを取り扱いたい場合には、メモリ節約で有効なこともあるかもしれません。とはいっても、普段はあまり考えなくてもいいかな？毎回削除処理が入るので、実行時間は当然ながら遅くなります。</p>
+<h2>Share</h2>
+<p>Shareは列挙子を共有します。</p>
+<pre><code class="language-csharp">using (var s = Enumerable.Range(1, int.MaxValue).Share())
+{
+    var e1 = s.GetEnumerator();
+    e1.MoveNext(); e1.MoveNext(); e1.MoveNext();
+    Console.WriteLine(e1.Current); // 3
+
+    var e2 = s.GetEnumerator(); // 列挙子が共有されているので3からスタート
+    Console.WriteLine(e2.Current); // 0。共有されるといっても、MoveNext前の値は不定です
+    e2.MoveNext();
+    Console.WriteLine(e2.Current); // 4。正しく初期値といえるのはここ
+
+    Console.WriteLine(e1.Current); // 3。e1とe2は同じものを共有していますが、Currentの値はMoveNextしない限りは変わらない
+
+    e1.MoveNext();
+    Console.WriteLine(e1.Current); // 5。列挙子を共有しているので、e2の続き
+}
+</code></pre>
+<p>といった形です。これの何が美味しいの？というと、例えば自分自身と結合させると、隣り合った値とくっつけられます。</p>
+<pre><code class="language-csharp">// Share, Memoize, Publishにはselectorを受けるオーバーロードがある
+// このselectorには var xs = source.Share() の xsが渡される
+// つまり、一度外部変数に置かなくてもよいという仕組み、Zipなどと相性が良い
+
+// 結果は {x = 1, y = 2}, { x = 3, y = 4}, { x = 5, y = 6}
+// 列挙子を共有して自分自身と結合するので、隣り合った値とくっつく
+Enumerable.Range(1, 6)
+    .Share(xs =&gt; xs.Zip(xs, (x, y) =&gt; new { x, y }))
+    .ForEach(x =&gt; Console.WriteLine(x));
+</code></pre>
+<p>なんだか、へぇー、という感じの動き。このShareを使うと<a href="http://d.hatena.ne.jp/okazuki/20110611/1307759414">stringの配列からDictionary&lt;string, string&gt;への変換 まとめ - かずきのBlog@Hatena</a>のコードは</p>
+<pre><code class="language-csharp">// {&quot;1&quot;:&quot;one&quot;}, {&quot;2&quot;:&quot;two&quot;}
+var array = new[] { &quot;1&quot;, &quot;one&quot;, &quot;2&quot;, &quot;two&quot; };
+var dict = array.Share(xs =&gt; xs.Zip(xs, Tuple.Create))
+    .ToDictionary(t =&gt; t.Item1, t =&gt; t.Item2);
+</code></pre>
+<p>物凄くシンプルになります。ループを回すなんて、やはり原始人のやることでしたね！</p>
+<h2>Publish</h2>
+<p>PublishはRxでは値を分散させましたが、Ixでも分散です。ただ、挙動にはかなりクセがあり、あまりお薦め出来ないというか……。動きとしては、取得時には共有された列挙子から流れてくるのでShareのようであり、列挙子取得後は全て必ず同じ値が返ってくることからMemoizeのようでもある。</p>
+<pre><code class="language-csharp">using (var p = Enumerable.Range(1, int.MaxValue).Publish())
+{
+    var e1 = p.GetEnumerator();
+    e1.MoveNext(); e1.MoveNext(); e1.MoveNext();
+    Console.WriteLine(e1.Current); // 3
+
+    var e2 = p.GetEnumerator(); // 取得時は列挙子の状態が共有されているので3からスタート
+    Console.WriteLine(e2.Current); // 0。 共有されるといっても、MoveNext前の値はやはり不定
+    e2.MoveNext();
+    Console.WriteLine(e2.Current); // 4。正しく初期値といえるのはここ
+
+    e1.MoveNext(); e1.MoveNext(); e1.MoveNext(); e1.MoveNext(); e1.MoveNext();
+    Console.WriteLine(e1.Current); // 8
+
+    e2.MoveNext(); // 取得後の状態はそれぞれ別、またキャッシュから返される
+    Console.WriteLine(e2.Current); // 5
+}
+</code></pre>
+<p>このPublish、こうして生イテレータを操作している分には理解できますが、普通に使うように演算子を組み合わせると予測不能の挙動になります。例えば</p>
+<pre><code class="language-csharp">// 自分自身と結合、GetEnumeratorのタイミングが同じなので同値で結合される
+// {1,1},{2,2},{3,3},{4,4},{5,5}
+Enumerable.Range(1, 5)
+    .Publish(xs =&gt; xs.Zip(xs, (x, y) =&gt; new { x, y }))
+    .ForEach(a =&gt; Console.WriteLine(a));
+
+// もし後者のほうをSkip(1)したらこうなります
+// {1,3},{2,4},{3,5}
+Enumerable.Range(1, 5)
+    .Publish(xs =&gt; xs.Zip(xs.Skip(1), (x, y) =&gt; new { x, y }))
+    .ForEach(a =&gt; Console.WriteLine(a));
+</code></pre>
+<p>Skip(1)すると {1,2},{2,3}... ではなくて {1,3},{2,4}... になる理由、すぐにティンと来ますか？正直私はわけがわかりませんでした。Zipの実装を見ながら考えると、少し分かりやすくなります。</p>
+<pre><code class="language-csharp">static IEnumerable&lt;TR&gt; Zip&lt;T1, T2, TR&gt;(this IEnumerable&lt;T1&gt; source1, IEnumerable&lt;T2&gt; source2, Func&lt;T1, T2, TR&gt; selector)
+{
+    using (var e1 = source1.GetEnumerator())
+    using (var e2 = source2.GetEnumerator())
+    {
+        while (e1.MoveNext() &amp;&amp; e2.MoveNext())
+        {
+            yield return selector(e1.Current, e2.Current);
+        }
+    }
+}
+</code></pre>
+<p>Skip(1)のない、そのままZipで結合したものはEnumeratorを取得するタイミングは同じなので、 {1,1},{2,2}... になるのは妥当です。では、source2がSkip(1)である場合は、というと、source2.GetEnumeratorの時点で取得されるのはSkip(1)のEnumeratorであり、Publishで分配されているEnumeratorはまだ取得開始されていません。では、いつPublishされているEnumeratorを取得するか、というと、これは最初にe2.MoveNextが呼ばれたときになります。なので、e1.MoveNextにより一回列挙されているから、e2の(MoveNext済みでの)初期値は2。更にSkip(1)するので、{1,3},{2,4}... という結果が導かれます。</p>
+<p>ZipやSkipなど、他のメソッドを組み合わせるなら、それらの内部をきっちり知らなければ挙動が導けないという、ものすごく危うさを抱えているので、Publishを上手く活用するのは難しい印象です、今のところ、私には。もともとPublishはRxに分配のためのメソッドとして存在して、その鏡としてIxにも移植されているという出自なのですが、どうしてもPull型で実現するには不向きなため、不自然な挙動となってしまっています。分配はPull(Ix)じゃなくてPush(Rx)のほうが向いている、というわけで、分配したいのならToObservableして、Observable側のPublishを使ったほうが、素直な動きをして良いと思います。</p>
+<h2>yield returnを突っつく</h2>
+<p>MemoizeのreaderCountの例でもそうでしたが、Publish/Memoizeされている列挙子を取得するのがGetEnumerator時ではなくて最初のMoveNextの時、になるのはyield returnを使うとそういう挙動で実装されるからです。例えば</p>
+<pre><code class="language-csharp">static IEnumerable&lt;T&gt; Hide&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    Console.WriteLine(&quot;列挙前&quot;);
+    using (var e = source.GetEnumerator()) // 通常は、foreachを使いますが。
+    {
+        while (e.MoveNext()) yield return e.Current;
+    }
+    Console.WriteLine(&quot;Dispose済み&quot;);
+} // yield break
+
+static void Main(string[] args)
+{
+    var e = Enumerable.Repeat(&quot;hoge&quot;, 1).Hide().GetEnumerator(); // ここではまだ何も起こらない
+    e.MoveNext(); // 列挙前 ← ここでメソッド冒頭からyield return e.Currentのところまで移動
+    Console.WriteLine(e.Current); // hoge
+    e.MoveNext(); // Dispose済み ← 最終行まで到達して終了
+}
+</code></pre>
+<p>イテレータの自動実装でメソッド本文を動きだすのは、最初のMoveNextから、というわけです。また、イテレータ内でusingなどリソースを掴む実装をしている場合は、普通にブロックを(using,lock,try-finally)超えた時に解放されます。ただし、ちゃんとブロックを超えるまでMoveNextを呼びきれる保証なんてない(例外が発生したり)ので、GetEnumeratorする時はusingも忘れずに、は大原則です。using、つまりEnumeratorをDisposeすると、using,lock,finallyがメソッド本文中で呼ばれていなかった場合は、呼ぶようになってます。</p>
+<p>ところで、本文が動き出すのは最初のMoveNextから、であることが困る場合もあります。例えば引数チェック。</p>
+<pre><code class="language-csharp">public static IEnumerable&lt;string&gt; Hoge(string arg)
+{
+    if (arg == null) throw new ArgumentNullException();
+
+    yield return arg;
+}
+
+void Main(string[] args)
+{
+    var hoge = Hoge(null); // ここでは何も起こらない！
+    hoge.GetEnumerator().MoveNext(); // ArgumentNullException発生
+}
+</code></pre>
+<p>nullチェックはメソッドに渡したその時にチェックして欲しいわけで、これではタイミングが違って良くない。これを回避するにはどうすればいいか、というと</p>
+<pre><code class="language-csharp">// 先にnullチェックを済ませて普通にreturn
+public static IEnumerable&lt;string&gt; Hoge(string arg)
+{
+    if (arg == null) throw new ArgumentNullException();
+
+    return HogeCore(arg);
+}
+
+// privateなメソッドで、こちらにyield returnで本体を書く
+private static IEnumerable&lt;string&gt; HogeCore(string arg)
+{
+    yield return arg;
+}
+
+static void Main(string[] args)
+{
+    var hoge = Hoge(null); // 例外発生！
+}
+</code></pre>
+<p>こうすれば、完璧な引数チェックの完成。実際に、LINQ to Objectsの実装はそうなっています。この時のprivateメソッドの命名には若干困りますが、私は今のところXxxCoreという形で書くようにしてます。MicrosoftのEnumerable.csではXxxIteratorという命名のようですね。また、Ixを覗くとXxx_という名前を使っている感じ。みんなバラバラなので好きな命名でいいのではかと。</p>
+<p>なお、こんなことのためだけにメソッドを分割しなければならないというのは、無駄だしバッドノウハウ的な話なので、かなり嫌いです。インラインにラムダ式でyield returnが使えればこんなことにはならないんだけれどなー、ﾁﾗﾁﾗ(次期C#に期待)</p>
+<h2>まとめ</h2>
+<p>再度、冒頭の図を眺め直してもらうと、ああ、なるほどそういうことね、と分かりますでしょうか？</p>
+<p>とはいえ、ShareもMemoizeもPublishもあんま使うことはないかと思いますぶっちゃけ！Memoizeは、使いたいシチュエーションは確かに多いのですけれど、しかし事前にToArrayしちゃってたりしちゃうことのほうが多いかなー、と。Shareは面白いんだけど使いどころを選ぶ。Publishは挙動が読みきれなくなりがちなので、避けたほうがいいと思います。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0810_337.html">LINQ to Objects & Interactive Extensions & linq.js 全メソッド概説</a></h1>
+<ul class="date"><li>2011-08-10</li></ul>
+<div class="entry_body"><p>@ITに以前書いたLINQの基礎知識の話が載りました -&gt; <a href="http://www.atmarkit.co.jp/fdotnet/chushin/greatblogentry_06/greatblogentry_06_01.html" title="LINQの仕組み＆遅延評価の正しい基礎知識 － ＠IT">LINQの仕組み＆遅延評価の正しい基礎知識 － ＠IT</a>。ああ、もっとしっかり書いていれば(図もへっぽこだし)、と思ったり思わなかったり。それでも校正していただいたのと、細部は修正してあるので、元のものよりも随分と読みやすいはずです。そういえばで1月頭の話なんですね、姉妹編としてRxの基礎知識もやるつもりだったのにまだやってないよ！</p>
+<p>ところでそもそも基礎知識といったら標準クエリ演算子が何をできるかではないのでしょうか？知ってるようで知らない標準クエリ演算子。<a href="http://msdn.microsoft.com/ja-jp/vcsharp/aa336746">101 LINQ Samples</a>もあるし<a href="http://msdn.microsoft.com/ja-jp/library/bb397926.aspx">MSDNのリファレンス</a>は十分に充実していますが、しかし意外と見逃しもあるかもしれません。また、Interactive Extensionsで何が拡張されているのかは知っていますか？ついでにJS実装のlinq.jsには何があるのか知っていますか？</p>
+<p>そんなわけで、LINQ to Objects、Ix、linq.jsの全メソッドを一行解説したいと思います。</p>
+<h2>LINQ to Objects</h2>
+<p>いわゆる、標準クエリ演算子。.NET 3.5から使えます。.NET4.0からはZipメソッドが追加されました。なお、サンプルと実行例は<a href="http://neue.cc/reference.htm" title="linq.js Reference">linq.js Reference</a>に「完全に」同じ挙動をするJS実装での例がありますので、そちらを参照にどうぞ。こういう場合はJS実装だと便利ですね。</p>
+<table>
+  <tr>
+    <td>Aggregate</td>
+    <td>汎用的な値算出</td>
+  </tr>
+  <tr>
+    <td>All</td>
+    <td>条件に全て一致するか</td>
+  </tr>
+  <tr>
+    <td>Any</td>
+    <td>条件に一つでも一致するか、引数なしの場合は空かどうか</td>
+  </tr>
+  <tr>
+    <td>AsEnumerable</td>
+    <td>IEnumerable&lt;T&gt;へアップキャスト</td>
+  </tr>
+  <tr>
+    <td>Average</td>
+    <td>平均</td>
+  </tr>
+  <tr>
+    <td>Cast</td>
+    <td>値のダウンキャスト、主な用途はIEnumerableからIEnumerable&lt;T&gt;への変換</td>
+  </tr>
+  <tr>
+    <td>Concat</td>
+    <td>引数のシーケンスを後ろに連結</td>
+  </tr>
+  <tr>
+    <td>Contains</td>
+    <td>値が含まれているか、いわばAnyの簡易版</td>
+  </tr>
+  <tr>
+    <td>Count</td>
+    <td>シーケンスの件数</td>
+  </tr>
+  <tr>
+    <td>DefaultIfEmpty</td>
+    <td>シーケンスが空の場合、デフォルト値を返す(つまり長さ1)</td>
+  </tr>
+  <tr>
+    <td>Distinct</td>
+    <td>重複除去</td>
+  </tr>
+  <tr>
+    <td>ElementAt</td>
+    <td>指定インデックスの要素の取得</td>
+  </tr>
+  <tr>
+    <td>ElementAtOrDefault</td>
+    <td>指定インデックスの要素の取得、なければデフォルト値を返す</td>
+  </tr>
+  <tr>
+    <td>Empty</td>
+    <td>空シーケンスの生成</td>
+  </tr>
+  <tr>
+    <td>Except</td>
+    <td>差集合・差分だけ、集合なので重複は除去される</td>
+  </tr>
+  <tr>
+    <td>First</td>
+    <td>最初の値の取得、ない場合は例外が発生</td>
+  </tr>
+  <tr>
+    <td>FirstOrDefault</td>
+    <td>最初の値を取得、ない場合はデフォルト値を返す</td>
+  </tr>
+  <tr>
+    <td>GroupBy</td>
+    <td>グループ化、ToLookupの遅延評価版(ただしストリーミングでの遅延評価ではない)</td>
+  </tr>
+  <tr>
+    <td>GroupJoin</td>
+    <td>右辺をグループにして結合、外部結合をしたい時にDefaultIfEmptyと合わせて使ったりもする</td>
+  </tr>
+  <tr>
+    <td>Intersect</td>
+    <td>積集合・共通の値だけ、集合なので重複は除去される</td>
+  </tr>
+  <tr>
+    <td>Join</td>
+    <td>内部結合</td>
+  </tr>
+  <tr>
+    <td>Last</td>
+    <td>最後の値を取得、ない場合は例外が発生</td>
+  </tr>
+  <tr>
+    <td>LastOrDefault</td>
+    <td>最後の値を取得、ない場合はデフォルト値を返す</td>
+  </tr>
+  <tr>
+    <td>LongCount</td>
+    <td>シーケンスの件数、longなので長い日も安心</td>
+  </tr>
+  <tr>
+    <td>Max</td>
+    <td>最大値</td>
+  </tr>
+  <tr>
+    <td>Min</td>
+    <td>最小値</td>
+  </tr>
+  <tr>
+    <td>OfType</td>
+    <td>指定した型の値だけを返す、つまりWhereとisが組み合わさったようなもの</td>
+  </tr>
+  <tr>
+    <td>OrderBy</td>
+    <td>昇順に並び替え</td>
+  </tr>
+  <tr>
+    <td>OrderByDescending</td>
+    <td>降順に並び替え</td>
+  </tr>
+  <tr>
+    <td>Range</td>
+    <td>指定個数のintシーケンスの生成</td>
+  </tr>
+  <tr>
+    <td>Repeat</td>
+    <td>一つの値を繰り返すシーケンスの生成</td>
+  </tr>
+  <tr>
+    <td>Reverse</td>
+    <td>逆から列挙</td>
+  </tr>
+  <tr>
+    <td>Select</td>
+    <td>射影、関数の第二引数はインデックス</td>
+  </tr>
+  <tr>
+    <td>SelectMany</td>
+    <td>シーケンスを一段階平らにする、モナドでいうbind</td>
+  </tr>
+  <tr>
+    <td>SequenceEqual</td>
+    <td>二つのシーケンスを値で比較</td>
+  </tr>
+  <tr>
+    <td>Single</td>
+    <td>唯一の値を取得、複数ある場合は例外が発生</td>
+  </tr>
+  <tr>
+    <td>SingleOrDefault</td>
+    <td>唯一の値を取得、複数ある場合はデフォルト値を返す</td>
+  </tr>
+  <tr>
+    <td>Skip</td>
+    <td>指定個数だけ飛ばす</td>
+  </tr>
+  <tr>
+    <td>SkipWhile</td>
+    <td>条件が正のあいだ飛ばす</td>
+  </tr>
+  <tr>
+    <td>Sum</td>
+    <td>合計</td>
+  </tr>
+  <tr>
+    <td>Take</td>
+    <td>指定個数列挙、シーケンスの個数より多く指定した場合はシーケンスの個数分だけ</td>
+  </tr>
+  <tr>
+    <td>TakeWhile</td>
+    <td>条件が正のあいだ列挙</td>
+  </tr>
+  <tr>
+    <td>ThenBy</td>
+    <td>同順の場合のソートキーの指定、昇順に並び替え</td>
+  </tr>
+  <tr>
+    <td>ThenByDescending</td>
+    <td>同順の場合のソートキーの指定、降順に並び替え</td>
+  </tr>
+  <tr>
+    <td>ToArray</td>
+    <td>配列に変換</td>
+  </tr>
+  <tr>
+    <td>ToDictionary</td>
+    <td>辞書に変換</td>
+  </tr>
+  <tr>
+    <td>ToList</td>
+    <td>リストに変換</td>
+  </tr>
+  <tr>
+    <td>ToLookup</td>
+    <td>不変のマルチ辞書(一つのキーに複数の値を持つ)に変換</td>
+  </tr>
+  <tr>
+    <td>Union</td>
+    <td>和集合・両方の値全て、集合なので重複は除去される</td>
+  </tr>
+  <tr>
+    <td>Where</td>
+    <td>フィルタ</td>
+  </tr>
+  <tr>
+    <td>Zip</td>
+    <td>二つのシーケンスの結合、長さが異なる場合短いほうに合わされる</td>
+  </tr>
+</table>
+<p>暗記する必要はなくて、なんとなくこういうのがあってこんな名前だったかなー、とぐらいに覚えておけば、IntelliSenseにお任せできるので、それで十分です。</p>
+<p>リスト処理という観点からみるとLINQはかなり充実しているわけですが、更に他の言語と比較した場合の特色は、やはりクエリ構文。SelectManyへの構文は多くの言語が備えていますが(<a href="http://matarillo.com/general/monads.php">モナドの驚異</a>を参照のこと、LINQはLINM:言語統合モナドである、というお話)、SQLの構文をベースにしたJoin、GroupBy、OrderByへの専用記法は、意外と、というか普通に便利。</p>
+<p>特にJoinはあってよかったな、と思います、インメモリで色々なところからデータ引っ張ってきて結合などすると特に。一つぐらいの結合なら別にメソッド構文でいいのですが、フツーのSQLと同じように大量のjoinを並べる場合に、クエリ構文じゃないとシンドい。インメモリからデータベースまで統一的な記法で扱える、ということの凄さを実感するところ。</p>
+<p>といっても、普段はほとんどメソッド構文で書いてるんですけどねー。あくまで、込み入った状況になるときだけクエリ構文にしています。クエリ構文では表現できないものが結構多いわけで、わざわざ、これはクエリ構文だけで表現できるからクエリ構文にするかー、とか考えるのもカッタルイので。あと、単純にIntelliSenseでポコポコ打ってるほうが快適、というのもあります。</p>
+<p>クエリ構文は、モナドへの記法というよりも、強力なリスト内包表記といった印象も、<a href="http://research.microsoft.com/en-us/um/people/simonpj/papers/list-comp/index.htm">HaskellへのOrder By, Group Byのペーパー</a>見て思ったりなんかしたりして。</p>
+<h2>Ix</h2>
+<p>Ix(Interactive Extensions)は<a href="http://msdn.microsoft.com/en-us/data/gg577609" title="Reactive Extensions">Reactive Extensions</a>で、現在は実験的なものとして提供されている、Enumerableの拡張メソッド群。NuGetの<a href="http://nuget.org/List/Packages/Ix_Experimental-Main" title="NuGet gallery">Ix_Experimental-Main</a>で入れるのが使いやすい感じ。<a href="http://www.infoq.com/jp/news/2011/07/Ix">InfoQ: LINQ to Objectsのためのインタラクティブエクステンション</a>に解説が少し出ていましたが、少し不足していたり、間違っていたり(DoWhileとTakeWhileは一見似ていますが、挙動は全然異なるし、Forは別に全く興味深くなくSelectManyと同じです)したので、こちらの方が正しいです(ｷﾘｯ</p>
+<table>
+  <tr>
+    <td>Buffer</td>
+    <td>指定個数分に区切って配列で値を列挙</td>
+  </tr>
+  <tr>
+    <td>Case</td>
+    <td>引数のIDictionaryを元に列挙するシーケンスを決める、辞書に存在しない場合はEmpty</td>
+  </tr>
+  <tr>
+    <td>Catch</td>
+    <td>例外発生時に代わりに後続のシーケンスを返す</td>
+  </tr>
+  <tr>
+    <td>Concat</td>
+    <td>可変長引数を受け入れて連結する生成子、拡張メソッド版はシーケンスのシーケンスを平らにする</td>
+  </tr>
+  <tr>
+    <td>Create</td>
+    <td>getEnumeratorを渡し任意のIEnumerableを生成する、といってもEnumerator.Createがないため、あまり意味がない</td>
+  </tr>
+  <tr>
+    <td>Defer</td>
+    <td>シーケンスの生成をGetEumerator時まで遅延</td>
+  </tr>
+  <tr>
+    <td>Distinct</td>
+    <td>比較キーを受け入れるオーバーロード</td>
+  </tr>
+  <tr>
+    <td>DistinctUntilChanged</td>
+    <td>同じ値が続くものを除去</td>
+  </tr>
+  <tr>
+    <td>Do</td>
+    <td>副作用として各値にActionを適用し、値をそのまま列挙</td>
+  </tr>
+  <tr>
+    <td>DoWhile</td>
+    <td>一度列挙後に条件判定し、合致すれば再列挙</td>
+  </tr>
+  <tr>
+    <td>Expand</td>
+    <td>幅優先探索でシーケンスを再帰的に平らにする</td>
+  </tr>
+  <tr>
+    <td>Finally</td>
+    <td>列挙完了時に指定したActionを実行</td>
+  </tr>
+  <tr>
+    <td>For</td>
+    <td>SelectManyと一緒なので存在意義はない(Rxと鏡にするためだけに存在)</td>
+  </tr>
+  <tr>
+    <td>ForEach</td>
+    <td>foreach、関数の第二引数はインデックス</td>
+  </tr>
+  <tr>
+    <td>Generate</td>
+    <td>forループを模した初期値、終了判定、増加関数、値成形関数を指定する生成子</td>
+  </tr>
+  <tr>
+    <td>Hide</td>
+    <td>IEnumerable&lt;T&gt;に変換、具象型を隠す</td>
+  </tr>
+  <tr>
+    <td>If</td>
+    <td>条件が正なら指定したシーケンスを、負なら指定したシーケンス、もしくはEmptyで列挙する</td>
+  </tr>
+  <tr>
+    <td>IgnoreElements</td>
+    <td>後に続くメソッドに何の値も流さない</td>
+  </tr>
+  <tr>
+    <td>IsEmpty</td>
+    <td>シーケンスが空か、!Any()と等しい</td>
+  </tr>
+  <tr>
+    <td>Max</td>
+    <td>IComparer&lt;T&gt;を受け入れるオーバーロード</td>
+  </tr>
+  <tr>
+    <td>MaxBy</td>
+    <td>指定されたキーで比較し最大値だった値を返す</td>
+  </tr>
+  <tr>
+    <td>Memoize</td>
+    <td>メモ化、複数回列挙する際にキャッシュされた値を返す</td>
+  </tr>
+  <tr>
+    <td>Min</td>
+    <td>IComparer&lt;T&gt;を受け入れるオーバーロード</td>
+  </tr>
+  <tr>
+    <td>MinBy</td>
+    <td>指定されたキーで比較し最小値だった値を返す</td>
+  </tr>
+  <tr>
+    <td>OnErrorResumeNext</td>
+    <td>例外が発生してもしなくても後続のシーケンスを返す</td>
+  </tr>
+  <tr>
+    <td>Publish</td>
+    <td>ShareとMemoizeが合わさったような何か</td>
+  </tr>
+  <tr>
+    <td>Repeat</td>
+    <td>無限リピート生成子、拡張メソッドのほうは列挙後に無限/指定回数最列挙</td>
+  </tr>
+  <tr>
+    <td>Retry</td>
+    <td>例外発生時に再度列挙する</td>
+  </tr>
+  <tr>
+    <td>Return</td>
+    <td>単一シーケンス生成子</td>
+  </tr>
+  <tr>
+    <td>Scan</td>
+    <td>Aggregateの算出途中の値も列挙する版</td>
+  </tr>
+  <tr>
+    <td>SelectMany</td>
+    <td>引数を使わず別のシーケンスに差し替えるオーバーロード</td>
+  </tr>
+  <tr>
+    <td>Share</td>
+    <td>列挙子を共有</td>
+  </tr>
+  <tr>
+    <td>SkipLast</td>
+    <td>後ろからn個の値をスキップ</td>
+  </tr>
+  <tr>
+    <td>StartWith</td>
+    <td>先頭に値を連結</td>
+  </tr>
+  <tr>
+    <td>TakeLast</td>
+    <td>後ろからn個の値だけを列挙</td>
+  </tr>
+  <tr>
+    <td>Throw</td>
+    <td>例外が発生するシーケンス生成子</td>
+  </tr>
+  <tr>
+    <td>Using</td>
+    <td>列挙完了後にDisposeするためのシーケンス生成子</td>
+  </tr>
+  <tr>
+    <td>While</td>
+    <td>列挙前に条件判定し合致したら列挙し、終了後再度条件判定を繰り返す生成子</td>
+  </tr>
+</table>
+<p>みんな実装したことあるForEachが載っているのが一番大きいのではないでしょうか。別に自分で実装するのは簡単ですが、公式に(といってもExperimental Releaseですが)あると、全然違いますから。なお、何故ForEachが標準クエリ演算子にないのか、というのは、<a href="http://blogs.msdn.com/b/ericlippert/archive/2009/05/18/foreach-vs-foreach.aspx">“foreach” vs “ForEach” - Fabulous Adventures In Coding</a>によれば副作用ダメ絶対とのことで。納得は……しない。</p>
+<p>Ixに含まれるメソッドは標準クエリ演算子では「できない」もしくは「面倒くさい」。Ixを知ることは標準だけでは何ができないのかを知ること。何ができないのかを知っていれば、必要な局面でIxを使うなり自前実装するなりといった対応がすぐに取れます、無理に標準クエリ演算子をこねくり回すことなく。例えばBufferやExpandは非常に有益で、使いたいシチュエーションはいっぱいあるんですが、標準クエリ演算子ではできないことです。</p>
+<p>While, DoWhileとTakeWhileの違いは条件判定する箇所。While,DoWhileは列挙完了前/後に判定し、判定がtrueならシーケンスを再び全て列挙する。TakeWhileは通る値で毎回判定する。</p>
+<p>PublishとMemoizeの違いは難解です。Memoizeは直球そのままなメモ化なんですが、Publishが凄く説明しづらくて……。Enumerator取得まではShareと同じく列挙子の状態は共有されてるんですが、取得後はMemoizeのようにキャッシュした値を返すので値の順番は保証される、といった感じです。うまく説明できません。</p>
+<p>存在意義が微妙なものも、それなりにありますね。例えばIfとCaseとForなどは、正直、使うことはないでしょう。Usingも、これを使うなら別メソッドに分けて、普通にusing + yield returnで書いてしまうほうが良いと私は考えています。</p>
+<p>Ixを加えると、ほとんど全てをLINQで表現出来るようになりますが、やりすぎて解読困難に陥ったりしがちなのには少し注意を。複雑になるようならベタベタ書かずに、一定の塊にしたものを別メソッドに分ければいいし、分けた先では、メソッドを組み合わせるよりも、yield returnで書いたほうが素直に表現出来るかもしれません。</p>
+<p>適切なバランス感覚を持って、よきLINQ生活を！</p>
+<h2>linq.js</h2>
+<p>LINQ to ObjectsのJavaScript実装である<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js</a>にも、標準クエリ演算子の他に(作者の私の趣味で)大量のメソッドが仕込んであるので、せっかくなのでそれの解説も。標準クエリ演算子にあるものは省きます(挙動は同一なので)。また、C#でIEqualityComparer&lt;T&gt;を受け取るオーバーロードは、全てキーセレクター関数のオーバーロードに置き換えられています。</p>
+<p>一行サンプルと実行は<a href="http://neue.cc/reference.htm" title="linq.js Reference">linq.js Reference</a>のほうをどうぞ。</p>
+<table>
+  <tr>
+    <td>Alternate</td>
+    <td>値の間にセパレーターを織り込む、HaskellのIntersperseと同じ</td>
+  </tr>
+  <tr>
+    <td>BufferWithCount</td>
+    <td>IxのBufferと同じ、次のアップデートでBufferに改称予定</td>
+  </tr>
+  <tr>
+    <td>CascadeBreadthFirst</td>
+    <td>幅優先探索でシーケンスを再帰的に平らにする、IxのExpandと同じ</td>
+  </tr>
+  <tr>
+    <td>CascadeDepthFirst</td>
+    <td>深さ優先探索でシーケンスを再帰的に平らにする</td>
+  </tr>
+  <tr>
+    <td>Catch</td>
+    <td>IxのCatchと同じ</td>
+  </tr>
+  <tr>
+    <td>Choice</td>
+    <td>引数の配列、もしくは可変長引数をランダムに無限に列挙する生成子</td>
+  </tr>
+  <tr>
+    <td>Cycle</td>
+    <td>引数の配列、もしくは可変長引数を無限に繰り返す生成子</td>
+  </tr>
+  <tr>
+    <td>Do</td>
+    <td>IxのDoと同じ</td>
+  </tr>
+  <tr>
+    <td>Finally</td>
+    <td>IxのFinallyと同じ</td>
+  </tr>
+  <tr>
+    <td>Flatten</td>
+    <td>ネストされた配列を平らにする</td>
+  </tr>
+  <tr>
+    <td>Force</td>
+    <td>シーケンスを列挙する</td>
+  </tr>
+  <tr>
+    <td>ForEach</td>
+    <td>IxのForEachと同じ</td>
+  </tr>
+  <tr>
+    <td>From</td>
+    <td>配列やDOMなど長さを持つオブジェクトをEnumerableに変換、linq.jsの要の生成子</td>
+  </tr>
+  <tr>
+    <td>Generate</td>
+    <td>ファクトリ関数を毎回実行して値を作る無限シーケンス生成子、IxのGenerateとは違う(IxのGenerateはUnfoldで代用可)</td>
+  </tr>
+  <tr>
+    <td>IndexOf</td>
+    <td>指定した値を含む最初のインデックス値を返す</td>
+  </tr>
+  <tr>
+    <td>Insert</td>
+    <td>指定したインデックスの箇所に値を挿入、Insert(0, value)とすればIxのStartWithと同じ</td>
+  </tr>
+  <tr>
+    <td>LastIndexOf</td>
+    <td>指定した値を含む最後のインデックス値を返す</td>
+  </tr>
+  <tr>
+    <td>Let</td>
+    <td>自分自身を引数に渡し、一時変数を使わず自分自身に変化を加えられる</td>
+  </tr>
+  <tr>
+    <td>Matches</td>
+    <td>正規表現のマッチ結果をシーケンスとして列挙する生成子</td>
+  </tr>
+  <tr>
+    <td>MaxBy</td>
+    <td>IxのMaxByと同じ</td>
+  </tr>
+  <tr>
+    <td>MemoizeAll</td>
+    <td>IxのMemoizeと同じ、次のアップデートでMemoizeに改称予定</td>
+  </tr>
+  <tr>
+    <td>MinBy</td>
+    <td>IxのMinByと同じ</td>
+  </tr>
+  <tr>
+    <td>Pairwise</td>
+    <td>隣り合う要素とのペアを列挙</td>
+  </tr>
+  <tr>
+    <td>PartitionBy</td>
+    <td>キーで指定した同じ値が続いているものをグループ化する</td>
+  </tr>
+  <tr>
+    <td>RangeDown</td>
+    <td>指定個数のマイナス方向数値シーケンス生成子</td>
+  </tr>
+  <tr>
+    <td>RangeTo</td>
+    <td>指定した値まで(プラス方向、マイナス方向)の数値シーケンス生成子</td>
+  </tr>
+  <tr>
+    <td>RepeatWithFinalize</td>
+    <td>単一要素の無限リピート、列挙完了時にその要素を受け取る指定した関数を実行</td>
+  </tr>
+  <tr>
+    <td>Return</td>
+    <td>IxのReturnと同じ</td>
+  </tr>
+  <tr>
+    <td>Scan</td>
+    <td>IxのScanと同じ</td>
+  </tr>
+  <tr>
+    <td>Share</td>
+    <td>IxのShareと同じ</td>
+  </tr>
+  <tr>
+    <td>Shuffle</td>
+    <td>シーケンスをランダム順に列挙する</td>
+  </tr>
+  <tr>
+    <td>TakeExceptLast</td>
+    <td>IxのSkipLastと同じ</td>
+  </tr>
+  <tr>
+    <td>TakeFromLast</td>
+    <td>IxのTakeLastと同じ</td>
+  </tr>
+  <tr>
+    <td>ToInfinity</td>
+    <td>無限大までの数値シーケンス生成子</td>
+  </tr>
+  <tr>
+    <td>ToJSON</td>
+    <td>シーケンスをJSON文字列に変換(組み込みのJSON関数のあるブラウザかjson2.jsの読み込みが必要)</td>
+  </tr>
+  <tr>
+    <td>ToNegativeInfinity</td>
+    <td>マイナス無限大までの数値シーケンス生成子</td>
+  </tr>
+  <tr>
+    <td>ToObject</td>
+    <td>JSのオブジェクトに変換</td>
+  </tr>
+  <tr>
+    <td>ToString</td>
+    <td>文字列として値を連結</td>
+  </tr>
+  <tr>
+    <td>Trace</td>
+    <td>console.logで値をモニタ</td>
+  </tr>
+  <tr>
+    <td>Unfold</td>
+    <td>Aggregateの逆、関数を連続適用する無限シーケンス生成子</td>
+  </tr>
+  <tr>
+    <td>Write</td>
+    <td>document.writelnで値を出力</td>
+  </tr>
+  <tr>
+    <td>WriteLine</td>
+    <td>document.writeln + &lt;br /&gt;で値を出力</td>
+  </tr>
+</table>
+<table>
+  <tr>
+    <td>TojQuery</td>
+    <td>シーケンスをjQueryオブジェクトに変換</td>
+  </tr>
+  <tr>
+    <td>toEnumerable</td>
+    <td>jQueryの選択している複数の要素を単一要素のjQueryオブジェクトにしてEnumerableへ変換</td>
+  </tr>
+  <tr>
+    <td>ToObservable</td>
+    <td>引数のSchduler上で(デフォルトはCurrentThread)Observableへ変換</td>
+  </tr>
+  <tr>
+    <td>ToEnumerable</td>
+    <td>Cold ObservableのみEnumerableへ変換</td>
+  </tr>
+</table>
+<p>Ixと被るものもあれば、そうでもないものも。ToStringなどは分かりやすく便利でよく使うのではかと。ToJSONもいいですね。Fromは拡張メソッドのない/prototype汚染をしないための、JavaScriptだけのためのメソッド。Matchesは地味に便利です、JSの正規表現は使いやすいようでいて、マッチの列挙はかなり面倒くさいので、そこを解消してくれます。linq.jsは移植しただけ、ではあるんですが、同時に移植しただけではなくて、JavaScriptでLINQはどうあるべきか、どうあると便利なのか、という考えに基づいて調整されています。</p>
+<p>JavaScriptにはyield returnがないので(Firefoxにはyieldありますが)、シーケンスは全て演算子の組み合わせだけで表現できなければならない。というのが、手厚くメソッドを用意している理由でもあります。これだけあれば何だって作れるでしょう、きっと多分恐らく。</p>
+<h2>まとめ</h2>
+<p>これで今日からLINQ to Objectsマスター。Rx版もそのうち書きます(以前に<a href="http://neue.cc/2010/07/28_269.html" title="neue cc - Reactive Extensions入門 + メソッド早見解説表">Reactive Extensions入門 + メソッド早見解説表</a>を書きましたが、今は結構変わってしまいましたからね)。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0803_336.html">ToArray vs ToList</a></h1>
+<ul class="date"><li>2011-08-03</li></ul>
+<div class="entry_body"><p>LINQの結果は遅延評価なので、その場で全部評価して欲しかったりする場合などに使うToArrayとToList。どちらを使っていますか？私はToArrayのほうが好みです。と、いうのも、LINQで書く以上、長さは決まったようなものなので、これ以上AddやRemoveしたいことなんてほとんどない。勿論、必ずないとは言いませんので、その場合だけToListを使いますが、そうでない場合は、長さが固定だという意図を示すためにもToArrayが好ましい。</p>
+<h2>パフォーマンス</h2>
+<p>T[]やList&lt;T&gt;に変換されたあとだと、T[]のほうが、大体においてパフォーマンスは良い。という点でもToArrayがいいかなあ、と思うわけですが、それはさておき、ではToArrayとToListメソッドそれ自体のパフォーマンスはどちらのほうが良いでしょうか？理屈の上ではToListのほうが上です。というのも、変換処理は下記の図のようになっているからです。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/toarraytolist.jpg">
+</p>
+<p>元ソースがIEnumerable&lt;T&gt;である以上、長さは分からないので、ToArrayでも動的配列としていっぱいになったら二倍に拡大する、という動作を行うのはToListと変わりありません。この辺の話は<a href="http://chasen.org/%7Etaku/blog/archives/2007/02/_o1.html" title="きまぐれ日記: 動的配列への追加コストはなぜ O(1)?">動的配列への追加コストはなぜ O(1)?</a>や、<a href="http://www.kmonos.net/wlog/111.html#_2334100705" title="d.y.d.">２倍だけじゃない</a>を参考に。.NETは2倍です。そして、最後に拡大された配列の長さを整えるためコピーするのがToArray、そのまま渡すのがToList。つまり、ToArrayのほうが最後の一回のコピー動作が増えているわけです。</p>
+<p>でも、ベンチマークをとると、ToArrayのほうが速かったりします。</p>
+<pre><code class="language-csharp">// 適当さ溢れている（若干恣意的な）測り方なので、それはそれとしてくだしあ
+// ToArray:00:00:01.5002685
+// ToList :00:00:01.8124284
+var source = Enumerable.Range(1, 100000000);
+
+var sw = Stopwatch.StartNew();
+source.ToArray();
+Console.WriteLine(&quot;ToArray:&quot; + sw.Elapsed);
+GC.Collect();
+sw.Restart();
+source.ToList();
+Console.WriteLine(&quot;ToList:&quot; + sw.Elapsed);
+</code></pre>
+<p>へー、ToArrayのほうが速いんだー、ではなくて、要素数1億件でこの程度しかでないので、どうでもいい程度の差でしかないということです。ここ注意。こういう適当なマイクロベンチのマイクロな差で、こっちのほうが速いからこうしなければならない、これが最適化のための10箇条、みたいなことをやるのは間抜けだと思います。JavaScriptにはそういう記事があまりにも多すぎるとも思っています。</p>
+<p>それはともかく、何で理屈の上ではコピーが多いToArrayのほうが&quot;速い&quot;のか。それは中身をゴニョゴニョしてみてみれば分かりますが</p>
+<pre><code class="language-csharp">public static List&lt;T&gt; ToList&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    // ICollection&lt;T&gt;の場合はnew List&lt;T&gt;(source)の中で最適化されてます
+    // 最適化されない場合はforach(var item in source) this.Add(item) という感じ
+    return new List&lt;T&gt;(source)
+}
+
+// 実際のコードとは違います、あくまでイメージです
+public static T[] ToArray&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    // ICollection&lt;T&gt;の場合はCopyToで最適化
+    var collection = source as ICollection&lt;T&gt;;
+    if (collection!= null)
+    {
+        var dest = new T[collection.Count];
+        collection.CopyTo(dest, 0);
+        return dest;
+    }
+
+    // そうでないなら列挙して配列を伸ばしながら作る
+    var array = new T[4];
+    var count = 0;
+    foreach (var item in source)
+    {
+        if (array.Length == count)
+        {
+            var dest = new T[count * 2];
+            Array.Copy(array, dest, count);
+            array = dest;
+        }
+        array[count++] = item;
+    }
+
+    // 生成したものと長さが同じならそのまま返す
+    if (array.Length == count) return array;
+
+    // そうでないなら長さを整えてから返す
+    var result = new T[count];
+    Array.Copy(array, result, count);
+    return result;
+}
+</code></pre>
+<p>これだけだとよくわからない？うーん、そうですね。ToArrayの場合は配列を作る、それだけに最適化されていて余計なコードが一切ありません。反面、ToList、というかnew List&lt;T&gt;(source)は、内部では少し色々なものの呼び出し回数が多かったりしています。その辺のことが、コピー回数以上に「ほんの少しだけ」速度の差を生んでいるのではないかな、ということのようです。</p>
+<pre><code class="language-csharp">// パフォーマンスを一切考えないのならこれでいいのよね
+public static T[] ToArray&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    // 実際はreturn new Buffer&lt;T&gt;(source).ToArray();
+    return new List&lt;T&gt;(source).ToArray();
+}
+</code></pre>
+<p>理屈的にはこれでいいわけですが、実際はBuffer&lt;T&gt;クラスというものをinternalでもっていて、それはLINQで使うためだけに余計なものが一切ない動的配列で、LINQ to Objectsの各メソッドは、動的配列が必要な場合ではList&lt;T&gt;ではなく、そのBuffer&lt;T&gt;クラスを使っています。DRYはどうした、という気は少しだけしますが、まあ、ユーザーとしては速いに越したことはないです。</p>
+<h2>Array.Copy</h2>
+<p>ところで、Array.CopyやICollection&lt;T&gt;のCopyToって面倒くさいですよね、長さを持った空の配列を作って、渡さなければならないって。と、<a href="http://d.hatena.ne.jp/fezg00/20110802/1312267034" title="Array Copy - Memo+">Array Copy - Memo+</a>の記事を見て改めて思いましたが、しかし、一番よくあるケースである一次元配列のコピーならToArrayを使えばOKです。↑の実装イメージであるように、ちゃんとis asで判定して最適化してくれているので、LINQだとforeachで全部舐めるから遅いんじゃないかなー、と考えなくても大丈夫。</p>
+<h2>まとめ</h2>
+<p>今日、Twitterで間違ったこと投稿しちゃって恥ずかすぃかったので反省して書いた。まる。とりあえずToArray使えばいいです。</p>
+</div>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

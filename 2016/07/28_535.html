@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - LightNode 2 - OWINからASP.NET Coreへの移植実例</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2016/0728_535.html">LightNode 2 - OWINからASP.NET Coreへの移植実例</a></h1>
+<ul class="date"><li>2016-07-28</li></ul>
+<div class="entry_body"><p><a href="https://docs.asp.net/en/latest/">ASP.NET Core</a>以前に<a href="https://www.microsoft.com/net/core">.NET Core</a>をガン無視している昨今。というのも、.NET Coreというかようするところ最近の.NETは横、つまりクロスプラットフォームへの広がりなんですよね。それ自体は素晴らしく良いことではあるのですが、縦、つまり機能面での拡充があるのかどうかというと、あんまない気がしています。それは、クロスプラットフォームいうても基本的にはWindowsでしか現状/当分は使わないんだよなー、という私みたいな人間にとってはあまり興味を引かれるものではないのであった。</p>
+<p>とかっていつまでも言ってるのもアレなので、とりあえず<a href="http://neuecc.github.io/LightNode/">LightNode</a>(という私の作ってるOwinで動くMicro REST Framework、ようはASP.NET Web APIみたいなやつ)をASP.NET Coreに移植してみました。アプリケーションの移植じゃなくてライブラリの移植なので、むしろ楽です。LightNodeはガチガチにOwinのみで構築していたので、ほとんど単純な置換のみでOKでした。</p>
+<ul>
+<li><a href="https://www.nuget.org/packages/LightNode/">Install-Package LightNode -Pre</a></li>
+</ul>
+<p>ASP.NET Coreで動作させるだけなら、OWIN - ASP.NET Coreのブリッジを使うという手もありますが、今回は完全にASP.NET Core向けに書き直しました。せっかくやるなら、ちゃんとしっかりしたものにしたいですしね、HttpContextのほうが望ましいのにIDictionaryなEnvironmentが露出してたりすると嫌じゃん。そんなわけでつまり、OWINに関連する部分は完全にASP.NET Core仕様に変わったので、互換性はありません。</p>
+<h2>ASP.NET Coreライブラリ開発の準備と移植手順</h2>
+<p>準備として<a href="https://www.visualstudio.com/en-us/news/releasenotes/vs2015-update3-vs">Visual Studio 2015 Update 3</a>と<a href="https://www.microsoft.com/net/core">.NET Core SDK</a>を入れればOK。が、しかしいきなり.NET Core SDKがUpdate 3が入ってねーよエラーが出てインストールできなくて泣いた。世の中厳しい。<a href="http://forums.asp.net/t/2099735.aspx?Cannot+install+DotNetCore+1+0+0+VS2015Tools+Preview2">Forumによるとそういう事例多数</a>。対応としては「DotNetCore.1.0.0-VS2015Tools.Preview2.exe SKIP_VSU_CHECK=1」で叩けば入るよって話で、そうして叩くことによってようやく準備OK。幸先は悪い。</p>
+<p>そうして入ったらテンプレートに.NET Core系があるので、とりあえずClass Library(.NET Core)を作る。参照してるのは .NETStandard Library 1.6.0。この辺良く分からないんですが、<a href="https://github.com/dotnet/corefx/blob/master/Documentation/architecture/net-platform-standard.md">corefx/.NET Platform Standard</a>によると.NET 4.6.3ぐらいに相当するそうで。ふーむ、まぁASP.NET Core系がnetcoreapp 1.0で1.6と同じところらしいので、このままでOKっぽい。気がする。とりあえず。UWPとかが視野の場合はちょっと話は違うのでしょうけれど。</p>
+<p>次にASP.NET系のライブラリをNuGetで入れる。のですが、どの参照をいれればいいのかがまず分からない:) 今回はOwin的なMiddlewareを作りたかったんですが、ここは<a href="https://www.nuget.org/packages/Microsoft.AspNetCore.Http.Abstractions/">Microsoft.AspNetCore.Http.Abstractions</a>が最適のようですね。これでようやくスタートライン。</p>
+<p>既存のLightNodeのコードを突っ込むと当然激しくコンパイルエラーが出るのでここからチマチマと直していきました。まず目につくのがリフレクション関連で、IsEnumとかTypeに生えてる判別系のメソッドが片っ端から動いてません。誰しもが通る.NET Coreの洗礼！これは、type.GetTypeInfo() によるTypeInfoのほうにIsEnumなどなどが生えてるので、ひたすら<a href="https://msdn.microsoft.com/ja-jp/library/system.reflection.introspectionextensions.gettypeinfo(v=vs.110).aspx">GetTypeInfo</a>を書き加えるだけの簡単なお仕事をします。GetTypeInfoの嫌なところはSystem.Reflection名前空間への拡張メソッドとして実装されてるので、IntelliSenseに出てこなくてイラッとする率が高いこと……。まぁ、あと実際にひたすらGetTypeInfoを書きまくるのは面倒くさいので、Typeへの拡張メソッドとして GetTypeInfo().IsEnum とかコンパイルエラー出てるものだけ定義してやることで作業量低減（まぁプロパティは()を書かなきゃいけないのでアレですけど。拡張プロパティはよ）</p>
+<p>また、Parallel.ForEach がない！これは.NETStandardには含まれてないそうなので、別途<a href="https://www.nuget.org/packages/System.Threading.Tasks.Parallel/">System.Threading.Tasks.Parallel</a>をNuGetから拾ってくる。なんかこう、標準に入ってて当たり前だろ、みたいに思うものが別添えになってるの、不思議な感覚ですね。これだともはやReactive Extensionsが標準にないとかImmutable Collecitonsが標準にないとか、どうでもというか全く大したことない話に見えます。なんせParallel.ForEachすらないんだから！（ところでNuGetのVersion History見ると結構細かくアップデートされてはいるんですが、いったいなにが変わったのかRelease Note出して欲しくはある……）</p>
+<p>AppDomain.CurrentDomain.GetAssemblies もない！対象アセンブリ内からControllerがわりのクラスを引っ張ってきたくて、読み込み済みのAssemblyからGetTypesして全部検査したい、というのをやりたいわけですが、ないんですねえ。そして実際、これの代替は今のところないらしい……（というかAppDomainが今のところない）。フレームワーク系の常套手段なのに……。Loaderがどうのこうのとか、あとASP.NET Core側で特化した何かはありそうな気配を感じなくもなかったんですが、今回はGetAssembliesじゃなくても回避可能なので（一手間ではあるんですが、外側からその対象AssemblyのTypeを渡してさえくれればAssembly拾えてGetTypesできる）、Typeを渡してもらう方式のみに制限することでとりあえず回避しました。</p>
+<p>ここから先はASP.NET Core的なところ。 <code>IDictionary[string, object]</code> を <code>HttpContext</code>に変える。そして<code>AppFunc</code>を<code>RequestDelegate</code>に変える。だけの簡単なお仕事。OWINとASP.NET Coreの差異はそれだけだし中身一緒なので、機械的に置き換えていくだけ。OWINに関してはどうだのこうだのと一悶着あったりなかったりで色々ありましたが、一番下のレイヤーで触ってる限りは、概念はほんと完全に一緒なので無駄なことは全くなかったですね。上のレイヤーで触っていても、それはそれで何も考えず置き換えられるはずなので、実際のとこOWINは良かったと思ってます。新しい、ASP.NET CoreのHttpContextは、昔のHttpContextというよりかは、OWINのEnvironmentそのものだったりしますからね。</p>
+<p>これでコンパイル通ったので、実行確認のためASP.NET Core Web Application(.NET Core)テンプレートから新規プロジェクトを作成。ASP.NET Core的なテンプレートはもちろんEmptyで。Startupに以下のを書いて</p>
+<pre><code class="language-csharp">using LightNode;
+using LightNode.Server;
+
+public class Startup
+{
+    public void Configure(IApplicationBuilder app, IHostingEnvironment env, ILoggerFactory loggerFactory)
+    {
+        app.UseLightNode(typeof(Startup));
+    }
+}
+
+public class Toriaezu : LightNodeContract
+{
+    public string Echo(string x)
+    {
+        return x;
+    }
+}
+</code></pre>
+<p><code>http://localhost:15944/Toriaezu/Echo?x=hoge</code> にアクセスでhogeが出力される。おー、ちゃんとできてますね！当たり前っちゃあ当たり前でしょうけれど、あまりに意外にすんなり動いたので普通に感動した。いやあ、いいじゃんASP.NET Core。</p>
+<h2>Swagger Included</h2>
+<p>LightNode 1の時は<a href="http://swagger.io/">Swagger</a>は別添えだったんですが、今回はとりあえず一緒に突っ込んじゃいました。JSON.NET使ったJSON出力とかも同梱です（というかデフォルトがそれになってます）。まぁSwaggerに関してはDependencyが増えるわけでもないしいいじゃんといえばいいじゃん、なので。いいかな、と。LightNodeのSwagger統合はビュー(HTMLとかCSSとか画像とか）がDLLに埋め込んでやってたんですが、そうしたリソースを.NET Coreで埋め込むにはどうすればいいのか。今まではPropertiesで埋めてったんですが、.NET Coreではproject.jsonに書くのが正解のようですねー。</p>
+<pre><code class="language-json">&quot;buildOptions&quot;: {
+        &quot;embed&quot;: [
+            &quot;Swagger/SwaggerUI/**&quot;
+        ]
+}
+</code></pre>
+<p>buildOptions.embedで指定できるようで、ああ、なるほど、これはこれで知ってれば凄く楽なので、全然良いですね。良いです。いいじゃん.NET Core。</p>
+<p>というわけでサクッとSwagger統合も果たせた。</p>
+<pre><code class="language-csharp">public class Startup
+{
+    public void Configure(IApplicationBuilder app, IHostingEnvironment env, ILoggerFactory loggerFactory)
+    {
+        app.Map(&quot;/api&quot;, builder =&gt;
+        {
+            builder.UseLightNode(typeof(Startup));
+        });
+
+        app.Map(&quot;/swagger&quot;, builder =&gt;
+        {
+            var xmlName = &quot;AspNetCoreSample.xml&quot;;
+            var xmlPath = Path.Combine(Path.GetDirectoryName(Assembly.GetEntryAssembly().Location), xmlName);
+
+            builder.UseLightNodeSwagger(new LightNode.Swagger.SwaggerOptions(&quot;AspNetCoreSample&quot;, &quot;/api&quot;)
+            {
+                XmlDocumentPath = xmlPath,
+                IsEmitEnumAsString = true
+            });
+        });
+    }
+}
+</code></pre>
+<p>うーん、全然いけますね、じゃあ次行こう、次。</p>
+<h2>Glimpse not Included</h2>
+<p>LightNodeのウリはSwagger統合と<a href="http://getglimpse.com/">Glimpse</a>統合、特にGlimpseへの診断情報表示は力を入れていて(Glimpseへのハックも含めて）他にここまでやってるフレームワークはないほどでした。ので、当然ASP.NET Coreでもやりたいわけですが、んー、そもそもGlimpseがまだASP.NET Coreに本対応してない……。2.0 Betaで一応対応してるということで、あるだけマシか？と思いきや、かなり古いもので全然動かない。というかGitHubでの開発も(1.x系も2.x系も)なんかもうほとんど動いてない……。<a href="http://blog.getglimpse.com/2015/07/14/glimpse-and-microsoft-join-forces/">メイン開発者2名がMicrosoftに転職</a>ということで、ASP.NET Core対応含めてよりアクティブになるのかなー、とか思ってたら、まさかの大失速……。多分、Microsoft内では別のことやっていて、そっちが忙しくて以前よりもなお作業できなくなってるんでしょうね。しかし、うーん、残念だなあ。</p>
+<p>ASP.NET Coreに移れない/移りたくない理由があるとしたら、このGlimpseが全然対応してないってことでしょうかねえ。Glimpse自体はほんと素晴らしいので、なんとか再生してくれればいいのですけれど。</p>
+<h2>感想</h2>
+<p>.NET CoreにせよASP.NET Coreにせよ、結構コマンド操作がフィーチャーされてて、ゆとりな私には辛いものがあるんですが、さすがに1.0、普通に書いてる限りは、Visual Studio使ってる限りは特にコマンドの必要性もなく、それなりに快適に書けますね。安定してねえー、とか不満に思うことも全然ないので、もう普通に良さそう。いや、思ってたよりも全然いい感じだった。</p>
+<p>さて、じゃあASP.NET CoreでもLightNode使おうぜ！になるかというと、うーん、とりあえずまずは普通にASP.NET Core MVCでいいでしょう（笑）。時代がねー、ちょっと違いますからね。LightNodeも3年前ですから。まぁ、でも設計思想とか全然古くなってないというかむしろASP.NET Core MVCがようやく追いついてきたかな、ぐらいの勢いだとは思ってます！例えば<a href="https://docs.asp.net/en/latest/mvc/controllers/filters.html">ASP.NET Core MVCのFilter</a>は完全にLightNodeのフィルターと一緒ですからね。</p>
+<pre><code class="language-csharp">// ASP.NET Core MVC
+public class SampleAsyncActionFilter : IAsyncActionFilter
+{
+    public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
+    {
+        // do something before the action executes
+        await next();
+        // do something after the action executes
+    }
+}
+
+// LightNode
+public class SampleFilterAttribute : LightNodeFilterAttribute
+{
+    public override async Task Invoke(OperationContext operationContext, Func&lt;Task&gt; next)
+    {
+        // do something before the action executes
+        await next();
+        // do something after the action executes
+    }
+}
+</code></pre>
+<p><a href="https://docs.asp.net/en/latest/mvc/controllers/filters.html#filters-vs-middleware">Filters vs. Middleware</a>の話なんかも、それは3年前に全部考えきって実装し実践してますから(ﾎｼﾞﾎｼﾞ。という話なんで、まぁ全然LightNode 2もいいじゃないでしょうか。LightNodeは他に、密接に統合されたクライアント自動生成などもありますしね。かわりにMVC + Web API的な、Razorのビューを返すコントローラーとWeb APIコントローラーとの統合、みたいなのができてないのは痛み。ここ馴染ませられないのは普通に不便だということを最近良く感じてるので、ASP.NET Core MVCいいですね。いいですね。</p>
+<p>OWINベースで書いたものの移行はそこそこすんなり行けるだろうなあ、という感触はなんとなく掴めた気がします。逆に、やっぱASP.NET MVC 5あたりからの移行は厳しそう。厳しいでしょう。どうするんでしょうね、どうしようかな、参りましたね……。</p>
+<p>ともあれせっかくの新しい.NETの幕開けなので、もう少しポジティブに情報掴んで行こうかなー、という気にはなれたのでめでたしめでたし。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

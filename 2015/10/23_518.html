@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - 同期（風）コードと対比させたUnity+UniRxで非同期を扱う場合のパターン集</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2015/1023_518.html">同期（風）コードと対比させたUnity+UniRxで非同期を扱う場合のパターン集</a></h1>
+<ul class="date"><li>2015-10-23</li></ul>
+<div class="entry_body"><p><a href="https://github.com/neuecc/UniRx/">UniRx</a>のGitHubのStar数が500行きました！</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/10682950/165b9eea-7977-11e5-87ec-9b98269e912a.png" alt="image" /></p>
+<p>今のところGitHub上での<a href="https://github.com/search?l=C%23&amp;o=desc&amp;q=Unity&amp;s=stars&amp;type=Repositories&amp;utf8=%E2%9C%93">Unity + C#</a>でスター順の検索だと、世界5位です。おおー。更に上を狙いたいところですね。最近はちょっと更新が滞っていますが、ネタはあるのでより完成度を高めたい。(滞った理由は、<a href="http://neue.cc/2015/09/29_517.html">PhotonWire</a>とか色々他のところに手を出していたため……)</p>
+<p>さて、本題。イベント結合に使う際はあてはまりませんが、Rx(<a href="https://github.com/neuecc/UniRx/">UniRx</a>)を非同期（長さ1のIOservableシーケンス)として扱う場合、それなりに癖があります。とはいえ、基本的には同期（或いはyield return)で書いていた際と、1:1で対比できるパターン化した形で概ね対応できるので、そのためのチートシートを考えてみました。コード例はC# 5.0のasync/awaitで出しますが、同期コード or IEnumeratorと同じように思ってもらえればいいです。例えば</p>
+<pre><code class="language-csharp">public void Sync()
+{
+    /* before action */
+    Method();
+    /* after action */
+}
+
+public IEnumerator IEnumerator()
+{
+    /* before action */
+    yield return StartCoroutine(Method());
+    /* after action */
+}
+
+public async Task Task()
+{
+    /* before action */
+    await MethodAsync();
+    /* after action */
+}
+</code></pre>
+<p>みたいな感じです、awaitに馴染みのない人も、なんとなくイメージしながら眺めてみてもらえると嬉しいです。</p>
+<h2>非同期汚染</h2>
+<p>コード例の前に非同期汚染、或いは非同期の伝搬について。まぁ、あんまし汚染という言い方は好きじゃないのですが、基本的に非同期、つまりTaskでもFutureでもPromiseでもIObservableでも、は、下層から上層まで伝搬していきます。メソッドが非同期であるなら戻り値はIObservableであり、そのIObservableを呼ぶメソッドもまた自然と非同期でなければならないので、IObservableになる、と。何故非同期の連鎖でなければならないのか。消費(Subscribe)してしまうと、その瞬間Fire and Forgetになってしまい、戻りを待ったりキャンセルしたりなどの別の操作が行えなくなってしまうからです。別にFire and Forgetしたければ、呼び元がそれを選択(Subscribeして放置)すればいいわけで、呼ばれる側が決定することではない。</p>
+<p>もちろん、最終的にはどこかの層で消費(Subscribe)しなければならないので、そこで伝搬は止まるのですけれど、それは、基本的には上層であればあるほどよいということですね。どこが上層やねんって話はあるかもしれませんが、ユーザーインタラクションに近かったり、MonoBehaviourのイベント層に近かったり、あたりがそうですかねー。あとは、ごく一部でしか使わないんだ！という確固たる思いがあれば、早い段階でSubscribeして伝搬を止めるのも策ではあります、その辺はケースバイケースで。</p>
+<p>非同期の伝搬に都合の良いメソッドが現状のUniRxには足りてません。実は！というわけで、次期バージョンではForEachAsyncというものを足したいのですが、それまでは以下のものをコピペって代用してください。挙動的にはシーケンスを消費して長さ1のIObservable[Unit]を返すもので、元シーケンスが非同期(長さ1)ならDoやSelectと、概ね一緒です。</p>
+<pre><code class="language-csharp">// 次期バージョンに入るので、それまでの代用ということで。
+// 元シーケンスが非同期なら .Select(x =&gt; { /* action(); */ return Unit.Default; }) とほぼ同様
+namespace UniRx
+{
+    public static class UniRxExtensions
+    {
+        public static IObservable&lt;Unit&gt; ForEachAsync&lt;T&gt;(this IObservable&lt;T&gt; source, Action&lt;T&gt; onNext)
+        {
+            return Observable.Create&lt;Unit&gt;(observer =&gt;
+            {
+                return source.Subscribe(x =&gt;
+                {
+                    try
+                    {
+                        onNext(x);
+                    }
+                    catch (Exception ex)
+                    {
+                        observer.OnError(ex);
+                        return;
+                    }
+                }, observer.OnError, () =&gt;
+                {
+                    observer.OnNext(Unit.Default);
+                    observer.OnCompleted();
+                });
+            });
+        }
+    }
+}
+</code></pre>
+<p>また、副作用（外の変数への代入など）に関しては、あまり気にしないほうが吉です。いや、Rxのパイプラインに押し込めたほうが美しくはあるんですが、それがオブジェクトであるなら、副作用かけてフィールド変数を変えたり、ReactivePropertyに結果を伝えたりとかは、あって然りかな、と。考える際には「もしこれが同期コードだったらどうなのか」を意識したほうがいいかもしれません、同期コードで自然なら、別にRxでそれを行っても、構わないのです。とはいえ、以下に紹介するコードは全部、副作用大前提みたいな説明なので、それはそれで若干の狂気でもありますが、その辺は慣れてきてからでよいかと。</p>
+<h2>戻り値のない場合</h2>
+<pre><code class="language-csharp">public async Task Demo1_TaskAsync()
+{
+    /* before action */
+    var x = await Task.Factory.StartNew(() =&gt; 100);
+    /* after action */
+}
+
+public IObservable&lt;Unit&gt; Demo1_IOAsync()
+{
+    /* before action */
+    return Observable.Start(() =&gt; 100)
+        .ForEachAsync(_ =&gt;
+        {
+            /* after action */
+        });
+}
+</code></pre>
+<p>メソッドに戻り値がない場合は、awaitの位置にForEachAsyncで、その中にactionを書く形になります。RxにおいてはIObservable[Unit]を戻り値のないことの表明として使います。</p>
+<h2>内部に複数の非同期がある場合</h2>
+<pre><code class="language-csharp">public async Task Demo2_TaskAsync()
+{
+    /* before action */
+    var x = await Task.Factory.StartNew(() =&gt; 100);
+    /* after action 1 */
+    var y = await Task.Factory.StartNew(() =&gt; 200);
+    /* after action 2 */
+}
+
+public IObservable&lt;Unit&gt; Demo2_IO_1Async()
+{
+    /* before action */
+    return Observable.Start(() =&gt; 100)
+        .SelectMany(x =&gt;
+        {
+            /* after action 1 */
+
+            return Observable.Start(() =&gt; 200);
+        })
+        .ForEachAsync(y =&gt;
+        {
+            /* after action 2 */
+        });
+}
+</code></pre>
+<p>awaitの位置にSelectManyを置くことで繋げることができます。最後の消費だけForEachAsyncで。</p>
+<h2>パイプライン中に複数の値を伝搬したい場合</h2>
+<pre><code class="language-csharp">public IObservable&lt;Unit&gt; Demo2_IO_2Async()
+{
+    /* before action */
+    return Observable.Start(() =&gt; 100)
+        .SelectMany(x =&gt;
+        {
+            /* after action 1 */
+            return Observable.Start(() =&gt; 200);
+        }, (x, y) =&gt; new { x, y }) // transport argument to next chain
+        .ForEachAsync(o =&gt;
+        {
+            /* after action 2 */
+            // { o.x, o,y } 
+        });
+}
+
+public IObservable&lt;Unit&gt; Demo2_IO_2_2Async()
+{
+    /* before action */
+    return Observable.Start(() =&gt; 100)
+        .SelectMany(x =&gt;
+        {
+            /* after action 1 */
+            var z = SyncMethod();
+            return Observable.Start(() =&gt; 200).Select(y =&gt; new { x, y, z });
+        })
+        .ForEachAsync(o =&gt;
+        {
+            /* after action 2 */
+            // { o.x, o,y, o.z } 
+        });
+}
+</code></pre>
+<p>同期コードでは、そのスコープ中の全ての値が使えるわけですが、Rxのメソッドチェーンでは次のパイプラインに送り込める値は一つしかありません。というわけで、匿名型（もしくはUniRx.Tuple）を使って、次のパイプラインへは値をまとめて上げる必要があります。SelectManyには第二引数があり、それにより前の値と次の値をまとめることができます。また、SelectMany内部で作った値を送り込みたい場合は、戻り値のところでSelectを使ってスコープ内でキャプチャして返してあげればいいでしょう。(匿名型、Tupleともにclassなので、気になる場合はstructの入れ物を用意してもいいかもしれない、何か箱を作って運搬しなきゃいけないのは残念ながら仕様です)</p>
+<h2>非同期が連鎖する場合</h2>
+<pre><code class="language-csharp">public IObservable&lt;Unit&gt; Demo2_IO_2_MoreChainAsync()
+{
+    /* before action */
+    return Observable.Start(() =&gt; 100)
+        .SelectMany(x =&gt;
+        {
+            /* after action 1 */
+            return Observable.Start(() =&gt; 200);
+        }, (x, y) =&gt; new { x, y })
+        .SelectMany(o =&gt;
+        {
+            /* after action 2 */
+            return Observable.Start(() =&gt; 300);
+        }, (o, z) =&gt; new { o.x, o.y, z }) // re-construct self
+        .ForEachAsync(o =&gt;
+        {
+            /* after action 3 */
+            // { o.x, o,y, o.z } 
+        });
+}
+</code></pre>
+<p>SelectManyの連打になります。また、伝搬する値は自分で分解して付け直してあげる必要があります、これは面倒くさいですね！この辺はクエリ構文を使った場合、Transparent Identifierという仕組みで自動的にコンパイラが行うのですが(<a href="http://www.slideshare.net/neuecc/an-internal-of-linq-to-objects-29200657">An Internal of LINQ to Objects</a>の35P、Rxでクエリ構文は結構頻繁にクエリ構文の範疇を逸脱するのと、副作用をパイプライン途中に書けないためあまり使い勝手は良くないので、面倒くさいながら手作業再構築を薦めます。</p>
+<h2>戻り値を返す場合</h2>
+<pre><code class="language-csharp">public async Task&lt;int&gt; Demo3_TaskAsync()
+{
+    /* before action */
+    var x = await Task.Factory.StartNew(() =&gt; 100);
+    /* after action */
+    return x; // return value
+}
+
+public IObservable&lt;int&gt; Demo3_IOAsync()
+{
+    /* before action */
+    return Observable.Start(() =&gt; 100)
+        .Select(x =&gt;
+        {
+            /* after action */
+            return x; // return value
+        });
+}
+</code></pre>
+<p>ForEachAsyncではなく、Selectを使っていきましょう。戻り値の型が同一で副作用だけ起こしたいならDoでも構わないのですが、まぁどっちでもいいです。また、awaitが複数になる場合は、SelectManyになります。そのうえでSelectManyのままreturnするか、最後に再びSelect(もしくはDo)を使うかどうかは、状況次第、かな。</p>
+<h2>例外をキャッチ</h2>
+<pre><code class="language-csharp">public async Task Demo4_TaskAsync()
+{
+    /* before action */
+    try
+    {
+        var x = await Task.Factory.StartNew(() =&gt; 100);
+    }
+    catch (Exception ex)
+    {
+        /* onerror action */
+        throw;
+    }
+
+    /* after action */
+}
+
+public IObservable&lt;Unit&gt; Demo4_IOAsync()
+{
+    /* before action */
+    return Observable.Start(() =&gt; 100)
+        .Catch((Exception ex) =&gt;
+        {
+            /* onerror action */
+            return Observable.Throw&lt;int&gt;(ex);
+        })
+        .ForEachAsync(x =&gt;
+        {
+            /* after action */
+        });
+}
+</code></pre>
+<p>これはCatchで賄えます。なお、Catchメソッドを使う際は、Catch&lt;T&gt;で例外の型を指定するよりも、ラムダ式の引数側で例外の型を書いたほうが書きやすいです（そうしたほうが型推論の関係上、ソースシーケンスの型を書かなくて済むため）。Catchの戻り値では再スローをObservable.Throw、握りつぶしをObservable.Return/Emptyで表現可能です。</p>
+<h2>Finally</h2>
+<pre><code class="language-csharp">public async Task Demo5_TaskAsync()
+{
+    /* before action(1) */
+    try
+    {
+        var x = await Task.Factory.StartNew(() =&gt; 100);
+    }
+    finally
+    {
+        /* finally action(2) */
+    }
+
+    /* after action(3) */
+}
+
+// not equivant try-finally
+public IObservable&lt;Unit&gt; Demo5_IO_PseudoAsync()
+{
+    /* before action(1) */
+    return Observable.Start(() =&gt; 100)
+        .Finally(() =&gt;
+        {
+            /* finally action(3) */
+        })
+        .ForEachAsync(x =&gt;
+        {
+            /* after action(2) */
+        });
+}
+
+public IObservable&lt;Unit&gt; Demo5_IO_CorrectLightweightButIsNotDryAsync()
+{
+    /* before action(1) */
+    return Observable.Start(() =&gt; 100)
+        .Do(_ =&gt; { /* finally action(2) */}, _ =&gt; {/* same finally action(2) */})
+        .ForEachAsync(x =&gt;
+        {
+            /* after action(3) */
+        });
+}
+</code></pre>
+<p>Finallyに関しては、実は同じに扱える表現がありません!RxのFinallyはパイプラインの終了時の実行なので、実行順序がベタtry-finallyで書いた時と異なるんですよねえ。いちおう、DoでOnNextとOnErrorのところに同じコードを書くことでそれっぽい表現は可能ではありますが……。</p>
+<h2>並列処理</h2>
+<pre><code class="language-csharp">public async Task ParallelAsync()
+{
+    var a = Task.Factory.StartNew(() =&gt; 100);
+    var b = Task.Factory.StartNew(() =&gt; 200);
+    var c = Task.Factory.StartNew(() =&gt; 300);
+    
+    var xs = await Task.WhenAll(a, b, c);
+    /* after action */
+}
+
+
+public IObservable&lt;Unit&gt; ParallelIO()
+{
+    var a = Observable.Start(() =&gt; 100);
+    var b = Observable.Start(() =&gt; 200);
+    var c = Observable.Start(() =&gt; 300);
+    
+    return Observable.WhenAll(a, b, c)
+        .ForEachAsync(xs =&gt;
+        {
+            /* after action */
+        });
+}
+</code></pre>
+<p>並列処理は非同期固有の実行ですが、WhenAllでドバッとまとめるというのが基本方針。</p>
+<h2>タイムアウト</h2>
+<pre><code class="language-csharp">public async Task TimeoutAsync(TimeSpan timeout)
+{
+    var task = Task.Factory.StartNew(() =&gt; 100);    
+    var delay = Task.Delay(timeout);
+    if (await Task.WhenAny(task, delay) == delay)
+    {
+        /* timeout action */
+        throw new TimeoutException();
+    }
+    /* after action */
+}
+
+
+public IObservable&lt;Unit&gt; TimeoutIO(TimeSpan timeout)
+{
+    return Observable.Start(() =&gt; 100)
+        .Timeout(timeout)
+        .Catch((TimeoutException ex) =&gt;
+        {
+            /* timeout action */
+            return Observable.Throw&lt;int&gt;(ex);
+        })
+        .ForEachAsync(x =&gt;
+        {
+            /* after action */
+        });
+}
+</code></pre>
+<p>タイマウトも非同期固有の処理。async/awaitの場合、特有のイディオムがあります。UniRxの場合はTimeoutだけでOK。特に例外時に処理するものもないなら、Catchは不要です。</p>
+<h2>IEnumeratorに戻す</h2>
+<pre><code class="language-csharp">public IObservable&lt;Unit&gt; Demo6_IE()
+{
+    /* before action(1) */
+    return Observable.FromCoroutine(() =&gt; Demo6_IECore());
+}
+
+IEnumerator Demo6_IECore()
+{
+    // 戻り値の不要な場合
+    yield return Observable.Start(() =&gt; 100).StartAsCoroutine();
+    
+    int ret;
+    yield return Observable.Start(() =&gt; 100).StartAsCoroutine(x =&gt; ret = x);
+}
+</code></pre>
+<p>SelectManyの連打が辛い場合、ふつーのコルーチンに戻して、更にIObservableでラップするという手段も取れます。まあ、この辺は複雑さ度合いで自由に！</p>
+<p>だったらもはや最初から全部コルーチンでええやん！Rxでメソッドチェーン複雑だし見た目だけならコルーチン最強にスッキリじゃん！というのは正しい。正しいんですが、例外処理・戻り値・合成可能性・並列処理・マルチスレッド、などといった要素が欠落してるので、コルーチンはコルーチンで苦しいところが多いというか実際のところシンプルなケース以外では相当苦しいので、基本的にはRxのほうが有利です。</p>
+<h2>async/awaitは必要？</h2>
+<p>みたとーり、必要です。どう考えても。さすがにSelectManyの連打を同期コードほどスッキリと言い張るのは無理があるでしょう。とはいえまぁ、書いて書けないこともないので、今あるツールの中でベストを尽くすのまた良きかな、とは思いますねー。というわけで良き非同期生活を！UniRxでイベントを扱う際のパターン集は、またそのうちにでも！</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

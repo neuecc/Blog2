@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - .NET Reactive Framework メソッド探訪第一回:FromEvent</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2009/0904_197.html">.NET Reactive Framework メソッド探訪第一回:FromEvent</a></h1>
+<ul class="date"><li>2009-09-04</li></ul>
+<div class="entry_body"><p>まず、リアクティブフレームワークとは何ぞや、ということなのですが今のところ<a href="http://www.infoq.com/jp/news/2009/07/Reactive-Framework-LINQ-Events">InfoQ: .NETリアクティブフレームワーク（Rx）がLINQ to Eventsを可能にする</a>の記事ぐらいしか情報はありません。.NET 4.0に含まれる(かもしれない)ということ、現在のところSilverlight Toolkitの単体テストのところにこっそりと配置されていること。それだけです。紹介も、記事中にもリンクされていますが<a href="http://themechanicalbride.blogspot.com/2009/07/introducing-rx-linq-to-events.html">unfold: Introducing Rx (Linq to Events)</a>の一連の記事ぐらいしかありません。これの前文が中々に素敵です。</p>
+<blockquote>
+<p>Buried deep in the bin folder of the Silverlight Toolkit Unit Tests is a hidden gem: The Rx Framework (System.Reactive.dll).  If you glanced quickly you’d miss it altogether but it’s one of the most exciting additions to the .NET framework since Linq.</p>
+</blockquote>
+<p>今のところ微妙にパッとしない(Parallelは簡単に使えるがゆえにインパクトが足らない)4.0の隠し玉はコレですね、間違いない。軽く触ってみたのですが、中々に感動的。Linq to Objects好きならば間違いなく琴線に触れます。C#3.0がコレクションの操作をforeachからLinqに変えてしまったように、.NET4.0はイベントもLinqに変わる。まさにLinq to Everywhere! Functional Reactive Programming!</p>
+<h2>How to use</h2>
+<p><a href="http://www.codeplex.com/Silverlight">Silverlight Toolkit</a>をダウンロードしてSource/Binaries/System.Reactive.dllを頂けば完了。ただし、これはそのままだとSilverlightのプロジェクトでしか動作しないので、その他ので利用したい場合は<a href="http://evain.net/blog/articles/2009/07/30/rebasing-system-reactive-to-the-net-clr">ここの記事</a>に示されているように、githubに公開されているコードを実行(Cecilのdllが必要、記事文中にリンクされています)して変換する必要があります。今回はとりあえず、Silverlightで試してみたいと思います。こちらはこちらで、<a href="http://www.microsoft.com/downloads/details.aspx?displaylang=ja&amp;FamilyID=9442b0f2-7465-417a-88f3-5e7b5409e9dd">Silverlight 3 Tools</a>のダウンロードが必要ですけれど。</p>
+<h2>実例</h2>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="300px">
+  <param name="source" value="http://neue.cc/wp-content/uploads/silverlight/SilverlightApplication4.xap"/>
+  <param name="background" value="white" />
+  <param name="minRuntimeVersion" value="3.0.40624.0" />
+  <param name="autoUpgrade" value="true" />
+  <a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=3.0.40624.0" style="text-decoration:none">
+      <img src="http://go.microsoft.com/fwlink/?LinkId=108181" alt="Microsoft Silverlight を入手" style="border-style:none"/>
+  </a>
+</object>
+</p>
+<p>マウスの動きに円が追随する、という単純なものをSilverlightで作ってみました。移動は完全に追随するのではなく、座標が15で割り切れる位置の場合のみ移動としました。スナップすることをイメージしたつもりなのですが、動きがガクガクです。これは、マウス移動に完全に追随して全ての座標でイベントが発生するわけではない = 15で割り切れる座標を通過してもイベントが発生しない場合がある = 動きがガクガク。というわけで、スナップしたい場合はWhereで間引くのではなく、Selectで近傍座標に寄せるべきです、が、いやまあ、例なので……。</p>
+<pre><code class="language-csharp">// XAMLではなく全部コード上に書いたのは両方を張るのが面倒だから……
+// 内容はCanvasとEllipseを配置するというもので、本筋とは関係ありません
+InitializeComponent();
+var canvas = new Canvas { Background = new SolidColorBrush(new Color {A=255, R = 100, G = 100, B = 100 }) };
+var ellipse = new Ellipse { Height = 30, Width = 30, Fill = new SolidColorBrush(Colors.Orange) };
+canvas.Children.Add(ellipse);
+this.Content = canvas;
+
+// FromEventはイベント発火がトリガとなってLinq発動
+// 後段に送られるのはEvent&lt;T&gt;というもので、
+// SenderとEventArgsという読み取り専用プロパティを持つクラス
+var canvasMove = Observable.FromEvent&lt;MouseEventArgs&gt;(canvas, &quot;MouseMove&quot;)
+    .Select(e =&gt; e.EventArgs.GetPosition(canvas))
+    .Where(p =&gt; (p.X % 15 == 0) || (p.Y % 15 == 0))
+    .Subscribe(p =&gt;
+    {
+        ellipse.SetValue(Canvas.LeftProperty, p.X - ellipse.Width / 2);
+        ellipse.SetValue(Canvas.TopProperty, p.Y - ellipse.Height / 2);
+    });
+
+// Subscribeの戻り値の型はIDisposable
+// Disposeを呼ぶと登録したイベントをデタッチすることが出来る
+// デタッチしないなら取得する必要は特にはない
+// canvasMove.Dispose();
+</code></pre>
+<p>MouseMoveでイベントが発火する度にLinqを通る。なるほど、イベントがリストに、見える。イベントを無限リスト生成として捉えることで、イベントに対してLinq操作が可能になった。ObserverパターンとIteratorパターンは同じだったんだよ！なんだってー！みたいなノリがある。もう少し丁寧に見ると、Observable.FromEventでイベントをPush型の無限リストに変換。戻り値はIObservable&lt;T&gt;。イベント発火時に後段に流れてくるのはEvent&lt;T&gt;。これは通常のイベント登録時に使うsenderとeventArgsをラップしただけの単純なもの。あとはIObservableに用意されているメソッド(Select, Where, TakeWhileなどお馴染みのものから、Delay, WaitUntilなどイベント用の目新しいメソッドなど多数)を繋げて、最後にSubscribe。このSubscribeは、つまり通常のイベント登録時のメソッド本文の役割を果たす。Linqで言ったらForEachのようなもの。Subscribeのオーバーロードも幾つかあるのですが、それはまた後日。</p>
+<pre><code class="language-csharp">// つまるところ、以下のコードと同じだったりはする
+// ただ、IObservable&lt;T&gt;は通常のイベント登録では無理な複雑な操作が簡単、
+// そして何よりも、このような単純なコードでもそんなに複雑になっていない！
+canvas.MouseMove += (sender, e) =&gt;
+{
+    var pos = e.GetPosition(canvas); // Select
+    if (!(pos.X % 15 == 0 || pos.Y % 15 == 0)) return; // Where
+    ellipse.SetValue(Canvas.LeftProperty, pos.X - ellipse.Width / 2);
+    ellipse.SetValue(Canvas.TopProperty, pos.Y - ellipse.Height / 2);
+};
+</code></pre>
+<p>通常のイベント登録と対比してみると分かりやすいかしらん。FromEventではMouseEventArgsという型を明示する必要があるのがカッタルイ。推論は偉大。が、しかし、IObservableが複雑な操作が可能なのに対し、イベントに追加では直球なものしか書けない。また、複雑な操作が可能なわりには、FromEventは驚くほどシンプルに書ける。シンプルな操作でも(記述するのに)重たくない、というのは特筆すべきことじゃあないでしょうか。</p>
+<pre><code class="language-csharp">// stringを避けたこういう登録方法もあるけれど、面倒なうえに警告出る
+Observable.FromEvent((EventHandler&lt;MouseEventArgs&gt; h) =&gt; new MouseEventHandler(h),
+        h =&gt; canvas.MouseMove += h, // addHandler
+        h =&gt; canvas.MouseMove -= h) // removeHandler
+    .Subscribe(e =&gt; Debug.WriteLine(e.EventArgs.GetPosition(canvas)));
+</code></pre>
+<p>ところで、イベント名をstringで書くのはどうよ、ていうかJavaScriptのaddEventHandlerみたいで嫌だよね？ね？リファクタリング効かないわ、IntelliSenseも動かないわでロクなことがない。というわけで、FromEventのオーバーロードを見ると、ちゃんと普通に登録する方法も用意されてはいる。一応、用意、されては、いる。が、しかし、あんまりだー。あんまりすぎるー。流れてくるEventhandler&lt;MouseEventArgs&gt;をMouseMoveが受け取ってくれないので、第一引数でMouseEventHandlerに変換する(ところで警告が消せないのですが、警告無しで処理する方法ってあるのかしらん)。あとは、addとremoveの登録。長ったらすぎてこれはダメぽ。確かに、こんなんなら、stringでいいです……。</p>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="300px">
+  <param name="source" value="http://neue.cc/wp-content/uploads/silverlight/SilverlightApplication3.xap"/>
+  <param name="background" value="white" />
+  <param name="minRuntimeVersion" value="3.0.40624.0" />
+  <param name="autoUpgrade" value="true" />
+  <a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=3.0.40624.0" style="text-decoration:none">
+      <img src="http://go.microsoft.com/fwlink/?LinkId=108181" alt="Microsoft Silverlight を入手" style="border-style:none"/>
+  </a>
+</object>
+</p>
+<pre><code class="language-csharp">// 普段あまり書かないMouseEventArgsとかいう型定義は書きにくいし
+// メソッド名もstringで書くのはミスが出がち、ということで
+// 拡張メソッドでイベント取り出し用のメソッドを予め作っておくと良い
+public static IObservable&lt;Event&lt;MouseEventArgs&gt;&gt; GetMouseMove(this UIElement elem)
+{
+    return Observable.FromEvent&lt;MouseEventArgs&gt;(elem, &quot;MouseMove&quot;);
+}
+
+// マウスの軌跡を1秒後に描画します
+canvas.GetMouseMove()
+    .Select(e =&gt; e.EventArgs.GetPosition(canvas))
+    .Delay(1000)
+    .Subscribe(p =&gt;Dispatcher.BeginInvoke(()=&gt;
+    {
+        ellipse.SetValue(Canvas.LeftProperty, p.X - ellipse.Width / 2);
+        ellipse.SetValue(Canvas.TopProperty, p.Y - ellipse.Height / 2);
+    }));
+</code></pre>
+<p>汚い部分は隔離！ということで、拡張メソッドに退避してやると、美しく書ける。いやまあ、この辺は全部<a href="http://themechanicalbride.blogspot.com/2009/07/developing-with-rx-part-1-extension.html">unfold: The Joy of Rx: Extension Events</a>に書いてあることなのですけど。んで、デモ的にもう少し面白げがあったほうがいいかな、と思ったのでDelayを足してみました。1秒後にマウス移動の軌跡を描画します。グルグルーっとマウス動かして止めてみてください。スムーズ、とは言い難いですね、しょんぼり。記述も、Delayを足すだけ。と言いたかったんですがBeginInvokeかあ、これどーにかなる方法ないかなあ。</p>
+<h2>次回</h2>
+<p>全10回ぐらいで、全部のメソッドを紹介するつもりです。私が理解できればの話ですが。ちょこちょこと実例的なものも交えていきたいと思います。私が使いこなせればの話ですが。というわけで、次回はSubscribeのオーバーロードの紹介にしたいと思います。Reactive Frameworkならではの魅力、に関してはもう少し先になってしまいそう。少し飛ばして、非同期連結の話なんかを先に持ってきた方が良いかなあ。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

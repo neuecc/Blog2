@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - Rxでのイベント変換まとめ - FromEvent vs FromEventPattern</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2011/0706_332.html">Rxでのイベント変換まとめ - FromEvent vs FromEventPattern</a></h1>
+<ul class="date"><li>2011-07-06</li></ul>
+<div class="entry_body"><p><a href="http://msdn.microsoft.com/en-us/data/gg577609">Reactive Extensions</a>の機能の一つに.NETにおけるイベントをIObservable&lt;T&gt;に変換する、というものがあります。<a href="http://msdn.microsoft.com/en-us/library/hh242978(v=VS.103).aspx">Bridging with Existing .NET Events</a>。そして、そのためのメソッドがFromEventでした。ところが最近のRxでは二つ、FromEventとFromEventPatternが用意されています。この差異は何なのでしょうか？</p>
+<p>結論としては、過去のRx(このサイトの古い記事や他のサイトの過去の記事などで触れられている)やWindows Phone 7でのFromEventはFromEventPatternに改名されました。後続にEventPatternという(object Sender, TEventArgs EventArgs)を持つ.NETのイベントの引数そのものを渡すものです。そして、空席になったFromEventに新しく追加されたFromEvent(紛らわしい！)は、EventArgsだけを送ります。それ以外の差異はありません。</p>
+<p>つまるところFromEventは FromEventPattern.Select(e =&gt; e.EventArgs) ということになります。なら、それでいいぢゃん、何も混乱を生む(WP7のFromEventがFromEventPatternである、というのは致命的よねえ)ことはないよ、とは思うのですが、パフォーマンスの問題でしょうかね。確かに、Senderは必要なく使うのはEventArgsだけの場合が多い。それなのに、毎回EventPatternを生成していたり、Selectというメソッド呼び出しが入るのは無駄です。</p>
+<p>そもそもインスタンスに対してFromEventで包むということは、クロージャでsenderは変数としていつでもどこでも使えてしまうのですよね、そもそも、そもそも。そういう意味でも送られてくるのはEventArgsだけでいいのであった。というわけで、基本的にはFromEventでいいと思います。</p>
+<h2>FromEventPatternについて</h2>
+<p>では、改めてFromEventPatternを復習します(WP7の人はFromEventで考えてください)。<a href="http://msdn.microsoft.com/en-us/library/hh229705(v=VS.103).aspx">Observable.FromEventPattern(TEventArgs) Method (Object, String) (System.Reactive.Linq)</a>にサンプルコードがあるのですけれどね。そうそう、MSDNのリファレンスには、一部のメソッド/一部のオーバーロードにはサンプルコードがあります。全部ではないのがミソです、見て回って発掘しましょう。まあ、というわけで、とりあえずそのFileSystemWatcherで。</p>
+<pre><code class="language-csharp">// FileSystemWatcherは指定フォルダを監視して、変化があった場合にイベントを通知します
+// 例えばCreatedイベントはファイルが作成されたらイベントが通知されます
+var fsw = new FileSystemWatcher(@&quot;C:\&quot;, &quot;*.*&quot;) { EnableRaisingEvents = true };
+
+// FromEventPatternその1、文字列でイベント名指定
+Observable.FromEventPattern&lt;FileSystemEventArgs&gt;(fsw, &quot;Created&quot;)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+
+// FromEventPatternその2、静的なイベントをイベント名指定(WP7にはない)
+Observable.FromEventPattern&lt;ConsoleCancelEventArgs&gt;(typeof(Console), &quot;CancelKeyPress&quot;)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.SpecialKey));
+</code></pre>
+<p>一番馴染み深いと思うのですが、文字列でイベント名を指定するものです。その2のほうはあまり見ないかもしれませんが、静的イベントに対しての指定も可能です。これら文字列指定によるメリットは、比較的シンプルであること。デメリットは、リフレクションを使うので若干遅い・スペルミスへの静的チェックが効かない・リファクタリングが効かない、といった、リフレクション系のデメリットそのものとなります。</p>
+<p>リフレクションしかないの？というと、勿論そんなことはありません。</p>
+<pre><code class="language-csharp">// FromEventPatternその3、EventHandlerに対する変換
+var current = AppDomain.CurrentDomain;
+Observable.FromEventPattern(h =&gt; current.ProcessExit += h, h =&gt; current.ProcessExit -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs));
+
+// FromEventPatternその4、EventHandler&lt;T&gt;に対する変換
+Observable.FromEventPattern&lt;ContractFailedEventArgs&gt;(
+        h =&gt; Contract.ContractFailed += h, h =&gt; Contract.ContractFailed -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.Message));
+
+// FromEventPatternその5、独自イベントハンドラに対する変換
+Observable.FromEventPattern&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; new FileSystemEventHandler(h),
+        h =&gt; fsw.Created += h,
+        h =&gt; fsw.Created -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+</code></pre>
+<p>イベントの登録と削除を行うためのラムダ式を渡してやります。その3とその4は比較的分かりやすいのではないでしょうか。その5の第一引数が謎いのですが、これはconversionです。C#の型システムの都合上、そのまんまだと独自イベントハンドラを処理出来ないので、型を変換してやる必要があるという定型句。</p>
+<p>数あるFromEventPatternのオーバーロードの中で、一番多く使うのはその5だと思います。何故なら、C#のイベントは独自イベントハンドラになっていることが多いから。はっきしいって、最低です。EventHandler&lt;T&gt;を使ってくれてさえいれば、こんな苦労はしなくて済むというのに。独自イベントハンドラは100害あって一利なし。え、WPFとか.NET標準がイベントハンドラは独自のものを使ってる？それは、WPFが悪い、.NET設計の黒歴史、悪しき伝統。</p>
+<p>それと、もはや独自デリゲートも最低です。FuncやActionを使いましょう。C#のデリゲートはメソッドの引数や戻り値が一致していようが、型が違ったら別のものとして扱われます。そのことによる不都合は、↑で見たように、あるんです。極力ジェネリックデリゲートを使いましょう。そうすれば、こんな腐った目に合わなくても済みます。</p>
+<p>ところで、その5は、もう少しだけ記述が短くなります。</p>
+<pre><code class="language-csharp">// FromEventPatternその5、第一引数別解、こう書くと短くて素敵
+Observable.FromEventPattern&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; h.Invoke,
+        h =&gt; fsw.Created += h,
+        h =&gt; fsw.Created -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+</code></pre>
+<p>h.Invoke。というのは、割とhそのものなわけですが、しかしInvokeと書くことで型が変換されます。この辺はコンパイラの都合上のマジックというか何というか。そういうものだと思えばいいのではかと。その5のスタイルで書くときは、この書き方をすると良いと思います。で、まだオーバーロードがあって</p>
+<pre><code class="language-csharp">// その6
+Observable.FromEventPattern&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; fsw.Created += h, h =&gt; fsw.Created -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+</code></pre>
+<p>conversionが不要で書けたりもします。一見素晴らしい、のですが、これ、中でなにやってるかというとconversionに相当するものをリフレクションで生成してるだけだったりして。そのため、なるべくconversionを使うオーバーロードのほうを使ったほうがよいでしょう。h =&gt; h.Invokeを書くだけですしね。このオーバーロードは紛らわしいだけで存在意義が不明すぎる。</p>
+<h2>FromEventについて</h2>
+<p>と、長々と見てきましたが、ではFromEventのほうも。</p>
+<pre><code class="language-csharp">// FromEvent
+Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; (sender, e) =&gt; h(e),
+        h =&gt; fsw.Created += h,
+        h =&gt; fsw.Created -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.FullPath));
+
+// FromEventPatternその5(比較用)
+Observable.FromEventPattern&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; (sender, e) =&gt; h(sender, e),
+        h =&gt; fsw.Created += h,
+        h =&gt; fsw.Created -= h)
+    .Select(e =&gt; e.EventArgs)
+    .Subscribe(e =&gt; Console.WriteLine(e.FullPath));
+</code></pre>
+<p>というわけで、FromEventPatternのその5に近いわけですが、conversionでEventArgsしか渡していない、という点が差異ですね。なので、後続にはsenderが伝わってこず、EventArgsしか通りません。まあ、senderは、↑の例ですとfswでどこでも使えるので、そもそも不要なわけで、これで良いかと思います。</p>
+<p>ところでFromEventも色々なオーバーロードがあるにはあるんですが、私の頭では存在意義が理解できなかったので無視します。挙動とかは理解したんですが、なんというか、存在する必要性、有効な利用法がさっぱり分からなかったのです……。まあ、多分、あんま意味ないと思うので気にしないでもいいかと。</p>
+<h2>拡張メソッドに退避させよう</h2>
+<p>FromEventにせよFromEventPatternにせよ、長いです。長い上に定型句です。なので、拡張メソッドに退避させると、スッキリします。例えば、今まで見てきたFileSystemWatcherだったら</p>
+<pre><code class="language-csharp">// .NETのFromEventなら IObservable&lt;TEventArgs&gt;
+// .NETのFromEventPatternなら IObservable&lt;EventPattern&lt;TEventArgs&gt;&gt;
+// WP7のFromEventなら IObservable&lt;IEvent&lt;TEventArgs&gt;&gt;
+// を返す拡張メソッド群を用意する。
+// 命名規則はイベント名AsObservableがIntelliSenseの順序的にお薦め
+public static class FileSystemWatcherExtensions
+{
+    public static IObservable&lt;FileSystemEventArgs&gt; CreatedAsObservable(this FileSystemWatcher watcher)
+    {
+        return Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; watcher.Created += h, h =&gt; watcher.Created -= h);
+    }
+
+    public static IObservable&lt;FileSystemEventArgs&gt; DeletedAsObservable(this FileSystemWatcher watcher)
+    {
+        return Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; watcher.Deleted += h, h =&gt; watcher.Deleted -= h);
+    }
+
+    public static IObservable&lt;RenamedEventArgs&gt; RenamedAsObservable(this FileSystemWatcher watcher)
+    {
+        return Observable.FromEvent&lt;RenamedEventHandler, RenamedEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; watcher.Renamed += h, h =&gt; watcher.Renamed -= h);
+    }
+
+    public static IObservable&lt;FileSystemEventArgs&gt; ChangedAsObservable(this FileSystemWatcher watcher)
+    {
+        return Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; watcher.Changed += h, h =&gt; watcher.Changed -= h);
+    }
+}
+</code></pre>
+<pre><code class="language-csharp">var fsw = new FileSystemWatcher(@&quot;C:\&quot;, &quot;*.*&quot;) { EnableRaisingEvents = true };
+
+// 例えば、ただ変更をロギングしたいだけなんだよ、という場合の結合
+// FromEventを外出ししていることによって、すっきり書ける
+Observable.Merge(
+        fsw.CreatedAsObservable(),
+        fsw.DeletedAsObservable(),
+        fsw.ChangedAsObservable(),
+        fsw.RenamedAsObservable())
+    .Subscribe(e =&gt; Console.WriteLine(e.ChangeType + &quot;:&quot; + e.Name));
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/fsw_intellisense.jpg">
+</p>
+<p>といった形です。また、普通に+-でのイベント以外のものへの登録も可能です。例えば</p>
+<pre><code class="language-csharp">// LayoutRootはWPFの一番外枠の&lt;Grid Name=&quot;LayoutRoot&quot;&gt;ということで。
+Observable.FromEvent&lt;MouseButtonEventHandler, MouseButtonEventArgs&gt;(
+        h =&gt; (sender, e) =&gt; h(e),
+        h =&gt; LayoutRoot.AddHandler(UIElement.MouseDownEvent, h),
+        h =&gt; LayoutRoot.RemoveHandler(UIElement.MouseDownEvent, h))
+    .Subscribe(e =&gt; Debug.WriteLine(e.ClickCount));
+</code></pre>
+<p>こんな形のものもObservable化が可能です。</p>
+<h2>イベントの解除</h2>
+<p>Subscribeの戻り値はIDisposableで、Disposeを呼ぶことでイベントが解除されます。</p>
+<pre><code class="language-csharp">// アタッチ
+var events = Observable.Merge(
+        fsw.CreatedAsObservable(),
+        fsw.DeletedAsObservable(),
+        fsw.ChangedAsObservable(),
+        fsw.RenamedAsObservable())
+    .Subscribe(e =&gt; Console.WriteLine(e.ChangeType + &quot;:&quot; + e.Name));
+
+// デタッチ(合成などをしていて、元ソースが複数ある場合も、すべて解除されます)
+events.Dispose();
+</code></pre>
+<p>Rxのこの仕組みは、従来に比べて圧倒的にイベントの解除がやりやすくなっていると思います。</p>
+<h2>まとめ</h2>
+<p>非同期の説明ばかりしてきていて、イベントはすっかり置き去りだったことを、まずはゴメンナサイ。少し前からFromEvent周りは大きな仕様変更が入ったわけですが、ようやくまともに解説できました。基本中のキの部分であるここが、過去のリソースがそのまま適用出来ないという最悪の自体に陥っていたので、とりあえずこれで何とか、でしょうかどうでしょうか。</p>
+<p>小さなこととはいえ、WP7との互換性が絶えているのが痛いのですが、その辺どうにかならなかったのかねー、とは思います。けれど、このEventArgsだけ送るFromEvent自体は良いと思います。 .Select(e =&gt; e.EventArgs) が定型句だったので、こういった変更は喜ばしい限り。それと、今まで思っていた、ぶっちゃけラムダ式とかRxでイベント登録するならsenderって不要じゃね？に対する答え(その通りで、完全に不要)を出してくれたのが嬉しい。</p>
+<p>さて、変換できるのはいいけれど、じゃあどこで使うのがいいの？という話がいつもありません。次回は、時間周りと絡めて、その辺のお話が出来ればと思いますが、いつも次回予告が達成されたことはないので、別のことを書くでしょう←ダメぢゃん。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

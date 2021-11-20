@@ -1,0 +1,1587 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2016/1005_541.html">UnityのMonoアップグレードによるasync/awaitを更にUniRxで対応させる</a></h1>
+<ul class="date"><li>2016-10-05</li></ul>
+<div class="entry_body"><p>ついに！.NET 4.6アップグレードが始まりました。Unityの。Unity 5.5でC#コンパイラをアップグレードしていましたが、今回はついにフレームワークも、です。また、Unity 5.5のものはC#のバージョンは4に制限されていましたが、今回はC# 6が使えます。<a href="https://forum.unity3d.com/threads/upgraded-mono-net-in-editor-on-5-5-0b4.433541/">現在はForumでアーリアクセスバージョン</a>が公開されていて、ついでにそこでリンクされているVisual Studio Tools for Unityも入れると、かなりふつーに.NET 4.6, C# 6対応で書ける感じです。</p>
+<p>さて、.NET 4.6, C# 6といったら非同期。async/await。もちろん、書けました。が、しかし。</p>
+<pre><code class="language-csharp">async Task ThraedingError()
+{
+    Debug.Log($&quot;Start ThreadId:{Thread.CurrentThread.ManagedThreadId}&quot;);
+
+    await Task.Delay(TimeSpan.FromMilliseconds(300));
+
+    Debug.Log($&quot;From another thread, can't touch transform position. ThreadId:{Thread.CurrentThread.ManagedThreadId}&quot;);
+    Debug.Log(this.transform.position); // exception
+}
+</code></pre>
+<p><img src="https://cdn-images-1.medium.com/max/800/1*5ymBUlQvVdGoMqGyQL74xQ.png" alt="" /></p>
+<p>これはtransformのとこで例外でます。なんでかっていうと、awaitによって別スレッドに行ってしまっているから。へー。この辺、async/awaitでは<a href="https://msdn.microsoft.com/magazine/gg598924.aspx">SynchronizationContext</a>という仕組みで制御するのですが、現在のUnity標準では特に何もされてないようです。</p>
+<p>それだけだとアレなので、そこで出てくるのが<a href="https://github.com/neuecc/UniRx">UniRx</a>。今日、アセットストアで最新バージョンのVer 5.5.0を公開したのですが、この5.5.0ではasync/await対応を試験的に入れています。それによって自動的にSynchronizationContextも生成/登録してくれます。</p>
+<pre><code class="language-csharp">async Task UseUniRxInBackground()
+{
+    Debug.Log($&quot;Start ThreadId:{ Thread.CurrentThread.ManagedThreadId}&quot;);
+    await Task.Delay(TimeSpan.FromMilliseconds(300));
+    Debug.Log($&quot;From same thread, because UniRx installs UniRxSynchronizationContext.ThreadId:{ Thread.CurrentThread.ManagedThreadId}&quot;);
+    Debug.Log(this.transform.position); // show transform
+}
+</code></pre>
+<p><img src="https://cdn-images-1.medium.com/max/800/1*MvfGABsKHNVALQxa3OKFDg.png" alt="" /></p>
+<p>というように、UniRxをインポート後では、前の例外を吐いたコードと全く同じでも、ちゃんとメインスレッドに戻してくれるようになります。</p>
+<h2>Coroutine is awaitable</h2>
+<p>UniRxを入れることで追加される機能はそれだけではなく、更に普通のコルーチンもawait可能な仕組みを裏側で仕込んでいます。これにより</p>
+<pre><code class="language-csharp">async Task CoroutineBridge()
+{
+    Debug.Log(&quot;start www await&quot;);
+    var www = await new WWW(&quot;https://unity3d.com&quot;);
+    Debug.Log(www.text);
+    await CustomCoroutine();
+    Debug.Log(&quot;await after 3 seconds&quot;);
+}
+
+IEnumerator CustomCoroutine()
+{
+    Debug.Log(&quot;start wait 3 seconds&quot;);
+    yield return new WaitForSeconds(3);
+    Debug.Log(&quot;end 3 seconds&quot;);
+}
+</code></pre>
+<p><img src="https://cdn-images-1.medium.com/max/800/1*kAoZUrQoRQvI8J8dspN3-Q.png" alt="" /></p>
+<p>といったように、WWWとかIEnumeratorを直接awaitすることが可能になります。これはUniRx側で用意した仕組みによるものなので、普通では（現状は）できません。</p>
+<p>勿論（？）IObservableもawait可能になっています。</p>
+<pre><code class="language-csharp">async Task AwaitObservable()
+{
+    Debug.Log(&quot;start await observable&quot;);
+    await Observable.NextFrame();  // like yield return null
+    await Observable.TimerFrame(5); // await 5 frame
+    try
+    {
+        // ObservableWWW promote exception when await(difference in await WWW)
+        var result = await ObservableWWW.Get(&quot;https://404.com&quot;);
+        Debug.Log(result);
+    }
+    catch (WWWErrorException ex)
+    {
+        Debug.LogError(ex.ToString());
+    }
+    Debug.Log(&quot;end await observable&quot;);
+}
+</code></pre>
+<p><img src="https://cdn-images-1.medium.com/max/800/1*bYPypWXTd3IgxR9tpYxHSw.png" alt="" /></p>
+<p>ObservableWWWを使うと例外はちゃんとtry-catchのほうに投げてくれるようになって、より自然に、簡単に扱えるようになります。</p>
+<h2>まとめ</h2>
+<p>思ったよりも、普通に使えて、普通に統合できるな、という印象があります &lt; async/await。コルーチンで扱うよりも自然で、より強力なので、非同期を扱うのに適したシチュエーションではこっちのほうが良いのは間違いないはずです。Rxとの住み分けですが、基本的に非同期が対象ならばasync/awaitのほうが良いです。が、今回見ていただいたようにIObservableはawaitableなので、コードがRxになっているならば、現在のコードから自然にasync/awaitベースにソフトに移行することが可能でしょう。</p>
+<p>Unityが今後、標準でSynchronizationContextを入れてくるのか、コルーチン対応クラスをawait対応にさせてくるのか、などはちょっと分かりません。分かりませんが、UniRxならば、その対応がずっと後のことになるとしても、今すぐ問題なく使うことが出来ますし、その可能性を今すぐ感じ取ることが可能なので、ぜひとも試してみてください！</p>
+<h2>余談</h2>
+<p>UniRxがAssetStore STAFFPICKに選ばれましたー。</p>
+<img src="https://pbs.twimg.com/media/Ct57c5SVIAAzSAJ.jpg:large" width=620 />
+<p>うーん、嬉しい。</p>
+</div>
+<h1><a href="http://neue.cc/2016/1002_540.html">過去に制作した30のライブラリから見るC#コーディングテクニックと個人OSSの原理原則</a></h1>
+<ul class="date"><li>2016-10-02</li></ul>
+<div class="entry_body"><p>という（サブ）タイトルで、<a href="http://dotnetfringe-japan.connpass.com/event/35659/">.NET Fringe Japan 2016</a>で発表してきました。<a href="http://live.nicovideo.jp/watch/lv277167391">ニコ生</a>では7時間目ぐらいから。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/key/5aYQa7asGPlktr" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/what-why-how-create-oss-libraries-30coss" title="What, Why, How Create OSS Libraries - 過去に制作した30のライブラリから見るC#コーディングテクニックと個人OSSの原理原則" target="_blank">What, Why, How Create OSS Libraries - 過去に制作した30のライブラリから見るC#コーディングテクニックと個人OSSの原理原則</a> </strong> from <strong><a href="//www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>リンク集はこちら。</p>
+<ul>
+<li>#01 2009-04-04 <a href="http://linqjs.codeplex.com/">linq.js</a></li>
+<li>#02 2009-10-29 <a href="http://linqcomparer.codeplex.com/">AnonymousComparer</a></li>
+<li>#03 2010-04-07 <a href="http://dbexecutor.codeplex.com/">DbExecutor</a></li>
+<li>#04 2010-04-30 <a href="http://dynamicjson.codeplex.com/">DynamicJson</a></li>
+<li>#05 2010-07-15 <a href="http://xstreamingreader.codeplex.com/">XStreamingReader</a></li>
+<li>#06 2010-09-12 <a href="http://reactiveoauth.codeplex.com/">ReactiveOAuth</a></li>
+<li>#07 2011-02-22 <a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a></li>
+<li>#08 2011-10-17 <a href="http://reactiveproperty.codeplex.com/">ReactiveProperty</a></li>
+<li>#09 2012-02-18 <a href="http://implicitquerystring.codeplex.com/">ImplicitQueryString</a></li>
+<li>#10 2012-04-02 <a href="http://hashmapper.codeplex.com/">HashMapper</a></li>
+<li>#11 2012-12-03 <a href="https://github.com/neuecc/MemcachedTranscoder">MemcachedTranscoder</a></li>
+<li>#12 2013-02-27 <a href="https://github.com/neuecc/AsyncOAuth">AsyncOAuth</a></li>
+<li>#13 2013-04-05 <a href="https://github.com/neuecc/CloudStructures">CloudStructures</a></li>
+<li>#14 2013-12-06 <a href="https://github.com/neuecc/OwinRequestScopeContext">OwinRequestScopeContext</a></li>
+<li>#15 2013-12-08 <a href="https://github.com/neuecc/Owin.RedisSession">Owin.RedisSession</a></li>
+<li>#16 2013-12-23 <a href="https://github.com/neuecc/LightNode">LightNode</a></li>
+<li>#17 2014-03-11 <a href="https://github.com/neuecc/RespClient">RespClient</a></li>
+<li>#18 2014-05-28 <a href="https://github.com/neuecc/UniRx">UniRx</a></li>
+<li>#19 2014-09-24 <a href="https://github.com/neuecc/LINQ-to-BigQuery">LINQ to BigQuery</a></li>
+<li>#20 2014-10-28 <a href="https://github.com/neuecc/LINQ-to-GameObject-for-Unity">LINQ to GameObject</a></li>
+<li>#21 2015-01-14 <a href="https://github.com/neuecc/Open-on-GitHub">Open on GitHub</a></li>
+<li>#22 2015-03-30 <a href="https://github.com/neuecc/NotifyPropertyChangedGenerator">NotifyPropertyChangedGenerator</a></li>
+<li>#23 2015-11-03 <a href="https://github.com/neuecc/EtwStream">EtwStream</a></li>
+<li>#24 2016-03-18 <a href="https://github.com/neuecc/SerializableDictionary">SerializableDictionary</a></li>
+<li>#25 2016-05-23 <a href="https://github.com/neuecc/MarkdownGenerator">MarkdownGenerator</a></li>
+<li>#26 2016-05-31 <a href="https://github.com/neuecc/PhotonWire">PhotonWire</a></li>
+<li>#27 2016-06-07 <a href="https://github.com/neuecc/ObserveEveryValueChanged">ObserveEveryValueChanged</a></li>
+</ul>
+<p>作り続けることで確実にイディオムが身についていくことと、それの発展や組み合わせによって、より大きなことが出来るようになっていくんじゃないかと思います。発想も、手札が多ければ多いほど、よりよくやれるということが分かるということになりますしね。とはいえ、どうしても発想のベースは自分の手札からになっていくので、時々は異なるものへのチャレンジを意識して行わないとなー、ってとこですね。今回のスライドでも、幾つかはやったことないことを勉強のため、みたいなのがありました。Unity周りは仕事で始めたことですけれど、今は自分の中でも重要な柱です。</p>
+<p>C#以外をやりたい、ってのは全然思わないんですが（言語の学習も悪くはないですが、それよりなにか作ったほうが100億倍良いのでは)、今猛烈に足りない/かつやりたい、のはグラフィック関係ですねー。自分で一本<a href="https://ja.wikipedia.org/wiki/%E3%83%87%E3%83%A2%E3%82%B7%E3%83%BC%E3%83%B3">メガデモ</a>を作れるようになりたいってのは、ずっと昔から思っていることで、かつ、今もできていないことなので近いどこかでチャレンジしたいです。</p>
+</div>
+<h1><a href="http://neue.cc/2016/0915_539.html">Photon Server Deep Dive - PhotonWireの実装から見つめるPhotonServerの基礎と応用</a></h1>
+<ul class="date"><li>2016-09-15</li></ul>
+<div class="entry_body"><p>本題と関係ない連絡ですが、<a href="https://github.com/neuecc/UniRx">UniRx 5.4.1</a>出しました。更新内容は主にUnity 5.5 Beta対応です（不幸にもそのままだとコンパイルエラーが出てしまっていたのだ！）。<a href="https://github.com/neuecc/LINQ-to-GameObject-for-Unity">LINQ to GameObject 2.2</a>もついでに出てます。こちらは最適化を更に進めたのと、Descendants(descendIntoChildren)というベンリメソッド（子孫要素への探索時に条件で打ち切る）の追加です。どちらも便利なので是非。</p>
+<p>と、いうわけかで、昨日、GMO Photon 運営事務局さん開催の<a href="https://atnd.org/events/80089">Photon勉強会</a>にてPhoton Server Deep Dive - PhotonWireの実装から見つめるPhoton Serverの基礎と応用というタイトルで話してきました。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/key/JaxJQUINL22sDc" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/photon-server-deep-dive-photonwirephotonserver" title="Photon Server Deep Dive - PhotonWireの実装から見つめるPhotonServerの基礎と応用" target="_blank">Photon Server Deep Dive - PhotonWireの実装から見つめるPhotonServerの基礎と応用</a> </strong> from <strong><a href="//www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>Deep Diveなのか入門なのか微妙なところに落ち着いてしまいはしたのですけれど、他の通信ライブラリ候補との比較含めPhotonの検討理由、PhotonServerの真っ白な基本的なところ、<a href="https://github.com/neuecc/PhotonWire">PhotonWire</a>の優れているところ、<a href="https://kuro-kishi.jp/">黒騎士と白の魔王</a>で予定している構成、などなどを一通り紹介できる内容になったのではかと思います。</p>
+<p>PhotonWireの細かい話は<a href="http://neue.cc/2016/05/31_531.html">PhotonWire - Photon Server + Unityによる型付き非同期RPCフレームワーク</a>と、実装の(Photonと関係ないC#的な)細かい話は<a href="http://neue.cc/2015/09/29_517.html">実例からみるC#でのメタプログラミング用法集</a>のほうが詳しいです。おうふ。より詳細を話すつもりが、逆に表面的になってしまった。反省。</p>
+<h2>ZeroFormatter</h2>
+<p>一番反響があったのは、Photonよりも、むしろ<a href="http://www.slideshare.net/neuecc/photon-server-deep-dive-photonwirephotonserver#53">スライド53pから少し説明している</a>ZeroFormatter（仮称）という、私が製作中の無限大に速い新シリアライザ/フォーマットの話でした。Oh……。</p>
+<p>まぁ実際、（Unityに限らずですが特にUnityで）かなり使えるシリアライザにするつもりなので乞うご期待。JsonUtility、いいんですけど、制約が強すぎるんですよね、特にオブジェクトをデシリアライズする際に、nullが0埋めされたクラスに変換されちゃうのがかなりヤバかったりなので、汎用フォーマットとしては使いにくいのではないかな、というところはあります。速いんですけどねえ。また、FlatBuffersはAPIがヤバいので検討する価値もないと思ってます。あれはアプリケーションの層で実用に使うのは無理。</p>
+<p>というわけで、絶妙にイイトコドリを目指してますので、乞うご期待。出来上がったらGitHubやUnityのAssetStoreに投下しますので人柱募集です。</p>
+</div>
+<h1><a href="http://neue.cc/2016/0811_538.html">LINQ to GameObject 2.1 - 手書き列挙子による性能向上と追加系をより使いやすく</a></h1>
+<ul class="date"><li>2016-08-11</li></ul>
+<div class="entry_body"><p>（前回の1.3から)1年ぶりの更新です！2.0は諸事情でスキップされました。アセットストアには出したんですが内容的にもう少しやりたかったのでなかったこと扱いで。LINQ to GameObject自体の説明はVer 1.0リリース時のブログ<a href="http://neue.cc/2014/11/11_482.html">LINQ to GameObjectによるUnityでのLINQの活用</a>を参照ください。</p>
+<ul>
+<li><a href="https://github.com/neuecc/LINQ-to-GameObject-for-Unity">GitHub/LINQ to GameObject</a></li>
+<li><a href="https://www.assetstore.unity3d.com/jp/#!/content/24256">AssetStore/LINQ to GameObject</a></li>
+</ul>
+<p>今回はパフォーマンスチューニングを徹底的にやりました。というのも以前の素朴な実装は、素朴な通りの性能で、いいとか悪いとかじゃなく素朴なので、やるのならいっそギチギチにやってみたらどうかな、と。性能面でここまでやってるものは絶対にないはず。</p>
+<p>もう一つは追加系をより使いやすく。のためにガッツリと破壊的変更を入れています。破壊的変更が入った理由は、使いにくかったからです。うぇぇ……。使いにくいポイントは概ね分かっていたし、プルリク等も貰っていたのですが、API的にイマイチなもので乗り気になれず、かといってAPIを維持しているとオーバーロードの解決などの問題でうまく処理できなくて、モニョモニョしている間に一年が経ってしまった。互換性は残したくはあったんですが、使いにくいままであったり、微妙なオーバーロードの追加とかで解決するよりは良いかな、と。いう決断です。</p>
+<h2>Traverse系</h2>
+<p>APIはほとんど変わってないです（但しnameでフィルターかけるオーバーロードは消しました、HTMLやXMLと違って名前でのフィルタの重要性がかなり低いので、むしろないほうがいいかな、と）。</p>
+<p><img src="https://raw.githubusercontent.com/neuecc/LINQ-to-GameObject-for-Unity/master/Images/axis.jpg" alt="" /></p>
+<p>ヒエラルキーをツリーに見立てて、「軸」の概念を元にして、必要となる全方向での列挙を満たしています。今回、コードを劇的に書き換えたパフォーマンスチューニングを施しました。一点目は、yield returnによるコードを、全部手書きの構造体の列挙子に書き換えてます。これにより列挙に伴うゴミ発生が理想的にはなくなっています、理想的には:)</p>
+<p>残念ながら、そのままforeachに流すと <a href="http://neue.cc/2016/08/05_537.html">C#のGCゴミとUnity(5.5)のコンパイラアップデートによるListのforeach問題解決について</a> によりboxingが発生しますが（ゴミ化）、それでも構造体のサイズや再帰的に処理される場合での内部処理は気を配っているので（特にDescendantsはエクストリームにチューニングしたコードに変えた（再帰を特化Stackで置き換えたり……））、以前よりも良くなっているのは間違いないです。</p>
+<blockquote>
+<p>ちなみに、基本的にはmutableなstructは避けたほうがいいです。Enumeratorはまさにそれで、実装にも注意が必要なら、利用にも注意を要するため（これはList&lt;T&gt;.Enumeratorも同様で、直接触ろうとすると罠にはまるケースが出てくる）なんでもかんでもstructで、というのは止めたほうがいいでしょう、どうしてもということでなければ原則やらないほうがいい事案です。struct enumeratorを返すテクニック自体は今は亡きXNAでも使われていたので(EffectPassCollectionやModelMeshCollectionなど各種コレクションがstruct Enumeratorを返す)、まぁ最終テクニックとしては有効（但し現状Unityではどうせforeachではボックス化されるのでそこまで有効ではないので、基本やらなくていいでしょう）</p>
+</blockquote>
+<p>LINQで繋げたら、当然普通にLINQの消費フローに入るので、そんな意味ないんですけどね！というだけなのもアレなので、改善二点目、頻出パターンについて特化した最適化を入れてます。(+ OfComponent) + First, FirstOrDefault, ToArray に関しては通常のLINQではなく、この構造体Enumeratorに特化した呼び出しをするため、所謂LINQで想像する性能劣化を受けません。社内調べによると、割と FirstOrDefault や ToArray が直接接続されてる場合が多いので、それだけでも6~7割はカバーできているのではないかな、と。</p>
+<p>更に三点目、ToArrayNonAllocというメモリ節約/GC防止メソッドが追加されています(IEnumerable&lt;T&gt;にも生やしてあるのでLINQ to GameObject関係ないシーンでも使えないこともない)</p>
+<pre><code class="language-csharp">GameObject[] array = new GameObject[0];
+
+// 毎フレーム走査していても余計なメモリ確保はしない！
+void Update()
+{
+    var size = origin.Children().ToArrayNonAlloc(ref array);
+    for (int i = 0; i &lt; size; i++)
+    {
+        var element = array[i];
+    }
+}
+</code></pre>
+<p>Physics.RaycastNonAllocやGetComponentsInChildren[T](List[T] results) のようなものですね。どうしても走査頻度が高くて、という場合には使えるんじゃないかと思います。まぁ、Find系は極力使わないように、というのと同じ話で、走査系を頻繁にやること自体が全然よくはないのですけれど。</p>
+<p>また、ToArray/ToArrayNonAlloc/Destroyには(Func&lt;GameObject, T&gt; selector), (Func&lt;GameObject, bool&gt; filter), (Func&lt;GameObject, bool&gt; filter, Func&lt;GameObject, T&gt; selector), (Func&lt;GameObject, TState&gt; let, Func&lt;TState, bool&gt; filter, Func&lt;TState, T&gt; selector) といった、Where().Select().ToArray() のような割とよくある状況に対する最適化オーバーロードを入れてます。</p>
+<p>この辺を活用してもらえば、単純にインラインで自前実装するよりも、むしろ速い/効率的なことのほうが多いでしょう。</p>
+<p>特化したものを速くなるのはある種当たり前で、しかしそうするとメソッドが雪だるま式に増えるのが良くなくて、そしてLINQのいいところは合成可能なことにより特化させずとも無限の組み合わせで機能を実現できるところにある。しかし、まぁ勿論、柔軟性とパフォーマンスが幾ばくかトレードオフなのは当然の話なわけで、LINQの雰囲気を保ったまま、裏側だけ特化実装にこっそり差し替わってる。というあたりが落とし所としては良いのかな、と思ってますし、なのでそういう風に実装しました。</p>
+<h2>再帰的なイテレータの罠</h2>
+<p>Children（子要素列挙）なんかは数が大したことないので問題はそんなないんですが、Descendants（子孫要素列挙）は性能差が大きく出てきます。そして、利用頻度で言ってもDescendants系が基本多い。これのパフォーマンスを改善することは、非常に意味のあることです。さて、これはシンプルなDescendantsの実装です。</p>
+<pre><code class="language-csharp">static IEnumerable&lt;GameObject&gt; Descendants(GameObject root)
+{
+    yield return root;
+    foreach (Transform item in root.transform)
+    {
+        foreach (var child in Descendants(item.gameObject))
+        {
+            yield return child.gameObject;
+        }
+    }
+}
+</code></pre>
+<p>このコードには大きな問題があります！再帰的なイテレータ、つまり foreach (var child in Descendants(item.gameObject)) は危険です。Baaaaad Practice、デス。要警戒です。これ、子孫にあるGameObjectの数だけ、イテレータ作ってます。GetEnumerator祭り！これは、LINQがどうのとかそういう次元を超えています。LINQのコストというのはメソッドチェーン分のGetEnumeratorの加算とMoveNextの連鎖による一回の呼び出しコストの増加が基本的な話で、ようするに2~3増えるという話で大したことあるといえば大したことあるし、大したことないといえば大したことない。が、さすがに要素数分だけ無駄にEnumerator作るとなったら話は別だ。ちょっとね、かなり気になるよね。</p>
+<p>解決策は２つあります。一つはstruct enumeratorで、struct生成コストはあるもののゴミにはなりません。↑で書いたように実装済みです。</p>
+<p>もう一点は、内部イテレーター化。イテレーターには概ね二種類、内部イテレーターと外部イテレーターがあります。外部イテレーターはforeachで使える、つまりGetEnumerator経由のもので、内部イテレーターはListのForEachなどクラスに直接生えてるもの。それぞれ利点と欠点があります。外部イテレーターの利点は柔軟性(LINQ)と言語サポート(foreach/generator)、よって基本的にはこちらを選べばOKです。欠点はパフォーマンスが内部イテレーターほど稼げない。どうしても一つシーケンスを進めるのにMoveNextとCurrentの2つのメソッド呼び出しが必要になるので。内部イテレーターの利点はパフォーマンスで、内部構造に最適化したループを回せるので、基本最速です。欠点は柔軟性がないのと、それぞれのコレクションで独自実装になること。</p>
+<p>LINQ to GameObjectでは両方実装しています。外部イテレーターは手書きで最適化したstruct enumerator（とStackPoolと、その他諸々の仕掛け）によって、遅延実行やLINQサポートなどの柔軟性を維持したまま、パフォーマンスとGC行きのゴミを全く出さないようにしています。内部イテレーターに関してはForEachとToArray(NonAlloc)に関しては、外部イテレーター版と全く異なる実行パスを通ることにより、最速を維持します。</p>
+<p>ところで、Unityネイティブに用意されているものがある場合は、それを使ったほうが速くなります。例えば DescendantsAndSelf().OfComponent().ToArray() は GetComponentsInChildren(includeInactive:true) に概ね等しく（一つのオブジェクトに複数コンポーネントが貼り付けてある場合、LINQ to GameObjectではそれぞれのGameObjectに一つのみ、GetComponentsInChildrenは複数と、正確には挙動が異なります）、後者を使ったほうが断然速い。一応ですが、ネイティブだから常に速いとか、そういうことはなくて、ネイティブ-マネージド間の変換コストのほうが勝る場合もあります（たとえば<a href="http://neue.cc/2016/05/14_529.html">Unityにおけるコルーチンの省メモリと高速化について、或いはUniRx 5.3.0でのその反映</a>のような話）。けれど、この場合は、C#だけで走査すると、GameObject毎でのGetComponentが避けられません(GetComponentのコストはタダではないのだ)。なので、一発でネイティブ内でかき集めてきたほうが絶対的に速くなります。子孫を辿るだけならほとんど遜色ない、むしろ速いといっていいぐらいなので、本当にこれはGetComponentに対する処理効率の差だけですね。これだけはどうにもできませんでした。</p>
+<h2>追加系</h2>
+<p>変わってます。使い勝手的にはこっちの対応がメインです。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/17275579/e5f4d4ba-5747-11e6-900f-30193a4ef7b4.png" alt="" /></p>
+<p>以前のAPIの何が不便かって、引数にGameObjectしか受け付けなかった！そして戻り値がGameObject！大抵の場合はComponentを入れてComponentを受け取りたいのに！これは酷い！いやほんと酷すぎでした……。なんでそうなってたかというと言い訳はそれなりにあって、まずGameObjectとComponentって継承階層が別のとこにいるんですよねー、のが困る。それをオーバーロードとして分けると、IEnumerableを受け取るオーバーロードが存在していたため、どうやってもうまく型が解決できなかったのだ……。</p>
+<p>もうどうにもならなかったので、API変えてます。IEnumerableを受け取るオーバーロードはXxxRangeという名前に分離。また、基本的には&lt;T&gt;を返すように、そして T:UnityEngine.Object を受け取れるようにしたので、引数としてやっとMonoBehaviourなComponentを素直に流し込めるようになりましたー。万歳。継承階層が別のとこにいて困ります問題は、UnityEngine.Objectを受け取った上で、動的にGameObjectとComponentに仕分けすることで解決。</p>
+<p>というわけで、やっと自信持って普通に使えるようになりました。単純な話なんですが、まず破壊的変更にする、ということに腰が重かったことと、それを踏まえても、うまいAPIを構築するのに手間取った。のせいでこんなに遅れてしまって、いやはや……。</p>
+<p>その他、あとDestroyでデフォルトでヒエラルキから外さなくしました。このヒエラルキから外すというのは最低のアイディアで、配列ではなく列挙しながら(LINQ to GameObjectでやるような！）Destroyする場合に、ヒエラルキから外すせいで位置がずれて死ぬ。というのを防ぐためにToArrayでキャッシュしなければならない（無駄なオーバーヘッド！）。というしょうもない自体に陥りがちなので、やめました。わざわざ外すコストだってゼロじゃないので、二重に悪い。</p>
+<h2>まとめ</h2>
+<p>GameObjectBuilderというものがあったのですが、イラナイ子なので消しました。LINQ to XMLのFunctional Constructionを模した――ものなのですが、そういう、コピーに一生懸命なだけなのって悪趣味なんですよね。大事なのは、概念(LINQ to Tree)を対象環境(Unity)に最適化することであって、コピーすることではない。そういうの、分かっているつもりではいたのですが、やり始めるとついついやってしまうところがある。随時見切って、バッサリ切り落とせるようにならないとですね。</p>
+<p>LINQ to GameObjectのオリジナルのデザインは2014/10/28だったんですが、その頃は今よりは全然遥かにUnityへの習熟度、知識が欠けていたなぁ、というのを改めて痛感しました。思い上がる、ということはないですが、環境への理解力が足らないとどこかイマイチなものになってしまうわけで、C#云々抜きに、常にUnityに真摯に向き合ってかないとダメですね。実際問題、愛情を持って突き詰めて考えられないと、本当の理想のところまでは行けない。小手先の知識だけで処理したようなライブラリは、まぁ使いたくないですねえ、そういうの実際どうしてもどこか独りよがりのしょうもないものになってしまうので。</p>
+<p>LINQは遅い/GCキツくなるというのは絶対的な事実ではあるのですけれど、極力書き味を失わないようにしつつ、6, 7割ぐらいのシチュエーションには特化した最適化を施し、何も考えずともむしろ普通に書くよりも速くなる。それ以外のシチュエーションでも、速さを意識した使い方をすれば、やはり普通に書くよりも速くなる。という、私的には理想的かな、というところで表現できたので、是非是非、機能を気にする人も、性能を気にする人も使ってみてください。どちらも満たせるものになっているはずです。</p>
+<p>ところでしつこいですが、9/13に<a href="https://atnd.org/events/80089">Photon勉強会</a>で「Photon Server Deep Dive - PhotonWireの実装から見つめるPhoton Serverの基礎と応用」というタイトルで話しますので、Photon興味ある人も、そうでなくてもUniRx興味ある人もどうぞ。LINQ to GameObject、或いはUnityとLINQについての話は、さすがにあんま関係ないのでセッション内容には含まれませんが懇親会ででも掴まえてもらえば何でも答えます。</p>
+</div>
+<h1><a href="http://neue.cc/2016/0805_537.html">C#のGCゴミとUnity(5.5)のコンパイラアップデートによるListのforeach問題解決について</a></h1>
+<ul class="date"><li>2016-08-05</li></ul>
+<div class="entry_body"><p>UnityにおいてList&lt;T&gt;のforeachは厳禁という定説から幾数年。しかしなんと現在Unityが取組中のコンパイラアップデートによって解決されるのだ！ついに！というわけで、実際どういう問題があって、どのように解決されるのかを詳しく見ていきます。</p>
+<h2>現状でのArrayのforeachとListのforeach</h2>
+<p>まずは現状確認。を、Unityのプロファイラで見てみます。以下の様なコードを書いて計測すると……。</p>
+<pre><code class="language-csharp">var array = new int[] { 1, 2, 3, 4, 5 };
+var list = new List&lt;int&gt; { 1, 2, 3, 4, 5 };
+
+// ボタンを叩いて計測開始
+button.OnClickAsObservable().Subscribe(_ =&gt;
+{
+    Profiler.BeginSample(&quot;GCAllocCheck:Array&quot;);
+    foreach (var item in array) { }
+    Profiler.EndSample();
+
+    Profiler.BeginSample(&quot;GCAllocCheck:List&quot;);
+    foreach (var item in list) { }
+    Profiler.EndSample();
+
+    // プロファイラでそこ見たいのでサッと止める。
+    Observable.NextFrame(FrameCountType.EndOfFrame).Subscribe(__ =&gt;
+    {
+        EditorApplication.isPaused = true;
+    });
+});
+</code></pre>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/17413233/5cca8302-5abb-11e6-820c-50b05ea98df4.png" alt="image" /></p>
+<p>Unityのプロファイラは使いやすくて便利。というのはともかく、なるほどListは40B消費している（注：Unity上でコンパイラした時のみの話で、普通のC#アプリなどでは0Bになります。詳しくは後述）。おうふ……。ともあれ、なぜListのforeachでは40Bの消費があるのか。ってところですよね。foreach、つまりGetEnumeratorのせいに違いない！というのは、半分合ってて半分間違ってます。つまり100%間違ってます。</p>
+<h2>GetEnumeratorとforeach</h2>
+<p>foreachはコンパイラによってGetEnumerator経由のコードに展開されます。</p>
+<pre><code class="language-csharp">// このコードは
+foreach(var item in list)
+{
+}
+
+// こう展開される
+using (var e = list.GetEnumerator())
+{
+    while (e.MoveNext())
+    {
+        var item = e.Current;
+    }
+}
+</code></pre>
+<p>GetEnumerator、つまり IEnumerator&lt;T&gt; はクラスなので、ヒープに突っ込まれてるに違いない。はい。いえ。だったらArrayだって突っ込まれてるはずじゃないですかー？</p>
+<pre><code class="language-csharp">// こんなコードを動かしてみると
+
+Profiler.BeginSample(&quot;GCAllocCheck:Array.GetEnumerator&quot;);
+array.GetEnumerator();
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:List.GetEnumerator&quot;);
+list.GetEnumerator();
+Profiler.EndSample();
+</code></pre>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/17413202/34d11a0a-5abb-11e6-8932-7ed0704ae72c.png" alt="image" /></p>
+<p>そう、むしろArrayは32B確保していてListはむしろ0なのだ。どっちも直感的には変てこ。</p>
+<h2>配列とforeachの最適化</h2>
+<p>配列をforeachで回すとコンパイラが、forループに展開します。</p>
+<pre><code class="language-csharp">// このコードは
+foreach (var item in array)
+{
+
+}
+
+// こうなる
+for (int i = 0; i &lt; array.Length; i++)
+{
+    var item = array[i];
+}
+</code></pre>
+<p>ちなみに配列のループを回すときは明確にLengthを使うと良いです。というのも、配列の境界チェック（自動で入る）が実行時に消せます。</p>
+<pre><code class="language-csharp">// こっちよりも
+var len = array.Length;
+for (int i = 0; i &lt; len; i++)
+{
+    var item = array[i];
+}
+
+//  こっちのほうが速い
+for (int i = 0; i &lt; array.Length; i++)
+{
+    var item = array[i];
+}
+</code></pre>
+<p>詳しくは<a href="https://blogs.msdn.microsoft.com/clrcodegeneration/2009/08/13/array-bounds-check-elimination-in-the-clr/">Array Bounds Check Elimination in the CLR</a>をどうぞ。ようするに基本的には配列はforeachで回しておけばおｋ、indexを別途使う場合があるなら、Lengthで回すことを心がけるとベター。というところでしょうか。（もっというと配列の要素は構造体であると、更にベターなパフォーマンスになります。また、配列は色々特別なので、配列 vs Listで回す速度を比較すれば配列のほうがベタベターです）</p>
+<h2>List&lt;T&gt;のGetEnumeratorへの最適化</h2>
+<p>list.GetEnumeratorが0Bの理由は、ここにクラスライブラリ側で最適化が入っているからです。と、いうのも、List&lt;T&gt;.GetEnumeratorの戻り値はIEnumerator&lt;T&gt;ではなくて、<a href="https://msdn.microsoft.com/ja-jp/library/x854yt9s.aspx">List&lt;T&gt;.Enumerator</a>という構造体になっています。そう、特化して用意された素敵構造体なのでGCゴミ行きしないのだ。なので、これをわざとらしくtry-finallyを使ったコードで回してみると</p>
+<pre><code class="language-csharp">Profiler.BeginSample(&quot;GCAllocCheck:HandConsumeEnumerator&quot;);
+
+var e = list.GetEnumerator();
+try
+{
+    while (e.MoveNext())
+    {
+        var item = e.Current;
+    }
+}
+finally
+{
+    e.Dispose();
+}
+
+Profiler.EndSample();
+</code></pre>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/17413965/68a816f0-5abe-11e6-9720-ee68fdf6bdc8.png" alt="image" /></p>
+<p>0Bです。そう、理屈的にはforeachでも問題ないはずなんですが……。ここでちゃんと正しくforeachで「展開された」後のコードを書いてみると</p>
+<pre><code class="language-csharp">using (var e = list.GetEnumerator())
+{
+    while (e.MoveNext())
+    {
+        var item = e.Current;
+    }
+}
+</code></pre>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/17414045/c793eb76-5abe-11e6-88f1-e7964fb03180.png" alt="image" /></p>
+<p>40B。なんとなくわかってきました！？</p>
+<h2>using展開のコンパイラバグ</h2>
+<p>「List&lt;T&gt;をforeachで回すとGCゴミが出るのはUnityのコンパイラが古いせいでバグッてるから」というのが良く知られている話ですが、より正しい理解に変えると、「構造体のIDisposableに対するusingの展開結果が最適化されていない（仕様に基づいていない）」ということになります。この辺の話は<a href="http://www.ecma-international.org/publications/standards/Ecma-334.htm">ECMA-334 C# Language Specification</a>にも乗っているので、C#コンパイラの仕様に対するバグと言ってしまうのは全然良いのかな？</p>
+<p>どういうことかというと、現状のUnityのコンパイラはこういうコードになります。</p>
+<pre><code class="language-csharp">var e = list.GetEnumerator();
+try
+{
+    while (e.MoveNext())
+    {
+        var item = e.Current;
+    }
+}
+finally
+{
+    var d = (IDisposable)e; // ここでBoxing
+    d.Dispose(); // 本来は直接 e.Dispose() というコードでなければならない
+}
+</code></pre>
+<p>そう、全体的に良い感じなのに、最後の最後、Disposeする時にIDisposableに<a href="https://msdn.microsoft.com/ja-jp/library/yz2be5wk.aspx">ボックス化</a>してしまうので、そこでGCゴミが発生するというのが結論です。そして、これは最新のmonoコンパイラなどでは直っています、というか<a href="https://bugzilla.novell.com/show_bug.cgi?id=571010">2010年の時点で直ってます</a>。どんだけ古いねん、Unityのコンパイラ……。</p>
+<h2>40Bの出処</h2>
+<p>ゴミ発生箇所は分かったけれど、せっかくなのでもう少し。サイズが40Bの根拠はなんなの？というところについて。まずは色々なもののサイズを見ていきましょうー。</p>
+<pre><code class="language-csharp">// こんなのも用意した上で
+struct EmptyStruct
+{
+}
+
+struct RefStruct
+{
+    public object o;
+}
+
+class BigClass
+{
+    public long X;
+    public long Y;
+    public long Z;
+}
+---
+
+// 色々チェックしてみる
+Profiler.BeginSample(&quot;GCAllocCheck:object&quot;);
+var _0 = new object();
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:class&quot;);
+var _1 = new BigClass();
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:int&quot;);
+var _2 = 99;
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:int.boxing&quot;);
+object _3 = 99;
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:emptyStruct&quot;);
+var _4 = new EmptyStruct();
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:emptyStruct.boxing&quot;);
+object _5 = new EmptyStruct();
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:bool.boxing&quot;);
+object _6 = true;
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:float.boxing&quot;);
+object _7 = 0.1f;
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:double.boxing&quot;);
+object _8 = 0.1;
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:refStruct.boxing&quot;);
+object _9 = new RefStruct();
+Profiler.EndSample();
+</code></pre>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/17415884/9e004e78-5ac6-11e6-8709-8b1ed441fddf.png" alt="image" /></p>
+<p>なるほどなるほど。当たり前ですがstructのままのは0B。EmptyStructやboolなど最小1バイトのboxingは17B(ほえ？）、int(4バイト)が20Bでdouble(8バイト)や参照を一個持たせた(IntPtr - 64bit環境において8バイト)構造体が24B。classにlongを3つめたのが40B。そしてobjectが16B。つまり。つまり、最小が16Bで、そこからフィールドのそれぞれの要素のサイズが加算されるということです。</p>
+<p>この16 bytesがどこから来ているかというと、<a href="https://www.simple-talk.com/dotnet/net-framework/object-overhead-the-hidden-net-memory-allocation-cost/">オブジェクトのヘッダ</a>です。ああ、なるほどそういう……。</p>
+<p>さて、これを踏まえてListのEnumeratorのフィールドを見てみると</p>
+<pre><code class="language-csharp">public struct Enumerator : IEnumerator, IDisposable, IEnumerator&lt;T&gt;
+{
+	private List&lt;T&gt; l;
+	private int next;
+	private int ver;
+	private T current;
+</code></pre>
+<p>ヘッダ16B + IntPtrの8B + intの4B + intの4B + Tがintの場合は4B = 36B。40じゃないじゃん、ってところは、32以降は8Bずつ埋まってくっぽ、実質33Bだと40B, 41Bだと48Bという感じ。といったところから40Bの消費になっていたということですね！</p>
+<h2>Experimental Scripting Previews</h2>
+<p>ついにコンパイラアップデートのPreviewがやってきた！<a href="http://forum.unity3d.com/forums/experimental-scripting-previews.107/">Experimental Scripting Previews</a>にて、コンパイラのアップデートプロジェクトも始まっています。そして今のところ5.3.5p8-csharp-compiler-upgradeが配られています。</p>
+<p>というわけで早速、冒頭の配列とListのforeachをかけてみると……</p>
+<pre><code class="language-csharp">Profiler.BeginSample(&quot;GCAllocCheck:Array&quot;);
+foreach (var item in array) { }
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:List&quot;);
+foreach (var item in list) { }
+Profiler.EndSample();
+</code></pre>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/17416914/62c1d0d4-5acb-11e6-9008-d1410e996e7a.png" alt="image" /></p>
+<p>やった！これで問題nothingですね！（実際は計測時は初回にListのほうに32B取られててあれれ？となったんですが、コンパイル後のIL見ても正常だし、まぁ二回以降叩いたのは↑画像の通りになったので、よしとしておこ……）</p>
+<h2>まとめ</h2>
+<p>で、現状はList&lt;T&gt;の列挙はどうすればいいのか、というと、まぁforでindexerでアクセスが安心の鉄板ではある。ForEachが内部配列に直接アクセスされるので速い説はなくはないですが、ForEachだとラムダ式のキャプチャに気を使わないと逆効果なので(詳しくは<a href="http://neue.cc/2016/01/06_525.html">Unityでのボクシングの殺し方、或いはラムダ式における見えないnewの見極め方</a>)、基本的には普通にforがいいと思います（なお、キャプチャのないように気を使えば、ForEachのほうが速度を稼げる余地はあります。理論上、正常になったforeachよりも良い場合があるため）</p>
+<p>理想的にはforeachであるべきだし、改革の時はまもなく！（5.5に↑のコンパイラアップグレードは入るっぽいですよ）。ちなみに、あくまでコンパイラのアップグレードなだけで、フレームワークのアップデートや言語バージョンのアップデートは今は含まれてはいない。段階的にやっていく話だと思うので、とりあえずはコンパイラがより良くなる、というだけでも良いと思ってます。というか全然良いです。素晴らしい。</p>
+</div>
+<h1><a href="http://neue.cc/2016/0803_536.html">UniRx 5.4.0 - Unity 5.4対応とまだまだ最適化</a></h1>
+<ul class="date"><li>2016-08-03</li></ul>
+<div class="entry_body"><p>UniRx 5.4.0をリリースしました！ちょうどUnity 5.4もリリースされたので、5.4向けの修正(Warning取り除いただけですが)を出せて良かった。というわけで5.4正式対応です。リリースは前回が5月だったので3ヶ月ぶりです。5.2 -&gt; 5.3も3ヶ月だったので、今のとこ3ヶ月スパンになってますが偶然です。</p>
+<ul>
+<li><a href="https://github.com/neuecc/UniRx">GitHub/UniRx</a></li>
+<li><a href="https://www.assetstore.unity3d.com/jp/#!/content/17276">AssetStore/UniRx</a></li>
+</ul>
+<p>何が変わったのかというと</p>
+<pre><code class="language-txt">Add: Observable.FrameInterval
+Add: Observable.FrameTimeInterval
+Add: Observable.BatchFrame
+Add: Observable.Debug(under UniRx.Diagnostics namespace)
+Add: ObservableParticleTrigger and OnParticleCollisionAsObservable, OnParticleTriggerAsObservabl(after Unity 5.4) extension methods
+Add: UniRx.AsyncReactiveCommand
+Add: ReactiveCommand.BindToOnClick, `IObservable&lt;bool&gt;.BindToButtonOnClick`
+Add: UniRx.Toolkit.ObjectPool, AsyncObjectPool
+Add: UniRx.AsyncMessageBroker, asynchronous variation of MessageBroker
+Add: ObserveEveryValueChanged(IEqualityComparer) overload
+Add: `Observable.FromCoroutine(Func&lt;CancellationToken, IEnumerator&gt;)` overload
+Add: ObservableYieldInstruction.IsDone property
+Add: IPresenter.ForceInitialize(object argument)
+Improvement: Where().Select(), Select().Where() peformance was optimized that combine funcs at internal
+Improvement: MicroCoroutine performance was optimized that prevent refresh spike
+Improvement: Observable.Return performance was optimized that reduced memory cost
+Improvement: Observable.Return(bool) was optimzied perofmrance that allocate zero memory
+Improvement: Observable.ReturnUnit was optimzied perofmrance that allocate zero memory
+Improvement: Observable.Empty was optimzied perofmrance that allocate zero memory
+Improvement: Observable.Never was optimzied perofmrance that allocate zero memory
+Improvement: Observable.DelayFrame performance was optimized
+Improvement: UnityEqualityComparer.GetDefault peformance was optimized
+Improvement: AddTo(gameObject) dispose when ObservableTrigger is not activated
+Improvement: AddTo(gameObject/component) performance was optimized by use inner CompositeDisposable of ObservableDestroyTrigger
+Improvement: `FromCoroutine&lt;T&gt;(Func&lt;IObserver&lt;T&gt;, IEnumerator&gt;)` stops coroutine when subscription was disposed
+Improvement: ReactiveCollection, ReactiveDictionary implements dispose pattern
+Fix: ToYieldInstruction throws exception on MoveNext when reThrowOnError and has error 
+Fix: ObserveEveryValueChanged publish value immediately(this is degraded from UniRx 5.3)
+Fix: Prevent warning on Unity 5.4 at ObservableMonoBehaviour/TypedMonoBehaviour.OnLevelWasLoaded
+Fix: Remove indexer.set of IReadOnlyReactiveDictionary
+Breaking Changes: Does not guaranty MicroCoroutine action on same frame
+Breaking Changes: UniRx.Diagnostics.LogEntry was changed from class to struct for performance improvement
+</code></pre>
+<p>相変わらずへっぽこな英語はおいといてもらえるとして、基本的にはパフォーマンス改善、です。</p>
+<p><a href="http://neue.cc/2016/05/14_529.html">前回紹介したMicroCoroutine</a>を改良して、配列をお掃除しながら走査する（かつ配列走査速度は極力最高速を維持する）ようになったので、より安定感もましたかな、と。その他メモリ確保しないで済みそうなものは徹底的に確保しないようになど、しつっこく性能改善に努めました。あと新規実装オペレータに関しては性能に対する執拗度がかなり上がっていて、今回でいうとBatchFrameはギチギチに最適化した実装です。既存オペレータも実装甘いものも残ってはいるので、見直せるものは見なおしてみたいですねえ。</p>
+<p>また、9/13日に<a href="https://atnd.org/events/80089">Photon勉強会【Photon Server Deep Dive - PhotonWireの実装から見つめるPhoton Serverの基礎と応用、ほか】</a>で登壇するので、<a href="https://github.com/neuecc/PhotonWire">PhotonWire</a>ではUniRxもクライアント側でかなり使っているので、その辺もちょっと話したいなと思っていますので、Photonに興味ある方もない方も是非是非。Photon固有の話も勿論しますが、普通にUnityとリアルタイム通信エンジンについての考えや、UniRx固有の話なども含めていきますので。</p>
+<h2>Debug</h2>
+<p>Debugという直球な名前のオペレータが追加されました。標準では有効化されていなくて、<code>UniRx.Diagnostics</code>というマイナーな名前空間をusingするようで使えるようになります。実際どんな効果が得られるのかというと</p>
+<pre><code class="language-csharp">using UniRx.Diagnostics;
+
+---
+
+// [DebugDump, Normal]OnSubscribe
+// [DebugDump, Normal]OnNext(1)
+// [DebugDump, Normal]OnNext(10)
+// [DebugDump, Normal]OnCompleted()
+{
+    var subject = new Subject&lt;int&gt;();
+
+    subject.Debug(&quot;DebugDump, Normal&quot;).Subscribe();
+
+    subject.OnNext(1);
+    subject.OnNext(10);
+    subject.OnCompleted();
+}
+
+// [DebugDump, Cancel]OnSubscribe
+// [DebugDump, Cancel]OnNext(1)
+// [DebugDump, Cancel]OnCancel
+{
+    var subject = new Subject&lt;int&gt;();
+
+    var d = subject.Debug(&quot;DebugDump, Cancel&quot;).Subscribe();
+
+    subject.OnNext(1);
+    d.Dispose();
+}
+
+// [DebugDump, Error]OnSubscribe
+// [DebugDump, Error]OnNext(1)
+// [DebugDump, Error]OnError(System.Exception)
+{
+    var subject = new Subject&lt;int&gt;();
+
+    subject.Debug(&quot;DebugDump, Error&quot;).Subscribe();
+
+    subject.OnNext(1);
+    subject.OnError(new Exception());
+}
+</code></pre>
+<p>シーケンス内で検出可能なアクション（OnNext, OnError, OnCompleted, OnSubscribe, OnCancel）が全てコンソールに出力されます。よくあるのが、何か値が流れてこなくなったんだけど→どこかで誰かがDispose済み(OnCompleted)とか、OnCompletedが実は呼ばれてたとかが見えるようになります。</p>
+<p>超絶ベンリな可視化！ってほどではないんですが、こんなものがあるだけでも、Rxで困ったときのデバッグの足しにはなるかなー、と。</p>
+<h2>BatchFrame</h2>
+<p>BatchFrameは特定タイミング後（例えばEndOfFrameまでコマンドまとめるとか）にまとめて発火するという、Buffer(Frame)のバリエーションみたいなものです。都度処理ではなくてまとめてから発火というのは、パフォーマンス的に有利になるケースが多いので、そのための仕組みです。Bufferでも代用できなくもなかったのですが、Bufferとは、タイマーの回るタイミングがBufferが空の時にスタートして、出力したら止まるというのが大きな違いですね。その挙動に合わせて最適化されています。</p>
+<pre><code class="language-csharp">// BatchFrame特定タイミング後にまとめられて発火
+// デフォルトは0フレーム, EndOfFrameのタイミング
+var s1 = new Subject&lt;Unit&gt;();
+var s2 = new Subject&lt;Unit&gt;();
+
+Observable.Merge(s1, s2)
+    .BatchFrame()
+    .Subscribe(_ =&gt; Debug.Log(Time.frameCount));
+
+Debug.Log(&quot;Before BatchFrame:&quot; + Time.frameCount);
+
+s1.OnNext(Unit.Default);
+s2.OnNext(Unit.Default);
+</code></pre>
+<p>実装的には、まとめる＆発火のTimerはコルーチンで待つようにしているのですが、今回はそのIEnumeratorを手実装して、適宜Resetかけて再利用することで、パイプライン構築後は一切の追加メモリ消費がない状態にしてます。</p>
+<h2>Optimize Combination</h2>
+<p>オペレータの組み合わせには、幾つかメジャーなものがあります。特に代表的なのはWhere().Select()でしょう。これはリスト内包表記などでも固有記法として存在するように、フィルタして射影。よくありすぎるパターンです。また、Where().Where()などのフィルタの連打やSelect().Select()などの射影の連打、そして射影してフィルタSelect().Where()などもよくみかけます（特にWhere(x =&gt; x != null)みたいなのは頻出すぎる！）。これらは、内部的に一つのオペレータとして最適化した合成が可能です。</p>
+<pre><code class="language-csharp">// Select().Select()
+onNext(selector1(selector2(x)));
+
+// Where().Where()
+if(predicate1(x) &amp;&amp; predicate2(x))
+{
+    onNext(x);
+}
+
+// Where().Select()
+if(predicate(x))
+{
+    onNext(selector(x));
+}
+
+// Select().Where()
+var v = selector(x);
+if(predicate(v))
+{
+    onNext(v);
+}
+</code></pre>
+<p>と、いうわけで、今回からそれらの結合を検出した場合に、内部的には自動的にデリゲートをまとめた一つのオペレータに変換して返すようになっています。</p>
+<h2>MessageBroker, AsyncMessageBroker</h2>
+<p>MessageBrokerはRxベースのインメモリPubSubです。Androidで<a href="http://qiita.com/yyaammaa/items/57d8baa1e80346e67e47">OttoからRxJavaへの移行ガイド</a>のような記事があるように、PubSubをRxベースで作るのは珍しいことではなく、それのUniRx版となってます。</p>
+<p>UniRxのMessageBrokerは「型」でグルーピングされて分配される仕組みにしています。</p>
+<pre><code class="language-csharp">// こんな型があるとして
+public class TestArgs
+{
+    public int Value { get; set; }
+}
+
+---
+
+// Subscribe message on global-scope.
+MessageBroker.Default.Receive&lt;TestArgs&gt;().Subscribe(x =&gt; UnityEngine.Debug.Log(x));
+
+// Publish message
+MessageBroker.Default.Publish(new TestArgs { Value = 1000 });
+
+// AsyncMessageBroker is variation of MessageBroker, can await Publish call.
+
+AsyncMessageBroker.Default.Subscribe&lt;TestArgs&gt;(x =&gt;
+{
+    // show after 3 seconds.
+    return Observable.Timer(TimeSpan.FromSeconds(3))
+        .ForEachAsync(_ =&gt;
+        {
+            UnityEngine.Debug.Log(x);
+        });
+});
+
+AsyncMessageBroker.Default.PublishAsync(new TestArgs { Value = 3000 })
+    .Subscribe(_ =&gt;
+    {
+        UnityEngine.Debug.Log(&quot;called all subscriber completed&quot;);
+    });
+</code></pre>
+<p>AsyncMessageBrokerはMessageBrokerの非同期のバリエーションで、Publish時に全てのSubscriberに届いて完了したことを待つことができます。例えばアニメーション発行をPublishで投げて、Subscribe側ではそれの完了を単一のObservableで返す、Publish側はObservableになっているので、全ての完了を待ってSubscribe可能。みたいな。文字だけだとちょっと分かりにくいですが、使ってみれば結構簡単です。</p>
+<h2>UniRx.Toolkit.ObjectPool/AsyncObjectPool</h2>
+<p>UniRx.Toolkit名前空間は、本体とはあんま関係ないけれど、Rx的にベンリな小物置き場という感じのイメージでたまに増やすかもしれません。こういうのはあまり本体に置くべき「ではない」とも思っているのですが、Rxの内部を考慮した最適化を施したコードを書くのはそこそこ難易度が高いので、実用的なサンプル、のような意味合いも込めて、名前空間を隔離したうえで用意していってもいいのかな、と思いました。</p>
+<p>というわけで、最初の追加はObjectPoolです。ObjectPoolはどこまで機能を持たせ、どこまで汎用的で、どこまで特化させるべきかという範囲がかなり広くて、実装難易度が高いわけではないですが、好みのものに仕上げるのは難しいところです。なのでまぁプロジェクト毎に作りゃあいいじゃん、と思いつつもそれはそれで面倒だしねー、の微妙なラインなのでちょっと考えつくも入れてみました。</p>
+<pre><code class="language-csharp">// こんなクラスがあるとして
+public class Foobar : MonoBehaviour
+{
+    public IObservable&lt;Unit&gt; ActionAsync()
+    {
+        // heavy, heavy, action...
+        return Observable.Timer(TimeSpan.FromSeconds(3)).AsUnitObservable();
+    }
+}
+
+// それ専用のPoolを&lt;T&gt;で作る
+public class FoobarPool : ObjectPool&lt;Foobar&gt;
+{
+    readonly Foobar prefab;
+    readonly Transform hierarchyParent;
+
+    public FoobarPool(Foobar prefab, Transform hierarchyParent)
+    {
+        this.prefab = prefab;
+        this.hierarchyParent = hierarchyParent;
+    }
+
+    // 基本的にはこれだけオーバーロード。
+    // 初回のインスタンス化の際の処理を書く（特定のtransformに下げたりとかその他色々あるでしょふ）
+    protected override Foobar CreateInstance()
+    {
+        var foobar = GameObject.Instantiate&lt;Foobar&gt;(prefab);
+        foobar.transform.SetParent(hierarchyParent);
+
+        return foobar;
+    }
+
+    // 他カスタマイズする際はOnBeforeRent, OnBeforeReturn, OnClearをオーバーロードすればおｋ
+    // デフォルトでは OnBeforeRent = SetActive(true), OnBeforeReturn = SetActive(false) が実行されます
+
+    // protected override void OnBeforeRent(Foobar instance)
+    // protected override void OnBeforeReturn(Foobar instance)
+    // protected override void OnClear(Foobar instance)
+}
+
+public class Presenter : MonoBehaviour
+{
+    FoobarPool pool = null;
+
+    public Foobar prefab;
+    public Button rentButton;
+
+    void Start()
+    {
+        pool = new FoobarPool(prefab, this.transform);
+
+        rentButton.OnClickAsObservable().Subscribe(_ =&gt;
+        {
+            // プールから借りて
+            var foobar = pool.Rent();
+            foobar.ActionAsync().Subscribe(__ =&gt;
+            {
+                // 終わったらマニュアルで返す
+                pool.Return(foobar);
+            });
+        });
+    }
+}
+</code></pre>
+<p>基本的に手動で返しますし、貸し借りの型には何の手も入ってません！Rent後のトラッキングは一切されてなくて、手でReturnしろ、と。まあ、9割のシチュエーションでそんなんでいいと思うんですよね。賢くやろうとすると基底クラスがばら撒かれることになって、あまり良い兆候とは言えません。パフォーマンス的にも複雑性が増す分、どんどん下がっていきますし。</p>
+<p>どこがRxなのかというと、PreloadAsyncというメソッドが用意されていて、事前にプールを広げておくことができます。フリーズを避けるために毎フレームx個ずつ、みたいな指定が可能になっているので、その完了がRxで待機可能ってとこがRxなとこです。</p>
+<p>それと同期版の他に非同期版も用意されていて、それは CreateInstance/Rent が非同期になってます。</p>
+<p>MessageBrokerと同じくAsyncとそうでないのが分かれているのは、Asyncに統一すべき「ではない」から。統一自体は可能で、というのも同期はObservable.Returnでラップすることで非同期と同じインターフェイスで扱えるから。そのこと自体はいいんですが、パフォーマンス上のペナルティと、そもそもの扱いづらさ（さすがにTのほうがIObservable[T]より遙かに扱いやすい！）を抱えます。</p>
+<p>sync over asyncは、UniRx的にはバッドプラクティスになるかなあ。なので、同期版と非同期版とは、あえて分けて用意する。使い分ける。使う場合は極力同期に寄せる。ほうがいいんじゃないかな、というのが最近の見解です。</p>
+<p>なお、Rent, Returnというメソッド名はdotnet/corefxの<a href="https://github.com/dotnet/corefx/tree/master/src/System.Buffers">System.Buffers</a>から取っています。</p>
+<h2>AsyncReactiveCommand</h2>
+<p>というわけでこちらもsync/asyncの別分けパターンで非同期版のReactiveCommandです。ReactiveCommandは何がベンリなのか分からないって話なのですが、実はこっちのAsyncReactiveCommandはかなりベンリです！</p>
+<pre><code class="language-csharp">public class Presenter : MonoBehaviour
+{
+    public UnityEngine.UI.Button button;
+
+    void Start()
+    {
+        var command = new AsyncReactiveCommand();
+
+        command.Subscribe(_ =&gt;
+        {
+            // heavy, heavy, heavy method....
+            return Observable.Timer(TimeSpan.FromSeconds(3)).AsUnitObservable();
+        });
+
+        // after clicked, button shows disable for 3 seconds
+        command.BindTo(button);
+
+        // Note:shortcut extension, bind aync onclick directly
+        button.BindToOnClick(_ =&gt;
+        {
+            return Observable.Timer(TimeSpan.FromSeconds(3)).AsUnitObservable();
+        });
+    }
+}
+</code></pre>
+<p>interactableの状態をコード実行中、というかつまり<code>IO&lt;T&gt;</code>が返されるまでfalseにします。連打防止でThrottleFirstがよく使われますが、それをより正確にコントロールしたり、また、引数にIReactiveProperty[bool]を渡せて、それを複数のAsyncReactiveCommandで共有することで、特定のボタンを実行中は他のボタンも実行できない、のような実行可否のグルーピングが可能になります（例えばグローバルでUI用に一個持っておけば、ゲーム中でUIは単一の実行しか許可されない、的なことが可能になる）</p>
+<h2>PresenterBase再考</h2>
+<p>PresenterBase、Obsoleteはつけてないのですけれど、GitHub上のReadMeで非推奨の明言を入れました。賢い基底クラスは悪。なのです。POCO。それはUnityにおいても何事においても例外ではない。その原則からするとPresenterBaseは賢すぎたのでナシ of the Year。動きはする、動きはするんですが……。</p>
+<p>Model-View-Presenterパターン自体の否定ではなくて（それ自体は機能するとは思っています、ただし関心がModelにばかり向きがちですが、Viewは何か、Presenterは何か、についてもきちんと向き合わないとPresenterが奇形化するかなー、というのは実感としてある。ViewであるものをPresenterとして表現してアレゲになる、とか）、PresenterBaseというフレームワークのミスかな、とは。です。</p>
+<p>とりあえずいったん初期化順序が気になるシーンは手でInitializeメソッド立てて、それをAwake, Startの代わりにして、呼ばせる。いじょ。みたいな素朴な奴で十二分かなー、とオモッテマス。結局。メリットよりもデメリットのほうが大きすぎたかな。反省。</p>
+<p>この辺りに関してはアイディアはあるので、形にするまで、むー、ちょっと味噌汁で顔洗って出直してきます。</p>
+<h2>まとめ</h2>
+<p>あんまり大きな機能追加はなく細々とした変化なんですが、着々と良くはなっているかな、と！</p>
+<p>Rxに関してもバッドプラクティスを色々考えられるというか反省できる（おうふ……）ようになっては来たので、どっかでまとめておきたいですね。油断するとすぐリアクティブスパゲティ化するのはいくないところではある。強力なツールではあるんですが、やりすぎて自爆するというのは、どんなツールを使っても避けられないことではあるけれど、Rxがその傾向はかなり強くはある。</p>
+<p>まぁ、sync over asyncはいくないです。ほんと（思うところいっぱいある）。</p>
+<p>というわけかで繰り返しますが、9/13日に<a href="https://atnd.org/events/80089">Photon勉強会【Photon Server Deep Dive - PhotonWireの実装から見つめるPhoton Serverの基礎と応用、ほか】</a>で登壇するので、よければそちらも是非是非です。</p>
+</div>
+<h1><a href="http://neue.cc/2016/0728_535.html">LightNode 2 - OWINからASP.NET Coreへの移植実例</a></h1>
+<ul class="date"><li>2016-07-28</li></ul>
+<div class="entry_body"><p><a href="https://docs.asp.net/en/latest/">ASP.NET Core</a>以前に<a href="https://www.microsoft.com/net/core">.NET Core</a>をガン無視している昨今。というのも、.NET Coreというかようするところ最近の.NETは横、つまりクロスプラットフォームへの広がりなんですよね。それ自体は素晴らしく良いことではあるのですが、縦、つまり機能面での拡充があるのかどうかというと、あんまない気がしています。それは、クロスプラットフォームいうても基本的にはWindowsでしか現状/当分は使わないんだよなー、という私みたいな人間にとってはあまり興味を引かれるものではないのであった。</p>
+<p>とかっていつまでも言ってるのもアレなので、とりあえず<a href="http://neuecc.github.io/LightNode/">LightNode</a>(という私の作ってるOwinで動くMicro REST Framework、ようはASP.NET Web APIみたいなやつ)をASP.NET Coreに移植してみました。アプリケーションの移植じゃなくてライブラリの移植なので、むしろ楽です。LightNodeはガチガチにOwinのみで構築していたので、ほとんど単純な置換のみでOKでした。</p>
+<ul>
+<li><a href="https://www.nuget.org/packages/LightNode/">Install-Package LightNode -Pre</a></li>
+</ul>
+<p>ASP.NET Coreで動作させるだけなら、OWIN - ASP.NET Coreのブリッジを使うという手もありますが、今回は完全にASP.NET Core向けに書き直しました。せっかくやるなら、ちゃんとしっかりしたものにしたいですしね、HttpContextのほうが望ましいのにIDictionaryなEnvironmentが露出してたりすると嫌じゃん。そんなわけでつまり、OWINに関連する部分は完全にASP.NET Core仕様に変わったので、互換性はありません。</p>
+<h2>ASP.NET Coreライブラリ開発の準備と移植手順</h2>
+<p>準備として<a href="https://www.visualstudio.com/en-us/news/releasenotes/vs2015-update3-vs">Visual Studio 2015 Update 3</a>と<a href="https://www.microsoft.com/net/core">.NET Core SDK</a>を入れればOK。が、しかしいきなり.NET Core SDKがUpdate 3が入ってねーよエラーが出てインストールできなくて泣いた。世の中厳しい。<a href="http://forums.asp.net/t/2099735.aspx?Cannot+install+DotNetCore+1+0+0+VS2015Tools+Preview2">Forumによるとそういう事例多数</a>。対応としては「DotNetCore.1.0.0-VS2015Tools.Preview2.exe SKIP_VSU_CHECK=1」で叩けば入るよって話で、そうして叩くことによってようやく準備OK。幸先は悪い。</p>
+<p>そうして入ったらテンプレートに.NET Core系があるので、とりあえずClass Library(.NET Core)を作る。参照してるのは .NETStandard Library 1.6.0。この辺良く分からないんですが、<a href="https://github.com/dotnet/corefx/blob/master/Documentation/architecture/net-platform-standard.md">corefx/.NET Platform Standard</a>によると.NET 4.6.3ぐらいに相当するそうで。ふーむ、まぁASP.NET Core系がnetcoreapp 1.0で1.6と同じところらしいので、このままでOKっぽい。気がする。とりあえず。UWPとかが視野の場合はちょっと話は違うのでしょうけれど。</p>
+<p>次にASP.NET系のライブラリをNuGetで入れる。のですが、どの参照をいれればいいのかがまず分からない:) 今回はOwin的なMiddlewareを作りたかったんですが、ここは<a href="https://www.nuget.org/packages/Microsoft.AspNetCore.Http.Abstractions/">Microsoft.AspNetCore.Http.Abstractions</a>が最適のようですね。これでようやくスタートライン。</p>
+<p>既存のLightNodeのコードを突っ込むと当然激しくコンパイルエラーが出るのでここからチマチマと直していきました。まず目につくのがリフレクション関連で、IsEnumとかTypeに生えてる判別系のメソッドが片っ端から動いてません。誰しもが通る.NET Coreの洗礼！これは、type.GetTypeInfo() によるTypeInfoのほうにIsEnumなどなどが生えてるので、ひたすら<a href="https://msdn.microsoft.com/ja-jp/library/system.reflection.introspectionextensions.gettypeinfo(v=vs.110).aspx">GetTypeInfo</a>を書き加えるだけの簡単なお仕事をします。GetTypeInfoの嫌なところはSystem.Reflection名前空間への拡張メソッドとして実装されてるので、IntelliSenseに出てこなくてイラッとする率が高いこと……。まぁ、あと実際にひたすらGetTypeInfoを書きまくるのは面倒くさいので、Typeへの拡張メソッドとして GetTypeInfo().IsEnum とかコンパイルエラー出てるものだけ定義してやることで作業量低減（まぁプロパティは()を書かなきゃいけないのでアレですけど。拡張プロパティはよ）</p>
+<p>また、Parallel.ForEach がない！これは.NETStandardには含まれてないそうなので、別途<a href="https://www.nuget.org/packages/System.Threading.Tasks.Parallel/">System.Threading.Tasks.Parallel</a>をNuGetから拾ってくる。なんかこう、標準に入ってて当たり前だろ、みたいに思うものが別添えになってるの、不思議な感覚ですね。これだともはやReactive Extensionsが標準にないとかImmutable Collecitonsが標準にないとか、どうでもというか全く大したことない話に見えます。なんせParallel.ForEachすらないんだから！（ところでNuGetのVersion History見ると結構細かくアップデートされてはいるんですが、いったいなにが変わったのかRelease Note出して欲しくはある……）</p>
+<p>AppDomain.CurrentDomain.GetAssemblies もない！対象アセンブリ内からControllerがわりのクラスを引っ張ってきたくて、読み込み済みのAssemblyからGetTypesして全部検査したい、というのをやりたいわけですが、ないんですねえ。そして実際、これの代替は今のところないらしい……（というかAppDomainが今のところない）。フレームワーク系の常套手段なのに……。Loaderがどうのこうのとか、あとASP.NET Core側で特化した何かはありそうな気配を感じなくもなかったんですが、今回はGetAssembliesじゃなくても回避可能なので（一手間ではあるんですが、外側からその対象AssemblyのTypeを渡してさえくれればAssembly拾えてGetTypesできる）、Typeを渡してもらう方式のみに制限することでとりあえず回避しました。</p>
+<p>ここから先はASP.NET Core的なところ。 <code>IDictionary[string, object]</code> を <code>HttpContext</code>に変える。そして<code>AppFunc</code>を<code>RequestDelegate</code>に変える。だけの簡単なお仕事。OWINとASP.NET Coreの差異はそれだけだし中身一緒なので、機械的に置き換えていくだけ。OWINに関してはどうだのこうだのと一悶着あったりなかったりで色々ありましたが、一番下のレイヤーで触ってる限りは、概念はほんと完全に一緒なので無駄なことは全くなかったですね。上のレイヤーで触っていても、それはそれで何も考えず置き換えられるはずなので、実際のとこOWINは良かったと思ってます。新しい、ASP.NET CoreのHttpContextは、昔のHttpContextというよりかは、OWINのEnvironmentそのものだったりしますからね。</p>
+<p>これでコンパイル通ったので、実行確認のためASP.NET Core Web Application(.NET Core)テンプレートから新規プロジェクトを作成。ASP.NET Core的なテンプレートはもちろんEmptyで。Startupに以下のを書いて</p>
+<pre><code class="language-csharp">using LightNode;
+using LightNode.Server;
+
+public class Startup
+{
+    public void Configure(IApplicationBuilder app, IHostingEnvironment env, ILoggerFactory loggerFactory)
+    {
+        app.UseLightNode(typeof(Startup));
+    }
+}
+
+public class Toriaezu : LightNodeContract
+{
+    public string Echo(string x)
+    {
+        return x;
+    }
+}
+</code></pre>
+<p><code>http://localhost:15944/Toriaezu/Echo?x=hoge</code> にアクセスでhogeが出力される。おー、ちゃんとできてますね！当たり前っちゃあ当たり前でしょうけれど、あまりに意外にすんなり動いたので普通に感動した。いやあ、いいじゃんASP.NET Core。</p>
+<h2>Swagger Included</h2>
+<p>LightNode 1の時は<a href="http://swagger.io/">Swagger</a>は別添えだったんですが、今回はとりあえず一緒に突っ込んじゃいました。JSON.NET使ったJSON出力とかも同梱です（というかデフォルトがそれになってます）。まぁSwaggerに関してはDependencyが増えるわけでもないしいいじゃんといえばいいじゃん、なので。いいかな、と。LightNodeのSwagger統合はビュー(HTMLとかCSSとか画像とか）がDLLに埋め込んでやってたんですが、そうしたリソースを.NET Coreで埋め込むにはどうすればいいのか。今まではPropertiesで埋めてったんですが、.NET Coreではproject.jsonに書くのが正解のようですねー。</p>
+<pre><code class="language-json">&quot;buildOptions&quot;: {
+        &quot;embed&quot;: [
+            &quot;Swagger/SwaggerUI/**&quot;
+        ]
+}
+</code></pre>
+<p>buildOptions.embedで指定できるようで、ああ、なるほど、これはこれで知ってれば凄く楽なので、全然良いですね。良いです。いいじゃん.NET Core。</p>
+<p>というわけでサクッとSwagger統合も果たせた。</p>
+<pre><code class="language-csharp">public class Startup
+{
+    public void Configure(IApplicationBuilder app, IHostingEnvironment env, ILoggerFactory loggerFactory)
+    {
+        app.Map(&quot;/api&quot;, builder =&gt;
+        {
+            builder.UseLightNode(typeof(Startup));
+        });
+
+        app.Map(&quot;/swagger&quot;, builder =&gt;
+        {
+            var xmlName = &quot;AspNetCoreSample.xml&quot;;
+            var xmlPath = Path.Combine(Path.GetDirectoryName(Assembly.GetEntryAssembly().Location), xmlName);
+
+            builder.UseLightNodeSwagger(new LightNode.Swagger.SwaggerOptions(&quot;AspNetCoreSample&quot;, &quot;/api&quot;)
+            {
+                XmlDocumentPath = xmlPath,
+                IsEmitEnumAsString = true
+            });
+        });
+    }
+}
+</code></pre>
+<p>うーん、全然いけますね、じゃあ次行こう、次。</p>
+<h2>Glimpse not Included</h2>
+<p>LightNodeのウリはSwagger統合と<a href="http://getglimpse.com/">Glimpse</a>統合、特にGlimpseへの診断情報表示は力を入れていて(Glimpseへのハックも含めて）他にここまでやってるフレームワークはないほどでした。ので、当然ASP.NET Coreでもやりたいわけですが、んー、そもそもGlimpseがまだASP.NET Coreに本対応してない……。2.0 Betaで一応対応してるということで、あるだけマシか？と思いきや、かなり古いもので全然動かない。というかGitHubでの開発も(1.x系も2.x系も)なんかもうほとんど動いてない……。<a href="http://blog.getglimpse.com/2015/07/14/glimpse-and-microsoft-join-forces/">メイン開発者2名がMicrosoftに転職</a>ということで、ASP.NET Core対応含めてよりアクティブになるのかなー、とか思ってたら、まさかの大失速……。多分、Microsoft内では別のことやっていて、そっちが忙しくて以前よりもなお作業できなくなってるんでしょうね。しかし、うーん、残念だなあ。</p>
+<p>ASP.NET Coreに移れない/移りたくない理由があるとしたら、このGlimpseが全然対応してないってことでしょうかねえ。Glimpse自体はほんと素晴らしいので、なんとか再生してくれればいいのですけれど。</p>
+<h2>感想</h2>
+<p>.NET CoreにせよASP.NET Coreにせよ、結構コマンド操作がフィーチャーされてて、ゆとりな私には辛いものがあるんですが、さすがに1.0、普通に書いてる限りは、Visual Studio使ってる限りは特にコマンドの必要性もなく、それなりに快適に書けますね。安定してねえー、とか不満に思うことも全然ないので、もう普通に良さそう。いや、思ってたよりも全然いい感じだった。</p>
+<p>さて、じゃあASP.NET CoreでもLightNode使おうぜ！になるかというと、うーん、とりあえずまずは普通にASP.NET Core MVCでいいでしょう（笑）。時代がねー、ちょっと違いますからね。LightNodeも3年前ですから。まぁ、でも設計思想とか全然古くなってないというかむしろASP.NET Core MVCがようやく追いついてきたかな、ぐらいの勢いだとは思ってます！例えば<a href="https://docs.asp.net/en/latest/mvc/controllers/filters.html">ASP.NET Core MVCのFilter</a>は完全にLightNodeのフィルターと一緒ですからね。</p>
+<pre><code class="language-csharp">// ASP.NET Core MVC
+public class SampleAsyncActionFilter : IAsyncActionFilter
+{
+    public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
+    {
+        // do something before the action executes
+        await next();
+        // do something after the action executes
+    }
+}
+
+// LightNode
+public class SampleFilterAttribute : LightNodeFilterAttribute
+{
+    public override async Task Invoke(OperationContext operationContext, Func&lt;Task&gt; next)
+    {
+        // do something before the action executes
+        await next();
+        // do something after the action executes
+    }
+}
+</code></pre>
+<p><a href="https://docs.asp.net/en/latest/mvc/controllers/filters.html#filters-vs-middleware">Filters vs. Middleware</a>の話なんかも、それは3年前に全部考えきって実装し実践してますから(ﾎｼﾞﾎｼﾞ。という話なんで、まぁ全然LightNode 2もいいじゃないでしょうか。LightNodeは他に、密接に統合されたクライアント自動生成などもありますしね。かわりにMVC + Web API的な、Razorのビューを返すコントローラーとWeb APIコントローラーとの統合、みたいなのができてないのは痛み。ここ馴染ませられないのは普通に不便だということを最近良く感じてるので、ASP.NET Core MVCいいですね。いいですね。</p>
+<p>OWINベースで書いたものの移行はそこそこすんなり行けるだろうなあ、という感触はなんとなく掴めた気がします。逆に、やっぱASP.NET MVC 5あたりからの移行は厳しそう。厳しいでしょう。どうするんでしょうね、どうしようかな、参りましたね……。</p>
+<p>ともあれせっかくの新しい.NETの幕開けなので、もう少しポジティブに情報掴んで行こうかなー、という気にはなれたのでめでたしめでたし。</p>
+</div>
+<h1><a href="http://neue.cc/2016/0716_534.html">BigQueryを中心としたヴァルハラゲートのログ分析システム</a></h1>
+<ul class="date"><li>2016-07-16</li></ul>
+<div class="entry_body"><p>というタイトルで<a href="https://events.withgoogle.com/google-for-mobile-game-boot-camp-tokyo/">Google for Mobile | Game Bootcamp</a>で発表しました。4月なので3ヶ月遅れでスライド公開です。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/key/dcoplrKYrwc1hP" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/bigquery-64082920" title="BigQueryを中心としたヴァルハラゲートのログ分析システム" target="_blank">BigQueryを中心としたヴァルハラゲートのログ分析システム</a> </strong> from <strong><a href="//www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>なんかあまり上手く話せなかったな、という後悔がなんかかなり残ってます:) スライドもフォント細くて吹き出しの文字が見辛いな！とりあえず、WindowsでBigQueryなシステムとしては一つの参考例にはなるのではないかなー、と思います。第一部完。</p>
+<p>第二部は<a href="https://github.com/neuecc/EtwStream">EtwStream</a>への移行と、BigQuerySinkのOSS公開かなー、というところなんですがまだまだまだまだまだ先っぽいのでアレでコレでどうして。できれば誰もが秒速でASP.NETアプリケーションのログをBigQueryに流し込める、みたいな状況にしたいのですけれどねえ、そこはまだまだ遠いかなー、ですね。そのへんの.NETのエコシステムは弱いと言わざるをえない。けれどまぁ、地道に補完していきたいと思ってます。</p>
+</div>
+<h1><a href="http://neue.cc/2016/0629_533.html">Japan VR Hackathonに参加し、AMD賞受賞しました</a></h1>
+<ul class="date"><li>2016-06-29</li></ul>
+<div class="entry_body"><p><a href="https://vrhackathon.co/">Japan VR Hackathon</a>に参加してきました！の<a href="http://mogurapr.hatenablog.com/entry/2016/06/28/235939">結果が昨日発表</a>されまして、AMD賞(Best Graphics)を受賞しました。やったー。事前に決めた5人チームでの参加で、大賞取る！という気概でやってたので、入選できて良かったです。</p>
+<p>今回作ったのは「Clash of Oni Online」というゲームで、<a href="https://www.htcvive.com/jp/">HTC Vive</a>用のVRゲームです。テーマである&quot;日本らしさ&quot;を（一応）イメージした（一応）和風の装い。</p>
+<p class="noindent">
+    <iframe width="640" height="360" src="https://www.youtube.com/embed/yUIe2SWPGZo" frameborder="0" allowfullscreen></iframe>
+</p>
+<p>飛んで来る岩を</p>
+<p class="noindent">
+<img src="https://cloud.githubusercontent.com/assets/46207/16436948/610a6a4a-3ddd-11e6-804b-8a16cd7493c6.png" />
+</p>
+<p>吹っ飛ばす</p>
+<p class="noindent">
+<img src="https://cloud.githubusercontent.com/assets/46207/16436958/72288d02-3ddd-11e6-9bca-d2ca14f18bf9.png" />
+</p>
+<p>という、VRバッティングセンター。ViveはVRというだけじゃなくてコントローラーがあるのがいいですねー。</p>
+<p>今回、2日間 31時間で242コミット（最初のコミットが2016/06/18 09:13で 最後のコミットが 2016/06/19 16:34）。時間制限のなかでは、ちゃんとゲームしてる（ゲーム性的にもとりあえず爽快に全部打ち倒すパターンと一球一球を狙い撃ちしないパターンを用意）し、グラフィックもまぁ見栄えがするレベルで、オンライン協力プレイも実装（ただしデモ時はオフラインモード）したのは結構頑張った。ハッカソン系参加が全員初めての割には綺麗に収められた感あります。</p>
+<p>チーム編成と最終的な役割は</p>
+<ul>
+<li>私（プログラマ）：プロジェクトセットアップ、敵ボス挙動、サーバーセットアップ、エフェクト発注、雑進行管理、プレゼンスライド作成、動画撮影</li>
+<li>プログラマ：マルチプレイプログラム、シーン管理プログラム</li>
+<li>プログラマ：Viveプログラム、エフェクト組み込み</li>
+<li>プログラマ：企画、地形エディット、サウンド、アセット検索、デモ</li>
+<li>テクニカルアーティスト：アセット検索、敵モーション作成、ライティング、エフェクト</li>
+</ul>
+<p>という感じでした。全員ほぼViveのプログラミング経験はなし(SDK入れて雰囲気掴んだことはあります程度）</p>
+<p>最初に入れたアセットは</p>
+<ul>
+<li><a href="https://github.com/neuecc/UniRx">UniRx</a> - ないと無理</li>
+<li><a href="https://github.com/neuecc/LINQ-to-GameObject-for-Unity">LINQ to GameObject</a> - ベンリ、だけど今回は別にあまり使わず</li>
+<li><a href="https://github.com/neuecc/PhotonWire">PhotonWire</a> - マルチプレイ前提なので。合わせてサーバー側プロジェクトもセットアップ</li>
+<li><a href="https://www.assetstore.unity3d.com/jp/#!/content/32647">SteamVR Plugin</a> - Viveがターゲットなので</li>
+<li><a href="https://www.assetstore.unity3d.com/jp/#!/content/63141">The Lab Renderer</a> - 使ったことなかったので結局あんま余裕なく使えなかった...</li>
+</ul>
+<p>という編成から随時アセット追加追加。</p>
+<h2>タイムライン</h2>
+<p>1週間ぐらい前に参加を決める。3日前ぐらいに「2人マルチ協力プレイ」「背中合わせにして立ちまわる（時代劇にある格好いい感じのアレ）雑魚戦 + デカい鬼を撃退するボス戦というアクションゲーム」「グラフィックで魅せる」を軸にする。というのを決定。和風です、和風。コミュニケーション手段としてSlack（チャット）を前日に立てる。Unityのバージョンを5.4.0b21に決めて全員にインストールしておいてもらうように。持ち込み物としてHTC Viveを2台用意。当日、会場ついてからGitHub（リポジトリ管理）のPrivateリポジトリを立てて全員招待。</p>
+<p>雑魚戦＋ボス戦といっても、作りきれるか怪しいので（実際ボス戦で手一杯だった、そりゃそうだ）、ボス戦から先に作っていくように。最初に決めていた役割分担は</p>
+<ul>
+<li>私（プログラマ）：マルチプレイ</li>
+<li>プログラマ：ボスプログラム、プレイヤー行動プログラム</li>
+<li>プログラマ：ボスプログラム、プレイヤー行動プログラム</li>
+<li>プログラマ：地形アセット購入/組み込み・サウンド購入/組み込み、パーセプションニューロン触る（使えそうなら使う）</li>
+<li>テクニカルアーティスト：モデルやらモーションやらエフェクトやら</li>
+</ul>
+<p>でした。まぁマルチプレイといってもUnity側のプログラムがある程度できないとやることもないんで、まずは自分で持ってきたViveを自前PCのSurface Bookに繋ごうとしたらSurface Bookの出力をViveがうまく認識してくれなくて最終的に諦め（Forumとか見た限りだとノートPCの出力端子とのトラブル事案は結構多い模様なのでshoganaiね)。ということでViveのプログラミングは他の人に完全に任せることにして、ボスのプログラムを作っていこうかなー、ということに。ボス戦は、崖のような場所にボスが立っている（下半身は見せない）というイメージが共有されたので</p>
+<p class="noindent">
+<img width="640" src="https://cloud.githubusercontent.com/assets/46207/16182516/0484d8f2-36e2-11e6-9f45-813e1915fd4e.gif" />
+</p>
+<p>迫り来るシリンダー撃退ゲーとして作成。雑に作ったこのシーンは、初日ずっとフル活用されることになったのだった。動画系は常時<a href="http://blog.bahraniapps.com/gifcam/">GifCam</a>で撮ってSlackにあげてました。イメージが瞬時に共有されますし、良い内容だとテンションも上がりますし。</p>
+<p>この時点で<a href="https://www.assetstore.unity3d.com/jp/#!/content/3595">LeanTween</a>を追加。マルチプレイできるようにするので、非確定要素をいれないように、というのとそんな凝ることもないしなので弾は全部トゥイーンで制御しようかと。トゥイーンライブラリは色々ありますが、今のとこ私が選ぶなら<a href="http://dotween.demigiant.com/">DOtween</a>かLeanTweenかなぁ。普通だったらDOtween選びます。ただ、今回はLeanTweenにしました、ちょっと慣れておこうかな、と思って。LeanTweenは複数のTweeenの制御とかの補助が入ってないんですが、その辺はUniRxで制御させたので全く問題なし。基本的に完了などのイベントをObservable化すれば既存トゥイーンライブラリとUniRxの統合は容易ですし、かなりいい具合にコントロールできます。実際今回は色々な挙動をそれで組みました。ところで、今ひっそりとUniRx前提のハイパフォーマンスでリアクティブなトゥイーンライブラリを作っているので、それが完成したら基本的にそれしか使いません:) まぁ、というのもあって色々なトゥイーンライブラリを試しているというのもあります。</p>
+<p>このシーンをプレイヤー行動プログラム側に渡して、VIVEで弾き返したり防いだりを作ってもらう感じに。パーセプションニューロン触るマンはパーセプションニューロンを触りつつサウンド探しを、テクニカルアーティストはボスのモデル（これ自体は買ったもの）のUnityへのインポートとテクスチャ調整とモーション付けを、私は弾のバリエーションを作ってました。</p>
+<p class="noindent">
+<img width="640" src="https://cloud.githubusercontent.com/assets/46207/16182927/556a57b6-36e6-11e6-93a1-cedd15ae33b8.gif" /></p>
+<p>豪速球を投げ込むバッティングセンター的イメージ。手前で弾が伸びてくるので振りにくい。二者択一（手前のキューブはプレイヤーAとプレイヤーBです、マルチ協力プレイだから！）でどっちに来るか分からないので、なんとなく緊迫感あってゲーム的でもあるよね、ということで最終的なボス行動にも採用。</p>
+<p class="noindent">
+<img width="640" src="https://cloud.githubusercontent.com/assets/46207/16183060/f90b428a-36e7-11e6-84e6-ce6e6b504536.gif" /></p>
+<p>ぶわーっと全方位に出すのが欲しい(VIVEのデモゲームのThe LabにあるXortexという360度シューティングのボス弾のような）というオーダーを受けて。中々いい感じに派手なので、これも採用。</p>
+<p>あとはボツ案的な弾を作ったり、その他、この時点ではまだ夢膨らみんぐで、ボスの行動も腕をばちーんと振り下ろしてきてそれを斬撃の連打で防いで弾き返す（協力プレイなので、片方が防いでたらそれに加勢しないとダメ、とか）、などを想定したコードを準備したりAIは少しリッチにしようかな、と<a href="https://en.wikipedia.org/wiki/Behavior_tree_(artificial_intelligence,_robotics_and_control)">BehaviorTree</a>のライブラリ書いてたり（ノードエディタなしの基本的なランタイムだけ）、プレイヤープログラム作るチームは盾で防御する処理（最終的に削られたけれど最初は刀と盾の装備のつもりだった）をやってたら、夜0時。うーむ、時間が過ぎるのは早い。</p>
+<p>この辺でさすがに未だにシリンダーとキューブが相手で完成形が全く見えてないのはヤヴァいでしょうということで、シーン統合しましょう祭り。特にテストで大量のアセットを抱えていたマップ作るマンがGitHubに中々Pushできないなどなどトラぶりつつも、2時ぐらいにようやく一段落。マップにモーション付きボスモデル配置して、とりあえず弾を出るようにして、でこんな具合に。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/16183468/219560d2-36ed-11e6-9bb9-ef072178f880.gif" alt="ezgif com-resize" /></p>
+<p>色々アレですが、しかし中々格好よくてテンションあがりますね！その他プレイヤーのほうも入れこんだりなんなりで床に転がって仮眠とって、朝。キューブにも岩を当てはめてついに出来上がったのは……！</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/16183503/8739926e-36ed-11e6-8954-ef885f0e3300.png" alt="image" /></p>
+<p>んー、悪くない。悪くないんだけど、和ではない。雲南省（適当なイメージ）とかそういう中国の高山っぽい気すらする。ここで実際完成させる仕様を概ね確定。</p>
+<ul>
+<li>マップは明確に和テイストが出るものにリテイク</li>
+<li>ボスは殴り攻撃などなし、弾のみ</li>
+<li>盾はなし、弾を打ち返してボスにダメージ与えて、一定回数食らわせたらクリア</li>
+<li>マルチプレイは諦めないので作業は並走、ただし最終的にはシングルプレイが完全にプレイできるの優先</li>
+</ul>
+<p>私は、ボスのモーションが二種あって、殴りつけてくるつもりでつけてもらったモーションはボスが弾を投げ飛ばしてくる（つもり）な雰囲気に適当に調整（タイミングは適当にdelayかけて目視で合わせただけでジャストとは程遠いんですが、まぁなんとなくそれっぽく見えなくもないのでヨシとした）したり、もう一個の大技っぽくやってくるモーションは、なんか岩を抱え込んでる感じにできそうな気がしたので、適当にそれっぽく位置合わせして破裂させてみることに。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/16183698/f027a2a0-36ef-11e6-9ebc-649b5f76336c.gif" alt="resize" /></p>
+<p>うん、それっぽい。地面にめり込んでってるのとかも、まぁ全然気にならないし。このボス行動は今回のハッカソンで私的な私が作った中では一番よくやりましたしょうでした。全部、偶然素材が揃っただけなんですがうまく噛み合ったということで。</p>
+<p>この後は、マップを和テイストに差し替えて常時マップブラッシュアップ、ゲームの要素が確定したので、各種のヒットエフェクトを作ってもらって当て込みや効果音、プレイ感向上のための弾の動きなどの調整、そして諦めてないマルチプレイなどなどを時間ギリギリまで使ってなんとか完成……！（実際、最後の30分でボスのダメージエフェクトがつき、最後の15分前でボスが死ぬようになった程度にギリギリだった）</p>
+<p>マルチプレイに関しては、Viveのセンサーが干渉してうまく二台プレイの調整ができなかったのと、もう一台のデスクトップPCを会場の無線LANに繋げなくて、というネットワーク的な問題で断念。いちおう、プログラム側はマルチ想定で動作するように最後まで組んでました、いやほんと。サーバー側、AzureのVMも一時的なものなのでということで、かなりマシンパワーの強いものに変更したりしたんですけどね、というわけでここをお見せできなかったのは残念。なので、最後の5分でマルチプレイ用のログイン待機処理を消して、リリースビルド完成。お疲れ様ー。</p>
+<h2>完成形</h2>
+<p>出来上がったものは、マップリテイクによって城が追加されたことにより「城下まで迫ってきた赤鬼を、手に持つサムライブレードにより撃退し、城を守る」という設定に。なっていた。完全後付けで。ゲーム名は特に何も考えもなく直前で「Clash of Oni Online」に大決定。</p>
+<p>ハッカソンでの評価は特に会場でのプレゼンはなく、体験してもらって審査員が表を付けてく形式とのことで、あとはデモマンがいい感じに来場者に説明してるのを横目に私は会場を見学する:)最後の一秒までドタバタと調整を続けていた割には、目立ったバグもなくスムースにプレイできてて良かった良かった。</p>
+<p>最終的には当日の審査ではなく後日の審査ということなので、プレゼン資料を作ったり動画を撮ったりして</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/key/2PlYr3M2epDy6U" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/clash-of-oni-online-vr-multiplay-sword-action" title="Clash of Oni Online - VR Multiplay Sword Action " target="_blank">Clash of Oni Online - VR Multiplay Sword Action </a> </strong> from <strong><a href="//www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>結果待ち……！そして発表……！受賞……！やったね！</p>
+<h2>反省点とか</h2>
+<p>当初の想定よりもViveのルームスケールを活かしてない、直立不動のスタイルになったのは、ちょっと想定外。弾を避けたりとか、近寄ったりとかもうちょっとだけアクティブなのをイメージしていたので、しょうがないといえばしょうがないのだけれど、次に何か作るのだったら動くタイプのを作りたいですねぇ。</p>
+<p>効果音が足りなかったり、割れてたり。効果音足りないのは、岩の音を、ボス撃破音とか足すべき箇所はいっぱいですよねー。マップリテイクで時間が取れなかったのがその辺の敗因か。Viveコントローラーと刀の位置が微妙にあってなかったり、足が地面に設置してなかったりといった、プレイヤーに対する調整も甘め。shoganai。この辺はViveプログラミングにて慣れてれば、スッと合わせられる話だと思うので、経験値を積もう。ボスの全方位弾が実は全方位じゃなくて左に寄ってるのは普通にロジックのバグ……。リテイク後のマップのクオリティが急ぎで用意しただけあってリテイク前に比べると低い（雑に光源足すためだけの灯籠を並べるとかしたかった）、ボスを遠方に置く形になってしまったのでスケール感が出なかった、など。</p>
+<p>とか、まぁアラはいくらでも見つかりますが、基本的にはよくやったと思ってる……！よ！チームメンバーが全員、より良くするために自分の仕事を探して作りきっていったというのは純粋なハッカソンの楽しさという感じで、疲労困憊だけど達成感はありますね。</p>
+<p>それとViveでのプログラミングは、結構ゲーム作成入門(Unity入門)にいいかもですね。3Dのプレイヤーの操作ってモーションつけたり色々ハードル高いですが、Viveならすぐに手の動きがキャプチャされて自由に動かせるアクションが作れるので、よくあるシューティングとかブロック崩しとか作っていくよりも楽しいんじゃないかな。（今のVR経験値が少ない現状なら）VRで空間を見て、Viveコントローラーで自由に操作できるというのは、それだけで楽しい体験を作れちゃいますしね。</p>
+<p>そんなわけで、家でもViveを設置したしGeforce GTX 1080搭載PCも買ったので、ちょいちょいとVive用に何か作っていきたいという気持ちを強くしました。ので、ちょいちょいと出していければいいですねー。</p>
+</div>
+<h1><a href="http://neue.cc/2016/0607_532.html">ObserveEveryValueChanged - 全てをRx化する拡張メソッド</a></h1>
+<ul class="date"><li>2016-06-07</li></ul>
+<div class="entry_body"><p>ブードゥーの秘術により、INotifyPropertyChanged不要で、値の変更を検知し、IObservable化します。例えばINotifyPropertyChangedじゃないところから、WidthとHeightを引き出してみます。</p>
+<pre><code class="language-csharp">using Reactive.Bindings.Extensions;
+
+public partial class MainWindow : Window
+{
+    public MainWindow()
+    {
+        InitializeComponent();
+
+        this.ObserveEveryValueChanged(x =&gt; x.Width).Subscribe(x =&gt; WidthText.Text = x.ToString());
+        this.ObserveEveryValueChanged(x =&gt; x.Height).Subscribe(x =&gt; HeightText.Text = x.ToString());
+    }
+}
+</code></pre>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/15827886/1573ff16-2c48-11e6-9876-4e4455d7eced.gif" alt="wpfgif" /></p>
+<p>なるほど的確に追随している。ソースコードはGitHub上に公開しました。</p>
+<ul>
+<li><a href="https://github.com/neuecc/ObserveEveryValueChanged">GitHub - ObserveEveryValueChanged</a></li>
+</ul>
+<p><a href="https://github.com/runceel/ReactiveProperty/">ReactiveProperty</a>と組み合わせることで、そのままバインダブルに変換することも可能です。</p>
+<pre><code class="language-csharp">public class MyClass
+{
+    public int MyProperty { get; set; }
+}
+
+public partial class MainWindow : Window
+{
+    MyClass model;
+    public IReadOnlyReactiveProperty&lt;int&gt; MyClassMyProperty { get; }
+
+    public MainWindow()
+    {
+        InitializeComponent();
+
+        model = new MyClass();
+        this.MyClassMyProperty = model.ObserveEveryValueChanged(x =&gt; x.MyProperty).ToReadOnlyReactiveProperty();
+    }
+}
+</code></pre>
+<p>ついでにokazukiさんが、<a href="http://blog.okazuki.jp/entry/2016/06/07/032319">ReactiveProperty v2.7.3</a>に組み込んでくれましたので（今のところ).NET版では是非是非に使えます。UWP用とかXamarin用とかもきっとやってくれるでしょう（他人任せ）</p>
+<h2>仕組み</h2>
+<p><a href="https://msdn.microsoft.com/ja-jp/library/system.windows.media.compositiontarget.rendering(v=vs.110).aspx">CompositionTarget.Rendering</a>に引っ掛けて、つまり毎フレーム監視を走らせています。もともと<a href="https://github.com/neuecc/UniRx">UniRx</a>のために作った機構を、そのままWPFに持ってきました。CompositionTarget.Renderingは、アニメーション描画などでも叩かれている比較的低下層のイベントで、これより遅いと遅れを人間が検知できちゃうので影響が出るし、これより早くても視認できないので意味がない。という、ぐらいの層です。こういった用途ではベストなところ。</p>
+<p>毎フレーム監視がありかなしか。ゲームエンジンだと、そもそもほとんどが毎フレームごとの処理になっているので違和感も罪悪感もないのですけれど、全てがイベントドリブンで構築されている世界にそれはどうなのか。もちろん、原則はNoです。素直にINotifyPropertyChangedを書くべきだし、素直にReactivePropertyを書くべきでしょう。</p>
+<p>ただ、アニメーションでも使われるしデバイスのインプット（LeapMotionとか）もその辺に引っ掛けるようなので、ここにちょっとプロパティに変更があるかないかのチェック入れるぐらい別にいいじゃん（どうせCPU有り余ってるんだし）、みたいな開き直りはあります。かなり。割と。</p>
+<p>ObserveEveryValueChangedは、毎フレーム回っているような低下層の世界から、イベントドリブン（リアクティブ）な世界に引き上げるためのブリッジとしての役割があります。そう思うと不思議と、よく見えてきませんか？ただ「毎フレームポーリングかよ、ぷぷｗ」とかって一笑するだけだと視野が狭く、もう少しだけ一歩踏み込んで考えてみると思考実験的に面白い。私はコード片に意思を詰め込んでいくのが好きですね。哲学といってもいいし、ポエムでもある。そこには幾重も意味が込められています。</p>
+</div>
+<h1><a href="http://neue.cc/2016/0531_531.html">PhotonWire - Photon Server + Unityによる型付き非同期RPCフレームワーク</a></h1>
+<ul class="date"><li>2016-05-31</li></ul>
+<div class="entry_body"><p>というのを作りました。Unityでネットワークマルチプレイヤーゲーム作るためのフレームワーク。といっても、100%自作じゃなくて、基本的に<a href="https://www.photonengine.com/en/onpremise">Photon Server</a>というミドルウェアの上に乗っかるちょっと高級なレイヤーぐらいの位置づけです。去年の9月ぐらいに作った/作ってるよ、というのは発表していたのですが、それからかれこれ半年以上もpublicにしてないベイパーウェアだったのですが（<a href="http://grani.jp/">グラニ社内</a>では使ってました）、重たい腰を上げてやっと、やっと……、公開。</p>
+<ul>
+<li><a href="https://github.com/neuecc/PhotonWire">neuecc/PhotonWire</a></li>
+</ul>
+<p>謳い文句は型付き非同期RPCフレームワークで、サーバー側はC#でasync/awaitを使ったメソッド実装、Unity側はそこから生成されたUniRx利用のメソッドを呼ぶだけで相互に通信できます。それでなにができるかというと、Visual StudioでUnity -&gt; Server -&gt; Unityと完全に一体化してデバッグできます。全部C#で。もうこれだけで最強でしょう。他は比較にならない。勝った。終わった。以上第一部完。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/15651046/f0931f46-26b7-11e6-979c-b8a766511617.gif" alt="" /></p>
+<p>真面目に特徴、強みを上げると、以下のような感じです。</p>
+<ul>
+<li>完全タイプセーフ。サーバー-サーバー間は動的プロキシ、クライアント-サーバー間は事前クライアント生成。</li>
+<li>IDLレス。C#サーバーコードのバイナリを元にして、クライアントコードを生成するので、普通にサーバーコードを書くだけ。面倒なIDLはゴミ箱ぽい。</li>
+<li>高性能。サーバーはasync/awaitで、クライアントは<a href="https://github.com/neuecc/UniRx">UniRx</a>により完全非同期で駆動。特にサーバーのC#コードはIL直書きも厭わずギチギチに最適化済み。</li>
+<li>事前生成シリアライザによるMsgPackでのシリアライズ/デシリアライズ。デシリアライズは更にマルチスレッド上で処理してUniRxでメインスレッドにディスパッチするのでフレームレートに一切影響を与えない。</li>
+<li>Visual Studioとの完全な統合。高いデバッガビリティと、Analyzer利用を前提にしたフレームワーク構成はVS2015時代の新しい地平線。</li>
+<li>外部ツール「PhotonWire.HubInvoker」により外からAPIを直接叩ける。</li>
+</ul>
+<p class="noindent">
+<img src="https://cloud.githubusercontent.com/assets/46207/15658680/4f2fea38-26fa-11e6-95ac-d8de2585a562.png" />
+</p>
+<p>HubInvokerは私にしては珍しく、ちゃんと見た目にこだわりました。これの外観の作り方は<a href="http://neue.cc/2015/09/10_515.html">Material Design In XAML Toolkitでお手軽にWPFアプリを美しく</a>で記事にしてます。</p>
+<h2>Photon Serverを選ぶ理由</h2>
+<p>Unityでもネットワーク系は色々な選択肢があると思います。</p>
+<ul>
+<li>UNET</li>
+<li>PUN + Photon Cloud</li>
+<li>Photon Server(SDK直叩き)</li>
+<li>モノビットエンジン</li>
+<li>WebSocketで自作</li>
+<li>MQTTで自作</li>
+</ul>
+<p>このあたりは見たことある気がします。そのうちUNETは標準大正義だしAPIもProfilerも充実してる感なのですが、uNet Weaver Errorがムカつくので(コンパイルができなくなるという絶望！特にUniRx使ってると遭遇率が飛躍的に上昇！)、それが直らないかぎりは一ミリも使う気になれない。というのと、サーバーロジックを入れ込みたいどうしてもとにかくむしろそれがマスト、な状況の時にというか割とすぐにそうなると思ってるんですが、Unity純正だと、逆にUnityから出れないのが辛いかな、というのはありますね（ロードマップ的にはその辺もやるとかやらないとかあった気がしますが、まぁ遠い未来ということで）。Unity外で弄れるというのは、サーバーロジックだけじゃなくHubInvokerのようなツールを作れるっていうのも良いところですね。大事。なので、標準大正義は正しくも選べないのです。</p>
+<p>モノビットはよく知らないので。C++でサーバーロジックは書きたくないなあ、今はC#も行けるんですっけ？</p>
+<p>自作系は、あんまりそのレイヤーの面倒は見たくないので極力避けたい。別に動くの作るのはすぐでも、まともにちゃんと動き続けるの作るのは大変なのは分かりきってる話で。トラブルシュートも泣いちゃう。そこに骨を埋める気はない。あと、自作にするにしてもプロトコルの根底の部分で安定してるライブラリがあるかないかも大事で（そこまで自作は本当に嫌！）、Unityだとただでさえそんなに選択肢のないものが更に狭まるので、結構厳しい気がするのよね。実際。</p>
+<p>Photonといって、Photon Cloudの話をしているのかPUN(Photon Unity Network)の話をしているのか、Photon Serverの話をしているのか。どれも違く、はないけれど性質は違うのだから一緒くたに言われてもよくわからない。さて、PUN。PhotonのUnityクライアントは生SDKが低レイヤ、その上に構築されたPUNが高レイヤのような位置づけっぽい感じですが、PUNは個人的にはないですね。秒速でないと思った。PUNの問題点は、標準のUnity Networkに似せたAPIが恐ろしく使いづらいこと。標準のUnity Network自体が別に良いものでもなんでもないレガシー（ついでにUnity自体も新APIであるUNETに移行する）なので、それに似てて嬉しい事なんて、実際のとこ全くないじゃん！もうこの時点でやる気はないんですが、更にPhoton Serverで独自ロジック書いたらそこははみ出すので生SDK触るしかないのだ、なんだ、じゃあいらないじゃん？Client-Client RPCも別になくてもいいし、というかなくていいし。</p>
+<p>Photon Server。C++のコアエンジンってのは言ってみればASP.NETにおけるIISみたいなもので、開発者は触るところじゃない、直接触るのはサーバーSDKとクライアントSDKだけで、つまり両方ピュアC#。その上では普通にC#でガリガリと書ける。いいじゃん。両方ピュアC#というのが最高に良い。サーバーはWindowsでホストされる。それも最高に良い。プロトコルとかはゲーム専用で割り切ってる分だけ軽量っぽい。うん、悪くないんじゃないか。</p>
+<p>また、ホスティングは結構優秀です。まず、無停止デプロイができる（設定でShadowCopy周りを弄ればOK）。これ、すっごく嬉しい。この手のは常時接続なのでデプロイ時に切断するわけにもいかないし、これ出来ないとデプロイの難易度が跳ね上がっちゃいますからねぇ。また、1サーバーで擬似的に複数台のシミュレートなどが可能です。実際、グラニでは6台構成クラスタのシミュレートという形で常に動かしていて、どうしても分散系のバグを未然に防ぐには重要で、それがサクッと作れるのは嬉しい。脚周りに関しては、かなり優秀と思って良いのではないでしょうか。</p>
+<h2>PhotonWireの必要な理由</h2>
+<p>Photon Serverがまぁ悪くないとして、なんでその上のレイヤーが必要なのか。これは生SDKを使ったコードを見てもらえれば分かるかしらん。</p>
+<pre><code class="language-csharp">// 1. クライアント送信
+var peer = new CliendSidePeer(new MyListener());
+peer.OpCustom(opCode:10, parameter:new Dictionary&lt;byte, object&gt;());
+</code></pre>
+<pre><code class="language-csharp">// 2. サーバー受信
+protected override void OnOperationRequest(OperationRequest operationRequest, SendParameters sendParameters)
+{
+    switch (operationRequest.OperationCode)
+    {
+        case 10:
+           // Dictionaryに詰まってる
+            var parameter = operationRequest.Parameters;
+            HogeMoge(); // なんか処理する
+            // 3. 送り返す
+            this.SendOperationResponse(new OperationResponse(opCode:5), sendParameters); // 
+            break;
+        // 以下ケース繰り返し
+        default:
+            break;
+    }
+}
+</code></pre>
+<pre><code class="language-csharp">public class MyListener : IPhotonPeerListener
+{
+    // 4. クライアント受信
+    public void OnOperationResponse(OperationResponse operationResponse)
+    {
+        // 返ってきたレスポンス
+        switch (operationResponse.OperationCode)
+        {
+            case 5:
+                // なんかする
+                break;
+        }
+    }
+}
+</code></pre>
+<p>問題点は明白です。原始的すぎる。byteパラメータ、Dictionaryを送って受け取りそれをswitch、送り返してやっぱswitch。こうなると当然長大なswitchが出来上がってカオスへ。また、クライアント送信とクライアント受信がバラバラ。コネクションで送信した結果を受け取るのが、独立した別のListenerで受け取ることになる、となると、送信時にフラグONで受信側でフラグチェック祭り、Listener側のフラグ制御が大変。送信したメッセージと戻り受信メッセージだという判別する手段がないので、並列リクエストが発生するとバグってしまう。</p>
+<p>これをPhotonWireはHubという仕掛け(とUniRx)で解決します。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/15657734/bbecb158-26ee-11e6-8058-872826fb98d2.png" alt="image" /></p>
+<p>ようするにMVCのControllerみたいな感じで実装できます、ということですね。また、逆に言えば、PhotonWireはそんなに大きな機能を提供しません。あくまで、このswitchやちょっとしたシリアライゼーションを自動化してあげるという、それだけの薄いレイヤーになっています。なので、PhotonWireによるコードが素のPhoton Serverによるものと少し異なるからといって、あまり警戒する必要はありません。実際、薄く作ることは物凄く意識しています。厚いフレームワークは物事の解決と同時に、別のトラブルを呼び込むものですから……。</p>
+<p>ちなみにPhotonWireを通すことによる通信のオーバーヘッドは4バイトぐらいです。それだけで圧倒的に使いやすさが向上するので、この4バイトは全然あり、でしょう。</p>
+<h2>Hub</h2>
+<p>Hubというのは<a href="http://www.asp.net/signalr">ASP.NET SignalR</a>から取っています。というか、PhotonWireのAPIはSignalRからの影響がかなり濃いので、ドキュメントはSignalRのものを漁れば20%ぐらいは合ってます（全然合ってない）</p>
+<pre><code class="language-csharp">// Unityクライアント側で受け取るメソッド名はインターフェイスで定義
+public interface ITutorialClient
+{
+    [Operation(0)]
+    void GroupBroadcastMessage(string message);
+}
+
+[Hub(100)]
+public class Tutorial : PhotonWire.Server.Hub&lt;ITutorialClient&gt;
+{
+    // 足し算するだけのもの。
+    [Operation(0)]
+    public int Sum(int x, int y)
+    {
+        return x + y;
+    }
+
+    // 非同期も行けます、例えばHTTPアクセスして何か取ってくるとか。
+    [Operation(1)]
+    public async Task&lt;string&gt; GetHtml(string url)
+    {
+        var httpClient = new HttpClient();
+        var result = await httpClient.GetStringAsync(url);
+
+        // PhotonのStringはサイズ制限があるので注意（デカいの送るとクライアント側で落ちて原因追求が困難）
+        // クラスでラップしたのを送るとPhotonの生シリアライズじゃなくてMsgPackを通るようになるので、サイズ制限を超えることは可能 
+        var cut = result.Substring(0, Math.Min(result.Length, short.MaxValue - 5000));
+
+        return cut;
+    }
+    
+    [Operation(2)]
+    public void BroadcastAll(string message)
+    {
+        // リクエスト-レスポンスじゃなく全部の接続に対してメッセージを投げる
+        this.Clients.All.GroupBroadcastMessage(message);
+    }
+
+    [Operation(3)]
+    public void RegisterGroup(string groupName)
+    {
+        // Groupで接続の文字列識別子でのグループ化
+        this.Context.Peer.AddGroup(groupName);
+    }
+
+    [Operation(4)]
+    public void BroadcastTo(string groupName, string message)
+    {
+        // 対象グループにのみメッセージを投げる
+        this.Clients.Group(groupName).GroupBroadcastMessage(message);
+    }
+}
+</code></pre>
+<p>async/awaitに全面対応しているので、同期通信APIを混ぜてしまっていて接続が詰まって死亡、みたいなケースをしっかり回避できます。属性をペタペタ張らないといけないルールは、Visual Studio 2015で書くとAnalyzerがエラーにしてくるので、それに従うだけで良いので、かなり楽です。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/15641589/f703ccb2-267c-11e6-8aa2-9a919bdbbecd.png" alt="" /></p>
+<p>プリミティブな型だけじゃなくて複雑な型を受け渡ししたい場合は、DLLを共有します。</p>
+<pre><code class="language-csharp">// こんなクラスをShareプロジェクトに定義して、Server側ではプロジェクト参照、Unity側へはビルド済みDLLをコピーする
+public class Person
+{
+    public int Age { get; set; }
+    public string FirstName { get; set; }
+    public string LastName { get; set; }
+}
+</code></pre>
+<pre><code class="language-csharp">// サーバーがこんなふうに戻り値を返して
+[Operation(1)]
+public Person CreatePerson(int seed)
+{
+    var rand = new Random(seed);
+
+    return new Person
+    {
+        FirstName = &quot;Yoshifumi&quot;,
+        LastName = &quot;Kawai&quot;,
+        Age = rand.Next(0, 100)
+    };
+}
+</code></pre>
+<pre><code class="language-csharp">// Unity側では普通に受け取れる
+proxy.Invoke.CreatePersonAsync(Random.Range(0, 100))
+    .Subscribe(x =&gt;
+    {
+        UnityEngine.Debug.Log(x.FirstName + &quot; &quot; + x.LastName + &quot; Age:&quot; + x.Age);
+    });
+</code></pre>
+<p>プロジェクトの構成はこんな感じ。シームレス。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/15658346/385e0ca8-26f6-11e6-8b89-afa6f1c7ed8f.png" alt="image" /></p>
+<p>また、オマケ的に、Unity側でのエディタウィンドウではコネクションの接続状況と送受信グラフがついてきます。UNETの立派なProfilerに比べるとショボすぎて話にならないんですが、ないよりはマシかな、と。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/15650771/fbdf81d4-26b5-11e6-87d0-811e1e77ca8f.png" alt="" /></p>
+<h2>サーバー間通信</h2>
+<p>Photon Serverはサーバーとサーバーを接続してクラスタを作れるのですが、その通信もHubを使ったRPCで処理しています。</p>
+<pre><code class="language-csharp">// ServerHub(呼ばれる方)
+[Hub(54)]
+public class MasterTutorial : PhotonWire.Server.ServerToServer.ServerHub
+{
+    [Operation(0)]
+    public virtual async Task&lt;int&gt; Multiply(int x, int y)
+    {
+        return x * y;
+    }
+}
+
+// ClientHub（呼ぶ方）
+[Hub(99)]
+public class Tutorial : Hub
+{
+    [Operation(0)]
+    public async Task&lt;int&gt; ServerToServer(int x, int y)
+    {
+        var val = await GetServerHubProxy&lt;MasterTutorial&gt;().Single.Multiply(x, y);
+        return val;
+    }
+}
+</code></pre>
+<p>この見た目、直接呼んでるかのように書けるサーバー間通信は、実行時には以下のように置き換わってネットワーク呼び出しに変換されています。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/15658426/78107286-26f7-11e6-9bd0-a8b88eabea0f.png" alt="image" /></p>
+<p>なので、ServerHubはかならず戻り値はTaskじゃないとダメです（Analyzerが警告してくれます）。昔はこの手の処理を、メソッド呼び出しのように隠蔽する場合って、同期的になっちゃって、でもネットワーク呼び出しなので時間かかってボトルネックに、みたいなパターンが多かったようですが、今はTask[T]があるので自然に表現できます。このへんも含めてTask[T]が標準であることの意味、async/awaitによる言語サポートは非常に大きい。</p>
+<p>この辺りの詳しい話は以下のスライドに書いています。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/key/pF55iU0qXIeRFv" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/metaprogramming-universe-in-c-ilroslyn" title="Metaprogramming Universe in C# - 実例に見るILからRoslynまでの活用例" target="_blank">Metaprogramming Universe in C# - 実例に見るILからRoslynまでの活用例</a> </strong> from <strong><a href="//www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<h2>ネットワーク構成</h2>
+<p>PhotonWireは特に何の既定もしません。Photonが自由に組める通り、どんな組み方もできるし、どんな組み方をしてもPhotonWireでの呼び出しに支障は出ません。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/15654243/7d2847aa-26cd-11e6-95cc-4f77c441f213.png" alt="" /></p>
+<p>のはいいんですが、その時、ClientPeer, InboundS2SPeer, OutboundS2SPeerの3種類のPeerを持つように、PhotonWireもまたHub, ServerHub, ReceiveServerHubとそれぞれに対応する3種のHubを持っています。3つ、これは複雑で面倒。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/15655365/7e9aa98e-26d7-11e6-8bfb-97eeea1330f5.png" alt="" /></p>
+<p>しかしPhotonWireはネットワークの複雑さの隠蔽はしません。やろうと思えばできますが、やりません。というのも、これ、やりだすと泥沼だから。賢くやりたきゃあAkkaでもなんでも使ってみればよくて、自分で書いたら一生終わらない。Photonのネットワークは本当に全然賢くなくて、ただたんに直結で繋いでるという、それだけです。そんなんでいい、とまではいいませんが、そうなら、それに関しては受け入れるべきでしょうね。勘違いしちゃあいけなくて、フレームワークは複雑さを隠蔽するもの、ではないのです。</p>
+<p>ともあれ、最低限の賢くなさなりに、スケールしそうな感じに組み上げることは可能なので、全然良いとは思ってますよ！</p>
+<h2>できないこと</h2>
+<p>ポンと貼り付けてtransformが自動同期したり、いい感じに隙間を補完してくれたりするものはありません。ただ、Client-Server RPCがあれば、それは、その上で実装していくものだと思うので（いわゆるNantoka ToolkitとかNantoka Contribの範疇）、しゃーないけれど、自前で作ろうという話にはなってきますね。↑のネットワーク構成の話も、隠蔽とまではいかなくても、決まった構成になるのだったらそれなりにバイパスするいい感じのユーティリティは組んでいけるだろうから、その辺のちょっとした増築は、やったほうがいいでしょう。</p>
+<h2>まとめ</h2>
+<p>現状実績はないです（今、公開したばかりですからね！）。ただ、<a href="http://grani.jp/">グラニ</a>で開発中の<a href="https://kuro-kishi.jp/">黒騎士と白の魔王</a>というタイトルに投下しています。</p>
+<iframe width="640" height="360" src="https://www.youtube.com/embed/Tzwk2LPrsSA" frameborder="0" allowfullscreen></iframe>
+<p>半年以上は使い続けているので、それなりには叩かれて磨かれてはいるかなあ、と。大丈夫ですよ！と言い切るには弱いですが、本気ですよ！とは間違いなく言えます。DLLシェアや自動生成周りが複数人開発でのコンフリクトを起こしがちで、そこが改善しないと大変かなー、というところもありますが、全般的にはかなり良好です。</p>
+<p>ちょっと大掛かりだったり、Windows/C#/Visual Studioベッタリな、時代に逆行するポータビリティのなさが開き直ってはいるんですが、結構使い手はあると思うので試してみてもらえると嬉しいですね！あと、大掛かりといっても、知識ゼロ状態からだったら素のPhoton Server使うよりずっと楽だと思います。そもそもにPhotonWireのGetting Startedのドキュメントのほうがよほど親切ですからねぇ、Visual Studioでのデバッグの仕方とかも懇切丁寧に書いてありますし！</p>
+<p>VR時代のマルチプレイヤーって結局どうすんねん、と思ってたんですが、<a href="https://github.com/googlesamples/tango-examples-unity/tree/master/TangoWithMultiplayer">Project Tango</a>のサンプルがPhotonだし<a href="http://altvr.com/">AltspaceVR</a>もPhotonっぽいので、暫くはPhotonでやってみようかなー。という感です。</p>
+</div>
+<h1><a href="http://neue.cc/2016/0523_530.html">MarkdownGenerator - C#におけるAPI Reference生成のためのドキュメントツール</a></h1>
+<ul class="date"><li>2016-05-23</li></ul>
+<div class="entry_body"><p>APIリファレンス作りたい？<a href="https://github.com/EWSoftware/SHFB">Sandcastle</a>。以上。終了。あるいは<a href="https://github.com/dotnet/docfx">dotnet/docfx</a>が良いのではないでしょうか。こいつはdotnet配下にあるように、MSの今後のOSS系のはこれでドキュメント生成されていく可能性があります。</p>
+<p>というのは置いといて、私的には実のところ、あんまり重要視していませんでした、ドキュメントツール。.chmにはいい思い出がなくて、というか別に見ないじゃん？htmlで出力してもなー、なんかゴチャゴチャしてて汚いしなー。一方でJavaScriptなんかは様々な格好良くフォーマットされた形式で色々出てるのであった。いいじゃん。いいね。</p>
+<p>さて、もう一つ。HTMLで出力しても置き場にこまる。GitHub Pagesにはそんないい思い出がない。別にあんなところをフロントにするよりもリポジトリのアドレス直のほうが断然いいじゃん、みたいな。というわけでアレだ、GitHub Wikiだ。あそこをゴミ置き場にすればいいんだ。という発想で、まずUniRxのリファレンスをGitHub Wikiに置いてみました。</p>
+<ul>
+<li><a href="https://github.com/neuecc/UniRx/wiki">UniRx/Wiki</a></li>
+</ul>
+<p class="noindent">
+<img src="https://cloud.githubusercontent.com/assets/46207/15460956/9b897c32-20f1-11e6-8520-c31b0035dd01.png" />
+</p>
+<p class="noindent">
+<img src="https://cloud.githubusercontent.com/assets/46207/15460939/73c76088-20f1-11e6-8fb7-a483383ab9a1.png" />
+</p>
+<p>UniRxは、namespaceを意図的にある程度平ったくしてるので、ちょっとごちゃってますが、まぁまぁいいんじゃない？それなりに見れる。悪くはない。少なくともないよりは100億倍良い。</p>
+<p>私的にはIntelliSenseがドキュメントだ！みたいな意識がそれなりにあって、最初のチュートリアルみたいなドキュメントがあったら、あとはそれを手がかりにあとはIntelliSenseでなんとかしようぜ、的なところが。実際<a href="https://github.com/dotnet/roslyn">Roslyn</a>なんかはそんな感じがする。Getting Startedはそれなりに厚い、けど全貌からは程遠い。でもAPIドキュメントはない。さあ、IntelliSenseで宝探しだ。って。肯定もしないけれど否定もしない、そういうのも今風よね。でも、まあこの程度のAPIリファレンスでも生成してやると、それはそれで良いな、って思ったのだ。です。</p>
+<h2>MarkdownGenerator</h2>
+<p>生成は自家製こんそーるあぷりで行ってます。というわけで公開しました。</p>
+<ul>
+<li><a href="https://github.com/neuecc/MarkdownGenerator">MarkdownGenerator</a></li>
+</ul>
+<p>dllとxmlを渡すとmdと目次用のHome.mdをばらまくので、GitHub Wikiに投げ込みます。そう、GitHub Wikiはご存じの方も多い通り、それ自体がgitで管理されててCloneできるのです。さいこー。というわけでそのままPushするだけ。Good。完璧。これなら、CIなんかでフックして毎回生成して投げ飛ばしてあげてもいい。よね。</p>
+<p>生成結果のStyleはちょっとまだまだ試行錯誤中。まあでも割とこんなもんでいいんちゃうんちゃうん？ユースケースの9割ぐらいはカバーできているでしょう。それ以上はノイズということで。</p>
+<h2>その他ツール</h2>
+<p>Sandcastleはそもそも出力をカスタマイズできるので、もう少し真面目というかガッチリしたものが必要ならば、<a href="https://github.com/maxtoroq/sandcastle-md">maxtoroq/sandcastle-md</a>あたりを使ってMarkdownを出力してやると良いでしょう。これなら、きっちりとSandcastleで出力される情報が全部そのまま入ってるので、ちゃんとしてる感は圧倒的に高いです。また、繰り返しますけれど<a href="https://github.com/dotnet/docfx">DocFX</a>は今からやるなら最有力候補な気がします。DLLからじゃなくてRoslynでプロジェクトファイルから解析したりとか今風。あくまでstatic file generatorなのでmdじゃなくてhtml出力なので、Wikiに投げ飛ばす用途には向かないのと、ちょっと複雑、使いこなすのは難しい、かな、まあ相応には良さそうかとは。</p>
+<p>MarkdownGeneratorは、ちゃんとしてないなりに、私的に重要視してる情報がパッと一覧で見やすくする、ということを重視しているので……。あと、なんかSandcastle使いたくないんだよねー、心理的に。なんだろうね、レガシー臭するからなのかな。食わず嫌いなだけって話でもあるのだけれど。</p>
+<p>何れにせよ、GitHubであってもなくてもいいだろうけれど、API Referenceを投げ飛ばす場としては、そういうところ（どういうところ？）がいいですね。独立してるよりもリポジトリに近い場所のほうが素敵度は高い。気がする。あとはなんのかんのでGitHubに慣れきってるというのもあって、GitHubにあると情報がスムースに受け取れる気がするんだよね。これもなんでだろうね。でもそういうのってあるよね。</p>
+</div>
+<h1><a href="http://neue.cc/2016/0514_529.html">Unityにおけるコルーチンの省メモリと高速化について、或いはUniRx 5.3.0でのその反映</a></h1>
+<ul class="date"><li>2016-05-14</li></ul>
+<div class="entry_body"><p>UniRx 5.3.0をリリースしました！今回のアップデートは、内部的な最適化、です。最適化は、もうそろそろあんまやるところ残ってないよね、なんて思ってたんですが、じっくり考えるとそんなことなく割とあったので埋めました。それが表題のコルーチンの省メモリと高速化です。使い方次第ではありますが、場合によっては今回のアップデートでものすごく恩恵に授かる人もいればそこそこの人もいるかもです。ともあれ基本的に内部的に変更してるだけなので、入れるだけでそれなりに高速化したりする可能性がそれなりにあります。</p>
+<ul>
+<li><a href="https://github.com/neuecc/UniRx">GitHub/UniRx</a></li>
+<li><a href="https://www.assetstore.unity3d.com/jp/#!/content/17276">AssetStore/UniRx</a></li>
+</ul>
+<p>前回が2月だったので3ヶ月ぶりですね。あまりオペレータ追加がないので、次はオペレータ追加に集中したい気もする。なんか優先的に欲しいのあればリクエストもどうぞ(Observable.Windowとかいい加減そろそろ入れろよって話なんですが）</p>
+<h2>MicroCoroutine</h2>
+<p>今回の大きい変化はMicroCoroutine(と、自称してる)の導入です。特に大量にEveryUpdateやEveryValueChangedを呼んでるシチュエーションにおいて10倍、というのは場合によりで大雑把なのですが、相当速くなります。</p>
+<pre><code class="language-csharp">void Start()
+{
+    // Start 10000 Coroutines
+    for (int i = 0; i &lt; 10000; i++)
+    {
+        // Standard Unity Coroutine
+        // StartCoroutine(Counter());
+
+        // Use UniRx 5.3 - MicroCoroutine
+        MainThreadDispatcher
+          .StartUpdateMicroCoroutine(Counter());
+    }
+}
+
+IEnumerator Counter()
+{
+    while (true)
+    {
+        count++;
+        yield return null;
+    }
+}
+</code></pre>
+<p>こんな10000個、単純なコルーチンを起動するコードがあったとして</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/15267997/86e9ed5c-1a0c-11e6-8371-14b61a09c72c.png" alt="image" /></p>
+<p>大きく違いがでます。ちょっと恣意的すぎではあるんですが、UniRxはコルーチンを簡単にかけるが故に、これに近いシチュエーションってのが意図せず起こりがちではありました。また、Resources.LoadAsyncなど非同期系APIからの取得に関しても、一時的に多くのコルーチンを起動するシチュエーションはあり得るのではないでしょうか。</p>
+<p>性能改善した理由は、基本的にはUnityの公式ブログ<a href="http://blogs.unity3d.com/jp/2015/12/23/1k-update-calls/">UPDATE()を10000回呼ぶ</a>で紹介されていることの話で、10000個のUpdateは遅くて、配列に詰めて直接ループで呼ぼうぜ、と。どうせUpdate内のメソッドは呼ばれてC#の領域で実行されるんだから、マネージド(C#)-アンマネージド(C++)の繋ぎのレイヤーは純粋にオーバーヘッドになってくるよ、と。なるほどそうだねそりゃそうだねぇ。それはStartCoroutineにも言えて、というかコルーチンのほうがもっと性能劣化度が大きいんですよね。</p>
+<p>この記事は非常に素晴らしくて、大量にモノ出して速度遅くなってるのがスクリプト起因なら、マネージャー立ててまとめて、あとUpdateに限らずマネージド-アンマネージドの繋ぎをやってる部分が遅いだろうからそこを適切に取り除ける限り除けば、全然まだまだそれなりに捌ける余裕は残ってるぜ。ということで、むしろ希望に満ちていていい感じです。実際、ハイパフォーマンスを謳うDOTweeenとかのライブラリもそんな感じですね、動かすものそれぞれにUpdateするコンポーネントを挿したりはしない、中央管理で動かすのだ、と。</p>
+<p>さて、UniRxでは幾つかのメソッドはコルーチン依存でループを回しています。Observable.EveryUpdateとかEveryValueChangedとか。少しに使う分にはいいんですが、気楽に使えるが故に、大量に使うと、10000個とまではいかなくてもやっぱり、それぞれがコルーチンを起動することによるマネージド-アンマネージドオーバーヘッドがそのまま乗っかってきてしまいます。というわけで、やはりコルーチン自前管理の道を進むしかない……。幸い、自前管理で問題になる機能面での低下に関しては、UniRx自体がコルーチンを凌ぐだけの機能を提供しているので、気にしないでよし。というわけで純粋にいかにコルーチン(IEnumerator)を高速に回転させ、高速にメンテナンスするかにだけ集中すればよし。</p>
+<p>回転させるのはforループ回すだけの話なんですが、マネージャー作ろうぜ、となった時に、Listに詰めるのはいいんですが、面倒くさいのは削除。削除は要注意で、単純にListのRemoveやって済ませたりするのは結構アレです(Removeは相当高コストな操作です)。かといってDictionaryやSet、LinkedListでやるなんていうのは論外で（列挙の性能が死ぬので本末転倒）、基本的に配列で頑張るべきなんですが、さてはて。結局、その辺のめんどーを見るのがめんどーだからUpdateやStartCoroutineでぶん回すのだ。割と本気で。</p>
+<p>ではどうしたか、というと、UniRxのMicroCoroutineのアプローチはRemoveしない。です。しない。空いた部分はnullで埋めて純粋にスキップするだけにする。多少の空きなら、いちいち削るよりもスキップさせたほうが速い。しかし、それだけだとブヨブヨと膨らみ続けてしまうので、xフレーム毎に空きスペースに詰めなおして小さくします。縮める際も前の方に整列させるんじゃなくて、空きスペースに対して後ろから埋めるようにするので、順番はグチャグチャになります。その代わり余計な配列へのセットが発生しないので速い。そして膨らんだ配列は放置して膨らんだままにします、終端のインデックスだけ記録して管理するのみ（ところでアセットストアにアップデート申請出してから気づいたのですが、この配列の使い方なら定期的なお掃除じゃなくて、動かしながら埋めるようなコードにするのも可能っぽい感、なので次回アップデートでそうします）</p>
+<p>というわけで、UniRxのMicroCoroutineは中央集権的なので多少膨らむことが許される（でしょう！）ことを利用して、とにかく高速にコルーチンを捌く、ということだけに集中してます。ので速い。下手に自前管理するよりも速いかもしれませんし、Updateで監視するよりもObserveEveryValueChangedのほうがむしろ速い、Rxで書いたほうが速い、みたいな逆転現象も全然発生しうるような話になります。</p>
+<pre><code class="language-txt">ObserveEveryValueChanged
+EveryUpdate 
+EveryFixedUpdate
+EveryEndOfFrame
+NextFrame
+TimerFrame 
+IntervalFrame
+DelayFrame 
+SampleFrame
+ThrottleFrame
+ThrottleFirstFrame
+TimeoutFrame
+</code></pre>
+<p>この辺りのメソッドを使った場合、内部の実装がMicroCoroutineに差し替わったので自動的に恩恵に預かれます。コルーチン -&gt; Observable変換に関しては FromMicroCoroutine が追加されました。基本的にはFromCoroutineと一緒なのですが、MicroCoroutineではyield returnするのはnullだけにしてください、それ以外には対応してません（UnityEditor上ではWarning出して警告します）。MicroCoroutineの制約はそれなんですが、なんだかんだで、8割ぐらいはyield return nullだけで成立するんちゃうんちゃうん、みたいな。賢くやろうとすればもう少しは出来なくもないんですが、シンプルで高速なコルーチンの回転を損ねちゃうのでナシ。IEnuemrator.Currentの呼び出しや、その型チェックすら省きたい。残り2割ぐらいなら普通にStartCoroutineすればいいじゃん、ということで。実際、UniRxの↑のメソッドはそれでかなり置き換えることが出来る、ということを発見できたので、全面的に導入する気になったのです。</p>
+<p>また、最悪待ちたい場合は、isDoneのループを回すようにToYieldInstruction経由でIObservableを待てるので、大抵のことはなんでもできます。</p>
+<pre><code class="language-csharp">IEnumerator MicroCoroutineWithToYieldInstruction()
+{
+    var www = ObservableWWW.Get(&quot;http://aaa&quot;).ToYieldInstruction();
+    while (!(www.HasResult || www.IsCanceled || www.HasError)) // 3つもプロパティ並べるのダルいので次回アップデートでIsDoneを追加します予定
+    {
+        yield return null;
+    }
+
+    if (www.HasResult)
+    {
+        UnityEngine.Debug.Log(www.Result);
+    }
+}
+</code></pre>
+<p>もっとプリミティブに直接利用したい場合は、StartCoroutineの代わりにMainThreadDispatcherに3つ生やしてあります。</p>
+<pre><code class="language-txt">MainThreadDispatcher.StartUpdateMicroCoroutine
+MainThreadDispatcher.StartFixedUpdateMicroCoroutine
+MainThreadDispatcher.StartEndOfFrameMicroCoroutine
+</code></pre>
+<p>それぞれがコルーチンを消費するタイミングで、まぁ普通はStartUpdateMicroCoroutineを使えばよいでしょふ。もし大量のStartCoroutineがプログラム中にあるのなら、これに差し替えるだけで本当にすっごく速くなるでしょう。ほんと。</p>
+<h2>SubscribeWithState</h2>
+<p>ここから先はUniRxのアップデートの話だけ。そして本当にMicro Micro Microな最適化であんま意味はないんですが、まず、SubcribeWithStateを追加しました。これによって何が変わるか、というと、例えば……</p>
+<pre><code class="language-csharp">// Before
+public static IDisposable SubscribeToText(this IObservable&lt;string&gt; source, Text text)
+{
+    return source.Subscribe(x =&gt; text.text = x);
+}
+
+// After
+public static IDisposable SubscribeToText(this IObservable&lt;string&gt; source, Text text)
+{
+    return source.SubscribeWithState(text, (x, t) =&gt; t.text = x);
+}
+</code></pre>
+<p>という感じの使い方ができます。どういう違いが出るのかというと、以前に<a href="http://neue.cc/2016/01/06_525.html">Unityでのボクシングの殺し方、或いはラムダ式における見えないnewの見極め方</a>という記事の中で説明したのですが、ラムダ式はその中身によってコンパイル時に生成されるコードがかなり変わってきます。で、最速なのはそのメソッド内だけで完結していて外部の変数等には一切触っていない状態。onNextはActionなので、副作用かける際にどうしても外部変数をキャプチャしてしまうことが多いんですよね。そこでSubscribeWithStateを使うと、必要な変数を閉じ込めることができるので最速ゴミなしの形で記述できます。</p>
+<p>ただまぁ、これやると、じゃあSelectやWhereなんかもState取れたほうがいいんですか？（理屈上はそうです）、とか、ああクロージャ殺さなきゃ死ね死ね死ね、とか思ったりしそうなのですけれど、Subscribeの回数ってパイプライン内の実行頻度に比べれば圧倒的に少なくなるはずなんですよね。だから全体のバランスで見たら無視できるといっても過言ではないはず、特にクロージャでちょっとゴミが出る程度の話は。</p>
+<p>なのであんま神経質にやることはないんですが、↑のSubscribeToTextのようなそんな手間もかからないし、UIとかシーンの初期化時にいっぱい登録される可能性があるようなものでライブラリ的な部分でカバーできる質のものならば、少しだけ気を使ってあげると気は安らぐかもしれません。</p>
+<h2>ReactiveCommand</h2>
+<p>ReactiveCommandは.NET版のReactiveProeprtyにあった、最後のパーツなんですが、どうなんでしょうね、本来はViewModelのレイヤーのためなんですが、UnityだとPresenterにUI要素がセリ出してきてるのでイマイチベンリかどうか分からなくて入れてなかったんですが。一応、こんな風に使えます。</p>
+<pre><code class="language-csharp">public class Player
+{
+   public ReactiveProperty&lt;int&gt; Hp;
+   public ReactiveCommand Resurrect;
+
+   public Player()
+   {
+        Hp = new ReactiveProperty&lt;int&gt;(1000);
+
+        // If dead, can not execute.
+        Resurrect = Hp.Select(x =&gt; x &lt;= 0).ToReactiveCommand();
+        // Execute when clicked
+        Resurrect.Subscribe(_ =&gt;
+        {
+             Hp.Value = 1000;
+        }); 
+    }
+}
+
+public class Presenter
+{
+    public Button resurrectButton;
+
+    Player player;
+
+    void Start()
+    {
+      player = new Player();
+
+      // If Hp &lt;= 0, can't press button.
+      player.Resurrect.BindTo(resurrectButton);
+    }
+}
+</code></pre>
+<p>buttonのinteractableとonClickが抽象化されたもの、って感じですね。</p>
+<h2>その他</h2>
+<p>リリースノートから。</p>
+<pre><code class="language-txt">Add : ReactiveCommand
+Add : MainThreadDispatcher.StartUpdateMicroCoroutine, StartFixedUpdateMicroCoroutine, StartEndOfFrameMicroCoroutine
+Add : Scheduler.MainThreadFixedUpdate, MainThreadEndOfFrame
+Add : ToYieldInstruction(cancellationToken)
+Add : Observer.Create(onNext/onNext, onError/onNext, onCompleted) overload
+Add : IReadOnlyReactiveProperty.SkipLatestValueOnSubscribe
+Add : Observable.WhenAll overload (IObservable&lt;Unit&gt;(params IObservable&lt;Unit&gt;[] sources), this becomes breaking changes)
+Add : Observable.FromMicroCoroutine
+Add : Observable.AsSingleUnitObservable
+Add : Observable.SubscribeWithState
+Add : Observable.CreateWithState
+Add : Disposable.CreateWithState
+Improvement : Use MicroCoroutine on `ObserveEveryValueChanged`, `EveryUpdate`, `EveryFixedUpdate`, `EveryEndOfFrame`, `NextFrame`, `TimerFrame`, `IntervalFrame`, `DelayFrame`, `SampleFrame`, `ThrottleFrame`, `ThrottleFirstFrame`, `TimeoutFrame`
+Improvement : Performance improvement for Observable.Range, Repeat when scheduler is Scheduler.Immediate
+Improvement : Use Time.unscaledDeltaTime in IgnoreTimeScaleMainThreadScheduler
+Fix : ReadOnlyReactiveProperty(source, initialValue) does not publish initial value on subscribe
+Fix : IReadOnlyCollection has set indexer
+Fix : Ambigious property of IReactiveCollection.Count, Indexer
+Fix : Throw invalid error when ObservableWWW.LoadFromCacheOrDownload failed.
+Breaking Changes : Added IReadOnlyReactiveProperty.HasValue
+Breaking Changes : AsyncConvertsion scheduler to Scheduler.MainThread on WebGL build(WebGL doesn't support ThreadPool)
+Other : Update UniRxAnalyzer 1.4.0.1 https://www.nuget.org/packages/UniRxAnalyzer
+</code></pre>
+<p>ToYieldInstructionは<a href="http://neue.cc/2015/12/21_523.html">UniRx 5.0 - 完全書き直しによるパフォーマンス向上とヒューマンリーダブルなスタックトレース生成</a>で説明しているのですが、Unity 5.3以降のCustomYieldInstuctionを応用したもので、IObservableをコルーチンで処理できるようにするやつで、結構お薦め機能です。MicroCoroutineで回すための補助にもなりますし。</p>
+<p>SchedulerにMainThreadFixedUpdateとMainThreadEndOfFrameを足しました。ObserveOnやTimerなどで、その辺の細かい制動をしたい方にどうぞ。</p>
+<p>(ReadOnly)ReactivePropertyへのSkipLatestValueOnSubscribe拡張メソッドの追加。これは、(UniRxの)ReactivePropertyはSubscribe時に必ず値をプッシュするようになってるんですが、そういった初期値を無視したいって局面は少なからずあるんですよね。Rx.NET用のReactivePropertyでは、コンストラクタでReactiveProeprtyModeとして、None | RaiseLatestValueOnSubscribe | DistinctUntilChanged を指定できるようなデザインを選んでいるのですが（というのも、Viewにデータバインディングするため構築時の初期値はnullであることが確定している、というシチュエーションが割とあるため）、UniRxのReactivePropertyではSubscribe側が選ぶというデザインにしています。この辺はフレームワークの性質の違いに合わせてるのですが、ともあれ、初期値を無視したい場合は rxProp.SkipLatestValueOnSubscribe().Subscribe() としてもらえれば。</p>
+<p>Observable.WhenAllを、IObservable[Unit][]が相手の場合はIObservable[Unit]を返すようにしました。これは、別にUnit[]が返されても何の意味もないからというのと、それによって余計な配列確保をしないという最適化も入れています。この方が絶対に良いんですが、しかし戻り値の型が変わってしまったので破壊的変更にはなっています。最初から気づいておけば良かったですね、すびばせん。</p>
+<p>AsSingleUnitObservableは LastOrDefault().AsUnitObservable() みたいな変換をかけるやつで、Async的な保証をかけるのにベンリというあれそれ。</p>
+<p>あとは、んー、使ってる人は、<a href="http://grani.jp/">うちの社内</a>以外にないのでは疑惑も感じてますが、UniRxAnalyzerを更新してます。コンストラクタにIObservableを突っ込んでいた場合に誤検出していたのを修正しています。</p>
+<p><img src="https://raw.githubusercontent.com/neuecc/UniRx/master/StoreDocument/VSAnalyzer.jpg" alt="" /></p>
+<p>これ、Visual Studio 2015を使って開発している人は絶対に入れたほうがいいですよ！Subscribe忘れて発火しないのに気づかなかったー、みたいなポカミスが圧倒的に防げますので。</p>
+<h2>まとめ</h2>
+<p>性能面でより気にせずにカジュアルに色々使えるようになった、というのはいいことかなー。性能面で問題出た際に「そういう使いかた想定してないから」といった却下の仕方って、あんましたくないですからね。聞いてていいものでは全くない。デザインとしてカジュアルに使えるようになっているなら、性能もちゃんと担保していかないし、そういうのが頻発するならライブラリの設計が悪い。と、思ってるので、今回のでよりちゃんと自然に使えるようになったかな、と。ObserveEveryValueChangedは個人的には最高にクールな機能だと思ってるので、気兼ねなく使って欲しいし、やっと本当に気兼ねなく使えるようになりました。</p>
+<p>ObservableUpdateTrigger(UpdateAsObservable), Observable.EveryUpdate, Observable.EveryGameObjectUpdate とUpdateのハンドリングも3択、性能特性も三者三様。混乱との対話！別に特に何をレコメンドすることもなく、まあ素直に書くならUpdateTriggerが素直でよく。自身のUpdateループで周りますしね。EveryUpdateはMicroCoroutineなので性能特性的には良さげ、どうせAddTo(this)するならループのライフサイクルもUpdateTriggerと別に変わりはしないし(UpdateTriggerだとDisableでUpdateが回らなくなるので、まぁその辺で挙動に違いは出る)。EveryGameObjectUpdateはMainThreadDispatcherのSubjectに積まれるもので、UpdateTriggerが使える状況なら非推奨かな、あんまりSubjectに頻繁にAdd, Removeするのは性能特性的に悪手なので。UpdateTriggerもSubjectが駆動するのですが、性質的にグローバルじゃないのでAdd, Removeは局所化されるからそこまででは、に通常はなるでしょう、的な。</p>
+<p>そんなこんなで、少なくともRxが性能面のネックでー、と言われるのは悔しい話なので、大きいものから小さいものまで、最適化ネタは常に考えてます。利用事例としても、結構ヒットしてる某社の某ゲーム（とは）や最近でた前作に続いてヒットの予感のする某ゲーム（とは）など、かなり使いこなしてる事例もあって（個人的にはとても感動した！）、ちゃんと実用的といってもいいレベルになってると思われます。弊社の開発中タイトルである<a href="https://kuro-kishi.jp/">黒騎士と白の魔王</a>でもガッツリ使っているので、ご興味ある方は<a href="http://grani.jp/recruit">中途採用</a>は絶賛募集中です:) 当たり前ですがドッグフーディングは凄く大事で、さすがにデカいバグは出てこないにしても軽微なものはちょいちょい上がってくるので、日々、堅牢さは担保されているな、とかかんとか。あと、使いすぎてるほどに使いすぎてるので、常に性能面でネックになってはいけない、性能面でネックになってはいけない、とマントラを唱えるプレッシャーになってるのもいいことです、多分きっと。</p>
+<p>今回のアップデートでツメが甘かった案件としてはAsyncOperation.AsObservableやObservableWWWが内部的にまだFromCoroutine利用なので、FromMicroCoroutineに可能なら差し替えようかな、と。効果のほどとしては、やっぱり場合によりけりですが、初期化とかで大量に回る時は大きく変わるかも。しれない。ともあれ次回アップデートにご期待を。ただyield return wwwやasyncOperationした場合とyield return nullでisDoneチェックする場合とで、戻ってくるタイミングが異なるので、そこのルールを統一させないとかなあ。</p>
+</div>
+<h1><a href="http://neue.cc/2016/0401_528.html">Microsoft MVP for Visual Studio and Development Technologies(C#)を再々々々々受賞しました</a></h1>
+<ul class="date"><li>2016-04-01</li></ul>
+<div class="entry_body"><p>今年の受賞で、6年目です。エキスパタイズとしてはVisual Studio and Development Technologiesという微妙な感じなので、C#です。C#です、と言わせてください。</p>
+<p>春はあけぼの、というわけで会社も新たなステージに入りました。原点を振り返りつつも、新たな創業として、より強固な姿を掲示できればいいかな、と思います。</p>
+<p>去年に私は</p>
+<blockquote>
+<p>私が主に力を入れているのはUnityと、そのReactive Extensions実装のUniRxで、特にUniRxはかなりヒットさせられたとは思います。が、まだまだ兆しといったところなので、確固たるものにしなければならない。また、それを基盤にして、C#の強さというのを、ただの今までの.NETコミュニティにだけに留まらず、幅広い世界に届ける、伝えていきたい。</p>
+</blockquote>
+<p>と言ってましたが、それは達成できました（いやほんと）。しかし、よくよく考えると、なんだか小粒です。今年はもう少し大きなヴィジョンで行きたいですね。最近のMicrosoftのメッセージとしても、C#の強さがより一層際立ってきました。それをしっかりと補強し、力強く、Real World C#というのを示し続けていきます。そう、Real Worldで。どういうことかといえば、そういうことです。今年はね。</p>
+<p>引き続き主戦場はC#とUnityです。Unityも.NET Foundation加入やHololensやVRの最有力の開発環境であったりと、変わらず非常に魅力的で、強力な環境ですす。いろいろな形で、刺激的なことを掲示し続けられればいいかな、と思っています。</p>
+<p>そんなわけで引き続き、今年もよろしくお願いします。</p>
+</div>
+<h1><a href="http://neue.cc/2016/0330_527.html">Roslyn Analyzerでコンフィグを読み込ませて挙動を変更する</a></h1>
+<ul class="date"><li>2016-03-30</li></ul>
+<div class="entry_body"><p>方法。が、欲すぃ。例えば採番する時に0ベースなのか1ベースなのかプロジェクトによって変えたい。例えばCodeFix時の名前変更のルールを先頭アンスコ付けるのか付けないのかを自由に変えさせたい。<a href="http://neue.cc/2015/06/13_513.html">NotifyPropertyChangedGenerator - RoslynによるVS2015時代の変更通知プロパティの書き方</a>の時は、専用のAttributeを使うので、その中のインターフェイスを書き換えてコンフィグ代わりにしてね、という方法を取ったのですが、専用の属性が使えなきゃ適用できない手法で、全然汎用的っぽくないし、当然ながら全然イケてない。</p>
+<p>ではどうするか。実は、Additional Filesという仕組みが用意されているので、それを用いることでコンフィグを読みこませることができます！詳細は<a href="https://github.com/dotnet/roslyn/blob/master/docs/analyzers/Using%20Additional%20Files.md">roslyn/Using Additional Files.md</a>に書かれていますが、任意のテキストファイルを色々な手法（コマンドラインの引数やcsprojの定義としてなど）でプロジェクトに設定し、Analyzer側では AnalyzerOptions.AdditionalFiles で読めます。</p>
+<p>では、やってみましょう。</p>
+<pre><code class="language-csharp">[DiagnosticAnalyzer(LanguageNames.CSharp)]
+public class AdditionalFileAnalyzer : DiagnosticAnalyzer
+{
+    static DiagnosticDescriptor Rule = new DiagnosticDescriptor(&quot;AdditionalFileAnalyzer&quot;, &quot;AdditionalFileテスト&quot;, &quot;AdditionalFiles:{0}&quot;, &quot;Usage&quot;, DiagnosticSeverity.Error, isEnabledByDefault: true);
+    public override ImmutableArray&lt;DiagnosticDescriptor&gt; SupportedDiagnostics { get { return ImmutableArray.Create(Rule); } }
+
+    public override void Initialize(AnalysisContext context)
+    {
+        context.RegisterSymbolAction(Analyze, SymbolKind.NamedType);
+    }
+
+    private static void Analyze(SymbolAnalysisContext context)
+    {
+        // AnalyzerOptionsにAdditionalFilesがある。
+        // CodeFixContextの場合はProjectに生えてるので、 context.Document.Project.AnalyzerOptions で取得可能。
+        var additionalFiles = context.Options.AdditionalFiles;
+
+        // Pathから引っ掛けて取る
+        var config = additionalFiles.FirstOrDefault(x =&gt; System.IO.Path.GetFileName(x.Path) == &quot;config.json&quot;);
+        if (config != null)
+        {
+            // GetText().ToString()で文字列が取れるので、あとはJsonConvertでデシリアライズするなりなんなりどうぞご自由に……。
+            var text = config.GetText().ToString();
+            context.ReportDiagnostic(Diagnostic.Create(Rule, context.Symbol.Locations[0], text));
+        }
+        else
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Rule, context.Symbol.Locations[0], &quot;JSONが見つかってないぞ&quot;));
+        }
+    }
+}
+</code></pre>
+<p>これでJSONが見つかってないぞ、と怒られまくります。ファイルを追加するには、まずプロジェクトの適当なところにconfig.jsonを足して、Build Actionを AdditionalFiles に変更します。が、変更しようとするとやっぱり怒られるので、しょうがないからcsprojを手動で書き換えます。</p>
+<pre><code class="language-xml">&lt;ItemGroup&gt;
+    &lt;AdditionalFiles Include=&quot;config.json&quot; /&gt;
+&lt;/ItemGroup&gt;
+</code></pre>
+<p>これで、以下の様な結果が得られます。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/14132223/6463302e-f67e-11e5-8b98-3645b82bf4fd.png" alt="image" /></p>
+<p>うん、ちゃんと読めてる！</p>
+<p>コンフィグとして使うには、まぁイマドキのJSONでコンフィグだったらJSON.NETでJsonConvert.DeserializeObjectなんかでサクッと復元してやるのが楽でしょう。外部DLL読み込むのが嫌だという場合は、XMLにしてLINQ to XMLやXmlSerializer使うのも全然お手軽でいいとは思います。</p>
+<p>コンフィグなんてほぼほぼ固定になるのに毎回デシリアライズ走らせるのは嫌だなあ、って場合はstaticオブジェクトにキャッシュしちゃうのも悪くない手だと思います。その場合は、書き換えた場合はプロジェクト再読み込み（or VS再起動)になってしまいますが、実用的には全然問題ないはず。といいたいのですが、複数のプロジェクト跨ぎで共有されちゃうと厄介だったりするので注意が必要なので、まぁちょっとDeserializeするぐらい大したことねーよということで、毎度Deserializeするのも全然構わないかな、とは。</p>
+<p>このコンフィグを読み込む手法は<a href="https://github.com/DotNetAnalyzers/StyleCopAnalyzers/blob/master/documentation/Configuration.md">StyleCopAnalyzer/Configuration.md</a>でも採用されているし、これがスタンダードのやり方だと思って良さそうです。</p>
+</div>
+<a href="./publish/4">Prev |</a>
+<a href="./publish/6">| Next</a>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - 複数の値とC# 5.0 Async再び、或いはAsyncEnumerableへの渇望とRx</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2012/0810_380.html">複数の値とC# 5.0 Async再び、或いはAsyncEnumerableへの渇望とRx</a></h1>
+<ul class="date"><li>2012-08-10</li></ul>
+<div class="entry_body"><p>以前に<a href="http://neue.cc/2012/07/11_377.html">Reactive Extensions + asyncによるC#5.0の非同期処理</a>では、単体の値であったらasync、複数の値であったらIObservable&lt;T&gt;が使い分け、とかかんとかと言ってましたが、本当にそうなの？もしくは、そもそも複数の値のシチュエーションって分かるような分からないようななのだけど？などなどと思ったりする昨今を如何様にお過ごしでしょうか。というわけで、今回はグッとこの部分に深く迫ってみましょう。</p>
+<h2>同期的なシチュエーション</h2>
+<p>さて、例、なのですけれど、データベースで行きましょう。生DataReaderを転がしてます。</p>
+<pre><code class="language-csharp">// 接続文字列に Asynchronous Processing=true は非同期でやるなら欠かさずに
+const string ConnectionString = @&quot;Data Source=.;Initial Catalog=AdventureWorks2012;Integrated Security=True;Asynchronous Processing=true;&quot;;
+
+// こういうreader.Readが尽きるまで列挙するだけのヘルパーがあるだけで
+static IEnumerable&lt;IDataRecord&gt; EachReader(IDbConnection connection, string query)
+{
+    using (var command = connection.CreateCommand())
+    {
+        command.CommandText = query;
+        if (connection.State != ConnectionState.Open) connection.Open();
+
+        using (var reader = command.ExecuteReader())
+        {
+            while (!reader.IsClosed &amp;&amp; reader.Read()) yield return reader;
+        }
+    }
+}
+
+static void Main(string[] args)
+{
+    using (var conn = new SqlConnection(ConnectionString))
+    {
+        // LINQでSelectとかいろいろ出来る！便利！抱いて！
+        var result = EachReader(conn, &quot;select * from Sales.Customer&quot;)
+            .Select(x =&gt; new
+            {
+                CustomerID = x.GetInt32(0),
+                PersonID = !x.IsDBNull(1) ? (int?)x.GetValue(1) : null,
+                StoreID = !x.IsDBNull(2) ? (int?)x.GetValue(2) : null,
+                TerritoryID = !x.IsDBNull(3) ? (int?)x.GetValue(3) : null,
+                AccountNumber = !x.IsDBNull(4) ? x.GetString(4) : null
+            })
+            .ToArray();
+
+        // PKでとりたければFirstOrDefualtとかでいいわけです
+        var customer = EachReader(conn, &quot;select * from Sales.Customer where CustomerID = 100&quot;)
+            .Select(x =&gt; new
+            {
+                CustomerID = x.GetInt32(0),
+                PersonID = !x.IsDBNull(1) ? (int?)x.GetValue(1) : null,
+                StoreID = !x.IsDBNull(2) ? (int?)x.GetValue(2) : null,
+                TerritoryID = !x.IsDBNull(3) ? (int?)x.GetValue(3) : null,
+                AccountNumber = !x.IsDBNull(4) ? x.GetString(4) : null
+            })
+            .FirstOrDefault();
+    }
+}
+</code></pre>
+<p>ExecuteReaderの結果のIDataRederは、yield returnで列挙してやると、LINQで加工できるようになるので、SelectしてToArrayとか、SelectしてFirstOrDefaultとか、非常にやりやすくて便利なわけです。</p>
+<p>ここまでは、いいと思います。じゃあ、非同期でやると、どうするの、と。</p>
+<h2>内部イテレータ的に考える</h2>
+<p>.NET Framework 4.5からは主要な非同期メソッドに全てXxxAsyncという名前のものがつきました。ADO.NETにおいては、OpenAsyncやExecuteReaderAyncなどがあります。というわけで、試してみましょう。</p>
+<pre><code class="language-csharp">// 非同期だったこうしたい、でもこれはコンパイル通らない！
+static async Task&lt;IEnumerable&lt;DbDataReader&gt;&gt; EachReaderAsync(DbConnection connection, string query)
+{
+    using (var command = connection.CreateCommand())
+    {
+        command.CommandText = query;
+        if (connection.State != ConnectionState.Open) await connection.OpenAsync();
+
+        using (var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess)) // 基本的にはSequentialAccessにしておきたい
+        {
+            while (!reader.IsClosed &amp;&amp; reader.Read()) yield return reader;
+        }
+    }
+}
+</code></pre>
+<p>残念ながら、asyncとyield returnを共存させることはできないので、どうにもなりません。……はい。しかし出来ない、では困る。さすがに、非同期実行するところに全部生のままで、こんなCreateCommand..., ExecuteReaderAsync, .... なんて書いてられないし。</p>
+<p>じゃあどうするか、というと、内部イテレータ的にしましょう。つまりList&lt;T&gt;にあるようなForEachです。yield returnが外部イテレータ的であり、それが無理なら、内部イテレータ的にすればいいぢゃない。</p>
+<pre><code class="language-csharp">// ループを回してる最中に実行するaction引数をつけた(FuncじゃなくてAction&lt;DbDataReader&gt;のオーバーロードも作るとベター)
+static async Task ForEachAsync(DbConnection connection, string query, Func&lt;DbDataReader, Task&gt; action)
+{
+    using (var command = connection.CreateCommand())
+    {
+        command.CommandText = query;
+        if (connection.State != ConnectionState.Open) await connection.OpenAsync();
+
+        using (var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess)) // 基本的にはSequentialAccessにしておきたい
+        {
+            while (!reader.IsClosed &amp;&amp; reader.Read()) await action(reader);
+        }
+    }
+}
+
+static async Task&lt;List&lt;Customer&gt;&gt; GetCustomers()
+{
+    using (var conn = new SqlConnection(ConnectionString))
+    {
+        // これで、Selectっぽくできてないこともないと言えなくもない
+        var list = new List&lt;Customer&gt;();
+
+        await ForEachAsync(conn, &quot;select * from Sales.Customer&quot;, async x =&gt;
+        {
+            var customer = new Customer
+            {
+                CustomerID = await x.GetFieldValueAsync&lt;int&gt;(0),
+                PersonID = !x.IsDBNull(1) ? await x.GetFieldValueAsync&lt;int?&gt;(1) : null,
+                StoreID = !x.IsDBNull(2) ? await x.GetFieldValueAsync&lt;int?&gt;(2) : null,
+                TerritoryID = !x.IsDBNull(3) ? await x.GetFieldValueAsync&lt;int?&gt;(3) : null,
+                AccountNumber = !x.IsDBNull(4) ? await x.GetFieldValueAsync&lt;string&gt;(4) : null
+            };
+            list.Add(customer);
+        });
+
+        return list;
+    }
+}
+
+// LINQじゃないので匿名型は使えないのね
+public class Customer
+{
+    public int CustomerID { get; set; }
+    public int? PersonID { get; set; }
+    public int? StoreID { get; set; }
+    public int? TerritoryID { get; set; }
+    public string AccountNumber { get; set; }
+}
+</code></pre>
+<p>ForEachAsync！というわけで、Actionを渡してやって、そこでグルグルッとすることにより制限を回避もどき。ToArrayしたい？古き良きListにAddすればいいぢゃない、といったものですよ、ははは。LINQじゃないので匿名型は使えないがね！</p>
+<p>さて、匿名型が使えないのはいいとしても、問題は、LINQの特徴である合成可能性を欠いているところです。一番困るのは、これ、FirstOrDefaultできないね、って。全件取るんですか？まあ、PKだったら一件なのが保証されてるし、そうでないならtop 1とでも書いておけよ、と言えなくもないですが、しかしどうなのよこれ、と。</p>
+<p>そんなわけでForEachAsyncと、もう一つ、ExecuteSingleAsyncという名前で、一件のみを列挙するようなものを別途作る必要があります。とはいえ、それでも対応できているのは一件と全件だけ。例えばTakeWhileみたいなのがやりたい、SkipWhileみたいなのがやりたいとなったらどうするの、と。答えは、どうにもなりません。諦めるしかない。</p>
+<h2>AsyncEnumerableで救われる</h2>
+<p>どうしても諦められないのならば、AsyncEnumerableを授けましょう。NuGetから<a href="http://nuget.org/packages/Ix_Experimental-Async">Ix_Experimental-Async</a>を引っ張ってきます。Ix、そう、みんな大好きReactive Extensionsの兄弟なわけですが、しかし紹介しておいてアレですが、このIx_Experimental-Asyncはお薦めはしません！完全に実験的に、できるから、というだけで実装例を掲示してみせてくれたというだけなノリがぷんぷんしているからです。実際、最初のAsync CTPが出た時に公開されて、それから更新されてませんしね……。</p>
+<p>ともあれ、どんなコンセプトの代物なのかは見ておきましょう。</p>
+<pre><code class="language-csharp">// こういうDB列挙用のIAsyncEnumerable/Enumeratorを作る。
+// yield returnのようなコンパイラサポートはないので手書きするんだよ！
+public class AsyncDbEnumerable : IAsyncEnumerable&lt;DbDataReader&gt;, IAsyncEnumerator&lt;DbDataReader&gt;
+{
+    DbConnection connection;
+    DbCommand command;
+    DbDataReader reader;
+    string query;
+
+    public AsyncDbEnumerable(DbConnection connection, string query)
+    {
+        this.connection = connection;
+        this.query = query;
+    }
+
+    public IAsyncEnumerator&lt;DbDataReader&gt; GetEnumerator()
+    {
+        return this;
+    }
+
+    public DbDataReader Current
+    {
+        get { return reader; }
+    }
+
+    public async Task&lt;bool&gt; MoveNext(System.Threading.CancellationToken cancellationToken)
+    {
+        if (command == null)
+        {
+            if (connection.State != ConnectionState.Open) await connection.OpenAsync();
+
+            command = connection.CreateCommand();
+            command.CommandText = query;
+            reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess);
+        }
+
+        if (await reader.ReadAsync())
+        {
+            return true;
+        }
+        return false;
+    }
+
+    public void Dispose()
+    {
+        reader.Dispose();
+        command.Dispose();
+    }
+}
+
+static IAsyncEnumerable&lt;DbDataReader&gt; EachReaderAsync(SqlConnection connection, string query)
+{
+    return new AsyncDbEnumerable(connection, query);
+}
+
+static async Task Test()
+{
+    using (var conn = new SqlConnection(ConnectionString))
+    {
+        // 完全にLINQなのでSelectしてToArrayで匿名型もOK
+        var result = await EachReaderAsync(new SqlConnection(ConnectionString), &quot;select * from Sales.Customer&quot;)
+            .Select(x =&gt; new
+            {
+                CustomerID = x.GetFieldValue&lt;int&gt;(0),
+                PersonID = !x.IsDBNull(1) ? x.GetFieldValue&lt;int?&gt;(1) : null,
+                StoreID = !x.IsDBNull(2) ? x.GetFieldValue&lt;int?&gt;(2) : null,
+                TerritoryID = !x.IsDBNull(3) ? x.GetFieldValue&lt;int?&gt;(3) : null,
+                AccountNumber = !x.IsDBNull(4) ? x.GetFieldValue&lt;string&gt;(4) : null
+            })
+            .ToArray();
+
+        // 勿論FirstOrDefaultもできる
+        var customer = await EachReaderAsync(new SqlConnection(ConnectionString), &quot;select * from Sales.Customer where CustomerID = 100&quot;)
+            .Select(x =&gt; new
+            {
+                CustomerID = x.GetFieldValue&lt;int&gt;(0),
+                PersonID = !x.IsDBNull(1) ? x.GetFieldValue&lt;int?&gt;(1) : null,
+                StoreID = !x.IsDBNull(2) ? x.GetFieldValue&lt;int?&gt;(2) : null,
+                TerritoryID = !x.IsDBNull(3) ? x.GetFieldValue&lt;int?&gt;(3) : null,
+                AccountNumber = !x.IsDBNull(4) ? x.GetFieldValue&lt;string&gt;(4) : null
+            })
+            .FirstOrDefault();
+    }
+}
+</code></pre>
+<p>IAsyncEnumerableの実装は完全に手作りです！真面目に使うなら、AnonymousAsyncEnumerableとかを作って、それを使って構築しますが、今回はてきとーな感じに実装しておきました。てきとーと言っても、ちゃんと動きますよ、はい。</p>
+<p>さて、これによってIAsyncEnumerableに変換されたシロモノは、LINQのメソッドが全て使えます。おー、やったね、これなら完璧。</p>
+<p>と、言いたいのですが、よーくSelectの中のラムダ式を見ると、ForEachAsyncの時のものと違うのが分かるでしょうか？ForEachAsyncの時はGetFieldValueAsyncといった、値取得まで非同期のものを使いました。でも、今回はそれは使ってない。何故かというと、そこでasyncにしてしまうと戻り値がIAsyncEnumerable&lt;Task&lt;T&gt;&gt;になってしまうから。</p>
+<p>何がいけないのか、というと、例えばToArrayした結果で見るとresult[0]はTaskなんですよ。実態はresult[0].Resultとしなきゃあいけません。おまけに、全部Taskということは、実行中かもしれないわけです。じゃあ全部待てばいいのか、 await Task.WhenAll(result) とすればいいか、というと、そうなると、一つのコネクションで複数実行が走る、この場合Connectionは複数実行は許容されていないので、まあ例外が飛んできてしまうでしょう。</p>
+<p>じゃあasyncは諦めるの？というと、幾つか手はある。ひとつはAwaitとかいうような拡張メソッドを作って、IAsyncEnumerable&lt;Task&lt;T&gt;&gt; から IAsyncEnumerable&lt;T&gt; に戻すようなものを作ればいい。作るのは、まあ、難しくはないのだけど結局yield returnがないので完全手書きしなきゃならないので面倒なので例は割愛。</p>
+<p>もしくはSelectなどのselectorに、ラムダ式がasyncで書かれている場合(戻り値がTaskになっている場合)はawaitするようなオーバーロードがあっても良かったと思うのですがねえ。んー、まあ、それはさすがに大きなお世話っぽいからダメか……。</p>
+<p>もしくは、ToArrayなどで外に出すのではなく、ForEachAsyncというメソッドが用意されているので、それを使ってawaitするか。こうなると内部イテレータとやってること同じになってきますが。</p>
+<p>とはいえともかく、例に出したAwaitメソッドのような、そういうのがないと、実用性に欠けると言わざるを得ません。また、これはあくまでもAsyncEnumerableであって、IEnumerableへのLINQ to Objectsとは別物です。Select, Where, Firstなどは挙動が同じというだけで、中身は全然違います。で、当然ながらコンセプト実装なので、内部的にもあまりこなれてませんね。なので、Ix_Experimental-Asyncは所詮はコンセプト実装であり、面白いとは思いますし満喫はしましたが、実世的なものとは言いがたいと結論づけます。</p>
+<h2>IObservable&lt;T&gt;の中へ</h2>
+<p>と、ここまで見てきたので、最後はRxで〆ましょう。ちなみにRxはバージョンが幾つかありますが、私としてはRx 2.0-RCしか使う気はありません。正直、1.0系とは雲泥の差ですからねえ。</p>
+<pre><code class="language-csharp">static IObservable&lt;DbDataReader&gt; EachReaderAsync(DbConnection connection, string query)
+{
+    // CreateAsyncで作る。OnErrorなどは手書きですが、十分に書きやすい
+    return Observable.CreateAsync&lt;DbDataReader&gt;(async observer =&gt;
+    {
+        try
+        {
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = query;
+                if (connection.State != ConnectionState.Open) await connection.OpenAsync();
+
+                using (var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess))
+                {
+                    while (!reader.IsClosed &amp;&amp; reader.Read()) observer.OnNext(reader);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            observer.OnError(ex);
+            return;
+        }
+        observer.OnCompleted();
+    });
+}
+
+static async Task Test()
+{
+    using (var conn = new SqlConnection(ConnectionString))
+    {
+        // Rxなので完全にLINQ、awaitableなのでToArrayをawaitしたりも出来るのでノリは完全に一緒
+        var result = await EachReaderAsync(new SqlConnection(ConnectionString), &quot;select * from Sales.Customer&quot;)
+            .Select(x =&gt; new
+            {
+                CustomerID = x.GetFieldValue&lt;int&gt;(0),
+                PersonID = !x.IsDBNull(1) ? x.GetFieldValue&lt;int?&gt;(1) : null,
+                StoreID = !x.IsDBNull(2) ? x.GetFieldValue&lt;int?&gt;(2) : null,
+                TerritoryID = !x.IsDBNull(3) ? x.GetFieldValue&lt;int?&gt;(3) : null,
+                AccountNumber = !x.IsDBNull(4) ? x.GetFieldValue&lt;string&gt;(4) : null
+            })
+            .ToArray();
+
+        // もちろん、そのままSubscribeしたり、FirstOrDefaultAsyncしたりしてもいい
+    }
+}
+</code></pre>
+<p>というわけでRxでも生成はしやすいし、出力結果も相当扱いやすい。素晴らしい！けれど、これもIAsyncEnumerableと同様にSelectの中でasyncしちゃうと厄介なことになるので、基本的にはできない。</p>
+<p>Await拡張メソッドを作るのは簡単だけど、Rxの場合はスレッドセーフの問題が結構難しくて、うまく決めるのは難しい……。</p>
+<p>それに加えて、ほとんど決まりきっている、ただたんに列挙したいだけ、のものにRxを使うというのはやり過ぎ感があり、性能面でちょっとね、と。うーん、言うほど悪くはないし、今まで散々持ち上げといてなんだよそれって感じですが、目の前にTaskが転がっていて、そこまで利点が大きくない中で選ぶか？と迫られたら、選びにくいなあ、って。思ってしまうのです。</p>
+<h2>おまけ：Entity Framework 6について</h2>
+<p>Entity Frameworkはロードマップによりバージョン6から非同期対応すると明言しています。また、デザインノート<a href="http://entityframework.codeplex.com/wikipage?title=Task-based%20Asynchronous%20Pattern%20support%20in%20EF.">Task-based Asynchronous Pattern support in EF.</a>も公開されていたり、それとEFはソースコードが公開されているのですが、CodePlexから最新版を落としてくれば、そこには既にTaskによる実装が存在しています。</p>
+<p>軽く見たところ、EF内部で使う用のAsyncEnumerableを定義してありました。それを使って、非同期系を動かしてましたね。ただ、完全に内部用なので外からは使えないし、色々限定的ですけれど。また、最終的に出力する場合は、やはり内部イテレータ的に、await ForEachAsyncしてListに変換するなりしていました。ふんふん、なるほどねー、と、結構眺めてて面白いのでお薦めです。</p>
+<h2>まとめ</h2>
+<p>C# 5.0で非同期は簡単になった！そして、同様に非同期はやはり難しい！こうして案を見ていったわけですが、結局どれを選ぶの？というと、まあ、内部イテレータ案が一番無難で良いと思います。</p>
+<p>それにしても、いやあもう頭ぱっつんぱっつんです。で、何でDBがネタになっているかというと、新Micro-ORMライブラリを作成中で(DbExecutor v.Next)、今から作るなら非同期対応しないとかありえないよねー、ということで色々考えてはいるんですが、これが中々にビシッ！としっくり決めるのが大変で。結構良い感じにはなってきてつもりではあるんですが、全然まだまだで。あんま人に見られたくない段階なんですが諸事情で見れる人には見れるようになってしまってて恥ずかちい。</p>
+<p>そんなわけでVS2012登場まで、もうすぐです(MSDN会員は一週間切ってる、そうでない人も一ヶ月後)。C# 5.0への備え、できてますか？さあ、カオスな非同期時代に突入しましょう！</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

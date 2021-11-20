@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - LINQ to GameObject 2.1 - 手書き列挙子による性能向上と追加系をより使いやすく</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2016/0811_538.html">LINQ to GameObject 2.1 - 手書き列挙子による性能向上と追加系をより使いやすく</a></h1>
+<ul class="date"><li>2016-08-11</li></ul>
+<div class="entry_body"><p>（前回の1.3から)1年ぶりの更新です！2.0は諸事情でスキップされました。アセットストアには出したんですが内容的にもう少しやりたかったのでなかったこと扱いで。LINQ to GameObject自体の説明はVer 1.0リリース時のブログ<a href="http://neue.cc/2014/11/11_482.html">LINQ to GameObjectによるUnityでのLINQの活用</a>を参照ください。</p>
+<ul>
+<li><a href="https://github.com/neuecc/LINQ-to-GameObject-for-Unity">GitHub/LINQ to GameObject</a></li>
+<li><a href="https://www.assetstore.unity3d.com/jp/#!/content/24256">AssetStore/LINQ to GameObject</a></li>
+</ul>
+<p>今回はパフォーマンスチューニングを徹底的にやりました。というのも以前の素朴な実装は、素朴な通りの性能で、いいとか悪いとかじゃなく素朴なので、やるのならいっそギチギチにやってみたらどうかな、と。性能面でここまでやってるものは絶対にないはず。</p>
+<p>もう一つは追加系をより使いやすく。のためにガッツリと破壊的変更を入れています。破壊的変更が入った理由は、使いにくかったからです。うぇぇ……。使いにくいポイントは概ね分かっていたし、プルリク等も貰っていたのですが、API的にイマイチなもので乗り気になれず、かといってAPIを維持しているとオーバーロードの解決などの問題でうまく処理できなくて、モニョモニョしている間に一年が経ってしまった。互換性は残したくはあったんですが、使いにくいままであったり、微妙なオーバーロードの追加とかで解決するよりは良いかな、と。いう決断です。</p>
+<h2>Traverse系</h2>
+<p>APIはほとんど変わってないです（但しnameでフィルターかけるオーバーロードは消しました、HTMLやXMLと違って名前でのフィルタの重要性がかなり低いので、むしろないほうがいいかな、と）。</p>
+<p><img src="https://raw.githubusercontent.com/neuecc/LINQ-to-GameObject-for-Unity/master/Images/axis.jpg" alt="" /></p>
+<p>ヒエラルキーをツリーに見立てて、「軸」の概念を元にして、必要となる全方向での列挙を満たしています。今回、コードを劇的に書き換えたパフォーマンスチューニングを施しました。一点目は、yield returnによるコードを、全部手書きの構造体の列挙子に書き換えてます。これにより列挙に伴うゴミ発生が理想的にはなくなっています、理想的には:)</p>
+<p>残念ながら、そのままforeachに流すと <a href="http://neue.cc/2016/08/05_537.html">C#のGCゴミとUnity(5.5)のコンパイラアップデートによるListのforeach問題解決について</a> によりboxingが発生しますが（ゴミ化）、それでも構造体のサイズや再帰的に処理される場合での内部処理は気を配っているので（特にDescendantsはエクストリームにチューニングしたコードに変えた（再帰を特化Stackで置き換えたり……））、以前よりも良くなっているのは間違いないです。</p>
+<blockquote>
+<p>ちなみに、基本的にはmutableなstructは避けたほうがいいです。Enumeratorはまさにそれで、実装にも注意が必要なら、利用にも注意を要するため（これはList&lt;T&gt;.Enumeratorも同様で、直接触ろうとすると罠にはまるケースが出てくる）なんでもかんでもstructで、というのは止めたほうがいいでしょう、どうしてもということでなければ原則やらないほうがいい事案です。struct enumeratorを返すテクニック自体は今は亡きXNAでも使われていたので(EffectPassCollectionやModelMeshCollectionなど各種コレクションがstruct Enumeratorを返す)、まぁ最終テクニックとしては有効（但し現状Unityではどうせforeachではボックス化されるのでそこまで有効ではないので、基本やらなくていいでしょう）</p>
+</blockquote>
+<p>LINQで繋げたら、当然普通にLINQの消費フローに入るので、そんな意味ないんですけどね！というだけなのもアレなので、改善二点目、頻出パターンについて特化した最適化を入れてます。(+ OfComponent) + First, FirstOrDefault, ToArray に関しては通常のLINQではなく、この構造体Enumeratorに特化した呼び出しをするため、所謂LINQで想像する性能劣化を受けません。社内調べによると、割と FirstOrDefault や ToArray が直接接続されてる場合が多いので、それだけでも6~7割はカバーできているのではないかな、と。</p>
+<p>更に三点目、ToArrayNonAllocというメモリ節約/GC防止メソッドが追加されています(IEnumerable&lt;T&gt;にも生やしてあるのでLINQ to GameObject関係ないシーンでも使えないこともない)</p>
+<pre><code class="language-csharp">GameObject[] array = new GameObject[0];
+
+// 毎フレーム走査していても余計なメモリ確保はしない！
+void Update()
+{
+    var size = origin.Children().ToArrayNonAlloc(ref array);
+    for (int i = 0; i &lt; size; i++)
+    {
+        var element = array[i];
+    }
+}
+</code></pre>
+<p>Physics.RaycastNonAllocやGetComponentsInChildren[T](List[T] results) のようなものですね。どうしても走査頻度が高くて、という場合には使えるんじゃないかと思います。まぁ、Find系は極力使わないように、というのと同じ話で、走査系を頻繁にやること自体が全然よくはないのですけれど。</p>
+<p>また、ToArray/ToArrayNonAlloc/Destroyには(Func&lt;GameObject, T&gt; selector), (Func&lt;GameObject, bool&gt; filter), (Func&lt;GameObject, bool&gt; filter, Func&lt;GameObject, T&gt; selector), (Func&lt;GameObject, TState&gt; let, Func&lt;TState, bool&gt; filter, Func&lt;TState, T&gt; selector) といった、Where().Select().ToArray() のような割とよくある状況に対する最適化オーバーロードを入れてます。</p>
+<p>この辺を活用してもらえば、単純にインラインで自前実装するよりも、むしろ速い/効率的なことのほうが多いでしょう。</p>
+<p>特化したものを速くなるのはある種当たり前で、しかしそうするとメソッドが雪だるま式に増えるのが良くなくて、そしてLINQのいいところは合成可能なことにより特化させずとも無限の組み合わせで機能を実現できるところにある。しかし、まぁ勿論、柔軟性とパフォーマンスが幾ばくかトレードオフなのは当然の話なわけで、LINQの雰囲気を保ったまま、裏側だけ特化実装にこっそり差し替わってる。というあたりが落とし所としては良いのかな、と思ってますし、なのでそういう風に実装しました。</p>
+<h2>再帰的なイテレータの罠</h2>
+<p>Children（子要素列挙）なんかは数が大したことないので問題はそんなないんですが、Descendants（子孫要素列挙）は性能差が大きく出てきます。そして、利用頻度で言ってもDescendants系が基本多い。これのパフォーマンスを改善することは、非常に意味のあることです。さて、これはシンプルなDescendantsの実装です。</p>
+<pre><code class="language-csharp">static IEnumerable&lt;GameObject&gt; Descendants(GameObject root)
+{
+    yield return root;
+    foreach (Transform item in root.transform)
+    {
+        foreach (var child in Descendants(item.gameObject))
+        {
+            yield return child.gameObject;
+        }
+    }
+}
+</code></pre>
+<p>このコードには大きな問題があります！再帰的なイテレータ、つまり foreach (var child in Descendants(item.gameObject)) は危険です。Baaaaad Practice、デス。要警戒です。これ、子孫にあるGameObjectの数だけ、イテレータ作ってます。GetEnumerator祭り！これは、LINQがどうのとかそういう次元を超えています。LINQのコストというのはメソッドチェーン分のGetEnumeratorの加算とMoveNextの連鎖による一回の呼び出しコストの増加が基本的な話で、ようするに2~3増えるという話で大したことあるといえば大したことあるし、大したことないといえば大したことない。が、さすがに要素数分だけ無駄にEnumerator作るとなったら話は別だ。ちょっとね、かなり気になるよね。</p>
+<p>解決策は２つあります。一つはstruct enumeratorで、struct生成コストはあるもののゴミにはなりません。↑で書いたように実装済みです。</p>
+<p>もう一点は、内部イテレーター化。イテレーターには概ね二種類、内部イテレーターと外部イテレーターがあります。外部イテレーターはforeachで使える、つまりGetEnumerator経由のもので、内部イテレーターはListのForEachなどクラスに直接生えてるもの。それぞれ利点と欠点があります。外部イテレーターの利点は柔軟性(LINQ)と言語サポート(foreach/generator)、よって基本的にはこちらを選べばOKです。欠点はパフォーマンスが内部イテレーターほど稼げない。どうしても一つシーケンスを進めるのにMoveNextとCurrentの2つのメソッド呼び出しが必要になるので。内部イテレーターの利点はパフォーマンスで、内部構造に最適化したループを回せるので、基本最速です。欠点は柔軟性がないのと、それぞれのコレクションで独自実装になること。</p>
+<p>LINQ to GameObjectでは両方実装しています。外部イテレーターは手書きで最適化したstruct enumerator（とStackPoolと、その他諸々の仕掛け）によって、遅延実行やLINQサポートなどの柔軟性を維持したまま、パフォーマンスとGC行きのゴミを全く出さないようにしています。内部イテレーターに関してはForEachとToArray(NonAlloc)に関しては、外部イテレーター版と全く異なる実行パスを通ることにより、最速を維持します。</p>
+<p>ところで、Unityネイティブに用意されているものがある場合は、それを使ったほうが速くなります。例えば DescendantsAndSelf().OfComponent().ToArray() は GetComponentsInChildren(includeInactive:true) に概ね等しく（一つのオブジェクトに複数コンポーネントが貼り付けてある場合、LINQ to GameObjectではそれぞれのGameObjectに一つのみ、GetComponentsInChildrenは複数と、正確には挙動が異なります）、後者を使ったほうが断然速い。一応ですが、ネイティブだから常に速いとか、そういうことはなくて、ネイティブ-マネージド間の変換コストのほうが勝る場合もあります（たとえば<a href="http://neue.cc/2016/05/14_529.html">Unityにおけるコルーチンの省メモリと高速化について、或いはUniRx 5.3.0でのその反映</a>のような話）。けれど、この場合は、C#だけで走査すると、GameObject毎でのGetComponentが避けられません(GetComponentのコストはタダではないのだ)。なので、一発でネイティブ内でかき集めてきたほうが絶対的に速くなります。子孫を辿るだけならほとんど遜色ない、むしろ速いといっていいぐらいなので、本当にこれはGetComponentに対する処理効率の差だけですね。これだけはどうにもできませんでした。</p>
+<h2>追加系</h2>
+<p>変わってます。使い勝手的にはこっちの対応がメインです。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/17275579/e5f4d4ba-5747-11e6-900f-30193a4ef7b4.png" alt="" /></p>
+<p>以前のAPIの何が不便かって、引数にGameObjectしか受け付けなかった！そして戻り値がGameObject！大抵の場合はComponentを入れてComponentを受け取りたいのに！これは酷い！いやほんと酷すぎでした……。なんでそうなってたかというと言い訳はそれなりにあって、まずGameObjectとComponentって継承階層が別のとこにいるんですよねー、のが困る。それをオーバーロードとして分けると、IEnumerableを受け取るオーバーロードが存在していたため、どうやってもうまく型が解決できなかったのだ……。</p>
+<p>もうどうにもならなかったので、API変えてます。IEnumerableを受け取るオーバーロードはXxxRangeという名前に分離。また、基本的には&lt;T&gt;を返すように、そして T:UnityEngine.Object を受け取れるようにしたので、引数としてやっとMonoBehaviourなComponentを素直に流し込めるようになりましたー。万歳。継承階層が別のとこにいて困ります問題は、UnityEngine.Objectを受け取った上で、動的にGameObjectとComponentに仕分けすることで解決。</p>
+<p>というわけで、やっと自信持って普通に使えるようになりました。単純な話なんですが、まず破壊的変更にする、ということに腰が重かったことと、それを踏まえても、うまいAPIを構築するのに手間取った。のせいでこんなに遅れてしまって、いやはや……。</p>
+<p>その他、あとDestroyでデフォルトでヒエラルキから外さなくしました。このヒエラルキから外すというのは最低のアイディアで、配列ではなく列挙しながら(LINQ to GameObjectでやるような！）Destroyする場合に、ヒエラルキから外すせいで位置がずれて死ぬ。というのを防ぐためにToArrayでキャッシュしなければならない（無駄なオーバーヘッド！）。というしょうもない自体に陥りがちなので、やめました。わざわざ外すコストだってゼロじゃないので、二重に悪い。</p>
+<h2>まとめ</h2>
+<p>GameObjectBuilderというものがあったのですが、イラナイ子なので消しました。LINQ to XMLのFunctional Constructionを模した――ものなのですが、そういう、コピーに一生懸命なだけなのって悪趣味なんですよね。大事なのは、概念(LINQ to Tree)を対象環境(Unity)に最適化することであって、コピーすることではない。そういうの、分かっているつもりではいたのですが、やり始めるとついついやってしまうところがある。随時見切って、バッサリ切り落とせるようにならないとですね。</p>
+<p>LINQ to GameObjectのオリジナルのデザインは2014/10/28だったんですが、その頃は今よりは全然遥かにUnityへの習熟度、知識が欠けていたなぁ、というのを改めて痛感しました。思い上がる、ということはないですが、環境への理解力が足らないとどこかイマイチなものになってしまうわけで、C#云々抜きに、常にUnityに真摯に向き合ってかないとダメですね。実際問題、愛情を持って突き詰めて考えられないと、本当の理想のところまでは行けない。小手先の知識だけで処理したようなライブラリは、まぁ使いたくないですねえ、そういうの実際どうしてもどこか独りよがりのしょうもないものになってしまうので。</p>
+<p>LINQは遅い/GCキツくなるというのは絶対的な事実ではあるのですけれど、極力書き味を失わないようにしつつ、6, 7割ぐらいのシチュエーションには特化した最適化を施し、何も考えずともむしろ普通に書くよりも速くなる。それ以外のシチュエーションでも、速さを意識した使い方をすれば、やはり普通に書くよりも速くなる。という、私的には理想的かな、というところで表現できたので、是非是非、機能を気にする人も、性能を気にする人も使ってみてください。どちらも満たせるものになっているはずです。</p>
+<p>ところでしつこいですが、9/13に<a href="https://atnd.org/events/80089">Photon勉強会</a>で「Photon Server Deep Dive - PhotonWireの実装から見つめるPhoton Serverの基礎と応用」というタイトルで話しますので、Photon興味ある人も、そうでなくてもUniRx興味ある人もどうぞ。LINQ to GameObject、或いはUnityとLINQについての話は、さすがにあんま関係ないのでセッション内容には含まれませんが懇親会ででも掴まえてもらえば何でも答えます。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

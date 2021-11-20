@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - 2013-06</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2013/0630_411.html">Micro-ORMとテーブルのクラス定義自動生成について</a></h1>
+<ul class="date"><li>2013-06-30</li></ul>
+<div class="entry_body"><p>謎社のデータアクセスは<a href="http://neue.cc/2012/12/11_390.html">Micro-ORM</a>でやっています。生SQL書いて、シンプルなPOCOにマッピングするだけの。ですが、そこで困るのはPOCOの作成。データベースの写しなだけのクラスですが、手で作るには、ひじょーに面倒。Entity Frameworkならドラッグアンドドロップで！DataSetですらホイホイと作れるのに、100%手作業とか嫌だよー、200テーブルを延々とクラス作るだけの刺身たんぽぽなんてしてたら死んじゃうよー。</p>
+<p>というわけで、Micro-ORM使うなら避けては通れない定義。EFのクラス定義だけ流用しちゃうとか色々と逃げ道も考えられなくもないですが、もしくは数によっては手動で頑張ってしまうのも手ですが、ここは自動生成しましょうの会。</p>
+<h2>GetSchema</h2>
+<p>普通にSQLのクエリを書いてデータベースの情報を取ってくることも可能ですが、各データベースでそれぞれバラバラだったりするので、ここはADO.NETで用意されている<a href="http://msdn.microsoft.com/ja-jp/library/kcax58fh.aspx">GetSchema</a>を使いましょう。情報取得の部分が抽象化されていて、型無しDataTableとして受け取ることが可能です。</p>
+<pre><code class="language-csharp">using (var conn = new MySqlConnection(&quot;接続文字列。MySQLでもなんでもいいよ。&quot;))
+{
+    conn.Open();
+
+    var schema = conn.GetSchema();
+}
+</code></pre>
+<p>さて、schemaとやらをデバッガで見てみるとですね……</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/dt_table_rows.jpg" />
+</p>
+<p>うおおお、これがDataTableか！な、なんだ、このデバッガビリティの低さは……。これはヤヴァい。マジキチ。RowsのKeyを辿るのも苦労するうえに、Valueが一覧で見れない。頑張ってもKeyだけ。なんだこりゃ。データの取得もLINQ to DataSet(笑)によって、普通に実に扱いづらい。話にならない。 クソが。というわけで、今時ならば型無しDataTableはdynamicで扱ったほうが楽です。ExpandoObjectに変換しましょう。</p>
+<pre><code class="language-csharp">public static class DataTableExtensions
+{
+    /// &lt;summary&gt;DataTableの各RowをExpandoObjectに変換します。&lt;/summary&gt;
+    public static IEnumerable&lt;dynamic&gt; AsDynamic(this DataTable table)
+    {
+        return table.AsEnumerable().Select(x =&gt;
+        {
+            IDictionary&lt;string, object&gt; dict = new ExpandoObject();
+            foreach (DataColumn column in x.Table.Columns)
+            {
+                var value = x[column];
+                if (value is System.DBNull) value = null;
+                dict.Add(column.ColumnName, value);
+            }
+            return (dynamic)dict;
+        });
+    }
+}
+</code></pre>
+<p>こんなものを用意すると、 var schema = conn.GetSchema().AsDynamic() とするだけで</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/dt_dynamic_view.jpg">
+</p>
+<p>うおおおおおおお、超捗る！ちゃんと動的ビューでKeyとValueが見える！ExpandoObjectありがとう。DataTableは死ね。また、DBNullをフツーのnullに変換したりなどもしているので、データを触るのもかなり捗るといったところもあります。item.Field&lt;string&gt;(&quot;CollectionName&quot;)と書くよりも、item.CollectionNameって書きたいですから。</p>
+<p>では、気を取り直してこれで解析していきましょう。まずは、件のCollectionNameを見てみますか。</p>
+<pre><code class="language-csharp">// MetaDataCollections
+// DataSourceInformation
+// DataTypes
+// Restrictions
+// ReservedWords
+// Databases
+// Tables
+// Columns
+// Users
+// Foreign Keys
+// IndexColumns
+// Indexes
+// Foreign Key Columns
+// UDF
+// Views
+// ViewColumns
+// Procedure Parameters
+// Procedures
+// Triggers
+foreach (var item in conn.GetSchema().AsDynamic())
+{
+    Console.WriteLine(item.CollectionName);
+}
+</code></pre>
+<p>MySQLでは以上のデータが取れるようです。この辺は使ってるデータベースによってかなり変わるので、適宜調べながら合わせてみてくださいな。というわけで、それっぽそうなTablesを見てみます。var tables = conn.GetSchema(&quot;Tables&quot;).AsDynamic(); とすれば</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/dt_table_schema.jpg" />
+</p>
+<p>テーブル一覧が取れるようです。で、しかし、今回必要なのはTablesではありません。TablesはほんとーにTableのデータだけなので。今回必要なのは、Columnsです。</p>
+<pre><code class="language-csharp">var columns = conn.GetSchema(&quot;Columns&quot;).AsDynamic()
+    .GroupBy(x =&gt; x.TABLE_NAME) // 全てのカラムが平らに列挙されてくるのでテーブル名でグルーピング
+    .Select(g =&gt; new
+    {
+        ClassName = g.Key, // クラス名はテーブル名(= グルーピングのキー)
+        Properties = g
+            .OrderBy(x =&gt; x.ORDINAL_POSITION) // どんな順序で来るか不明なので、カラム定義順にきちんと並び替え
+            .Select(x =&gt; new
+            {
+                Name = x.COLUMN_NAME,
+                Type = x.DATA_TYPE
+            })
+            .ToArray()
+    });
+</code></pre>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/dt_columns_def.jpg" />
+</p>
+<p>良い感じに作れてきました。さて、クラスを自動生成するのに必要なのは「クラス名」「プロパティ名」「プロパティの型」です。DATA_TYPEだとDBの生の型名、bigintとかvarcharとかC#のデータ型じゃないよー。なので、このまんまじゃダメです。</p>
+<p>というわけで、マッピングを用意してあげます。といっても手動でやる必要はなくて、これはGetSchema(&quot;DataTypes&quot;)で取れます。</p>
+<pre><code class="language-csharp">// 型名を決めるのに必要なのは
+// TypeName(MySQLの型名), DataType(.NETの型名), IsUnsigned
+var typeDictionary = conn.GetSchema(&quot;DataTypes&quot;).AsDynamic()
+    .ToDictionary(x =&gt;
+        Tuple.Create((string)x.TypeName.ToLower(), (bool?)x.IsUnsigned ?? false),
+        x =&gt; (Type)Type.GetType(x.DataType));
+
+// MySQLのtinyintはboolとして使われることが多いので、そちらにマッピングしちゃう（不要ならしなくていいです）
+typeDictionary[Tuple.Create(&quot;tinyint&quot;, true)] = typeof(bool);
+typeDictionary[Tuple.Create(&quot;tinyint&quot;, false)] = typeof(bool);
+
+// nullableの場合を考慮する必要があるのでTypeDictionaryは生では使わない
+Func&lt;string, bool, bool, string&gt; getTypeName = (dataType, isUnsigned, isNullable) =&gt;
+{
+    var type = typeDictionary[Tuple.Create(dataType.ToLower(), isUnsigned)];
+    return (isNullable &amp;&amp; type.IsValueType)
+        ? type.Name + &quot;?&quot; // 値型かつnull許可の時
+        : type.Name;
+};
+</code></pre>
+<p>TypeName(MySQLの型名), DataType(.NETの型名), IsUnsigned。それにNullableへの対応を組み合わせれば、マッピングできると考えられます。GetSchemaからの情報だけだとNullable対応が苦しくなるので、外にメソッド立てています。</p>
+<p>さて、この型定義辞書を使って変換すると、以下のようになります。</p>
+<pre><code class="language-csharp">var columns = conn.GetSchema(&quot;Columns&quot;).AsDynamic()
+    .GroupBy(x =&gt; x.TABLE_NAME) // 全てのカラムが平らに列挙されてくるのでテーブル名でグルーピング
+    .Select(g =&gt; new
+    {
+        ClassName = g.Key, // クラス名はテーブル名(= グルーピングのキー)
+        Properties = g
+            .OrderBy(x =&gt; x.ORDINAL_POSITION) // どんな順序で来るか不明なので、カラム定義順にきちんと並び替え
+            .Select(x =&gt; new
+            {
+                Name = x.COLUMN_NAME,
+                // unsignedの判定はCOLUMN_TYPEから、nullableの判定はYES/NOで行われる
+                Type = getTypeName(x.DATA_TYPE, x.COLUMN_TYPE.Contains(&quot;unsigned&quot;), x.IS_NULLABLE == &quot;YES&quot;)
+            })
+            .ToArray()
+    });
+</code></pre>
+<p>これで完璧！さて、定義の抽出はできたので、次はテンプレート作りにいきましょうか。</p>
+<h2>T4</h2>
+<p>（テキストとしての）C#コード生成は、C#コード上で文字列を切った貼ったする、わけは勿論ありません。この手の作業するときはテンプレートエンジンを使うのが良いでしょう。最近だとRazorを使った<a href="http://razorengine.codeplex.com/">RazorEngine</a>などもあるのですが、RazorはあくまでHTML/XMLを出力するのに向いている構文で、C#コードを出力するような用途で使うのは、あまり向いていません。ここは素直にVisual Studio標準の<a href="http://msdn.microsoft.com/ja-jp/library/bb126445.aspx">T4 Template</a>を使うのが良いでしょう。あえてStringTemplate.NETとか、他のを選ぶ理由は、ないかなぁ。T4でいいですよ。</p>
+<p>T4にはVisual Studioと連携して保存時にテンプレートが当てはまったテキストを出力するタイプと、ふつーのクラスとして、実行時に任意の変数をあてて、テキストを生成するもののニタイプが選べます。このブログでも何度か紹介してきたのは、全て前者でしたが、今回は後者のパターンを使います。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/dt_runtime_template.jpg" />
+</p>
+<p>昔の名前は「前処理されたテキストテンプレート」でした。VS2012から名前変わって「ランタイムテキストテンプレート」になったようです。見つからなかったら検索ウィンドウにT4と入れると良いですよ。では、まず、TableGeneratorTemplate.ttとしてテンプレートを定義します。</p>
+<pre><code class="language-csharp">&lt;#@ template language=&quot;C#&quot; #&gt;
+&lt;#@ assembly name=&quot;System.Core&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Linq&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Text&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Collections.Generic&quot; #&gt;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+public class &lt;#= ClassName #&gt;
+{
+&lt;# foreach(var x in Properties) {#&gt;
+    public &lt;#= x.Type #&gt; &lt;#= x.Name #&gt; { get; set; }
+&lt;# } #&gt;
+
+    public override string ToString()
+    {
+        return &quot;&quot;
+&lt;# foreach(var x in Properties) {#&gt;
+            + &quot;&lt;#= x.Name #&gt; : &quot; + &lt;#= x.Name #&gt; + &quot;|&quot;
+&lt;# } #&gt;
+            ;
+    }
+}
+</code></pre>
+<p>テンプレートの記法としては、#=で囲むだけなので、まぁそう難しいものでもないです、読みづらさはかなりありますが。さて、このままだとClassNameとかPropertiesとかいうのは未定義でコンパイルもできないので、パーシャルクラスを作ります。クラス名はテンプレートと同名で。</p>
+<pre><code class="language-csharp">public partial class TableGeneratorTemplate
+{
+    public string ClassName { get; set; }
+    public IEnumerable&lt;dynamic&gt; Properties { get; set; }
+
+    public TableGeneratorTemplate(string className, IEnumerable&lt;dynamic&gt; properties)
+    {
+        this.ClassName = className;
+        this.Properties = properties;
+    }
+}
+</code></pre>
+<p>これで、パラメータを渡せるようになりました。コンパイルエラーも出ません。というわけで実際に出力しましょう。テンプレートをnewして、TransformTextを呼ぶだけです。</p>
+<pre><code class="language-csharp">// あ、ちなみにここまでのはConsoleApplicationでの話でした、はい。
+// テーブル名.csにテンプレートを当てて全部出力
+foreach (var item in columns)
+{
+    var tt = new TableGeneratorTemplate(item.ClassName, item.Properties);
+    var text = tt.TransformText();
+    File.WriteAllText(item.ClassName + &quot;.cs&quot;, text, Encoding.UTF8);
+}
+</code></pre>
+<p>これで、以下の様なファイルがテーブル数だけ出力されます。</p>
+<pre><code class="language-csharp">using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+public class aiueo_test_table
+{
+    public Int64 id { get; set; }
+    public String name { get; set; }
+    public Int32 age { get; set; }
+    public DateTime? created { get; set; }
+    public DateTime? modified { get; set; }
+
+    public override string ToString()
+    {
+        return &quot;&quot;
+            + &quot;id : &quot; + id + &quot;|&quot;
+            + &quot;name : &quot; + name + &quot;|&quot;
+            + &quot;age : &quot; + age + &quot;|&quot;
+            + &quot;created : &quot; + created + &quot;|&quot;
+            + &quot;modified : &quot; + modified + &quot;|&quot;
+            ;
+    }
+}
+</code></pre>
+<p>やったね！刺身たんぽぽさようなら！ちなみにただのプロパティの塊というだけじゃなく、ToStringも生成しておいてやると、実アプリでのデバッグの時に割と便利ですねー。</p>
+<h2>応用</h2>
+<p>GetSchemaで得られる情報は他にも沢山ありますので、Diffを取るプログラムを書けたり、あと、Index, IndexColumnsでインデックスの情報が取れます。インデックスで貼られているものはselectクエリーをほぼほぼ発行するはず、とみなせるので、selectクエリを発行するメソッドを自動生成しちゃったりとかは、実際に謎社ではしています。</p>
+<p>つまり作業手順としては、どちらかというデータベースファーストになります。結局、コードとデータベースは違うので、データベース優先の定義・作業のほうが、どこまでいっても自然かな、と。(EF)コードファーストは私は幻想だと思っています。別に、SQL Server Management StudioなりHeidiSQLなどのツールでぽちぽち定義作るのは、そう面倒なわけでもない。そこからC#側のクラス定義も自動で生成できるのなら、むしろ、無理のあるコードでのデータベース表現をして回るよりも、結局、楽じゃない？DB定義をC#側から発行されて、どーのこーとか、なんてのに気を使わなくてもいいので、ずっと楽ちんだと思うんだ。原始的で全然スマートじゃないようで、実利はこっちにある。</p>
+<h2>まとめ</h2>
+<p>コードの詳細はMySQLなので、SQL Serverとかじゃ100%そのままは動かないかもですが、その辺は適宜調整してください、きっと似たようなのはあるはずなので。</p>
+<p>あと、GetSchemaのDataTableで何が取れるのか、どんなフィールドがあるのかって、特にMySQLだとドキュメントゼロなのですが、そこでAsDynamicは本当に死ぬほど役に立ちました。Visual Studio上でのデバッガビリティを高めるの超大事。その辺がクソなのがDataTableの嫌なところですねえ。今時DataSetを使いまくってるレガシー会社とかあると悲しいですねえ。</p>
+<p>ともあれ、dynamicはかなりデバッガビリティ高いので、活用してあげると良いです。dynamic、最近だと忘れ去られているC#の機能らしいので（笑）まあ、メインには使いませんけれど、あるとやっぱ便利なので、あって良かったなって、思いますよん。</p>
+</div>
+<h1><a href="http://neue.cc/2013/0624_410.html">AsyncOAuth ver.0.7.0 - HttpClient正式版対応とバグ修正</a></h1>
+<ul class="date"><li>2013-06-24</li></ul>
+<div class="entry_body"><p>HttpClientが<a href="http://blogs.msdn.com/b/dotnet/archive/2013/05/29/get-httpclient-rtm-200-ok.aspx">RTMを迎えた</a>、と思ったら、<a href="http://blogs.msdn.com/b/dotnet/archive/2013/06/19/update-to-httpclient-and-automatic-decompression.aspx">次バージョンのベータ</a>が出た、と、展開早くて追いつけないよ～な感じですが、とりあえず正式版のほうを要求する形で、AsyncOAuthも今回からBetaじゃなくなりました。</p>
+<ul>
+<li><a href="https://github.com/neuecc/AsyncOAuth">AsyncOAuth - GitHub</a></li>
+<li>PM&gt; Install-Package <a href="https://nuget.org/packages/AsyncOAuth/">AsyncOAuth</a></li>
+</ul>
+<p>AsyncOAuthについては<a href="http://neue.cc/2013/02/27_398.html">AsyncOAuth - C#用の全プラットフォーム対応の非同期OAuthライブラリ</a>を、HttpClientについては<a href="http://neue.cc/2013/05/27_405.html">HttpClient詳解、或いはAsyncOAuthのアップデートについて</a>を参照ください。</p>
+<p>今回のアップデートなのですが、PCL版HttpClientのRTM対応という他に、バグ修正が二点ほどあります。バグ的には、結構痛いところですね……。</p>
+<h2>OrderByと文字列について</h2>
+<p>バグ修正その一として、OAuthの認証シグネチャを作るのにパラメータを並び替える必用があるのですが、その並び順が特定条件の時に狂っていました。狂っている結果、正しく認証できないので、実行が必ず失敗します。特定条件というのは、パラメータ名が大文字始まりと小文字始まりが混在するときです。例えばhogeとHugaとか。本当はHuga-hogeにならなければならないのに、hoge-Hugaの順序になってしまっていたのでした。</p>
+<p>なぜそうなったか、というと、OrderByをデフォルトで使っていたからです。</p>
+<pre><code class="language-csharp">// charの配列をOrderByで並び替えると、ASCIIコード順 = 65:'A', 97:'a'
+foreach (var item in new[] { 'a', 'A' }.OrderBy(x =&gt; x))
+{
+    Console.WriteLine((int)item + &quot;:&quot; + (char)item);
+}
+
+// stringの配列をOrderByで並び替えると、良い感じ順 = &quot;a&quot;, &quot;A&quot;
+foreach (var item in new[] { &quot;a&quot;, &quot;A&quot; }.OrderBy(x =&gt; x))
+{
+    Console.WriteLine(item);
+}
+</code></pre>
+<p>良い感じ順！というのはなにかというと、<a href="http://msdn.microsoft.com/ja-jp/library/system.stringcomparer.currentculture.aspx">StringComparison/Comparer.CurrentCulture</a>の順番です。ほぅ……。ありがたいような迷惑のような。で、今回はASCIIコードにきっちり従って欲しいので、</p>
+<pre><code class="language-csharp">// 実際のコード。
+// ところでrealmのところは!x.Key.Equals(&quot;realm&quot;, StringComparison.OrdinalIgnoreCase) って書くべき、次のバージョンで直します
+var stringParameter = parameters
+    .Where(x =&gt; x.Key.ToLower() != &quot;realm&quot;)
+    .Concat(queryParams)
+    .OrderBy(p =&gt; p.Key, StringComparer.Ordinal)
+    .ThenBy(p =&gt; p.Value, StringComparer.Ordinal)
+    .Select(p =&gt; p.Key.UrlEncode() + &quot;=&quot; + p.Value.UrlEncode())
+    .ToString(&quot;&amp;&quot;);
+</code></pre>
+<p>といったように、StringComparer.OrdinalをOrderBy/ThenByに渡してあげることで解決しました。メデタシメデタシ。文字列の比較とか、言われてみれば基本中の基本っっっ！なのですけれど、完全に失念してました。テストでも、パラメータ小文字ばっかだったりして問題が中々表面化しないんですね、言い訳ですけれど……。しかし、幾つかのライブラリ見てみると、ほとんどがこれの対応できてなかったので私だけじゃないもん！みたいな、うう、情けないのでやめておきましょう。OAuthBase.csもissueには上がってましたがマージされてないんで、同様の問題抱えてるのですねえ。さすがにDotNetOpenAuthはきっちりできていました。</p>
+<h2>UriクラスとQueryとエスケープについて</h2>
+<p>バグ修正その2。GETにパラメータをくっつける、つまりクエリストリングとして並べた時に、日本語などURLエンコードが必要な物が混ざっている時に必ず認証に失敗しました。エンコード周りということで、お察しの通り二重エンコードが原因です。</p>
+<p>これに関しては、私のUriクラスへの認識が甘々だったのがマズかったです。ぶっちけ、ただのstringを包んだだけの面倒臭い代物とか思ってたりとかしたりとか……。いや、さすがにそこまでではないんですが、まぁしかし甘々でした。こっちは↑のに比べても本当に初歩ミスすぎて穴掘って埋まりたいですぅー。相当恥ずかしい。</p>
+<pre><code class="language-csharp">// クエリストリングつけたものを投げるとして
+var uri = new Uri(&quot;http://google.co.jp/serach?q=つくば&quot;);
+
+// QueryはURLエンコードされてる =&gt; ?q=%E3%81%A4%E3%81%8F%E3%81%B0
+Console.WriteLine(uri.Query);
+
+// URLエンコードされてるのを渡したとして
+uri = new Uri(&quot;http://google.co.jp/serach?q=%E3%81%A4%E3%81%8F%E3%81%B0&quot;);
+
+// ToString結果はURLデコードされたものがでてくる =&gt; http://google.co.jp/serach?q=つくば
+Console.WriteLine(uri.ToString());
+</code></pre>
+<p>というわけで、Queryは常にURLエンコードされるし、ToStringは常にURLデコードされてる。この辺の認識がフワフワッとしてると、エンコードやデコード結果が非常にアレになっちゃうんですね……。</p>
+<pre><code class="language-csharp">// 元データが欲しい時はOriginalString
+Console.WriteLine(uri.OriginalString);
+
+// エンコードされないで取るにはGetComponentsで指定してあげる
+// ちなみにQueryは (UriComponents.Query | UriComponents.KeepDelimiter, UriFormat.Escaped) と等しい
+var unescaped = uri.GetComponents(UriComponents.Query, UriFormat.Unescaped);
+Console.WriteLine(unescaped); // q=つくば
+</code></pre>
+<p>GetComponents大事大事。</p>
+<h2>Next</h2>
+<p>今回からBetaを取ったということで、1.0に上げようかなあ、とか思ったんですが、↑のように手痛いバグが残っていたことが発覚したりなので、まだもう少し様子見といった感。さすがにもう大丈夫なはず！といくら思っても見つかっていくわけで、枯れてるって本当に大事ですねえ。AsyncOAuthも枯れたライブラリになるよう、頑張ります。今回のバグとかもユーザーが伝えてくれるお陰なので足を向けて寝られません。</p>
+<p>私自身が使ってるのか？というと、答えは、使っています！こないだに<a href="http://neue.cc/2013/06/10_406.html">.NET最先端技術によるハイパフォーマンスウェブアプリケーション</a>というセッションを行ない、そこで言及したように、現在、某ソーシャルゲームをC#で再構築中です。で、GREEにせよMobageにせよ、ソーシャルゲームってOpenSocialの仕組みに乗っかっているのですが、その認証がOAuthなのです。というわけで、めっちゃくちゃヘヴィーに使っています。(認証の形態がちょっと違うので幾つかメソッドが足されているのと、Shift-JIS対応とかのためのカスタムバージョンだったりはしますが…… その辺はAsyncOAuth本体にも載せるか検討中)。実戦投下まであとちょっとってところですが、それできっちり動ききれば、十分に枯れた、といえるのではないかと思っています。その時までは0.xで。でも現状でもかなり大丈夫だとは思いますので、是非是非使ってください。</p>
+</div>
+<h1><a href="http://neue.cc/2013/0623_409.html">The History of LINQ</a></h1>
+<ul class="date"><li>2013-06-23</li></ul>
+<div class="entry_body"><p>という内容で、<a href="http://atnd.org/event/E0015958">つくばC#勉強会</a>で話してきました。</p>
+<iframe src="http://www.slideshare.net/slideshow/embed_code/23314703" width="597" height="400" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC;border-width:1px 1px 0;margin-bottom:5px" allowfullscreen webkitallowfullscreen mozallowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="http://www.slideshare.net/neuecc/the-history-of-linq" title="The History of LINQ" target="_blank">The History of LINQ</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>初心者向け勉強会（？）ということで、歴史ですかにぇー。詳細よりは、全体的にあっさり、みたいな。多分ね！<a href="http://research.microsoft.com/en-us/um/cambridge/projects/comega/">Cω</a>とかもう10年前ですが、これだけ時間のたった今だからこそ、あらためてちょっと見てみると面白いね、みたいな。</p>
+<p><a href="http://togetter.com/li/523153">第一回つくばC#勉強会 #tkbcsmt 当日の様子</a>ということで実にカオス、よかったね！面白かったです～。</p>
+</div>
+<h1><a href="http://neue.cc/2013/0620_408.html">TypeScript 0.9のジェネリクス対応でlinq.jsの型定義作って苦労した話</a></h1>
+<ul class="date"><li>2013-06-20</li></ul>
+<div class="entry_body"><p>久しぶりの<a href="http://www.typescriptlang.org/">TypeScript</a>。<a href="http://blogs.msdn.com/b/typescript/archive/2013/06/18/announcing-typescript-0-9.aspx">Announcing TypeScript 0.9</a>というわけで、ついに待望のジェネリクスが搭載されました。やったね！というわけで、ジェネリクス対応の<a href="https://linqjs.codeplex.com/">linq.js</a>の型定義を早速作りました、と。ver 3.0.4-Beta5です。まだまだBeta、すみませんすみません、色々忙しくて……。NuGetからもしくはサイトからのダウンロードで公開してます。</p>
+<p>とりあえず例として使ってみた感じ。</p>
+<pre><code class="language-javascript">// booleanしか受け入れないwhereにnumberを突っ込んだらちゃんと怒ってくれるよ！
+// Call signatures of types '(x: any) =&gt; number' and '(element: number, index: number) =&gt; boolean' are incompatible.
+var seq = Enumerable.from([1, 10, 100, 100]).where(x =&gt; x * 2);
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/ts_generics_intellisense.jpg">
+</p>
+<p>やったー。これだよこれ！LINQはジェネリクスがあって本当の本当の真価を発揮するんです！！！</p>
+<h2>面白げな型定義</h2>
+<p>C#とちょっと違うところとしては、ジェネリクスの型変数のところにもオブジェクトを突っ込めるんですね。だから</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/ts_generics_typearg.jpg">
+</p>
+<pre><code class="language-javascript">// from(obj)の型定義はこんな感じ。
+from(obj: any): IEnumerable&lt;{ key: string; value: any }&gt;;
+
+// ちなみにfromのオーバーロードはいっぱいある
+// linq.js自体はJScriptのIEnumerableとWinMDのIIterable&lt;T&gt;にも対応してるのですがTSで表現できないので、そこは未定義……。。。
+from(): IEnumerable&lt;any&gt;; // empty
+from&lt;T&gt;(obj: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
+from(obj: number): IEnumerable&lt;number&gt;;
+from(obj: boolean): IEnumerable&lt;boolean&gt;;
+from(obj: string): IEnumerable&lt;string&gt;;
+from&lt;T&gt;(obj: T[]): IEnumerable&lt;T&gt;;
+from&lt;T&gt;(obj: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
+</code></pre>
+<p>このkey,valueはどこから出てきたんだよって感じでわかりづらかったので、こうして見えてくれると嬉しい度高い。</p>
+<h2>型消去</h2>
+<p>場合によってはIEnumerable&lt;any&gt;となるため、Tの型をつけてあげたかったり、もしくは強引に変換したかったり（例えば↑のIIterable&lt;T&gt;は{key,value}に解釈されてしまうので、明示的に変換してあげる必要がある）する場合のために、castメソッドを用意しました。</p>
+<pre><code class="language-javascript">// any[]型で渡ってきたりする場合に
+var seq: any[] = [1, 2, 3, 4, 5];
+
+var result = Enumerable.from(seq)
+    .cast&lt;number&gt;() // numberに変換
+    .select(x =&gt; x * x) // x:number
+    .toArray(); // result:number[]
+</code></pre>
+<p>さて、ところで、TypeScriptのジェネリクスは型消去(Type Erasure)式です。コンパイル結果のJSは以下のような感じで</p>
+<pre><code class="language-javascript">var result = Enumerable.from(seq)
+    .cast()
+    .select(function (x) { return x * x; })
+    .toArray();
+</code></pre>
+<p>一切の型は消えています。なので、TypeScriptでTの型を取って実行時に扱ったりはできません。型が欲しければ型を渡せ方式。</p>
+<p>linq.jsにはofTypeという、型でフィルタリングするメソッドがあるのですが</p>
+<pre><code class="language-javascript">// 混在した配列から、型でフィルタして取り出す
+var mixed: any[] = [1, &quot;hoge&quot;, 100, true, &quot;nano&quot;];
+
+// このままじゃ型が分からないのでresultはany[]
+var result1 = Enumerable.from(mixed)
+    .ofType(Number) // 数値型のみでフィルタ、つまり[1, 100]
+    .toArray();
+
+// ofTypeの後にcastするか、もしくはofTypeで型指定するか
+var result2 = Enumerable.from(mixed)
+    .ofType&lt;number&gt;(Number)
+    .toArray();
+</code></pre>
+<p>というように、&lt;number&gt;(Number)と連続するのが非常に不恰好……。まあ、この辺はそういうものなのでしょうがないと諦めましょう。</p>
+<h2>地雷ふんだり</h2>
+<p>さて、そんな素敵なTypeScript 0.9なのですが、残念なお知らせ。現在の、というか、この0.9ですが、完成度はものすごーーーーーーーーく、低いです。はい、超低いです。Visual Studioと組み合わせて使う場合、半端無く動作も補完も遅いです。正直、ベータどころかアルファぐらいのクオリティで、何故に堂々と出してきたのか理解に苦しむ。遅いだけならまだしも、ジェネリクスの解釈が非常に怪しく、地雷を踏むと補完やエラー通知が消え去ります。いや、消え去るだけならまだよくて、Visual Studioと裏で動くTypeScript Compilerが大暴走をはじめてCPUが100%に張り付いたりします。もうヤヴァい。タスクマネージャー開きっぱにして警戒しながらじゃないと書けないです。linq.jsの型定義書くの超絶苦労した……。</p>
+<pre><code class="language-javascript">interface IEnumerable&lt;T&gt; {
+    // 戻り値の型をIEnumerable&lt;IGrouping&lt;TKey, T&gt;&gt;にしたいのですが、
+    // interface側で定義しているTをネストした型変数に使うとVSが大暴走して死ぬ
+    // ので、今回のバージョンではanyにしてます
+    groupBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IEnumerable&lt;IGrouping&lt;TKey, any&gt;&gt;;
+}
+</code></pre>
+<p>具体的に踏んだのは↑ですねえ。最初原因が分かってなくてかなり時間食われちゃいました。んもー。最小セットで試してる限りでは、コンパイルエラーにはなるんですが(A generic type may not reference itself with a wrapped form of its own type parameters.)暴走はしない、んですがlinq.d.tsで弄ってると死ぬ。おうふ。もう定義の仕方が悪いのかコンパイラがアレなのか判断つかないのでしんどい。</p>
+<p>そんなわけで、0.8の完成度からだいぶ退化して、実用性はゼロになってしまいました。私の環境だけ、じゃあないよねえ…‥？とりあえず0.9.1を待ちましょう。どうやらコンパイラをまるっと書き換えたそうですしねー、初物だからshoganaiと思うことにして。しかし泣きたい。</p>
+<h2>linq.d.ts</h2>
+<p>とりあえず、こんな感じになってます。</p>
+<pre><code class="language-csharp">// Type Definition for linq.js, ver 3.0.4-Beta5
+
+declare module linqjs {
+    interface IEnumerator&lt;T&gt; {
+        current(): T;
+        moveNext(): boolean;
+        dispose(): void;
+    }
+
+    interface Enumerable {
+        Utils: {
+            createLambda(expression: any): (...params: any[]) =&gt; any;
+            createEnumerable&lt;T&gt;(getEnumerator: () =&gt; IEnumerator&lt;T&gt;): IEnumerable&lt;T&gt;;
+            createEnumerator&lt;T&gt;(initialize: () =&gt; void , tryGetNext: () =&gt; boolean, dispose: () =&gt; void ): IEnumerator&lt;T&gt;;
+            extendTo(type: any): void;
+        };
+        choice&lt;T&gt;(...params: T[]): IEnumerable&lt;T&gt;;
+        cycle&lt;T&gt;(...params: T[]): IEnumerable&lt;T&gt;;
+        empty&lt;T&gt;(): IEnumerable&lt;T&gt;;
+        // from&lt;T&gt;, obj as JScript's IEnumerable or WinMD IIterable&lt;T&gt; is IEnumerable&lt;T&gt; but it can't define.
+        from(): IEnumerable&lt;any&gt;; // empty
+        from&lt;T&gt;(obj: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
+        from(obj: number): IEnumerable&lt;number&gt;;
+        from(obj: boolean): IEnumerable&lt;boolean&gt;;
+        from(obj: string): IEnumerable&lt;string&gt;;
+        from&lt;T&gt;(obj: T[]): IEnumerable&lt;T&gt;;
+        from&lt;T&gt;(obj: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
+        from(obj: any): IEnumerable&lt;{ key: string; value: any }&gt;;
+        make&lt;T&gt;(element: T): IEnumerable&lt;T&gt;;
+        matches&lt;T&gt;(input: string, pattern: RegExp): IEnumerable&lt;T&gt;;
+        matches&lt;T&gt;(input: string, pattern: string, flags?: string): IEnumerable&lt;T&gt;;
+        range(start: number, count: number, step?: number): IEnumerable&lt;number&gt;;
+        rangeDown(start: number, count: number, step?: number): IEnumerable&lt;number&gt;;
+        rangeTo(start: number, to: number, step?: number): IEnumerable&lt;number&gt;;
+        repeat&lt;T&gt;(element: T, count?: number): IEnumerable&lt;T&gt;;
+        repeatWithFinalize&lt;T&gt;(initializer: () =&gt; T, finalizer: (element) =&gt; void ): IEnumerable&lt;T&gt;;
+        generate&lt;T&gt;(func: () =&gt; T, count?: number): IEnumerable&lt;T&gt;;
+        toInfinity(start?: number, step?: number): IEnumerable&lt;number&gt;;
+        toNegativeInfinity(start?: number, step?: number): IEnumerable&lt;number&gt;;
+        unfold&lt;T&gt;(seed: T, func: (value: T) =&gt; T): IEnumerable&lt;T&gt;;
+        defer&lt;T&gt;(enumerableFactory: () =&gt; IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
+    }
+
+    interface IEnumerable&lt;T&gt; {
+        constructor(getEnumerator: () =&gt; IEnumerator&lt;T&gt;);
+        getEnumerator(): IEnumerator&lt;T&gt;;
+
+        // Extension Methods
+        traverseBreadthFirst(func: (element: T) =&gt; IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
+        traverseBreadthFirst&lt;TResult&gt;(func: (element: T) =&gt; IEnumerable&lt;T&gt;, resultSelector: (element: T, nestLevel: number) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        traverseDepthFirst&lt;TResult&gt;(func: (element: T) =&gt; Enumerable): IEnumerable&lt;T&gt;;
+        traverseDepthFirst&lt;TResult&gt;(func: (element: T) =&gt; Enumerable, resultSelector?: (element: T, nestLevel: number) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        flatten(): IEnumerable&lt;any&gt;;
+        pairwise&lt;TResult&gt;(selector: (prev: T, current: T) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        scan(func: (prev: T, current: T) =&gt; T): IEnumerable&lt;T&gt;;
+        scan&lt;TAccumulate&gt;(seed: TAccumulate, func: (prev: TAccumulate, current: T) =&gt; TAccumulate): IEnumerable&lt;TAccumulate&gt;;
+        select&lt;TResult&gt;(selector: (element: T, index: number) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        selectMany&lt;TOther&gt;(collectionSelector: (element: T, index: number) =&gt; IEnumerable&lt;TOther&gt;): IEnumerable&lt;TOther&gt;;
+        selectMany&lt;TCollection, TResult&gt;(collectionSelector: (element: T, index: number) =&gt; IEnumerable&lt;TCollection&gt;, resultSelector: (outer: T, inner: TCollection) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        selectMany&lt;TOther&gt;(collectionSelector: (element: T, index: number) =&gt; TOther[]): IEnumerable&lt;TOther&gt;;
+        selectMany&lt;TCollection, TResult&gt;(collectionSelector: (element: T, index: number) =&gt; TCollection[], resultSelector: (outer: T, inner: TCollection) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        selectMany&lt;TOther&gt;(collectionSelector: (element: T, index: number) =&gt; { length: number;[x: number]: TOther; }): IEnumerable&lt;TOther&gt;;
+        selectMany&lt;TCollection, TResult&gt;(collectionSelector: (element: T, index: number) =&gt; { length: number;[x: number]: TCollection; }, resultSelector: (outer: T, inner: TCollection) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        where(predicate: (element: T, index: number) =&gt; boolean): IEnumerable&lt;T&gt;;
+        choose(selector: (element: T, index: number) =&gt; T): IEnumerable&lt;T&gt;;
+        ofType&lt;TResult&gt;(type: any): IEnumerable&lt;TResult&gt;;
+        zip&lt;TResult&gt;(second: IEnumerable&lt;T&gt;, resultSelector: (first: T, second: T, index: number) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        zip&lt;TResult&gt;(second: { length: number;[x: number]: T; }, resultSelector: (first: T, second: T, index: number) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        zip&lt;TResult&gt;(second: T[], resultSelector: (first: T, second: T, index: number) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        zip&lt;TResult&gt;(...params: any[]): IEnumerable&lt;TResult&gt;; // last one is selector
+        merge&lt;TResult&gt;(...params: IEnumerable&lt;T&gt;[]): IEnumerable&lt;T&gt;;
+        merge&lt;TResult&gt;(...params: { length: number;[x: number]: T; }[]): IEnumerable&lt;T&gt;;
+        merge&lt;TResult&gt;(...params: T[][]): IEnumerable&lt;T&gt;;
+        join&lt;TInner, TKey, TResult&gt;(inner: IEnumerable&lt;TInner&gt;, outerKeySelector: (outer: T) =&gt; TKey, innerKeySelector: (inner: TInner) =&gt; TKey, resultSelector: (outer: T, inner: TKey) =&gt; TResult, compareSelector?: (obj: T) =&gt; TKey): IEnumerable&lt;TResult&gt;;
+        join&lt;TInner, TKey, TResult&gt;(inner: { length: number;[x: number]: TInner; }, outerKeySelector: (outer: T) =&gt; TKey, innerKeySelector: (inner: TInner) =&gt; TKey, resultSelector: (outer: T, inner: TKey) =&gt; TResult, compareSelector?: (obj: T) =&gt; TKey): IEnumerable&lt;TResult&gt;;
+        join&lt;TInner, TKey, TResult&gt;(inner: TInner[], outerKeySelector: (outer: T) =&gt; TKey, innerKeySelector: (inner: TInner) =&gt; TKey, resultSelector: (outer: T, inner: TKey) =&gt; TResult, compareSelector?: (obj: T) =&gt; TKey): IEnumerable&lt;TResult&gt;;
+        groupJoin&lt;TInner, TKey, TResult&gt;(inner: IEnumerable&lt;TInner&gt;, outerKeySelector: (outer: T) =&gt; TKey, innerKeySelector: (inner: TInner) =&gt; TKey, resultSelector: (outer: T, inner: TKey) =&gt; TResult, compareSelector?: (obj: T) =&gt; TKey): IEnumerable&lt;TResult&gt;;
+        groupJoin&lt;TInner, TKey, TResult&gt;(inner: { length: number;[x: number]: TInner; }, outerKeySelector: (outer: T) =&gt; TKey, innerKeySelector: (inner: TInner) =&gt; TKey, resultSelector: (outer: T, inner: TKey) =&gt; TResult, compareSelector?: (obj: T) =&gt; TKey): IEnumerable&lt;TResult&gt;;
+        groupJoin&lt;TInner, TKey, TResult&gt;(inner: TInner[], outerKeySelector: (outer: T) =&gt; TKey, innerKeySelector: (inner: TInner) =&gt; TKey, resultSelector: (outer: T, inner: TKey) =&gt; TResult, compareSelector?: (obj: T) =&gt; TKey): IEnumerable&lt;TResult&gt;;
+        all(predicate: (element: T) =&gt; boolean): boolean;
+        any(predicate?: (element: T) =&gt; boolean): boolean;
+        isEmpty(): boolean;
+        concat(...sequences: IEnumerable&lt;T&gt;[]): IEnumerable&lt;T&gt;;
+        concat(...sequences: { length: number;[x: number]: T; }[]): IEnumerable&lt;T&gt;;
+        concat(...sequences: T[]): IEnumerable&lt;T&gt;;
+        insert(index: number, second: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
+        insert(index: number, second: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
+        alternate(alternateValue: T): IEnumerable&lt;T&gt;;
+        alternate(alternateSequence: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
+        alternate(alternateSequence: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
+        alternate(alternateSequence: T[]): IEnumerable&lt;T&gt;;
+        contains(value: T): boolean;
+        contains&lt;TCompare&gt;(value: T, compareSelector?: (element: T) =&gt; TCompare): boolean;
+        defaultIfEmpty(defaultValue?: T): IEnumerable&lt;T&gt;;
+        distinct(): IEnumerable&lt;T&gt;;
+        distinct&lt;TCompare&gt;(compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        distinctUntilChanged(): IEnumerable&lt;T&gt;;
+        distinctUntilChanged&lt;TCompare&gt;(compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        except(second: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
+        except&lt;TCompare&gt;(second: { length: number;[x: number]: T; }, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        except(second: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
+        except&lt;TCompare&gt;(second: IEnumerable&lt;T&gt;, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        except(second: T[]): IEnumerable&lt;T&gt;;
+        except&lt;TCompare&gt;(second: T[], compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        intersect(second: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
+        intersect&lt;TCompare&gt;(second: { length: number;[x: number]: T; }, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        intersect(second: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
+        intersect&lt;TCompare&gt;(second: IEnumerable&lt;T&gt;, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        intersect(second: T[]): IEnumerable&lt;T&gt;;
+        intersect&lt;TCompare&gt;(second: T[], compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        union(second: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
+        union&lt;TCompare&gt;(second: { length: number;[x: number]: T; }, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        union(second: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
+        union&lt;TCompare&gt;(second: IEnumerable&lt;T&gt;, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        union(second: T[]): IEnumerable&lt;T&gt;;
+        union&lt;TCompare&gt;(second: T[], compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        sequenceEqual(second: { length: number;[x: number]: T; }): boolean;
+        sequenceEqual&lt;TCompare&gt;(second: { length: number;[x: number]: T; }, compareSelector: (element: T) =&gt; TCompare): boolean;
+        sequenceEqual(second: IEnumerable&lt;T&gt;): boolean;
+        sequenceEqual&lt;TCompare&gt;(second: IEnumerable&lt;T&gt;, compareSelector: (element: T) =&gt; TCompare): boolean;
+        sequenceEqual(second: T[]): boolean;
+        sequenceEqual&lt;TCompare&gt;(second: T[], compareSelector: (element: T) =&gt; TCompare): boolean;
+        orderBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IOrderedEnumerable&lt;T&gt;;
+        orderByDescending&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IOrderedEnumerable&lt;T&gt;;
+        reverse(): IEnumerable&lt;T&gt;;
+        shuffle(): IEnumerable&lt;T&gt;;
+        weightedSample(weightSelector: (element: T) =&gt; number): IEnumerable&lt;T&gt;;
+        // truly, return type is IEnumerable&lt;IGrouping&lt;TKey, T&gt;&gt; but Visual Studio + TypeScript Compiler can't compile.
+        groupBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IEnumerable&lt;IGrouping&lt;TKey, T&gt;&gt;;
+        groupBy&lt;TKey, TElement&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement): IEnumerable&lt;IGrouping&lt;TKey, TElement&gt;&gt;;
+        groupBy&lt;TKey, TElement, TResult&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement, resultSelector: (key: TKey, element: IEnumerable&lt;TElement&gt;) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        groupBy&lt;TKey, TElement, TResult, TCompare&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement, resultSelector: (key: TKey, element: IEnumerable&lt;TElement&gt;) =&gt; TResult, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;TResult&gt;;
+        // :IEnumerable&lt;IGrouping&lt;TKey, T&gt;&gt;
+        partitionBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IEnumerable&lt;IGrouping&lt;TKey, any&gt;&gt;;
+        // :IEnumerable&lt;IGrouping&lt;TKey, TElement&gt;&gt;
+        partitionBy&lt;TKey, TElement&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement): IEnumerable&lt;IGrouping&lt;TKey, TElement&gt;&gt;;
+        partitionBy&lt;TKey, TElement, TResult&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement, resultSelector: (key: TKey, element: IEnumerable&lt;TElement&gt;) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        partitionBy&lt;TKey, TElement, TResult, TCompare&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement, resultSelector: (key: TKey, element: IEnumerable&lt;TElement&gt;) =&gt; TResult, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;TResult&gt;;
+        buffer(count: number): IEnumerable&lt;T&gt;;
+        aggregate(func: (prev: T, current: T) =&gt; T): T;
+        aggregate&lt;TAccumulate&gt;(seed: TAccumulate, func: (prev: TAccumulate, current: T) =&gt; TAccumulate): TAccumulate;
+        aggregate&lt;TAccumulate, TResult&gt;(seed: TAccumulate, func: (prev: TAccumulate, current: T) =&gt; TAccumulate, resultSelector: (last: TAccumulate) =&gt; TResult): TResult;
+        average(selector?: (element: T) =&gt; number): number;
+        count(predicate?: (element: T, index: number) =&gt; boolean): number;
+        max(selector?: (element: T) =&gt; number): number;
+        min(selector?: (element: T) =&gt; number): number;
+        maxBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): T;
+        minBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): T;
+        sum(selector?: (element: T) =&gt; number): number;
+        elementAt(index: number): T;
+        elementAtOrDefault(index: number, defaultValue?: T): T;
+        first(predicate?: (element: T, index: number) =&gt; boolean): T;
+        firstOrDefault(predicate?: (element: T, index: number) =&gt; boolean, defaultValue?: T): T;
+        last(predicate?: (element: T, index: number) =&gt; boolean): T;
+        lastOrDefault(predicate?: (element: T, index: number) =&gt; boolean, defaultValue?: T): T;
+        single(predicate?: (element: T, index: number) =&gt; boolean): T;
+        singleOrDefault(predicate?: (element: T, index: number) =&gt; boolean, defaultValue?: T): T;
+        skip(count: number): IEnumerable&lt;T&gt;;
+        skipWhile(predicate: (element: T, index: number) =&gt; boolean): IEnumerable&lt;T&gt;;
+        take(count: number): IEnumerable&lt;T&gt;;
+        takeWhile(predicate: (element: T, index: number) =&gt; boolean): IEnumerable&lt;T&gt;;
+        takeExceptLast(count?: number): IEnumerable&lt;T&gt;;
+        takeFromLast(count: number): IEnumerable&lt;T&gt;;
+        indexOf(item: T): number;
+        indexOf(predicate: (element: T, index: number) =&gt; boolean): number;
+        lastIndexOf(item: T): number;
+        lastIndexOf(predicate: (element: T, index: number) =&gt; boolean): number;
+        asEnumerable(): IEnumerable&lt;T&gt;;
+        cast&lt;TResult&gt;(): IEnumerable&lt;TResult&gt;;
+        toArray(): T[];
+        // truly, return type is ILookup&lt;TKey, T&gt; but Visual Studio + TypeScript Compiler can't compile. 
+        toLookup&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): ILookup&lt;TKey, any&gt;;
+        toLookup&lt;TKey, TElement&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement): ILookup&lt;TKey, TElement&gt;;
+        toLookup&lt;TKey, TElement, TCompare&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement, compareSelector: (key: TKey) =&gt; TCompare): ILookup&lt;TKey, TElement&gt;;
+        toObject(keySelector: (element: T) =&gt; any, elementSelector?: (element: T) =&gt; any): Object;
+        // :IDictionary&lt;TKey, T&gt;
+        toDictionary&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IDictionary&lt;TKey, any&gt;;
+        toDictionary&lt;TKey, TValue&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TValue): IDictionary&lt;TKey, TValue&gt;;
+        toDictionary&lt;TKey, TValue, TCompare&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TValue, compareSelector: (key: TKey) =&gt; TCompare): IDictionary&lt;TKey, TValue&gt;;
+        toJSONString(replacer: (key: string, value: any) =&gt; any): string;
+        toJSONString(replacer: any[]): string;
+        toJSONString(replacer: (key: string, value: any) =&gt; any, space: any): string;
+        toJSONString(replacer: any[], space: any): string;
+        toJoinedString(separator?: string): string;
+        toJoinedString&lt;TResult&gt;(separator: string, selector: (element: T, index: number) =&gt; TResult): string;
+        doAction(action: (element: T, index: number) =&gt; void ): IEnumerable&lt;T&gt;;
+        doAction(action: (element: T, index: number) =&gt; boolean): IEnumerable&lt;T&gt;;
+        forEach(action: (element: T, index: number) =&gt; void ): void;
+        forEach(action: (element: T, index: number) =&gt; boolean): void;
+        write(separator?: string): void;
+        write&lt;TResult&gt;(separator: string, selector: (element: T) =&gt; TResult): void;
+        writeLine(): void;
+        writeLine&lt;TResult&gt;(selector: (element: T) =&gt; TResult): void;
+        force(): void;
+        letBind&lt;TResult&gt;(func: (source: IEnumerable&lt;T&gt;) =&gt; { length: number;[x: number]: TResult; }): IEnumerable&lt;TResult&gt;;
+        letBind&lt;TResult&gt;(func: (source: IEnumerable&lt;T&gt;) =&gt; TResult[]): IEnumerable&lt;TResult&gt;;
+        letBind&lt;TResult&gt;(func: (source: IEnumerable&lt;T&gt;) =&gt; IEnumerable&lt;TResult&gt;): IEnumerable&lt;TResult&gt;;
+        share(): IDisposableEnumerable&lt;T&gt;;
+        memoize(): IDisposableEnumerable&lt;T&gt;;
+        catchError(handler: (exception: any) =&gt; void ): IEnumerable&lt;T&gt;;
+        finallyAction(finallyAction: () =&gt; void ): IEnumerable&lt;T&gt;;
+        log(): IEnumerable&lt;T&gt;;
+        log&lt;TValue&gt;(selector: (element: T) =&gt; TValue ): IEnumerable&lt;T&gt;;
+        trace(message?: string): IEnumerable&lt;T&gt;;
+        trace&lt;TValue&gt;(message: string, selector: (element: T) =&gt; TValue ): IEnumerable&lt;T&gt;;
+    }
+
+    interface IOrderedEnumerable&lt;T&gt; extends IEnumerable&lt;T&gt; {
+        createOrderedEnumerable&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey, descending: boolean): IOrderedEnumerable&lt;T&gt;;
+        thenBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IOrderedEnumerable&lt;T&gt;;
+        thenByDescending&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IOrderedEnumerable&lt;T&gt;;
+    }
+
+    interface IDisposableEnumerable&lt;T&gt; extends IEnumerable&lt;T&gt; {
+        dispose(): void;
+    }
+
+    interface IDictionary&lt;TKey, TValue&gt; {
+        add(key: TKey, value: TValue): void;
+        get(key: TKey): TValue;
+        set(key: TKey, value: TValue): boolean;
+        contains(key: TKey): boolean;
+        clear(): void;
+        remove(key: TKey): void;
+        count(): number;
+        toEnumerable(): IEnumerable&lt;{ key: TKey; value: TValue }&gt;;
+    }
+
+    interface ILookup&lt;TKey, TElement&gt; {
+        count(): number;
+        get(key: TKey): IEnumerable&lt;TElement&gt;;
+        contains(key: TKey): boolean;
+        toEnumerable(): IEnumerable&lt;IGrouping&lt;TKey, TElement&gt;&gt;;
+    }
+
+    interface IGrouping&lt;TKey, TElement&gt; extends IEnumerable&lt;TElement&gt; {
+        key(): TKey;
+    }
+}
+
+// export definition
+declare var Enumerable: linqjs.Enumerable;
+</code></pre>
+<p>アップデートを全然追ってないので、初期に作った定義の仕方のまんまなので、大丈夫かな、まあ、大丈夫じゃないかな、きっと。</p>
+<p>とりあえずとにかく面倒くさかった。しかし定義する人が苦労すれば、利用者はハッピーになれるから！！！なのではやくVS対応がまともになってください。ぶんぶんぶん回したいのだけれどねえ←その前にlinq.js ver.3がいつまでもBetaなのをなんとかしろ</p>
+</div>
+<h1><a href="http://neue.cc/2013/0614_407.html">C#の強み、或いは何故PHPから乗り換えるのか</a></h1>
+<ul class="date"><li>2013-06-14</li></ul>
+<div class="entry_body"><p>という内容で、C#ユーザー会で話してきました。</p>
+<iframe src="http://www.slideshare.net/slideshow/embed_code/22979400" width="597" height="400" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC;border-width:1px 1px 0;margin-bottom:5px" allowfullscreen webkitallowfullscreen mozallowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="http://www.slideshare.net/neuecc/c-22979400" title="C#の強み、或いは何故PHPから乗り換えるのか" target="_blank">C#の強み、或いは何故PHPから乗り換えるのか</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>特にPHPディスりたいわけでは、あるのかないのかはともかく、やっぱり実際に使ってきて良いところというのも分からなくもない感じです。会場でも話したのは、短期的な開発速度には有利なのは間違いないのかな、と。デプロイとかも、とりあえずポン置きでいいし、開発も、なんかもう複雑なことやると面倒だし、どうせ文字列だらけになるしで、開き直ってハードコーディングでバカバカ作っていくから速い、とか。ただし勿論あとで苦労するわけですがそれはそれとして。けれどやっぱC#良いよね、って。</p>
+<p>言語も色々なトレードオフで成り立つわけですが、その中でもC#は、バランス良くて好きだなーというのが私の個人的なところです。Visual Studio良いよねー、でもいいですしLINQ良いよねー、もいいですし、IntelliSenseがないと生きていけないですし。うん、そう、IntelliSense指向言語が好きなわけです。</p>
+<p>ほとんどVisual Studioの話じゃねーか、というのは、まぁそうなのですけれど、大事なのはVisual Studioを前提においた言語構造になってるってとこです。強力すぎる型推論は、100%の入力補完を実現できなかったりする。強力すぎる動的さは100%の入力補完を実現できなかったりする。C#がVisual Studioとともに使って快適なのは、そういう言語設計になっているからです。コンパイルの速さも重要で。C#は他のコンパイル型言語に比べて速い部類に入ります。だから快適だし、エラー通知とかもリアルタイム。目に見えないところ、使ってみないと評価しにくい、ただの○×表だけの性能比較にはない部分、結構多いものです。</p>
+</div>
+<h1><a href="http://neue.cc/2013/0610_406.html">.NET最先端技術によるハイパフォーマンスウェブアプリケーション FAQ</a></h1>
+<ul class="date"><li>2013-06-10</li></ul>
+<div class="entry_body"><p>Build Insider Offlineにて、「.NET最先端技術によるハイパフォーマンスウェブアプリケーション」と題して、グラニのC#によるウェブアプリケーション作成の仕組みについて話してきました。</p>
+<iframe src="http://www.slideshare.net/slideshow/embed_code/22662425" width="597" height="400" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC;border-width:1px 1px 0;margin-bottom:5px" allowfullscreen webkitallowfullscreen mozallowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="http://www.slideshare.net/neuecc/net-22662425" title=".NET最先端技術によるハイパフォーマンスウェブアプリケーション" target="_blank">.NET最先端技術によるハイパフォーマンスウェブアプリケーション</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>一日でViewsが1万、はてブが250と、ドトネト系にしては珍しく多くの人に見てもらえたようでなにより。</p>
+<p>今までのC#関連って、MS純正ライブラリを使ったどうのこうの、というのはありましたが、外部ライブラリを組み合わせて、実践的にどうしているかっていうような話ってほとんどなかったんですよね。やってるところがない、ことはないのですが、しかし表にない、見えないものはないに等しいです。</p>
+<p>別にC#だって自分達の手でライブラリを選び、作り、組み上げていく。それがこれからの時代のスタンダードです。遅れていたのかもしれません。しかし、遅すぎるなんてことはない。素材は良いし、.NETは死んだのでなく、むしろ風が吹いてきている。リアルなモデルケースとして、引っ張っていけたらと思っています。</p>
+<h2>FAQ</h2>
+<ul>
+<li>今時Windowsサーバー？</li>
+</ul>
+<p>AWSやAzureなどで簡単にWindowsインスタンスの立ち上げが可能なので、今時というか普通に選択肢に入ってくれるといいですねえ、これからは。ウェブ＝LAMPとか誰が決めたの？という話で。コスト面ではそんなに高くなるわけでもないし、それで開発効率が上がったり、サーバー台数が削減されるなら、むしろプラスです。開発効率に関しては人員次第ですが、うちのメンバーの習熟度で言ったら間違いなく上がります、圧倒的に。</p>
+<ul>
+<li>サーバーサイドでトラフィック以外がくってるのおかしい</li>
+</ul>
+<p>そうそう、一般的にウェブではネックなのは通信部分だけ、と思っていたことも有りました。でもまぁ、クックパッドの<a href="http://techlife.cookpad.com/2013/06/07/rubykaigi-high-performance-rails/">Rails アプリケーションのパフォーマンスについて RubyKaigi 2013 で発表しました</a>のスライドのResponse time breakdownのところ。SQLが20%がRubyが80%とあるんですね。うちのグラフと一緒？CakePHPはとにかくアレなわけですが、重量級フレームワークは割とそうなるもんなのかしらねえ、と少しだけホッとしたような絶望したような。</p>
+<p>先入観じゃなくちゃんとモニタリングしてくのが大事、と当たり前の話ですけれど。スライドでも推しましたが<a href="http://newrelic.com/">New Relic</a>は本当に最高なので、よほどの事情がない限りは入れるべきかなぁ、と。PHP, Ruby, Java, .NET, Python, Node.js、多くの言語に対応しています。確実にパワーは喰いますが、それでも全然お釣りくる。</p>
+<ul>
+<li>アプリケーションサーバー:DBマスター:DBスレーブの比率がおかしい</li>
+</ul>
+<p>ええと、これ、実質的にはSlaveは0です。色々な経緯があって、アプリ本体からは参照も全てMasterにし
+か振ってません。Slaveの用途は管理画面からの参照用とか、その程度です（スタンバイという点でも、RDSのMulti-AZを利用しているので意味は無い）。となると比率はますますオカシクなるわけですが、うーん、まあ、今時のDBってなんだかんだで頑丈ですからねえ、そう増えないかなあ。しかしそれにしてもアプリケーションサーバーの台数が多すぎなのは、まぁもう本当にすみませんすみませんって感じなわけなのですが。みんなCakePHP触ってみるといいですよ、XHProfにかけると絶望しますから。</p>
+<p>勿論チューニングの余地はあります。ありますし、最後にはCakePHPを捨てるというところになることも見えるし、PHPにこだわる理由がどこにもありません。それならC#移行に、といったところですね。とはいえ実際のとこ増え続けることによる歪みが色々発生してるので、ヒィヒィ言いながら適宜対処してます。あと、最低限というか割とそれなりにはCakePHP本体に手を入れたりもしてはいるんですけど、それでも中々どうにも。</p>
+<ul>
+<li>PHPのLINQあるよ</li>
+</ul>
+<p>ないよ。幾つかのPHP-LINQライブラリを、コードも読んで評価しましたが、ゴミという結論に達しました。私は<a href="http://linqjs.codeplex.com/">JavaScriptにLINQ移植</a>したりとかしているので、LINQにはこだわりがありひじょーにうるさいのです。あとCakePHPに含まれてるコレクション系のメソッドもゴミですね。かわりに自作したLINQっぽいコレクション処理用の何かを使っています。PHP 5.4を使っているので、ラムダとかもがしがし使えはするので、メソッドチェーンでフィルターやグルーピング、複数キーのソートとか一通りできるように作りました。これ作ってなかったら死んでたわ……。ただ、簡易的な実装なので遅延実行ではありません。最近発表された<a href="http://akanehara.info/phpcon/ginq/#/">Ginq</a>は非常に良いですね！もっと前にあったら、採用していたかもしれません。</p>
+<ul>
+<li>「何でもハッシュに詰めるしかない」</li>
+</ul>
+<p>ここ説明が足りなくてアレでしたね、申し訳ないです。文脈としてはIntelliSenseが効くか効かないか、の話しかするつもりなかったのと、ハッシュだろうとオブジェクトだろうとDBからの戻り値の場合はどうせ効かないのでどうでもいい、といった感だったので不正確でした、すみません。</p>
+<p>あ、DBから以外の部分で、Modelとして作りこむところでは普通にclass立てたり、TypeHinting使ったりPhpDoc書いたりして、補完がなるべく効きやすいように作ってはいますよ。IDE信奉者なので、<a href="http://www.jetbrains.com/phpstorm/">PhpStorm</a>を会社で購入して使っていますので。とはいえ、タイプヒンティングやPHPDocでも、PHP自体がゆるふわなので効きめはイマイチなんですよ。じゃあ、PHP自体がのゆるふわさを捨てて完全にガチガチに書くか？といったら、それはそれでイマイチになるので、まぁ、半分諦めるのがいいかな、とは。</p>
+<p>一応誤解なきように弁解すると、無知のC#モノがイヤイヤPHP使ってるだけでPHPについて何も分かっちゃいない、というほどに分かってないわけではないです。一応はPHPの最新言語仕様についてはちゃんと追っかけて差分取っているぐらいには使っています。さすがに仕事の商売道具ですから、嫌いだから何も勉強しない！わけでもないです。traitなども効果的だと思ったところには使ってますし、まぁtrait使うと更にPhpStormの補完が死ぬわけですが。</p>
+<ul>
+<li>なんで水平分割いやがるの</li>
+</ul>
+<p>一応スライド中にも書きましたが、メンドーごとが増えるので。特に嫌なのは、<a href="http://www.heidisql.com/">HeidiSQL</a>とか、GUIツール郡の使い勝手が低下して、かわりに自社製のツールセット（コマンドか、しょぼいWebUI）になるか、とかですよねえ、それが一番避けたくて。他社の話を聞いていて驚くのは、phpMyAdminとかコマンド叩いてるとかいうんですよ、DB見たりするのに。私的には、ありえない。みんなもっとちゃんとGUIツールも使いましょう。必要とあらばウェブツールだけじゃなくてGUIツールも自作しましょう(C#なら簡単です！)。</p>
+<p>まあ、どうしてもダメになったら水平にします。でもFusion-IOはもとより、AWSでも10万IOPSのインスタンスが出たりとか、ハードウェア性能はどんどん進化しているので、何とかなってくれるんじゃないかなあ、と楽観視はしています。良い時代になったな、と思います。</p>
+<h2>なぜ移行するの？C#のどこがいいの？</h2>
+<p>ということを、<a href="http://t.co/mxY8JFk7j2">6/11 第90回codeseek＆第30回日本C#ユーザー会 勉強会 「やっぱり.NETだよね」</a>でお話しますので、明日ですが、当日まで申し込みは受け付けてる的なノリがいつもの感じだとあるので、時間あるかたは是非お越しください。そんなにDisってよりは割とSoftな感じです、私の分はいちおー。</p>
+<p>珍しく既にスライドは完成していまして、「Static vs Dynamic」「Type for IntelliSense」「Type for Refactoring」「Debugger is Power」「LINQ vs array_xxx」「Razor:Template Engine Revolution」といったようなタイトルが並んでますので、気になった方はどーぞ。</p>
+<p>ああ、そう、あとA vs Bにおいて、全てにおけてAのほうがいい、なんてことは絶対にないんですね。どこかしらかはBのほうがよかったり、BならXxxなのに、とかいうようなことも出てくるでしょう。何がどれだけ自分に、自分達に良いのかの選択をしてくのが肝要なので、その選択を考えるための道具になればいいかと思ってます。</p>
+</div>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

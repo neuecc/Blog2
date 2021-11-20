@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - イベントベースの非同期処理をReactive Extensionsで扱う方法</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2010/1110_284.html">イベントベースの非同期処理をReactive Extensionsで扱う方法</a></h1>
+<ul class="date"><li>2010-11-10</li></ul>
+<div class="entry_body"><p><a href="http://d.hatena.ne.jp/y_maeyama/20101110/1289350526" title="Reactive Extensionsを使用して複数のサービス非同期コールを連続して呼べるか試してみた。その２ - y_maeyamaの日記">Reactive Extensionsを使用して複数のサービス非同期コールを連続して呼べるか試してみた。その２ - y_maeyamaの日記</a> という記事にて、Rxを使ってWCFを綺麗に呼んでました。なるほど！Silverlightで！WCFで！非同期コールを連続して呼ぶ！とっても実践的なテーマ。<a href="http://neue.cc/2010/11/05_283.html" title="neue cc - 実践例から見るReactive Extensinosを用いた非同期処理">XboxInfoほげほげがどうのこうの</a>、とかやってたどこかの私と違います、げふんげふん。とても素晴らしいテーマとコードだと思ったので、拝借して私も少し書いてみました。</p>
+<pre><code class="language-csharp">// 実行部分(実行後10秒後ぐらいにWCFサービスの連鎖を経てメッセージボックスに結果を表示)
+var client = new ServiceReference1.Service1Client();
+
+var asyncQuery = from a in Observable.Defer(() =&gt; client.GetAAsObservable(&quot;てすと&quot;))
+                 from b in client.GetBAsObservable(a.EventArgs.Result)
+                 from c in client.GetCAsObservable(b.EventArgs.Result)
+                 select c.EventArgs.Result;
+
+asyncQuery.Subscribe(s =&gt; MessageBox.Show(&quot;チェーン終了 - &quot; + s));
+</code></pre>
+<p>「前に呼んだサービスの引数にアクセス」に関しては、SelectManyで匿名型を作る、が解だと思います。で、幾つも連鎖する時はクエリ構文を使うのが大変お手軽。ただしクエリ構文は独自定義のメソッドと繋がりが悪くなるという欠点があります。RxではDoとかObserveOnとか結構使いますから、クエリ構文、便利な用で使いどころに困る代物。その辺は実際に書く内容によって判断つけるところですねー。</p>
+<h2>XxxAsObservable</h2>
+<p>突然出てきているGetAAsObservableって何だ、といったら、勿論、拡張メソッドです。FromEventやFromAsyncPatternなどはコード本体に書いてあると鬱陶しいので、基本は拡張メソッドで隔離してしまいましょう。命名規則に特に決まりはありませんが、私はXxxAsObservableという規則で書いています。今回はWCFのサービス参照で自動生成されたイベントベースの非同期処理のラップなので、FromEventをベースに、ただし少し小細工を。</p>
+<pre><code class="language-csharp">public static class IObservableExtensions
+{
+    // イベントベースの非同期はRxと今一つ相性が悪いので変換する
+    public static IObservable&lt;IEvent&lt;T&gt;&gt; ToAsynchronousObservable&lt;T&gt;(this IObservable&lt;IEvent&lt;T&gt;&gt; source) where T : EventArgs
+    {
+        var connectable = source
+            .Take(1) // 実行は一回のみ(これしとかないとイベントハンドラの解除がされないし、そもそもPruneが動かなくなる)
+            .Prune(); // AsyncSubjectに変換
+        var detacher = connectable.Connect(); // コネクト(イベント登録実行)
+        return connectable.Finally(() =&gt; detacher.Dispose()); // 任意のDispose時にイベントのデタッチ(なくても構いません)
+    }
+}
+
+public static class Service1Extensions
+{
+    // 量産なので多いようならT4テンプレートで生成してしまうと良いでしょう
+    public static IObservable&lt;IEvent&lt;GetACompletedEventArgs&gt;&gt; GetAAsObservable(this Service1Client client, string key)
+    {
+        var o = Observable.FromEvent&lt;GetACompletedEventArgs&gt;(
+                h =&gt; client.GetACompleted += h, h =&gt; client.GetACompleted -= h)
+            .ToAsynchronousObservable();
+        client.GetAAsync(key); // 非同期実行開始
+        return o;
+    }
+    
+    // あと二つほど
+}
+</code></pre>
+<p>ふつーにFromEventをラップして終わり、ではなくて少々細工を仕込んでいます。理由は、イベントベースの非同期処理はそのままだとRxでは扱いづらいから。</p>
+<h2>イベントベース非同期処理とReactive Extensions</h2>
+<p>.NET Frameworkには基本的に2つの非同期処理の方法があります。一つはBeginXxx-EndXxxによるAPM(非同期プログラミングモデル)。もう一つはXxxAsyncとXxxCompletedによるイベントベースの非同期処理。イベントベースは素で扱う分にはAPMよりもずっと書きやすかった。だからWebClient、BackgroundWorkerなど、手軽に使える系のものに採用された（というのが理由かは知りませんが）。そしてサービス参照の自動生成のものもイベントベース。</p>
+<p>しかし、ラッピングして使う場合はとにかく使いづらい！一度の登録で何度も何度も実行されてしまうことは合成時に都合が悪い。また、ラップしたメソッドと、引数を渡す処理の実行箇所が離れてしまうことは(FromEvent.Subscribe で登録して client.GetAsync で実行)書くのが二度手間になり面倒、という他に、Subscribeよりも前に非同期実行して、更にSubscribeよりも前に非同期実行が完了してしまった場合は何も起こらなくなる。といった実行タイミングの面倒くさい問題まで絡んでくる。</p>
+<p>というわけで、イベントベースの非同期処理をReactive Extensionsに載せる場合は、ただたんにFromEventで包むだけではなく、一工夫することをお薦めします。</p>
+<p>それが上で定義したToAsynchronousObservable拡張メソッド。これは<a href="http://neue.cc/2010/10/09_278.html" title="neue cc - Rxを使って非同期プログラミングを簡単に">Rxを使って非同期プログラミングを簡単に</a>の時に少し出しました。 source.Take(1).Prune() ですって！ ふむ、よくわからん。一行ずつ見ていくと、sourceは、この場合はFromEvent後のものを想定しています（なので拡張メソッドの対象はIObservable&lt;IEvent&gt;）。それをTake(1)。これは、ふつーの非同期処理では実行完了は1回だけだから、それを模しています。イベントベースのラップなので何もしないと無限回になっていますから。</p>
+<p>続けてPrune。これは内部処理をAsyncSubjectに変換します。AsyncSubjectに関しては<a href="http://neue.cc/2010/09/28_277.html" title="neue cc - Reactive Extensionsの非同期周りの解説と自前実装">Reactive Extensionsの非同期周りの解説と自前実装</a>で簡易実装しましたが、処理が完了(OnCompleted)まで待機して、完了後はキャッシュした値を流すという、非同期処理で不都合（実行タイミングの問題など）が起こらなくするようにしたもの。対になるのはSubjectでイベント処理を模したもの。FromEventを使うと内部ではSubjectが使われることになるので、それを非同期で都合が良い形であるAsyncSubjectに変換する、ためにPruneを使いました。そしてここでConnectすることで即座にイベントにアタッチします（実行タイミングの前後の問題をなくすため）。</p>
+<h2>awaitは救いの手？</h2>
+<p>Reactive Extensionsは準備さえ済んでしまえば、非同期が恐ろしく簡単に書ける、のですが、如何せん準備が決して簡単とは言いません。さて、それがC# 5.0のasync/awaitは魔法のように解決してくれるのか、というと、そんなことはありません。現在のAsync CTPではAsyncCtpLibrary.dllにAsyncCtpExtensionsというクラスが用意されていて、その中には既存クラスに対して涙ぐましいまでにAsyncで使うのに最適なようにとXxxAsync拡張メソッドが大量に定義されています。例えばWebClientのDownloadStringにはDownloadStringTaskAsyncが。少しその中身を見てみれば、上で書いたものとやっていることは同じようなもの。イベントを登録して、完了時にはイベントハンドラを解除して。</p>
+<p>既存クラスは用意してもらったのがあるからいいけど、サービス参照のような自動生成されるクラスにたいしてはどうすれば？答えは勿論、自分で書こうね！orz。まだまだ、そんな受難な時代は続きそうです。でも、Rxは一度分かってしまえばTake(1).Prune()で済むし、T4で自動生成もそんな難しくない雰囲気なので、まあ悪くはないんじゃないでしょーか。悪いのはむしろイベントベースの非同期処理なのでは、という気がしてきた昨今。</p>
+<h2>まとめ</h2>
+<p>今月はまだまだ非同期周りの記事を書くよ！いっぱい書くよ！</p>
+<p>そういえばで、今回のソースをBitbucketに上げました。今後も何か書くときは合わせてBitbucketに上げていきたいと思っています。</p>
+<p><a href="https://bitbucket.org/neuecc/eventtoasync" title="neuecc / EventToAsync / overview – Bitbucket">neuecc / EventToAsync / overview – Bitbucket</a></p>
+<p>RSSなどのアイコンが並んでいる部分の一番右のget sourceからzipで落とせます（Bitbucketはナビゲーションが少しわかりづらいのよねえ、Mercurialベースで非常に快適なソースホスティングサービスだとは思うのですが）。また、Rxのライブラリは<a href="http://nuget.codeplex.com/" title="NuGet (formerly NuPack)">NuGet</a>を使って参照しています（なのでRx本体のインストールがしてなくても試せます、かわりにNuGetが必要？不必要？その辺まだ仕組みがよく分かってないのですが……）。以前はNuPackっていう名前でしたが、名前が被るとかで変更されたそうです。VS2010の拡張機能マネージャのオンラインギャラリーからもVS拡張がインストール出来るので、とりあえずお薦め。色々なライブラリが簡単にインストール出来ます。</p>
+<p>私も<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js</a>登録しちゃおうかな、かな……。まあ、Fixしなきゃいけないことがかなり溜まってるので、まずはそれやれよって話なのですががが。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

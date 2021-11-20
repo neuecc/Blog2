@@ -1,0 +1,2160 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - 2010</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2010/0629_264.html">linq.js ver.2.2.0.0 - 配列最適化, QUnitテスト, RxJSバインディング</a></h1>
+<ul class="date"><li>2010-06-29</li></ul>
+<div class="entry_body"><p><a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">CodePlex - linq.js - LINQ for JavaScript</a></p>
+<p>linq.jsをver 2.2に更新しました。変更事項は、メソッドの追加、配列ラッピング時の動作最適化、ユニットテストのQUnitへの移行、RxJSバインディング追加の4つです(あと、若干のバグフィックスと、RxJS用vsdoc生成プログラムの同梱)。まずは、追加した二つのメソッドについて。</p>
+<pre><code class="language-javascript">var seq = Enumerable.From([1, 5, 10, 4, 3, 2, 99]);
+
+// TakeFromLastは末尾からn個の値を取得する
+var r1 = seq.TakeFromLast(3).ToArray(); // [3, 2, 99]
+// 2.0から追加されているTakeExceptLast(末尾からn個を除く)と対になっています
+var r2 = seq.TakeExceptLast(3).ToArray(); // [1, 5, 10, 4]
+
+// ToJSONはjson文字列化します(列挙をJSON化なので必ず配列の形になります)
+// JSON.stringifyによるJSON化のため、
+// ネイティブJSON対応ブラウザ(IE8以降, Firefox, Chrome, Opera...)
+// もしくはjson2.jsをインポートしていないと動作しません
+var objs = [{ hoge: &quot;huga&quot; }, { tako: 3}];
+var json = Enumerable.From(objs).ToJSON(); // [{&quot;hoge&quot;:&quot;huga&quot;},{&quot;tako&quot;:3}]
+</code></pre>
+<p>TakeFromLast/TakeExceptLastはRxからの移植です(Rxについては後でまた少し書きます)。RxではTakeLast, SkipLastという名前ですが、諸般の都合により名前は異なります。より説明的なので悪くはないかな、と。</p>
+<p>もう一つはToJSONの復活。ver 1.xにはあったのですが、2.xでばっさり削ってたました。復活といっても、実装は大きく違います。1.xでは自前でシリアライズしていたのですが、今回はJSON.stringifyに丸投げしています。と、いうのも、IE8やそれ以外のブラウザはJSONのネイティブ実装があるので、それに投げた方が速いし安全。ネイティブ実装は<a href="http://www.json.org/js.html">json2.js</a>と互換性があるので、IE6とかネイティブ実装に対応していないブラウザに対しては、json2.jsを読み込んでおくことでToJSONは動作します。</p>
+<p>json2.jsはネイティブ実装がある場合は上書きせずネイティブ実装を優先するようになっているので、JSON使う場合は何も考えずとりあえず読み込んでおくといいですね。</p>
+<h2>配列ラップ時の最適化</h2>
+<p>Any, Count, ElementAt, ElementAtOrDefault, First, FirstOrDefault, Last, LastOrDefault, Skip, SequenceEqual, TakeExceptLast, TakeFromLast, Reverse, ToString。</p>
+<p>Enumerable.From(array)の直後に、以上のメソッドを呼んだ際は最適化された挙動を取るように変更しました。各メソッドに共通するのは、lengthが使えるメソッドということです。Linqは基本的に長さの情報を持っていない(無限リストとか扱えるから)ため、例えばCountだったら最後まで列挙して長さを取っていました。しかし、lengthが分かっているのならば、Countはlengthに置き換えられるし、Reverseは[length - 1]から逆順に列挙すればいい。ElementAt(n)はまんま[n]だしLastは[length - 1]だし、などなど、lengthを使うことで計算量が大幅に低減されます。</p>
+<p>C#でも同様のことをやっている(ということは以前に<a href="http://neue.cc/2009/07/21_178.html">LinqとCountの効率</a>という記事で書いてあったりはする)のですが、今になってようやく再現。先の記事にあるように、C#では中でisやasを使ってIEnumerableの型を調べて分岐させてますが、linq.jsでは Enumerable.FromでEnumerableを生成する際に、今まではEnumerableを返していたところを、ArrayEnumerable(継承して配列用にメソッドをオーバーライドしたもの)を返す、という形を取っています。</p>
+<p>これが嬉しいかどうかというと、そこまで気にするほどではありません。C#では array.Last() のように使えますが、linq.jsではわざわざ Enumerable.From(array).Last() と、ラップしなきゃいけませんから、それならarray[array.length - 1]でいいよ、という。ちなみに当然ですがFrom(array).Where().Count()とか、他のLinqメソッドを挟むと、ArrayEnumerableじゃなくEnumerableになるため最適化的なものは消滅します。</p>
+<p>でもまあ、意味はあるといえばあります。配列を包んだだけのEnumerableは割と色々なところで出てきます。例えばGroupJoin。これのresultSelectorの引数のEnumerableは、配列をラップしただけです。又は、ToLookup。Lookupを生成後、Getで取得した際の戻り値のEnumerableは配列を包んだだけです。GroupByの列挙(Grouping)もそう。特にGroupingで、グループの個数を使うってシーンは多いように思います。そこで今まではCount()で全件列挙が廻っていたのが、一度も列挙せずに値が取れるというのは精神衛生上喜ばしい。</p>
+<h2>パフォーマンス？</h2>
+<p>このArrayへの最適化は勿論パフォーマンスのためなのですが、じゃあ全体的にlinq.jsのパフォーマンスはどうなの？というと、遅いよ！少し列挙するだけで山のように関数呼び出しが間に入りますから、速そうな要素が一つもない。ただ、遅さがクリティカルに影響するほどのものかは、場合によりけりなので分かりません。遅い遅いと言っても、jQueryでセレクタ使って抽出してDOM弄りするのとどちらが重いかといったら、(データ量にもよりますが)圧倒的にDOM弄りですよね？的な。</p>
+<p>JavaScriptは、どうでもいいようなレベルの高速化記事がはてブなんかにも良く上がってくるんですが、つまらない目先に囚われず、全体を見てボトルネックをしっかり掴んでそこを直すべきだと思うんですよね。「１万回の要素追加で9msの高速化」とか、意味無いだろそれ絶対と思うのですが……。</p>
+<p>ただ、アプリケーションとライブラリだと話は別で、ライブラリならば1msでも速いにこしたことはないのは事実です。linq.jsは仕組み的には遅いの確定なのはしょうがないとしても、もう少しぐらいは、速度に気を使って努力すべきな気はとてもします。今後の課題。</p>
+<h2>コードスニペット</h2>
+<p>無名関数書くのに、毎回function(x) { return って書くの、面倒くさいですよね。ということで、Visual Studio用のコードスニペットを同梱しました。func1-&gt;Tab-&gt;Tabで、linq.jsで頻繁に使う一行の無名関数 function(x){ return /* キャレットここ */ } を生成してくれます。これは激しく便利で、C#の快適さの3割ぐらいを占めていると言っても過言ではないぐらいに便利なのですが、動画じゃないと伝わらないー、けれど動画撮ってる体力的余裕がないので省略。</p>
+<p>func0, func1, func2, action0, action1, action2を定義しています。0だの1だのは引数の数。funcはreturn付き、actionはreturn無しのスニペットです。また、Enumerable.RangeとEnumerable.Fromにもスニペットを用意しました。erange, efromで展開されます。jQueryプラグイン版の場合はjqrange, jqfromになります。</p>
+<p>インストールは、Visual Studio 2010でツール→コードスニペットマネージャーを開いてインポートでsnipetts/.snippetを全部インポート。</p>
+<h2>binding for RxJS</h2>
+<p><a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx">RxJS -Reactive Extensions for JavaScript</a>と接続出来るようになりました。ToObservableとToEnumerableです(jQuery版のTojQueryとtoEnumerableと同じ感覚)。</p>
+<pre><code class="language-javascript">// enumerable sequence to observable
+var source = Enumerable.Range(1, 10)
+    .Shuffle()
+    .ToObservable()
+    .Publish();
+
+source.Where(function (x) { return x % 2 == 0 })
+    .Subscribe(function (x) { document.writeln(&quot;Even:&quot; + x + &quot;&lt;br&gt;&quot;) });
+
+source.Where(function (x) { return x % 2 != 0 })
+    .Subscribe(function (x) { document.writeln(&quot;Odd:&quot; + x + &quot;&lt;br&gt;&quot;) });
+
+source.Connect();
+
+// observable to enumerable
+var subject = new Rx.ReplaySubject();
+
+subject.OnNext(&quot;I&quot;);
+subject.OnNext(4);
+subject.OnNext(&quot;B&quot;);
+subject.OnNext(2);
+subject.OnNext(&quot;M&quot;);
+
+var result = subject.ToEnumerable()
+    .OfType(String)
+    .Select(function (x) { return x.charCodeAt() - 1 })
+    .Select(function (x) { return String.fromCharCode(x) })
+    .ToString(&quot;-&quot;);
+
+alert(result); // H-A-L
+</code></pre>
+<p>ToObservableでは、<a href="http://neue.cc/2010/06/24_263.html" title="neue cc - Reactive Extensions for .NET (Rx) メソッド探訪第7回:IEnumerable vs IObservable">こないだ例に出したPublishによる分配</a>を。ToEnumerableは、例が全然浮かばなかったので適当にOnNextを発火させた奴をEnumerable化出来ますねー、と。なお、cold限定です。hotに対して適用すると空シーケンスが返ってくるだけです(ちなみにC#版のRxでhotに対してToEnumerableするとスレッドをロックして無限待機になる)</p>
+<p>それと、RxVSDocGeneratorの最新版を同梱してあります。<a href="http://neue.cc/2010/03/26_248.html" title="neue cc - RxJS用IntelliSense生成プログラム(と、VisualStudioのJavaScript用vsdocの書き方)">以前に公開していた</a>のは、RxJSのバージョンアップと同時に動かなくなっちゃってたのよね。というわけで、修正したうえで同梱商法してみました。</p>
+<h2>プレースホルダの拡張</h2>
+<p>無名関数のプレースホルダが少し拡張されました。今までは引数が一つの時のみ$が使えたのですが、今回から二引数目は$$、三引数目は$$$、四引数目は$$$$が使えるようになりました。</p>
+<pre><code class="language-javascript">// 連続した重複がある場合最初の値だけを取る
+// (RxのDistinctUntilChangedをlinq.jsでやる場合)
+// 1, 5, 4, 3, 4
+Enumerable.From([1, 1, 5, 4, 4, 3, 4, 4])
+    .PartitionBy(&quot;&quot;, &quot;&quot;, &quot;key,group=&gt;group.First()&quot;)
+// $$でニ引数目も指定出来るようになった
+Enumerable.From([1, 1, 5, 4, 4, 3, 4, 4])
+    .PartitionBy(&quot;&quot;, &quot;&quot;, &quot;$$.First()&quot;)
+</code></pre>
+<p>便利といえば便利ですが、あまりやりすぎると見た目がヤバくなるので適度に抑えながらでどうぞ。なお、以前からある機能ですが&quot;&quot;は&quot;x=&gt;x&quot;の省略形です。PartitionByでは、それぞれkeySelectorとelementSelector。</p>
+<h2>入門QUnit</h2>
+<p>今までlinq.jsのユニットテストはJSUnitを使用していたんですが、相当使いにくくてやってられなかったため、QUnitに移しました。QUnitはjQueryの作者、John Resigの作成したテストフレームワークで、流石としか言いようがない出来です。物凄く書きやすい。JSUnitだとテストが書きづらくて、だから苦痛でしかなかった。テストドリブンとか言うなら、まずはテストが書きやすい環境じゃないとダメだ。</p>
+<p>JSUnitのダメな点―― 導入が非常に面倒。大量のファイルを抱えたテスト実行環境が必要だし、クエリストリングでファイル名を渡さなければならなかったり、しかも素ではFirefox3で動かなかったりと(Firefox側のオプションを調整)下準備が大変。面倒くささには面倒くささなりのメリット(Java系の開発環境との連携とかあるらしいけど知らない)があるようですが、俺はただテスト書いて実行したいだけなんだよ！というには些か重たすぎる。一方、QUnitはCSSとJSとHTMLだけで済む。</p>
+<p>また、JSUnitはアサーションのメソッドが微妙。大量にあるんだけど、逆に何が何だか分からない。assertObjectEqualsとかassertArrayEqualsとか。ArrayEqualsはオブジェクトの配列を値比較してくれない上に、それならせめて失敗してくれればいいものの成功として出されるから役に立たなかったり、ね……。QUnitは基本、equal(参照比較)とdeepEqual(値比較)だけという分かりやすさ。deepEqualはしっかりオブジェクト/配列をバラして再帰的に比較してくれるという信頼感があります。</p>
+<p>テスト結果画面の分かりやすさもQUnitに軍配が上がる。というかJSUnitは致命的に分かりづらい。一つのテスト関数の中に複数のアサートを入れると、どれが失敗したか分からないという有様。なのでJSUnitではtestHoge1, testHoge2といった形にせざるを得ないのだけど、大変面倒。更に、JSUnitのテスト実行は遅くて数百件あるとイライラする。</p>
+<p>そもそもJSUnitはコードベースが古いし最近更新されてるかも微妙(GitHubに移って開発は進んでるようですが)。というわけで今からJavaScriptでユニットテストやるならQUnitがいいよ！残念ながらか、ネットを見ると古い紹介記事ばかりが見当たるので、ていうかオフィシャルのドキュメントまで古かったりしてアレゲなので、簡単に解説します。と、思ってたのですが、一月程前に素晴らしいQUnitの記事が出ていました。なので基本無用なのですが、文章を書いてしまってあったので(これ書いてたのは4月頃なのです)出します、とほほ。</p>
+<p>まず、<a href="http://docs.jquery.com/QUnit">QUnit - jQuery JavaScript Library</a>のUsing QUnitのところにあるqunit.jsとqunit.cssを落とし、下記のテンプレHTMLは自前で作る。ファイル名はなんでもいいんですが、私はtestrunner.htmとでもしておきました。</p>
+<pre><code class="language-xml">&lt;!DOCTYPE html PUBLIC &quot;-//W3C//DTD XHTML 1.0 Transitional//EN&quot; &quot;http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd&quot;&gt;
+&lt;html xmlns=&quot;http://www.w3.org/1999/xhtml&quot;&gt;
+&lt;head&gt;
+    &lt;title&gt;linq.js test&lt;/title&gt;
+    &lt;link href=&quot;qunit.css&quot; rel=&quot;stylesheet&quot; type=&quot;text/css&quot; /&gt;
+    &lt;script src=&quot;qunit.js&quot; type=&quot;text/javascript&quot;&gt;&lt;/script&gt;
+    &lt;!-- テストに必要な外部ライブラリは好きに読み込む --&gt;
+    &lt;script src=&quot;linq.js&quot; type=&quot;text/javascript&quot;&gt;&lt;/script&gt;
+    &lt;!-- ここにテスト直書きもアリだし --&gt;
+    &lt;script type=&quot;text/javascript&quot;&gt;
+        test(&quot;Range&quot;, function()
+        {
+            deepEqual(Enumerable.Range(1, 3).ToArray(), [1, 2, 3]);
+        });
+        // 自動的にロード後に実行されるので、これも問題なく動く
+        test(&quot;hoge&quot;, function ()
+        {
+            var h2 = document.getElementsByTagName(&quot;h2&quot;);
+            equal(h2.length, 2);
+        });
+    &lt;/script&gt;
+    &lt;!-- 外部jsファイルにして読み込むのもアリ --&gt;
+    &lt;script src=&quot;testEnumerable.js&quot; type=&quot;text/javascript&quot;&gt;&lt;/script&gt;
+    &lt;script src=&quot;testProjection.js&quot; type=&quot;text/javascript&quot;&gt;&lt;/script&gt;
+&lt;/head&gt;
+&lt;body&gt;
+    &lt;h1 id=&quot;qunit-header&quot;&gt;linq.js test&lt;/h1&gt;
+    &lt;h2 id=&quot;qunit-banner&quot;&gt;&lt;/h2&gt;
+    &lt;h2 id=&quot;qunit-userAgent&quot;&gt;&lt;/h2&gt;
+    &lt;ol id=&quot;qunit-tests&quot;&gt;&lt;/ol&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+</code></pre>
+<p>実行用のHTMLにqunit.jsとqunit.cssを読み込み、body以下の4行を記述すれば準備は完了(bodyの4行はid決め打ちで面倒だし、どうせ空なので、qunit.js側で動的に生成してくれてもいいような気がする、というか昔はそうだった気がするけどjQuery依存をなくした際になくしたのかしらん)。</p>
+<p>あとは、test(&quot;テスト名&quot;, 実行される関数) を書いていけばいいだけ。そうそう、test関数はHTMLが全てロードされてから実行が始まるので、jQuery読み込んでjQuery.readyで囲む必要とかは特にありません。testProjection.jsは大体↓のような感じ。</p>
+<pre><code class="language-javascript">/// &lt;reference path=&quot;testrunner.htm&quot;/&gt;
+
+module(&quot;Projection&quot;);
+
+test(&quot;Select&quot;, function ()
+{
+    actual = Enumerable.Range(1, 10).Select(&quot;i=&gt;i*10&quot;).ToArray();
+    deepEqual(actual, [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
+    actual = Enumerable.Range(1, 10).Select(&quot;i,index=&gt;i*10+index&quot;).ToArray();
+    deepEqual(actual,[10, 21, 32, 43, 54, 65, 76, 87, 98, 109]);
+});
+</code></pre>
+<p>reference pathはVisualStudio用のパスなのであんま気にせずにー。詳細は<a href="http://neue.cc/2010/05/24_260.html">JavaScriptエディタとしてのVisual Studioの使い方入門</a>のほうで。読み込み元のHTMLを指定しておくとIntelliSenseが効いて、書くのが楽になります。</p>
+<p>actual(実行結果)は私は別変数で受けてますが、当然、直書きでも構いません。アサーション関数は、基本は(actual, expected(期待する結果), message(省略可能)) の順番になっています。</p>
+<pre><code class="language-javascript">equal(1, &quot;1&quot;); // okay - 参照比較(==)
+notEqual
+strictEqual(1, &quot;1&quot;); // failed - 厳密な比較(===)
+notStrictEqual
+deepEqual([1], [1]); // okay - 値比較
+notDeepEqual
+ok(1 == &quot;1&quot;); // okay - boolean
+ok(1 !== &quot;1&quot;);  // okay - notの場合は!で
+</code></pre>
+<p>基本的に使う関数はこれらだけです。ドキュメントへの記載はないのですが、以前にあったequalsとsameはequalとdeepEqualに置き換わっています。後方互換性のためにequals/sameは残っていますが、notと対称が取れるという点で、equal/deepEqualを使ったほうが良いんじゃないかと思います。</p>
+<p>非同期テストとかは、またそのうちに。</p>
+<h2>まとめ</h2>
+<p>linq.js ver.2出したときには、もう当分更新することなんてないよなあ、なんて思っていたのですが、普通にポコポコと見つかったり。でもさすがに、もうないと思いたい。C#との挙動互換性も、私の知る限りでは今回の配列最適化が最後で、やり残しはない。そして今回がラストだー、とばかりに思いつく要素を全部突っ込んでやりました。</p>
+<p>そんなわけなので、使ってやってください。私がVisualStudio使いなのでVS関連の補助が多めですが、別にVS必須というわけじゃなくプラスアルファ的なもの(入力補完ドキュメントだのコードスニペットだの)でしかないので、エディタ書きでも何ら問題なく使える、かな、きっと。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0624_263.html">Reactive Extensions for .NET (Rx) メソッド探訪第7回:IEnumerable vs IObservable</a></h1>
+<ul class="date"><li>2010-06-24</li></ul>
+<div class="entry_body"><p>物凄く期間を開けてしまいましたが、<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Reactive Extensions for .NET (Rx)</a>紹介を再開していきます。もはやRxってなんだっけ？という感じなので、今回は最も基本である、IObservableについて扱います。ボケーッとしている間にIQbservable(IQueryableのデュアル)とか出てきてて置いてかれちゃってるし。</p>
+<p>そんなこんなで、IObservableはIEnumerableのデュアルなんだよ、とか言われてもぶっちゃけさっぱり分かりません。なので、その辺のことはスルーして普通にコードで対比させながら見ていくことにします。</p>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="300px">
+<param name="source" value="http://neue.cc/wp-content/uploads/silverlight/IEvsIO.xap"/>
+<param name="background" value="white" />
+<param name="minRuntimeVersion" value="4.0.50401.0" />
+<param name="initparams" value="Start=1" />
+<a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=4.0.50401.0" style="text-decoration:none">
+ 	<img src="http://go.microsoft.com/fwlink/?LinkId=161376" alt="Microsoft Silverlight の取得" style="border-style:none"/>
+</a>
+</object>
+</p>
+<pre><code class="language-csharp">// IEnumerable (RunはForEachです、ようするに)
+Enumerable.Range(1, 10)
+    .Where(i =&gt; i % 2 == 0)
+    .Select(i =&gt; i * 2)
+    .Run(Console.WriteLine, () =&gt; Console.WriteLine(&quot;completed!&quot;));
+
+// IObservable
+Observable.Range(1, 10)
+    .Where(i =&gt; i % 2 == 0)
+    .Select(i =&gt; i * 2)
+    .Subscribe(Console.WriteLine, () =&gt; Console.WriteLine(&quot;completed!&quot;));
+</code></pre>
+<p>ボタンを押して確認する、までもなく同じ結果です。1から10までを偶数だけ通して二倍して出力。見た目は同じですが、中身は丸っきり違います。見た目が一緒すぎて言葉で表現出来ないので図に表してみました。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/rx_pullandpush.jpg">
+</p>
+<p>何という下手っぴな図、さっぱり伝わらん。……。というのはおいておいて、矢印の向きに注目。IEnumerableの連鎖は、列挙を消費する時にIEnumeratorの伝搬に変わります。Run-&gt;Select-&gt;Where-&gt;RangeとMoveNextが駆け上がったら、今度はRange-&gt;Where-&gt;Select-&gt;RunとCurrentが降りていきます。末尾(Run)が値を要求(MoveNext)して値(Current)を取り出すという連鎖。末端から根元の値を引っ張ってくる(Pull)ようなイメージ。</p>
+<p>IObservableは、根元自体が値を押し出していく(Push)ようなイメージ。こちらはIObserverの連鎖になっていて、根元からOnNextで値を伝えていきます。</p>
+<h2>Pushのメリット</h2>
+<p>Observable.Rangeのような、もしくはEunmerableに対してToObservableした時のような、普通のPull型シーケンスをPush型に変換することのメリットは？イベントや非同期など、他の形式から生成されたIObservableと連携出来る、というのは当然一番の話ですが、もう一つ、要素を分配出来るようになります。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/rx_pullandpush_2.jpg">
+</p>
+<p>このイミフな図の言わんとしていることが伝わる、わけはないので説明。Pull型はソースと1対1の関係である必要があるため、複数の列挙の消費者(RunだったりCountだったりSumだったりLastだったり)がいる場合、接続した回数だけ列挙が最初から回ることになります。かたやPush型は、1対多の関係を持つことが出来るため、一度の列挙で全ての消費者に値を配分することが可能です。</p>
+<h2>Hot vs Cold</h2>
+<p>同じように見えるIObservableにも、HotとColdという性質があります。それはyield returnで作る遅延評価のIEnumerableと、配列のように既に値が生成済みのIEnumerableとの違い、のようなものかもしれません。</p>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="300px">
+<param name="source" value="http://neue.cc/wp-content/uploads/silverlight/IEvsIO.xap"/>
+<param name="background" value="white" />
+<param name="minRuntimeVersion" value="4.0.50401.0" />
+<param name="initparams" value="Start=2" />
+<a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=4.0.50401.0" style="text-decoration:none">
+ 	<img src="http://go.microsoft.com/fwlink/?LinkId=161376" alt="Microsoft Silverlight の取得" style="border-style:none"/>
+</a>
+</object>
+</p>
+<pre><code class="language-csharp">var seq = Observable.Range(1, 5)
+    .Do(i =&gt; Console.WriteLine(&quot;source -&gt; &quot; + i));
+
+button1.Click += (sender, e) =&gt;
+    seq.Subscribe(i =&gt; Console.WriteLine(&quot;button1 -&gt; &quot; + i));
+
+button2.Click += (sender, e) =&gt;
+    seq.Subscribe(i =&gt; Console.WriteLine(&quot;button2 -&gt; &quot; + i));
+</code></pre>
+<p>Doは、列挙に通ったものを取り出しつつも素通しします。つまり、 Select(i =&gt; { action(i); return i; }) です。今回は列挙がその箇所を通ったかどうかを書き出しています。余談ですが、IEnumerableならNyaRuRuさんの作成されたAchiralには<a href="http://d.hatena.ne.jp/NyaRuRu/20080131/p1">Hookというメソッド</a>があって、細かい列挙中のモニタリングが出来るようになっています。</p>
+<p>実行結果を見てみると、ボタンを押す=Subsribeを繋げると、即座に列挙が開始されていて、これだとIEnumerableのforeachと何も変わません。よって、このIObservableはColdです。もう値は生成され終わっているので。Subscribeの度に即座に全ての値をPushします。</p>
+<p>ではHotは？</p>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="300px">
+<param name="source" value="http://neue.cc/wp-content/uploads/silverlight/IEvsIO.xap"/>
+<param name="background" value="white" />
+<param name="minRuntimeVersion" value="4.0.50401.0" />
+<param name="initparams" value="Start=3" />
+<a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=4.0.50401.0" style="text-decoration:none">
+ 	<img src="http://go.microsoft.com/fwlink/?LinkId=161376" alt="Microsoft Silverlight の取得" style="border-style:none"/>
+</a>
+</object>
+</p>
+<pre><code class="language-csharp">// FromEvent(canvas,&quot;MouseMove&quot;)は手軽ですが、丁寧にこう書くほうが理想的かしら
+Func&lt;IObservable&lt;Point&gt;&gt; GetMouseMovePosition = () =&gt;
+    Observable.FromEvent&lt;MouseEventHandler, MouseEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(sender, e),
+            h =&gt; canvas.MouseMove += h,
+            h =&gt; canvas.MouseMove -= h)
+        .Select(e =&gt; e.EventArgs.GetPosition(canvas));
+
+// ICollection&lt;IDisposable&gt;です。
+var disposables = new CompositeDisposable();
+
+evenButton.Click += (sender, e) =&gt;
+{
+    disposables.Add(
+        GetMouseMovePosition()
+            .Where(p =&gt; p.X % 2 == 0 &amp;&amp; p.Y % 2 == 0)
+            .Subscribe(p =&gt; Console.WriteLine(&quot;Even -&gt; &quot; + p.X + &quot;:&quot; + p.Y)));
+};
+
+oddButton.Click += (sender, e) =&gt;
+{
+    disposables.Add(
+        GetMouseMovePosition()
+            .Where(p =&gt; p.X % 2 != 0 &amp;&amp; p.Y % 2 != 0)
+            .Subscribe(p =&gt; Console.WriteLine(&quot;Odd -&gt; &quot; + p.X + &quot;:&quot; + p.Y)));
+};
+
+disposeButton.Click += (sender, e) =&gt;
+{
+    // Disposeでイベントのデタッチ + 再登録不可
+    // Clearでイベントのデタッチ + 再登録可
+    disposables.Clear();
+};
+</code></pre>
+<p>例えばマウスイベント。クリックの度にOnNextに値を送る、ムーブの度に値を送るといったイベントをIObservable化するFromEventはHot。無限リスト状態になっているものは、接続しただけでは値が送られてこないとも言えるので、幾つでもSubscribeすることが出来ます。サンプルでは、ボタンをクリックすればしただけ、右側のログ表示に同内容のものが連続して表示されるのが確認出来ます。</p>
+<p>両者が混ざったような挙動をするIObservableもあります(例えばReplaySubject)ので、HotなのかColdなのか両方なのか。というのを意識してみると理解が深まるかもしれません。また、メソッドの動作確認などの際にHotとColdを区別せずにいると、思わぬ挙動で混乱するかもしれないので注意。というか、私はよくやります……。Observable.Rangeばかりで確認していてイミフ！と思ったら、FromEventでチェックしたら何て分かりやすいこと！というのが何度も。</p>
+<h2>CompositeDisposable</h2>
+<p>本題と離れますがTips。イベントのデタッチが簡単なのもRxのメリットの一つです。さて、複数イベントをデタッチする場合はどうしましょうか？List&lt;IDisposable&gt;に格納してforeachで列挙してDispose、というのも悪くないですが、そういう用途で使うためのCompositeDisposableというICollection&lt;IDisposable&gt;なクラスが用意されているので、そちらを使ったほうがよりスマートに書けます。</p>
+<p>上のSilverlightのHotのサンプルコードでは、ボタンを押す(=Subscribeする=イベントを登録する)度にCompositeDisposableにAdd。そしてDisposeAllボタンでまとめてデタッチしています。</p>
+<pre><code class="language-csharp">var subject = new Subject&lt;int&gt;();
+var d1 = subject.Subscribe(i =&gt; Console.WriteLine(i));
+var d2 = subject.Subscribe(i =&gt; Console.WriteLine(i * i));
+using (new CompositeDisposable(d1, d2))
+{
+    subject.OnNext(2); // 2, 4
+    subject.OnNext(3); // 3, 9
+}
+subject.OnNext(2); // usingを抜けデタッチ済みなので何も起こらない
+</code></pre>
+<p>List&lt;IDisposable&gt;に対するCompositeDisposableのメリットは、Disposeで解除出来るということ。つまり、using構文に放りこむことが可能です。多段Usingよりも綺麗に見えるのでお薦め。</p>
+<p>上の例にコソッと出したSubjectクラスはPush型シーケンスの大本で、OnNextやOnCompletedを後続に送ることが出来ます。イベントのラップじゃなく、Rxネイティブなクラスを作る場合に使います。Subjectはちゃんと詳しく書かなきゃいけない大事なクラスの一つなので、また次にでもきっちり紹介する予定は未定。</p>
+<h2>列挙の分配</h2>
+<p>Pushのメリットとして分配可能なことを挙げたのに、Coldなので分配出来ません。以上終了。で終わるわけは当然ないわけで、Cold to Hot変換メソッドが使えます。Publishです。Publishの戻り値はIConnectableObservable。</p>
+<pre><code class="language-csharp">public interface IConnectableObservable&lt;out T&gt; : IObservable&lt;T&gt;
+{
+    IDisposable Connect();
+}
+</code></pre>
+<p>IObservableなのでメソッドチェインを繋げることが出来ます。そして、Subscribeしても列挙は始まりません。Connectを呼んだ時に、一度だけ列挙することが出来ます(二度以降Connectを呼んでも何もしない)</p>
+<p>私はダムの堰止をイメージしています。何もしないとドバドバと水が流れてしまうのでPublishで一時的に止めて、Connectで放水。放水後は空っぽ。みたいな。</p>
+<h2>Max/Sumなど集計系</h2>
+<p>インターフェイスを挙げただけじゃよく分からないので実例を。SumやMaxといった集計系メソッドと合わせて使ってみます。そこら中にモニタリング用のDoが入っていてコードが若干分かりづらいですが、実行結果で、どのタイミングで値が通過するのかを確認してみてください。</p>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="300px">
+<param name="source" value="http://neue.cc/wp-content/uploads/silverlight/IEvsIO.xap"/>
+<param name="background" value="white" />
+<param name="minRuntimeVersion" value="4.0.50401.0" />
+<param name="initparams" value="Start=4" />
+<a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=4.0.50401.0" style="text-decoration:none">
+ 	<img src="http://go.microsoft.com/fwlink/?LinkId=161376" alt="Microsoft Silverlight の取得" style="border-style:none"/>
+</a>
+</object>
+</p>
+<pre><code class="language-csharp">var source = Enumerable.Range(1, 5)
+    .Do(i =&gt; Console.WriteLine(&quot;Source -&gt; &quot; + i));
+
+enumerableButton.Click += (sender, e) =&gt;
+{
+    var sum = source.Sum();
+    var max = source.Max();
+    var all = source.All(i =&gt; i &lt; 3);
+    Console.WriteLine(&quot;sum = &quot; + sum);
+    Console.WriteLine(&quot;max = &quot; + max);
+    Console.WriteLine(&quot;all = &quot; + all);
+};
+
+observableButton.Click += (sender, e) =&gt;
+{
+    var connectable = source.ToObservable().Publish();
+
+    connectable.Subscribe(_ =&gt; { }, () =&gt; Console.WriteLine(&quot;OnCompleted&quot;));
+
+    var sum = default(int);
+    connectable
+        .Do(i =&gt; Console.WriteLine(&quot;BeforeSum -&gt; &quot; + i))
+        .Sum()
+        .Do(i =&gt; Console.WriteLine(&quot;AfterSum -&gt; &quot; + i))
+        .Subscribe(i =&gt; sum = i);
+
+    var max = default(int);
+    connectable
+        .Do(i =&gt; Console.WriteLine(&quot;BeforeMax -&gt; &quot; + i))
+        .Max()
+        .Do(i =&gt; Console.WriteLine(&quot;AfterMax -&gt; &quot; + i))
+        .Subscribe(i =&gt; max = i);
+
+    var all = default(bool);
+    connectable
+        .Do(i =&gt; Console.WriteLine(&quot;BeforeAll -&gt; &quot; + i))
+        .All(i =&gt; i &lt; 3)
+        .Do(b =&gt; Console.WriteLine(&quot;AfterAll -&gt; &quot; + b))
+        .Subscribe(b =&gt; all = b);
+
+    connectable.Connect();
+    Console.WriteLine(&quot;sum = &quot; + sum);
+    Console.WriteLine(&quot;max = &quot; + max);
+    Console.WriteLine(&quot;all = &quot; + all);
+};
+</code></pre>
+<p>値が確定した時、Allならば全ての列挙が完了した(OnCompletedを受信する)か、条件がfalseのものが見つかったときに、1つだけSubscribeに値が届きます。SumやMaxは、全ての列挙が完了しないと算出出来ないので、全て完了したとき。こういった結果の確定するタイミングは、Enumerableでの場合と変わりません。</p>
+<p>このような動作(戻り値が長さ1のIObservable)をするものには、 Aggreagte, Count, Any... 、ようするにIEnumerableにもあって戻り値がIEnumerableじゃないメソッドは全てそうです。全部似たりよったりなので具体的な紹介は省きます。</p>
+<h2>Pushのデメリット</h2>
+<p>IObservable便利すぎてIEnumerableいらなくネ？ と、言いたいところですが、例えばこれら集計系メソッドは全て長さ1のIObservableになります。Sumの場合、欲しいのはintであってIObservableではありません。長さ1のIObservableは、いつConnectされるか分からないのでSubscribeで外の値に受け渡してやらなければならないわけですが、見た目が美しくなく宣言も冗長になる。</p>
+<p>また、集計するのに複数回列挙は確かに格好悪いな！よし、そういう場合はRx使おう。と思った場合はとりあえず待った。ただの配列からの列挙程度の場合は、ふつーに複数回列挙したほうがPublishで分岐させるよりも遥かに速かったりします。元ソースが複雑にLinqで繋いであって重たかったり、ファイルやネットワーク経由だったりで複数呼び出しを避けたい、副作用があって複数回呼びだすと内容が変化している、という場合はRxです。が、一旦ToListしてキャッシュすれば済むシーンならば、キャッシュした方が分かりやすく速い場合が多かったりします。</p>
+<p>Publishの具体的な使い処としては、以前に、<a href="http://neue.cc/2010/04/29_255.html" title="neue cc - C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions">TwitterのStreamAPIをRxを使って分配する</a>という記事で紹介しました。</p>
+<h2>まとめ</h2>
+<p>PullとPushは、むしろ動作的にはPushのほうが素直で分かりやすい雰囲気。難解だと思って避けていたそこのアナタ、さあ、Rxを使おう！ しかしColdとHotは大いなる罠。初見ではきっとつまづく。この区別は本当に大事。Rxが難解っぽいとしたら、Cold/Hotのせい。挙動がまるっと変わるんだもの。でも、ゆっくり紐解けば全然大丈夫。さあ、Rxを使おう！Publishや集計系はそんなには使わないかもですが、覚えておくと便利な時も割とある。さあ、Rxを(ry</p>
+<p>個人的にRxの特色・使いどころは「イベントの合成」「タイマー・ネットワーク・スレッドなど非同期処理の一元化」「シーケンスの分配」の3つだと思っているのですが、このブログでは、延々とシーケンス分配という、3つの中で一番どうでもいい機能しか紹介していない！という酷い事実に気がつきました。そんなんじゃRxのポテンシャルを全然伝えられない。</p>
+<p>というわけで、次回はタイマー辺りを紹介したいと思います予定は未定。というか計画ではObservableの合流周りとMarble Diagramについてを書く予定。Rxの知名度も徐々に上がってきているようなので、しっかり紹介していきたいですし、他の人も書いて欲すぃ。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0608_262.html">Linq雑話</a></h1>
+<ul class="date"><li>2010-06-08</li></ul>
+<div class="entry_body"><p>ここ数日Twitterで見た/出したLinqネタまとめ。私の広くない観測範囲(<a href="http://twitter.com/neuecc" title="neuecc (neuecc) on Twitter">@neuecc</a>)での話ですが。</p>
+<h2>SelectManyとクエリ構文でUsing</h2>
+<p>ネタ元、コード元は<a href="http://marcgravell.blogspot.com/2009/11/selectmany-combining-idisposable-and.html">Code, code and more code.: SelectMany; combining IDisposable and LINQ</a>から。</p>
+<pre><code class="language-csharp">static void Main(string[] args)
+{
+    var firstLines =
+        from path in new[] { &quot;foo.txt&quot;, &quot;bar.txt&quot; }
+        from stream in File.OpenRead(path)
+        from reader in new StreamReader(stream)
+        select path + &quot;\t&quot; + reader.ReadLine();
+}
+
+public static IEnumerable&lt;TResult&gt; SelectMany&lt;TSource, TDisposable, TResult&gt;(
+    this IEnumerable&lt;TSource&gt; source,
+    Func&lt;TSource, TDisposable&gt; disposableSelector,
+    Func&lt;TSource, TDisposable, TResult&gt; resultSelector) where TDisposable : IDisposable
+{
+    foreach (var item in source)
+    {
+        using (var disposableItem = disposableSelector(item))
+            yield return resultSelector(item, disposableItem);
+    }
+}
+</code></pre>
+<p>自前定義の拡張メソッドはメソッド構文だけのものと思っていませんでしたか？私はそう思っていました。でも、クエリ構文でも同名のものがあれば拡張メソッドが使用されるんです、というお話。それを利用してusingのネストをクエリ構文で華麗に表現してやったぜー、というサンプルで、確かにこれはクール！素晴らしすぎる。</p>
+<p>でも、クエリ構文使いたいかというと、そんなことはなく変わらずメソッド構文派です、私は。クエリ構文自体は悪いとは思わないし、良さがあるのも分かるんですが、他の拡張メソッドに繋げる時に前後にカッコで括ると途端に書き/読みにくくなることと、拡張性の乏しさが如何ともし難い。クエリ構文とメソッド構文のちゃんぽんになるぐらいなら、メソッド構文だけで書いたほうが美しいよね、と思ってしまう。あと、クエリ構文の存在が「LINQ = SQLみたいなの」という図式を産んでしまっているくさいのも、憎んでしまいますね……。</p>
+<h2>ラムダ式の引数の名前とシャッフルについて</h2>
+<p>お馴染み感溢れるOrderByでのシャッフル。</p>
+<pre><code class="language-csharp">var rand = new Random();
+var shuffle = Enumerable.Range(1, 10).OrderBy(_ =&gt; rand.Next());
+</code></pre>
+<p>それはそれとして、ラムダ式の引数の名前どうする？というお話が。私は、引数を使わない場合は _ を、使う場合は型の1～2文字(i(Int32)とかs(String)とかa(AnonymousType)とか、考えるの面倒なときはx、配列系はarかxs)という自分ルールを敷いています。以前に<a href="http://neue.cc/2009/10/05_207.html">ラムダ式の引数の名前</a>という記事を書いたのですが、その時から変わっていません。ですが、最近ネットで見かけるコードでは全部_でまかなう例もよく見るね、と。Scalaでは匿名関数の引数として_が使える(プレースホルダ構文って言うんですね、名前知らなかった)ようなので、_をダメとは言い辛いのですけど、私はちょち苦手(linq.jsで$をゴリゴリ使ってるくせに、って話ではあるけど) 。</p>
+<p>C#にもプレースホルダ構文みたいなの欲しいね、というのは、若干ある。プロパティの「value」とか最初からそこにある良く分からない変数、みたいなのはあるし。ただ、IntelliSenseとの兼ね合いもあるし、そういうのが入れられるか、入って本当に幸せになれるのかどうかの判断は保留。短絡的に欲しい！って言うのは簡単だけど、それの及ぼす影響となると分からないものだ。</p>
+<p>それともう一つ。OrderByの引数は比較関数ではなくキーセレクターにすぎないのでちゃんとシャッフルされる、とか言ったりなどした私ですが、そうじゃなくて<a href="http://blog.livedoor.jp/dankogai/archives/50615442.html">シャッフルの精度はランダムの範囲に影響される</a>ね(実際上は問題ないとしても)、という話が。完全に頭から抜け落ちていて、かつ、全くもってその通りで恥ずかしかったりしたのですが確認できてよかったです、感謝。</p>
+<h2>OrderByのComparison</h2>
+<p>全然使わないけどOrderByの第二引数。</p>
+<pre><code class="language-csharp">class MyClass
+{
+    public int Hoge { get; set; }
+    public int Fuga { get; set; }
+}
+static void Main(string[] args)
+{
+    var array = new[] { new MyClass(), new MyClass() };
+    // コンパイルは通るけど例外出る
+    var ordered = array.OrderBy(x =&gt; x).ToArray();
+    // 上のはこれに等しい(当然、例外出る)
+    array.OrderBy(x =&gt; x, Comparer&lt;MyClass&gt;.Default);
+    // AnonymousComparerを使えばComparisonを使った比較が出来る
+    array.OrderBy(x =&gt; x, (x, y) =&gt; x.Fuga - y.Hoge);
+}
+</code></pre>
+<p>OrderByついでですが、キーセレクターは制約かかってないので別にIComparableじゃなくても動いたりします。そういう時はComparer&lt;T&gt;.Defaultが指定されることになって、例外出て死ぬだけです。意味ナイネ。</p>
+<p>DescendingとThenByがあるので滅多に使わないであろう第二引数はIComparer。一々クラス作ってnewですってよ、C#らしくないですね。Comparisonじゃないなんて！大変ウザい。そんな人のための<a href="http://linqcomparer.codeplex.com/">AnonymousComparer</a>。ラムダ式でIEqualityComparer/IComparerを作ることが出来ます。また、Linq標準演算子への拡張メソッドとしてOrderBy/ThenByのオーバーロードとしてComparisonが使えるようになります。便利ですね！是非使ってください、という宣伝。</p>
+<h2>Empty -&gt; Sum</h2>
+<p>Empty.Sum()は0。言われてみれば当たり前といえば当たり前なのですが……。</p>
+<pre><code class="language-csharp">// SumはAggregateで表現出来る
+var sum = Enumerable.Range(1, 10).Aggregate((x, y) =&gt; x + y); // 55
+// でもEmptyで例外出るから表現出来ない(ｷﾘｯ
+sum = Enumerable.Empty&lt;int&gt;().Sum(); // 0
+sum = Enumerable.Empty&lt;int&gt;().Aggregate((x, y) =&gt; x + y); // 例外
+// 実はseed与えればおk
+sum = Enumerable.Empty&lt;int&gt;().Aggregate(0, (x, y) =&gt; x + y); // 0
+</code></pre>
+<p>SumやMax, Minなどは全てAggregateで表現出来ます。でも、Sumは空シーケンスの時はゼロ出すけど(MaxやAverageは例外)Aggregateを使うと例外が出てしまうので表現出来ない、とか言ったのですが0を最初に与えとけばいいよね、という話が。ぬお、そうでした！</p>
+<p>発端は<a href="http://linqjs.codeplex.com/">linq.js</a>でこの問題(というかC#と互換が取れてないこと)に気づいたことで、linq.jsではAggregateでやってるため、AggregateはScan.LastだからScan.LastOrDefault(0)にするー、なんて考えてたんですが、初項0で済むというシンプルさを完全に失念。標準演算子外のメソッドを大量に用意してあるので、そっち側で解決しちゃおうとしてしまう姿勢は、ちょっと頭硬直化しちゃってる、全くもってよろしくない。</p>
+<p>シャッフルの話といい、Aggregateの話といい、最近はLinqに慣れすぎて逆に見方が定型的になりすぎていると実感したので、少し気を引き締めないと。あ、で、そんなこんなでlinq.jsの空シーケンスでのSumの問題は次のリリースで直します。他にもバグがあったり(MemoizeAllが少しマズい)、加えたいことが数点あったりするので、もう少し先になりますが。</p>
+<h2>世の中の主流はまだVS2005ですか？</h2>
+<blockquote>
+<p>開発言語としてのJavaとC＃を10の視点から比較<br />
+共通点が多いが、今後は違いが大きくなるかも<br />
+しかし近年のC#はLINQ（Language Integrated Query：言語統合クエリ）プロジェクトが重視されています。これはクエリ、集合操作、変換、および型推測などのデータ指向機能の多くを直接的にC#言語に統合しようとするものです。今後は違いがさらに大きくなっていくかもしれません。<br />
+<a href="http://www.atmarkit.co.jp/fjava/rensai4/java_dotnet01/03.html">プログラマが知っておきたいJavaと.NETの違い (3/4) - ＠IT</a></p>
+</blockquote>
+<p>Linqは、VS2008出たのは3年前だよね(プレビュー版から言えばどれだけ前なのかしら)。今後は違いが大きくなるかも、じゃなくて既に違いは大きすぎるような。そして10の比較というけれど、最大の違いはデリゲートの有無では？特に、匿名メソッド/ラムダ式の有無。<a href="http://www.asahi-net.or.jp/%7Edp8h-izn/delegate.html">A.R.N [ Top &gt; 書庫 &gt; Microsoftの「Delegate」について ]</a>にある、Javaには無名クラスがあるからdelegateは不要、とは10年以上前のSunの言で、さすがに10年以上も前のを持ち出してどうこう言ってもしょうがないのですが(比較対象に匿名メソッドないし)、価値観は移り変わっていくものなのだと思わずにはいられない。匿名クラスで代用出来るって、いやまあ出来なくもないのは分かりますがUglyすぎ。今、クロージャなんて不要、とか言ったらフルボッコなはず。</p>
+<p>言語面で見ると、Java5から進化の足を止めている(そしてJava7延期しすぎ)ように見えるJavaと、ひたすら貪欲に(無節操に)取り込み続けるC#。スタート時には似たようなものだったとして、今はもうコードの見た目からして全然似てるようには見えない。Java畑の人は、今でもC#はJavaに似たようなもの、という認識なのかしら。
+確かに、古典的に書けば似てますが……。そして、他の言語を考えれば、やっぱ似てるといえば似てるのですが。しかし……。ふむ。そろそろModern C# Designが出版されるべき。 <a href="http://community.bartdesmet.net/blogs/bart/Default.aspx">Bart De Smet</a>が書く<a href="http://www.amazon.co.jp/gp/product/0672330792?ie=UTF8&tag=ilsgeometrati-22&linkCode=as2&camp=247&creative=7399&creativeASIN=0672330792">C# 4.0 Unleashed</a><img src="http://www.assoc-amazon.jp/e/ir?t=ilsgeometrati-22&l=as2&o=9&a=0672330792" width="1" height="1" border="0" alt="" style="border:none !important; margin:0px !important;" />
+には超期待。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0529_261.html">.NET(C#)におけるシリアライザのパフォーマンス比較</a></h1>
+<ul class="date"><li>2010-05-29</li></ul>
+<div class="entry_body"><p>ちょっとしたログ解析(細々としたのを結合して全部で10万件ぐらい)に書き捨てコンソールアプリケーションを使って行っていたのですが(データ解析はC#でLinqでコリっと書くのが楽だと思うんです、出力するまでもなく色々な条件を書いておいてデバッガで確認とか出来るし)、実行の度に毎回読んでパースして整形して、などの初期化に時間がかかってどうにも宜しくない。そこで、データ丸ごとシリアライズしてしまえばいいんじゃね？と思い至り、とりあえずそれならバイナリが速いだろうとBinaryFormatterを使ってみたら異常に時間がかかってあらあら……。</p>
+<p>というしょうもない用途から始まっているので状況としては非現実的な感じではありますが、標準/非標準問わず.NET上で実装されている各シリアライザで、割と巨大なオブジェクトをシリアライズ/デシリアライズした時間を計測しました。そんなヘンテコな状況のパフォーマンスなんてどうでもいー、という人は、各シリアライザの基本的な使いかたの参考にでもしてください(いやまあ、どれもnewしてSerializeメソッド呼ぶだけですが)。ソースは後で出しますが、具体的に計測に使ったオブジェクトはテスト用クラスが10万件含まれたListです。まずは結果のほうを。</p>
+<pre><code class="language-text">Serialize BinaryFormatter
+00:00:06.4701421
+53MB
+Serialize XmlSerializer
+00:00:07.7035246
+59MB
+Serialize DataContractSerializer
+00:00:02.1545153
+149MB
+Serialize DataContractSerializer Binary
+00:00:01.4706517
+78MB
+Serialize DataContractJsonSerializer
+00:00:02.6021908
+47MB
+Serialize DataContractJsonSerializer Binary
+00:00:02.5019512
+75MB
+Serialize NetDataContractSerializer
+00:00:09.1802584
+183MB
+Serialize NetDataContractSerializer Binary
+00:00:08.1960399
+99MB
+Serialize Formatter`1 - Protocol Buffers
+00:00:00.7043000
+13MB
+Serialize MsgPackFormatter - MessagePack
+00:01:33.3844083
+46MB
+Serialize JsonSerializer - JSON.NET
+00:00:07.4997295
+38MB
+Serialize JsonSerializer - JSON.NET BSON
+00:00:11.7767353
+44MB
+
+Deserialize BinaryFormatter
+00:00:59.1693980
+Check =&gt; OK
+Deserialize XmlSerializer
+00:00:02.7073623
+Check =&gt; NG
+Deserialize DataContractSerializer
+00:00:06.3459340
+Check =&gt; OK
+Deserialize DataContractSerializer Binary
+00:00:03.5622500
+Check =&gt; OK
+Deserialize DataContractJsonSerializer
+00:00:10.5392504
+Check =&gt; OK
+Deserialize DataContractJsonSerializer Binary
+00:00:07.2658857
+Check =&gt; OK
+Deserialize NetDataContractSerializer
+00:00:09.1020073
+Check =&gt; OK
+Deserialize NetDataContractSerializer Binary
+00:00:07.4024345
+Check =&gt; OK
+Deserialize Formatter`1 - Protocol Buffers
+00:00:00.9176016
+Check =&gt; OK
+Deserialize MsgPackFormatter - MessagePack
+00:00:29.8292134
+Check =&gt; OK
+Deserialize JsonSerializer - JSON.NET
+00:00:11.7517757
+Check =&gt; OK
+Deserialize JsonSerializer - JSON.NET BSON
+00:00:12.0099519
+Check =&gt; OK
+</code></pre>
+<p>対象シリアライザ、かかった時間、シリアライズ時は出力ファイルサイズ、デシリアライズ時は正しく復元できたかを表示しています。</p>
+<p>.NET標準ライブラリからはBinaryFormatter, XmlSerializer, DataContractSerializerとそのバイナリ出力, DataContractJsonSerializerとそのバイナリ出力, NetDataContractSerializerとそのバイナリ出力。オープンソースライブラリからは、GoogleのProtocol Buffersの.NET移植<a href="http://code.google.com/p/protobuf-net/">protobuf-net</a>、国産のMessagePackの<a href="http://d.hatena.ne.jp/saiya_moebius/20081227">C#実装</a>、<a href="http://json.codeplex.com/">Json.NET</a>のJSONシリアライズとBSON(Mong DBで使われているバイナリ形式のJSON)のシリアライズを出力しました。</p>
+<p>BinaryFormatter遅くね？が発端であり裏付けるように、BinaryFormatterのデシリアライズが異常に遅い。他が数秒なのに1分かかってます。テスト用データの詳細は後で述べますが、どうもObjectの配列が含まれていると遅くなるようです。テストデータにはKeyValuePair[]を含んでいるので、それが引っかかって激遅に。シリアライザする対象によって速度が変化するのは分かりますが、幾らなんでも限度を超えた速度低下。バグじゃないかしら？と言いたい。DataContractSerializerでもバイナリが吐ける昨今、もはやObsoleteにしてもいい雰囲気すら漂う。</p>
+<p>XmlSerializerが速い・サイズ少ないという感じですがデシリアライズでCheck =&gt; NGと表記されているように、シリアライズに失敗しています。テストデータにKeyValuePair[]が含まれているのですが、それがシリアライズ出来なくて空配列になってしまったため。Dictionaryがシリアライズ出来なかったりと、XmlSerializerは割と使いにくいところがあります。今だとガイドライン的にも、XmlのAttributeの設定とか出力するXMLを細かく制御するならXmlSerializer、そうでないならDataContractSerializerのほうを推奨、とのことです。</p>
+<p>そのDataContractSerializerはファイルサイズが嵩んでいるのが難点。属性などを付与していないため、テストデータ中の自動プロパティが &lt;_x003C_MyProperty1_x003E_k__BackingField&gt;hoge1&lt;/_x003C_MyProperty1_x003E_k__BackingField&gt; といったような、とんでもなく長ったらしいタグになってしまっているのが原因。DataMember属性で名前を振ってあげればマシになりますが、今回は属性未使用で計測としました。そんなDataContractSerializerですが、バイナリXMLとして保存するとファイルサイズが縮むので気になる場合はそちらを使えばいいのかも。パフォーマンスも良くなります。</p>
+<p>DataContractJsonSerializerは、シリアライズ・デシリアライズの速度はXMLよりも劣っていますが、ファイルサイズに関しては（JSONなので当然とはいえ)比較にならないほど小さい。バイナリXMLよりも小さくて、中々優秀のようです。しかし、バイナリ化して保存すると逆にファイルサイズが膨らむという罠が。</p>
+<p>NetDataContractSerializerはシリアライザ作る時に型指定がいらなかったりと利便性はちょびっと○。また、循環参照が含まれていても問題なくシリアライズ出来たりと、DataContractSerializer（素の状態だと循環参照が含まれると例外）とは若干毛色が違います。といった点から言っても、BinaryFormatterの後継はこれになるのでしょう。</p>
+<p>Protocol Buffersは爆速な上に非常に縮んで素晴らしい！さすがGoogle。ということだけじゃなく、protobuf-netの実装も良いのでしょうね。APIも非常に練られていて使いやすいし、C#でのクラスから.protoファイルの生成とかも出来て大変便利。Silverlightで使えるし、Windows Phone 7でも動かせるよう調整中、とのことでかなり気に入りました。</p>
+<p>MsgPackFormatterはシリアライズ、デシリアライズ共にかなり時間が……。これは、MessagePackが、というよりも、実装の方でオブジェクトグラフの生成に時間がかかってるようです。</p>
+<p>JSON.NETは中々優秀な結果を出しています。しかし、<a href="http://james.newtonking.com/archive/2010/01/01/net-serialization-performance-comparison.aspx" title=".NET Serialization Performance Comparison - James Newton-King">Performance Comparison</a>でDataContractSerializerよりも速いぜ！と謳っていたけれど、そんなことはなく。こういうのは計測する内容によって変わってくるので一概にどうこう言えないんですねー、というのを知るなど。バイナリ化で逆にサイズが膨らむのはDataContractJsonSerializerと同様。なお、JSON.NETはAPIが正直使いにくくてどうにかならないのかねー、と思うので個人的には好きじゃありません。使いやすいAPI設計ってセンスが必要ですよね……。</p>
+<h2>コード</h2>
+<p>割と長ったらしいので、分割して。追試したい方は<a href="http://neue.cc/wp-content/uploads/file/SerializerBench.cs">こちら</a>に元ソース置いておくので使ってみてください。VS2010用。ライブラリ全部揃えるのも大変だと思うので、測定を省きたい項目はMainメソッドのリスト初期化子の部分で該当するものをコメントアウトすれば省けます。</p>
+<pre><code class="language-csharp">[ProtoContract]
+[Serializable]
+public class TestClass : IEquatable&lt;TestClass&gt;
+{
+    [ProtoMember(1)]
+    public string MyProperty1 { get; set; }
+    [ProtoMember(2)]
+    public int MyProperty2 { get; set; }
+    [ProtoMember(3)]
+    public DateTime MyProperty3 { get; set; }
+    [ProtoMember(4)]
+    public bool MyProperty4 { get; set; }
+    [ProtoMember(5)]
+    public KeyValuePair&lt;string, string&gt;[] MyProperty5 { get; set; }
+
+    public bool Equals(TestClass other)
+    {
+        return this.MyProperty1 == other.MyProperty1
+            &amp;&amp; this.MyProperty2 == other.MyProperty2
+            &amp;&amp; this.MyProperty3 == other.MyProperty3
+            &amp;&amp; this.MyProperty4 == other.MyProperty4
+            &amp;&amp; this.MyProperty5.SequenceEqual(other.MyProperty5);
+    }
+
+    public override int GetHashCode()
+    {
+        return this.MyProperty1.GetHashCode() + this.MyProperty2.GetHashCode();
+    }
+}
+</code></pre>
+<p>これがテスト用クラスの中身です。string, int, DateTime, bool, KeyValuePair&lt;string,string&gt;[] とそこそこ満遍なく散りばめて、それとデシリアライズがちゃんと出来たか確認出来るようIEquatable&lt;TestClass&gt;を実装して値比較出来るようにしています。&amp;&amp;や||や三項演算子の:は前置にする派。綺麗に揃う感じが好き。属性はProtocol Buffersはつけないと動かないのでProtoMemberを指定していますが、それ以外は無指定です。指定した方が縮んだりとかありそうですが、私的には無指定の状態で調べたいなあ、と思ったのでなし。最適じゃない状態からのそれぞれのシリアライズ形式への生成、書き戻しの具合を見たいと思ったので。いや、単純に各実装で使う属性を調べるのが面倒だったという手抜きな理由もありますが。</p>
+<pre><code class="language-csharp">public abstract class SerializerBenchmark
+{
+    public static readonly List&lt;TestClass&gt; TestData;
+
+    static SerializerBenchmark()
+    {
+        TestData = Enumerable.Range(1, 100000)
+            .Select(i =&gt; new TestClass
+            {
+                MyProperty1 = &quot;hoge&quot; + i,
+                MyProperty2 = i,
+                MyProperty3 = new DateTime(1999, 12, 11).AddDays(i),
+                MyProperty4 = i % 2 == 0,
+                MyProperty5 = Enumerable.Range(1, 10)
+                    .ToDictionary(x =&gt; x.ToString(), _ =&gt; i.ToString()).ToArray()
+            })
+            .ToList();
+    }
+
+    public static SerializerBenchmark&lt;T&gt; Create&lt;T&gt;(T serializer, Func&lt;T, Action&lt;Stream, Object&gt;&gt; serializeSelector, Func&lt;T, Func&lt;Stream, Object&gt;&gt; deserializeSelector, string optional = null)
+    {
+        return new SerializerBenchmark&lt;T&gt;(serializer, serializeSelector, deserializeSelector, optional);
+    }
+
+    public abstract void Serialize();
+    public abstract void Deserialize();
+}
+</code></pre>
+<p>ベンチマークで重複コードのコピペ(ストップウォッチを前後に挟んだり)を省くために抽象クラスを作りました。このList&lt;TestClass&gt; TestDataが実際にシリアライズ/デシリアライズに使ったデータになります。Enumerable.Range(1, 100000)のToListで10万件のリスト生成。KeyValuePairの配列は、全て長さ10で、DictionaryのToArrayで作っています。</p>
+<pre><code class="language-csharp">public class SerializerBenchmark&lt;T&gt; : SerializerBenchmark
+{
+    private T serializer;
+    private string name;
+    Action&lt;Stream, Object&gt; serialize;
+    Func&lt;Stream, Object&gt; deserialize;
+
+    private string FileName { get { return name + &quot;.temp&quot;; } }
+
+    public SerializerBenchmark(T serializer, Func&lt;T, Action&lt;Stream, Object&gt;&gt; serializeSelector, Func&lt;T, Func&lt;Stream, Object&gt;&gt; deserializeSelector, string optional = null)
+    {
+        this.serializer = serializer;
+        this.name = serializer.GetType().Name + ((optional == null) ? &quot;&quot; : &quot; &quot; + optional);
+        this.serialize = serializeSelector(serializer);
+        this.deserialize = deserializeSelector(serializer);
+    }
+
+    private void Bench(string label, Action action)
+    {
+        GC.Collect();
+        Console.WriteLine(label + &quot; &quot; + name);
+        var sw = Stopwatch.StartNew();
+        action();
+        Console.WriteLine(sw.Elapsed);
+    }
+
+    private void OpenAndExecute(string path, Action&lt;FileStream&gt; action)
+    {
+        using (var fs = File.Open(path, FileMode.OpenOrCreate))
+        {
+            action(fs);
+        }
+    }
+
+    public override void Serialize()
+    {
+        Bench(&quot;Serialize&quot;, () =&gt; OpenAndExecute(FileName, fs =&gt; serialize(fs, TestData)));
+        Console.WriteLine(new FileInfo(FileName).Length / 1024 / 1024 + &quot;MB&quot;);
+    }
+
+    public override void Deserialize()
+    {
+        List&lt;TestClass&gt; data = null;
+        Bench(&quot;Deserialize&quot;, () =&gt; OpenAndExecute(FileName, fs =&gt; data = (List&lt;TestClass&gt;)deserialize(fs)));
+        Console.Write(&quot;Check =&gt; &quot;);
+        Console.WriteLine(TestData.SequenceEqual(data) ? &quot;OK&quot; : &quot;NG&quot;);
+    }
+}
+</code></pre>
+<p>こちらがベンチマークの中身。処理を共通化したかったのですが、各シリアライザがIFormatter（Serialize,Deserializeメソッドを持つインターフェイス）を実装している、なんてことは全くなくて共通化しようがなくてうぎゃー。せめてメソッド名が全てSerializeならdynamic使うという最終手段もあるけれど、DataContractSerializerのメソッド名はWriteObjectだし、ダメだこりゃ。</p>
+<p>で、気づいたのがSerializeはAction&lt;Stream, Object&gt;、DeserializeはFunc&lt;Stream, Object&gt;だということ。というわけで、各メソッドそのものをコンストラクタで渡してあげる形にすることで共通化できた。めでたしめでたし。もはやFuncやActionのない世界は考えられませんね！え、Javaのことですか知りません。</p>
+<p>Deserialize時には、正しくデシリアライズ出来たかのチェックを仕込んでいます。データがListなのでLinqのSequenceEqualで元データと値比較。Listの要素であるTestClassもIEquatableなので、全部値比較で確認。</p>
+<pre><code class="language-csharp">static class Program
+{
+    static void Main(string[] args)
+    {
+        var bench = new List&lt;SerializerBenchmark&gt;
+        {
+            SerializerBenchmark.Create(new BinaryFormatter(), x =&gt; x.Serialize, x =&gt; x.Deserialize),
+            SerializerBenchmark.Create(new XmlSerializer(typeof(List&lt;TestClass&gt;)), x =&gt; x.Serialize, x =&gt; x.Deserialize),
+            SerializerBenchmark.Create(new DataContractSerializer(typeof(List&lt;TestClass&gt;)), x =&gt; x.WriteObject, x =&gt; x.ReadObject),
+            SerializerBenchmark.Create(new DataContractSerializer(typeof(List&lt;TestClass&gt;)),
+                x =&gt; (s, data) =&gt; XmlDictionaryWriter.CreateBinaryWriter(s).Using(xw =&gt; x.WriteObject(xw, data)),
+                x =&gt; s =&gt; XmlDictionaryReader.CreateBinaryReader(s,XmlDictionaryReaderQuotas.Max).Using(xr =&gt; x.ReadObject(xr)),
+                &quot;Binary&quot;),
+            SerializerBenchmark.Create(new DataContractJsonSerializer(typeof(List&lt;TestClass&gt;)), x =&gt; x.WriteObject, x =&gt; x.ReadObject),
+            SerializerBenchmark.Create(new DataContractJsonSerializer(typeof(List&lt;TestClass&gt;)),
+                x =&gt; (s, data) =&gt; XmlDictionaryWriter.CreateBinaryWriter(s).Using(xw =&gt; x.WriteObject(xw, data)),
+                x =&gt; s =&gt; XmlDictionaryReader.CreateBinaryReader(s,XmlDictionaryReaderQuotas.Max).Using(xr =&gt; x.ReadObject(xr)),
+                &quot;Binary&quot;),
+            SerializerBenchmark.Create(new NetDataContractSerializer(), x =&gt; x.Serialize, x =&gt; x.Deserialize),
+            SerializerBenchmark.Create(new NetDataContractSerializer(),
+                x =&gt; (s, data) =&gt; XmlDictionaryWriter.CreateBinaryWriter(s).Using(xw =&gt; x.WriteObject(xw, data)),
+                x =&gt; s =&gt; XmlDictionaryReader.CreateBinaryReader(s,XmlDictionaryReaderQuotas.Max).Using(xr =&gt; x.ReadObject(xr)),
+                &quot;Binary&quot;),
+            SerializerBenchmark.Create(ProtoBuf.Serializer.CreateFormatter&lt;List&lt;TestClass&gt;&gt;(), x =&gt; x.Serialize, x =&gt; x.Deserialize, &quot;- Protocol Buffers&quot;),
+            SerializerBenchmark.Create(new MsgPackFormatter(), x =&gt; x.Serialize, x =&gt; x.Deserialize, &quot;- MessagePack&quot;),
+            SerializerBenchmark.Create(new JsonSerializer(),
+                x =&gt; (s, data) =&gt; new StreamWriter(s).Using(sw =&gt; new JsonTextWriter(sw).Using(tw=&gt; x.Serialize(tw, data))),
+                x =&gt; s =&gt; new StreamReader(s).Using(sr =&gt; new JsonTextReader(sr).Using(tr=&gt; x.Deserialize&lt;List&lt;TestClass&gt;&gt;(tr))),
+                &quot;- JSON.NET&quot;),
+            SerializerBenchmark.Create(new JsonSerializer(),
+                x =&gt; (s, data) =&gt; new BsonWriter(s).Using(bw =&gt; x.Serialize(bw, data)),
+                x =&gt; s =&gt; new BsonReader(s){ReadRootValueAsArray = true}.Using(br =&gt; x.Deserialize&lt;List&lt;TestClass&gt;&gt;(br)),
+                &quot;- JSON.NET BSON&quot;)
+        };
+
+        bench.ForEach(b =&gt; b.Serialize());
+        Console.WriteLine();
+        bench.ForEach(b =&gt; b.Deserialize());
+
+        Console.ReadKey();
+    }
+
+    // IDisposable extensions
+
+    static void Using&lt;T&gt;(this T disposable, Action&lt;T&gt; action) where T : IDisposable
+    {
+        using (disposable) action(disposable);
+    }
+
+    static TR Using&lt;T, TR&gt;(this T disposable, Func&lt;T, TR&gt; func) where T : IDisposable
+    {
+        using (disposable) return func(disposable);
+    }
+}
+</code></pre>
+<p>Listに突っ込んで、まとめてForEachで計測。でも何だかゴチャゴチャしててキタナイですね……。Listの最初の3つまでは良いんです。それぞれ一行で。SerializeとDeserialize登録するだけで。その次から想定外でして……。そう、Serializeは決して必ずしもAction&lt;Stream, Object&gt;じゃあなかった！例えばDataContractSerializerでバイナリXML化を行うには、WriteObjectにStreamじゃなくてXmlDictionaryWriterを渡さなきゃいけない。と、いうわけで、そういった特別対応が必要なメソッドには入れ子のラムダ式を作って処理しています。そのせいでゴチャゴチャと。もはや可読性の欠片もない。がくり。入れ子のラムダが出てくると読むのシンドイんですよね、可能な限り避けたいとは思ってるんですが……。</p>
+<p>Using拡張メソッドは、using構文使うと式じゃなくて文になってラムダ式で書きづらくてウザいので無理やり式にするためのシロモノ。そのせいで入れ子が更に入れ子になって可読性落としてる気がする。何事もやりすぎはいけない。</p>
+<h2>まとめ</h2>
+<p>DataContractSerializer良いよね。XmlDictionaryWriter.CreateBinaryWriter突っ込めばバイナリ化も出来るし。あと<a href="http://code.google.com/p/protobuf-net/">protobuf-net</a>はこうして数字見ると本当に凄いね。と、いったことことぐらいしか言うことがなく。</p>
+<p>それとは関係あったりなかったりで、Twitter素晴らしい。毎回思うけれど、やっぱTwitterは素晴らしい。もともと<a href="http://twitter.com/neuecc/status/14755041874" title="Twitter / neuecc: そういえばですが、BinaryFormatterのデ ...">BinaryFormatterなんか遅くね？</a>とTwitterに愚痴ったところからスタートして、色々な人にアドバイスを受けて最終的にこんな記事（斜め上なだけな気はする）になったわけで、Twitterなかったら「遅くね？以上終了」で終わってた。</p>
+<p>私がTwitterをはじめたのは<a href="http://neue.cc/2008/01/04_48.html" title="neue cc - Twitterはじめました">Twitterはじめました</a>とかいう記事で確認出来るところでは2008/01/04(CoD4について書いてますけど、CoD4のシングルはあんま好きじゃなかった、でもその後マルチプレイヤーにはまったので結局MW2買ってますね！)。しかも、この後も当分は何もポストしないままでいて、同年9月の<a href="http://neue.cc/2008/09/30_106.html" title="neue cc - 三度目の正直">三度目の正直</a>とかいう記事でTwitter→はてダへの転送ツールを作ってからようやく始めてました。コードの一部が載ってますけど、postList.Addとかいうのが初々しいなあ。今だとforeach使ったら負け、.ToList()だろ常識的に考えて。ですね。あと、TrimStartの使い方を間違えてるという。1年半前の私のド素人っぷりが伺えて面白い。ていうか、考えてみると物凄く成長しましたね……。</p>
+<p>そして今ではすっかりTwitter中毒です。あらあらうふふ。</p>
+<p>アドバイス受けてばかりというのもアレですので、私でも応えられそうなのがTLに流れてきたり検索(キーワード「Linq」を割と頻繁に眺めてる)にかかった時は答えるようにしています。いや、あんましてないかも。積極的に答えるようにしていきたいなあ、と。そんなわけで、<a href="http://twitter.com/neuecc/" title="neuecc (neuecc) on Twitter">@neuecc</a>でTwitterやってるので気が向いたらフォローしてやってください。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0524_260.html">JavaScriptエディタとしてのVisual Studioの使い方入門</a></h1>
+<ul class="date"><li>2010-05-24</li></ul>
+<div class="entry_body"><p class="noindent">
+<object width="640" height="385"><param name="movie" value="http://www.youtube.com/v/pyNqIGJVpHs&hl=ja_JP&fs=1&rel=0&hd=1"></param><param name="allowFullScreen" value="true"></param><param name="allowscriptaccess" value="always"></param><embed src="http://www.youtube.com/v/pyNqIGJVpHs&hl=ja_JP&fs=1&rel=0&hd=1" type="application/x-shockwave-flash" allowscriptaccess="always" allowfullscreen="true" width="640" height="385"></embed></object>
+</p>
+<p><a href="http://linqjs.codeplex.com/">linq.js</a>ってデバッグしにくいかも……。いや、やり方が分かればむしろやりやすいぐらい。という解説を動画で。HDなので文字が見えない場合はフルスクリーンなどなどでどうぞ。中身の見えないEnumerableは、デバッガで止めてウォッチウィンドウでToArrayすれば見えます。ウォッチウィンドウ内でメソッドチェーンを繋げて表示出来るというのは、ループが抽象化されているLinqならではの利点。sortしようが何しようが、immutableなので元シーケンスに影響を与えません。ラムダ式もどきでインタラクティブに条件を変えて確認出来たりするのも楽ちん。</p>
+<p>ところで、JavaScript開発でもIDE無しは考えられません。デバッグというだけならFirebugもアリではありますが、入力補完や整形が可能な高機能エディタと密接に結びついている、という点でIDEに軍配があがるんじゃないかと私は思っています。動画中ではVisual Studioの無料版、Visual Web Developerを使っています。Visual Studioというと、何か敷居が高く感じられるかもしれませんが、使う部分を絞ってみれば、超高性能なHTML/JavaScriptエディタとして使えちゃいます。<a href="http://www.amazon.co.jp/gp/product/B003LTZ1Y2?ie=UTF8&tag=ilsgeometrati-22&linkCode=as2&camp=247&creative=7399&creativeASIN=B003LTZ1Y2">有料版の最高級エディションは170万円</a><img src="http://www.assoc-amazon.jp/e/ir?t=ilsgeometrati-22&l=as2&o=9&a=B003LTZ1Y2" width="1" height="1" border="0" alt="" style="border:none !important; margin:0px !important;" />ですからね(MSDNという何でも使えるライセンスがセットなので比較は不公平ですが)、機能限定版とはいえ、その実力は推して知るべし、です(機能限定部分は、主にC#でのASP.NET開発部分に絡むものなのでJavaScript周りでは全く関係ありません)。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/jqueryintellisense.jpg">
+</p>
+<p>VSを使うと何が嬉しいのでしょう？JavaScriptでの強力な入力補完、自動整形、使いやすいデバッガ、リアルタイムエラー通知。そしてこっそり地味に大切なことですが、jQueryの完璧な日本語ドキュメント付き入力補完が同梱されています。と、嬉しいことはいっぱいあるのですが、ASP.NETの開発用ではあるので、JS開発には不要なメニューが多くて戸惑う部分も多いのは事実。分かれば不要部分はスルーするだけなので簡単なのですが、そこまでが大変かもしれない。なので、JavaScript開発で使うVisualStudio、という観点に絞って、何が必要で不要なのかを解説していきます。</p>
+<h2>インストール</h2>
+<p>何はともあれまずはインストール。<a href="http://www.microsoft.com/japan/msdn/vstudio/express/">Microsoft Visual Studio Express</a>からVisual Web Developerを選び、リンク先のWeb Platform Installerとかいうのをダウンロード＆実行。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/webplatform.jpg">
+</p>
+<p>PHPとかWordPressとか色々ありますがどうでもいいので、Visual Web Developer 2010 Expressだけ入れましょう。クリックして指示に従って適当に待つだけ、10分ぐらいあれば終わるはず。10分は短くはないですが、インストール自体は非常に簡単です。</p>
+<h2>プロジェクト作成</h2>
+<p>実行すると初回起動時はイニシャライズが若干長いですが、それを超えれば新しいプロジェクトと新しいWebサイトの違いが分からねえええええ。で、ここは新しいWebサイトです。プロジェクトのほうはC#でASP.NETが基本なので関係ありません。スタートページから、もしくはファイル→新規作成→Webサイト。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/blankasp.jpg">
+</p>
+<p>更に項目があって分からねえ、けどここはASP.NET空のウェブサイトを選びます。次にソリューションエクスプローラーウィンドウを見ます（なければ表示→ソリューションエクスプローラー）。web.configとかいうゴミがありますが、それはスルーしておきましょう(消してもいいですが復活します)。空なので、ルートを右クリックして新しい項目の追加。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/htmlpage.jpg">
+</p>
+<p>いっぱいあると思いますが、ほとんど関係ありません、ノイズです。真ん中ぐらいにあるHTMLページかJScriptファイルを選びましょう。あとは、エディタでガリガリと書いたら、Ctrl+F5を押せば簡易サーバーが立ち上がり、ブラウザ上に現在編集中のHTMLが表示されます。</p>
+<p>以上が基本です。手順は簡単なので一度覚えればすんなり行くはずです。最初は如何せんHTML/JS用としてはダミー項目が多いのがやや難点。なお、保存時はデフォルトではMy DocumentのVS2010のWebSites下にHTMLとかが、Projects下に.slnファイル(プロジェクトを束ねている設定とかが書かれたファイル)が置かれています。以後プロジェクトをVSで開くときは.slnのほうをダブルクリック、もしくはスタートページの最近使ったプロジェクトから。</p>
+<p>では、Visual Studioを使ってJavaScriptを書いて嬉しい！機能を幾つか挙げていきます。</p>
+<h2>エラー表示</h2>
+<p>小括弧が、波括弧が、足らなかったり足しすぎだったりを見落とすことは割とあります。そして起こる実行時エラー。こんなのコンパイルエラーで弾かれてくれ、あばばばば。と思うときはいっぱいあります。そこでVisual Studioのリアルタイムエラー検出。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/errorlist.jpg">
+</p>
+<p>hoge = functionではなくhoge : function。下のは波括弧が一個多い。というのを、リアルタイムで検出してくれて、疑わしいところには波線を敷いてくれます。エラー一覧にも表示されるので、このウィンドウは常時表示させておくと書くのが楽になります。私は縦置きにしてエディタの左側にサイドバーとして常時表示。カラムはカテゴリと説明だけにしています。</p>
+<p>エラー通知のためのコード走査はバックグラウンドで定期的に動いているようですが、任意に発動させたい場合はCtrl + Shift + Jで行えます。修正結果が正しいのかとっとと確認したいんだよ馬鹿やろー、って時に便利。というか普通に押しまくります、私は。</p>
+<h2>コードフォーマット</h2>
+<p>コード整形は大事な機能だと思っています。手動でスペース入れていくとか面倒くさいし。かといって整形が汚いコードは萎えます。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/codeformat.jpg">
+</p>
+<p>ショートカットはCtrl＋K、で、Ctrlを押しながら続けてD。微妙に覚えにくいショートカット。ちなみに選択範囲のコメント化はCtrl+K, Cで、非コメント化はCtrl+K, U。ようするに整形系はCtrl+K始まりで、DはDocumentFormat、CはComment、UはUncommentの意味になるようです。フォーマットのルール(改行をどこに入れるか、とか)は設定で変えられます。</p>
+<h2>デバッグ</h2>
+<p>当然のようにブレークポイントの設定、ステップイン、ステップアウトなどのデバッグをサポートしています。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/debugger.jpg">
+</p>
+<p>F9でブレークポイントを設定してF5でデバッグ実行。が基本です。ローカルウィンドウで変数の値表示、そして便利なのがウォッチウィンドウで、見たい値を好きに記述出来ます。式も書けるので平気で副作用かませます。で、デバッガで良いのはthisが見れるところですねー。JavaScriptはthisが不定で、いったいこの中のthisは何を指しているんだ！と悩んでしまうわけですが、そんなものデバッガで見れば一発で分かりますね、はは。考えるより前にとりあえずデバッグ実行。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/debugalert.jpg">
+</p>
+<p>さて、そんなデバッグですが、初回時には何やら怪しげなダイアログが上がります。ここはYESで。そして、デバッグ出来ましたか？出来なかった人も多いかもしれません。実は、IEじゃないとデバッガ動かないのです。というわけで、ソリューションエクスプローラーからプロジェクトのルート部分を右クリックしてブラウザの選択を選ぶ。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/defaultie.jpg">
+</p>
+<p>IEをデフォルトにしてください。一度設定すれば、以降はこの設定が継続されます。IEとか冗談じゃない。と思うかもしれませんが、えーと、IEで常に書くことで、IEで動かないスクリプトを書くことを避けられるのです、とかいうどうでもいい効用はあります。でもまあ、Firefox拡張とかChrome拡張を書くのにはデバッガが使えなくなるも同然なのは不便ですね。その時はデバッグは当然ブラウザ固有のデバッガを使い(デバッガを使わないと言う選択肢はないよ！)、エディタとしてだけに使えばいいぢゃない。</p>
+<h2>入力補完/日本語jQuery</h2>
+<p>入力補完(IntelliSense)は素敵。ローカル変数があればそれが出てくる。もう変数名打ち間違えで動かない、とかない。ドットを打てば、補完候補に文字列であればreplaceとか、配列であればjoinとか、DOMであればappendChildとか出てくる。メソッド名を暗記する必要もなければ、打ち間違えることもない。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/intellisensejs.jpg">
+</p>
+<p>補完は割と賢くて、関数では引数を見て(というか裏でインタプリタ走ってるんですね、きっと)、ちゃんと返す値を判別してくれます。</p>
+<p>ところでですが、最初の釣り画像にあるjQueryの日本語化ドキュメントはどこにあるのでしょうか？</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/aspproject.jpg">
+</p>
+<p>ファイル→新規作成→プロジェクトからASP.NET Webアプリケーションを選びます。すると、Scriptsフォルダの下にjquery-1.4.1-vsdoc.jsとかいうものが！こいつを、コピペって頂いてしまいましょう。ASP.NET Web Application自体はどうでもいいので破棄です、破棄。でもせっかくなので、Default.aspxを開いてCtrl+F5で実行してみてください。出来た！ウェブアプリが出来た！そう、C#+ASP.NETは驚くほど簡単にウェブアプリが作れるんです。あとは安レンタルサーバーさえ普及してくれれば……。</p>
+<h2>vsdocについて</h2>
+<p>-vsdoc自体は&lt;script src&gt;で読み込む必要はありませんし、実際にサーバーにアップロードする必要もありません。仕組みとしてはhoge.jsとhoge-vsdoc.jsが同じ階層にあると、VisualStudioの入力補完解析はhoge-vsdoc.jsを見に行く、といった感じになっています。なので、jquery-1.4.1.jsだけを読み込めばOKです。</p>
+<p>HTMLファイルに記述する場合はscript srcで読み込めて補完が効くのは分かるけど、単独JSファイルの場合は読み込みの依存関係をどう指定すればよいでしょうか。答えは、ファイルの先頭にreference pathを記載します。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/jqueryjsint.jpg">
+</p>
+<p>これで、JScript1.jsという単独JSファイルでもjQueryの補完が効かせられるようになりました。reference pathというのはVSだけで効果のあるタグで、ブラウザの解釈上はコメントに過ぎないので、ブラウザ表示時に問題が出ることもありません。</p>
+<p>なお、このreference pathというのを覚えている必要はありません。refと記述してTabを二回押すとこのタグが展開されるはずです。コードスニペットというコード挿入の仕組みに予め用意されているわけです。なお、コードスニペットは、この他にもfor-&gt;Tab x2でforが展開されたりなど色々あって便利です(自分で作成することも出来る)。</p>
+<h2>その他設定など</h2>
+<p>その他、好みもありますが設定など。ツール→オプションから。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/optionconsolas.jpg">
+</p>
+<p>何はともかくフォントの変更。MSゴシックとかありえん。フォントをConsolasにしましょう！ Consolasはプログラミング用のClearTypeに最適化された見やすい素敵フォントです。勿論、スラッシュドゼロ。サイズは私は9で使ってます。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/buildout.jpg">
+</p>
+<p>Ctrl+F5押す度にアウトプットウィンドウが立ち上がるのが猛烈にウザいので、「ビルド開始時に出力ウィンドウを表示」のチェックは外しておく。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/htmlattr.jpg">
+</p>
+<p>HTMLでの属性の引用符自動挿入はチェックつけといたほうが幸せ気分。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/tabentercommit.jpg">
+</p>
+<p>入力候補の、このTabかEnterのみで確定させるってのはチェックを外す。だってメソッド書くときは「(」で確定させたいし、オブジェクトを開くときは「.」で確定させたいもの。例えばdocument.getElementByIdは「doc -&gt; Enter -&gt; .  -&gt; get -&gt; Enter -&gt; (」じゃなくて「doc -&gt; . -&gt; get -&gt; (」というように、スムーズに入力したい。一々Enterを挟むのは流れを止めてしまう。</p>
+<h2>まとめ</h2>
+<p>IDEを知ってて使わない、というのは個人の好き好きなのですが、単純に知らないというのは勿体無いな、と。特に初心者ほどIDEを必要とすると思います。初心者がプログラミング始めるなら、導入がメモ帳とブラウザだけで開発出来るJavaScriptお薦め！って台詞は、あまりよろしくないんじゃないかなー。初心者ほど些細なスペルミスや構文ミスでつまづく上に、目を皿のようにしてみても原因が分からない。たとえ導入までの敷居が若干高くなろうとも、親切にエラー箇所に波線を敷いてくれるIDEこそ必要なんじゃないかな。あと、デバッガ。ビジュアルに変数が動き変わることほど分かりやすいものもないでしょう。</p>
+<p>IDEもEclipseのプラグインとか色々ありますが、Visual Studioの強力なjQuery対応度は何にも代え難いんじゃないでしょうか。導入もオールインワンなので何も考えなくてもいい簡単さですし。是非一度、試してみてもらえればいいなあ。</p>
+<p>ついでですが、冒頭動画の<a href="http://linqjs.codeplex.com/">linq.js</a>は便利なJavaScriptライブラリ(無名関数を多用して関数型言語的にコレクション操作を可能にする)でいて、更にVisual Studioの入力補完に最適化してあるので使ってみてください、と宣伝。いや、作者私なので。ごほごほ。jQueryプラグインとして動作するバージョンも同梱してあります。</p>
+<iframe src="http://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=B003LTZ1VU" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<p>それと、勿論Visual Studioは有料版のほうが高機能な面もあります。JavaScript開発のみだとあまり差はないのですが、WindowsScriptHostをJavaScriptで書いてもデバッグ出来るとか無料版に比べて大したことない利点があるにはあります。C#でSilverlightなどもごりごり書きたい、とかになれば断然、有料版のほうが輝いてきます。</p>
+<p>Ultimateは100万オーバーで無理なので、Professional買いましょう、私は買います。(メインはC#の人間なので。JSの人は正直Expressでイイと思うよ……)。まだ発売されてないのでこれから買います。「アップグレード」ですが、Express（無料版）からのアップグレードも認められているという意味不明仕様なので（誰が倍額する通常版買うんでしょうかね……）皆様も是非、上のリンクからamazonで買ってくれれば、ごほごほ。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0521_259.html">DynamicJson ver 1.2.0.0</a></h1>
+<ul class="date"><li>2010-05-21</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://dynamicjson.codeplex.com/" title="DynamicJson">CodePlex - DynamicJson</a></li>
+</ul>
+<p>DynamicJsonをver1.2.0.0に更新しました。おうぁぁぁぁ。Dynamicのまま配列をばらせないことに気づいた！foreachで列挙出来るのはいいけれど、Linqで、例えばSelectManyに渡せないぢゃん！ヤバいヤバい。バグではないけど、そんなんじゃ使い物にならない。ということでその辺のを修正しました。</p>
+<p>何言ってるのかよくわからないですね、なわけで例を。</p>
+<pre><code class="language-csharp">// page1から5までを取得して平らにする(で、古い順に並び替える)
+var wc = new WebClient();
+var statuses = Enumerable.Range(1, 5)
+    .Select(i =&gt;
+        wc.DownloadString(&quot;http://twitter.com/statuses/user_timeline/neuecc.json?page=&quot; + i))
+    .SelectMany(s =&gt; (dynamic[])DynamicJson.Parse(s))
+    .OrderBy(j =&gt; j.id);
+
+foreach (var status in statuses)
+{
+    Console.WriteLine(status.text);
+}
+</code></pre>
+<p><a href="http://twitter.com/neuecc" title="neuecc (neuecc) on Twitter">neueccさん</a>(私だ、私)の投稿を取得するわけですが、一回に20件しか取得出来ないので(countを指定すれば200件まで取れますけど)、複数ページ分取得して結合することにします。そういう場合はforでグルグル？ご冗談を、Modern C#(そんな定義ない)ではLINQを使います。</p>
+<p>1ページのJSONは[{text:nantoka},{text:kantoka}] といった形に配列にデータが入った形で取得出来ます。それが5ページ分。[[{},{}],[{},{}]]といった感じなので、これを真平らにしてやりましょう。[{},{},{},{}]といった風に。それがSelectManyです。SelectManyは微妙にわかりにくいけれど、Linqの中でもかなり重要なんですよー。<a href="http://d.hatena.ne.jp/NyaRuRu/20080206/p2">図解 SelectMany - NyaRuRuの日記</a>なども参考に。</p>
+<p>さて、この「.SelectMany(s =&gt; (dynamic[])DynamicJson.Parse(s))」って部分が、前は出来なかったのです、とほほほ。IEnumerable&lt;T&gt;を実装していれば(IEnumerable&lt;dynamic&gt;)で済んだのだけどなあ。そうすれば配列に変換しなくても済むので効率的にも良いし。Dynamic Viewと結果ビューが共存出来さえすれば……。</p>
+<p>というわけですが、今回の修正で無事、出来るようになりました。配列変換は気にくわないけどしょうがない。IEnumerableを実装しているけれどDynamic Viewが使えるやり方募集中です。方法あったら誰か教えてくださいお願いします。</p>
+<p>あと、キャストついでに、読み取り専用プロパティに対しても値をセットしようとして例外出るのを修正しました。これは、まあ、バグですね。仕様とか言ったら怒る。ていうかすみません。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0518_258.html">linq.js ver 2.1.0.0 - ToDictionary, Share, Let, MemoizeAll</a></h1>
+<ul class="date"><li>2010-05-18</li></ul>
+<div class="entry_body"><p><a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">CodePlex - linq.js - LINQ for JavaScript</a></p>
+<p>linq.jsを2.0から2.1に更新しました。今回はただのメソッド追加というだけじゃなく、1.*の時から続いてる微妙コードを完全抹殺の一掃で書き換えた結果、内部的にはかなり大きな変更が入りました。その影響で挙動が変わってるところも割とあります。</p>
+<p>まず、OrderByのロジックを変更しました。これで動作はC#完全準拠です（多分）。前のはかなりアレだったのでずっと書きなおしたいと思ってたのですが、やっと果たせました。従来と比べるとThenByを複数個繋げた時の挙動が変わってくる(今まではOrderByのみ安定ソートで、ThenBy以降は非安定ソートだったのが、今回からは幾つ繋げても安定ソートになります)ので、複雑なソートをやろうとしていた場合は違う結果が出る可能性はなきにしもあらず、ですが、基本的には変化なしと見て良いと思います。</p>
+<p>ちなみにJavaScriptのArray.sortは破壊的だし、安定である保証もないので、linq.jsのOrderBy使うのは素敵な選択だと思いますよ！非破壊的で安定で並び替え項目を簡単に複数連結出来る(ThenBy)という、実に強力な機能を提供しています。代償は、ちょっと処理効率は重いかもですね、例によってそういうのは気にしたら負けだと思っている。</p>
+<p>他に関係あるところで大きな変更はToLookup。戻り値を、今まではJSのオブジェクトだったのですが、今回からはlinq.jsの独自クラスのLookupになります。すみませんが、破壊的変更です、前と互換性ありません。変えた理由はJSのオブジェクトを使うとキーが文字列以外使えないため。そのことはわかっていて、でもまあいっかー、と思っていたのですがGroupByとか内部でToLookupを使ってるメソッドの挙動が怪しいことになってる(という報告を貰って気づいた)ので、ちゃんとした文字列以外でもキーに使えるLookupを作らないとダメだなー、と。</p>
+<h2>GroupByでのcompareSelector</h2>
+<p>そんなわけで、GroupByのキーが全部文字列に変換されてしまう、というアレゲなバグが修正されました。あと、オーバーロードを足して、compareKey指定も出来るようにしました。何のこっちゃ？というと、例えばDateもオブジェクトも参照の比較です。</p>
+<pre><code class="language-javascript">alert(new Date(2000, 1, 1) == new Date(2000, 1, 1)); // false
+alert({ a: 0} == { a: 0 }); // false
+</code></pre>
+<p>JavaScriptではどちらもfalse。別のオブジェクトだから。C#だとどちらもtrue、匿名型もDateTimeも、値が比較されます。そんなわけでJavaScriptで値で比較したい場合はJSONにでもシリアライズして文字列にして比較すればいいんじゃね？とか適当なことを言ってみたりはしますが、実際Linqだと参照比較のみだと困るシーン多いんですねえ。そんなわけで、GroupBy/ToLookup、その他多数のメソッドに比較キー選択関数を追加しました。例を一つ。</p>
+<pre><code class="language-javascript">var objects = [
+    { Date: new Date(2000, 1, 1), Id: 1 },
+    { Date: new Date(2010, 5, 5), Id: 2 },
+    { Date: new Date(2000, 1, 1), Id: 3 }
+]
+
+// [0] date:Feb 1 2000 ids:&quot;1&quot; 
+// [1] date:Jun 5 2010 ids:&quot;2&quot;
+// [2] date:Feb 1 2000 ids:&quot;3&quot; 
+var test = Enumerable.From(objects)
+    .GroupBy(&quot;$.Date&quot;, &quot;$.Id&quot;,
+        function (key, group) { return { date: key, ids: group.ToString(',')} })
+    .ToArray();
+</code></pre>
+<p>キーにDateを指定し、日付でグルーピングしたいと思いました(この程度の指定で関数書くのは面倒くさいし視認性もアレなので、文字列指定は非常に便利です)。しかし、それだけだと、参照比較なので同じ日付でも別物として扱われてしまうのでグルーピングされません。$.Date.toString()として文字列化すれば同一日時でまとめられるけれど、Keyが文字列になってしまう。後で取り出す際にKeyはDateのまま保っていて欲しい、といった場合にどうすればいいか、というと、ここで今回新設した第四引数のcompareSelectorの出番です。</p>
+<pre><code class="language-javascript">// [0] date:Feb 1 2000 ids:&quot;1,3&quot;
+// [1] date:Jun 5 2010 ids:&quot;2&quot;
+var test2 = Enumerable.From(objects)
+    .GroupBy(&quot;$.Date&quot;, &quot;$.Id&quot;,
+        function (key, group) { return { date: key, ids: group.ToString(',')} },
+        function (key) { return key.toString() })
+    .ToArray();
+</code></pre>
+<p>比較はキー(この場合$.Date)をtoStringで値化したもので行う、と指定することで、思い通りにグループ化されました。なお、C#でもこういうシーン、割とありますよね。C#の場合はIEqualityComparerを指定するのですが、わざわざ外部にクラス作るのは大変どうかと思う。といった時は<a href="http://linqcomparer.codeplex.com/">AnonymousComparer</a>を使えばlinq.jsと同じようにラムダ式でちゃちゃっと同値比較出来ます。</p>
+<p>なお、今回からGroupByの第三引数(resultSelector)が未指定の場合はGroupingクラスが列挙されるように変更されました。GroupingはEnumerableを継承しているので全てのLinqメソッドが使えます。その他に、.Key()でキーが取り出しできるというクラスです。</p>
+<h2>Lookup</h2>
+<p>LookupはGroupByの親戚です。むしろGroupByは実はToLookupしたあと即座に列挙してるだけなのだよ、ナンダッテー。で、何かというとMultiDictionaryとかMultiMapとか言われてるような、一つのキーに複数個の要素が入った辞書です。そして、immutableです。不変です。変更出来ません。</p>
+<pre><code class="language-javascript">var list = [
+    { Name: &quot;temp&quot;, Ext: &quot;xls&quot; },
+    { Name: &quot;temp2&quot;, Ext: &quot;xLS&quot; },
+    { Name: &quot;temp&quot;, Ext: &quot;pdf&quot; },
+    { Name: &quot;temp&quot;, Ext: &quot;jpg&quot; },
+    { Name: &quot;temp2&quot;, Ext: &quot;PdF&quot; }
+];
+
+var lookup = Enumerable.From(list).ToLookup(&quot;$.Ext&quot;, &quot;$.Name&quot;, &quot;$.toLowerCase()&quot;);
+
+var xls = lookup.Get(&quot;XlS&quot;); // toLowerCaseが適用されるため大文字小文字無視で取得可
+var concat = xls.ToString(&quot;-&quot;); // temp-temp2 &lt;- lookupのGetの戻り値はEnumerable
+var zero = lookup.Get(&quot;ZZZ&quot;).Count(); // 0 &lt;- Getで無いKeyを指定するとEnumerable.Emptyが返る
+
+// ToEnumerableでEnumerableに変換、その場合はGroupingクラスが渡る
+// Groupingは普通のLinqと同じメソッド群＋.Key()でキー取得
+lookup.ToEnumerable().ForEach(function (g)
+{
+    // xls:temp-temp2, pdf:temp-temp2, jpg:temp
+    alert(g.Key() + &quot;:&quot; + g.ToString(&quot;-&quot;));
+});
+</code></pre>
+<p>ToLookup時に第三引数を指定すると、戻り値であるLookupにもその比較関数が有効になり続けます。今回はtoLowerCaseを指定したので、大文字小文字無視でグルーピングされたし、Getによる取得も大文字小文字無視になりました。なお、GroupByでもそうですが、キーは文字列以外でも何でもOKです(compareSelectorを利用する場合はその結果が数字か文字列か日付、そうでない場合はそれそのものが数字か文字列か日付を使う方が速度的に無難です、後で詳しく述べますが)。</p>
+<h2>Dictionary</h2>
+<p>Lookupは内部でDictionaryを使うためDictionaryも作成、で、せっかく作ったのだから公開しますか、といった感じにToDictionaryが追加されました。ToObjectと違い、文字列以外をキーに指定出来るのが特徴です。</p>
+<pre><code class="language-javascript">// 従来は
+var cls = function (a, b)
+{
+    this.a = a;
+    this.b = b;
+}
+var instanceA = new cls(&quot;a&quot;, 100);
+var instanceB = new cls(&quot;b&quot;, 2000);
+
+// オブジェクトを辞書がわりに使うのは文字列しか入れられなかった
+var hash = {};
+hash[instanceA] = &quot;zzz&quot;;
+hash[instanceB] = &quot;huga&quot;;
+alert(hash[instanceA]); // &quot;huga&quot; ([Object object]がキーになって上書きされる)
+
+// linq.jsのDictionaryを使う場合……
+// new Dictionaryはできないので、新規空辞書作成はこれで代用(という裏技)
+// 第三引数を指定するとハッシュ値算出＋同値比較にその関数を使う
+// 第三引数が不要の場合はToDictionary()でおk
+var dict = Enumerable.Empty().ToDictionary(&quot;&quot;, &quot;&quot;,
+    function (x) { return x.a + x.b });
+
+dict.Add(instanceA, &quot;zzz&quot;);
+dict.Add(instanceB, &quot;huga&quot;);
+alert(dict.Get(instanceA)); // zzz
+alert(dict.Get(instanceB)); // huga
+
+// ...といったように、オブジェクト(文字列含め、boolでも何でも)をキーに出来る。
+// ToEnumerableで列挙も可能、From(obj)と同じく.Key .Valueで取り出し
+dict.ToEnumerable().ForEach(function (kvp)
+{
+    alert(kvp.Key.a + &quot;:&quot; + kvp.Value);
+});
+</code></pre>
+<p>空のDictionaryを作りたい場合は、空のEnumerableをToDictionaryして生成します。微妙に裏技的でアレですが、まあ、こういう風に空から使うのはオマケみたいなものなので。というかToDictionaryメソッド自体がオマケです。DictionaryはLookupに必要だから作っただけで、当初は外部には出さないつもりでした。</p>
+<p>第三引数を指定しないとオブジェクトを格納する場合は線形探索になるので、格納量が多くなると重くなります(toStringした結果をハッシュ値に使うので、Dateの場合は値でバラつくので大丈夫です、普通のオブジェクトの場合のみ)。第三引数を指定するとハッシュ値の算出にそれを使うため、格納量が増えても比較的軽量になります(ハッシュ衝突時はベタにチェイン法で探索してます)。なお、第三引数はハッシュ関数、ではあるのですが、それだけじゃなくて同値比較にも利用します。GetHashCodeとEqualsが混ざったようなものなので、ようするに<a href="http://linqcomparer.codeplex.com/">AnonymousComparer</a>のデフォルト実装と同じです。</p>
+<p>勿論、ハッシュ関数と同値比較関数は別々の方が柔軟性が高いんですが(特にJavaScriptはハッシュ関数がないから重要性は高いよね！)、別々に設定って面倒くさいしぃー、結局一緒にするシーンのほうが割と多くない？と思っているためこのようなことになっています。というだけじゃなくて、もしequalsとgetHashCodeを共に渡すようにするなら{getHashCode:function(), equals:function()} といった感じのオブジェクト渡しにすると思うんですが、私はIntelliSenseの効かない、こういうオブジェクト渡しが好きではないので……。</p>
+<p>メソッドはIDictionaryを模しているためAdd, Remove, Contains, Clear、それにインデクサが使えないのでGet, Set、EnumerableではないかわりにToEnumerableでKeyValuePairの列挙に変換。Addは重複した場合は例外ではなく上書き、Getは存在しない要素を取得しようとした場合は例外ではなくundefinedを返します。この辺はC#流ではなく、JavaScript風に、ということで。</p>
+<p>GroupingはEnumerableを継承しているのに、DictionaryとLookupは継承していないのでToEnumerableで変換が必要です。C#準拠にするなら、Groupingと同じく継承すべきなのですが、あえて対応を分けた理由は、Groupingはそのまま列挙するのが主用途ですが、LookupやDictionaryはそのまま使うのがほとんどなので、IntelliSenseに優しくしたいと思ったのからです。90近いメソッドが並ぶと、本来使いたいGetとかが見えなくなってしまうので。</p>
+<p>なお、Dictionaryの列挙順は、キーが挿入された順番になります。不定ではありません。JavaのLinkedHashMapみたいな感じです(C#だとOrderedDictionary、Genericsじゃないけど)。順序保持の理由は、DictionaryはLookupで使う-&gt;LookupはGroupByで使う-&gt;GroupByの取り出し順は最初にキーが見つかった順番でなければならない(MSDNにそう記載がある)。といった理由からです。ちなみにですが、GroupByが順番通りに来るってのは経験則では知ってたのですがMSDNに記載があったのは見落としていて、むしろ不定だと考えるべきじゃないか、とかTwitterでデマ吹いてたんですが即座にツッコミを頂いて大変助かりました、毎回ありがとうございます。</p>
+<h2>Share, Let, MemoizeAll</h2>
+<p>そして3つの新メソッド。これらは<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx">Reactive Extensions</a>に含まれるSystem.Interactive.dllのEnumerableに対する拡張メソッドから移植しています。</p>
+<pre><code class="language-javascript">// Shareはenumeratorを共有する
+// 一つの列挙終了後に再度呼び出すと、以前中断されたところから列挙される
+var share = Enumerable.Range(1, 10).Share();
+var array = share.Take(4).ToArray(); // [1,2,3,4]
+var arrayRest = share.ToArray(); // [5,6,7,8,9,10]
+
+// 例えば、これだと二度列挙してしまうことになる！
+// 1,1,2,3とアラートが出る
+var range = Enumerable.Range(1, 3).Do(&quot;alert($)&quot;)
+var car = range.First(); // 1
+var cdr = range.Skip(1).ToArray(); // [2,3]
+
+// Shareを使えば無駄がなくなる(アラートは1,2,3)
+var share = range.Share();
+var car = share.First(); // 1
+var cdr = share.ToArray(); // [2,3]
+</code></pre>
+<p>Shareは、列挙の「再開」が出来ると捉えると良いかもしれません。ちなみに、再開が出来るというのは列挙完了までDispose(終了処理)しないということに等しいのには、少しだけ注意が必要かもしれません。</p>
+<pre><code class="language-javascript">// Letの関数の引数は自分自身
+// [1,2], [2,3], [3,4], [4,5]
+Enumerable.Range(1, 5).Let(function (e)
+{
+    return e.Zip(e.Skip(1), &quot;x,y=&gt;[x,y]&quot;);
+});
+
+// 上のLetはこれと等しい
+var range = Enumerable.Range(1, 3);
+range.Zip(range.Skip(1), &quot;x,y=&gt;[x,y]&quot;);
+
+// 余談：Pairwiseは↑と同じ結果です、一つ先の自分との結合
+Enumerable.Range(1, 5).Pairwise(&quot;x,y=&gt;[x,y]&quot;);
+</code></pre>
+<p>Letは、Enumerableを受け取ってEnumerableを返す関数を渡します。何のこっちゃですが、外部変数に置かなくても、メソッドチェーンを切らさずに自分自身が使えるということになります。使い道は主に自分自身との結合を取りたい場合、とか。なお、何も対処せずそのまま結合すると二度列挙が回ることには注意が必要かもしれません。</p>
+<pre><code class="language-javascript">// MemoizeAllは、そこを一度通過したものはキャッシュされる
+var memo = Enumerable.Range(1, 3)
+    .Do(&quot;alert($)&quot;)
+    .MemoizeAll();
+
+memo.ToArray(); // 一度目の列挙なのでDoでalertが出る
+memo.ToArray(); // 二度目の列挙はキャッシュからなのでDoを通過しない
+
+// Letと組み合わせて、自己結合の列挙を一度のみにする
+Enumerable.Range(1, 5)
+    .MemoizeAll()
+    .Let(function (e) { return e.Zip(e.Skip(1), &quot;x,y=&gt;[x,y]&quot;) });
+</code></pre>
+<p>MemoizeAllはメモ化です。二度三度列挙するものは、一度.ToArray()とかして配列に置いたりすることが少なくなかったのですが、MemoizeAllはその辺を遅延評価のままやってくれます。使いかっては良さそう。ただし、これもShareと同じく列挙完了まで例外が起ころうが何だろうがDispose(終了処理)しないのは注意が必要かもしれません。素のJavaScriptではリソース管理は滅多にないので関係ないですが、例えばメモ化が威力を発揮しそうな(linq.jsではWSHで、C#だったら普通にやりますよね)ファイル読み込みに使おうとすると、ちょっと怖い。ていうか私はそういう場合は素直にToArrayします。</p>
+<p>この3つは「注意が必要かもしれません」ばかりですね！ただ、MemoizeAll-&gt;Let-&gt;Zipで自分自身と結合するのは便利度鉄板かと思われます。便利すぎる。</p>
+<h2>まとめ</h2>
+<p>Dictionaryの導入は地味に影響範囲が大きいです。集合演算系メソッドもみんなDictionary利用に変えたので。なんでかというと、ええと、そう、今まではバグっておりました……。trueと&quot;true&quot;区別しないとか。Enumerable.From([&quot;true&quot;,true]).Distinct()の結果が[&quot;true&quot;]になってました。ほんとすみません。今回から、そういう怪しい挙動は潰れたと思います。いや、Dictionaryがバグッてたら元も子もないのですが多分大丈夫だと思います思いたい。</p>
+<p>とにかく一年前の私はアホだな、と。来年も同じこと思ってそうですが。</p>
+<p>Share, MemoizeAll, LetのRx移植三点セットは遊んでる分には面白いんですが、使いどころは難しいですね。ちなみに、MemoizeAllということで、RxにはAllじゃないMemoizeもあるのですが、かなり挙動が胡散臭いので私としては採用見送りだし、C#でも使う気はしません。内部の動きを相当意識してコントロールしないと暴走するってのが嫌。</p>
+<p>VS2010のJavaScript用IntelliSenseは本当に強化されましたねー。ということで、VS2010ならDictionaryやLookupでIntelliSenseが動作するのですが、VS2008では動作しません。完全にVS2010用に調整してたら2008では動かないシーンも幾つか出てきてしまった……。まあでも、2010は素敵なのでみんな2010使えばいいと思うよ。私はまだExpressですががが。一般パッケージ販売まだー？(6月です)</p>
+<p>そういえば、2.0は公開からひと月でDL数100到達。本当にありがとうございます。そろそろ実例サンプルも作っていきたいのですがネタがな。Google Waveって結局どうなんでしょうかね。ソーシャルアプリは何か肌に合わない雰囲気なのでスルーで、Waveに乗り込むぜ、とか思ってたんですが思ってただけで乗り込む以前に触ってもいないという有様。HTML5は、ええと、基本はC#っ子なのでSilverlight押しだから。うー、じゃあChrome拡張辺りで……。いやでもHTML5かな、よくわからないけれど。</p>
+<p>今のところ最優先事項はlinq.javaなんですけどね、忘れてない忘れてない。というか、linq.js 2.0も今回のOrderByのロジック変更も、linq.javaで書いてあったのを持ってきただけだったりして。もうほんと、とっとと出したいです。出してスッキリして次に行きたい。</p>
+<p>そんなわけで、この2.1でlinq.jsはようやくスタート地点に立てたぜ、という感じなので使ってやってください。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0506_257.html">C# DynamicObjectの基本と細かい部分について</a></h1>
+<ul class="date"><li>2010-05-06</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://dynamicjson.codeplex.com/" title="DynamicJson">CodePlex - DynamicJson</a></li>
+</ul>
+<p>DynamicJsonをver.1.1に更新しました。ver.1.0の公開以降に理解したDynamicObjectについての諸々を反映させてあります。具体的には、IsDefinedやDeleteといったメソッド名を書かずに、それらが呼び出せるようにし、また、foreach時にキャストが不要になりました。DynamicはIntelliSenseが効かないので、メソッド名を書かせたら負け。大まかに分けて「プロパティ」「名前付きメソッド」「名前無しメソッド」「キャスト」の4つをうまいこと振り分けて、不自然ではなく使えるようにすれば、DynamicObjectとして良い設計となるのではないかな、と思っています。</p>
+<p>というわけで、今回は微妙にはまったDynamicObjectの挙動の色々について書きますが、その前に1.1の更新事項を。DynamicJson自体については、<a href="http://neue.cc/2010/04/30_256.html" title="neue cc - DynamicJson - C# 4.0のdynamicでスムーズにJSONを扱うライブラリ">ver1.0のリリース時の記事</a>を参照ください。</p>
+<pre><code class="language-csharp">// ただの入れ物クラスなのであまり気にしないで。
+public class FooBar
+{
+    public string foo { get; set; }
+    public int bar { get; set; }
+}
+
+// こんなJSONがあったとするとする
+var json = DynamicJson.Parse(@&quot;{&quot;&quot;foo&quot;&quot;:&quot;&quot;json&quot;&quot;, &quot;&quot;bar&quot;&quot;:100, &quot;&quot;nest&quot;&quot;:{ &quot;&quot;foobar&quot;&quot;:true } }&quot;);
+var arrayJson = DynamicJson.Parse(@&quot;[1,10,200,300]&quot;);
+var objectJson = DynamicJson.Parse(@&quot;{&quot;&quot;foo&quot;&quot;:&quot;&quot;json&quot;&quot;,&quot;&quot;bar&quot;&quot;:100}&quot;);
+
+// .プロパティ名()はIsDefined(&quot;プロパティ名&quot;)と同じになります
+var b1_1 = json.IsDefined(&quot;foo&quot;); // true
+var b2_1 = json.IsDefined(&quot;foooo&quot;); // false
+var b1_2 = json.foo(); // true            
+var b2_2 = json.foooo(); // false;
+
+// .(&quot;プロパティ名&quot;)はDelete(&quot;プロパティ名&quot;)と同じになります
+json.Delete(&quot;foo&quot;);
+json(&quot;bar&quot;);
+
+// キャストはDeserialize&lt;T&gt;()と同じになります
+var array1 = arrayJson.Deserialize&lt;int[]&gt;();
+var array2 = (int[])arrayJson; // array1と一緒
+int[] array3 = arrayJson; // こう書いてもDeserialize呼び出しと同じだったりする
+
+// 配列だけではなく、パブリックプロパティ名で対応を取るマッピングも可能です
+var foobar1 = objectJson.Deserialize&lt;FooBar&gt;();
+var foobar2 = (FooBar)objectJson;
+FooBar foobar3 = objectJson;
+
+// 勿論、配列＋オブジェクトでも可。Linqに繋げる時はキャストで囲みましょう(asはダメ)
+var objectJsonList = DynamicJson.Parse(@&quot;[{&quot;&quot;bar&quot;&quot;:50},{&quot;&quot;bar&quot;&quot;:100}]&quot;);
+var barSum = ((FooBar[])objectJsonList).Select(fb =&gt; fb.bar).Sum(); // 150
+var hoge = objectJsonList as FooBar[]; // これはnullになる、asとキャストは挙動が違う
+
+// array状態のDynamicJsonにforeachはdynamicが渡る
+// 中の型が分かっている場合は、varではなく型名指定するといいかも
+// ちなみに、数字はdynamicのままだと全てdoubleです
+foreach (int item in arrayJson)
+{
+    Console.WriteLine(item); // 1, 10, 200, 300
+}
+
+// オブジェクト状態のDynamicJsonへのforeachはKeyValuePair
+// .Key、.Valueなのは分かってる、というならdynamicで受けると楽かも
+foreach (KeyValuePair&lt;string, object&gt; item in objectJson)
+{
+    Console.WriteLine(item.Key + &quot;:&quot; + item.Value); // foo:json, bar:100
+}
+</code></pre>
+<p>foreachを自然に使えるようにしたのと、IsDefined、Remove、DeserializeをDynamicとして自然に呼び出せるようにした、というのが更新内容になります。IsDefined(&quot;name&quot;)が.name()で自然なのか？というと、どうなんでしょうねー、という感じですが、しかしDynamicはIntelliSenseが効かないのです！なので、多少ややこしくても、こうして使える方が便利だと思われます。</p>
+<p>ところで、キャストとasの関係は、DynamicObjectだとより正確に意識する必要が出てきます。キャストとasは例外が飛ぶかnullになるかの違いしかない、と思っていたりしたのは私なのですが、そんなことはなくて、asはユーザ定義の変換演算子を呼ばないという性質があります。DynamicObjectでもそれが反映されているため、キャストするとTryConvertが呼ばれるのですが、asは純粋にそのクラスの継承関係しか見ません。</p>
+<h2>DynamicObjectとは</h2>
+<p>では本題。まずは基本から。型宣言がdynamicの場合に、挙動が変わるオブジェクトの作成方法は、DynamicObjectを継承して、挙動を変えたいメソッド(Tryなんたら)をオーバーライドするだけです。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/dynamic_override.jpg">
+</p>
+<p>override-&gt;スペースでIntelliSenseに候補が出てきますね、素敵。Try何とかかんとかの第一引数はbinderですが、とりあえずbinder.Nameだけで何とかなります。成否はboolで返し(falseの場合は、呼び出しを解決するため更に連鎖が重なったりする)、trueの場合はresultにセットした値が呼び出し元に返る。といった仕組みになっています。</p>
+<h2>呼び出しの解決</h2>
+<p>簡単な例、ということで呼び出し名を返す、というだけの単純なTryInvokeMemberを定義してみます。</p>
+<pre><code class="language-csharp">// MyDynamic:DynamicObjectのオーバーライド、メソッド呼び出し名を文字列としてそのまま返す、引数がある場合はfalse
+public override bool TryInvokeMember(InvokeMemberBinder binder, object[] args, out object result)
+{
+    result = binder.Name;
+    return (args.Length &gt; 0) ? false : true;
+}
+
+dynamic d = new MyDynamic();
+var t1 = d.Hoge(); // Hoge - dynamic(string)
+var t2 = d.ToString(); // ToStringにはならない、MyDynamicのToStringが呼ばれる
+</code></pre>
+<p>さて、この場合本来あるメソッドであるToStringやEquals、その他自分で定義したメソッドがあれば、それらを呼んだ場合はどちらが優先されるでしょうか、というと、定義されたメソッドが優先です。なので、TryInvokeMemberにだけ挙動を定義しておくと、どうやっても呼べないメソッドが出てきます。例えばDynamicJsonで言えば、プロパティ名がToStringのJSONに対してToString()で定義されているか確認は出来ません。そのための回避策として、TryInvokeMemberはIsDefinedの簡易記法としています。IsDefined(&quot;ToString&quot;)ならば問題なく呼べますので。</p>
+<p>引き続いて、TryInvokeMemberがfalseの場合も見てみます。</p>
+<pre><code class="language-csharp">public override bool TryGetMember(GetMemberBinder binder, out object result)
+{
+    result = new MyDynamic();
+    return true;
+}
+
+public override bool TryInvoke(InvokeBinder binder, object[] args, out object result)
+{
+    result = ((string)args[0]).ToUpper();
+    return true;
+}
+
+dynamic d = new MyDynamic();
+var t = d.Hoge(&quot;aaa&quot;); // AAA(InvokeMemberが失敗したらGetMemberが呼ばれ、それのTryInvokeが呼ばれる)
+</code></pre>
+<p>d.Hoge(&quot;aaa&quot;)は、まずTryInvokeMemberが呼ばれます。今回は引数がある場合はfalseとしているので、失敗します。すると、呼び出しの解決のためTryGetMemberが呼ばれます。ここでtrueの場合は、引数を持ってTryInvokeが呼ばれます。TryInvokeはd(&quot;aaa&quot;)のような、メソッド名なしでの関数呼び出しです。C#にはない記法となるので、TryInvokeMemberからの失敗の連鎖でTryGetMemberでDynamicObject以外を返すと、TryInvokeに失敗という形で例外が出ます。</p>
+<p>ややこしいですね！この失敗の連鎖はDynamicJsonではオブジェクトがネストしている際の呼び出しの解決に利用しています。</p>
+<pre><code class="language-csharp">var json = DynamicJson.Parse(@&quot;{&quot;&quot;tes&quot;&quot;:10,&quot;&quot;nest&quot;&quot;:{&quot;&quot;a&quot;&quot;:0}&quot;);
+
+json.nest(); // これはjson.IsDefined(&quot;nest&quot;)
+json.nest(&quot;a&quot;); // これはjson.nest.Delete(&quot;a&quot;)
+</code></pre>
+<p>json.nest(&quot;a&quot;)は、まずTryInvokeMemberが呼んでいます。これは原則IsDefinedと等しいのですが、引数がある場合はfalseにしています。そのためTryGetMemberが呼ばれて.nestを取得。そして、TryInvoke(これはDeleteに等しい)を呼ぶという流れになっています。真面目にDynamicObjectを使って構造を作る場合、呼び出し解決順序などを意識する必要は、間違いなくあります。ややこしいですけどねー。</p>
+<h2>DynamicObjectとforeach</h2>
+<p>DynamicObjectがIEnumerableならば、foreachはそれを呼びます。ていうかforeach可能なものはIEnumerableにするでしょ常識的に考えて。と、言いたいのですが世の中そうもいかなかったりします。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/dynamic_view.jpg">
+</p>
+<p>Dynamicの変数はデバッガで見るとDynamic Viewというものが用意されていて、展開すると全てのプロパティ名と値を表示してくれます(これに対応させるにはGetDynamicMemberNamesをオーバーライドする必要がある、DynamicObject作るなら必須！)。大変便利なのですが、これ、クラスがIEnumerableを実装している場合はIEnumerableの結果ビューに置き換わってしまい、Dynamic Viewがなくなってしまいます。</p>
+<p>Dynamic Viewがないと非常に不便極まりないので、DynamicJsonではIEnumerableの実装は断念しました。しかし、foreachでそのまま呼べないのは不便だ。どうする？となって思い浮かんだのは、IEnumerableじゃなくてもGetEnumeratorがあればforeachって呼ばれるんだよねー、普通のクラスは。という仕様がC#にはあるので、Dynamicでも行けるかな？と思いきやそんなことはなく、呼ばれませんでした。じゃあ、かわりにforeach時に何が呼ばれていたか、というと、TryConvertが呼ばれます。</p>
+<pre><code class="language-csharp">public override bool TryConvert(ConvertBinder binder, out object result)
+{
+    // foreachで呼ばれた時はbinder.TypeがIEnumerable
+    if (binder.Type == typeof(IEnumerable))
+    {
+        result = Enumerable.Range(1, 10); // resultはIEnumerableとIEnumerator、どちらでも可
+        return true;
+    }
+
+    // 通常のキャストは適当に分岐させるか、キャストの演算子オーバーロードでもどちらでもいい
+    // 演算子オーバーロードがある場合は、そちらが優先されます
+    result = (binder.Type == typeof(string)) ? &quot;hogehoge&quot; : null;
+    return true;
+}
+
+dynamic d = new MyDynamic();
+foreach (var item in d)
+{
+    Console.WriteLine(item); // 1,2,3,4,5,6,7,8,9,10
+}
+
+var ie = (IEnumerable)d; // これは失敗する、インターフェイスへの明示的型変換は不可！
+</code></pre>
+<p>C#ではインターフェイスの演算子オーバーロードは定義出来ないし、Dynamicでも呼び出しは不可能になっています。が、foreach呼び出し時のみ、TryConvertにTypeがIEnumerableとして渡るようになっているので、そこでtrueを返せば、IEnumerableではないDynamicObjectでもforeachで列挙出来ます。</p>
+<p>正直なところ、セコいハックに過ぎないです。本当はデバッガでDynamic Viewと結果ビューが共存できればいいんですよ、ていうか出来るべき。あと、Dynamic Viewは今のところ値がnullのものは表示しないようになっているのですが、これも不便な仕様ですね、改善して欲しいところ。とはいえ、IEnumerableじゃないから不便になってる！ということは無いと思われます。どちらにせよIEnumerableじゃなくてもdynamicはキャストしないと拡張メソッドが呼べない(つまりそのままではLinqが使えない)ため、利用感は犠牲にしていません。</p>
+<p>そういえばExpandoObjectはIEnumerableなのにdynamic viewが出るので、何か方法はあるかもしれませんね。</p>
+<h2>まとめ</h2>
+<p>dynamicは当初思っていたよりも、遥かに使いがいのある仕組みでした。dynamicはDSL。だと思います。そして、DSLとして便利に使わせるならば、メソッド名で呼ばせるのは厳禁。用意された機構を上手く使ってIntelliSenseレスでも快適に操作出来るようにしなければならない。というか、それで操作出来ないならば普通にC#で組んでIntelliSense効かせた方がずっと良い。</p>
+<p>と、まあ、そんなわけで<a href="http://dynamicjson.codeplex.com/" title="DynamicJson">DynamicJson</a>は400行程度の小さいコードですが、割と色々考えて作ってありますので、是非使ってみてください。お手製ライブラリにありがちなJSON解析の出来が怪しい、といった問題を、解析部を.NET FrameworkのJsonReaderWriterFactoryに丸投げしているため避けられている、というのも大きな利点かと思われます。</p>
+<p>ソースコード本体は、ArrayとObjectを一つのクラスに統合しているため、各メソッド行頭でifで分ける、というのが若干怪しいのですが(オブジェクト指向的にはポリモーフィズム、ていうかDynamicならその辺考えずに分けても問題ない、だろうけど400行のコードですからねえ、分割したほうが手間かつ分かりにくくなるだろうしで、まだリファクタリングの出番ではない、と思いますです、これ以上規模が膨れるなら別ですが)、全体的にはDynamicObjectの機能を満遍なく使っているので、参考になるかと思います。あと、JSON書き出し時のLinq to XmlでのXML組み立て部分は若干トリッキーなものの、割とよく出来ているかな？ Deserializeはもう少し気合入れて実装し直さないとダメな感じですがががが。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0430_256.html">DynamicJson - C# 4.0のdynamicでスムーズにJSONを扱うライブラリ</a></h1>
+<ul class="date"><li>2010-04-30</li></ul>
+<div class="entry_body"><p>C#4.0の新機能といったらdynamic。外部から来る型が決まってないデータを取り扱うときは楽かしら。とはいえ、実際に適用出来る範囲はそんなに多くはないようです。例えばXMLをdynamicで扱えたら少し素敵かも、と一瞬思いつつもElementsもDescendantsも出来なくてAttributeの取得出来ないXMLは、実際あんまり便利じゃなかったりする。ただ、ちょうどジャストフィットするものがあります。それは、JSONですよ、JSON。というわけで、dynamicでJSONを扱えるライブラリを書いてみました。ライブラリといっても300行程度のクラス一個です。</p>
+<ul>
+<li><a href="http://dynamicjson.codeplex.com/" title="DynamicJson">CodePlex - DynamicJson</a></li>
+</ul>
+<p>使い方は非常にシンプルで直感的。まずは、文字列JSONの読み込みの例を。DynamicJson.Parseメソッド一発です。</p>
+<pre><code class="language-csharp">// Parse (from JsonString to DynamicJson)
+var json = DynamicJson.Parse(@&quot;{&quot;&quot;foo&quot;&quot;:&quot;&quot;json&quot;&quot;, &quot;&quot;bar&quot;&quot;:100, &quot;&quot;nest&quot;&quot;:{ &quot;&quot;foobar&quot;&quot;:true } }&quot;);
+
+var r1 = json.foo; // &quot;json&quot; - dynamic(string)
+var r2 = json.bar; // 100 - dynamic(double)
+var r3 = json.nest.foobar; // true - dynamic(bool)
+var r4 = json[&quot;nest&quot;][&quot;foobar&quot;]; // インデクサでのアクセスも可
+
+// 定義されてるかチェック
+var b1 = json.IsDefined(&quot;foo&quot;); // true
+var b2 = json.IsDefined(&quot;foooo&quot;); // false
+</code></pre>
+<p>Parseしたら、あとはJavaScriptと同じ感じにプロパティ名をドット打つだけで値が取り出せます。dynamicとJSONは相性が良いですね、JavaScriptと全く同じ感覚です。注意点としては、存在しないプロパティ名を読むと例外が出ます。Dictionaryみたいなものだと思ってください。さすがにそれだと使いにくいところもあるので、IsDefinedメソッドであるかないかチェック出来ます。dynamicなため、IntelliSenseには出てこないということは注意してください。もう一つ気をつけなきゃいけないのは、数字は全てdoubleです。JSONでは数値類は全部一緒くたにNumberなので、適宜自分でキャストしてください。</p>
+<h2>オブジェクトからJSON文字列への変換</h2>
+<p>dynamicとは関係ないのですが、JSON文字列へのシリアライズも可能です。こちらもDynamicJson.Serializeメソッド一発。</p>
+<pre><code class="language-csharp">// Serialize (from Object to JsonString)
+var obj = new
+{
+    Name = &quot;Foo&quot;,
+    Age = 30,
+    Address = new
+    {
+        Country = &quot;Japan&quot;,
+        City = &quot;Tokyo&quot;
+    },
+    Like = new[] { &quot;Microsoft&quot;, &quot;Xbox&quot; }
+};
+// {&quot;Name&quot;:&quot;Foo&quot;,&quot;Age&quot;:30,&quot;Address&quot;:{&quot;Country&quot;:&quot;Japan&quot;,&quot;City&quot;:&quot;Tokyo&quot;},&quot;Like&quot;:[&quot;Microsoft&quot;,&quot;Xbox&quot;]}
+var jsonStringFromObj = DynamicJson.Serialize(obj);
+</code></pre>
+<p>匿名型でサクッとJSONを作り上げられます。非常にお手軽。DataContractJsonSerializerはちょっと大仰すぎなのよねえ、という時にはこれでサクサクッと作ってやってください。匿名型だけじゃなく、普通のオブジェクトでも大丈夫です（その場合はパブリックプロパティからKeyとValueを生成します）。</p>
+<h2>JSONオブジェクトの再編集・作成</h2>
+<p>生成したDynamicJsonは可変です。自由に編集して再シリアライズとか出来ます。</p>
+<pre><code class="language-csharp">var json = DynamicJson.Parse(@&quot;{&quot;&quot;foo&quot;&quot;:&quot;&quot;json&quot;&quot;, &quot;&quot;bar&quot;&quot;:100, &quot;&quot;nest&quot;&quot;:{ &quot;&quot;foobar&quot;&quot;:true } }&quot;);
+
+// 追加、編集、削除が出来ます
+json.Arr = new string[] { &quot;NOR&quot;, &quot;XOR&quot; }; // Add
+json.foo = 5000; // Replace
+json.Delete(&quot;bar&quot;); // Delete
+            
+// DynamicJsonから文字列へのシリアライズはToStringを呼ぶだけ
+var reJson = json.ToString(); // {&quot;foo&quot;:5000,&quot;nest&quot;:{&quot;foobar&quot;:true},&quot;Arr&quot;:[&quot;NOR&quot;,&quot;XOR&quot;]}
+
+// 配列はちょっと特殊で、foreachなので扱いたい場合はobject[]にキャストしてください
+Console.WriteLine(json.Arr[1]); // XOR
+foreach (var item in (object[])json.Arr)
+    Console.WriteLine(item); // NOR XOR
+
+// 新しく作成することも出来ます
+dynamic root = new DynamicJson(); // ルートのコンテナ
+root.obj = new { }; // 空のオブジェクトの追加は匿名型をどうぞ
+root.obj.str = &quot;aaa&quot;;
+root.obj.@bool = true; // C#の予約語と被る場合は@を先頭につけるとアクセス出来るよ！
+root.array = new[] { 1, 200 }; // 配列の追加
+root.obj2 = new { str2 = &quot;bbbb&quot;, ar = new object[] { &quot;foobar&quot;, null, 100 } }; // オブジェクトの追加と初期化
+
+// {&quot;obj&quot;:{&quot;str&quot;:&quot;aaa&quot;,&quot;bool&quot;:true},&quot;array&quot;:[1,200],&quot;obj2&quot;:{&quot;str2&quot;:&quot;bbbb&quot;,&quot;ar&quot;:[&quot;foobar&quot;,null,100]}}
+Console.WriteLine(root.ToString()); 
+</code></pre>
+<p>追加は存在しないプロパティ名に直接突っ込めばOK。編集はそのまま上書き。型名とか関係ないので、元から入っているものの型に合わせる必要はありません。削除はDeleteメソッドを呼べば出来ます。配列はちょっと扱いが特殊でして、foreachしたかったりLinqメソッド使いたい場合はobject[]にキャストする必要があります。この辺は仕様です。諸事情によりIEnumerableじゃないんです。ごめんなさい。ちなみにobjectってものなあ、intが欲しいんすよ、っていう時は.Cast<int>()とかでLinqに繋げるといいかもですね。</p>
+<p>一から新しいDynamicJsonオブジェクトを作成することも出来ます。普通にnewするだけ。注意点としては、変数はdynamicで受けてください。varで受けても何の嬉しいこともありませんので。あとは、普通にぽこぽこ足すだけ。オブジェクトを作る場合は空の匿名型でやります。決してDynamicJsonを足したりしないでください、がっかりなことになりますので。</p>
+<h2>実装の裏側</h2>
+<p>300行のクラス一個、ということで、勿論自前でパーサー書いてるわけがありません。ていうか、その手のは自分で書きたくないんだよね、ソートアルゴリズムとかもそうだけど、こういうのはちゃんと検証されてるものを使うべき。（そしてそもそも、ちゃんとしたのが書けるかというと、書けません……）。で、何を使っているかというと<a href="http://neue.cc/2010/04/29_255.html" title="neue cc - C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions">先日の記事でLinq to Json</a>とか言ってたように、JsonReaderWriterFactoryを使用しています。</p>
+<p>ようするに、ただのJsonReaderWriterFactoryのラッパーです。内部ではJSONの構造をXMLとして保持していて、書き出しの際にJsonReaderWriterFactoryを通しています。ただですね、Readerのほうは使い易くてJsonReaderWriterFactoryお薦め！なのですが、Writerのほうは結構厳しいです。ルールに則って書いたXMLを通すとJSONになる、という仕組みなのですが、ルールに則ってないと即弾かれるということでもあって、かなり面倒くさいです。</p>
+<pre><code class="language-csharp">// 例えばこんなDynamicJSONは
+dynamic root = new DynamicJson();
+root.Hoge = &quot;aiueo&quot;;
+root.Arr = new[] { &quot;A&quot;, &quot;BC&quot;, &quot;D&quot; };
+
+// 内部ではこんなコードに変換されています
+new XElement(&quot;root&quot;, new XAttribute(&quot;type&quot;, &quot;object&quot;),
+    new XElement(&quot;Hoge&quot;, new XAttribute(&quot;type&quot;, &quot;string&quot;), &quot;aiueo&quot;),
+    new XElement(&quot;Arr&quot;, new XAttribute(&quot;type&quot;, &quot;array&quot;),
+        new XElement(&quot;item&quot;, new XAttribute(&quot;type&quot;, &quot;string&quot;), &quot;A&quot;,
+        new XElement(&quot;item&quot;, new XAttribute(&quot;type&quot;, &quot;string&quot;), &quot;BC&quot;,
+        new XElement(&quot;item&quot;, new XAttribute(&quot;type&quot;, &quot;string&quot;), &quot;D&quot;)))));
+</code></pre>
+<p>このXElementを素で書いていくのは地獄でしょう。DynamicJsonはこの変換を自動で行います。dynamicでラッピングすることで、煩わしい部分を完全に包み隠すことができました。ここまで簡略化出来ると、DSLの域です。C#は大変素晴らしいデスネ。いや、マジで。</p>
+<h2>まとめ</h2>
+<p>クラス一個なので、csファイルをコピペって使ってもいいですし（その場合は追加でSystem.Runtime.Serializationの参照を）、DLLを参照設定に加えても、どちらでもお好きな方をどうぞ。数あるJSONライブラリの中でも、使いやすさはトップクラスなのではないでしょうか（自画自賛）。いや、これは、単純にdynamicの威力の賜物ですね。これを作るまではdynamicについて割と勘違いしていたところもあったのですが、なんというか、DSL向けだと思います。で、DSL指向で行くなら全部プロパティだけで組まないとダメですねえ。IntelliSenseが動かないのでメソッドを使うのは今ひとつ。そういう意味で、IsDefinedじゃなくて.property? とかって感じに、末尾に？をつけるとかどうかな！とか考えてみたんですが、コンパイル通らないのでダメでした、残念。「.あいうえお」なら行けるので、日本語プログラミングDSLが待たれるところです。嘘。</p>
+<pre><code class="language-csharp">static void Main()
+{
+    var publicTL = new WebClient().DownloadString(@&quot;http://twitter.com/statuses/public_timeline.json&quot;);
+    var statuses = DynamicJson.Parse(publicTL);
+    foreach (var status in (dynamic[])statuses)
+    {
+        Console.WriteLine(status.user.screen_name);
+        Console.WriteLine(status.text);
+    }
+}
+</code></pre>
+<p>最後に例として、Twitterのpublic_timeline.jsonを引っこ抜くコードを。凄まじく簡潔です。C#はどこをどう見てもLightWeightですね、本当にありがとうございました。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0429_255.html">C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions</a></h1>
+<ul class="date"><li>2010-04-29</li></ul>
+<div class="entry_body"><p>何か盛り沢山になったのでタイトルも盛り沢山にしてみました。SEO(笑)</p>
+<p>最近話題のTwitterの<a href="http://apiwiki.twitter.com/ChirpUserStreams" title="Twitter API Wiki / ChirpUserStreams">ChirpUserStreams</a>を使ってみましょー。ChirpUserStreamsとは、自分のタイムラインのあらゆる情報がストリームAPIによりリアルタイムで取得出来る、というもの。これを扱うには、まずはストリームをIEnumerable化します。そのまま扱うよりも、一度IEnumerable化すると非常に触りやすくなる、というのがLinq時代の鉄則です。C#でのストリームAPIの取得方法は以前にも記事にしましたが、かなり汚かったのでリライト。WebClient愛してる。</p>
+<pre><code class="language-csharp">public static IEnumerable&lt;XElement&gt; ConnectChirpStream(string username, string password)
+{
+    const string StreamApiURL = &quot;http://chirpstream.twitter.com/2b/user.json&quot;;
+
+    var wc = new WebClient() { Credentials = new NetworkCredential(username, password) };
+    using (var stream = wc.OpenRead(StreamApiURL))
+    using (var reader = new StreamReader(stream))
+    {
+        var query = reader.EnumerateLines() // 1行に1JSONなのです
+            .Where(s =&gt; !string.IsNullOrEmpty(s)) // 空文字が来るので除去
+            .Select(s =&gt; // 文字列JSONからXElementへ変換
+            {
+                using (var jsonReader = JsonReaderWriterFactory.CreateJsonReader(Encoding.Default.GetBytes(s), XmlDictionaryReaderQuotas.Max))
+                    return XElement.Load(jsonReader);
+            });
+
+        foreach (var item in query) yield return item; // 無限列挙
+    }
+}
+
+// StreamReaderの補助用拡張メソッド(あると大変便利)
+public static IEnumerable&lt;string&gt; EnumerateLines(this StreamReader streamReader)
+{
+    while (!streamReader.EndOfStream)
+    {
+        yield return streamReader.ReadLine();
+    }
+}
+</code></pre>
+<p>中々シンプルに書けます。C#もLLと比べても全然引けを取らないでしょう(誰に言ってる)。ChirpUserStreamsはJSONでしか取れないのですが、StreamAPIではXmlよりもJSONのほうが使い易いので、JSONだけでも全然問題ありません。とはいえ、C#でJSONはちょっと扱いにくいんだよねー？と思いきや、意外に普通に標準ライブラリだけで何とかなりました。</p>
+<p>参照設定にSystem.Runtime.Serializationを加えます(注：VS2008ではSystem.ServiceModel.Webを参照設定に加えてください)。この参照で通常使うのはDataContractJsonSerializerだと思いますが、もう一つ、JsonReaderWriterFactoryというクラスが用意されていて、このReaderはJSONをXmlReaderとして扱うことが出来ます。この図式は以前の<a href="http://neue.cc/2010/03/02_244.html" title="neue cc - C#でスクレイピング:HTMLパース(Linq to Html)のためのSGMLReader利用法">Linq to HtmlのためのSGMLReader利用法</a>と同じです。そのままXElementに流しこめば、JSONをXmlとして扱って、Linq to Jsonが成り立ちます。</p>
+<p>さて、StreamAPIなのでEndOfStreamは来ない。繋ぎっぱなし、つまりはConnectChirpStreamメソッドは無限リストになります。この中には色々な情報が混ぜこぜになって来ます。投稿した、という他にも、誰かをフォローした、何かをふぁぼった、何かをリツイートした、などなどなどなど。クライアントソフト作るなら、当然どの情報も漏れ無く扱いたいわけですが、どうしましょう？foreachでグルッと回して、ifで分ける、しか、ない、かもですね？ しかしそれは敗北です。退化です。foreachを使ったら負けだと思っている。</p>
+<p>ところで突然に、今のところ思う<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx">Reactive Extensions for .NET (Rx)</a>を使うメリットは3つ。「複雑になりがちな複数イベントの合成」「同じく複雑になりがちな非同期処理のLinq化」そして、「列挙の分配」。従来型のLinqでは、一回の列挙には一個の処理しか挟めませんでした。例えば、MaxとCountを同時に取得する方法はなかった。MaxとCountを別々に二度列挙するか、または旧態依然なやり方、つまりforeachでグルグルと回してMaxとCountを手動で計算するかしかなかった。それはIEnumerableがPullモデルなためで、PushモデルのIObservableならば、出来ないこともない。</p>
+<p>では、Rxでこのストリームを分配してみましょう。</p>
+<pre><code class="language-csharp">static void Main(string[] args)
+{
+    // IEnumerableをIObservableに変換し、Publish(Connectするまで列挙されない(ので分配が可能になる))
+    var connecter = ConnectChirpStream(&quot;username&quot;, &quot;password&quot;)
+        .ToObservable()
+        .Publish();
+
+    // 1件目は必ず自分のフレンドのIDリストが来るらしいっぽいのでまるっと保存
+    HashSet&lt;int&gt; friendList;
+    connecter.Take(1).Subscribe(x =&gt; friendList = new HashSet&lt;int&gt;(
+        x.Element(&quot;friends&quot;).Elements().Select(id =&gt; (int)id)));
+
+    // どんなのが来るのかよく分からないのでモニタ用にテキストにまるっと保存
+    var sw = new StreamWriter(&quot;streamLog.txt&quot;) { AutoFlush = true };
+    connecter.Subscribe(x =&gt; sw.WriteLine(x));
+
+    // userがあるなら普通の投稿(ってことにしておく)
+    connecter.Where(x =&gt; x.Element(&quot;user&quot;) != null)
+        .Select(x =&gt; new
+        {
+            Text = x.Element(&quot;text&quot;).Value,
+            Name = x.Element(&quot;user&quot;).Element(&quot;screen_name&quot;).Value
+        })
+        .Subscribe(a =&gt; Console.WriteLine(a.Name + &quot;:&quot; + a.Text));
+
+    // favoriteとかretweetは &quot;event&quot;:&quot;favorite&quot; というJSONが来る
+    var events = connecter.Where(x =&gt; x.Element(&quot;event&quot;) != null);
+
+    // favoriteの場合の処理
+    events.Where(x =&gt; x.Element(&quot;event&quot;).Value == &quot;favorite&quot;)
+        .Subscribe(x =&gt; Console.WriteLine(x)); // favorite用の何か処理
+    // retweetの場合の処理
+    events.Where(x =&gt; x.Element(&quot;event&quot;).Value == &quot;retweet&quot;)
+        .Subscribe(x =&gt; Console.WriteLine(x)); // retweet用の何か処理
+
+
+    // 同期か非同期かは、ToObservableの引数で変わる。デフォルトは同期
+    // Scheduler.ThreadPoolを引数に入れるとThreadPoolで非同期になる
+    connecter.Connect(); // 列挙開始
+}
+</code></pre>
+<p>ID一覧取得、テキスト保存、投稿時処理、Fav時処理、リツイート時処理の5つへの分配が非常にスマートに出来ました。ToObservable、Publish、Connect。たったこれだけで一つストリームを複数に分配することが出来ます。普通にそれぞれをWhereだのSelectだの、独立してLinqでコネコネ出来ました。で、何が嬉しいかっていうと、それぞれが完全に独立していて見やすいってのは勿論あります。あと、部品化されてるので外部に分割しやすくなるんですね、物凄く。組み合わせたりもしやすいし。</p>
+<h2>結論</h2>
+<p>Rxヤバい。というわけで、みんなRx触ろう！ .NET Framework 4.0ではRxで使うIObservableとIObserverインターフェイスが搭載されています。インターフェイスだけでどうすんだよボケ、っていうと、実際のところどうにもなりませんね、たはー。それでもインターフェイスだけ先行搭載ということは、RxはDevLabs内だけで終わる実験的プロジェクトではなく、必ず標準搭載するから安心しろよ！というメッセージだと受け取ることにしました。きっと.NET Framework 4.0 SP1には標準搭載されます。される、と、いいなあ。ちなみにRxは初期の頃と結構変わってますし、まだ変わるかも。でも、だからこそ、それに付き合うのも楽しいってものですよ？</p>
+<p>ああ、あと、ChirpUserStreamsもヤバいですね。リアルタイムでゴリゴリ迫ってくる感覚は素敵というか、なんか別次元のメディアになった感じでもあります。今、新規にTwitterクライアント作るならStreamAPI完全対応すれば差別化出来て良いですね！私は作りませんが。ただ、ストリームAPIとRxは相性良いと思うので、ストリームAPI時代の到来と同時にRx時代も到来！する、かなあ？</p>
+<h2>ToDo</h2>
+<p><a href="http://neue.cc/2010/04/23_254.html" title="neue cc - linq.js ver 2.0 / jquery.linq.js - Linq for jQuery">linq.jsがようやく一段落した</a>ので、Rxの紹介もまたやっていきたいですねー(すみません、かなり長いこと放置していて)。ToObservableによる列挙の分配は中々に強烈なので、linq.jsとRxJSを橋渡しするようなコードというかJSというかも用意したいなあ（軽く作ってみたんですが、RxJSでもPublishで分配出来て中々に威力ありそうでした）。うーん、考えてみるとやることはいっぱいあるねえ。適当に待っていてください。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0423_254.html">linq.js ver 2.0 / jquery.linq.js - Linq for jQuery</a></h1>
+<ul class="date"><li>2010-04-23</li></ul>
+<div class="entry_body"><p class="noindent">
+<object width="640" height="385"><param name="movie" value="http://www.youtube.com/v/vOk7x1aHeEI&hl=ja_JP&fs=1&rel=0&color1=0x3a3a3a&color2=0x999999&hd=1"></param><param name="allowFullScreen" value="true"></param><param name="allowscriptaccess" value="always"></param><embed src="http://www.youtube.com/v/vOk7x1aHeEI&hl=ja_JP&fs=1&rel=0&color1=0x3a3a3a&color2=0x999999&hd=1" type="application/x-shockwave-flash" allowscriptaccess="always" allowfullscreen="true" width="640" height="385"></embed></object>
+</p>
+<p>無駄に1280x720なので、文字が小さくて見えない場合はフルスクリーンにするかYouTubeに飛んでそちらで大きめで見てください。というわけで、動画です。linq.js + Visual Studio 2010で補完でウハウハでjQueryプラグインで世界系です。ここ最近、RxJS、JSINQとJavaScript系の話が続く中で、ふと、乗るしかない このビックウェーブに、という妄念が勢いづいてlinq.jsをver.2.0に更新しました。</p>
+<p><a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js - LINQ for JavaScript</a></p>
+<p>内部コードを全面的に変更し、丸っきり別物になりました。破壊的な変更も沢山あります。名前空間がE、もしくはLinq.EnumerableだったのがEnumerableになり、幾つかのメソッドを廃止、廃止した以上にメソッドを大量追加。そして、WindowsScriptHostに対応しました。その他色々細かい変更事項の詳細は下の方で。あ、そうそう、名前空間はEnumerableを占有するので、prototype.jsとは被るため一緒に使えません。</p>
+<p>今回の最大のポイントは、jquery.linq.jsという、jQueryのプラグイン化したlinq.jsを追加です。基本機能は完全に同一ですが、jQueryプラグイン版のみの特徴として、jQueryとEnumerableとの相互変換用のメソッドが定義されています。呼び出しは$.Enumerableを使います(グローバル名前空間は一つも汚しません)。</p>
+<h2>Linqとは？</h2>
+<p>耳タコなぐらい繰り返していますが、C#知らない人やこのサイトを始めて訪れた人にも使って欲しいんです！ということで、Linqとは何かを紹介します。簡単に言うと、そのふざけたforをぶち殺す。ための代物。Linq導入以降、当社比100%でfor, foreachの出番はなくなりました。ifも半減。ネスト量激減。えー、forー？forなんて使うの小学生までだよねー。</p>
+<p>Linq(to Objects)とは？便利コレクション処理ライブラリです。語弊は、大いにある。あるのだけど、言い切るぐらいでいいと思うことにしている近頃。具体的には、mapやfilterやreduceが使えます。非破壊的なsortができます。Shuffle(ランダムに並びかえ)やDistinct(重複除去)などがあります。流れるようにメソッドチェーンで記述出来ます。index付きのforeachが書けます。DOMに対しても同じようにforeachやmapを適用できます。遅延評価が基本になっているので、幾つmapやfilterを繋げても、ムダの無い列挙が可能になっています。また、無限リストが扱えます。JavaScriptでプログラミングするにあたって不足しまくるコレクション処理を大幅に下支えするのが、linq.jsです。</p>
+<h2>Linqの世界、jQueryの世界</h2>
+<p>100億の言葉より1の実例。</p>
+<pre><code class="language-javascript">// こんな感じ(1から10個、偶数のみを二乗したのをアラートに出す)
+$.Enumerable.Range(1, 10)
+     .Where(&quot;$%2==0&quot;) // 他言語でfilterとか言われているもの
+     .Select(&quot;$*$&quot;) // 他言語でmapとか言われているもの
+     .ForEach(&quot;alert($)&quot;);
+
+// Linq側はTojQueryでjQueryオブジェクトに変換
+$.Enumerable.Range(1, 10)
+    .Select(function (i) { return $(&quot;&lt;option&gt;&quot;).text(i) })
+    .TojQuery()
+    .appendTo(&quot;#select1&quot;);
+
+// jQueryオブジェクト側はtoEnumerableでLinqに変換
+var sum = $(&quot;#select1&quot;).children()
+    .toEnumerable()
+    .Select(&quot;parseInt($.text())&quot;)
+    .Sum(); // 55
+</code></pre>
+<p>シームレスに結合されているようであまり統合されてはいません。お互い、コレクション操作中心であったり、連鎖で操作するという形なので、融け合うことはできません。toEnumerableに関しても、jQuery世界とは切り離された、Linqの世界へと移行するだけ。とはいえ、toEnumerableとTojQueryにより、チェーンを切らさずに相互変換して、スムーズに世界を切り替えられるというのは、中々に楽しい。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linq-jquery.jpg">
+</p>
+<p>図にするとこんな感じ。jQueryの世界はメソッド名小文字、Linqの世界はメソッド名大文字、というので自分の今居る世界が分かります。Linqは世界系。世界に囚われると逃げ出すことは出来ないのです！いくらもがいても（Select）もがいても（Where)変わらない。鏡の中に逃げこむか(tojQuery)、鏡を割ってしまうか(ToArray)、どちらにせよ、代償を払うわけですね？ 意味不明。そんな感じで非常に楽しいです。</p>
+<h2>IDE Lover</h2>
+<p>linq.jsの特徴として、入力補完サポートを徹底的に行っているという点があります。なぜなら、私自身がIDE大好きっ子、入力補完大好きっ子だから。テキストエディタで書いているとか言う人は、そのエディタは窓から投げ捨ててIDE使おうぜ！ どんな感じで書けるかというと、動画を見てください、一番上の。今回は無料の<a href="http://www.microsoft.com/japan/msdn/vstudio/express/" title="Microsoft Visual Studio Express">Visual Web Developer 2010 Express</a>を使っています。インストールも拍子抜けするぐらい簡単ですよ！超お薦め。HTML/JSエディタとして使うポイントは、「Webサイトを作成」から「空のASP.NETウェブサイト」を選ぶことです。詳しくはまた後日にでも。</p>
+<h2>linq.js ver.2.0.0.0</h2>
+<p>では、本体の更新事項の方もご紹介。jquery.linq.jsも、この2.0から作られているので以下の事項は当てはまります。まず、名前空間を大々的に弄りました。Linq名前空間は全面的に廃止、Enumerableのみに。また、ショートカットとして用意していたEも廃止。それとLinq.ObjectとLinq.Enumerableは統合されて、Enumerableになりました。</p>
+<p>次に廃止ですが、いっぱいあります。ToJSONの廃止、ちゃんと出力可能なのかを保証出来ないのでやめた。JSONは専用ライブラリ使ってください。ToTableの廃止、明らかに不要で邪魔臭かったから。なんでこんなもの搭載したのかすら謎。TraceFの廃止、というか、今までのTraceFをTraceとし、TraceFを消滅させました。TraceFはconsole.logに書き込んでいたのですが、IE8からはIEでも使えるようなので、F(Firebug)じゃなくていいかな、と。あと元のTraceはdocument.writeだったので、それは意味ねーだろ、ということで。あとは、RangeDownToの廃止。かわりにRangeToをマイナス方向への移動に対応させました。これは、ToなんだからUpとDownを区別するほうがオカシイってことにやっと気づいたからです、しょぼーん。</p>
+<p>次に名前変更の類。ZipWithの名称をZipに変更(.NET 4.0と名前を合わせるため)。Sliceの名称をBufferWithCountに変更(Rxと名前を合わせるため)。Makeの名称をReturnに変更(Rxと名前を合わせるため)。Timesの名称をGenerateに変更(Rxと名前を合わせるため、RxのGenerateは基本Unfoldですが)。</p>
+<p>新メソッドとしてMaxBy, MinBy, Alternate, TakeExceptLast, PartitionBy, Catch, Finallyを追加しました。MaxByとMinByはそのまんま。Alternateは一個毎に値を挟み込みます。TakeExceptLastは最後のn個(引数を省いた場合は1個)を除いて列挙します(Skipの逆バージョンみたいなもの)。PartitionByはGroupByの特殊系みたいな。CatchとFinallyはエラーハンドリング用。いつもなら、ここで例を出すところなのですが今回は省略、詳しくはリファレンスのほうで。</p>
+<p>それと、OfTypeの追加。JavaScriptは型がゆるふわだからCastもOfTypeもイラナイし！と思ってたんですが、そしてCastは実際いらないのですが、OfTypeは翌々考えてみると型がゆるふわだからこそ、フィルタリングするために超絶必要じゃないか！ということに気づきました。ので追加。そして、これでCast以外は.NETのLinq演算子の全てを搭載ということになりました。</p>
+<h2>Windows Script Host</h2>
+<p>最後に、Enumerable.FromをJScriptのEnumeratorに対応させました(linq.jsのEnumeratorじゃなくて組み込みの方ね)。これにより、Windows Script Hostやエディタマクロでlinqが使えるようになりました。Linq for WSH！えー、WSH？WSHなんて使うの小学生までだよねー。今はPowerShellっすよ。と思うかもしれませんが違います。WSHならばJavaScriptで強烈に補完効かせながらガリガリ書けるのです。しかもLinqが使える。むしろPowerShellの時代は終わったね、WSH復権の時よ来たれ！だからそろそろアップデートかけて.NET Frameworkのライブラリが全面的に使えるようになって欲すぃ(今は、極一部のは使えないことはないのですが相当微妙)。では実例など少し。</p>
+<pre><code class="language-java">// フォルダ下のフォルダ名とファイル名を取得する
+var dir = WScript.CreateObject(&quot;Scripting.FileSystemObject&quot;).GetFolder(&quot;C:\\&quot;);
+
+// 通常の場合
+var itemNames = [];
+for (var e = new Enumerator(dir.SubFolders); !e.atEnd(); e.moveNext())
+{
+    itemNames.push(e.item().Name);
+}
+for (var e = new Enumerator(dir.Files); !e.atEnd(); e.moveNext())
+{
+    itemNames.push(e.item().Name);
+}
+// linq.js
+var itemNames2 = Enumerable.From(dir.SubFolders)
+    .Concat(dir.Files)
+    .Select(&quot;$.Name&quot;)
+    .ToArray();
+</code></pre>
+<p>WSHでJScriptを使う場合の最大の欠点は、foreachがないこと、でしょうか。生のEnumeratorを回すのは苦痛でしかない。しかし、linq.jsを用いればFrom.ForEachで簡単に列挙できます。それだけでなく、Linqの多様なメソッドを用いて自然なコレクション操作が可能です。上記例では、Concatでファイル一覧とサブフォルダ一覧を連結することで、名前の取り出しを共通化することができました。</p>
+<p>WSHに関して詳しくはウェブで、じゃなくて後日、と言いたいのですが（既に記事がかなり長いので）、そんなこと言ってるといつまでたっても書かなさそうなので、簡単に説明を。WSH(WindowsScriptHost)とはWindows用のスクリプト環境で、自動化など、非常に強力で大抵のことが出来ます。で、標準ではVBScriptと、JScriptで書けます。つまりJavaScriptで書ける。つまりlinq.jsが読み込める。つまりLinqがWSHでも使える。WSHで扱うあらゆるコレクションに対して、Linqを適用させることが可能です。WSHだけでなく、Windows上でJScriptを用いるもの、例えばWindowsのデスクトップガジェットなどでも利用することが出来ます。</p>
+<p>ライブラリを用いる場合は、wsfファイルで記述すると良いかもです。中身は簡単なXMLで、下のような感じに。</p>
+<pre><code class="language-javascript">&lt;job id=&quot;Main&quot;&gt;
+    &lt;script language=&quot;JScript&quot; src=&quot;linq.js&quot;&gt;&lt;/script&gt;
+    &lt;script language=&quot;JScript&quot;&gt;
+        function EnumerateLines(filePath)
+        {
+            return Enumerable.RepeatWithFinalize(
+                    function () { return WScript.CreateObject(&quot;Scripting.FileSystemObject&quot;).OpenTextFile(filePath) },
+                    function (ts) { ts.Close() })
+                .TakeWhile(function (ts) { return !ts.AtEndOfStream })
+                .Select(function (ts) { return ts.ReadLine() });
+        }
+
+
+        EnumerateLines(&quot;C:\\test.txt&quot;).Take(10).ForEach(function (s)
+        {
+            WScript.Echo(s);
+        });
+    &lt;/script&gt;
+&lt;/job&gt;
+</code></pre>
+<p>そうそう、自動Closeも含めたリソース管理も出来ます。ストリームなどにはRepeatWithFinalizeを使ってLinq化することで、Closeまで一本にまとめあげられます。といったような複雑なことが必要なくても、E.From(collection).ForEach()がふつーに便利です。というか、こんな単純なことすら素の状態じゃ出来ないJScriptに絶望した！でもそれがいい。JScript可愛いよJScript。</p>
+<h2>エディタマクロ</h2>
+<p>WSHによるJavaScript実行はEmEditorやサクラエディタ、Meryなど様々なテキストエディタで利用できます。せっかくなのでちょっと実用的なものを、と思って電卓を作ってみました。EmEditor用マクロです。選択範囲内の一行を計算し、その行の右側に出力します。ちゃちゃっと計算出来て便利。計算し直しを頻繁にする時は、新規ファイルを開いてまっさらなものに数式を書いて、Ctrl+A -&gt; マクロ実行を繰り返すと良い感じ。</p>
+<pre><code class="language-javascript">#include = &quot;linq.js&quot;
+
+with (document.Selection)
+{
+    Enumerable
+        .RangeTo(GetTopPointY(eePosLogical), GetBottomPointY(eePosLogical))
+        .Select(function($i)
+        {
+            var $line = document.GetLine($i);
+            try { eval($line) } catch ($e) { } // SetVariableToGlobal
+            var $expr = $line.split(&quot;=&quot;)[0].replace(/^ +| +$/g, &quot;&quot;);
+            try { var $result = eval($expr) } catch ($e) { }
+            return { PointY: $i, Result: $result, Line: $expr }
+        })
+        .Where(function(a) { return a.Result !== undefined })
+        .ForEach(function(a)
+        {
+            SetActivePoint(eePosLogical, 1, a.PointY, false)
+            SelectLine(); Delete();
+            document.writeln(a.Line + &quot; = &quot; + a.Result);
+            SelectLine(); UnIndent(); StartOfLine();
+        });
+}
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linqjs_editorcalc.jpg">
+</p>
+<p>一行のうち=の左側をevalして、戻り値を返すものは出力、evalに失敗したものはスルー。ということなので、JavaScriptのMath関数は全部使えます。Select内の変数が$iとか、$始まりなのは変数定義による名前の衝突を避けるためです。慣れないマクロ書きなので色々酷い箇所も多いとは思いますが、なんとなく伝わるでしょうか？ テキストエディタのマクロは、一行ずつの配列として、一行に対して操作をかけることが多いので、RangeToで範囲を作って、行ごとに適当に変形(Select)させて例外条件を省いて(Where)、処理(ForEach)。煩雑になりがちな行番号管理などを、流れるように簡単に記述出来ます。</p>
+<p>なお、EmEditorは先頭に#includeを記述するだけでライブラリ読み込みが出来ますが、インクルード機能のないエディタでは以下のようなコードを先頭に置くことでライブラリが読み込めます。</p>
+<pre><code class="language-javascript">eval(new ActiveXObject(&quot;Scripting.FileSystemObject&quot;).OpenTextFile(&quot;linq.js&quot;).ReadAll().replace(/^・ｿ/,&quot;&quot;));
+</code></pre>
+<p>ようするに、丸ごとテキストとして読み込んでevalです。/^・ｿ/はUTF-8のBOM対策(適当すぎる)。一応、Meryでlinq.jsが動くのは確認しました。電卓マクロは動きません(eePosLogicalとかがEmEditorにしかないので、まあ、その辺は当然だししょうがないわなあ)</p>
+<h2>まとめ</h2>
+<p>今回のリニューアルは大変気合が入ってます。コード全部作り替えたぐらいには。最初はjQueryプラグインだけ足せばいいや、とか思ってたのですが、破壊的変更をかけるなら中途半端はいくない、と思い、やれるのは今だけということで徹底的に作り替えました。</p>
+<p>ちなみに、ちっとも気にしてないパフォーマンスは悪化しました。ver.1.xがそれでもまだシンプルな構造だったのに比べ、今回は一回の呼び出し階層がかなり深くなった影響があります。列挙終了後にRepeatWithFinalizeとFinallyでしか使ってないDisposeのために階層駆け上がるし(これほんと入れようか悩んだんですけど、WSHだけでなく、将来的にはJavaScriptでもきっちりリソース管理でCloseって機会も増えそうなので入れました)。しかし遅いといっても、ベンチ取るとChromeなら爆速で誤差範囲に収まってしまうのですよ！Google Chrome、恐ろしい子。Firefoxだと？聞くな。いえいえ、JSINQよりは速かったですよ？←何だこの対抗心は</p>
+<p>jQueryのおともに。WSHのおともに。エディタマクロのおともに。調度良い感じの隙間にピタリはまるようになっております。JavaScriptにおいてコレクションライブラリはニッチ需要だし、WSH用ライブラリなんて完全隙間産業なわけですが、むしろだからこそ、幾分か価値があるかな？合計83メソッドと、大充実なので、きっと要求に答えられると思います。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0415_253.html">linq.jsをjQueryと一緒に使う</a></h1>
+<ul class="date"><li>2010-04-15</li></ul>
+<div class="entry_body"><p><a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript Library">linq.js</a>とjQueryを一緒に使うとするとどうなるのかな、という今まで微妙に避けてきた話。実用的なことを考えるなら避けて通れないのですが、実用的なことなんて考えたこともなかった！今まで！すみません。というわけで、少し考えてみます。あ、Linq to Xml(linq.xml.js)はボツの方向で行きます。RxJSを見習って、jQueryと仲良くやる方向で考えるつもりです。割とイイ線行ってたかなあ、とは思うんですが、クロスブラウザ対応の面倒くささが半端なくて実装しきる気力が持ちそうにないのと、やっぱセレクタ操作が冗長になりすぎてダメだったかなあ、なんて思ってます。</p>
+<blockquote>
+```javascript
+var p_arr = from p_ele in $("p")
+            where "hoge" in p_ele.classes
+            select p_ele
+<p>for(var p in p_arr){
+p.toggleClass(&quot;hilight&quot;);
+}</p>
+<pre><code>
+こんな風なことができるのかと思ったがそんなわけはなく。&lt;br /&gt;
+&lt;a href=&quot;http://d.hatena.ne.jp/beta_magnus/20100412/1271070326&quot;&gt;Linq.js - 人生がベータ版&lt;/a&gt;
+&lt;/blockquote&gt;
+
+お試しありがとうございます。この例は、出来るといえば出来るし、出来ないといえば出来ないです。まず、クエリ構文では書けなくて、というのはともかくメソッド構文で実際にlinq.jsで組んでみるとこうなります。
+
+```javascript
+E.From($(&quot;p&quot;)) // 内包するDOM要素を列挙
+ .Select(&quot;jQuery($)&quot;) // 単一要素のjQueryオブジェクトにラップ
+ .Where(function (q) { return q.attr(&quot;class&quot;) == &quot;hoge&quot; })
+ .ForEach(function (q) { q.toggleClass(&quot;hilight&quot;) });
+
+// jQueryで同じような形にするならこうでしょうか
+$(&quot;p.hoge&quot;).each(function () {
+    var q = $(this);
+    q.toggleClass(&quot;hilight&quot;);
+});
+</code></pre>
+<p>FromでjQueryの選択された要素を列挙に変換します。jQueryの列挙はjQueryオブジェクトではなく、DOM要素をそのまま返すので(これは.eachで回した時も一緒ですね)、jQueryのメソッドを使いたい時は再度ラップしてあげます。ただまあ、単純なフィルタリングなら、jQueryのセレクタで書いたほうが当然すっきり仕上がりますね。更にまあ、そもそもeachする必要はなく、</p>
+<pre><code class="language-javascript">// jQuery自体が集合を扱うので一行で書けるんですよね……
+$(&quot;p.hoge&quot;).toggleClass(&quot;hilight&quot;);
+</code></pre>
+<p>となってしまうわけで、DOMから選択してDOMに作用を加える、という一連のjQueryチェーンで綺麗に成り立っている場合に、linq.jsを挟む余地はありません。jQuery自体が集合を含有しているので、ｊQueryだけで綺麗に完結しちゃうんですね。そしてlinq.jsは、それ自体はクロスブラウザ対応だったりのDOM操作は一切持っていないので、その辺はjQueryにお任せします。そうなると、どうしても出番が限られてくるという。</p>
+<p>じゃあ無価値なのかといえば勿論そんなことはなくて、DOMをDOMのまま扱って抽出して作用を加えるのではなく、そこからテキストだったり数値を抽出する、というシーンでは生き生きとします。DOMの選択、フィルタリングまではjQueryのセレクタで行ったらlinq.jsに渡す。数値だったら集計系のメソッドが使えるし、他にもテーブル内の文字をキーにして複数テーブルの結合(join)、なんかも簡単に出来ます。</p>
+<p>ところで、 E.From($(&quot;selector&quot;)).Select(&quot;jQuery($)&quot;) というのは定型文になるので、jQuery自体に拡張してしまいます。こんなんでもプラグインって呼んでいいですか？(プラグインとしての部分は一行でも、繋がってる先はある意味ヘビー級なので)</p>
+<pre><code class="language-javascript">// これでjQueryオブジェクトからtoEnumerable()を呼ぶとlinqが使える
+jQuery.fn.toEnumerable = function () {
+    return E.From(this).Select(&quot;jQuery($)&quot;);
+}
+
+// 例えば、input要素の数値を合計する、とか
+var sum = $(&quot;input&quot;).toEnumerable()
+    .Select(&quot;parseInt($.val())&quot;)
+    .Sum();
+</code></pre>
+<p>割と便利。かな？具体例に乏しくて非常に説得力に欠ける感じですが、良ければ使ってやってください。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0411_252.html">Linq to ObjectsをJavaScriptに実装する方法</a></h1>
+<ul class="date"><li>2010-04-11</li></ul>
+<div class="entry_body"><p><a href="http://journal.mycom.co.jp/articles/2010/04/09/jsinq/index.html">JavaScriptでLINQを使おう - 複雑な検索処理を簡潔に記述する「JSINQ」</a>という記事が出ました。私は<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript Library">linq.js</a>という、同種のJavaScriptへのLINQ移植ライブラリを作成している人間のため、JSINQの人気っぷりに思わず嫉妬してしまった(笑)のですが、そういう感情は抜いておいてこの紹介記事は、今ひとつよろしくない。</p>
+<p>まず頂けないのが、列挙の方法。</p>
+<pre><code class="language-javascript">// 生のenumeratorを取り出して列挙するですって！？
+while (enumerator.moveNext()) {
+    var name = enumerator.current();
+    document.write(name + '&lt;br&gt;');
+}
+// eachが用意されているというのに！
+result.each(function(name) { document.write(name + &quot;&lt;br /&gt;&quot;) });
+</code></pre>
+<p>C#でもJavaでも、きっと他の言語でも、反復子をwhileループで回すなんて原始的なことは普通やりませんよね？ foreachに渡しますよね？ そんなわけでJSINQにはeachメソッドが用意されているのですが紹介記事は普通にスルー。「enumeratorでの列挙とeachでの列挙二つ紹介する」「enumeratorのみ紹介する」「eachのみ紹介する」の三択で、スペースの都合上一つしか紹介出来ないなら、eachのほうを紹介すべきでしょう。いやまあ、例が一個だったらしょうがないなあ、どうせJSINQのチュートリアルの上のほうから抜き取っただけだろうしー、と思うのですが、三個もenumerator取り出しの例を出されるとさすがにオイオイオイオイ、と突っ込みたくなる。</p>
+<p>もうひとつは、文字列によるクエリ構文を推しすぎ。JSINQの最大の特徴でもある部分なのでJSINQの紹介としては正しいのですが(JSINQのプロジェクトページでもそれをフィーチャーしてますしね)、LINQの紹介として見ると大変頂けない。.NETを知らない人(JavaScriptのライブラリなので、基本はJavaScriptの人が見るでしょう)がLinqを誤解してしまう要因になりうるので、こういった紹介は割とキツい。</p>
+<p>LINQとはLanguage Integrated Query(統合言語クエリ)であり、言語に統合されていてこそLinqなのです。文字列で与えたらSQLと一緒。LinqはしばしばSQLっぽく記述するもの、と誤認されているようですが、違います。文字列で与えていたSQL(こんな風にね、と最近作った<a href="http://neue.cc/2010/04/07_250.html" title="neue cc - DbExecutor - Linqで操作しやすいSQL実行ライブラリ">DbExecutor</a>というSQL実行簡易補助ライブラリをどさくさに紛れて紹介してみる)とは全く別物なのです。詳細は説明すると長くなるので省いちゃいます（え？）。理屈はともかく、言語に統合されていない状態でのSQLは書きやすいとはいえないわけですよ？</p>
+<pre><code class="language-javascript">var elements = document.getElementsByTagName('a');
+var enumerable = new jsinq.Enumerable(elements);
+
+var query = new jsinq.Query(' \
+    from e in $0 \
+    where e.href.indexOf(&quot;google.co.jp&quot;) &gt; -1 \
+    select e \
+');
+
+query.setValue(0, enumerable);
+var result = query.execute();
+
+var enumerator = result.getEnumerator();
+while (enumerator.moveNext()) {
+    var e = enumerator.current();
+    document.write(e.text + ': ' + e.href + '&lt;br&gt;');
+}
+</code></pre>
+<p>改行のために末尾に\を入れなければならない、不恰好なプレースホルダ、クエリコンパイルの必要性(executeメソッドの実行でメソッドチェーン形式に変換されます、面白いことにこの点まで.NET Frameworkの忠実な再現となっています(クエリ構文はメソッド構文の糖衣構文にすぎない))。というわけで、到底書きやすいとは言えません。この例を見て、長げーよ馬鹿、意味ねー、アホじゃねーの？普通にfor回した方が百億倍マシだろ、と思った人もいるでしょう。その通りです。素直に便利かも……とか思ったなら、物事はもう少し冷静に見るようにしてください。しかしメソッド構文(jQueryのようにメソッドチェーンで書く方法)ならこう書けます。</p>
+<pre><code class="language-javascript">var elements = document.getElementsByTagName('a');
+new jsinq.Enumerable(elements)
+    .where(function(e) { return e.href.indexOf(&quot;google.co.jp&quot;) &gt; -1 })
+    .each(function(e) { document.write(e.text + &quot;: &quot; + e.href + &quot;&lt;br&gt;&quot;) });
+</code></pre>
+<p>これなら納得で、割と使えるかもって感じではないでしょうか？ JSINQにおける文字列によるクエリ構文は、人を釣るためのただの餌です。そんな餌で俺様が釣られクマー。jSINQをJavaScriptライブラリとして使うのならば、メソッド構文のほうをお薦めします。クエリ構文はネタ、もしくはただの技術誇示にすぎません。よくやるなー、って感じで素晴らしいとは思いますが、実用性は皆無です。JSINQ自体はLinqの移植として割と良く出来ているので(何だこの上から目線)、文字列クエリ構文で試してみて使えないなー、と思ってしまった、もしくは紹介を見て文字列クエリ構文とかこのライブラリダメだろ、と思った人は、その辺は誤解なくどうぞ。</p>
+<h2>linq.js</h2>
+<p>LinqのJavaScript実装は他にもあります。一つは、ええと、私の作成しているlinq.jsです。売り文句はJSINQと同じくSystem.Enumerableとの完全なるAPI互換。.NET4までの範囲を全てカバーしています。更にその上に、Achiral, Ruby, Haskellなどから参考にした大量のメソッドが追加されていることと、Visual Studioで使う場合にはIntelliSenseが動作するファイルがあること、などなど「実用的に使う」ことを強く意識して作っています。手前味噌なのでアレですが、他のどのライブラリよりも使える度は高いと思っています。</p>
+<ul>
+<li><a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript Library">linq.js - LINQ for JavaScript Library</a> - プロジェクトページ</li>
+<li><a href="http://neue.cc/2009/04/04_145.html" title="neue cc - linq.js - JavaScript用LINQライブラリ">紹介と簡単なチュートリアル</a></li>
+<li><a href="http://neue.cc/2009/06/06_164.html" title="neue cc - 最もタメになる「初心者用言語」はVisualStudio(言語?)">入力補完に対応させたのでVSでの利用法紹介</a></li>
+<li><a href="http://neue.cc/category/software/linqjs" title="neue cc - linq.js">ブログ記事のlinq.jsカテゴリ</a>(最後の更新が去年の9月、がーん)</li>
+</ul>
+<p>更新が微妙に止まっているのですが、WindowsScriptHostで快適に使えるような追加ライブラリを作成中(と、9月に言ったっきり絶賛作業休止中、すみません、でもやる気はあるので遠くないうちに必ず出します)。あと、<a href="http://neue.cc/2010/03/18_247.html" title="neue cc - Reactive Extensions for JavaScript">Reactive Extensions for JavaScript</a>という、これまた.NET発のJavaScript移植ライブラリが出ているので、それとの協調動作も考えています。</p>
+<h2>Linqを自分で実装する</h2>
+<p>では本題。実際にLinqをJavaScriptで実装してみましょう。C#でSelectを実装してみたことはありますか？ 何のことはなく、たった1行で出来ちゃうんですよね。そんなわけで、実際のところ別に難しいことはありません。勿論、全てのAPIを網羅するのは面倒くさいですが、基本的な原理を掴んでおくとグッと利用法が広がるはずです。まずは、一番単純な、Array.prototypeに生やす方法を考えてみます。例としてmapとforEachを実装してみましょう。</p>
+<pre><code class="language-javascript">Array.prototype.map = function(selector) {
+    var result = [];
+    for (var i = 0; i &lt; this.length; i++)
+        result.push(selector(this[i]));
+    return result;
+}
+
+Array.prototype.forEach = function(action) {
+    for (var i = 0; i &lt; this.length; i++)
+        action(this[i], i); // with index
+}
+
+var array = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+array.map(function(i) { return { Single: i, Double: i * 2} })
+     .forEach(function(a) { alert(a.Single + &quot;:&quot; + a.Double) });
+</code></pre>
+<p>配列を変形してforeach。非常に単純な代物ですが、単純が故にmapやfilterは便利ですよね、かなり多用します。C#における匿名型は、JavaScriptではそのままハッシュを返すことで実現されます。さて、このやり方には問題が二つあります。一つはビルトインオブジェクトのprototypeを拡張する、微妙なお行儀の悪さ。そこで、arrayを独自オブジェクトにくるんでやりましょう。</p>
+<pre><code class="language-javascript">function Enumerable(array) {
+    this.source = array;
+}
+
+Enumerable.prototype.map = function(selector) {
+    var result = [];
+    for (var i = 0; i &lt; this.source.length; i++)
+        result.push(selector(this.source[i]));
+    return new Enumerable(result);
+}
+
+Enumerable.prototype.filter = function(predicate) {
+    var result = [];
+    for (var i = 0; i &lt; this.source.length; i++)
+        if (predicate(this.source[i])) result.push(this.source[i]);
+    return new Enumerable(result);
+}
+
+Enumerable.prototype.reduce = function(func) {
+    var result = this.source[0];
+    for (var i = 1; i &lt; this.source.length; i++)
+        result = func(result, this.source[i]);
+    return result;
+}
+
+var array = [1, 2, 3, 4, 5, 6];
+var sum = new Enumerable(array)
+    .filter(function(i) { return i % 2 == 0 })
+    .map(function(i) { return i * i })
+    .reduce(function(x, y) { return x + y });
+alert(sum); // 56
+</code></pre>
+<p>配列を一旦包まなくてはならないのが煩わしいのですが、メソッドチェーンのコンボを決めて、気持ちよく列挙することが出来ます。この例ではFirefoxのfilter, map, reduceを再定義してみました(thisObjectの辺りはスルーしてますしreduceの引数なんかも違いますが)。1から6の配列のうち偶数のみを二乗して足し合わせる。答えは56。さて、しかしこの方式にも問題があります。Arrayのprototype拡張が抱えているもう一つの問題と同じですが、メソッドの一つ一つを通る度に無駄な中間配列を生成してしまっています。メソッドチェーンの形になっていると隠蔽されてしまうのですが、冷静に眺めてみればこういうことです。</p>
+<pre><code class="language-javascript">var array = [1, 2, 3, 4, 5, 6];
+var _array = [];
+for (var i = 0; i &lt; array.length; i++) {
+    if (array[i] % 2 == 0) _array.push(array[i]);
+}
+var __array = [];
+for (var i = 0; i &lt; _array.length; i++) {
+    __array.push(_array[i] * _array[i]);
+}
+var sum = __array[0];
+for (var i = 1; i &lt; __array.length; i++) {
+    sum += __array[i];
+}
+</code></pre>
+<p>さすがに、これはあまりのアホさと無駄さに死ね！と言いたくなりませんか？まあ、この程度は大したコストではないのも確かですし、これこそが富豪的プログラミングだ！といえば、そうだし、その辺はそんなに否定しません。些細なパフォーマンスチューニングにはあまり興味ありません。が、しかし、根本的な問題として、これだと無限リストが扱えません。無限リストとは無限に続くもの、例えば [0,1,2,...,9999,10000,...] 。そんなの使わないって？いやいや、使いこなすと存外便利ですよ？ そんなわけで、富豪とか云々を抜きにしても、ただのArrayラッパーは却下です。即時評価なfilterやmapなんて使いたくありません。.NET FrameworkのLinq to Objectsは遅延評価なので、無限リストも扱えますし中間配列といった無駄は出てきません。では遅延評価のリスト処理をどう実装しましょうか。無限リストを作る方法は色々あるでしょうが、ここはLinqの移植なのでC#でのやり方と同じくイテレータパターンを用います。</p>
+<pre><code class="language-javascript">IEnumerable = function(moveNext) {
+    this.getEnumerator = function() {
+        return { current: null, moveNext: moveNext }
+    }
+}
+
+// Generator
+Enumerable =
+{
+    toInfinity: function(from) {
+        if (from === undefined) from = 0;
+        return new IEnumerable(function() {
+            this.current = from++;
+            return true;
+        });
+    }
+}
+
+// select as map
+IEnumerable.prototype.select = function(selector) {
+    var source = this;
+    var enumerator = null;
+
+    return new IEnumerable(function() {
+        if (enumerator == null) enumerator = source.getEnumerator();
+        if (enumerator.moveNext()) {
+            this.current = selector(enumerator.current);
+            return true;
+        }
+        return false;
+    });
+}
+
+// 無限に2倍するリスト[0, 1, 4, 9, 16,...
+Enumerable.toInfinity().select(function(i) { return i * 2 });
+</code></pre>
+<p>LinqはIEnumerableオブジェクトの連鎖で成り立っています。また、return thisでメソッドチェーンをするわけではありません。selectを見てください。メソッドが呼ばれた時点では何も実行せずに、クロージャにより環境を保持した新しいIEnumerableを生成し、それを返しています。ではいつ実行されるのかというと、getEnumerator()が呼ばれ、それで取得されたenumeratorオブジェクトのmoveNext()を呼んだ時です。</p>
+<p>さて、しかしこのままではgetEnumeratr()で反復子を取得しての列挙しか出来なくて不便なので、forEachなどを定義してやる必要があります。また、無限リストが本当に無限のままでは困るので、停止させるものが必要です。というわけで、代表的なものを幾つか紹介します。</p>
+<pre><code class="language-javascript">IEnumerable = function(moveNext) {
+    this.getEnumerator = function() {
+        return { current: null, moveNext: moveNext }
+    }
+}
+
+// Generator
+Enumerable =
+{
+    from: function(array) {
+        return Enumerable.repeat(array)
+            .take(array.length)
+            .select(function(ar, i) { return ar[i] });
+    },
+
+    toInfinity: function(from) {
+        if (from === undefined) from = 0;
+        return new IEnumerable(function() {
+            this.current = from++;
+            return true;
+        });
+    },
+
+    repeat: function(element) {
+        return new IEnumerable(function() {
+            this.current = element;
+            return true;
+        });
+    }
+}
+
+// select as map
+IEnumerable.prototype.select = function(selector) {
+    var source = this;
+    var enumerator = null;
+    var index = -1;
+
+    return new IEnumerable(function() {
+        if (enumerator == null) enumerator = source.getEnumerator();
+        if (enumerator.moveNext()) {
+            this.current = selector(enumerator.current, ++index);
+            return true;
+        }
+        return false;
+    });
+}
+
+// where as filter
+IEnumerable.prototype.where = function(predicate) {
+    var source = this;
+    var enumerator = null;
+    var index = -1;
+
+    return new IEnumerable(function() {
+        if (enumerator == null) enumerator = source.getEnumerator();
+        while (enumerator.moveNext()) {
+            if (predicate(enumerator.current, ++index)) {
+                this.current = enumerator.current;
+                return true;
+            }
+        }
+        return false;
+    });
+}
+
+IEnumerable.prototype.take = function(count) {
+    var source = this;
+    var enumerator = null;
+    var index = -1;
+
+    return new IEnumerable(function() {
+        if (enumerator == null) enumerator = source.getEnumerator();
+        while (++index &lt; count &amp;&amp; enumerator.moveNext()) {
+            this.current = enumerator.current;
+            return true;
+        }
+        return false;
+    });
+}
+
+IEnumerable.prototype.toArray = function() {
+    var result = [];
+    var enumerator = this.getEnumerator();
+    while (enumerator.moveNext()) {
+        result.push(enumerator.current);
+    }
+    return result;
+}
+
+// 利用例
+
+// こんな配列があったとして
+var array = [1232, 421, 1, 2, 3412, 42, 4, 2, 45];
+// 偶数のもののみ二倍した新しい配列を生成
+var array2 = Enumerable.from(array)
+    .where(function(i) { return i % 2 == 0 })
+    .select(function(i) { return i * 2 })
+    .toArray();
+
+// 1-100の配列を作成
+var array3 = Enumerable.toInfinity(1).take(100).toArray();
+// &quot;&quot;のみの長さ100の配列を作成
+var array4 = Enumerable.repeat(&quot;&quot;).take(100).toArray();
+</code></pre>
+<p>生成用メソッドとして、配列を反復子に変換するfrom, 無限にインクリメントした整数を返すtoInfinity, 無限に同一要素を繰り返すrepeatを定義しました。メソッドチェーン用として関数を要素に適用させるselect, 関数でフィルタリングするwhere, 指定個数取得するtake。そしてメソッドチェーンを打ちきって通常使えるオブジェクトに変換するものとして、配列に変換するtoArrayを定義。</p>
+<p>fromがrepeatとtakeとselectの組み合わせで出来ているというのが、面白いところです。所謂Fill（配列の初期化）も、repeat-&gt;take-&gt;toArrayで出来てしまいます。小さなパーツを組み合わせてあらゆることを出来るようにするのがLinqの魅力です。</p>
+<p>速度？これが速いと思いますか？そうですねえ、見るからに、xxxですね。しかし、私はミリセカンド単位でのパフォーマンスチューニングにはあまり興味がありません。はいはい、富豪的富豪的。実際のとこGoogle Chrome使えばIE6の1000倍速くなるんだぜ！（数値は適当）。って感じなので、JavaScript側での最適化は、あまり……。とくにLinqではDOM操作とか重たいことをやるんではなくて、純粋に、連鎖の分だけ関数呼び出しが増えるって程度でしかないので、この程度のことでムダムダムダムダー、と言ってもしょうがない気がします。なので、そんなことは気にしないことにします。</p>
+<h2>ラムダ式もどき</h2>
+<p>function(x,y,...){return ...}は、長い。Firefoxならfunction() ... で書けるけれど、それでも長い。というわけで、linq.jsでは文字列でラムダ式風に記述出来るようにしています。</p>
+<pre><code class="language-javascript">var CreateLambda = function(expression) {
+    if (expression.indexOf(&quot;=&gt;&quot;) == -1) {
+        return new Function(&quot;$&quot;, &quot;return &quot; + expression);
+    }
+    else {
+        var expr = expression.match(/^[(\s]*([^()]*?)[)\s]*=&gt;(.*)/);
+        return new Function(expr[1], &quot;return &quot; + expr[2]);
+    }
+}
+
+var lambda = CreateLambda(&quot;i=&gt;i*i&quot;);
+var r = lambda(3); // 9
+
+E.Range(1,10).Where(&quot;$%2==0&quot;).Select(&quot;$*$&quot;) // linq.jsではこんな感じで書ける
+</code></pre>
+<p>「引数=&gt;式」で文字列を与えます。引数が一つ以下の場合は=&gt;を省略出来ると同時に、$が引数の値として使えるようになっています(Scalaの_とかこんな感じ、なはず)。実装は見た通り非常に単純で文字列分解してnew Functionに渡して関数作ってるだけ。これの難点は、クロージャにならないので、変数のキャプチャが出来ないことです。まあ、そういう時は諦めて無名関数作ってください。</p>
+<h2>まとめ</h2>
+<p>filterやmapやreduceが使えて、distinct(重複除去、いわゆるuniq)が使えて、遅延評価だったり、selectやwhereを何段もポコポコと追加出来るわけです。linq.jsはシンプルなライブラリです。派手な機能は一切ありません。ただ列挙して処理するメソッドしかありません。DOMなど一切触りません(DOMの列挙自体は可能なので、DOMノードを流してフィルタリングしたり加工したり、というのは有益でしょう)。ただ、それ故に、使い道は無限大です。</p>
+<p>微妙に更新止まってます、が、やる気はあります！まずはWSH対応から！と言いたいのですが、現在は何故か<a href="http://neue.cc/2010/02/18_242.html" title="neue cc - Re:Scheduled">Java移植の制作を進めています</a>。Javaにも素晴らしいLinq to Objectsの世界を、忠実移植で。というわけなのですが、これも先月ぐらいからやるやる詐欺中。中身は完全に出来上がっていて現在テストとJavaDoc書き中。今月中にはリリースしたい、ですね。先月も同じこと言ってましたが、まあ、着々と鈍足ながらも進んでいるので、近いうちにはお見せできるはずです。</p>
+<p>ともあれ、Linq to Objectsは大変素晴らしいので、C#な人はガンガン使って欲しいし、JavaScriptの人はlinq.jsを試して欲しいし、Javaな人はもう少し待ってください。私は、ええと、このサイトのC#カテゴリのほとんどがLinq絡みです、ひたすらに使い倒して、有用な使い方を紹介していけたらと思っています。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0409_251.html">ParseOrDefault</a></h1>
+<ul class="date"><li>2010-04-09</li></ul>
+<div class="entry_body"><p><a href="http://d.hatena.ne.jp/bleis-tift/20100408/1270735704" title="match があれば TryParse いらないんじゃないか - 予定は未定Blog版">match があれば TryParse いらないんじゃないか - 予定は未定Blog版</a>という記事を見て、outとかrefは確かにしょっぱい。そういえばF#はTryParseはTuple返しで、おまけに let success, value = int.TryParse &quot;123&quot; という自然な多値返しが出来てCOOLなんだよねー。などと思ってC#でTuple返しにしたものを書いたりしたのですが、どうもしっくりこなくて延々と弄っているうちに明後日の方向へ。</p>
+<p>さて、で、「数値に変換できるなら変換して返し、できないなら -1 を返す」というシチュエーションは大変多くて、それにoutを使って組み上げるのは、とてもかったるい、大変避けたい。かといってStringへの拡張メソッドを大量に生やすのも、IntelliSense的な観点からして抑えたい(それにしてもT4 Template使って生成ってのは面白いですね)。なので、汎用的に使えることは捨てて、上述のシチュエーション、変換出来るなら変換して、出来ないなら指定したデフォルト値を返すことにのみ絞って、拡張メソッドにしました。Stringに生やすのは抵抗感があるって場合はUtil.ParseOrDefaultとかにしてもいいと思います。</p>
+<pre><code class="language-csharp">using System;
+
+static class Program
+{
+    static void Main(string[] args)
+    {
+        // 例えばURLのクエリストリングのパースをしたい時とかありますよね！
+        // num=100にint.Parse(num)はnum=hugaが来たら死ぬのでデフォでは0にしたいとか
+
+        var r1 = &quot;100&quot;.ParseOrDefault(int.TryParse, -1); // 100
+        var r2 = &quot;huga&quot;.ParseOrDefault(int.TryParse, -1); // -1
+
+        // 勿論、int.Parse以外でも何でもいけます
+        var r3 = &quot;2000/12/12&quot;.ParseOrDefault(DateTime.TryParse, DateTime.Now);
+        // デフォルト値を省く時は型の明記が必要
+        var r4 = &quot;2000/12/12&quot;.ParseOrDefault&lt;DateTime&gt;(DateTime.TryParse);
+    }
+}
+
+public static class StringExtensions
+{
+    public delegate bool TryParse&lt;T&gt;(string input, out T value);
+
+    public static T ParseOrDefault&lt;T&gt;(this string input, TryParse&lt;T&gt; tryParse)
+    {
+        return input.ParseOrDefault(tryParse, default(T));
+    }
+
+    public static T ParseOrDefault&lt;T&gt;(this string input, TryParse&lt;T&gt; tryParse, T defaultValue)
+    {
+        T value;
+        return tryParse(input, out value) ? value : defaultValue;
+    }
+}
+</code></pre>
+<p>out付きの汎用Funcはデフォルトでは定義されていません。なので、自前で定義する必要があります。この辺の話は<a href="http://twitter.com/takeshik" title="Takeshi K. Jiro (残4) (takeshik) on Twitter">@takeshik</a>さんのスライド<a href="http://www.slideshare.net/takeshik/38-lt-funclt-ref-out" title="わんくま東京#38 LT 「Func&amp;lt;&gt; と ref / out 小咄」">わんくま東京#38 LT 「Func&lt;&gt; と ref / out 小咄」</a>が詳しいのでどうぞ。こんなデリゲートは単体では使うことは滅多にないでしょうから、static classの中に閉じ込めておくことで名前空間を汚しません(笑)</p>
+<p>引数にT defaultValueを要求することで、型推論が働いてTryParseを渡す際に明示的な型付けが不要になります。C#の型推論(と言っていいのかな？)がScalaやF#に比べて弱いのは事実なので、ここは、C#でも自然な形で扱えるような誘導、設計が大事です。型を書いたら負けだと思っている、みたいな。まあ、どんなに頑張っても負けるときは負けるので、その時は潔く書くことにします。</p>
+<p>ちなみに、ParseOrDefaultは最初は<a href="http://ideone.com/xJuBC" title="Ideone.com | xJuBC">こんな形</a>でした。酷過ぎる。私は骨の髄まで関数型言語脳ならぬLinq脳なので、とにかくまず無理矢理にでもLinqで処理する方法を考えて、出来上がってふと冷静に眺めると、普通に書けよ馬鹿、ということに気付いて普通に書き直すというサイクルを取ってます。馬鹿すぎる。<a href="http://neue.cc/2010/04/07_250.html" title="neue cc - DbExecutor - Linqで操作しやすいSQL実行ライブラリ">DbExecutor</a>で紹介したyield returnで一個のみの列挙を返すというのを、やたら使って見ちゃったりするところが麻疹。Repeat(value,1) と Repeat(value,int.MaxValue)があればLinqは何でも記述出来るんです病。</p>
+</div>
+<h1><a href="http://neue.cc/2010/0407_250.html">DbExecutor - Linqで操作しやすいSQL実行ライブラリ</a></h1>
+<ul class="date"><li>2010-04-07</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://dbexecutor.codeplex.com/" title="DbExecutor - linq based database executor">CodePlex : DbExecutor - linq based database executor</a></li>
+</ul>
+<p><a href="http://neue.cc/2010/04/05_249.html" title="neue cc - C#で原始的にSQLを扱うお話">前回の記事</a>を書いたところ、ついったで素敵な突っ込みを頂けたので、それを元にもう少し練り直してライブラリ化し、CodePlexに公開しました。ライブラリといっても<a href="http://linqcomparer.codeplex.com/" title="AnonymousComparer - lambda compare selector for Linq">AnonymousComparer</a>と同じく単純なものですので、ソースコード一本のみ。ご自由にお使いください。例によってCodePlexでの英語がヤバい（小学生レベル、とりあえず何でもforつけておけばいいだろ、的な）ですね、世の中厳しい。</p>
+<p>Linq to Sqlと名乗りたいところなのですが、本物がありますから名乗れないー。以前はIQueryableじゃないものをLinq to Hogeって言うのはどうよ、なんて思っていたのですが、考えてみるとLinq to XmlもXMLをIEnumerableベースに処理しやすいような構造を持たせたクラス群にすぎず、別にIQueryableは関係ない。Rxもそうで、あれはIEnumerableでもIQueryableでもなく完全に独立している、けれど、Linq to Events。ようするにLinq的な操作が出来ればLinqなわけです。というわけで、これはSqlをIEnumerableベースで処理出来るようにしたLinq to DB。でも本当に超絶薄いラッパーにすぎないのであんまカッコつけた名前付けるのも恥ずかしくDbExecutorという極々普通の名前に落ち着きました。「Linqで操作しやすい」とかいう釣りタイトルをつけてますが、ただたんにIEnumerable返すというだけです。SQL周りは真剣に追いかけると無限泥沼になる気がする(Entity Framework、そして更にその次へと……？)。追いかけてみたいですが、まあ、まずは、一歩目から。</p>
+<p>何で作ったかと言うと、SQLを扱っていて嫌なusing地獄を殺したかったから。</p>
+<pre><code class="language-csharp">using (var conn = new SqlConnection(&quot;connectionString&quot;))
+using (var cmd = conn.CreateCommand())
+{
+    conn.Open();
+    cmd.CommandText = &quot;select ....&quot;;
+    using (var reader = cmd.ExecuteReader())
+    {
+        foreach (IDataRecord item in reader)
+        {
+</code></pre>
+<p>ちょっとクエリ呼びたいだけなのに、普通にこの量、このネスト。こんなんだからLLの人に馬鹿にされてしまうんだよ。で、ふと思ったのは、この図式ってもしかしてWebRequestと同じですか？</p>
+<pre><code class="language-csharp">string html;
+var req = (HttpWebRequest)WebRequest.Create(&quot;http://google.co.jp&quot;);
+using (var res = req.GetResponse())
+using (var stream = res.GetResponseStream())
+using (var sr = new StreamReader(stream))
+{
+    html = sr.ReadToEnd();
+}
+</code></pre>
+<p>ちょっとWebからデータを取得したいだけなのに狂ったようにusingを重ねなければならない！そしてもう一つ嫌なのが、変数に渡す際に、usingのスコープが絡むので場合によっては外で定義しなければならないこと。string html;だってさ。嫌だ嫌だ。別にvarが使えないから嫌だと言っているわけじゃなくて(半分はそうなのですが)、代入位置と宣言が離れるのは可読性が落ちます。あとは、単純に不恰好ですしね。そんなWebRequestですが、WebClientという簡単に使えるものが用意されているので、普段はこっちを使うわけです。</p>
+<pre><code class="language-csharp">var html = new WebClient().DownloadString(&quot;http://google.co.jp&quot;);
+</code></pre>
+<p>素晴らしい！ 私はWebClientが好きです。簡単なのは良いこと、を体現していますから。ネット上のサンプルがやたらとWebRequestを使うものばかりなことを嘆きます。<a href="http://neue.cc/2009/12/17_230.html">WebRequestとWebClientでCookie認証をする方法</a>とかいう記事を書いたりと、必死に普及に励んだりしていますが中々どうして焼け石に水、ていうか確かに少し凝ったことをやろうとすると面倒くさいのは否めませんね……。</p>
+<p>というわけかで、偉大なるWebClientを見習って、SqlConnectionの一連の流れを抹殺するラッパーを作ってみました。プリミティブなAPIなんて触りたくないっす。プリミティブなものは魅力どころか穢れたものに見えてしまうので、可能な限り隠蔽してやりたいのです。本当は生のSQLだって触りたくないんですけどね……。さて、目標は、簡単に使えることと、usingが極力表に出ないようにすること。とりあえず利用例から。PersonTableというAgeとFirstNameとLastNameが格納されてるテーブルからデータを引っ張ってきます。</p>
+<pre><code class="language-csharp">// ただの入れ物
+public class Person
+{
+    public string Name { get; set; }
+    public int Age { get; set; }
+}
+
+static class Program
+{
+    static void Main(string[] args)
+    {
+        // 実行→即Closeの場合静的メソッドを用いる(Regexと同じ感覚で)
+        var maxAge = DbExecutor.ExecuteScalar&lt;int&gt;(new SqlConnection(&quot;ConnectionString&quot;),
+            @&quot;select max(Age) from PersonTable&quot;);
+
+        // 接続を維持して複数回実行する場合はインスタンス生成で
+        using (var executor = new DbExecutor(new SqlConnection(&quot;ConnectionString&quot;)))
+        {
+            // 列名とプロパティ名を対比させてマッピング
+            // パラメータはstring.Format的に@p0, @p1などに対して適用される
+            var persons = executor.ExecuteQuery&lt;Person&gt;(@&quot;
+select
+    FirstName + ' ' + LastName as Name,
+    Age
+from PersonTable
+where Age &lt; @p0 and FirstName = @p1&quot;
+                , 20, &quot;Osakana&quot;).ToList(); // 遅延評価なのでusingを抜ける前にリスト化などどうぞ
+
+            // ExecuteReadはIEnumerable&lt;IDataRecord&gt;で一行ずつ取得できる
+            var persons2 = executor.ExecuteRead(@&quot;select * from PersonTable&quot;)
+                .Select(dr =&gt; new
+                {
+                    Age = dr.GetInt32(0),
+                    FirstName = dr.GetString(1),
+                    LastName = dr.GetString(2)
+                });
+        }
+    }
+}
+</code></pre>
+<p>といった感じに、処理用のラッパーにDB接続を渡して実行します。メソッドはExecuteScalar, ExecuteNonQuery, ExecuteRead, ExecuteQueryの4つ。ScalarとNonQueryは普通のと同じ、Readは一行毎に列挙、Queryはオブジェクトへのマッピングが出来ます。4つのメソッドの引数は全て同じで、string query, params object[] parametersになります。パラメータは@p0, @p1, といったように「@p順番」に対して適用されます。</p>
+<p>実行して即座にコネクションを閉じたい場合は静的メソッドを、接続を維持したまま複数実行した場合はインスタンスを生成してください。DbExecutor自体がIDisposableで、Dispose時に中のコネクションに対しDisposeを呼びます。なお、トランザクション関連のメソッドはありませんが、それはTransactionScopeを使ってくださいな。</p>
+<h2>スコープと遅延評価</h2>
+<p>同じ処理はメソッドに括り出す！Don't Repeat Yourself！コピペ禁止！ではあるものの、スコープが絡むと結構難しい。usingは難敵です。以下、実装の一部。</p>
+<pre><code class="language-csharp">// 実装(一部抜粋)
+public class DbExecutor : IDisposable
+{
+    // usingを共通化させたいんだけど、普通に値返すとスコープ抜けちゃう
+    // →IEnumerableで包んでしまえばいいぢゃない！
+    private IEnumerable&lt;DbCommand&gt; UsingCommand(string query, object[] parameters)
+    {
+        using (var cmd = dbConnection.CreateCommand())
+        {
+            if (dbConnection.State != ConnectionState.Open) dbConnection.Open();
+            cmd.CommandText = query;
+            foreach (var p in parameters.Select((v, i) =&gt; CreateParameter(cmd, &quot;@p&quot; + i, v)))
+            {
+                cmd.Parameters.Add(p);
+            }
+            yield return cmd;
+        }
+    }
+
+    // UsingCommand().First().ExecuteScalar()だとusingを抜けてから実行になるのでダメなのですよー
+    public T ExecuteScalar&lt;T&gt;(string query, params object[] parameters)
+    {
+        return UsingCommand(query, parameters).Select(c =&gt; (T)c.ExecuteScalar()).First();
+    }
+
+    public IEnumerable&lt;IDataRecord&gt; ExecuteRead(string query, params object[] parameters)
+    {
+        return UsingCommand(query, parameters).SelectMany(c =&gt; c.EnumerateAll());
+    }
+}
+
+public static class IDbCommandExtensions
+{
+    public static IEnumerable&lt;IDataRecord&gt; EnumerateAll(this IDbCommand command)
+    {
+        using (var reader = command.ExecuteReader())
+        {
+            while (reader.Read()) yield return reader;
+        }
+    }
+}
+</code></pre>
+<p>UsingCommandメソッドが苦心の跡です。ExecuteScalarとExecuteReadの処理(DbCommand取ってパラメータ足す)を共通化したかったのですが、usingが難敵で。ExecuteScalarはTを返すから即時実行、これをusingで一部括り出すのは簡単なのですが、問題はExecuteRead。IEnumerableを返すから遅延実行で、これに対してusing(cmd){return cmd}なんて関数を使ってしまうと、実行時に即座にusingのスコープを抜けてしまってusingが無効になってしまう(どころかDispose済みになってしまうので実効時エラー)。</p>
+<p>じゃあどうすればいいか、というと、usingに括り出した部分も遅延評価してしまえばいい。そこで要素一つのみでyield returnする。そして、即時評価のものはSelect-&gt;First、遅延評価のものはSelectManyを使うことで、無事Usingを共通化出来ました。おお、Linqは何と素晴らしいのでしょうか！何かと言うと、つまりは、Linq to Objectsの用途はリスト処理だけじゃないんですね。IEnumerableはインフラ。そして、Reactive Extensionsに入っているEnumerableEx.Return(これはEnumerable.Repeat(elem,1)に等しい)の意味合いがジワジワくる。Returnは明らかにHaskell由来の命名で、モナドが(以下略、もしくはナンダッテー)</p>
+<p>で、まあ、利用時は結局データベースとの接続やトランザクションとの兼ね合いもあるので、接続の状態自体は割と意識してないとダメですね。適当なところでToListとでもしておいてください。この辺も含有した上での解決策は課題ですね、今はうまいやり方が全然思いつかない。</p>
+<h2>SQLiteで使う</h2>
+<p>勿論、SqlServer以外でも使えます。<a href="http://sqlite.phxsoftware.com/">System.Data.SQLite</a>で試しましたが、問題なく動きました。というわけで、Hello, SQLite。SQLiteをインストールしたら参照設定にSystem.Data.SQLiteを加えて</p>
+<pre><code class="language-csharp">var builder = new SQLiteConnectionStringBuilder { DataSource = &quot;test.db&quot; };
+
+using (var executor = new DbExecutor(new SQLiteConnection(builder.ConnectionString)))
+{
+    var existsTable = executor.ExecuteRead(@&quot;select * from sqlite_master where type='table' and name = @p0&quot;, &quot;test&quot;)
+        .Any();
+    if (!existsTable)
+    {
+        executor.ExecuteNonQuery(@&quot;create table test (Age, Name)&quot;);
+        executor.ExecuteNonQuery(@&quot;insert into test values(10,'hoge')&quot;);
+        executor.ExecuteNonQuery(@&quot;insert into test values(20,'tako')&quot;);
+        executor.ExecuteNonQuery(@&quot;insert into test values(30,'ika')&quot;);
+    }
+
+    executor.ExecuteRead(@&quot;select * from test where Age &gt;= @p0&quot;, 20)
+        .Select(dr =&gt; new { Age = dr.GetInt32(0), Name = dr.GetString(1) })
+        .ToList()
+        .ForEach(a =&gt; Console.WriteLine(a.Name + &quot;:&quot; + a.Age));
+}
+</code></pre>
+<p>existsTableのクエリはテーブルがあるかないかを調べるもので、一行帰ってくるならテーブルが存在する、何も帰ってこない時はテーブルが存在しない。というわけで、それAny()で、ですね。IEnumerableベースで扱えると、こういうことが非常に楽です。</p>
+<p>それにしてもSystem.Data.SQLiteいいですね、初めて使ったんですが拍子抜けするぐらいに簡単に試せました。インストールしたら参照設定に加えるだけ、DataSourceに直にファイル名指定すれば、あれば読み込み、なければ生成してくれる。データベースは設定が面倒っちいですからねー、こう簡単に出来るのは嬉しいです。</p>
+<h2>おまけ</h2>
+<p>で、まあ、VS2008ならLinq to SQL/Entities使わないのー？って話であり、まあ、ねえ、確かに、ねえ。なので、ひっそりとVS2005バージョンも作ってみました(zipに同梱してあります)。内部的にも(当然)Linq未使用なので
+、VS2008で対象フレームワークが.NET 2.0の場合でも、こちらなら使えます。内部でSelectとかSelectManyを再定義して、拡張メソッドの呼出じゃなくて普通の呼び出しに書き換えただけです。あまりの型推論の効かなさにイライラしました。もうC#2.0に戻るとか無理すぎるだろ常識的に考えて。</p>
+<pre><code class="language-csharp">List&lt;Person&gt; persons = executor.ExecuteRead&lt;Person&gt;(@&quot;select * from PersonTable&quot;, null,
+    delegate(IDataRecord dr)
+    {
+        Person p = new Person();
+        p.Age = dr.GetInt32(0);
+        p.Name = dr.GetString(1) + &quot; &quot; + dr.GetString(2);
+        return p;
+    });
+</code></pre>
+<p>ExecuteReadとExecuteQueryは、IEnumerableを返されても困ると思うので、Listを返すようにしています。ExecuteReadはSelectがないので、第三引数でConverterデリゲートを受けるようにして、Selectの代わりにしました。
+使う分には、VS2008のものとさして変わらないと思います。</p>
+<h2>追記</h2>
+<p>初回リリース時の名前はDbExecuterだったんですが、DbExecutorに変更しました。stableとか言っておきながら4時間で撤回とか、殺されていいですね、ほんとすみませんすみません。あまりの恥ずかしさに穴掘って埋まりたいです……。まあ、executerでもよくね？と思わなくもなくもないのですが、実際問題ぐぐる先生の検索結果で大きな差があるので、むしろ変えるなら、たった4時間の今のうちしかない、と思ったので変更しちゃいました。しかし、ああ……。スペルは結構気をつけてるほうだと思ったんだけどなあー。</p>
+</div>
+<a href="./publish/2010/2">Prev |</a>
+<a href="./publish/2010/4">| Next</a>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - Rx FromEvent再訪(と、コードスニペット)</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2011/0218_303.html">Rx FromEvent再訪(と、コードスニペット)</a></h1>
+<ul class="date"><li>2011-02-18</li></ul>
+<div class="entry_body"><p>最近の私ときたらFromAsyncでキャッキャウフフしすぎだが、Asyncの前にEventを忘れているのではないか、と。というわけで、FromEventについて、「また」見直してみましょう！延々と最初の一歩からひたすら足踏みで前進していないせいな気はその通りで、いい加減飽きた次に進めということだけれど、まあそれはそのうち。私的にはFromEventはとうに既知の話だと思い込んで進めているのであまり話に出していなかっただけなのですが、初期に出したっきりで、特にここ数カ月で(WP7出たりAsync CTP出たり昇格したり)でRxが注目を浴びるのが多くなってはじめましてな場合は、そんな昔の記事なんて知らないよねですよねー(Blogの形式は過去記事へのポインタの無さが辛い)。なわけなので定期再び。</p>
+<p>「Rxの原理再解説」や「時間軸という抽象で見るRx」、というネタをやりたいのですが、長くなるのと絵書いたり動画撮ったり色々準備がという感じで中々書き進められていないので、先にFromEvent再訪を。</p>
+<h2>4オーバーロード</h2>
+<p>FromEventはイベントをReactive Sequenceに変換するもの。これはオーバーロードが4つあります。</p>
+<pre><code class="language-csharp">// ただのEventHandlerを登録する場合はハンドラの+-を書くだけ
+// 例はWPFのWindowクラスのActivatedイベント
+Observable.FromEvent(h =&gt; this.Activated += h, h =&gt; this.Activated -= h);
+</code></pre>
+<p>使う機会は少ないかな？ 実際はEventHandler/EventArgsだけのものなどは少ないわけで。</p>
+<pre><code class="language-csharp">// WPFのButtonなどり
+Observable.FromEvent&lt;RoutedEventArgs&gt;(button1, &quot;Click&quot;);
+</code></pre>
+<p>これはサンプルなどで最も目にすることが多いかもで、文字列でイベントを登録するもの。記述は短くなるのですが、動作的にはイベント登録時にリフレクションで取ってくることになるので、あまり推奨はしない。じゃあどうすればいいか、というと</p>
+<pre><code class="language-csharp">// 第一引数conversionはRoutedEventHandlerに変換するためのもの、とにかく記述量大すぎ！
+Observable.FromEvent&lt;RoutedEventHandler, RoutedEventArgs&gt;(
+    h =&gt; h.Invoke, h =&gt; button1.Click += h, h =&gt; button1.Click -= h);
+</code></pre>
+<p>ハンドラの+-を自前で書くわけですが、EventArgsと一対一の俺々EventHandlerへの変換関数も必要になっています。これはnew RoutedEventHandler() などとしなくても、 Invoke と書くだけで良いようです。最後のオーバーロードは</p>
+<pre><code class="language-csharp">// EventHandler&lt;T&gt;利用のものって本当に少ないんですよね、こちらを標準にして欲しかった
+Observable.FromEvent&lt;TouchEventArgs&gt;(h =&gt; button1.TouchDown += h, h =&gt; button1.TouchDown -= h);
+</code></pre>
+<p>EventHandler&lt;T&gt;のものはスッキリ書けます。</p>
+<h2>コードスニペット</h2>
+<p>conversionが必要なFromEvent面倒くさい。それにしても面倒くさい。WPFのINotifyPropertyChangedほどじゃないけれど、やはり面倒くさい。ジェネリックじゃない俺々EventHandlerどもは爆発しろ！デリゲートはEventHandler&lt;T&gt;とFuncとActionがあれば他は原則不要(ref付きが必要とか、そういう特殊なのが欲しい時に初めて自前定義すればよろし)。と、嘆いてもしょうがない。何とかしなければ。<a href="http://neue.cc/2010/08/19_272.html" title="neue cc - Reactive ExtensionsのFromEventをT4 Templateで自動生成する">以前はT4でガガガガッと自動生成してしまう方法</a>を紹介しましたが、少し大仰な感があります。もう少しライトウェイトに、今度は、コードスニペットでいきましょう。</p>
+<pre><code class="language-csharp">// 普通に使うもの
+Observable.FromEvent&lt;$EventHandler$, $EventArgs$&gt;(h =&gt; h.Invoke, h =&gt; $event$ += h, h =&gt; $event$ -= h)
+
+// 拡張メソッドとして定義する場合のもの
+public static IObservable&lt;IEvent&lt;$EventArgs$&gt;&gt; $eventName$AsObservable(this $TargetType$ target)
+{
+    return Observable.FromEvent&lt;$EventHandler$, $EventArgs$&gt;(
+        h =&gt; h.Invoke, h =&gt; target.$eventName$ += h, h =&gt; target.$eventName$ -= h);
+}
+</code></pre>
+<p>この二つです。二つ目の拡張メソッドのものは、ええと、大体の場合は長ったらしくて面倒なので拡張メソッドに退避させるわけですが、それを書きやすくするためのものです。利用時はこんな形。</p>
+<pre><code class="language-csharp">class Program
+{
+    static void Main(string[] args)
+    {
+        var c = new ObservableCollection&lt;int&gt;();
+        var obs1 = Observable.FromEvent&lt;NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs&gt;(h =&gt; h.Invoke, h =&gt; c.CollectionChanged += h, h =&gt; c.CollectionChanged -= h);
+        var obs2 = c.CollectionChangedAsObservable();
+    }
+}
+
+public static class EventExtensions
+{
+    public static IObservable&lt;IEvent&lt;NotifyCollectionChangedEventArgs&gt;&gt; CollectionChangedAsObservable&lt;T&gt;(this ObservableCollection&lt;T&gt; target)
+    {
+        return Observable.FromEvent&lt;NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs&gt;(
+            h =&gt; h.Invoke, h =&gt; target.CollectionChanged += h, h =&gt; target.CollectionChanged -= h);
+    }
+}
+</code></pre>
+<p>rxevent -&gt; TabTab か、 rxeventdef -&gt; TabTab というだけで、この面倒くさい（長い！）定義が簡単に書けます。おっと、スニペットファイルはXMLなのでこれだけじゃ動きませんね。ベタ張りだと長いので、ダウンロードは<a href="https://bitbucket.org/neuecc/rxsnippet/src/78d68200b834/RxSnippet/snippet/" title="neuecc / RxSnippet / source – Bitbucket">neuecc / RxSnippet / source – Bitbucket</a>の二つからどうぞ。そうしたら、ツール-&gt;コードスニペットマネージャーで追加してやってください。</p>
+<p>今回、スニペットは<a href="http://snippetdesigner.codeplex.com/">Snippet Designer</a>で作成しました。Visual Studioと統合されているので非常に書きやすくてGood。コンパイルがしっかり通る、万全な雛形をコード上で作ったら右クリックしてExport As Snippet。スニペットエディタ上に移ったら、置換用変数を選択してMake Replacement。それだけで出来上がり。あとはプロパティのDescriptionとShortcutを書くだけ。楽すぎる。もうスニペットを手書きとか馬鹿らしくてやってられません。これだけ楽だと、ちょっとした面倒事を片っ端からスニペット化していけるというものですねん。</p>
+<h2>アタッチ、デタッチのタイミングを考えよう</h2>
+<p>Rxで意外と困るのが、いつアタッチされているのか、デタッチされているのか、よくわからなかったりします。慣れると分かってくるのですが、最初は存外厳しい。そういう時は悩まずに、デバッガを使おう！</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/rxfromedebug.jpg">
+</p>
+<p>こういったように、アタッチのラムダ式、デタッチのラムダ式にそれぞれ縄を張れば、いつ呼ばれるのか一目瞭然です。悩むよりも手を動かしたほうがずっと早い。</p>
+<p>ところでRxのいいところは、イベントのデタッチが恐ろしく簡単になったことです。そのお陰で今まであまりやらなかった、そもそも考えすらしなかった、アタッチとデタッチを繰り返すようなイベント処理の書き方が発想として自然に浮かび上がるようになった。少し簡単に書けるようになった、という程度じゃあそんな意味がない。Rxのように極限まで簡単に書けるようになると、スタイルが一変して突然変異が発生する。ある意味これもまた、パラダイムシフトです。オブジェクト指向から関数型へ？いえいえ、C#から、Linqへ。</p>
+<h2>まとめ</h2>
+<p>2/11に<a href="http://social.msdn.microsoft.com/Forums/en-US/rx/thread/1b554ca0-7e23-4603-8b00-7753acf08c83" title="Rx v1.0.2856.0 release now available">Rx v1.0.2856.0 release</a>としてアップデートが来てました。大量更新ですよ大量更新！正式入りしたから更新ペースがゆったりになるかと思いきや、その逆で加速しやがった！ちなみに破壊的変更も例によって平然とかけてきて、Drainというメソッドが消滅しました(笑) 何の躊躇いもないですね、すげー。</p>
+<p>代わりに、Christmas Releaseの時に消滅してWP7と互換がなくなった！と騒いだPruneとReplayは復活しました（なんだってー）。というわけで、再びWP7との互換は十分保たれたという形ですね、ヨカッタヨカッタ。そんなわけで、常に見張ってないと分からないエキサイティングさが魅力のRx、是非是非使っていきましょう。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

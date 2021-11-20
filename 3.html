@@ -1,0 +1,2076 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2018/1228_572.html">MagicOnion v1 -> v2リブート, gRPCによる.NET Core/Unity用ネットワークエンジン</a></h1>
+<ul class="date"><li>2018-12-28</li></ul>
+<div class="entry_body"><p>先にCygames Engineers' Blogで<a href="http://tech.cygames.co.jp/archives/3181/">MagicOnion – C#による .NET Core/Unity 用のリアルタイム通信フレームワーク</a>としてリリースを出しましたが、改めまして、MagicOnionというフレームワークを正式公開しました。</p>
+<p><a href="https://github.com/Cysharp/MagicOnion/">GitHub - Cysharp/MagicOnion</a></p>
+<p>MagicOnionはAPI通信系とリアルタイム通信系を一つのフレームワークで賄う、というコンセプトを元に、前職のグラニで「黒騎士と白の魔王」の開発において必要に迫られて捻り出されたものでした。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/key/LrPbFMPfMXWJKj" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/grpchttp2-api-streaming" title="「黒騎士と白の魔王」gRPCによるHTTP/2 - API, Streamingの実践" target="_blank">「黒騎士と白の魔王」gRPCによるHTTP/2 - API, Streamingの実践</a> </strong> from <strong><a href="https://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>で、今更気づいたのがMagicOnionって正式リリースしてなかったんですよね、このブログでも↑のような形でしか触れていなくて、公式ドキュメントも貧弱な謎フレームワークだったという。今回Ver2って言ってますが、その前はVer0.5でしたし。まぁここでは便宜的にv1と呼びます。</p>
+<p>何故に正式リリースまで行かなかったかというと、リアルタイム通信部分が微妙だったから。↑のp.39-40で説明していますが、Unary + ServerStreamingという構成で組んだのが、かなり開発的に辛かったんですね。時間的問題もあり強行するしかなかったんですが、ちゃんと自分が納得いく代案を出せない限りは、大々的には出していけないなあ、と。</p>
+<p>その後すったもんだがあったりなかったりで、プレーンなgRPCでリアルタイム通信を組む機会があって、↑の時に考えていたDuplexStreaming一本で、コマンドの違いをProtobufのoneofで吸収する、という案でやってみたのですが、すぐに気づきましたね、これ無理だと。UnaryはRPCなのですが、Duplex一本はRPCじゃないんで、ただたんにoneofをswitchしてメソッド呼び出す、だけじゃ全然機能足りてない、と。</p>
+<p>ただまぁコネクション的にはDuplex一本案は間違ってなさそうだったので、その中で手触りの良いRPCを組むにはどうすればいいか……。と、そこでMagicOnionをリブートさせるのが一番手っ取り早いじゃん、というわけで着手したりしなかったりしたりしたのでした。その間に<a href="https://cysharp.co.jp/">Cysharpの設立</a>の話とかもあり、事業の中心に据えるものとしても丁度良かったという思惑もあります。</p>
+<p>早速（？）Qiitaでも何件か紹介記事書いてもらいました。</p>
+<ul>
+<li><a href="https://qiita.com/mitchydeath/items/cecf01493d1efeb4ae55">Unity+MagicOnionで超絶手軽にリアルタイム通信を実装してみた</a></li>
+<li><a href="https://qiita.com/yKimisaki/items/1d55b08f3e7bcae46585">MagicOnion v2を使ってUnity IL2CPPでgRPC通信をする</a></li>
+<li><a href="https://qiita.com/shigezo/items/66220c611be4d014463a">Docker を利用して MagicOnion &amp; .Net Core の開発環境を整える</a></li>
+</ul>
+<h2>v1 -&gt; v2</h2>
+<p>Unary系(API通信系)はほとんど変わっていません。それは、v1の時点で十分に高い完成度があって、あんま手を加える余地はなかったからですね。ただしフィルターだけ戻り値をTaskからValueTaskに変えています。これはフィルターの実行はメソッド実行前に同期的にフック(ヘッダから値取り出してみるとか)するだけ、みたいなものも多いので、TaskよりValueTaskのほうが効率的に実行できるからですね。</p>
+<p>元々フィルターを重ねることによるオーバーヘッドを極小にするため、純粋にメソッド呼び出しが一個増えるだけになるように構成してあったのですが、更により効率的に動作するようになったと思います。</p>
+<p>SwaggerのUIを更新するのと、HttpGatewayの処理を効率化するのが課題として残っているので、それは次のアップデートでやっていきます。</p>
+<p>また、Unity向けにはコードジェネレート時にインターフェイス定義でTaskをIObservableに変換していたのですが、今のUnityは.NET 4.xも使えるということで、インターフェイスはそのまま使ってもらうようにしています。Taskのままで。</p>
+<h2>StreamingHub</h2>
+<p>の、導入に伴って、v1でリアルタイム通信系をやるための補助機構である StreamingContextRepository を廃止しました。StreamingContextRepositoryは、まぁ、正直微妙と思っていたのでなくせて良かったかな。決して機能してないわけではないのですけれど。</p>
+<p>代わりのコネクションを束ねる仕組みはGroupという概念を持ってきました。これはASP.NETのWebsocketライブラリである<a href="https://github.com/aspnet/AspNetCore/tree/master/src/SignalR">ASP.NET Core SignalR</a>にあるものを、再解釈して実装しています。</p>
+<p>MagicOnionのGroupの面白いところは、裏側の実装を変えられることで、デフォルトはImmutableArrayGroupという、MORPGのようなルームに入って少人数で頻繁にやり取りするようなグルーピングに最適化された実装になっています。もう一種類はConcurrentDictionaryGroupという、こちらはMMORPGやグローバルチャットのような、多人数が頻繁に出入りするようなグルーピングのための実装です。更に、RedisGroupというバックエンドにRedisのPubSubを置いて複数サーバー間でグループを共有するシステムも用意しています、これはチャットや、全体通知などに有効でしょう。</p>
+<p>また、GroupにはInMemoryStorage[T]というプロパティが用意されていて、グループ内各メンバーに紐付いた値をセットできるようにしています。これは、通信のブロードキャスト用グループの他に、値の管理のためにConcurrentDictionary[ConnectionId, T]のようなものを用意してデータを保持したりが手間で面倒くさいんで、いっそグループ自体にその機能持ってたほうが便利で最高に楽じゃん、という話で、実際多分これめちゃくちゃ便利です。</p>
+<h2>まとめ</h2>
+<p>というわけで、リブートしました！最初チョロいと思ってたんですが、割とそんなことはなくて、この形にまとめあげるまではそれなりに大変でした……。の甲斐もあって、今回のMagicOnionはかなり自信を持って推進できます。以前はそもそもgRPC本体をフォークして魔改造したり、というのもあったのですが、今は公式ビルドを使えるようになったのでUnity向けにも良い具合になってきています。</p>
+<p>MagicOnion2の内容は、(v1を)実際に使ってリリースした後の反省点が盛り込まれているので、そういう点で二周目の強みがあります。最初からこの形で出すのは絶対にできないであろうものなので、しっかりと経験が活かされています。実プロダクトで使って初めて見えるものっていっぱいありますからねー。とはいえv1はv1で大きな役割を果たしたと思いますし、まぁあと自分で言うのもアレですが「黒騎士と白の魔王」が証明したこと(gRPCがUnityでいけるんだぞ、という)ってメチャクチャ大きかったなあ、と。</p>
+<p>CysharpとしてもMagicOnion、使っていきますし、ほんと是非是非使ってみてもらえると嬉しいです。コードジェネレーターもついにWin/Mac/Linux対応しましたので（まだ微妙にバグいのですが年内か、年明け早々にはなんとかします）、ガッツリと使っていけるのではないかとです。</p>
+</div>
+<h1><a href="http://neue.cc/2018/1225_571.html">UniTask(UniRx.Async)から見るasync/awaitの未来</a></h1>
+<ul class="date"><li>2018-12-25</li></ul>
+<div class="entry_body"><p><a href="https://qiita.com/advent-calendar/2018/c-sharp">C# Advent Calendar 2018</a>大遅刻会です。間に合った。間に合ってない。ごめんなさい……。今回ネタとして、改めてコード生成に関して、<a href="http://neue.cc/2017/12/04_560.html">去年は「動的」な手法を解説した - Introduction to the pragmatic IL via C#</a>ので、現代的な「静的」な手法について説明してみよう、と考えていたのですが、そういえばもう一つ大遅刻がありました。</p>
+<p>7月に<a href="http://neue.cc/2018/07/12_567.html">UniTask - Unity + async/awaitの完全でハイパフォーマンスな統合</a>という記事を出して、リリースしたUniTaskですが、その後もちょこちょこと更新をしていて、内部実装含め当初よりもかなり機能強化されています。といった諸々を含めて、<a href="https://connpass.com/event/95696/">Unity 非同期完全に理解した勉強会</a>で話してきました。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/key/BtNztL3wrlBCWN" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/deep-dive-asyncawait-in-unity-with-unitaskunirxasync" title="Deep Dive async/await in Unity with UniTask(UniRx.Async)" target="_blank">Deep Dive async/await in Unity with UniTask(UniRx.Async)</a> </strong> </div>
+<p>9月！更新内容の告知もしてなければ、この発表のフォローアップもしてない！最近はこうした文章仕事がめっちゃ遅延するようになってしまいました、めっちゃよくない傾向です。来年はこの辺もなんとかしていきたい。</p>
+<p>と、いうわけで、予定を変えてUniRx.Asyncについて、というか、それだとUnity Advent Calendarに書けよって話になるので、UniRx.Asyncは独自のTask生態系を作っている、これは.NET Core 2.1からのValueTaskの拡張であるIValueTaskSourceに繋がる話なので、その辺を絡めながら見ていってもらえると思います。</p>
+<h2>Incremental Compilerが不要に</h2>
+<p>告知が遅延しまくっている間にUnity 2018.3が本格リリースされて、標準でC# 7.xに対応したため、最初のリリース時の注釈のような別途Incremental Compiler(preview)を入れる必要がなくなりました。Incremental Compiler、悪くはないのですが、やっぱpreviewで怪しい動きもしていたため、標準まんまで行けるのは相当嬉しいです。というわけで今まで敬遠していた人も早速試しましょう。</p>
+<h2>new Progress[T] is Evil</h2>
+<p>これは普通の.NETにも言える話なのですが、C#のasync/awaitの世界観では進捗状況はIProgress[T]で通知していくということになっています(別にAction[T]でよくね？そっちのほうが速いし、説はある)。進捗はReport(T value)メソッドで通知していくことになりますが、こいつは<a href="https://referencesource.microsoft.com/#mscorlib/system/progress.cs,92">必ずSynchronizationContext.Post経由で値を送ります</a>。これがどういうことかというと、Unityだとfloatを使う、つまりIProgress[float]で表現する場合が多いはずですが、なんと、ボックス化します。(If T is a value type, it will get boxed here.)じゃねーよボケが。アホか。これはオプションで回避不能なので、new Progress[T]は地雷だと思って「絶対に」使わないようにしましょう。</p>
+<p>代わりにUniRx.AsyncではProgress.Createを用意しました。これはSynchronizationContextを使いません。もしSyncContext経由で同期したいならマニュアルでやってくれ。Unityの場合、進捗が取れるシチュエーションはメインスレッド上のはずなので、ほとんどのケースでは不要なはずです。</p>
+<p>こういった、あらゆる箇所での.NET標準の余計なお世話を観察し、Unityに適した形に置き直していくことをUniRx.Asyncではやってるので、async/await使うならUniRx.Asyncを使ったほうがいいのです。標準のも、今の時代で設計するならこうはなってないと思うんですけどね、まぁ時代が時代なのでshoganai。</p>
+<h2>コルーチンの置き換えとして</h2>
+<p>コルーチン、或いはRxでできた処理は、改めて全部精査して、全てasync/awaitで実装できるようにしました。</p>
+<pre><code class="language-txt">Add UniTask.WaitUntil
+Add UniTask.WaitWhile
+Add UniTask.WaitUntilValueChanged
+Add UniTask.WaitUntilValueChangedWithIsDestroyed
+Add UniTask.SwitchToThreadPool
+Add UniTask.SwitchToTaskPool
+Add UniTask.SwitchToMainThread
+Add UniTask.SwitchToSynchronizationContext
+Add UniTask.Yield
+Add UniTask.Run
+Add UniTask.Lazy
+Add UniTask.Void
+Add UniTask.ConfigureAwait
+Add UniTask.DelayFrame
+Add UniTask.Delay(..., bool ignoreTimeScale = false, ...) parameter
+</code></pre>
+<p>概ね名前からイメージ付くでしょう、イメージ通りの挙動をします。こんだけ用意しておきゃほとんど困らないはず（逆に言えば、標準のasync/awaitには何もありません）</p>
+<p>ちなみにSwitchTo***は、最初のVisual Studio Async CTP(お試しエディション)に搭載されていたメソッドで、すぐに廃止されました。というのも、async/awaitが自動でスレッド(SynchronizationContext)をコントロールするというデザインになったからですね。あまりにも最初期すぎる話なのでこの辺の話が残っているものも少ないのですが、ちゃんと<a href="https://ufcpp.wordpress.com/2011/04/13/async-ctp-refresh/">岩永さんのブログには残っていた</a>ので大変素晴らしい。</p>
+<p>UniRx.Asyncでは不要なオーバーヘッドを避けるため（そもそも特にUnityだとメインスレッド張り付きの場合のほうが多い）、自動でSynchronizationContextを切り替えることはせず、必要な場合に手動で変更してもらうというデザインを取っています。というか、今からasync/await作り直すなら絶対こうなったと思うんだけどなぁ、どうなんでしょうねぇ。ちょっとSynchronizationContextに夢見すぎだった時代＆Windows Phone 7（うわー）とかの要請が強すぎたせいっていう時代背景は感じます。</p>
+<h2>Everything is awaitable</h2>
+<p>考えられるありとあらゆるものをawait可能にしました。AsyncOperationだけじゃなくてWWWやJobHandle（そう、C# Job Systemもawaitできます！）、そしてReactivePropertyやReactiveCommand、uGUI Events(button.OnClickAsyncなど)からMonoBehaviour Eventsまで。</p>
+<p>さて、AsyncOpeartionなど長さ1の非同期処理がawait可能なら、そらそーだ、って話なのですが、イベントがawait可能ってどういうこっちゃ、というところはあります。</p>
+<pre><code class="language-csharp">// ようするところこんな風に待てる
+async UniTask TripleClick(CancellationToken token)
+{
+    await button.OnClickAsync(token);
+    await button.OnClickAsync(token);
+    await button.OnClickAsync(token);
+    Debug.Log(&quot;Three times clicked&quot;);
+}
+</code></pre>
+<p>コレに関してはスライドに書いておきましたが、「複雑なイベントの合成」をする際に、Rxよりも可読性良く書ける可能性があります。</p>
+<p>Rxは「複雑なイベントハンドリング」を簡単にするものじゃなかったの！？という答えは、YesでもありNoでもありで、複雑なものは複雑で、難しいものは難しいままです。イベントハンドリングは手続き的に記述出来ない（イベントコールバックが飛び飛びになる)ため、コールバックを集約させて合成できるRxが、素のままでやるより効果的だったわけですが、async/awaitはイベントコールバックを手続き的に記述できるため、C#のネイティブのコントロールフロー(for, if, whileなど)や自然な変数の保持が可能になります。これは関数合成で無理やり実現するよりも、可読性良く実現できる可能性が高いです。</p>
+<p>単純なものをasync/awaitで記述するのは、それはそれで効率やキャンセルに関する対応を考慮しなければならなくて、正しく処理するのは地味に難易度が高かったりするので、基本的にはRxで、困ったときの必殺技として手段を知っている、ぐらいの心持ちが良いでしょう</p>
+<pre><code class="language-csharp">async UniTask TripleClick(CancellationToken token)
+{
+    // 都度OnClick/token渡しするよりも最初にHandlerを取得するほうが高効率
+    using (var handler = button.GetAsyncClickEventHandler(token))
+    {
+        await handler.OnClickAsync();
+        await handler.OnClickAsync();
+        await handler.OnClickAsync();
+        Debug.Log(&quot;Three times clicked&quot;);
+    }
+}
+</code></pre>
+<p>↑こういう色々なことを考えるのが面倒くさい。</p>
+<h2>Exception/Cancellationの扱いをより強固に</h2>
+<p>UniTaskでは未処理の例外はUniTaskScheduler.UnobservedTaskExceptionによって設定されている未処理例外ハンドラによって処理されます（デフォルトはロギング）。これは、UniTaskVoid、或いはUniTask.Forgetを呼び出している場合は即時に、そうでない場合はUniTaskがGCされた時に未処理例外ハンドラを呼びます。</p>
+<p>async/awaitが持つべきステータスは「正常な場合」「エラーの場合」「キャンセルの場合」の3つがあります。しかし、async/awaitならびにC#の伝搬システムは、正常系は戻り値、異常系は例外の二択しかないため、「キャンセルの場合」の表現としてawaitされた元にはOperationCanceledExceptionが投げられます。よって、例外の中で、OperationCanceledExceptionは「特別な例外」です。デフォルトではこの例外が検出されて未処理の場合は、未処理例外ハンドラを無視します。何もしません。キャンセルは定形の処理だと判断して、無視します。</p>
+<p>また、例外を使うためパフォーマンス上の懸念もあります。そこで、UniTask.SuppressCancellationThrowを使うことで、対象のUniTaskが例外の発生源であれば（throw済みで上の階層に伝搬されたものではない)、例外の送出ではなく、Tupleでの戻り値としてキャンセルを受け取り、例外発生のコストを抑えることができます。これはイベントハンドリングなどの場合に有用です、が、正しく使うことは内部をかなりのレベルで理解していないといけないため、ぶっちゃけムズい。ただたんにSuppressCancellationThrowを使うだけでパフォーマンスOKというわけにはいかんのだ。というわけで、どうしてもパフォーマンス的に困ったときのための逃げ道、ぐらいに思っておいてください。</p>
+<h2>UniTaskTracker</h2>
+<p>とはいえなんのかんのでTaskがリークしてしまったり、想像以上に多く起動してしまっていたりもあるでしょう。UnityのEditor拡張でトラッキングウィンドウを用意したので、すべて追跡できます。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/50421527-abf1cf80-0883-11e9-928a-ffcd47b8c454.png" alt="image" /></p>
+<p>こういうのRxにも欲しいわー。そうですね、なんか実装方法は考えてみようかとは思いますが一ミリも期待しないで待たないでください。</p>
+<h2>IValueTaskSourceでWhenAllを進化させる</h2>
+<p>.NET CoreのC#はTaskとValueTaskに分かれているわけですが、面倒くせーから全てValueTaskでいーじゃん、というわけにはいきません(なお、私の意見は全部ValueTaskでいいと思ってます、というのも使い分けなんて実アプリ開発でできるわけないから）。そうはいかない一番大きな理由はWhenAllで、このTaskで最も使われる演算子であろうWhenAllは、Taskしか受け取らないので、Taskへの変換が必要になってきます。せっかくValueTaskなのにモッタイナイ。じゃあValueTask用のWhenAllを作ればいいじゃん、というとそれも無理で、Task.WhenAllはTaskのinternalなメソッドに依存して最適化が施されているので、外部からはどうしても非効率的なWhenAllしか作れない仕様になっています（クソですね！）。</p>
+<p>が、しかし、そもそもWhenAllってあんま効率的じゃなくないっすか？というのがある。と、いうのも、<a href="https://referencesource.microsoft.com/#mscorlib/system/threading/Tasks/Task.cs,6055">配列を受け取るAPI</a>でも、まず保守的にコピーしてるんですよね。可変長引数でWhenAll(new[]{ foo, bar, baz })みたいに渡してもコピーされてるとか馬鹿らしい！あと、WhenAllの利用シーンでもう一つ多いのが WhenAll(source.Select(x =&gt; x.FooAsync()))のような、元ソース起点に非同期メソッドを呼んで、それを全部待つ、みたいなシチュエーション。なんかねー、別に配列作んなくてもいいじゃん、みたいな気になるんですよね。</p>
+<p>と、そこでIValueTaskSourceの出番で、Task(ValueTaskですが)の中身を完全に自分の実装に置き換えることができるようになった、のがIValueTaskSourceです。よって、真に効率的なValueTaskに最適化されたうえで↑のような事情を鑑みたWhenAll作れるじゃん、って。思ったわけですよ。</p>
+<p>そこでMagicOnionでは(UniRx.Asyncじゃないのかよって、IValueTaskSourceはUnityの話じゃないですから！)<a href="https://github.com/Cysharp/MagicOnion/blob/master/src/MagicOnion/Utils/ReservedWhenAllPromise.cs">ReservedWhenAllPromise</a>というカスタムなWhenAllを用意してみました。</p>
+<pre><code class="language-csharp">var promise = new WhenAllPromise(source.Length);
+foreach (var item in source)
+{
+    promise.Add(item.FooAsync());
+}
+await promise.AsValueTask();
+</code></pre>
+<p>のように書けます。つまり何かと言うと、WhenAllに必要なのは「個数」で、個数が最初から確定しているなら、それを渡せばいいし、WhenAll自体の駆動に配列は必要ないので、随時Addしてあげてもいいわけです。これで、一切配列を使わない効率的なWhenAllが実装できました。めでたし。</p>
+<p>他にも型が異なるTaskをawaitするのにValueTupleで受け取りたい、というのをTask.WhenAllを介さずにその個数に最適化したWhenAllを用意するとか、やりたい放題にめっちゃ最適化できるわけです。</p>
+<p>と、いうのも踏まえて、(サーバーサイドC#における)アプリケーションのTaskの定義はValueTaskで統一しちゃっていいと思うし、そのかわりに幾つかの最適化したValueTask用のWhenAllを用意しましょう。というのが良い未来なんじゃないかなー、って思ってます。(このValueTask用のWhenAllのバリエーションはCysharpとして作ったらOSSで公開するので、こちらは期待して待っててください！）</p>
+<h2>まとめ</h2>
+<p>UniRx.AsyncナシでUnityにasync/awaitを持ち込んで使いこなすのはかなりの無理ゲーなので、よほどUnity以外で使い込んできた経験がある、とかでなければ、素直に使って頂ければと思います。また、そうでなくてもUnity向けに完全に作り直しているUniTaskの存在価値というのは、スライドのほうで十分理解してもらえてるのではとも思っています。</p>
+<p>別にCLRの実装は至高のものだ！ってこたぁ全然なくて、時代とかもあるんで、後の世に作り直されるこたぁ往々にめっちゃある。Microsoftのハイパーエンジニアが練りに練ったものだろうがなんだろうが、永遠に輝き続けるコードなんてあんまなく、時代が経ちゃあどれだけ丁寧に作られたものでも滅びるんです。人間もプログラムも老化には逆らえない（WPFなんて何年前のUIフレームワークなんでしょう!)。というわけで、あんまり脳みそ固くせず、自分の意志で時々に見直して考えてみるといいんじゃないでしょうか。(古の)Microsoftよりも(現代の観点では)私のほうが正しい、とか自信持って言っておきましょう。</p>
+<p>さて、UniRx.Asyncは(UniRxも)まだまだ完成しきってるとは言えない、のにドキュメント放置、更新放置で例によって半年ぐらい来てしまったのですが、その間は<a href="http://neue.cc/2018/10/31_570.html">株式会社Cysharpを設立しました</a>であったり、<a href="http://tech.cygames.co.jp/archives/3181/">MagicOnionのリブート</a>であったり、結構わたわたしてしまったところがありなのですが、ようやく諸々落ち着いてきたので、また腰据えて改善に取り組んでいきたいと思います。まぁドキュメントが全然足りないんですけど(UniRx.Asyncの機能は、かなり膨大なのです……)。</p>
+<p>C#的にも、自分でTaskの全域を見つめ直して作り直すという経験を通して得られたものも多かったので、今回の記事もそうですが、Unity関係なくasync/awaitを使っていく上で使える話は色々出せていければというところですね。ではまた次回の更新の時まで！次こそはすぐブログ書きますから！</p>
+</div>
+<h1><a href="http://neue.cc/2018/1031_570.html">株式会社Cysharpを設立しました</a></h1>
+<ul class="date"><li>2018-10-31</li></ul>
+<div class="entry_body"><p><img src="https://user-images.githubusercontent.com/46207/47785837-3e2a9b00-dd4d-11e8-9393-376094de3cf9.png" alt="image" /></p>
+<p><a href="https://www.cygames.co.jp/press/press-18879/">株式会社Cygames、技術開発子会社を立ち上げ　株式会社Cysharp設立のお知らせ</a></p>
+<p><a href="https://www.cygames.co.jp/">Cygames</a>さんと共に、新しく<a href="https://cysharp.co.jp/">Cysharp</a>という会社を立ち上げました。今年の5月に、創業期より参加し6年ほど取締役CTOを務めていた<a href="http://neue.cc/2018/04/02_563.html">株式会社グラニを退任</a>し、6月から<a href="http://new-world.co/">New World</a>という会社を作っていたのですが、今後の活動は基本的にCysharpに集約していきます。</p>
+<p>社名の通り、C#を全力でやる会社です。分かりやすい！という出落ちな社名が一周回って気に入ってます。</p>
+<p>単一言語にフォーカスするのは勿論リスキーなのですが、自分達の働きがC#をレガシーにしない、むしろ常に最前線に押し上げていく。雇用も需要も作る。世の中のスタンダードをC#にする。という妄想、ではなくて覚悟でやっていくので、つまりは大丈夫にしていくのです。C#自体の発展が滞ってしまえばオシマイなのですが、そこもまた世界が盛り上がっているなら投資は続きます。逆に盛り下がれば、より危なさが増していくので、「業界全体やコミュニティの発展」が大事なわけで、そこを強く意識しながら動いていきたいですね。</p>
+<p>もう一つは会社として多様性の確保をどこでやるのか。そもそもグラニの時からC#全振りで多様性のかけらもなかったのですが、無数にあるスタートアップは総体として多様性があればいいと考えてます。テクノロジーを固定して、当たるスタートアップもあれば外れるスタートアップもある。小さな企業がマイクロサービスだの多様性だので採用技術を分散させるのは、中途半端で力を集中させられないだけで、失敗する可能性を上げるだけです。</p>
+<p>さて、Cysharpなのですが、親会社であるCygamesさんがかなり大きな企業で、会社を支えるモバイルゲームの部門もあれば、先月発表された<a href="https://www.famitsu.com/news/201809/10163763.html">PS4向けのProject Awakening</a>のようなAAAゲームを内製ゲームエンジンで制作する部門もあれば、<a href="https://research.cygames.co.jp/">Cygames Research</a>のようなアカデミックに近い研究開発部門もある。大きな企業ならではの自社内での多様性、その中の一つとしてCysharpを考えれば、何も違和感はないでしょう。</p>
+<p>私自身としても、個人、あるいは小さいところでやっていくのにはスケールに限界があり、もとより技術にフォーカスした会社を成立させるのはかなり厳しいと考えていたのですが（ミドルウェアで成立させている会社は本当に凄い！）、そしてせめてそれ自体が市場での価値があるものなら、プロダクトベースでやってやれないこともないのですが、「C#」を主軸にしてどうこうっていう、それ自体で大きな価値、大きな影響を作っていくのはかなり難しい。</p>
+<p>そういうこともあったりなかったりで（中略）Cygamesさんと共にやっていくことになりました。こうした組み方であれば、言語にフォーカスするというのは、大きなシナジーを産めるはずです！</p>
+<p>基本的にゲーム領域での技術開発を中心に行っていきますが、今までどおりに「業界全体の技術やコミュニティの発展に貢献してまいります」、というわけで、ゲームに限らず色々なところで使えるテクノロジーを発信し続けられると考えています。ゲーム業界が魅力的なのは、技術的にハイエンドであり、そこで培われる技術は広い目であらゆるところで役立つからです。実際、グラニでの成果は世界レベルで大きな影響を与えられたと思っていますが、よりスケールアップして、日本はもとより、世界でも大きい存在感を出せるようにしていければと考えています。</p>
+<p>なので引き続き、開発した成果はOSSとして出していきますので、その辺はもろもろ安心してください。</p>
+<p>会社としての究極的な目標は「C#大統一理論で世界征服」です。クライアントサイドとサーバーサイドに分けて、クライアントサイドでは(Unityの)C#スクリプティングで究極のパフォーマンスを目指す。サーバーサイドではLinux上で動く(さよならWindows Server).NET Coreにフォーカスして、C#でのコンテナベースでの次世代アーキテクチャの確立と実証。でやっていきます。そして両方そなわり最強に見える。</p>
+<p>とりあえずまずは<a href="https://github.com/neuecc/MagicOnion">MagicOnion</a>をリブートします:)</p>
+<p>まだ積極的な採用までは行きませんが、「C#の可能性を切り開いていく」ことに共感し、本気でコミットしていく覚悟があるなら（ちなみにCLR至上主義みたいなのは私は好きではないです、それは可能性を狭めていることなので。UnityもCLRもそれぞれ共に良いと考えて、特性を引き出せる人が望ましいですね）、是非、私の方まで直接言って頂ければというところです。</p>
+<p>ちなみにオフィスは渋谷/神泉ですので(Cygamesさんのフロアです)、お近くの方は是非是非。</p>
+</div>
+<h1><a href="http://neue.cc/2018/1023_569.html">Memory Management of C# with Unity Native Collections</a></h1>
+<ul class="date"><li>2018-10-23</li></ul>
+<div class="entry_body"><p>と、題して<a href="https://connpass.com/event/101774/">ECS完全に理解した</a>勉強会で登壇してきました。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/key/J59cmUDa4KwHkP" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/memory-management-of-c-with-unity-native-collections" title="Memory Management of C# with Unity Native Collections" target="_blank">Memory Management of C# with Unity Native Collections</a> </strong> from <strong><a href="https://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>ECSは今後力を入れていきたい分野で、LTドリブン開発ということで、登壇するからにはやってこにゃ！という意気込みだったのですが諸々が諸々で色々間に合わずだったので、ややお茶を濁した展開になってしまいました。なむ。それは別として、これ自体は結構いい話なんじゃないかとは思います。</p>
+<p>制約には必ず理由があるはずで、UnityやECSが持つ制約(それは時にC#らしくない、という難癖に繋がる）も、その理由をちゃんと紐解けば合理的な判断に見えるはずです。そこを示していきたいな、というのが今回の発表の流れです。時間的都合もあってECS成分が薄くなってしまいましたが、意味や繋がりは分かってもらえたはずです。私はCoreCLRのアプローチもUnityのアプローチも、どっちもいいと思ってるしどっちも面白く感じられているので、両者を見ながらC#の可能性を広げていきたいですね。</p>
+<p>まるでC++というか原始時代に回帰してると言えなくもないんですが、表面のレイヤーはmanagedなC#であることに変わりないし、なるべくその表面のレイヤーを増やす努力は続いていると思われます！ただ、一昔前では、そこC++がー、とかそこはランタイムがー、で賄っていた部分がC#で実装するものとして表に出てきたんですね。これ自体はいいことなのですが、故に、使いこなすための知識としては、回帰してます。(Spanはunsafeまみれじゃないぞ、と言いたいかもしれませんが、Unsafe.***はunsafeマークのついてない実質unsafeなので、むしろより悪質です)。</p>
+<p>時代は変わっていくし、C#らしさも変わっていくわけなので、そこは「面白く思うこと」が何より大事だし、変わったものには素直に従って深く追求していく姿勢が大事。乗り遅れず、最前線でやっていきましょう！</p>
+</div>
+<h1><a href="http://neue.cc/2018/0825_568.html">最速のC#の書き方 - C#大統一理論へ向けて性能的課題を払拭する</a></h1>
+<ul class="date"><li>2018-08-25</li></ul>
+<div class="entry_body"><p>と、題しまして、<a href="https://2018.cedec.cesa.or.jp/session/detail/s5b559852a6405">CEDEC 2018にて講演</a>してきました。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/key/66lRdcVpkv11NB" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/cedec-2018-c-c" title="CEDEC 2018 最速のC#の書き方 - C#大統一理論へ向けて性能的課題を払拭する" target="_blank">CEDEC 2018 最速のC#の書き方 - C#大統一理論へ向けて性能的課題を払拭する</a> </strong> from <strong><a href="https://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>今回、事前情報で事務局による誤記が漏れたり、当日のスポンサードの表記から分かる通り、縁がありこのセッションは某社にスポンサードいただきました。公募で落ちてしまい話したくても話せないというパターンも少なくない中で、このような形で枠を得られたのは、申し訳なさもありますが、同時に幸運でもありますので、いつになく気合を入れて仕上げてきました！（ほんと）。難易度はそこまで高いわけじゃない（実際、中辛で設定しました）ので、もっとdopeな話を聞きたい人には物足りなさもあるかもですが、C#というテーマだとあまり語られることのない、目新しい領域の話ですので、新鮮に聞いていただけた方も多いのではないかと思います。</p>
+<p>会場も満員御礼で立ち見からの入場規制まで行きましたし、反響も資料は多くリツイートされましたし、反応もかなり良いようなので、かなり満足度高いセッションということでいいのではないでしょうか（多分！）。</p>
+<p>謎のChapter4, 5, 6は勿論、最初から存在しない……！次回にご期待下さい。また来年。</p>
+<p>Chapter 4: async/await Hackに関しては、来月9/15に行われる「<a href="https://connpass.com/event/95696/">Unity 非同期完全に理解した勉強会</a>」にて話させていただく「Deep Dive UniRx.Async(UniTask)」に内容含まれますので、そちらに乞うご期待。ぜひ参加どうぞどうぞ、と言いたいところなのですがめちょくちょ埋まってしまっているので、ぜひ生放送のほうを見てください。</p>
+<h2>C#元年を始めよう</h2>
+<p>去年Uniteにて発表した<a href="https://www.slideshare.net/UnityTechnologiesJapan/unite-2017-tokyocunirx">C#大統一理論</a>がかなりインパクトあったというのもあり、また、その波及効果なのかはさておき、最近手応えを感じ始めてきところでもあります。なのでまぁ、諦めたくないんですね、ここで踏み込んでいけばまだまだ行けるはずなんだ、という。</p>
+<p>というわけかで、これは自分自身へのスローガンでもあり、あらゆる方向からアプローチしていこう、と。最初の方で冗談めいて言ってるトライアングル論法は、割と真面目な話でもあり、UniRxの強化(async/await, UniTask)は、よりサーバーサイドC#との親和性を高めていくことにも実は繋がっているのです。実は。</p>
+<p>全方位で武器を磨き示すことによって、多くの人が合理的な判断としてC#を選択していく。そんな時代が作れるんじゃないか、始まるんじゃないか。そんな期待と、そのために色々やっていくぞ、という宣言なわけです。ほんと。</p>
+<p>こういうの昔もなんかあったなー、と思い出すものがありまして、2012年に<a href="http://neue.cc/2012/12/30_391.html">gloopsを辞めてからグラニが表に出る前の謎の空白期間</a>があったのですが、その頃のような心境です。何か大きなことを仕込んでいて、やってやるぞ！という、あれそれです。</p>
+<p>というわけで、外から見て私が何やってるかは完全に謎だとは思いますが、今後の私の活動にも期待しておいてくださいな。</p>
+</div>
+<h1><a href="http://neue.cc/2018/0712_567.html">UniTask - Unity + async/awaitの完全でハイパフォーマンスな統合</a></h1>
+<ul class="date"><li>2018-07-12</li></ul>
+<div class="entry_body"><p>Unityでasync/await使えてハッピー。が、しかしまだ大々的に使われだしてはいないようです。理由の一つとして、Unityが標準でサポートする気が全くなさそう。少なくとも、Unityがフレームワークとしてasync/awaitには何一つ対応していない。async/awaitという道具立てだけじゃあ何もできないのです、フレームワークとして何らかのサポートがなければ機能しないわけですが、なんと、何もない……。</p>
+<p>何もないことの理由はわからないでもないです。パフォーマンス面で不満/不安もありそうですし、マルチスレッドはC# Job System使ってくれというのは理にかなっている（私もそちらが良いと思います、つまりTaskのマルチスレッドな機能は原則使わない）。とはいえ、async/awaitは便利なので、このまま、便利だけど性能は微妙だから控えようみたいな扱い（あ、それ知ってる、LINQだ）になるのは嫌なのよね。まぁLINQは局所的なので使わないのは簡単なのだけど（実際、最近は私もあまりLINQ書いてないぞ！遅いからね！）、async/awaitは割と上位に伝搬していって汚染気味になるので、そもそも一度どこかで使うと使わない、という選択肢が割と取りづらいので、ならいっそむしろ超究極パフォーマンスのasync/awaitを提供すればそれで全部解決なのである。</p>
+<p>という長ったらしい前置きにより、つまり超究極パフォーマンスのUnityのasync/await統合を提供するライブラリを作りました。場所は（面倒くさいので）UniRxに同梱です。というわけでなんと久しぶりにUniRxも更新しました……！(主にReactivePropertyが高速になりました、よかったよかった。PRとかIssueのチェックはこれからやります、いや、まず重い腰を上げたというのが何より大事なのですよ！)</p>
+<p><a href="https://github.com/neuecc/UniRx/">GitHub/UniRx</a> と、アセットストアに既に上がっています。</p>
+<h2>UniTask</h2>
+<p>何ができるか、について。</p>
+<pre><code class="language-csharp">// この名前空間はasync有効化と拡張メソッドの有効化に必須です
+using UniRx.Async;
+
+// UniTask&lt;T&gt;をasyncの戻り値にできます、これはより軽量なTask&lt;T&gt;の置き換えです
+// ゼロ（or 少しの)アロケーションと高速な実行速度を実現する、Unityに最適化された代物です
+async UniTask&lt;string&gt; DemoAsync()
+{
+    // Unityの非同期オブジェクトをそのまま待てる
+    var asset = await Resources.LoadAsync&lt;TextAsset&gt;(&quot;foo&quot;);
+
+    // .ConfigureAwaitでプログレスのコールバックを仕込んだりも可能
+    await SceneManager.LoadSceneAsync(&quot;scene2&quot;).ConfigureAwait(new Progress&lt;float&gt;(x =&gt; Debug.Log(x)));
+
+    // 100フレーム待つなどフレームベースの待機(フレームベースで計算しつつTimeSpanも渡せます)
+    // (次の更新でフレーム数での待機はDelayFrameに名前変えます）
+    await UniTask.Delay(100); // be careful, arg is not millisecond, is frame count
+
+    // yield return WaitForEndOfFrameのような、あるいはObserveOnみたいな
+    await UniTask.Yield(PlayerLoopTiming.PostLateUpdate);
+
+    // もちろんマルチスレッドで動作する普通のTaskも待てる（ちゃんとメインスレッドに戻ってきます）
+    await Task.Run(() =&gt; 100);
+
+    // IEnumeratorなコルーチンも待てる
+    await ToaruCoroutineEnumerator();
+
+    // こんなようなUnityWebRequestの非同期Get
+    async UniTask&lt;string&gt; GetTextAsync(UnityWebRequest req)
+    {
+        var op = await req.SendWebRequest();
+        return op.downloadHandler.text;
+    }
+
+    var task1 = GetTextAsync(UnityWebRequest.Get(&quot;http://google.com&quot;));
+    var task2 = GetTextAsync(UnityWebRequest.Get(&quot;http://bing.com&quot;));
+    var task3 = GetTextAsync(UnityWebRequest.Get(&quot;http://yahoo.com&quot;));
+
+    // 並列実行して待機、みたいなのも簡単に書ける。そして戻り値も簡単に受け取れる（これ実際使うと嬉しい）
+    var (google, bing, yahoo) = await UniTask.WhenAll(task1, task2, task3);
+
+    // タイムアウトも簡単にハンドリング
+    await GetTextAsync(UnityWebRequest.Get(&quot;http://unity.com&quot;)).Timeout(TimeSpan.FromMilliseconds(300));
+
+    // 戻り値はUniTask&lt;string&gt;の場合はstringを、他にUniTask（戻り値なし）、UniTaskVoid（Fire and Forget）もあります
+    return (asset as TextAsset)?.text ?? throw new InvalidOperationException(&quot;Asset not found&quot;);
+}
+</code></pre>
+<p>提供している機能は多岐にわたるのですが、</p>
+<ul>
+<li>Unityの非同期オブジェクトをawaitできるように拡張（最速で動くように細心の注意を払って対応させています）</li>
+<li>コルーチンやUniRxで出来るフレームベースのawaitサポート(Delay, Yield)</li>
+<li>戻り値をTupleで受け取れるWhenAll, どれが返ってきたかをindexで受け取れるWhenAny, 便利なTimeout</li>
+<li>標準のTaskよりも高速でアロケーションの少ないUniTask[T], UniTask, UniTaskVoid</li>
+</ul>
+<p>となっています。で、何が出来るのかと言うと、ようはコルーチンの完全な置き換えが可能です。async/awaitがあります、っていう道具立てだけだと、何もかもが足りないんですね。ちゃんと機能するようにフレームワーク側でサポートさせてあげるのは必須なのですが、前述の理由（？）どおり、Unityはサポートする気が1ミリもなさそうなので、代わりに必要だと思える全てを提供しました。</p>
+<h2>Taskを投げ捨てよ</h2>
+<p>目の付け所がいかれているので、Taskを投げ捨てることにしました。Taskってなんなの？というと、asyncにする場合戻り値がTaskで強要される、という型。そして究極パフォーマンスの実現として、このTaskがそもそも邪魔。なんでかっていうと、歴史的経緯によりそもそもTaskは図体がデカいのです。異様に高機能なのは（TaskSchedulerがどうだのLongRunningがどうだの)、ただたんなる名残（或いは負の遺産）でしかない。アドホックな対応を繰り返すことにより(言語/.NET Frameworkのバージョンアップの度に)コードパス的に小さくはなっていったのですが(async/awaitするためだけには不要な機能がてんこ盛りなのだ！)、もういっそ全部いらねーよ、という気にはなる。</p>
+<p>そこでC# 7.0です。C# 7.0からasyncの戻り値を任意の型に変更することが可能になりました。詳しくは言語仕様の<a href="https://github.com/dotnet/roslyn/blob/master/docs/features/task-types.md">Async Task Types in C#</a>に書いてありますが、Builderを実装することにより、なんとかなります。</p>
+<p>というわけで、UniRx.Asyncでは軽量のTaskであるUniTaskと、そのためのBuilderを完全自前実装して、Unityに最適化されたasync/awaitを実現しました。</p>
+<p>代わりにC# 7.0が必須のため、現状ではIncremental Compilerを導入する必要があります（現状のUnity 2017/2018はC# 6.0のため)</p>
+<img src="https://user-images.githubusercontent.com/46207/42524447-7586b728-84ab-11e8-8b3d-f48b73db3ae4.png" width=600 />
+<p>Incremental Compilerではなくても、恐らくUnity 2018の近いバージョンではC#のバージョン上がりそうな気配なので、先取りするのは悪くないでしょう。</p>
+<h2>PlayerLoop</h2>
+<p>UniRx.AsyncはUniRxに依存していません。そのため、GitHubのreleasesページではUniRxを含まないパッケージも提供しています。併せて使ったほうがお得なのは事実ですが、なしでも十分に機能します。</p>
+<p>さて、UniRxではMainThreadDispatcherというシングルトンのMonoBehaviourにMicroCoroutine(というイテレータを中央管理するもの)を駆動してもらっていましたが、今回スタンドアロンで動作させるため、別の手段を取りました。それがPlayerLoopです（詳しくは<a href="http://tsubakit1.hateblo.jp/entry/2018/04/17/233000">テラシュールブログの解説</a>が分かりやすい）。</p>
+<p>これをベースにUpdateループをフックして、await側に戻す処理を仕掛けています。</p>
+<h2>Multithreading</h2>
+<p>掲げたのはNo Task, No SynchronizationContext。何故かというと、そもそもUnityの非同期って、C++のエンジン側で駆動されていて、C#のスクリプティングレイヤーに戻ってくる際には既にメインスレッドで動くんですよね。例えば AsyncOperation.completed += action とか。コルーチンのyield retunもそうですね、PlayerLoop側で処理されている。ようするに、本来SynchronizationContextすら不要なのです、全てメインスレッドで動作するので。</p>
+<p>通常のC#はスレッドベースで、Windows FormsやWPF, ASP.NETなど諸々の事情を吸収するために存在していたわけですが、Unityだけで考えるなら完全に不要です。他のものにはないフレーム毎に駆動することと、本体がC#ではなくC++側にあるということが大きな大きな違いです。async/awaitやTask自体は汎用的にする必要があるため、それらの吸収層が必要（SynchronizationContext）なわけですが、当然ながらオーバーヘッドなので、取り除けるなら取り除いたほうが良いでしょう。そのために、UniTaskの独自実装も含めて、全てのコードパスを慎重に検討し、不要なものを消し去りました。</p>
+<p>UniTaskはどちらかというとJavaScript的（シングルスレッドのための非同期の入れ物）に近いです。Taskは、そうした非同期の入れ物に加えてマルチスレッドのためなどなど、とにかく色々なものが詰まりすぎていて、あまりよろしくはない。非同期とマルチスレッドは違います。明確に分けたほうが良いでしょうし、UnityではC# JobSystemを使ったほうが良いので、カジュアルな用途以外（まぁラクですからね）ではマルチスレッドとしてのTaskの出番は少なくなるでしょう。</p>
+<p>嬉しいこととして、スレッドを使わないのでWebGLでもasync/awaitが完全に動作します。</p>
+<h2>Rx vs Coroutine vs async/await</h2>
+<p>もう結論が出ていて、async/await一本でOK、です。まずRxには複数の側面があって、代表的にはイベントと非同期。そのうち非同期はasync/awaitのほうがハンドリングが用意です。そしてコルーチンによるフレームベースの処理に関してはUniTask.DelayやYieldが解決しました。ので、コルーチン→出番減る, async/await → 非同期, Rx → イベント処理 というように分離されていくと思われます。</p>
+<h2>C# Standard vs Unity</h2>
+<p>正直なところ私は別にUnityがC#スタンダードに添わなくてもいいと思ってるんですよね。繰り返しましが、Unityの本体はC++の実行エンジンのほうで、C#はスクリプティングレイヤーなので。C#側が主張するよりも、C++に寄り添うことを第一に考えたほうが、よい結果がもたらされると思っています。よりC#に、というならPure C#ゲームエンジンでないとならないですが、商業的にはほぼ全滅であることを考えると、Unityぐらいの按配が実際ちょうどいいのだろうな、と。理想もいいんですが、ビジネスとしての成功がないと全く意味がないので。</p>
+<p>と、いうわけで、C# JobSystemは大歓迎だしBurst Compilerは最高 of 最高なわけですが（そしてECSなんてそもそもオブジェクト指向ですらなくなる）、さて、Task。UniTaskの有用性や存在意義については、よくわかってもらえたと思います！そのうえで、それを分かったうえでもノンスタンダードな選択を取るべきなのか論は、それ自体は発生して然りです。</p>
+<p>まぁ、まずUnityだとそもそもC# 7.0が来たら片っ端からValueTask（という、TとTaskのユニオンがC# 7.0から追加された）に置き換え祭りは発生するでしょう。実際async祭りで組むと、「同期で動くTask」がどうしても多く発生してしまい、無駄なアロケーション感半端ないので、ValueTask主体のほうがよい。</p>
+<p>更にその上で.NET Core 2.1ではValueTaskにIValueTaskSourceという仕掛けが用意されて、これは何かと言うと、やっぱりasync/awaitの駆動においてTaskを無視するための仕組みです（現状はSystem.IO.Pipelinesというこれまたつい先週ぐらいに出た機能のみ対応）。そう、別にUnityだけじゃなくて通常の.NETでもTaskはオーバーヘッドと認識されているのだ……。</p>
+<p>つまりなんというか、そう、そもそもC#本流ですら割と迷走しているのだ……。存在すると思っているStandardなんてもはやないのだ……。てわけで、別にUniTask、いいんじゃない？とか思ってしまいますがどうでしょう。どうでしょうね、それはさすがにポジショントークすぎにしても。</p>
+<p>ようはポリシーとして、asyncで宣言した際に、TaskにするかValueTaskにするかUniTaskにするかを迫られます。逆に言えばそれだけです。あれ、意外と人畜無害。そう、意外と人畜無害なのです。よし、なら、とりまやってみるか。いいんじゃないかな？別に最悪、一括置換で戻したり進めたり割と容易なので。あと、ちなみに、UniTaskがUnityでデファクトスタンダードになれば、尚更迷う必要性はなくなるので、むしろ是非みんなでデファクトスタンダードまで持っていきましょう:)</p>
+<h2>まとめ</h2>
+<p>非同期革命の幕開け！そもそもこれぐらいやらないと世論は動かない、というのもあるので、フルセットでどーんと凄い（っぽい）（実際凄い）のを掲示することにはめちゃくちゃ意味があります。UniTaskが流行っても流行らなくても、この掲示にはめちゃくちゃ意味があるでしょう。UniRx.Asyncが何を実現したかを理解することは非常に重要です、教科書に出ますよ！</p>
+<p>それと、UniRx全然更新していなくてごめんなさい、があります。ごめんなさい。今回、ReactivePropertyのパフォーマンス向上を（ようやく）入れたり、今後はちゃんと面倒みていくのでまたよろしくおねがいします。</p>
+<p><a href="https://opencollective.com/unirx">Open Collective/UniRx</a>というところで寄付/スポンサー募集もはじめたので、よければ個人/企業で入れてくれると嬉しいですね……！今ならUniRxのGitHubページのファーストビューにロゴが出るので、特に企業などはアピールポイントです……！</p>
+</div>
+<h1><a href="http://neue.cc/2018/0702_566.html">Microsoft MVP for Visual Studio and Development Technologies(C#)を再々々々々々々受賞しました</a></h1>
+<ul class="date"><li>2018-07-02</li></ul>
+<div class="entry_body"><p>新規は毎月で、更新は7月に統一という周期らしく、全然忘れていたのですが、当日はインターネット的にはそわそわした空気を感じたりなかったりはします。変わらず、Visual Studio and Development Technologies、つまりC#を受賞しました。</p>
+<img src='http://neue.cc/wp-content/uploads/2018/07/mvpring.jpg' alt='' />
+<p>↑このリングに一個足されます（後日発送）</p>
+<p>去年は<a href="https://github.com/neuecc/MessagePack-CSharp/">MessagePack for C#</a>や<a href="https://github.com/neuecc/Utf8Json">Utf8Json</a>といった、世界的にもヤバいレベルのライブラリの作成（とその実装詳細の紹介）が、最も直接的な成果ですね。私が担っているのはOSSと、実践的で先鋭的なC#、その実証と共有というところであり、世界的に見ても成果を示せているという自信もあり、またMVPはその客観的な証明と考えています。偉そう！まぁ実際成果はえらい。</p>
+<p>毎年、今までの延長線じゃない何かをやりたいんだ！と言いつつ、手癖のバリエーション勝負になってる気がしなくもないのがどうなのよ、と思うところもあるのですが、まぁそれはそれでしつこく繰り返すことで、ちゃんと深化しているので、よしとはしておきましょう。近年は C# x 無限大のパフォーマンス、を勝負の軸にしているのですが、結構意義はあると思います。</p>
+<p><a href="http://neue.cc/2018/04/02_563.html">4月の退職エントリ</a>では、これから何をやっていくのか模索中、という感だったのですが、結果的に今は、割とちゃんと会社を立てて、その名義で仕事を受けています。<a href="http://new-world.co/">New World, Inc.</a> ← 未だに何もデザインされていない。UnityやgRPC関連でのアドバイスとかやっていますので、興味あればお問い合わせくだしあ。</p>
+<p>去年よりも上を、去年よりも上を、とハードルは無限に高くなっていくので、個人にせよ会社にせよ、世界にインパクトを残していける何かをやっていこう、というのが目標ですね。手元でも一つ二つ、仕込んでいるのがあるのできっと近いうちにお見せ出来ると思います。願わくばそれでチャリンチャリンできるといいんですが（笑）、まぁできなくてもそれはそれですねん。</p>
+</div>
+<h1><a href="http://neue.cc/2018/0507_564.html">Rx.NETの近況、或いはUniRxの近況（？）</a></h1>
+<ul class="date"><li>2018-05-07</li></ul>
+<div class="entry_body"><p>あまり長々とした記事ばかりではなく、サラッと流したのも書きましょう！というかリハビリです、リハビリ。<a href="http://neue.cc/2018/04/02_563.html">ハイパー無職タイム</a>が発動しつつあることもあり、ダラけようと思えば無限にダラけてしまえるのです。なんだかやっぱ一瞬、緊張の糸が途切れた感はどうしてもあります、どうしても。GitHubのグラフもかなり白くなってしまっていますからねー、いやはや。その辺はそろそろモードを切り替えないと、というタイミングです。色々と考えてはいるんですけどね。やることが多すぎると逆にフリーズするというあるああるあるです。</p>
+<h2>dotnet/reactive</h2>
+<p>GitHubのリポジトリが Reactive-Extensions/Rx.NET から <a href="https://github.com/dotnet/reactive/">dotnet/reactive</a> に引越ししました（リダイレクトされます）。これ、ただ単に引っ越したというだけではなく、今回からついにRx.NETがコミュニティ主導による開発に引き渡された、という意味合いを持ちます。これ凄く大きなことでめちゃくちゃ大事なのですよ。</p>
+<p>何故かというと、経緯は <a href="https://github.com/dotnet/reactive/issues/466">issues/466 Become an official dotnet repo?</a>のディスカッションにありますが、Rx.NET自体が、ずっとRx v2以降長らくRx.NETの開発をほぼ一人でリードしてきた Bart J.F. De Smet氏(MicrosoftのPrincipal Software Development Engineer, 直近ではBingやコルタナの裏側の分散サービス基盤をRxで実装、とか）によって開発の主導権は握られていました。これは別に悪いことではないですよ！（ほぼ）オリジナルのAuthorですし、実装力も高いですし、<a href="http://community.bartdesmet.net/blogs/bart/default.aspx">学生時代(MS MVP時代)のブログ</a>なんかはもう10年前とかの記事ばかりですが今でも珠玉のものばかりですし、私のリスペクトするエンジニアの一人です。んで、まぁそれはいいんですが、かなり昔（4年も前）にRx v3の計画を発表していて(<a href="http://schd.ws/hosted_files/buildstuff14/96/Cloud-Scale%20Event%20Processing.pptx">Cloud-scale Event Processing using Rx</a>)、その中心が「Reactor」という上記コルタナの裏側で作られたシステムを元にしてRxを見つめ直すという、多分に野心的なシステムで、なんと結局パブリックにするといって未だにパブリックにされていない！</p>
+<p>その辺ののらりくらりっぷりは、以前に私の書いた<a href="https://www.buildinsider.net/column/kawai-yoshifumi/004">各言語に広まったRx（Reactive Extensions、ReactiveX）の現状・これから</a>という記事で悲観的に説明しましたが、やはり想像通りに、そんな野心的なビジョンがあるせいで、Rx.NETの開発はほとんど止まっちゃいました。その後の進捗としてはRx.NETをGitHub上でコミュニティを加えて開発していく、という話があり、実際にコミュニティの手によりv3もリリースされましたが、UWPや.NET Standardへ対応するといった、リリースマネージャーを引き受けただけであり、Rx.NETを発展させていく、という点では依然としてコミュニティの手には渡っていない状況が続いていました。</p>
+<p>とはいえ、<a href="https://github.com/ReactiveX/RxJava">RxJava</a>や<a href="https://github.com/ReactiveX/RxSwift">RxSwift</a>は次々と進化を遂げていて、Rx.NETは元祖ではあるが、ただ単に元祖であるというだけで、すっかり先端ではなくなった現状が間違いなくあり、また、もはや決して看過されるべきではない時期が来ている。壮大なビジョンやオリジナル著者へのリスペクトも大事ですが、何よりも重要なのは止まらない成長なのだ。と、突きつけられたのが件のissueで、まぁ概ね開発の主導も移されました。</p>
+<p>こういうの、パイオニアってだけじゃ追いつかれ追い抜かれちゃうから、現代では元祖であること、そのこと自体には価値はないのですよね。良くも悪くも目の前にあるモノの出来が全てで。元祖だとか、10年先を行っていただとか、それは立派なことで尊敬されるべきことですが、ようするにただの勲章なのです。勲章を誇りだしたら老害ですから、一番よくない価値観でもある。(C#は昔からー、とかWPF/XAMLはー、とかMVVMはずっと前にー、とかRxはー、とか言うのはダサいところは結構あります、C#が格好良かった（まだ過去形ではない）のは、実践的な形に落とし込んだ先端を走り続けていたことでしょう）。</p>
+<p>さて、開発の主導が渡されたからといって、じゃあ誰が開発していけるの？という話ですが、まずはRxJavaに追いつこうぜ、というところで、現在RxJavaのプロジェクトリードである<a href="https://github.com/akarnokd">akarnokd</a>氏が（RxJavaのコミット数2位、2015年以降だと1位）入って、オペレーターの追加やRxJavaによって成熟された最適化が始まっています。外部の風強い……。</p>
+<p>議論の場も<a href="https://reactivex.slack.com/">reactivex/slack</a>のrxnetチャンネルに移り、活発にやり取りされています。そんなわけで、そう遠くなくRx.NETの時は動き出しそうです。めでたしめでたし。</p>
+<h2>UniRxの近況？</h2>
+<p>まぁ、ぶっちけるとRx.NETにおける Bart先生と同じような状況ですね！やりたいこともあるし将来のビジョンもあり、やる気もあるはずなのだけど、手が止まっている、みたいな。ダメじゃん！ダメですね……。</p>
+<p>ではなくて、ええと、まぁ私も<a href="http://new-world.co/">New World, Inc.</a>という会社をこないだ立ち上げまして、とりあえず何かお金に変えていかなければならないのです！別に有料にしたりはしませんが、寄付ぐらいは入れたいかなー、とか、思っているのですけれど、だったらプロジェクトはアクティブじゃないとダメですよねアタリマエですよね、ということで、いよいよついにちゃんとガチでやってきます。ほんと。これはほんと。人は霞じゃ生きていけないのでチャリンチャリンも大事。私はよくチャリンチャリンビジネスと言ってます。</p>
+<p>それとは別にRx.NET本体をUnity(.NET 4.6/IL2CPP)対応させるというのもあります。これは、Rx.NET側からの要請もあって、手伝っていきたいことですね。とはいえ、UniRxはUnityにフィットさせるために手を加えているものも多いので、コンパイル通してランタイムエラー潰しただけだと、ぶっちけイマイチなところがかなり出てくるので、単純移植はそこまで価値あるかというと、そうでもないかな。というわけで、どちらにせよRxJavaに追いつけプロジェクトのほうが優先なわけで、そちらが落ち着いたら、UniRx側で得た知見などを少しずつフィードバックしていこうかなとは思ってますが、だいぶ遠い未来にはなりそうなので、そういう面でもUniRxは安心して使ってほしいですね。更新もします、しますから……！</p>
+<p>実際まあ、Unityもasync/await入ってRxとどう使い分けるとかそもそも使い分けないとか、色々あるわけで、で、私はその答えを持っているので（async/await自体もC#7までの機能をフルに使って色々ごにょったりしたことあるので、私、めちゃくちゃ詳しいんです！）、ライブラリ実装という技術面でも、こうした文章での解説でも、出せていけたらなーという感じですねー。</p>
+<p>とにかくダラダラ生きないためにも今年は色々やっていきますよです。</p>
+</div>
+<h1><a href="http://neue.cc/2018/0402_563.html">株式会社グラニを退任します</a></h1>
+<ul class="date"><li>2018-04-02</li></ul>
+<div class="entry_body"><p>創業期より参加し、取締役CTOを務めている株式会社グラニを退任します（今日、ではなく正確にはもう少し残りますが）。</p>
+<p>マイネットさんのプレスリリースより、<a href="https://mynet.co.jp/news/2018/02/22/gmg/">グラニのスマートフォンゲーム事業に関する買収と協業に向けた基本合意のお知らせ</a>、<a href="https://mynet.co.jp/news/2018/03/08/kurokishi/">グラニのスマートフォンゲーム「黒騎士と白の魔王」の配信権を買取。4月よりマイネットグループが提供・運営</a>を持ちまして、タイトルならびにグラニのメンバーはマイネットグループへと参画しますが、私は移らず、そのまま退任という形になります。開発チームそのものはマイネットさんへ引き続きジョインしますので、ゲーム自体の運営は問題なく続いていきます。その点はご安心ください。</p>
+<p>私の次は決まっていないので、とりあえずGitHubにレジュメを公開しています。</p>
+<ul>
+<li>GitHub - <a href="https://github.com/neuecc/Resume">neuecc/Resume</a></li>
+</ul>
+<p>また、個人会社として New World, Inc. を設立しました（正確にはまだ設立しきってなくて準備中なのでfoundedはちょっと嘘です）。</p>
+<ul>
+<li><a href="http://new-world.co/">New World, Inc.</a></li>
+</ul>
+<p>社是は「新世界の創造」です。次のプロダクトにご期待下さい。とはいうものの、まぁ、まだ基本的にはただの個人事業主です。</p>
+<p>技術顧問/社外CTO/スポットでの短期の初期技術支援から中期ぐらいまでの恒久的支援、.NET向けのSDK制作などカスタムな一品物の制作(+サポート)、C#全般の教育やパフォーマンスチューニング、ライブラリ導入支援(UniRx、MessagePack for C#, Utf8Json, MagicOnionなど)、サーバーサイドのロギングや解析などモニタリング設計、ネットワーク関連やgRPC、Roslyn(C#コンパイラ)を使ったLintやコードジェネレーターの開発、その他特にメタプログラミングが必要な基盤技術開発など、スタンダードな.NETからUnityのほうまで、私に任せていただくことが最適な領域は数多くあると思いますので、上記レジュメとあわせて、ご興味ある方はお声がけください。</p>
+<p>更に言うと、まだ動き出してもいないので、条件によってはフルコミットな参画もなくはないので、まずは気楽にご相談からでどうぞ。</p>
+<h2>グラニを振り返り</h2>
+<p>2012年からなので、私のキャリアの中では最も長く働いたところとなります。5年間で技術トレンドも変わり、主に携わったソーシャルゲーム業界も、ウェブからネイティブへとシフトしていったわけですが、トレンドが移ってもなお、最初から最後までグラニは技術的に独特な存在感を放ち続けられた、と思っています。当初より、凡百な会社には絶対にしないという意志で、開発の方向性の意思決定や、露出のコントロールをしてきたのですが、そこはしっかり達成できたでしょう。</p>
+<p>CTOの役割って色々あって、マネージャー色の強い形であるとか(いわゆるVPoEがいない場合はそれを兼ねて、どちらかというとそちらが強め）、あるいは技術専任の最高系なのか。私が掲げていたのは、上記の通りグラニを凡百の会社にしないこと、であったので、技術色強めでやる以外の選択はなかったです。もちろん、私より優れた技術的な人間が入ってきてそこに任せるのが適任であるという結論が正しければ譲るべきとは思いますが（ありがちなのは人に任せないことによるCTOが技術の限界値となりボトルネック化する）、結果的に最後まで私より技術＋露出という面で優れた人間が入ってこなかったので（別に潰したり引き立てなかったりということはなく、客観的にね）、延々と前線にいたのは正当化されるでしょう、多分きっと。</p>
+<p>私の理想の目的は別に前線で強いコードを書き続けること、ではなくて凡百の会社にしないこと、にあるので、必要なら技術開発を主導すべきだし、必要なら引いて広報に回るべきだし（雑誌連載持ってきたりインタビュー持ってきたり、登壇などもそうですが）、という観点で評価すれば、めちゃくちゃよくやったと自画自賛します。はい。</p>
+<p>ただし、そこに注力した分だけ、他で劣ったところも少なからずあります（教育とかはてんでダメだし、もう少しチーム全体の成長も望むならマネジメント力を磨くか、それのできる人間を採れるべきだった）。何もかもが優れてる、何もかも良かったと言うことはできないので、トータルバランスとして、アリだったかナシだったかが問われます。これの答えは私が出せる話ではないですが、私は最初から最後までグラニにいてエンジニアの全員を採用してきましたが、皆がグラニでの経験はプラスになったと思ってもらえれば、何よりだと考えています。</p>
+<h2>神獄のヴァルハラゲート</h2>
+<p>前半のハイライトは、「神獄のヴァルハラゲート」のリリース、そしてC#への移行です。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/key/5P7DkoKwsqYsWN" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/aws-windowscnet" title="AWS + Windows(C#)で構築する.NET最先端技術によるハイパフォーマンスウェブアプリケーション開発実践" target="_blank">AWS + Windows(C#)で構築する.NET最先端技術によるハイパフォーマンスウェブアプリケーション開発実践</a> </strong> from <strong><a href="https://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>最初はPHPで開発されていました。なんでやねん、というところですが、まぁ色々理由はあるのですけれど、PHPで開発したほうが早く確実にリリースできそうだった、というのがあります。グラニは、<a href="http://gloops.com/">gloops</a>のとあるゲームの開発チームが独立した形で設立されたので、技術的なバックボーンはC#(gloopsは当時唯一C#(ASP.NET Web Forms)でソーシャルゲームを開発、かつモバゲープラットフォーム上でトップのデベロッパーという中々凄い会社でした）にあるのですが、C#でソーシャルゲームを開発するのって、ライブラリが足りなすぎて難易度が結構高いのです。そこをgloopsは当時のCTOがフレームワークを作り上げてカバーしていたわけですが、一から、短期勝負でやっていくのなら、そこを再開発するよりかは、ライブラリも知見も豊富にあるPHPを選択するのは、全くおかしくない決定でした。</p>
+<p>と、いうと私がそうしたチョイスをしたように見えますが、実際のところはジョインが諸事情で一ヶ月ほど遅れていて、既にPHPである程度作られていた後だったので、そりゃPHPでやるべきでしょう、みたいな。でもやっぱり結果的に正解でした。何より優先すべきはプロダクトの素早い成功でしたし（会社として収入がないので、一軒家にすし詰めになって無給で働いていたのです！）、成功したあとならなんだって出来ると思っていたので、素早く呑んでPHPを書きましたとも。</p>
+<p>幸い、リリース初日にして成功を確信できたので、すぐさまC#移行のプロジェクトがスタート。まだ設立したばかりで、一本しかない状況でいきなり移植（しかもPHP側も成功を波に乗せるためどんどん追加開発していかなければならない）というのも、正直狂った判断としか言いようがないのですが、決断は遅れれば遅れるほど致命的になるので、ここはもうやりきれることを信じて即決。社長も信頼してくれて、全面的に任せてくれたというのも大きな支援でしたね。</p>
+<p>そして何より、まだC#でやれるかも分かっていない状況なのに誘って入ってくれた人、設立されたばかりの怪しい会社にまともな応募ページもないようなホームページから応募してきてくれて入ってくれた人、強力なメンバーに恵まれました。これが一番の成功の理由で、本当に本当に感謝しています。(<a href="https://web.archive.org/web/20130311080407/http://grani.jp:80/recruit.html">WebArchivesに残ってた当時のホームページ</a>、こんな一文とmailtoしか書かれていないようなところから応募してくれたのは実際凄い、勿論私のTwitterとかBlogを見てくれていて情報をある程度は知ってはるとはいえ）</p>
+<p>gloops時代での経験、そしてPHPでのヴァルハラゲートを経て組んだ設計は、ウェブソーシャルゲーム時代における一つの総決算でした。技術的にも成果としても他社の先を行き、C#の強さを証明する大きな事例の一つにもなれたでしょう（実際、今もC#を軸に組んでる他社さんにある程度は影響を与えられているようです）。</p>
+<p>また、技術的にオープンに発信をし続けることで、「業界をリードする企業となること」「C#を強くアピールすること」「C#でトップの企業であると認知されること」を推進できたと考えています。それによる会社の技術的ブランドの向上は、内向けにも（所属することへの誇り・明確な方向性・技術的挑戦） 外向けにも（知名度・採用力）大きくプラスになりましたし、CTOとして何をすべきか、の答え、一例でもあると思います。</p>
+<h2>黒騎士と白の魔王</h2>
+<p>後半のハイライトは「黒騎士と白の魔王」のリリース、の間に幾つかのタイトルのリリースはありますが、大きく動いたのはここです。</p>
+<p>の前に、その間で一番大きなものが<a href="https://github.com/neuecc/UniRx">UniRx</a>の公開です。業界全体がネイティブシフト（今となっては懐かしい言葉の気もしますが、ウェブソーシャルゲームからiOS/Androidアプリへの移行のこと）する中で、グラニも当然ネイティブゲーム開発に乗り出すのは当然で、かつUnityを選ぶのも必然(C#だから！)。かといって既に名だたるメーカーも参入し、市場が形成されている中で、ただたんにゲーム作りました、だけじゃあ技術的に一ミリも目立てない。私自身も(Microsoft .NETの)C#業界ではそれなりの知名度があっても、Unityでの実績はゼロで、知名度は全くない。当然ヒットするゲームは作っていくつもりでしたが、それだけじゃあ、ヴァルハラゲートで達成したことは達成できないことは明白でした。何か、グラニならではの強み、まさにC#力を活かして、他社にはできない唯一のことをやらなければならない。その中で産まれたのが「C#大統一理論（サーバーとクライアントをC#で統一して活かす）」と「UniRx」でした。</p>
+<p>UniRxは、結果的にかなりメジャー級のヒットになり、グラニが「黒騎士と白の魔王」のリリースまで沈黙していた間の技術的アピールも埋めることができたし、黒騎士の技術基盤という意味でも大きな柱になりました（良くも悪くも！）。</p>
+<p>技術的な広報は、アピールしなくなると、どれだけ今まで目立っていてもすぐに存在感が消えることは前職の頃から分かっていたことなので、とはいえ開発に期間が空くと出すものがないから消えてしまうわけで、どうやって開発と開発の間を埋めていくかは大きな課題で、変化球的な対応ですが、（狙っていたこととはいえ）上手くいって助かりました。なんというか、メジャー級の商品（例えばコカコーラとか）が巨額の資金を投じてでも延々とCMなどプロモーションをやり続ける理由がよくわかります。多分、何もしなければコカコーラレベルのものですら埋没していってしまうのでしょう。それを考えれば「〇〇の技術で凄い会社」みたいなブランドなんて、続けなければ秒速で吹き飛びます。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/key/SyArngADoKW25" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/UnityTechnologiesJapan/unite-2017-tokyocunirx" title="【Unite 2017 Tokyo】「黒騎士と白の魔王」にみるC#で統一したサーバー/クライアント開発と現実的なUniRx使いこなし術" target="_blank">【Unite 2017 Tokyo】「黒騎士と白の魔王」にみるC#で統一したサーバー/クライアント開発と現実的なUniRx使いこなし術</a> </strong> from <strong><a href="https://www.slideshare.net/UnityTechnologiesJapan" target="_blank">UnityTechnologiesJapan</a></strong> </div>
+<iframe src="//www.slideshare.net/slideshow/embed_code/key/LrPbFMPfMXWJKj" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/grpchttp2-api-streaming" title="「黒騎士と白の魔王」gRPCによるHTTP/2 - API, Streamingの実践" target="_blank">「黒騎士と白の魔王」gRPCによるHTTP/2 - API, Streamingの実践</a> </strong> from <strong><a href="https://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>「黒騎士と白の魔王」の開発は結構時間がかかりましたが、終わってみれば、最近の他社比較でそこまで大きく開発期間がズレたわけでもなく、また、よりゲームの造りが重厚になっていく時代をきちんとキャッチアップできていました（例えば、黒騎士はキャラがかなりヌルヌル動くのですが、開発当時の時期の感覚では、ほとんど一枚絵でエフェクトだけ飾っておけば良い、的なところもなきにしもあらずで、ちゃんと二年先のトレンドを抑えてあった）。その甲斐もあり、チャートアクションも悪くなく、自社オリジナルIPとしては十分なヒットにできました。</p>
+<p>しかし技術的に大成功かというと、何とも言い難いところはいっぱいあります。特にUnity側での、初期の技術決定のほとんどは失敗で、これはもう単純に開発経験のなさが大きく響いていて、終盤までダメージを与え続けることにりました。UIに関しても当時はNGUI vs uGUI(まだベータだった）で、これからの開発期間を考えると先行してuGUIを採用して進めるべき、という決断は正しかったと思うのですが、当時はまだベータ故にuGUI自体の未完成さと合わせた手間取るところの多さ＋それ故に、uGUIを更に抽象化した巨大なUIフレームワークの開発を推進し、その独自UIフレームワークが目も当てられない大失敗で、開発効率でも性能面でも、そして技術蓄積という面でも大きなマイナスという、最初から特大の技術的負債を抱えるという有様は決して肯定はできません。</p>
+<p>なのでCTOとしての技術的采配という面では、良い選択を取れてきていません。これはかなり悔いが残るところで、ちゃんと埋めたいと思っています。</p>
+<p>代わりの挽回として、土壇場になってのシリアライザの置換(<a href="https://github.com/neuecc/MessagePack-CSharp">MessagPack for C#</a>の開発)とネットワークフレームワークのgRPCへの全移行(<a href="https://github.com/neuecc/MagicOnion">MagicOnion</a>の開発)を主導しました。これをリリース半年前に決定してやっているので、ヴァルハラゲートのC#移行と並ぶ、クレイジーな決断でした。いやほんと。全く検証とかしてないしね。</p>
+<p>結果的にやりきって成功だったので良かったねという話ですが、失敗したらもうなんというかかんというか。そこを強権的に自己責任（とはいえダメージは会社全体に及ぶ）で選択できるのがCTOだし、自分でやりきるのもまたCTOなんじゃないでしょうか、という例です。万人にお薦めはしませんが、自分/自分のチームに自信を持てるなら、冒険的なこと、やるのはいいことです。多分。別に博打を打ったわけじゃあなく、私は自分自身の能力と、グラニのメンバーの能力を鑑みて、全然やれると踏んでいたので。結果成功しましたが、振り返ると成功理由の一つは人に任せっぱにするんじゃなくて自分も大事なところを噛むこと、ですかねえ。UIフレームワーク開発は投げっぱに近かったので、結果振り返ると博打で、博打はどっちに転ぶか分からないので良い判断ではなかった。</p>
+<p>gRPCの事例が（非ゲームで）最近は増えてきましたが、ストリーミングも含めて黒騎士ほど使い倒しているところは少ないようです。その点でも技術的な優位性を世に示すことが出来ました。また、MessagPack for C#はC#最速のシリアライザとしてUniRxに継ぐヒットを飛ばし、世界的にも大きな貢献を果たしました。</p>
+<p>グラニを技術的に特異な（しかし優れた）立ち位置として認知させるだけの技術開発は出来たと思っていますし、とはいえ、ただたんに技術で遊ぶわけではなく、ちゃんとゲームの成功に結びつくよう導入できました。この辺のバランスを上手く取って開発を推進出来たという点では、大きな成果を残せたのでないかな。</p>
+<h2>これから</h2>
+<p>口幅ったいことを言えばグラニは「C#の大本山」みたいになれましたし、実際、この先にC#大統一理論的に、めちゃくちゃやれる企業がどれだけ出てくるだろうか。ということを考えると、幸い技術的な情報は積極的に公開していったので、芽吹いていってくれたら嬉しいなあ、って。めっちゃ思います。まだまだやり残したこともやれることもあるので！</p>
+<p>私自身は幸い、現在も色々とお声掛け頂いています。ちょっとばかし煮え切らない姿勢でいて申し訳なさもあるのですが、皆さんからお話を伺いながら、何をしていこうか固めている最中です。</p>
+<p>グラニでの5年間で、大きな成長を果たせました。良い経営陣、良い同僚に恵まれて、私が好き放題やるのを支えてもらっちゃいました。本当に、良い経験ができ、良い実績が残せ、楽しかったです。願わくば次のキャリアでも同じような、より大きな挑戦をしていきたいところです。</p>
+</div>
+<h1><a href="http://neue.cc/2018/0118_562.html">ReactivePropertySlim詳解</a></h1>
+<ul class="date"><li>2018-01-18</li></ul>
+<div class="entry_body"><p><a href="http://blog.okazuki.jp/entry/2018/01/18/103347">ReactiveProperty v4.1.0 をリリースしました</a>ということで、Pull Requestしたコードをリリースして頂きました。ReactivePropertyはオリジナルは私が作ったのですが、数年前からokazukiさんがメインに開発/リリースしてもらっています。</p>
+<p>今回はReactivePropertySlimという新クラスが追加されました！名前の通り、軽量なReactivePropertyで、これはもともと社内で(Unityの)ReactivePropertyを大量に使っていて、改善のやり玉に上がっていて、その中で施された/施した施策を移植してきたという代物になります。当初そんな乗り気じゃなかったんですが、同僚に書き換えてもらったのを見て、ようやくやる気が上がったという、最低ですね、はい。</p>
+<p>無印との違いは</p>
+<ul>
+<li>フィールド数を最小限にしてアロケーションを抑えた（無印はバリデーション系などのためにSubjectやLazyの保持がかなりある）</li>
+<li>内部で使ってるSubjectをやめて完全自前管理＆Subscription(IDisposable)自体を連結リストのノード自身にすることで、複数Subscribeでのアロケーションをなくした</li>
+<li>変更通知の実行をスケジューラー経由で行わず直接する（無印はデフォルトでDispatcher経由になるけれど、パフォーマンス上の問題と、厄介な挙動を時折示していた）</li>
+<li>バリデーション系のメソッドを除去</li>
+<li>ReactivePropertySlimからObservable Sourceを受けとる機能/コンストラクタを削除（ReadOnlyReactivePropertySlimのみがその機能を持つ）</li>
+</ul>
+<p>もともとReactivePropertyはViewModelでのViewへのバインディング用を主に考えて機能を足していったため、Modelで使う分には不適切な重さがあるな、と考えていました。なので今回、一掃して、2018年エディションとして再デザインしました。基本的な箇所の設計は2011年と6年前のものなので、今視点で見ると考慮が甘い部分も割とあったのですよね。</p>
+<p>パフォーマンスを見てみましょう。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/35102451-5cd2f4d6-fca6-11e7-865c-6c473fd3a032.png" alt="image" /></p>
+<p><img src="https://user-images.githubusercontent.com/46207/35102357-1404b7da-fca6-11e7-8bf0-001ef3e68637.png" alt="image" /></p>
+<p>上がコンストラクタ＋3つSubscribeした場合。下がValueへの代入を3回した場合。Subscribeの高速化と生成時も含めた省メモリは意図通りなのですが、Valueの代入のほうがインパクト大きいですね。こっちは想定外。これはScheduler経由をなくした効果だと思われるけれど、かなりの差がでてて、あらあら、という感じ……(ちなみにSchedulerはImmediate指定してるのでSchedulerの中では最速ではあるはず）。</p>
+<p>生成/Subscribeの高速化は起動時間（Unityだとシーン初期化だとか、WPFでもWindow作ったりとか）に影響あるので、短いにこしたこたぁないですねん。いいことです。</p>
+<h2>ReactiveProperty/Subject分解</h2>
+<p>Slim、について考える前に、改めてReactivePropertyについて見てみましょう。</p>
+<pre><code class="language-csharp">// 最小のReactivePropertyはSubjectのラッパーというイメージ
+public class MinimumReactiveProperty&lt;T&gt; : IObservable&lt;T&gt;
+{
+    readonly Subject&lt;T&gt; subject = new Subject&lt;T&gt;();
+    T latestValue;
+
+    public T Value
+    {
+        get
+        {
+            return latestValue;
+        }
+        set
+        {
+            // 値の設定で通知
+            latestValue = value;
+            subject.OnNext(value);
+        }
+    }
+
+    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
+    {
+        return subject.Subscribe(observer);
+    }
+}
+</code></pre>
+<p>これ以上ないってぐらいシンプルで、まぁいいじゃんって話で、2011年は不満はなかったんですが、今視点で見るとちょっと引っかかるところがあったりします。</p>
+<p>というわけで、Subjectを展開してみます。</p>
+<pre><code class="language-csharp">public class MinimumReactiveProperty&lt;T&gt; : IObservable&lt;T&gt;
+{
+    // Subjectの内部のobserverのリスト
+    IObserver&lt;T&gt;[] data;
+
+    public T Value
+    {
+        set
+        {
+            // subject.OnNext(value);
+            for (var i = 0; i &lt; data.Length; i++)
+            {
+                data[i].OnNext(value);
+            }
+        }
+    }
+
+    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
+    {
+        // observerの追加のたびに新しい配列に詰め直し(ImmutableArray)
+        var newData = new IObserver&lt;T&gt;[data.Length + 1];
+        Array.Copy(data, newData, data.Length);
+        newData[data.Length] = value;
+        data = newData; // (代入時、実際にはThreadsafeのための挙動も入ります)
+
+        // 購読解除のためのIDisposableの生成
+        return new Subscription(this, observer);
+    }
+}
+</code></pre>
+<p>Subjectは内部でIObserverをImmutableArrayとして保持しています。なのでSubscribeがある度に、新規配列を生成してコピーしてます。古いやつはゴミ行き！これは一見無駄に見えますが、別に悪い話ではなくて、一点目はスレッドセーフになること（しやすいこと、実際には代入前後にThreadSafeを確保する処理は必要）。二点目は、OnNextが最速になること。C#において列挙は、配列をその配列の長さでforで回すのが最速です。通常、この手のイベント処理は、購読が初回の一回で、その後に大量の配信があるという構成になるのが普通なので、OnNext側の性能を最大限にするというのは全然アリです。</p>
+<p>また、こう見ると、Subjectではなく生のevent構文を使ったほうが安価に見えるかもしれませんが、実はC#のeventも似たような実装になっているため<a href="https://referencesource.microsoft.com/#mscorlib/system/multicastdelegate.cs,267">MulticastDelegate.CompibeImpl</a>ぶっちゃけ同じです（この辺は特にイベント専用のマジックとかなく、割と実装されたまんまに実行されます）。</p>
+<p>そして、最後に購読解除のためのSubscriptionを作って返す。これは必要コストですよねshoganai。</p>
+<p>で、まぁ、OnNextの性能を最大限にするとはいえImmutableArrayは生成コストがちょっと高いよねー、と思ってました。また、Subscriptionを都度生成しなきゃいけないのも必要コストとはいえ勿体無くて、気になるものは気になる。うーむ。</p>
+<p>それらを何とかするアイディアとして、必要コストとして絶対に存在するSubscriptionを線形リストのノードにすることで、最小限の生成に抑えました。</p>
+<pre><code class="language-csharp">// 別添えでLinkedList本体は作らず、ReactivePropertySlim自体をLinkedListにする（節約）
+internal interface IObserverLinkedList&lt;T&gt;
+{
+    void UnsubscribeNode(ObserverNode&lt;T&gt; node);
+}
+
+// LinkedListNode自体がSubscriptionになる(節約)
+internal sealed class ObserverNode&lt;T&gt; : IObserver&lt;T&gt;, IDisposable
+{
+    readonly IObserver&lt;T&gt; observer;
+    IObserverLinkedList&lt;T&gt; list;
+
+    public ObserverNode&lt;T&gt; Previous { get; internal set; }
+    public ObserverNode&lt;T&gt; Next { get; internal set; }
+
+    public ObserverNode(IObserverLinkedList&lt;T&gt; list, IObserver&lt;T&gt; observer)
+    {
+        this.list = list;
+        this.observer = observer;
+    }
+
+    public void OnNext(T value)
+    {
+        observer.OnNext(value);
+    }
+
+    public void OnError(Exception error)
+    {
+        observer.OnError(error);
+    }
+
+    public void OnCompleted()
+    {
+        observer.OnCompleted();
+    }
+
+    public void Dispose()
+    {
+        var sourceList = Interlocked.Exchange(ref list, null);
+        if (sourceList != null)
+        {
+            sourceList.UnsubscribeNode(this);
+            sourceList = null;
+        }
+    }
+}
+
+// というのを使って実装すると
+public class ReactivePropertySlim&lt;T&gt; : IReactiveProperty&lt;T&gt;, IReadOnlyReactiveProperty&lt;T&gt;, IObserverLinkedList&lt;T&gt;
+{
+    // LinkedListでいうFirstとLastを保持(ReactivePropertySlim自体がLinkedList本体になる)
+    ObserverNode&lt;T&gt; root;
+    ObserverNode&lt;T&gt; last;
+
+    public T Value
+    {
+        set
+        {
+            this.latestValue = value;
+            
+            // LinkedListを辿ってObserverを発火
+            var node = root;
+            while (node != null)
+            {
+                node.OnNext(value);
+                node = node.Next;
+            }
+
+            this.PropertyChanged?.Invoke(this, SingletonPropertyChangedEventArgs.Value);
+        }
+    }
+
+    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
+    {
+        // 線形リストのノードを作って、自身でノードを管理する
+        var next = new ObserverNode&lt;T&gt;(this, observer);
+        if (root == null)
+        {
+            root = last = next;
+        }
+        else
+        {
+            last.Next = next;
+            next.Previous = last;
+            last = next;
+        }
+
+        return next; // ノード自体がSubscription
+    }
+    
+    // SubscriptionのDisposeでLinkedListを張り替える
+    void IObserverLinkedList&lt;T&gt;.UnsubscribeNode(ObserverNode&lt;T&gt; node)
+    {
+        if (node == root)
+        {
+            root = node.Next;
+        }
+        if (node == last)
+        {
+            last = node.Previous;
+        }
+
+        if (node.Previous != null)
+        {
+            node.Previous.Next = node.Next;
+        }
+        if (node.Next != null)
+        {
+            node.Next.Previous = node.Previous;
+        }
+    }
+}
+</code></pre>
+<p>良い所は、生成において無駄が全くない。同居できるものは徹底的に同居させることで、もうこれ以上は削れないでしょう。多分。悪い所は、線形リストの列挙は、配列列挙よりも明らかに遅いので、通知のパフォーマンスの低下がある。まあこのへんは購読料にもよりけりなので、なんとも言い難いところですね。（それとReactiveProperty, ReactivePropertySlim比較だと、スケジューラー経由を削ったことによってそれどころじゃないパフォーマンス向上を果たした）。</p>
+<p>悪い所は、スレッドセーフじゃないです。うーん、Subscriptionの解除側ぐらいはスレッドセーフにしたほうがいいかなあ。ここちょっと悩ましい所で、考えさせてください。</p>
+<h2>***Slim</h2>
+<p>***Slimという命名は、<a href="https://msdn.microsoft.com/ja-jp/library/system.threading.manualresetevent(v=vs.110).aspx">ManualResetEvent</a>と<a href="https://msdn.microsoft.com/ja-jp/library/system.threading.manualreseteventslim(v=vs.110).aspx">ManualResetEventSlim</a>の関係性にならって付けています。ManualResetEventは、通常Slim版しか使わないです。</p>
+<p>と、いうわけで、ReactivePropertySlimも、Model専用での推奨というかは、ViewModel側でも支障がなければ積極的に使ったほうが幸せになれると思っています。機能的には、バリデーションが必要なところだけ、無印を使うのがいいと考えています。</p>
+<p>機能的に低下した所は他に、ToReactivePropertySlimがありません。これは、Sourceから流れてくるのとValueへのセットの二通りで値が変化する(Mergeされてる)のが気持ち悪いというか、使いみちあるのそれ？みたいに思ったからです。ない、とはいわないまでも、存在がおかしい。のでいっそ消しました。かわりにToReadOnlyReactivePropertySlimがあります。値の変化はSourceからのみ。このほうが自然でしょふ。</p>
+<h2>UniRx</h2>
+<p>Unityは元々ほとんどシングルスレッドなので、スレッドセーフじゃなくても概ね問題はないし、ゴミにたいして敏感な環境でもあるので、むしろReactiveProeprty（無印）をSlim版に変えたいと思ってます（今の無印版の命名をどうしようか問題はある、どうしよう）。が、破壊的変更になるので、どうしようか……。でも明らかにSlimのほうがいいし、デフォで使ってもらうべきなので、まぁ、多分、変えます。近いうち（ほんとか？）に。</p>
+<p>あとToReactivePropertyでReadOnlyReactivePropertyを返すようにするかも。前述のように普通のToReactivePropertyがなくなるので、そっちのほうが自然にまとまった感じでいいんじゃないかなー、とか。</p>
+<p>ところでちなみに.NET版のReactivePropertyよりもUniRxのReactivePropertyのほうが元々スリムなので、冒頭のベンチマークほどのOnNext(Valueへの代入)の性能差は出ませんので、そこは安心してください。</p>
+<h2>まとめ</h2>
+<p>パフォーマンス向上の原則はオブジェクトを作らない！オブジェクトを作らないためには、機能を一つのクラスに詰める！機能は分けない！まぁ、分けないことによって使い勝手が悪くなるのは最悪なので、パブリックAPIは適切な分割と集約をきっちり意識して、プライベートAPIは、性能を意識して、あえて統合する、というのもアリ（必ずしも性能が最重要案件ではないというか、最適化は後回しでいい場合が多いので、別に全てをそうしろとはいいませんよ）。ということで。</p>
+<p>ReactivePropertySlimはSlimの名前の通り、小さくはあるんですが、大きく作るよりも、小さく作るほうが存外難しく、そして価値あるものです。実装自体は見た通り簡単なもので、別に複雑なアルゴリズムやコーディングが入っているわけでもないですが、アイディアが大事ということで。言われてみれば、そうですねー、っていう話ではあるのだけれど、そこに気づいて実装まで回せるかというのは全然難易度が違うんですよね。ともあれ、中々良い仕上がりになったと思うので、是非試してみてください（機能的には無印と一緒ですが！）。</p>
+</div>
+<h1><a href="http://neue.cc/2017/1231_561.html">2017年を振り返る</a></h1>
+<ul class="date"><li>2017-12-31</li></ul>
+<div class="entry_body"><p>毎年恒例ということにしているので、今年も振り返ってみます。</p>
+<p>まず、「<a href="https://kuro-kishi.jp/">黒騎士と白の魔王</a>」がリリースされました。開発2年分の成果が結実ということで、まずはメデタシ。セールス的にも一定の足跡を残せています。昨今モバイルゲームもシブい状況になってきてはいますが、その中でキャラ物ではないノンIPのオリジナルタイトルでこのレベルに達せているものがどれだけあるか、ということを考えると、自分達でいうのもアレですが、実際やりますな、みたいなのは、ありますね！</p>
+<p>さて、私個人としても、今年は大きな弾を幾つか出して、大きなインパクトを与えられたんじゃないかと思います。去年ではC#を書く技量が向上した、というのが実感としてありました。そして今年も引き続き、技量向上しました！と、はっきりと言い切れる、感じ取れるだけの成長は果たせています。人間どこででも、どこまでも成長できるし、完成したと思った瞬間に下り坂は始まるのでしょう。そして、成長を対外的にちゃんと証明し続けられている限りは、まだ下り坂、ではなさそうです。</p>
+<p>というわけで、対外的には良い感じかな？対外的に、という言い方がアレですが、個人的なところだと、今年は前半は良かったんですが、後半の息切れ加減が酷くて、来年は気合い入れ直さないとなー、というところが結構あります。今年はCTOという職種が色々な意味で話題になる機会が、狭い世界では多かったわけですが、んー、スキャンダルはないんですが（笑）役割として全うできているかというと、反省として特に後半はダメかな。自己採点でほんと良くないんで、ごめんなさい＆がんばります、です。</p>
+<h2>C#</h2>
+<p>今年の自身のテーマとして、C#で極限まで性能を出していく(Extreme C#)、ということを主題にして様々なものを公開してきました。目的は2つあって、繰り返すことで、本気で、正しく、自分の血肉にしようというのがまず一つ。外に出せるレベルの品質を担保し（面倒くさい汚れ/単調な仕事もきっちりこなして）、しつこく変奏を弾き続けることで、曖昧さが1ミリもない100%の自信と理屈の裏付けをしようということですね。まぁ別にえらいことはなく、何事も反復練習と経験です。</p>
+<p>もう一つは自分のブランディングの再構築。もういい加減「LINQの人」的なブランドはさすがに古臭いし、いつまでも引きずっててもダサいし、何の役にも立たないところもある。というわけで、「パフォーマンスといったら」のブランドに変えよう、と。単発だとやっぱ弱いんで、2つ3つと呆れるぐらいにひたすら連発されれば、強固にイメージも上塗りされていくでしょう。きっと。</p>
+<p>というわけかでブログを振り返る。ブログの記事数は年々減ってきているのですが、そのかわり一発一発が重めなので、その辺でカバー。でいいかしらん？</p>
+<p>今年の第一弾はMessagePack for C#、<a href="http://neue.cc/2017/03/13_550.html">C#(.NET, .NET Core, Unity, Xamarin)用の新しい高速なMessagePack実装</a>でした。MessagePack for C#は、一気に知名度も得て、世界中で使われる最速のC#バイナリシリアライザとしてある程度の地位を確立できました。実際、今年一番の成果で、世界に貢献してて偉いですね！</p>
+<p>誕生理由は、完全に黒騎士のため。これ完成してなかったらヤバかった……！元々、前年に作った<a href="https://github.com/neuecc/ZeroFormatter">ZeroFormatter</a>を導入してたんですが、想定してたよりも性能面で機能しなかったというか、むしろ全然機能してなくて、マズいな、というのを感じてたのです（ZeroFormatterが悪いというかは黒騎士の用法とマッチしてなかった)。</p>
+<p>とはいえ作っちゃったし入れちゃったんだし、そこはそのままにするしかないんじゃない？（開発時期的にも後期でリサーチとかしてる余裕ゼロだし）。と、常識的な判断をするところだったんですが、本能的にこのまま進めるべきではないと判断して、裏でコソコソ作り始めて<a href="https://twitter.com/neuecc/status/830946835967533056">最初にポソッと呟いた</a>のが2017年2月13日。黒騎士のリリースが 2017年4月26日 なので本当に直前で（この辺は職権濫用というか私の立場がCTOだからやれたことですね、ほんと）。3月に完成したら、それを受けて<a href="https://github.com/neuecc/MagicOnion">MagicOnion</a>のシリアライザもZeroFormatterからMessagePack for C#に差し替えました。</p>
+<p>スケジュールもテストもクソもないんですが、まぁ最高のもの作りゃあ問答無用で良いから大丈夫でしょ、ぐらいの勢いはありました。一度シリアライザ作りきった経験(ZeroFormatter)と、それの導入と結果で黒騎士で求められる性能特性とかその他その他とかをしっかり把握出来てたんで、強くてニューゲームの気分で、絶対出来るという確信はあったし、その通りになったのでヨカッタネ（終わってみればそう言えるんであって、自信はあれど、作ってる最中のプレッシャーは普通にキツかったですよ）。</p>
+<p>この辺の、技術判断は、自分自身でやるものに関してはあまりミスらないなぁ、という自信と実績はそこそこあります。ダメだと判断したらすぐに自分でリカバーすればいいということでもあり。ただ、大きなプロジェクトの責任者としての立ち位置だと、自分でやれるものもあれば、当然やれないものもあって、その場合の、人に任せること、判断するってことは、単純じゃないですね。そして、その辺のところで、失敗だ、といえるものもそれなりにあったのが（今年の判断で、というかここ数年での結果として下ったのが今年だ、ということですが）いささか悔いるところです。根気と眼力が問われるところで、とりあえず自分には両方が足りなかったし、今はどうなのかな、正直今も全然ではありそう。</p>
+<p>そして引き続きで<a href="https://github.com/neuecc/MagicOnion">MagicOnion</a>が正式リリースを迎えていない……！のが良くない。前からの傾向ですが、今年は特にとっちらかってしまった感は否めず……。MagicOnion自体は、gRPC(モバイルで/Unityで)いち早く実践投下したりの珍奇性と、そして今年は特に日本ではgRPCの知名度/採用率が飛躍的に上がったと思うのですが、それにいち早く手を付けていたりと、悪くない判断だったんじゃないでしょふか。実装的にも<a href="http://neue.cc/2017/04">C# 7.0 custom task-like の正しいフレームワークでの利用法</a>とか、面白く仕上がっていますしね。だから、ちゃんと完成させて正式リリースするんじゃもん……。</p>
+<p><a href="https://www.slideshare.net/UnityTechnologiesJapan/unite-2017-tokyocunirx">【Unite 2017 Tokyo】「黒騎士と白の魔王」にみるC#で統一したサーバー/クライアント開発と現実的なUniRx使いこなし術</a>でクライアントサイドを、AWS Summitで<a href="https://www.slideshare.net/neuecc/grpchttp2-api-streaming">「黒騎士と白の魔王」gRPCによるHTTP/2 - API, Streamingの実践</a>としてサーバーサイドのセッションをしました。この2つは大きなイベントで、ちゃんと話せてこれたのはいい感じ。クライアントサイドをもう少し誇れる感じで言いたかったのですが、うーみぅ。</p>
+<p><a href="http://neue.cc/2017/07/09_554.html">MicroResolver - C#最速のDIコンテナライブラリと、最速を支えるメタプログラミングテクニック</a>は、突然のDI。なんでもいいからIL書き技術を磨く実験台が欲しかった説はある。素振り大事。総合ベンチマークがあって、1msを競う戦いができる環境ってのがヨカッタですね。色々学びあったし、実際ベンチ勝負で勝った。この辺で、C#で最速を叩き出すための勘所を、完全に掴みました。なぜ遅いのかが理解できて、どうすりゃ速くできるか知っている。そして、そのとおりに書くことができる。</p>
+<p>そして自信をつけた私は、<a href="http://neue.cc/2017/08/07_556.html">C#の高速なMySQLのドライバを書こうかという話、或いはパフォーマンス向上のためのアプローチについて</a>、という、長年の懸念だったC#のMySQLドライバ遅い問題に手をいれるぜ、と思って始めたプロジェクト。未完！こういうやりかけ放置よくない。今年の放置っぷりは酷い。</p>
+<p><a href="http://neue.cc/2017/08/28_558.html">MessagePack for C#におけるオートマトンベースの文字列探索によるデシリアライズ速度の高速化</a>、これはいい話ですねー。ところでMessagePack for C#はめちゃくちゃ更新してまして<a href="https://www.nuget.org/packages/MessagePack">NuGetのVersion History</a>を見てもらえれば分かるんですが</p>
+<p><img src="https://user-images.githubusercontent.com/46207/34461399-e4225ed4-ee6b-11e7-9237-70bfe0ca9a3e.png" alt="image" /></p>
+<p>今年58回も更新してるんですよ！58回！シリアライザは本当に大変なんです！JSON.NETが無限に更新し続ける理由がわかりましたよ、なにをそんなに更新する必用あるんだって話ですが、あるんですよ、ほんと。そしてprotobuf-netやJilやMsgPack-Cliに沢山issueが詰まれる理由もわかりましたよ。シリアライザは無限にバグるんです！いやー、シリアライザのメンテマンとか大変ですよぅー、私は二個抱えることになって本当に本当に本当に大変なのです、そりゃ他のことに中々手がつけられなくなるというのも分かってほすぃ。</p>
+<p>というわけかで、二個抱えるうちのもう一個、<a href="http://neue.cc/2017/09/29_559.html">Utf8Json - C#最速のJSONシリアライザ(for .NET Standard 2.0, Unity)</a>の公開。これも世界的にかなりインパクトあってヨカッタ。Utf8JsonやMessagePack for C#の意義って、新しい時代のパフォーマンスのベースラインを示した、ヌルい眼前に実証をもって叩きつけたことにあると思ってます。C#はねー、やっぱ実装がヌルいものが多いです、というか、BCL含めて99%のものがヌルいです。それはしょうがないんですけどね、そういう時代じゃなかったからだし。でも時代は明らかに変わった、変わってている、その中で新しい基準が必要だし、その基準というものを私は作って、突きつけられたんじゃないかな、と。</p>
+<p>もちろん、Utf8Json自体も「ちゃんと使える」JSONライブラリになってます。JSONってかなりフワフワなので、おしきかせの決め打ちフォーマットだけじゃなく、あらゆるJSONをちゃんとデシリアライズできるようにするカスタマイズ性が絶対に必要なんですね。そこをきちんと満たしつつ、超高性能も実現している、というのがもう一つのUtf8Jsonのキモです（一番の目玉はUtf8バイナリとみなして読み書きするってところですが）</p>
+<p>最後に総決算として<a href="http://neue.cc/2017/12/04_560.html">Introduction to the pragmatic IL via C#</a>、ILの書き方を残しました。</p>
+<h2>お仕事</h2>
+<p>マジカル変化球で負債を返却する、というのを去年後半から今年前半にかけてやって、それを成立させました（黒騎士リリース）。中盤は成果のスポークスマンで、それもまぁ悪くないでしょう(Unite, AWS Summit講演)。この辺は考えていた既定路線でちゃんとハマっていたと思うんですが、後半も技術にフォーカスに脳みそを意識しすぎて、しかも出来たもの(Utf8Jsonとか)が会社のプロダクトとして直接役立ったかというと、役立ってないわけではないが凄い貢献するわけではない、ぐらいになったのがいくなかったですねえ。MySQLドライバをほっぽりだしてしまったのがロードマップ的にはまずかった（それの代替/副産物がUtf8Jsonなのですけれど）。</p>
+<p>さすがに技術フォーカスすれば、してない時に比べると脳みそが回ってる度は高くなるとはいえ、リサーチやってるわけでもないんで、もちっとプロダクトの改善に目を向けたいし、積み残して放置気味な厄介なバグをちゃんと潰したいし、MagicOnionの正式リリースもしたい。マネジメントとまでは言わないですが、一区切りついたということもあるので、開発組織の方向付けとかもあるでしょう。</p>
+<h2>漫画/音楽/ゲーム/その他...</h2>
+<p>すっかりkindleで電子書籍中心になりました。iPhone * Plus(今はXですが)の、やや大きめサイズのスマフォのお陰で、漫画や小説の小さな文字がギリギリ読めるサイズ（欲を言えばもう少し大きい方がいい）で、いつでも手軽に開けるようになったのが大きい。iPadも持ってるのですが、やっぱスマフォでサクッとになりがちですね。なので、スマフォは大きめサイズのもの一択。もう小さいのには戻りたくない（ので、XでPlusからちょっと画面サイズ小さくなったのはなんとも言い難いところ)。</p>
+<p>で、見直してみると凄い良かった、って思えるのがナカッタ。カモ。うーん、どういうこっちゃら。駆け込みで<a href="https://www.amazon.co.jp/dp/B078GL51L2/">センチメントの行方</a>(12/21, センチメントの季節の新章)が出たのが良かった。変わらずとてもドキッと来る感じで。好き。</p>
+<p>音楽は<a href="https://ja.wikipedia.org/wiki/NUITO">NUITO</a>を今年知ったのです！最高……！2009年に出た唯一のアルバム、Unutellaめっちゃ聴いた(Apple Musicにもあります)！ライブ（去年から7年ぶりに再開したそうで）も行った！超良かった！<a href="http://www.ele-king.net/news/005519/">Shobaleader One（スクエアプッシャーのバンド名義）の来日公演</a>も行けたし、今年は中々に満喫したかもしれない。</p>
+<p>ライブとか美術展とか演劇とか、一期一会で、基本、次はないよねー、と思う度が強くなったので（逃した後悔がそれなりにあったせいかも）、なるべく気になったら行くようにしたい。してる。しはじめた。<a href="http://brdg.tokyo/">VRDG</a>も開催される毎に行ってましたが、毎回面白くてよきかなよきかな。来年はコンテンポラリーダンスを色々見ていきたいですねぇ。</p>
+<p>ゲームはSwitchも買ったしPS4もそこそこ稼働させたしで色々買ってはみたものの、んー、ロクに最後までプレイしたものが、ない……！その中でいうと<a href="http://ruinergame.com/">RUINER</a>は良かったし最後までやりました。このビジュアルは最高。ゲーム的には、まぁそこそこまぁまぁだけど、とにかくビジュアルが最高。ゲーム的には年末に買ったばかりではあるんですが、<a href="http://bluerevolvergame.com/">BLUE REVOLVER</a>は間違いなく面白い。良い。あとはみんな挙げますが実際<a href="http://www.jp.square-enix.com/nierautomata/">NieR:Automata</a>はヨカッタ。</p>
+<h2>来年は</h2>
+<p>今年は技術面では普通の（？）C#にフォーカスしすぎたきらいがありますね。Unityが手付かずで。ついでにUniRxも放置で（ひどぅぃ、あ、アセットストアにアップデート申請は年末のこないだ出したので来年頭には通ってそうです)。というわけで、Unityに再フォーカスしたい。</p>
+<p>というのと、あとここ数年ずっと頭のなかにあったやりたいこと、をやる手法というのが年末の末の末にやっと見いだせて光が指したんで、技術的にそれを実装したいというのが密やかにあります。今までのお得意のプログラミング、とは違う領域になるので、そこをやりきるのがチャレンジでもありますねー。C#じゃゲロ遅いってことでC++かCompute Shaderでやるかなー、とも思ってるんで、C#と付き合って10年目にして脱C#かもしれないしそうじゃないかもしれない。まぁ部分的ってだけで、相変わらず技術のベースはC#であり続ける気がします。</p>
+<p>ともあれ来年は来年で、新しい何かを示し続けよう、というのは絶対に変わらないものとしてあります。C#も客観的には正直しょっぱい情勢と言わざるをえないのですが、そこもちゃんと尽力していきましょう。そして、黒騎士リリース以後のグラニの技術にもご期待下さい。</p>
+</div>
+<h1><a href="http://neue.cc/2017/1204_560.html">Introduction to the pragmatic IL via C</a></h1>
+<ul class="date"><li>2017-12-04</li></ul>
+<div class="entry_body"><p>この記事は<a href="https://qiita.com/advent-calendar/2017/csharp">C# Advent Calendar 2017</a>のための記事になります。12/1は<a href="http://mslgt.hatenablog.com/entry/2017/12/01/000328">masanori_mslさんの【C#】処理の委譲で迷った話</a>でした。そしてこの記事は12/2、のはずが今は12/4、つまり……。すみません。</p>
+<p>ところでですが、私は今年の自身のテーマとして、「Extreme C#」を掲げています。C#で極限まで性能を出していく、ということを主題にして様々なものを公開してきました。その中でもILを書く技術というのは、どうしても欠かせないものです。実際、私が近年制作したライブラリはほとんどIL生成を含んでいます。</p>
+<p>例えば、シリアライザ - <a href="https://github.com/neuecc/ZeroFormatter">ZeroFormatter</a>, <a href="https://github.com/neuecc/MessagePack-CSharp">MessagePack for C#</a>, <a href="https://github.com/neuecc/Utf8Json">Utf8Json</a>。RPC - <a href="https://github.com/neuecc/PhotonWire">PhotonWire</a>, <a href="https://github.com/neuecc/MagicOnion">MagicOnion</a>。DI - <a href="https://github.com/neuecc/MicroResolver">MicroResolver</a>。これらから、実際に使われた例と、そして実地でしか知り得ないTipsを紹介します。</p>
+<p>この記事によって、IL書きが決して黒魔術ではなく、ごく当たり前の選択肢、になるのは行き過ぎにしても、必要な時に抵抗なく選べるようになってくれれば幸いです。</p>
+<h2>動的生成の本質</h2>
+<p>IL書けるのは凄いとか、黒魔術とか、そんなイメージがなくもないと思うんですが、とはいえ別に漠然とILを書いても、別に速いコードになるわけではありません。そして、最初のイメージとして浮かぶのは「リフレクションを高速にするもの」だと思いますが、本質的にはそうではありません。じゃあ何かっていうと、私は「生成時の最適なコード分岐の抽象化」というイメージで捉えています。</p>
+<p>具体例としてUtf8Jsonのシリアライズを見てみましょう。</p>
+<pre><code class="language-csharp">namespace ConsoleApp26
+{
+    // こんなどうでもいいクラスがあるとして
+    public class Person
+    {
+        public int Age { get; set; }
+        public string FirstName { get; set; }
+        public string LastName { get; set; }
+    }
+
+    class Program
+    {
+        static void Main(string[] args)
+        {
+            // これで生成したシリアライザが作られる(or 取り出される)
+            var serializer = DynamicObjectResolver.Default.GetFormatter&lt;Person&gt;();
+
+            // 生成型名：Utf8Json.Formatters.ConsoleApp26_PersonFormatter1
+            Console.WriteLine(serializer.GetType().FullName);
+
+            // まぁこんな風にシリアライズする
+            var writer = new JsonWriter();
+            serializer.Serialize(ref writer, new Person(), BuiltinResolver.Instance);
+            Console.WriteLine(writer.ToString()); // {&quot;Age&quot;:0,&quot;FirstName&quot;:null,&quot;LastName&quot;:null}
+        }
+    }
+}
+</code></pre>
+<p>Utf8Jsonのシリアライザ生成は、DynamicObjectResolverのGetFormatterで行われています（普段はこれより高レベルなAPI、JsonSerializer.Serializeに隠れて裏で行われているので、露出はしていません）。シリアライザの生成ってどういうことかというと、概ねこんな感じです。</p>
+<pre><code class="language-csharp">// このインターフェイスは公開
+public interface IJsonFormatter&lt;T&gt; : IJsonFormatter
+{
+    void Serialize(ref JsonWriter writer, T value, IJsonFormatterResolver formatterResolver);
+    T Deserialize(ref JsonReader reader, IJsonFormatterResolver formatterResolver);
+}
+
+// この型が動的に生成された
+public class ConsoleApp26_PersonFormatter1
+{
+    public void Serialize(ref JsonWriter writer, T value, IJsonFormatterResolver formatterResolver)
+    {
+        // この中身をIL直書きで埋め込み
+    }
+
+    // Deserialize...
+}
+</code></pre>
+<p>よし、じゃあいっちょその生成部分見りゃあいいってことっすね、と見に行くときっと<a href="https://github.com/neuecc/Utf8Json/blob/02f69cbc3515cd75ccad0c2b9ca0c2b19cc4dc5f/src/Utf8Json/Resolvers/DynamicObjectResolver.cs#L734-L1389">わけわかんなくて挫折する(DynamicObjectResolver.cs#L734-L1389)</a>と思うのでお薦めしません（あばー）。この記事を最後まで読んでくれれば分かるようになりますよ！</p>
+<p>さて、ILを埋め込むというのは、そもそも普通のC#で書けるということなのです。動的生成というのは、汎用化/抽象化なので、Personが来たときにはこういうコードを生成しよう、というのは素のC#で書けます。IL直書きは別にマジックでもなんでもなく、原則C#で書けること以上のことはできませんから。</p>
+<pre><code class="language-csharp">public class ConsoleApp26_PersonFormatter1 : IJsonFormatter&lt;Person&gt;
+{
+    // writerで手書きするならこんなもんですよね、的な。
+    public void Serialize(ref JsonWriter writer, Person value, IJsonFormatterResolver formatterResolver)
+    {
+        if(value == null)
+        {
+            writer.WriteNull();
+            return;
+        }
+
+        // なんとなく挙動のイメージは伝わるでしょう（伝わりますよね？）
+
+        writer.WriteBeginObject(); // {
+
+        writer.WritePropertyName(&quot;Age&quot;); // &quot;Age&quot;:
+        writer.WriteInt32(value.Age);
+
+        writer.WriteValueSeparator(); // ,
+        writer.WritePropertyName(&quot;FirstName&quot;); // &quot;FirstName&quot;:
+        writer.WriteString(value.FirstName);
+
+        writer.WriteValueSeparator(); // ,
+        writer.WritePropertyName(&quot;LastName&quot;); // &quot;LastName&quot;:
+        writer.WriteString(value.LastName);
+
+        writer.WriteEndObject(); // }
+    }
+}
+</code></pre>
+<p>素朴に考えると、上のようなコードになるでしょう。 value.Age などの部分が、IL生成をしない汎用的なコードだとリフレクションが必要なものですが、IL生成によってそれを避ける、つまり「リフレクションを高速にするもの」状態です。また、高速化のポイントとしてはルックアップを最小に抑える、というのが挙げられます。プロパティ単位でアクセサーを生成していると、プロパティ名で辞書引き（文字列の辞書引きは比較的コストの高い処理です！）ではなく、型単位で全てまとまったものを生成することで、より高速なコードが得られます。</p>
+<p>「普通は」このぐらいのコードが出来ると満足してしまうところですが、真の魔術師になりたいなら、もっとアグレッシブに行きましょう。Utf8Jsonの最新版のコード生成はこうなっています。</p>
+<pre><code class="language-csharp">public class ConsoleApp26_PersonFormatter1 : IJsonFormatter&lt;Person&gt;
+{
+    // プロパティ名は変わらないので、予めエンコード済みのキャッシュを持つ
+    byte[][] stringByteKeys;
+
+    public ConsoleApp26_PersonFormatter1()
+    {
+        stringByteKeys = new byte[][]
+        {
+            // Ageは一番最初なので{も含めて埋め込む。それ以外は二番目なので,も含めて埋め込む
+            JsonWriter.GetEncodedPropertyNameWithBeginObject(&quot;Age&quot;), // {&quot;Age&quot;:
+            JsonWriter.GetEncodedPropertyNameWithPrefixValueSeparator(&quot;FirstName&quot;), // ,&quot;FirstName&quot;:
+            JsonWriter.GetEncodedPropertyNameWithPrefixValueSeparator(&quot;LastName&quot;) // ,&quot;LasttName&quot;:
+        };
+    }
+
+    public void Serialize(ref JsonWriter writer, Person value, IJsonFormatterResolver formatterResolver)
+    {
+        if (value == null)
+        {
+            writer.WriteNull();
+            return;
+        }
+
+        // byte[]の長さが7だと「生成時」に知ってるので、長さに最適化したバイトコピーを使う
+        // 32Bit環境か64Bit環境なのかも、「生成時」に知っているので、その環境向けのコードを吐く
+        UnsafeMemory64.WriteRaw7(ref writer, this.stringByteKeys[0]);
+        writer.WriteInt32(value.Age);
+
+        UnsafeMemory64.WriteRaw13(ref writer, this.stringByteKeys[1]);
+        writer.WriteString(value.FirstName);
+
+        UnsafeMemory64.WriteRaw12(ref writer, this.stringByteKeys[2]);
+        writer.WriteString(value.LastName);
+
+        writer.WriteEndObject();
+    }
+}
+</code></pre>
+<p>初期化タイミングでキャッシュ出来るものは徹底的にキャッシュしよう、ですね。このぐらいまでなら手書きでもやってやれなくもないですが、そのbyte[]の長さに決め打たれたバイトコピーのメソッドを使う、というのは実質やれない、の領域です。また、「実行時」にしか知り得ない32Bitか64Bitという情報も含めて埋め込んでいけるのは実行時コード生成にだけ可能な芸当です（まぁif(IntPtr.Size == 4)ぐらいの分岐はJITで消えますが)。</p>
+<p>さて、JSONのシリアライズはオプションによって様々に変更させることが求められます。例えば、「nullの場合は出力しない、名前をスネークケースにする」というオプション(DynamicObjectResolver.ExcludeNullSnakeCase)の場合、このようなコードを生成します。</p>
+<pre><code class="language-csharp">public class ConsoleApp26_PersonFormatter1 : IJsonFormatter&lt;Person&gt;
+{
+    byte[][] stringByteKeys;
+
+    public ConsoleApp26_PersonFormatter1()
+    {
+        // snake_caseのものをキャッシュ。nullかどうかで先頭が変わるので{や,は埋めこまない
+        stringByteKeys = new byte[][]
+        {
+            JsonWriter.GetEncodedPropertyName(&quot;age&quot;),
+            JsonWriter.GetEncodedPropertyName(&quot;first_name&quot;),
+            JsonWriter.GetEncodedPropertyName(&quot;last_name&quot;)
+        };
+    }
+
+    public void Serialize(ref JsonWriter writer, Person value, IJsonFormatterResolver formatterResolver)
+    {
+        if (value == null)
+        {
+            writer.WriteNull();
+            return;
+        }
+
+        writer.WriteBeginObject(); // {
+
+        var first = true;
+
+        // structはnullチェックなし
+        // if (value.Age != null)
+        {
+            if (!first)
+            {
+                writer.WriteValueSeparator();
+            }
+            else
+            {
+                first = false;
+            }
+
+            UnsafeMemory64.WriteRaw6(ref writer, this.stringByteKeys[0]);
+            writer.WriteInt32(value.Age);
+        }
+
+        if (value.FirstName != null)
+        {
+            if (!first)
+            {
+                writer.WriteValueSeparator();
+            }
+            else
+            {
+                first = false;
+            }
+
+            UnsafeMemory64.WriteRaw13(ref writer, this.stringByteKeys[1]);
+            writer.WriteString(value.FirstName);
+        }
+
+        if (value.LastName != null)
+        {
+            if (!first)
+            {
+                writer.WriteValueSeparator();
+            }
+            else
+            {
+                first = false;
+            }
+
+            UnsafeMemory64.WriteRaw12(ref writer, this.stringByteKeys[2]);
+            writer.WriteString(value.LastName);
+        }
+
+        writer.WriteEndObject(); // }
+    }
+}
+</code></pre>
+<p>処理が多くなりましたね！そう、Defaultに比べるとExcludeNullは、条件分岐が増えることと、JSONとしてのプロパティの出力順番が不定のため、キャッシュのアグレッシブ度も下げざるを得ないため、実行速度が若干低下します。</p>
+<p>今回別にJSONの解説をしたいわけではなくて、大事なのは、オプションによって最高速なコードは変わっていくということです。そこを共通化してオプションによってコード分岐させたりせずに、オプション毎に最適化されたコードを生成することが肝要です。とはいえ、徹底的にオプション毎にコード生成を分けるのは生成部分が肥大化するため、記述には大いに苦痛を伴うでしょう。それをありえないほどクソ丁寧に徹頭徹尾やってるからMessagePack for C#やUtf8Jsonはデタラメに高速なのです。</p>
+<p>また、事前生成ではオプション毎の最適なコードの生成は事実上不可能（全ての組み合わせを用意することは出来ない！）ので、その点でもあらゆるパターンの最適化コードを作れる動的生成は有利です。もちろん、通常アプリケーションで使うオプションは固定なので、そのオプションに絞った生成をすればいい、とうのは回答の一つではありますが（実際、UnityのAOT環境であるIL2CPP向けのUtf8Json, MessagePack for C#では単一オプションでの生成を行う）。</p>
+<p>ともあれ、IL生成とかなんとかいっても、環境固定・対象固定であれば、C#で書けるコードが動的に生成されている、というだけの話です。C#で見ると、まぁちょっと面倒くさいことやってるな、程度の話で、別に特別に複雑なことはやってないんですよね。</p>
+<p>というわけで、コード生成をしたいと思ったら、考える順番として、必ず、C#だとどういうコードになるか、を想像して、いや、実際に書くところから始めましょう。それが出来上がれば、あとはILに起こすだけです。その起こすだけ、というのが難しそう！っていう話なのですが、実は現代はツールが充実しているので、以外と難しくありません！というわけで、本題に入っていきましょう。</p>
+<h2>動的生成の手段</h2>
+<p>それなりに色々あるので、何使えばいいのーガイド最新版。</p>
+<p><a href="https://msdn.microsoft.com/ja-jp/library/system.codedom(v=vs.110).aspx">CodeDom</a>。今はRoslyn(C#実装のC#コンパイラ)があるので、レガシー互換したいとかの余程の謎事情がない限りは不要かな。特に、動的生成したい、という目的で選ぶ必要性はあまりないでしょう。</p>
+<p><a href="https://msdn.microsoft.com/ja-jp/library/system.reflection.emit.assemblybuilder(v=vs.110)">AssemblyBuilder</a>。動的にアセンブリを生成します。アセンブリを生成するということは、動的にモジュールを作り、動的に型を作り、動的にメソッドを作ります。つまりなんでも出来ます。コードの埋め込みはIL手書き。今回の話のメイン。NuGetでは<a href="https://www.nuget.org/packages/System.Reflection.Emit/">System.Reflection.Emit</a>。</p>
+<p><a href="https://msdn.microsoft.com/ja-jp/library/system.reflection.emit.dynamicmethod(v=vs.110).aspx">DynamicMethod</a>。こちらは動的にデリゲートを作るというもの。コードの埋め込みはIL手書き。NuGetでは<a href="https://www.nuget.org/packages/System.Reflection.Emit.Lightweight/">System.Reflection.Emit.Lightweight</a>ということで、Lightweightエディションです。LCG(Lightweight CodeGen)と言われることもある。型そのものを作るAssemblyBuilderよりも出来ることが圧倒的に限られてしまうので、Lightweightに済ませたい局面以外では不要、と言いたいところなのですが、実はLCGでしか出来ないこともあるので、現実的にはAssemblyBuilderと併用していくことになります。</p>
+<blockquote>
+<p>LCGでしか出来ないことというのは、private変数への外側からのアクセスです。AssemblyBuilderでは、本当に外側からC#を書いた時のような制限がかかりますが、LCGではその辺を無視することが可能です。動的生成ではリフレクション系を扱うことが多いはずで、privateへもアクセスしたいというのは多くの場合要件に含まれるでしょう。</p>
+</blockquote>
+<p><a href="https://docs.microsoft.com/ja-jp/dotnet/csharp/programming-guide/concepts/expression-trees/">ExpressionTree</a>。できることはLCGと同じ(最終的にデリゲート生成ではLCGを通して作られているので)。ただし定義されているExpression以上のことはできないのと、正直いってIL書くのに慣れると、ExpressionTreeのほうが冗長で面倒くさいので、最近の私は使いません。特に.NET 4から足されたループなど「文」系の構文をExpressionTreeで書くのはかなりダルいので、無理して拘る必要はないでしょう。</p>
+<blockquote>
+<p>ただしExpressionTreeによるCompileはXamarin iOSなどのAOT環境(動的コード生成不可）でも動くデリゲートが生成できます。何故なら、AOT環境の場合はExpressionTree専用のインタプリタで動かすデリゲートを生成するからです。もちろん、インタプリタになるので低速ですが、互換性維持的に楽なので、その点ではLCGではなくExpressionTreeを選ぶという選択肢はアリです。</p>
+</blockquote>
+<p><a href="https://www.nuget.org/packages/Microsoft.CodeAnalysis.CSharp/">Microsoft.CodeAnalysis.CSharp(Roslyn)</a>。C#コンパイラ、ということでILを書かずとも、文字列としてのC#コードを書けばそこから実行時に使えるコードを生成できます。ILの知識も不要だしC#コンパイラの最適化も受けれるのでいいね！って話なのですが、あんま使われてないし、実際私もあまり使う気にはなれません。何故かというと、標準入りせず（5年前の.NET 4.5からは、コアフレームワーク標準入りという概念はなくなって、新規ライブラリはNuGetによる提供が主体になったため）、かなり大仰なパッケージを入れる必要があるため、依存関係にそれを仕込みたくないというのが一つ。もう一つは、割と面倒くさい。ソースコードをポンと放り投げれば出来上がり、というほどではなく、参照関係をかっちりかき集めてこなきゃいけないので、想像よりも遥かに手間がかかるんですね。一度テンプレートコードみたいなのを作ってしまえばいいといえばいいんですが……。また、初回生成時コストがかなり高いのが、初回のみなので無視できると言い張るにしても若干厳しいところもある。</p>
+<p>と、いうわけでこの記事ではAssemblyBuilderとDynamicMethodを中心に扱っていきます。</p>
+<h2>動的生成のためのツール</h2>
+<p>よし、じゃあ早速書いていくぜ、の前にツールです。はやる気持ちは抑えて、何はともあれツールです。ツールがあると理解がめちゃくちゃ早まりますし、ハマりどころもなくなってめちゃくちゃ楽になります。とにかく現代はツールがめちゃくちゃ充実しています。別にildasmとニラメッコしたり、デバッグシンポルを入れるのに四苦八苦したりする必要はありません。シンプルに書いて、ひたすらツールに突っ込むのがとにかく近道です。</p>
+<p><a href="https://github.com/0xd4d/dnSpy/">DnSpy</a>。最強の.NET逆コンパイラ。DynamicAssemblyで生成したコードなら、そのまま中身確認どころかステップ実行のデバッグができる。ヤバい。もうこれで何も怖くない。残念ながらDynamicMethodにたいしてのデバッグは出来ないので、それだけのためにもDynamicAssembly中心にしたい（が、DynamicMethodのプライベートアクセスの機能は重要なので頑張って両対応させるのが、一手間でも最終的には一番いい）。</p>
+<p><a href="https://github.com/icsharpcode/ILSpy">ILSpy</a>。みんな大好き定番.NET逆コンパイラ。DynamicAssemblyならDLLとして出力することが可能なので、それを流し込めば生成した結果がC#コードとして見れる。IL手書きは、たいてい一発でうまくいかなくてC#として解析できない腐ったILを作ってしまったりするのですが、それはそれで、生成されたILを見ることができるので間違っている場所を探し出すことができます。アセンブリのリロードがDnSpyと違ってサクサクできるので、未だにDnSpyよりもこちらのほうが出番ずっと多し。なお、この生成コードをDLLとして出力して確認する、というデバッグ手法はコード生成がめちゃくちゃ楽になるので、絶対欠かせません（で、DynamicMethodだとそれができないので頑張って両対応させるのが一番）。</p>
+<p><a href="https://www.linqpad.net/">LINQPad</a>。LINQPadの何がいいかというと、ILタブがあるところ。C#で書いたコードがどういうILに変換されるかは、LINQPadでミニマムなコードを書いて確認するのが一番手っ取り早い。いわばカンニングです。別にILの全てを知らなきゃIL手書きできないわけじゃないんです、普通にC#で書いて、書き写してくだけでいいんですよ。いやほんと。それを繰り返していくうちに、そのうち覚えていくでしょうしね。そう、別にミニマムなコードだけじゃなく、「コード生成をしたいと思ったら、考える順番として、必ず、C#だとどういうコードになるか、を想像して、いや、実際に書くところから始めましょう」と言いましたが、そのコード全体をLINQPadに通してILタブを見れば、それが生成すべきコードの答えです！汎用的にするため、ある程度は自分で展開しなきゃいけないんですが、「答え」が存在しているのといないのとでは、難易度は桁違いに変わります。</p>
+<p><a href="https://github.com/neuecc/linqpadspy">LINQPadSpy</a>。別に必ず必要でもないんですが、これはいわばC# to C#です。どういうことかというと、LINQPadの生成結果をILSpyに流したものがその場で確認できます。C# to C#って同じ結果だろ？と言いたいところなのですが、C#コンパイラもまたコンパイル時コード生成するので、全然異なるコードになってたりするんですね。例えば<a href="http://engineering.grani.jp/entry/2017/02/20/175816">C#のswitch文のコンパイラ最適化について</a>という記事では、switchが二分探索に化ける例を紹介しました。そういうのをサクッと確認できるようになります。このINQPadSpyは私がForkしてLINQPad 5に対応させたものになります。</p>
+<p><a href="https://msdn.microsoft.com/ja-jp/library/62bwd2yd%28v=vs.110%29.aspx">PEVerify</a>。Visual Studioを入れればついてきます(ildasm.exeとかsn.exeとかと同じ場所にある、例えば &quot;C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.7 Tools\x64\PEVerify.exe&quot; )。これの何がいいかというと、IL手書きに間違ったコード生成はつきもの、なんですが、 その場合にどこがどう間違ってるか教えてくれます。その場所に関してはILSpyで確認できるので、ILSpyとPEVerifyを合わせれば、修正が圧倒的なスピードでできます。これないと、ひたすら気合で探していくことになりますからね。ちなみにunsafeコードがあると、その部分はダメだと指摘が来ますが、別にそれはそのままでいいので、ノイズになるのは諦めましょう。</p>
+<p><a href="https://msdn.microsoft.com/ja-jp/library/f7dy01k1%28v=vs.110%29.aspx?f=255&amp;MSPPError=-2147217396">Ildasm</a>。99%、ILSpyがあれば不要な代物。ILSpyのほうが使いやすく、見やすいですからね。ただ、たまーに残り1%の部分でIldasmでしか表示できないものがあったりします。例えば.data領域に詰まった文字列定数のbytearrayなんかは、ILSpyだと見る術がありませんが、Ildasm経由で逆コンパイル結果を出力すると、そこの部分も見れたりします。別に見れると何があるというわけでもないですが、正しい理解のために、信頼できる無加工の生の出力をしてくれる、という性質は貴重なものがあります。めったに使いませんが。</p>
+<h2>ILの基礎</h2>
+<p>よし、じゃあ早速書くぞ、って話なのですが、まあ待ってください。まずは基礎の基礎ぐらいは軽く頭に入れておきましょう。ぶっちゃけ何も知らなくてもLINQPadで吐いたコードをカンニングコピペでなんとかなるといえばなんとかなる（ほんと！）んですが、さすがに少しぐらいは知ってたほうがエラー対処も容易になるので、覚えておきましょう。</p>
+<p>C#コンパイラの仕事は<a href="https://ja.wikipedia.org/wiki/%E5%85%B1%E9%80%9A%E4%B8%AD%E9%96%93%E8%A8%80%E8%AA%9E">IL</a>を作ることです。で、ILは<a href="https://ja.wikipedia.org/wiki/%E3%82%B9%E3%82%BF%E3%83%83%E3%82%AF%E3%83%9E%E3%82%B7%E3%83%B3">スタックマシン</a>として解釈され実行されます。どういうことかというと、Stackに命令をPushしたりPopしたりして計算するそうな。</p>
+<p>まぁ、LINQPadでふんいきを見てみましょう。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33274401-511675a6-d3d3-11e7-8e75-128ba92dcbfd.png" alt="image" /></p>
+<p>足し算は、Ldarg_0, Ldarg_1(引数ロード)がStackへPush。Add(足し算)がその詰まれた2つをPopして加算して、計算結果をPush。Ret(return)で、その最後の一つの値を返してStackを空に。というのが基本の流れです。</p>
+<p>ところでLINQPadを使う場合の注意事項として、右下に最適化ボタンがあるので、必ずONにしておきましょう。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33527490-2dcb57ee-d895-11e7-9c39-dd3bd28972f1.png" alt="image" /></p>
+<p>最適化がONじゃないとnop(何もしない命令、デバッガがこれで止まるようになるのでデバッグビルドで必要だけどリリースビルドでは不要)が大量に埋め込まれるので、見にくくなるためです。</p>
+<p>さて、このldargやretがOpCodeという代物で、今のとこ226種類あります。ええ、via C#なのでC#で確認してみましょう。LINQPadで以下のコードを打ちます。</p>
+<pre><code class="language-csharp">typeof(OpCodes).GetFields().Select(x =&gt; x.GetValue(null)).OfType&lt;OpCode&gt;().Dump();
+</code></pre>
+<p><img src="https://user-images.githubusercontent.com/46207/33527433-4c06ac0a-d894-11e7-8154-885996a0ff7e.png" alt="image" /></p>
+<p>とりあえずNameとStackBehaviourPopとStackBehaviourPushに注目。StackBehaviourPopが幾つ取り出すか、StackBehaviourPushが幾つ詰むか。ldarg.0(0番目の引数をロードする)はPop0, Push1。add(足し算)はPop1_pop1(Pop2じゃないんですね)で、Push1。二個消費して、一個返すということ。。</p>
+<p>と、いうイメージで、一個のStackにPushしたりPopしたりして結果を作る。メソッドは大抵最後にreturnで戻り値を返すわけですが、その場合はStackに一個だけ値を残しておいて、OpCodes.Retを叩けばおｋ、と。</p>
+<p>というわけで実際のIL生成としてDynamicMethodにした場合は、こうなります。さっきの足し算コードに、+ 99を追加というのにしましょう。</p>
+<pre><code class="language-csharp">// (int x, int y) =&gt; x + y + 99
+var dm = new DynamicMethod(&quot;Sum99&quot;, typeof(int), new[] { typeof(int), typeof(int) });
+var il = dm.GetILGenerator();
+
+// 引数0と引数1を詰んで加算、更に+99してreturn。
+il.Emit(OpCodes.Ldarg_0);    // [x]
+il.Emit(OpCodes.Ldarg_1);    // [x, y]
+il.Emit(OpCodes.Add);        // [(x + y)]
+il.Emit(OpCodes.Ldc_I4, 99); // [(x + y), 99]
+il.Emit(OpCodes.Add);        // [(x + y + 99)]
+il.Emit(OpCodes.Ret);        // []
+
+// そしてCreateDelegateでFuncを作る
+var sum = (Func&lt;int, int, int&gt;)dm.CreateDelegate(typeof(Func&lt;int, int, int&gt;));
+
+// 129
+Console.WriteLine(sum(10, 20));
+</code></pre>
+<p>AssemblyBuilderもDynamicMethodも基本の流れは一緒です。 GetILGenerator でILGeneratorを取得して、EmitでOpCodeの埋め込み。そして最後にCreateTypeかCreateDelegateする。Emitメソッドは引数にOpCodeと、パラメータを受け取ります。パラメータは定数であったりメソッド呼び出しであればMethodInfoなど様々。全然タイプセーフじゃないので間違ったパラメータ突っ込んじゃうことは多数ですが頑張って慣れましょう。なお、こういうのは完全に頭に叩き込んでおいてソラで手書きする必要は全くありません。基本はLINQPadで書いてカンニングコピペです。</p>
+<p>もう少し基礎知識を続けます、習うより慣れろ、ではあるものの、ある程度OpCodeの種類も知っておいたほうが良いでしょう。大雑把に解説しておきます。</p>
+<p>読み込む系 - ldarg.<em>, ldloc.</em>, ldc.i4.*, ldfld, ldsfld, など。ldはロードで、それぞれargは引数(argument)、locはローカル変数(local)、i4は整数(4byte integer)、fldはフィールド、sfldはスタティックフィールド、の読み込みをします。つまりPop0, Push1。長いILを書いてる時に（正しくはLINQPadからコピペって書き写している時に）スタティックとそうでないやつの書き間違いを起こすことが稀によくある。よくあるミスなのでエラーになった時はその辺を真っ先に疑います。</p>
+<p>ldargaやldfldaなど、最後にaがついてるやつがいますが、これはaddressだけ読むもので、参照系を扱う場合に使い分けが必要です。よくわからない場合は逆コンパイル結果を見ればOK。これもまた長いILを打ってるとたまに間違えて、死ぬ場合多数。</p>
+<p>また、.0, .1, .2, .3 や .s というのが後者についてるものがありますが(ldc.i4.1, ldc.i4.sなど)、これは最適化です。i4だと-1 ~ 8までは引数不要でそのOpCode自体が数字も示して読み込めますよ、と。sはshort formで、これまた最適化で、1バイト以内に収まるものはこちらを使ったほうが良い、という扱いです。</p>
+<p>面倒な場合は全部Ldc_I4でいいじゃん、ってところなのですが、何も考えずとも最適に扱えるよう、こういう拡張メソッドを用意しておくのは賢いやりかたです。</p>
+<pre><code class="language-csharp">public static void EmitLdc_I4(this ILGenerator il, int value)
+{
+    switch (value)
+    {
+        case -1:
+            il.Emit(OpCodes.Ldc_I4_M1);
+            break;
+        case 0:
+            il.Emit(OpCodes.Ldc_I4_0);
+            break;
+        case 1:
+            il.Emit(OpCodes.Ldc_I4_1);
+            break;
+        case 2:
+            il.Emit(OpCodes.Ldc_I4_2);
+            break;
+        case 3:
+            il.Emit(OpCodes.Ldc_I4_3);
+            break;
+        case 4:
+            il.Emit(OpCodes.Ldc_I4_4);
+            break;
+        case 5:
+            il.Emit(OpCodes.Ldc_I4_5);
+            break;
+        case 6:
+            il.Emit(OpCodes.Ldc_I4_6);
+            break;
+        case 7:
+            il.Emit(OpCodes.Ldc_I4_7);
+            break;
+        case 8:
+            il.Emit(OpCodes.Ldc_I4_8);
+            break;
+        default:
+            if (value &gt;= -128 &amp;&amp; value &lt;= 127)
+            {
+                il.Emit(OpCodes.Ldc_I4_S, (sbyte)value);
+            }
+            else
+            {
+                il.Emit(OpCodes.Ldc_I4, value);
+            }
+            break;
+    }
+</code></pre>
+<p>Ldc_I4に限らず、慣れてきたら幾つか予め容易しておくと色々はかどります。この辺のユーティリティが勢揃いフルセットなのが<a href="https://github.com/kevin-montrose/Sigil">Sigil</a>なのですが、これはこれでToo Muchなきらいもあるし、ツール類から流したりコピペったりする分には素のほうがやりやすかったりなので、むしろ最初のうちは素のままやっていったほうが良いでしょう。Sigilの検証などは一見良さそうなのですが、素で書いてILSpy/ILVerifyに流したほうが結局情報豊富だったりしますしね。</p>
+<p>なお、<a href="https://github.com/neuecc/Utf8Json/blob/master/src/Utf8Json/Internal/Emit/ILGeneratorExtensions.cs">Utf8JsonのILGeneratorExtensions</a>を参考までに。基本的には素朴にやれるものしか定義していません。</p>
+<p>代入する系 - stloc, starg, stfld, stsfld, など。stはストアということで代入、まんまですね。スタックへの挙動はPop1, Push0です。そりゃそーだ。</p>
+<p>算術演算系 - add, sub, mul, div, など。まぁこれはまんまですね。二項演算子なので、みんなPop1_pop1, Push1です</p>
+<p>分岐系 - br, brtrue, beq, bgt, ble, bne, blt, など。brはbranchで、ようするところif + gotoです。C#でifで書いたものは、全てbr*に変換されています。値をPopして、それを元にしてジャンプするかどうかを決めます。beqはbranch equal, bneはbranch not equal, bleはbranch less than equal, bltはbranch less than, bgeはbranch greater than equal, bgtはbranch greater thanと、3文字で圧縮されると呪文のようでわかりにくくあるんですが、概ねそういうことですね。switchもありますが、C#のswitchとは異なることに注意。C#のswitchはコンパイラが場合によって二分探索に置き換えたりしますが、OpCodeのswitchは[0..]のジャンプテーブル(goto先が詰まってる)しかありません。</p>
+<p>その他 - callはメソッド呼ぶ。Pop数は引数によりけりなので不定(Varpop)。callvirtというものもあって、違いはcallvirtが仮想メソッド呼び出し（インターフェース経由とかの場合）、callが直呼び出しということで、よくわかんなかったらcallvirtに倒しときゃとりあえず安全、という雑な言い方もできますが、例によって出し分け拡張メソッドを作っておくと、何も考えなくてラクかもしれません。</p>
+<pre><code class="language-csharp">public static void EmitCall(this ILGenerator il, MethodInfo methodInfo)
+{
+    if (methodInfo.IsFinal || !methodInfo.IsVirtual)
+    {
+        il.Emit(OpCodes.Call, methodInfo);
+    }
+    else
+    {
+        il.Emit(OpCodes.Callvirt, methodInfo);
+    }
+}
+</code></pre>
+<p>こうやってIL眺めてると、高速なのはきっとCallのほうなんだろうなぁ、みたいなイメージが湧いてきます。取っ掛かりは、そういう雑なイメージからでいいんですよ。</p>
+<p>retはreturn。voidのメソッドであってもメソッドの最後は必ずretでしめます。</p>
+<p>dup。これはスタックの値を複製する。例えば連続してインスタンスのプロパティに代入する場合なんかに、インスタンスをdupしたりします。ようはオブジェクト初期化子なんかそうですね。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33527733-45d22d78-d899-11e7-9388-31b6488866f7.png" alt="image" /></p>
+<p>スタックの状態を書くと、</p>
+<pre><code class="language-csharp">newobj(myclass)
+dup(myclass, myclass)
+ldc.i4(myclass, myclass, 15)
+callvirt(myclass)
+dup(myclass, myclass)
+ldstr(myclass, myclass, &quot;HogeHoge&quot;)
+callvirt(myclass)
+ret()
+</code></pre>
+<p>と、いうわけです。dupは何かとよく出てくるんですが、スタックの状況によって増えるものが違うんで混乱の原因ではありますね。まぁ、大抵はインスタンスのはずです。手書きの際に条件分岐などでdupすべきスタックの状態がグチャグチャでよくわからん！ってなる場合は、ローカル変数を作ってしまって、それをロードする、という形で逃げる手も割と良い手段です。LINQPadからのカンニングコピペは基本ですが、時に自分の意志で逸脱できるようになれば上級者！</p>
+<h2>AssemblyBuilderことはじめ</h2>
+<p>というわけで本編。AssemblyBuilderを始めましょう。習うより慣れろ、ということでまずやってみましょう。注意点としては、まずは.NET Coreや.NET Standardじゃなく、.NET Frameworkで作ってみてください(Linux環境下の人はmonoで！)。理由は、.NET Coreではアセンブリの保存ができないため、デバッグ難易度が跳ね上がるからです。</p>
+<pre><code class="language-csharp">const string ModuleName = &quot;FooBar&quot;;
+
+// .NET 4.5から。それ以前ではAppDomain.CurrentDomain.DefineDynamicAssemblyをかわりに使う
+// AssemblyBuilderAccessは.NET Coreでは現状Runしか使えないが、デバッグに超便利なので少なくともデバッグ用にだけはRunAndSaveの口を確保しておきたい
+// 一つのAssemblyに複数ModuleをDefineすることが可能ですが、何かと混乱を招くので、わかりやすさのためにも1:1にしておくと良い
+var assemblyBuilder = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName(ModuleName), AssemblyBuilderAccess.RunAndSave);
+
+// 基本的にはmoduleBuilderをstatic変数などに保持しておいて、必要な際に都度DefineTypeで動的に型定義していく
+var moduleBuilder = assemblyBuilder.DefineDynamicModule(ModuleName, ModuleName + &quot;.dll&quot;); // RunAndSaveの場合、ここでファイル名を指定しておく
+
+// Foo型を定義
+var typeBuilder = moduleBuilder.DefineType(&quot;Foo&quot;, TypeAttributes.Public);
+
+// Foo型からSumインスタンスメソッドを定義
+var sum = typeBuilder.DefineMethod(&quot;Sum&quot;, MethodAttributes.Public, typeof(int), new[] { typeof(int), typeof(int) });
+
+// そしてメソッドの中身をEmit
+var il = sum.GetILGenerator();
+il.Emit(OpCodes.Ldarg_1); // インスタンスメソッドの場合、arg0がthisになる
+il.Emit(OpCodes.Ldarg_2);
+il.Emit(OpCodes.Add);
+il.Emit(OpCodes.Ret);
+
+// CreateTypeで型を実体化する
+var fooType = typeBuilder.CreateType(); // これで「型」のできあがり
+var instance = Activator.CreateInstance(fooType); // まぁ大抵は？生成したインスタンスをキャッシュするのでしょう
+
+var result = fooType.GetMethod(&quot;Sum&quot;).Invoke(instance, new object[] { 10, 20 });
+Console.WriteLine(result); // 30, ちゃんとSumが呼べてる。
+
+// 保存する時はDefineDynamicModuleの時に指定したのと同じ名前で吐くのが安全のために良い
+#if DEBUG
+assemblyBuilder.Save(ModuleName + &quot;.dll&quot;);
+#endif
+</code></pre>
+<p>これでFooBarモジュールにSumメソッドを持つFoo型ができました。DefineDynamicAssembly -&gt; DefineDynamicModuleは定形なので、こんなもんだと思ってください。ここで作るAssemblyBuilder/ModuleBuilderはアプリケーション中でずっと使いまわします（さすがに一つの型毎にAssembly生成してたら過剰すぎるので！）。</p>
+<p>DefineTypeにより型定義、このDefineTypeはスレッドセーフなので安心して（？）グローバルに保存しているModuleBuilderから呼び出せます(ただしmonoでは非スレッドセーフなので、mono環境での実行を意識するならDefineTypeにlockかけましょう、例えばUnityとかね……)。</p>
+<p>型を定義したら次はメソッド、ということでDefineMethod。Defineには他にDefineField, DefineConstructor, DefinePropertyなどあります。そして中身の記述のためILGeneratorを取り出し、Emit。最後にCreateTypeしてできあがり、です。</p>
+<p>ここまでで通常は終わりですが、デバッグ時はSaveを呼んで、中身を確認すると色々と楽になれます。今回はFooBar.dllができたので、ILSpyで開いてみましょう。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33528628-33ad7978-d8a7-11e7-803b-ae832bf0131e.png" alt="image" /></p>
+<p>問題なし、と。まぁ問題ない場合は問題なしでいいんですが、たいてい問題アリなので（特に長いコード書いてくと本当に辛い！）、こうして見れるのめちゃくちゃ大事です。</p>
+<p>或いはdnSpyを使うという手もあります。dnSpyの場合はそのままステップ実行までできます！やり方は簡単で、Startボタンを押して、exeを指定。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33528674-ad4eafcc-d8a7-11e7-90b3-db69a1518068.png" alt="image" /></p>
+<p>あとは、Invokeしているところに止めて、F11連打してくと、Sumの呼び出しまでステップ実行で降りていけます。そうなるとロードしたインメモリアセンブリも表示されていて中身丸見えに。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33528727-96658816-d8a8-11e7-943b-348ec745305b.png" alt="image" /></p>
+<p>なので、dnSpyを使っていくならSaveしなくても大丈夫です。ただ、そもそもILが腐っている場合にILSpyならSaveして腐ったILを見ることができますがdnSpyでは無理なので、ILのデバッグ的には腐ったILを修正していくフェーズのほうが多いので、できればSave可能な環境を作ったほうが良いでしょう。</p>
+<p>でも最終成果物は.NET StandardなのでSaveできないんです！って場合は、というかもう今からライブラリ作る人はみんなそうだと思うんですが、そういう人はメインライブラリは.NET Standardで作って、それとは別に.NET Frameworkのコンソールアプリを作って、プロジェクト参照でライブラリを引っ張り、コンパイラシンボルで.NET Frameworkからの参照のときのみSaveの口を開けておく、みたいなやり方で確保するのがオススメです。例えばUtf8JsonはこんなAssemblyBuilder用のヘルパーを使っています。</p>
+<pre><code class="language-csharp">using System.Reflection;
+using System.Reflection.Emit;
+
+namespace Utf8Json.Internal.Emit
+{
+    internal class DynamicAssembly
+    {
+#if NET45 || NET47
+        readonly string moduleName;
+#endif
+        readonly AssemblyBuilder assemblyBuilder;
+        readonly ModuleBuilder moduleBuilder;
+
+        public ModuleBuilder ModuleBuilder { get { return moduleBuilder; } }
+
+        public DynamicAssembly(string moduleName)
+        {
+#if NET45 || NET47
+            this.moduleName = moduleName;
+            this.assemblyBuilder = System.AppDomain.CurrentDomain.DefineDynamicAssembly(new AssemblyName(moduleName), AssemblyBuilderAccess.RunAndSave);
+            this.moduleBuilder = assemblyBuilder.DefineDynamicModule(moduleName, moduleName + &quot;.dll&quot;);
+#else
+#if NETSTANDARD
+            this.assemblyBuilder = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName(moduleName), AssemblyBuilderAccess.Run);
+#else
+            this.assemblyBuilder = System.AppDomain.CurrentDomain.DefineDynamicAssembly(new AssemblyName(moduleName), AssemblyBuilderAccess.Run);
+#endif
+
+            this.moduleBuilder = assemblyBuilder.DefineDynamicModule(moduleName);
+#endif
+        }
+
+#if NET45 || NET47
+
+        public AssemblyBuilder Save()
+        {
+            assemblyBuilder.Save(moduleName + &quot;.dll&quot;);
+            return assemblyBuilder;
+        }
+
+#endif
+    }
+}
+</code></pre>
+<h2>PEVerifyことはじめ</h2>
+<p>最初のうちどころか、慣れてきても、大抵はEmitには失敗します。どっか間違えます。例えばスタックにあまったものが存在している場合</p>
+<pre><code class="language-csharp">var il = sum.GetILGenerator();
+il.Emit(OpCodes.Ldarg_1);
+il.Emit(OpCodes.Ldarg_2);
+il.Emit(OpCodes.Add);
+il.Emit(OpCodes.Ldc_I4, 999); // 一個余計なものを足す
+il.Emit(OpCodes.Ret);
+</code></pre>
+<p>これは、Sumを呼んだ時に実行時エラーとして「System.InvalidProgramException: JIT コンパイラで内部的な制限が発生しました。」がでます。この「JIT コンパイラで内部的な制限が発生しました。」はもう悲すぃぐらいに付き合うことになるでしょう。こいつの倒し方ですが、まぁようするにどこでエラーが起きたかを突き止めていくということ。で、役に立つ（？）のが、スタックをとりあえず空にしてダミーでreturnする方。</p>
+<pre><code class="language-csharp">// こういうヘルパーメソッド用意しておくと便利
+public static void EmitPop(this ILGenerator il, int count)
+{
+    for (int i = 0; i &lt; count; i++)
+    {
+        il.Emit(OpCodes.Pop);
+    }
+}
+
+// で、こういうふうにしてひたすら探る
+var il = sum.GetILGenerator();
+il.Emit(OpCodes.Ldarg_1);
+il.Emit(OpCodes.Ldarg_2);
+il.EmitPop(2); // 二個消す（いくつPopすれば分からない場合も多いけど、そのときは1, 2, 3...と適当にPop数を増やして例外が起きないように探ればOK）
+il.Emit(OpCodes.Ldc_I4_1);
+il.Emit(OpCodes.Ret);
+// --- ここまでは大丈夫だった --
+/*
+il.Emit(OpCodes.Add);
+il.Emit(OpCodes.Ldc_I4, 999); // 一個余計なものを足す
+il.Emit(OpCodes.Ret);
+*/
+</code></pre>
+<p>Popとダミーのリターンで、どこまでのEmitは大丈夫で、どこからがダメなのかを探していきます。このやり方で9割ぐらいは最終的に見つかります。例えばldargとldarg_Sの間違いとかはサクッと見つかりますね。残り1割は、しょうがないケースなので頑張ろう。</p>
+<p>この原始的なやり方は最後の最後まで役に立ちます。が、もう少し楽をしたいので、PEVerifyを使いましょう。PEVerifyによって95%ぐらいのエラーを一撃必殺で見抜くことができます。アセンブリのSaveとセット販売で用意しておくとデバッグが捗ります。</p>
+<pre><code class="language-csharp">// ようはこういうヘルパーメソッドを用意しておく
+static void Verify(params AssemblyBuilder[] builders)
+{
+    var path = @&quot;C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.6.1 Tools\x64\PEVerify.exe&quot;;
+
+    foreach (var targetDll in builders)
+    {
+        var psi = new ProcessStartInfo(path, targetDll.GetName().Name + &quot;.dll&quot;)
+        {
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+
+        var p = Process.Start(psi);
+        var data = p.StandardOutput.ReadToEnd();
+        Console.WriteLine(data);
+    }
+}
+
+// Invokeタイミングで死ぬのでDLLの生成自体は可能。SaveしてVerifyを通すようにしておきましょう。
+try
+{
+    var result = fooType.GetMethod(&quot;Sum&quot;).Invoke(instance, new object[] { 10, 20 });
+    Console.WriteLine(result); // ↑のとこで例外を吐く
+}
+finally
+{
+    assemblyBuilder.Save(ModuleName + &quot;.dll&quot;);
+    Verify(assemblyBuilder);
+}
+</code></pre>
+<p>PEVerifyによって、例えばこういうメッセージが得られます。</p>
+<pre><code class="language-csharp">[IL]: エラー:[FooBar.dll : Foo::Sum][オフセット 0x00000008] スタックに含めることができるのは、戻り値だけです。
+</code></pre>
+<p>ILSpyでDLLをIL Viewにして見てみると</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33528907-292a37ac-d8ac-11e7-8e92-a8c24e1fa310.png" alt="image" /></p>
+<p>オフセットはIL_0008に対応していて、retのあたりがダメなんだ、ということが分かります。で、まぁメッセージとニラメッコして、なんとなくスタックの数がおかしいんだろうなあ、と辺りをつけましょう。</p>
+<p>さて、もう一個よくみる例外が「共通言語ランタイムが無効なプログラムを検出しました。」です。これもようするところ間違えたILをEmitしてるってことなんですが。例えばこういうコードをEmitしてPEVerifyにかけましょう。</p>
+<pre><code class="language-csharp">var il = sum.GetILGenerator();
+il.Emit(OpCodes.Ldarg_1);
+// il.Emit(OpCodes.Ldarg_2); // スタック足りなくしてみる
+il.Emit(OpCodes.Add);
+il.Emit(OpCodes.Ret);
+</code></pre>
+<p>こういう結果が得られます！</p>
+<pre><code class="language-csharp">[IL]: エラー:[FooBar.dll : Foo::Sum][オフセット 0x00000001] スタックのアンダーフロー
+</code></pre>
+<p>腐ったILを生成すると、ILSpyのC#ビューがウンともスンとも言わなくなります。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33528986-f0cc8e86-d8ac-11e7-89c8-764576f8c004.png" alt="image" /></p>
+<p>が、ILビューは生きているので頑張りましょう。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33528988-0ebccb68-d8ad-11e7-8e71-2d13498aa57a.png" alt="image" /></p>
+<p>オフセット0x00000001、つまりaddのところでスタック足りてませんよ、っていうことでした。OK。まぁこのぐらい短いとどうってことないですが、長いILだとスタックの数がオカシイのは分かるけど、どのへんイジりゃあいいんだこれ、って混乱したりしなかったりしますが、場所さえ突き止められれば、あとは気合でなんとでもなります。問題なし。</p>
+<h2>DynamicMethodことはじめ</h2>
+<p>DynamicMethodは、ようするところAssemblyBuilderからDefineAssembly/DefineModule/DefineTypeを抜いたものです。デリゲート生成しかできませんが、AssemblyBuilderをstaticなどっかに保存しておく、とか別に大したことないといえば大したことないけど、面倒っちゃあ面倒なので、いーんじゃないでしょうか。それと、大事なことが一つ。DynamicMethodならプライベートな変数やメソッドにアクセスできます。</p>
+<pre><code class="language-csharp">// こんな型があるとして、ぷらいべーとなフィールドを高速に書き換えれるアクセサを用意してみましょう
+public class Person
+{
+    int age; // private field!
+
+    public Person(int age)
+    {
+        this.age = age;
+    }
+
+    public int GetAge()
+    {
+        return age;
+    }
+}
+
+// DefineMethodとほぼ同等に戻り値、引数の型を並べて作る
+// ただしDynamicMethodだけの要素として、ModuleとSkipVisibilityに注意！
+var dynamicMethod = new DynamicMethod(&quot;SetAge&quot;, null, new[] { typeof(Person), typeof(int) }, m: typeof(Person).Module, skipVisibility: true);
+
+// ILGeneratorに関してはDefineMethodとかわりなし
+var il = dynamicMethod.GetILGenerator();
+il.Emit(OpCodes.Ldarg_0); // staticメソッドなので0はじまり
+il.Emit(OpCodes.Ldarg_1);
+il.Emit(OpCodes.Stfld, typeof(Person).GetField(&quot;age&quot;, BindingFlags.NonPublic | BindingFlags.Instance));
+il.Emit(OpCodes.Ret);
+
+// 最後にCreateDelegateでデリゲートを作る
+var setAge = (Action&lt;Person, int&gt;)dynamicMethod.CreateDelegate(typeof(Action&lt;Person, int&gt;));
+
+var person = new Person(10);
+setAge(person, 999);
+
+Console.WriteLine(person.GetAge()); // 999
+</code></pre>
+<p>よくあるゲッターへのアクセサ/セッターへのアクセサ、です。汎用的なものにすると引数/戻り値がobject型にならざるを得なくて、ボクシングが避けられずエクストリームなパフォーマンス追求には使えないんですが、カジュアル用途でやってくには十分以上に便利でしょう。</p>
+<p>DynamicMethodの注目点はm:とskipVisibility:です。これを指定しておくとプライベート変数へのアクセスが可能になるほか、実はパフォーマンス的にも有利なので、別にプライベートへのアクセスがなくても、必ず指定するようにしておくと良いでしょう。</p>
+<p>キャッシュが型単位だったり、インターフェイス単位で使う、などの場合にDynamicMethodだとやりづらくはあるんですが、コンストラクタにデリゲートを渡して、各メソッドはそれを移譲して呼び出すだけの入れ物型を用意してあげれば、DynamicMethodでも型付きのものとほぼ同様のことが可能です。DynamicAssemblyでのコンストラクタでキャッシュ用のフィールドを初期化する、といったケース(Utf8Jsonではエンコード済みのプロパティ名とか)も、同じようにコンストラクタで渡してあげれば良いでしょう。</p>
+<p>例えばUtf8Jsonでは、基本はDynamicAssemblyで生成したシリアライザを使いますが、AllowPrivateオプションのシリアライザを使う場合は、DynamicMethod経由で生成し、以下の入れ物を通して型をキャッシュしています。</p>
+<pre><code class="language-csharp">internal delegate void AnonymousJsonSerializeAction&lt;T&gt;(byte[][] stringByteKeysField, object[] customFormatters, ref JsonWriter writer, T value, IJsonFormatterResolver resolver);
+internal delegate T AnonymousJsonDeserializeFunc&lt;T&gt;(object[] customFormatters, ref JsonReader reader, IJsonFormatterResolver resolver);
+
+internal class DynamicMethodAnonymousFormatter&lt;T&gt; : IJsonFormatter&lt;T&gt;
+{
+    readonly byte[][] stringByteKeysField;
+    readonly object[] serializeCustomFormatters;
+    readonly object[] deserializeCustomFormatters;
+    readonly AnonymousJsonSerializeAction&lt;T&gt; serialize;
+    readonly AnonymousJsonDeserializeFunc&lt;T&gt; deserialize;
+
+    public DynamicMethodAnonymousFormatter(byte[][] stringByteKeysField, object[] serializeCustomFormatters, object[] deserializeCustomFormatters, AnonymousJsonSerializeAction&lt;T&gt; serialize, AnonymousJsonDeserializeFunc&lt;T&gt; deserialize)
+    {
+        this.stringByteKeysField = stringByteKeysField;
+        this.serializeCustomFormatters = serializeCustomFormatters;
+        this.deserializeCustomFormatters = deserializeCustomFormatters;
+        this.serialize = serialize;
+        this.deserialize = deserialize;
+    }
+
+    public void Serialize(ref JsonWriter writer, T value, IJsonFormatterResolver formatterResolver)
+    {
+        if (serialize == null) throw new InvalidOperationException(this.GetType().Name + &quot; does not support Serialize.&quot;);
+        serialize(stringByteKeysField, serializeCustomFormatters, ref writer, value, formatterResolver);
+    }
+
+    public T Deserialize(ref JsonReader reader, IJsonFormatterResolver formatterResolver)
+    {
+        if (deserialize == null) throw new InvalidOperationException(this.GetType().Name + &quot; does not support Deserialize.&quot;);
+        return deserialize(deserializeCustomFormatters, ref reader, formatterResolver);
+    }
+}
+</code></pre>
+<p>DynamicMethodの困った点は、Saveできないこと。dnSpyでのステップ実行もできません。これはデバッガビリティが恐ろしく落ちます。特に解決策という解決策もないんですが、しいていえばILGeneratorからの流れはDynamicAssemblyと変わらないので、Emit部分をメソッドで分けて、生成部分を共通化してやると良いでしょう。</p>
+<p>その際の注意点は、引数の順番がズレること。これは、ArgumentFieldという構造体を用意して、Ldargなどはそれ経由で呼ぶようにして解決しました。</p>
+<pre><code class="language-csharp">internal struct ArgumentField
+{
+    readonly int i;
+    readonly bool @ref;
+    readonly ILGenerator il;
+
+    public ArgumentField(ILGenerator il, int i, bool @ref = false)
+    {
+        this.il = il;
+        this.i = i;
+        this.@ref = @ref;
+    }
+
+    public ArgumentField(ILGenerator il, int i, Type type)
+    {
+        this.il = il;
+        this.i = i;
+        this.@ref = (type.IsClass || type.IsInterface || type.IsAbstract) ? false : true;
+    }
+
+    public void EmitLoad()
+    {
+        if (@ref)
+        {
+            il.EmitLdarga(i);
+        }
+        else
+        {
+            il.EmitLdarg(i);
+        }
+    }
+
+    public void EmitStore()
+    {
+        il.EmitStarg(i);
+    }
+}
+</code></pre>
+<p>もう一つは、インスタンスの呼び出し/インスタンスフィールドの呼び出しができないこと(DynamicMethodはインスタンスが存在しませんからね！)。そこでフィールドキャッシュのLoadなどは、Actionで外から渡すようにして、両者が共通でない部分は外出しするようにしました。正直言って、手間だし、ややグチャグチャしてしまうところもあるのですが、やる価値はあります。SaveなしでIL手書きと戦うのは本当にキツいので……。</p>
+<h2>ILGeneratorことはじめ</h2>
+<p>基本、今まで見た通りEmitするだけなんですが、まだループや分岐に関しては説明していないですね！で、ILにはそれらへの気の利いた文法はありません。全部labelとgotoで実現するものと思いましょう。そして、ループや分岐が絡むと途端にIL書く気が失せます。というのも、複雑怪奇になるので。例えばこんな単純なループですら……</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33529421-1309bdb4-d8b4-11e7-911d-661281cd975d.png" alt="image" /></p>
+<p>なんかもう嫌な感じでいっぱいです。ああ、ああ……。といっても書かなきゃいけない局面もいっぱいあるんで、書きましょう。</p>
+<p>まず、forはないものと思って、この手のイメージコードを作る場合は全部gotoに直します。それがILに近くなるので。近いほうがイメージもしやすい。</p>
+<pre><code class="language-csharp">	var i = 0;
+	goto FOR_CONDITION;
+
+FOR_BODY:
+	if (i == 50) goto FOR_END;
+FOR_CONTINUE: // 今回は使いませんが
+	i += 1;
+FOR_CONDITION:
+	if (i &lt; 100)
+	{
+		goto FOR_BODY;
+	}
+FOR_END:
+	Console.WriteLine(&quot;End&quot;);
+</code></pre>
+<p>なるほど古き良きgoto。既に帰りたい感じですが、更にこれをEmitに直します。まぁ基本はLINQPadのコピペなのですが、LabelのDefineが必要です！</p>
+<pre><code class="language-csharp">const string ModuleName = &quot;FooBar&quot;;
+var assemblyBuilder = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName(ModuleName), AssemblyBuilderAccess.RunAndSave);
+var moduleBuilder = assemblyBuilder.DefineDynamicModule(ModuleName, ModuleName + &quot;.dll&quot;);
+var typeBuilder = moduleBuilder.DefineType(&quot;Foo&quot;, TypeAttributes.Public);
+
+var methodBuilder = typeBuilder.DefineMethod(&quot;For&quot;, MethodAttributes.Public, null, Type.EmptyTypes);
+
+// -- ここから --
+ILGenerator il = methodBuilder.GetILGenerator();
+
+// gotoの行き先をあらかじめDefineLabelで持つ
+var forBodyLabel = il.DefineLabel();
+var forContinueLabel = il.DefineLabel();
+var forConditionLabel = il.DefineLabel();
+var forEndLabel = il.DefineLabel();
+
+// ローカル変数を宣言する
+var iLocal = il.DeclareLocal(typeof(int));
+
+il.Emit(OpCodes.Ldc_I4_0);
+il.Emit(OpCodes.Stloc, iLocal); // i = 0;
+il.Emit(OpCodes.Br, forConditionLabel); // goto FOR_CONDITION;
+
+// MarkLabelでラベルの位置を確定させる
+il.MarkLabel(forBodyLabel); // FOR_BODY:
+il.Emit(OpCodes.Ldloc, iLocal);
+il.Emit(OpCodes.Ldc_I4, 50);
+il.Emit(OpCodes.Beq, forEndLabel); // if(i == 50) goto FOR_END;
+
+il.MarkLabel(forContinueLabel);
+il.Emit(OpCodes.Ldloc, iLocal);
+il.Emit(OpCodes.Ldc_I4_1);
+il.Emit(OpCodes.Add);
+il.Emit(OpCodes.Stloc, iLocal);  // i += 1;
+            
+il.MarkLabel(forConditionLabel); // FOR_CONDTION:
+il.Emit(OpCodes.Ldloc, iLocal);
+il.Emit(OpCodes.Ldc_I4, 100);
+il.Emit(OpCodes.Blt, forBodyLabel); // if(i &lt; 100) goto FOR_BODY;
+
+il.MarkLabel(forEndLabel); // FOR_END:
+il.EmitWriteLine(&quot;End&quot;); // Stfld, Call WriteLine
+
+il.Emit(OpCodes.Ret);
+// -- ここまで --
+
+var t = typeBuilder.CreateType();
+dynamic instance = Activator.CreateInstance(t);
+
+try
+{
+    instance.For(); // 実行確認
+}
+finally
+{
+    assemblyBuilder.Save(ModuleName + &quot;.dll&quot;);
+    Verify(assemblyBuilder);
+}
+</code></pre>
+<p>DefineLabelで予め宣言する、MarkLabelでラベル位置を決める、分岐系OpCodeでLabelを指定する。ということになります。まぁ、全部gotoなんだって思えば別になんてことない話ではあるんですが、だいぶ見辛くなりました。ただの、ほぼ空のfor文ですら！また、分岐はBeq_SなどがLINQPadなどの解析結果に出ると思うのですが、これはジャンプ先が近ければ_Sが使えて、遠ければ実行時エラーになります。埋め込み量がわかっている場合は_Sでいいんですが、動的生成の都合上、長さわからない場合っていうのも少なくなかったりするので、安全側に倒すなら、とりあえず_Sナシでやるってのは手だと思っています。ちょっとね、怖いんですよね。</p>
+<p>ちなみに私はこれを書き写すにあたって、二回ミスってPEVerifyのお世話になりました（笑）。ちょっと長くなったり分岐入ると、やっぱミスってしまうんですよねぇ。で、これ、PEVerifyなしで探れって言われると、たかだかfor文一つだけでしかなくても、めっちゃ辛いわけです。実際の生成コードだとこれの比じゃなく長くなりますから、いやはや、大変な話です……。</p>
+<h2>キャッシュの手法</h2>
+<p>生成したコードは再利用するためにどこかに保持する必要があります。ああ、Dictionaryの出番だね。その通りですが、その通りではありません。Dictionaryのルックアップコストはタダではない！GetHashCodeとEqualsを呼び出すわけですが、例えばStringがキーなら、GetHashCodeで一回全舐めして、Equalsでやはり全舐めするわけです。おお……（もちろん、文字列の長さが長ければ長いほどコストは嵩む）。とはいえ、通常はTypeをキーにすると思うので、ルックアップのコストはそこまで高くはないので、構わないっちゃあ構わないでしょう。</p>
+<p>が、もしTypeなら、ジェネリクスを有効に使うと、より高速なルックアップが可能です。MessagePack for C#やUtf8JsonではResolverという形で、生成した型をキャッシュ/取得する機構を全面採用しています。</p>
+<pre><code class="language-csharp">internal sealed class DynamicObjectResolverAllowPrivateFalseExcludeNullFalseNameMutateOriginal : IJsonFormatterResolver
+{
+    public static readonly IJsonFormatterResolver Instance = new DynamicObjectResolverAllowPrivateFalseExcludeNullFalseNameMutateOriginal();
+    
+    static readonly Func&lt;string, string&gt; nameMutator = StringMutator.Original;
+    static readonly bool excludeNull = false;
+    const string ModuleName = &quot;Utf8Json.Resolvers.DynamicObjectResolverAllowPrivateFalseExcludeNullFalseNameMutateOriginal&quot;;
+
+    static readonly DynamicAssembly assembly;
+
+    static DynamicObjectResolverAllowPrivateFalseExcludeNullFalseNameMutateOriginal()
+    {
+        assembly = new DynamicAssembly(ModuleName);
+    }
+
+    DynamicObjectResolverAllowPrivateFalseExcludeNullFalseNameMutateOriginal()
+    {
+    }
+
+    // DynamicObjectResolverAllowPrivateFalseExcludeNullFalseNameMutateOriginal.Instance.GetFormatter&lt;T&gt;で取得する
+    public IJsonFormatter&lt;T&gt; GetFormatter&lt;T&gt;()
+    {
+        // 中身は型キャッシュのフィールドを取りに行くだけ
+        return FormatterCache&lt;T&gt;.formatter;
+    }
+
+    // 型キャッシュ
+    static class FormatterCache&lt;T&gt;
+    {
+        public static readonly IJsonFormatter&lt;T&gt; formatter;
+
+        // 静的コンストラクタはスレッドセーフが保証される
+        static FormatterCache()
+        {
+            // ここでILのEmitしてIJsonFormatter&lt;T&gt;を一度だけ生成している
+            formatter = (IJsonFormatter&lt;T&gt;)DynamicObjectTypeBuilder.BuildFormatterToAssembly&lt;T&gt;(assembly, Instance, nameMutator, excludeNull);
+        }
+    }
+}
+</code></pre>
+<p>難点はアンロードできないことと、動的に生成しづらい（できないわけではない, ただしそれで生成した型もアンロード不可能）になりますが、大抵この手のライブラリの生成データはアプリケーションの生存期間でずっと生き続けるので、あまり問題にはならないでしょう。</p>
+<h2>その他Tips</h2>
+<p>C#コンパイラがコード生成するもの(yield returnやawaitなど)をIL生成でやるのは、無理です。が、そういうのが必要なのだという場合は、ヘルパーメソッドを作ってあげて、それを呼ぶ形にしてあの手この手でIL手書き部分を減らしてあげましょう。</p>
+<p>unsafeをIL手書きで書くのは地獄の一里塚です。しかし、やらなければならない時はあります（実際MessagePack for C#やUtf8Jsonはunsafeが含まれてる）。そして、何気にfixedのコードもまた、コンパイラ生成だったりします。LINQPadで見てみましょう。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33529917-75e4f6a0-d8ba-11e7-9160-2c24e985f78c.png" alt="image" /></p>
+<p>fixed(byte* p = xs) のコードは生成量が多くてうげー、って感じなので、基本 fixed(byte* p = &amp;xs[0]) のほうでいいでしょう(nullチェック？それは外側でしましょ)。若干ややこしいですが、こんな感じで。</p>
+<pre><code class="language-csharp">// DeclareLocalの際にpinned: trueを指定する
+var p = il.DeclareLocal(typeof(byte).MakePointerType(), pinned: true); // byte*
+
+// begin fixed定型文
+il.Emit(OpCodes.Ldarg_1); // staticメソッドじゃないので1で。
+il.Emit(OpCodes.Ldc_I4_0);
+il.Emit(OpCodes.Ldelema, typeof(byte));
+il.Emit(OpCodes.Stloc, p); // byte* p = &amp;xs[0];
+
+// -- ここに好きにBodyをどうぞ--
+
+// end fixed定型文
+il.Emit(OpCodes.Ldc_I4_0);
+il.Emit(OpCodes.Conv_U);
+il.Emit(OpCodes.Stloc, p);
+
+il.Emit(OpCodes.Ret);
+</code></pre>
+<p>このfixed含みのコードをPEVerifyにかけると</p>
+<pre><code class="language-csharp">[IL]: エラー:[Foo::For][オフセット 0x00000007][address of Byte が見つかりました][unmanaged pointerS が必要です] スタックに予期しない型があります。
+[IL]: エラー:[Foo::For][オフセット 0x0000000A][Native Int が見つかりました][unmanaged pointerS が必要です] スタックに予期しない型があります。
+</code></pre>
+<p>という2つのエラーメッセージが必ず出てしまいますが、これはもうそういうものだと思うことにしましょう、しょうがない……。</p>
+<p>ニッチトピックスとしてはGeneric型の生成は、結構大変です。いや、大変でもないんですが、そのジェネリックとしてのTを使って、別の型で生成するのがむつかしいのです。IntelliSenseから出てこないし普通に書いてると辿りつけないんですが、TypeBuilder.GetMethod経由だとDefineGenericParametersとMakeGenericTypeからMethodInfoが取れる。って、何言ってるのか全く意味不明と思うんですが、いつか誰かがはまった時のヒントとして残しておきます。もしジェネリック型を生成して、なにかよくわからないけれど、どうにもならないことがあったら、思い出してください。はい。</p>
+<h2>まとめ</h2>
+<p>とにかくツールの使いこなしが全てです。徒手空拳でILGeneratorと戦うのは、そりゃあ大変な努力が必要ですが、きっちりとツールを使っていけば、超絶難易度の黒魔術、というほどではなく、まぁまぁ常識的な範囲に収まります。書くだけなら。読み解くのはやっぱ一苦労だし、人の書いたのを読めるかって言ったら、まぁ読めないんですが（自分の書いたのだって数日置いたら読めないぞ！）、その辺はアセンブラなんでしょうがないね。読みの難易度と書きの難易度は非対称だし、読みに比べると、書きのほうがずっと楽、ということです（なんせカンニングコピペというテクが使えますからね）。</p>
+<p>というわけで、あまり恐れずに、自分の中のツールセットとして持っておくと、なんらかのフレームワーク的なレイヤーを作る際にやれることが大きく広がるんじゃないかと思います。</p>
+<p>とはいえ、別に無闇に使うのはお薦めしません！必要ないところでは必要ないのままでいいし、場合によってはベタなリフレクションで構わない場合も多いでしょう。そこの辺の選択は冷静にやったほうがいいですね、麻疹にかかるのも大事ですが、IL書きは割と冗談じゃなく本人以外メンテ不能になるので。</p>
+<p>さて、そんなわけで明日のAdvent Calendardは既に書いていただいているのですが<a href="https://qiita.com/NumAniCloud/items/f2fc95fbe650bf9f8f80">@NumAniCloudさんのC#で実装！RPGのパッシブ効果の作り方を通じたオブジェクト指向のノウハウ</a>です。</p>
+</div>
+<h1><a href="http://neue.cc/2017/0929_559.html">Utf8Json - C#最速のJSONシリアライザ(for .NET Standard 2.0, Unity)</a></h1>
+<ul class="date"><li>2017-09-29</li></ul>
+<div class="entry_body"><p>Utf8Jsonという新しいC#用のJSONシリアライザを作りました。.NET Standard 2.0で作っているのでふつーの.NETでもXamarinでも概ね動くはずです（.NET 4.5版もあります）。また、Unity用にもちゃんと用意しています。Unityの場合はJsonUtilityと比較してどうよ、ってことなんですが、いいと思いますよ（あとで少しだけ説明します）</p>
+<ul>
+<li><a href="https://github.com/neuecc/Utf8Json">GitHub - neuecc/Utf8Json</a></li>
+</ul>
+<p>なんかバズって、一気に350 Star超えしました。<a href="https://github.com/trending/c%23">GitHubのToday's Trending - C#</a>で1位、全体で20位ぐらいになってたりました。</p>
+<p>使い方を説明してもしょうがないので(ReadMe見てね)、ここではパフォーマンスに関する実装面での工夫について説明します。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/30982275-e17f52e8-a4c1-11e7-84b4-350c72f3011c.png" alt="image" /></p>
+<p>赤枠で囲ったのがUtf8Jsonで、それより左側はバイナリシリアライザです。JSONでは最速。ウリは超高速性と、十分な拡張性。さすがにフォーマットの違いがあるので<a href="https://github.com/neuecc/MessagePack-CSharp/">MessagePack for C#</a>には敵わないのですが（というか改めて見てもむしろデタラメに速すぎ……）、他のJSONシリアライザよりも勝っています。シリアライズに至ってはprotobuf-netより速いし。また、メモリアロケーションも非常に少ない（基本的にpayloadのサイズ分しか必要とせず、メモリプールに収まる範囲内では、ゼロアロケーションです）。</p>
+<p>コンセプトの核はシンプルです。JSONをUTF8 byte[]に直接読み書きすることで、バイナリシリアライザであるかのように動作させる。それにより、従来あったString(UTF16)との相互変換のオーバーヘッドを消して、速度を圧倒的に向上させることができる。</p>
+<p>このような試みは、corefxlabにより<a href="https://github.com/dotnet/corefxlab/blob/master/docs/specs/span.md">Span&lt;T&gt;</a>という、そろそろ標準に入りそうでまだ入ってない効率的な配列のスライスっぽい何か、の活用の一貫として研究されています。<a href="https://github.com/dotnet/corefxlab/wiki/System.Text.Formatting">corefxlabのWikiにあるSystem.Text.Formattingの解説</a>を見てみましょう。ToStringやFormattingを避け、直接UTF8として書き込むことにより、多くのアロケーションを避け、より高速に動作することを目指しています。残念ながらこれは未だ「early prototype, not complete, please don't try to use it in real world software」ではありますが。また、汎用的なJSONシリアライザとはまた別のものです。とはいえ、コンセプトの正しさ、目指さなければならない地点はどこにあるか、というのは分かると思います。Utf8Jsonは、実装した結果を持って、そこに到達しました。</p>
+<p>C#自体としても<a href="https://github.com/dotnet/csharplang/issues/909">UTF8String Constants</a>などの提案もありますが、実現するかも分からない遠い未来のことであり、UTF16のコストは払い続けなければならないでしょうね。null安全に関する話もそうですが、C#もレガシー言語と言わざるを得ない要素は色々と嵩んできてはいると思っています。Stringに関してはGoのほうがモダンでイケてる<a href="https://blog.golang.org/strings">Strings, bytes, runes and characters in Go</a>ように見えますし、しかし言語の大元に組み込まれているもの(UTF16)を変えるというのは非常に難しいところでしょう。その中で、しかし現実は現実として、今、このC#で、いかに、どこまでやれるかというのが勝負だし、C#を戦場で勝ち残れる環境に引き上げていくことでもあります。</p>
+<h2>TextReader/Writerのオーバーヘッド</h2>
+<p>通常のJSONシリアライザはstringを返しますが、別にstringを返されても使い道はないので、その後更にbyte[]に変換するでしょう、多くの場合はEncoding.UTF8.GetBytesにより。或いはTextReader/WriterでStreamに書き込みするかの、二択です。そこに着目した場合、通常のJSONシリアライザにはオーバーヘッドが存在します。例えばUtf8Jsonと<a href="https://github.com/kevin-montrose/Jil">Jil</a>(C#での高速なJSONシリアライザとしてJSON.NETのオルタナティブとしては最もメジャー)で見てみると</p>
+<pre><code class="language-csharp">// Object to UTF8 byte[]
+[Benchmark]
+public byte[] Utf8JsonSerializer()
+{
+    return Utf8Json.JsonSerializer.Serialize(obj1, jsonresolver);
+}
+
+// Object to String to UTF8 byte[]
+[Benchmark]
+public byte[] Jil()
+{
+    return utf8.GetBytes(global::Jil.JSON.Serialize(obj1));
+}
+
+// Object to Stream with StreamWriter
+[Benchmark]
+public void JilTextWriter()
+{
+    using (var ms = new MemoryStream())
+    using (var sw = new StreamWriter(ms, utf8))
+    {
+        global::Jil.JSON.Serialize(obj1, sw);
+    }
+}
+</code></pre>
+<p>Obj -&gt; String -&gt; byte[]は明らかに無駄ステップで、Obj -&gt; byte[]のほうが明らかに速そうだ、というのは単純明快でよくわかります。では Object -&gt; Stream(with StreamWriter)はどうでしょう。ベンチマークで分かる通り、StreamWriterを介したものはStringからのbyte[]よりも、むしろ低速です。一見「ストリーミング」で良いかのように見えますが、それは見せかけだけのことで、実際には内部でバッファを&quot;いい具合&quot;に抱えてやりくりしているだけのことであり、更にそれによりStreamWriterへの書き込みそのものに多くのオーバーへッドが存在するからです。このことはそもそも<a href="https://github.com/kevin-montrose/Jil#avoid-abstractions-if-able">JilのReadMe</a>にも書かれていることです、が、しかし例えばASP.NET Core MVCのシリアライザを差し替えようとして、このような実装をついしてしまうでしょう。</p>
+<pre><code class="language-csharp">// ASP.NET Core, OutputFormatter
+public class JsonOutputFormatter : IOutputFormatter //, IApiResponseTypeMetadataProvider
+{
+    const string ContentType = &quot;application/json&quot;;
+    static readonly string[] SupportedContentTypes = new[] { ContentType };
+
+    public Task WriteAsync(OutputFormatterWriteContext context)
+    {
+        context.HttpContext.Response.ContentType = ContentType;
+
+        // Jil, normaly JSON Serializer requires serialize to Stream or byte[].
+        using (var writer = new StreamWriter(context.HttpContext.Response.Body))
+        {
+            Jil.JSON.Serialize(context.Object, writer, _options);
+            writer.Flush();
+            return Task.CompletedTask;
+        }
+
+        // Utf8Json
+        // Utf8Json.JsonSerializer.NonGeneric.Serialize(context.ObjectType, context.HttpContext.Response.Body, context.Object, resolver);
+    }
+}
+</code></pre>
+<p>context.Response.BodyはStreamだから、普通にStreamWriter通して書きますよね？そのことにより謳い文句よりもずっと低速で、多くのメモリ消費をしてしまっているというのに！これが、Jilに差し替えても爆速だぜー、を達成できない理由です（とはいえさすがにもちろんJSON.NETよりは遥かに速い）。今も変わらず、JSONのシリアライゼーションは.NETのボトルネックであり続けているのです。</p>
+<p>ついでじゃないですが、StreamWriterは初期化時（コンストラクタ）に、デフォルトでchar[1024] と byte[3075] という、かなりデカいバッファをいきなり確保します。<a href="https://github.com/Microsoft/referencesource/blob/master/mscorlib/system/io/streamwriter.cs#L203-L204">referencesource/streamwriter.cs#L203-L204</a>。これは普通にデカい。こういうのがストリームの代償なんですよね、あばー。</p>
+<h2>シリアライズの最適化</h2>
+<p>こんな感じで動いています、の図。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/30877807-c7f264d8-a335-11e7-91d8-ad1029d4ae86.png" alt="" /></p>
+<pre><code class="language-csharp">// 逆コンパイル結果のイメージ。
+public sealed class PersonFormatter : IJsonFormatter&lt;Person&gt;
+{
+    // 実質シングルトンになるので永久にキャッシュ
+    private readonly byte[][] stringByteKeys;
+
+    public PersonFormatter()
+    {
+        // プロパティ名は&quot;{&quot;, &quot;:&quot;, &quot;,&quot;を引っ付けた上で事前生成してキャッシュ
+        this.stringByteKeys = new byte[][]
+        {
+            JsonWriter.GetEncodedPropertyNameWithBeginObject(&quot;Age&quot;), // {\&quot;Age\&quot;:
+            JsonWriter.GetEncodedPropertyNameWithPrefixValueSeparator(&quot;Name&quot;) // ,\&quot;Name\&quot;:
+        };
+    }
+
+    public sealed Serialize(ref JsonWriter writer, Person person, IJsonFormatterResolver jsonFormatterResolver)
+    {
+        if (person == null) { writer.WriteNull(); return; }
+
+        // WriteRawXはメモリコピーの特化版（生成時にx32/x64とsrcの長さが分かってるので、特化して生成する）
+        UnsafeMemory64.WriteRaw7(ref writer, this.stringByteKeys[0]);
+        writer.WriteInt32(person.Age); // itoaで直接書き込むことによりToString + UTF8エンコードを避ける
+        UnsafeMemory64.WriteRaw8(ref writer, this.stringByteKeys[1]);
+        writer.WriteString(person.Name);
+
+        writer.WriteEndObject();
+    }
+
+    // public unsafe Person Deserialize(ref JsonReader reader, IJsonFormatterResolver jsonFormatterResolver)
+}
+</code></pre>
+<p>この場合だと処理ステップ的には5ブロック分です。JSONのシリアライズが（バイナリに比べて）遅くなってしまう要因は色々あるのですが、各プロパティ名の書き込みには最適化の余地があります。一つに、名前は固定なので、事前にエンコードしておきましょう。更に、区切り記号&quot;:&quot;や連結&quot;,&quot;、ヘッダ&quot;{&quot;の出現位置は決まっているので、名前にくっつけて一体化してしまいます。パフォーマンス向上の基本原則は呼び出し回数を抑えること、なので一体化には大いに意味があります。あとは、ターゲットがbyte[]なので、メモリコピーするだけです。</p>
+<p>そして、更にメモリコピーの最適化の問題に入ります。C#におけるコピーの手法として、<a href="https://msdn.microsoft.com/ja-jp/library/system.array.copy%28v=vs.110%29.aspx">Array.Copy</a>、を卒業した人は<a href="https://msdn.microsoft.com/ja-jp/library/system.buffer.blockcopy.aspx">Buffer.BlockCopy</a>を使い出します。これはプリミティブ型のコピーでは、Array.Copyより高速という謳い文句で、概ね実際そうなのですが、小さいサイズのコピーの場合は話が少々違ってきます。そして、プロパティ名は通常、かなり小さい(普通は10バイト以下、多くても30バイト以下でしょう)。</p>
+<p>そしてそもそもBuffer.BlockCopyには無駄があります。<a href="https://github.com/dotnet/coreclr/pull/3118">coreclrに改善PRが出されている</a>ので、それを見るのが分かりやすいですが、Buffer.BlockCopyはランタイムのネイティブのC++コードの呼び出しになりますが、型のチェックと汎用的な型による処理が入っているんですね。というのも、Buffer.BlockCopyはプリミティブ型全てがコピーできる代物だから。でも、利用用途の9割はbyte[]のコピーのはずで、より最適なコードが叩き込めるはずです。というわけで、2016年の2月に、これは入りました。それ以前のものに関しては南無、という話です。それとCore CLRの話なのでCoreじゃないCLRにどの程度反映されているかは謎です（多分、反映されてない気がする）。</p>
+<p>とはいえどちらにせよ使いません。unsafeが許されるなら.NET 4.6から追加された<a href="https://msdn.microsoft.com/ja-jp/library/system.buffer.memorycopy(v=vs.110).aspx">Buffer.MemoryCopy</a>のほうが高速だからです。じゃあそれでOKかというと、やはりそんなことはなくて、GitHubのcoreclr上で何度か最適化PRが出されていて、現在の最新のPRは<a href="https://github.com/dotnet/coreclr/pull/9786">Optimize Buffer.MemoryCopy #9786</a>です。中身を説明すると、ある程度のThreshold(x64では2048)までは、SSE2が使える環境なら64バイト単位(RyuJITがそうする)、そうじゃなければ8バイト単位でC#のunsafeで普通にコピーするという代物です。なるほどunsafeで普通にコピー。それが速い。そうなのか。</p>
+<p>で、さらにILGeneratorによる実行時動的生成なので、コピー元の長さも知っているので、分岐も消せるんですね、直接埋め込んでしまえば。と、いうわけで、<a href="https://github.com/neuecc/Utf8Json/blob/master/src/Utf8Json/Internal/UnsafeMemory.cs">UnsafeMemory.cs</a>には31バイトまでの最適化メソッドがあります。コード生成時に長さを判定して、31バイト以下なら専用メソッドを直接呼ぶコード、それ以上はBuffer.MemoryCopyを使うコードを生成。これが真の最速コピー。</p>
+<p>なお、ILには<a href="https://msdn.microsoft.com/ja-jp/library/system.reflection.emit.opcodes.cpblk.aspx">Cpblk命令</a>がありますが(C#からは直接呼べない)、結局コレはランタイムがどう処理するかって話でしかなくて別に特にマジックもなく、むしろあまり使われないせいで最適化の手が回ってない説すらあるんで、夢は持たないでおきましょう。どうしても使いたければ現在はNuGetからSystem.Runtime.CompilerServices.Unsafeを落としてくれば使うこと自体は簡単にできます。</p>
+<h2>itoa/atoi, dtoa/atod</h2>
+<p>itoaというと古き良き香りって話で、まぁ実際古き良き話なのですが、integer to ascii、ということで数字をUTF8 byte[]に変換するなら、これが使えます。UTF8は数字はascii同様ですからね。コレの何が良いかというと、ToStringしなくて済みます。ToStringは何気にコストなのです！(ようするにInteger to UTF16だから)。更に加えてbyte[]にしたければUTF16 -&gt; UTF8へのエンコードまで必要です。絶対避けたい話ですよね、ということで数字の書き込みはitoaを実装することにしましょう。また、その逆 atoi も大事。atoiのほうは、普通だと byte[] -&gt; String -&gt; int.Parse という処理順になって無駄があるんで、そこ直接 byte[] -&gt; int に変換かけれたほうが有利になります。</p>
+<p>itoaは割と素朴に実装するだけなのでいいんですが、dtoaは問題です。doubleはねー、大変なんですよ……！ここがバイナリシリアライザと大きな違いで、バイナリシリアライザはdoubleでもサクッと高速に変換できるんですが、doubleをテキストに変換する/テキストからdoubleに変換するのは割と大仕事で、性能面に差が出てきてしまうところPart1です（Part2は文字列で、文字列はエスケープが必要になって全走査かける必要があるからめちゃくちゃネックになる）。</p>
+<p>んで、dtoaをどうするかなんですが、モダンでイケてるアルゴリズムとしてGrisu2というのがあって（<a href="http://www.cs.tufts.edu/%7Enr/cs257/archive/florian-loitsch/printf.pdf">論文は2004年</a>と比較的新しいですね）、それのC++実装として<a href="https://github.com/google/double-conversion">google/double-conversion</a>があるので(Grisu3かも、別にバージョン（？）違いは性能向上ってよりは機能面での違いってふいんきではある、<a href="http://gyafun.jp/ln/">ふぃっしゅ数</a>みたいなもんですよ←違います)、今回はそれをPure C#として移植しました。これでまぁ、概ねOKでしょう。</p>
+<p>なお、dtoaのアルゴリズムの比較はC++の高速なJSONライブラリである<a href="https://github.com/Tencent/rapidjson">RapidJSON</a>の作者が、それのために色々アルゴリズムを比較している<a href="https://github.com/miloyip/dtoa-benchmark">dtoa-benchmark</a>が割と詳しい、です。RapidJSONの作者さんはテンセント勤務。うーん、中国強い。実際、C#もGitHub見てると中国語しか説明ない謎ライブラリ、でも強そう、あと英語圏でも無名そうなのにStarいっぱいついてる、みたいな中華圏ローカルでも規模めっちゃデカいし出来も凄いんです感がとてもあって、めっちゃ面白い。時代は中国。</p>
+<p>この辺のことをSpanベースの標準サポートでやりたいのが<a href="https://github.com/dotnet/corefxlab/tree/master/src/System.Text.Primitives/System/Text">corefxlab/System.Text.Primitive</a>なんですが、まぁまだ作りかけって感じですね。実際、大事なところは TODO:そのうちやる、みたいになってるし。この辺はSpanがそもそもまだリリースされてない → Utf8Stringが全然固まってない、で、その後にくる課題だと思うんで、完成するまで先は長そうです。Utf8Jsonはcorefxlabがやりたかったことがかなり詰まってるんですよねえ。そういう意味でも未来のライブラリです。実際、JSONシリアライザとしては世代が一つ先のものと言えるでしょう。</p>
+<h2>デシリアライズの最適化</h2>
+<p>デシリアライズの最適化、に関しては<a href="http://neue.cc/2017/08/28_558.html">MessagePack for C#におけるオートマトンベースの文字列探索によるデシリアライズ速度の高速化</a>で説明したオートマトンによる検索をIL生成で埋め込んでいます。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/29754771-216b40e2-8bc7-11e7-8310-1c3602e80a08.png" alt="" /></p>
+<p>やってることは以前に書いた通りなので詳しいのはそれ読んでほしいんですが、文字列にデコードしてハッシュテーブルでマッチングするんじゃなくて、バイト列をそのまま使って、かつlong単位でバイト列を切り取ってオートマトン探索をマッチする定数ごとコード生成時に埋め込む、という割と大掛かりな代物 。大掛かりではあるんですが、コード的にもコピペして持ってきただけなので新規の手間は全然かかってません！なお、もちろん、Stringにデコードしたりとかせずに、更にエスケープされているまんまでスライスを作ってそれでオートマトンに通してます。とにかく無駄処理は徹底的に省く。テキストフォーマットだと、その辺に特にシビアにならなきゃいけなくて、性能を気にする場合はバイナリシリアライザよりも難易度がかなり高い……。</p>
+<h2>Mutable Struct Reader/Writer</h2>
+<p>Mutable Struct is Evil!というのは過去のこと、というわけではないですが、考えなしにとりあえず否定するのは時代遅れの腐った脳みそです。と、いうわけでUtf8Jsonの最もプリミティブな部位、JSONを読み書きするJsonReader/JsonWriterは状態を持つ構造体です。例えばJsonReaderはbyte[]とint offsetを保持し、読み込みのたびにoffsetが進みます。</p>
+<p>これは、値渡しをしてはいけないことを意味します。また、ローカル変数に入れるのも禁止です。コピー禁止、徹底的に。というわけで、型毎のシリアライザ、IJsonFormatterの定義はこうなっています。</p>
+<pre><code class="language-csharp">public interface IJsonFormatter&lt;T&gt; : IJsonFormatter
+{
+    void Serialize(ref JsonWriter writer, T value, IJsonFormatterResolver formatterResolver);
+    T Deserialize(ref JsonReader reader, IJsonFormatterResolver formatterResolver);
+}
+</code></pre>
+<p>ちなみに、値渡しの禁止はC# 7.2のref-like typesによって、コンパイラによる制御がかけられる、といいなあ、というのが詳しくは<a href="https://github.com/dotnet/csharplang/blob/master/proposals/csharp-7.2/span-safety.md">csharp-7.2/span-safety.md</a>をどうぞでref周りには色々と手が入る予定があるんですが、残念ながら禁止はできなさそうです(ref-likeであってref-onlyではない、みたいな)。なので自己責任で気をつけてください、という話になります。<a href="https://github.com/dotnet/csharplang/blob/master/proposals/csharp-7.2/readonly-ref.md">csharp-7.2/Readonly references</a>あたりは少し助けになりますが、それでも完全ではないですね。ref周りの強化はまだ続いてくので、今後に注視していきたいところ。</p>
+<p>また、JsonReader/Writerはあまり気の利いたステートを持ちません。中身は byte[] bufferとint offset しか持ちません。なので、例えばJSON.NETはStartArrayすると、EndArrayまではWriteValueに対して&quot;,&quot;を自動でつけてくれるとかしてくれますが、そういうのは一切してくれません。100%マニュアル管理です。これは、↑で出たプロパティ名に&quot;{&quot;とか&quot;:&quot;とか&quot;,&quot;がくっついてるなどなど、最適化のために内部ステートをガン無視した投下を行うで、管理しようがないからってのが理由になりますね。あとは、もちろん不要なステート管理は性能上の無駄なので、そうじゃなくても最初から捨てる気でした。</p>
+<p>いえいえ、別にだからといって読み書きしづらいわけじゃないですよ？むしろReadに関しては、かなりやりやすいと思います。例えばList[int]のデシリアライザを作るとして</p>
+<pre><code class="language-csharp">public List&lt;int&gt; Deserialize(ref JsonReader reader, IJsonFormatterResolver formatterResolver)
+{
+    if (reader.ReadIsNull()) return null;
+
+    var list = new List&lt;int&gt;();
+
+    var count = 0; // 外部変数で状態管理（JsonReaderは状態を持たない）
+    while (reader.ReadIsInArray(ref count))
+    {
+        list.Add(reader.ReadInt32()); // Int32で読む
+    }
+
+    return list;
+}
+</code></pre>
+<p>と、結構端的に書けます。JSON.NETだとwhile(Read())してTokenをswitchして...とやらなきゃいけないので、むしろこっちのほうが書きやすいとすら言えるでしょう。このAPIスタイルはMessagePack for C#のMessagePackBinaryを踏襲したものです。前方から、型が確定の状態で読み進めていくのにやりやすいAPIと思っています（ただしTokenを使ったdynamicな処理しようとするとReadを忘れるというミス率高し、つい数時間前にもそのミスによるバグレポを直した）。ただし、一般的なAPIスタイルではない、という自覚はあります。まぁ、ハナからMutable Structで一般的じゃないので、いいじゃないですか。つーかXmlReader辺りから続く、10年物の骨董品みたいなAPIスタイルをいつまでも有難がってるほうがおかしい。</p>
+<h2>Unity/コードジェネレーター</h2>
+<p>Unityには標準で<a href="https://docs.unity3d.com/2017.2/Documentation/Manual/JSONSerialization.html">JsonUtility</a>があって、それは十分に高速でイケてるんですが、幾つか難点が。一つはUnityのシリアライズ対応に従わなければならないところがあって、nullableダメとか配列がルートにできないとかDictionaryがダメとか（当然他のコレクションもダメ、配列とListだけ）nullのハンドリングがビミョウどころかヤバい（中身が空のインスタンスが生成される、classなのにdefault(struct)みたいな処理がされる）とか、厳しいところもあります。それを乗り越えれば高速でいいんですが。</p>
+<p>もう一つは、ターゲットがstringなので、File I/OやNetwork I/Oが相手の場合はUTF8変換が必要になりますよね（もちろんその分のアロケーションは存在する）</p>
+<p>ってことで、Utf8Jsonを使うと直接byte[]に変換出来て真のゼロアロケーションを達成出来る！おまけにどんな型でも自在にシリアライズ可能！その上で十二分に高速！まぁ高速性に関しては、JsonUtilityとbyte[]変換分を加算した上で、いい勝負ってぐらいですね。勝てるケースもありますが微妙な判定のケースもあるので、どっこい、ぐらいです。さすがに、JsonUtilityはシリアライズ対象に制約があるということは、UnityのC++エンジンの内部に都合がよい形で、C++でガリガリッと処理しているということだと思うんで（なので制約がキツいのは受け入れてあげるべきと思ってます、しょーがないじゃん、世の中なんでもトレードオフですよ）、Pure C#レイヤーだけでいい勝負できてることのほうがむしろ凄いことです。いや実際。</p>
+<p>PC版の場合は、ILGeneratorによる動的コード生成も動くので、そのまんまJsonUtilityを置き換えれるといっても過言ではないです。が、iOS/AndroidなどIL2CPPの場合は勿論動きません。……。てわけで、例によってコマンドラインアプリケーションとしてコードジェネレーターを用意してあって、動的コード生成のかわりに事前生成したのに差し替えられるようになってます。ビルド時のフックなりUnityのPre/Post処理などに入れるなりして動かせば、そこまで面倒って感じではないと思います、最初のセットアップさえ完了すれば。</p>
+<p>そして、MessagePack for C#などの場合はWindowsでしか動かなかったコードジェネレーターが、今回からwin/mac/linuxで動くようになりました……！おめでとうおめでとう。<a href="https://www.microsoft.com/net/core">.NET Core</a>によるC#でのクロスプラットフォームアプリケーションの成果物なので、みんなクロスプラットフォームでちょっとした小物作る場合はGoだけじゃなくてC#も使いましょう。</p>
+<p>てわけでUnity用には<a href="https://github.com/neuecc/Utf8Json/releases">Utf8Json/relases</a>ページにして.unitypackageと、コードジェネレーターのzipが置いてあります。</p>
+<p>ちなみにstringが欲しい場合は出来上がったbyte[]をGetString、しなくてもToJsonStringメソッドが映えてるのでそちらを使うことで、stringへの変換もできます。その場合はobject -&gt; byte<a href="utf8"></a> -&gt; string(utf16)という変換パスになるので、byte[]に比べると速度が落ちてしまいますが、この辺は最優先のターゲットとしてどちらを優先するか、というところなのでしょうがないとこです。</p>
+<h2>テキスト(JSON) vs バイナリ</h2>
+<p>JSON最強理論はあるのですが（実際Utf8Jsonはprotobuf-netより速いし）、それでも私は使い分けすべきと思ってます。というのも、バイナリ(MessagePack for C#)は鬼のように速いし、これはもうフォーマットの違いがさすがに決定的で、Utf8Jsonをそこまで高速化するのは絶対不可能です。テキストをほぼバイナリであるかのようにあつかって処理はしてますが、やっぱ限界はあります、特にdoubleとか文字列(エスケープ)とかのネックっぷりがキツい。それとどうしてもペイロードがデカくなるので、デカいってのは純粋に読み書きのコストが増大してパフォーマンス的には（比較すると）不利になりますからね。</p>
+<p>とはいえ、MesssagePackだけでOKかというと、そうじゃあないんですよね。公開API作るならJSONじゃなきゃだし、Web用もJavaScriptで読めるJSONじゃなきゃ基本ダメ。モバイルや別言語との通信だったらMessagePackでもOKではありますが、しかしJSONのほうがやりやすい場合も多いでしょう。</p>
+<p>というわけで、JSONじゃなきゃダメなシチュエーションは当然あるので、そこはUtf8Json。それ以外（いっぱいありますよね？Redisに保存するものとか）だったら、MessagePack for C#。という風な使い分けが良いと思ってます。また、MessagePack for C#のほうが多機能(Unionサポートなど、これはJsonだとInvalidなオレオレJSONが出来上がるのでサポートする気はない）なので、C#で完結する処理ではMessagePack for C#のほうが便利です。</p>
+<p>多少の機能性に違いはあれど、原則出力形式が違うこと以外は、Utf8JsonとMessagePack for C#に大きな差はありません。protobuf等の場合使い勝手が悪くてJSONを選ぶ、ということもありましたが、MessagePack for C#の場合は違います。なので、普通に使い分けしてください。これがC#におけるシリアライザに関してのファイナルアンサーです。完全に決着ついた。もう一切悩む必要はない。</p>
+<h2>まとめ</h2>
+<p>Utf8Jsonの公開効果によって<a href="https://github.com/neuecc/MessagePack-CSharp">MessagePack for C#</a>の知名度もつられて上昇し<a href="https://github.com/msgpack/msgpack-cli">MsgPack-Cli</a>のスター数を遥かに抜いてった。この辺は意図してることで、同じようなものを連発して、相互に認知度高めていくのは基本っちゃあ基本ですね。もう一つブーストさせたかったので、想定通りの結果でよきかなよきかな。</p>
+<p>目的のもう一個は最適なテキストプロトコル処理を作ることで、以前に<a href="http://neue.cc/2017/08/07_556.html">C#の高速なMySQLのドライバを書いてるよ</a>という話を書きましたが、進捗ダメです！じゃなくて、別に諦めたわけでも放置したわけでもなくて、MySQLって基本はテキストプロトコルで、そこに対して最速の処理をあてたかったんですね。んで、私自身、最速バイナリ処理の技法は持ってたんですが、最速テキスト処理の技法がなくて、MySQLにたいして研究からやってるのあんま効率良くなかった。比較対象もないし、処理通すのにMySQL叩くのも面倒なうえにピュアな処理じゃないし。そこで、JSONはめっちゃ都合よくて、サクッと手元で完結するし比較対象はいっぱいあるし、おまけに完成すれば絶対に需要がある。更にはシリアライザのアーキテクチャ自体はMessagePack for C#で完成しているので、かなりの部分を流用できる。いいことづくめじゃん。というのが、作ろうとした発端でした。というわけでMySQLドライバは諦めてないというか、むしろここが出発点なのでmattekudasai……！</p>
+<p>それと<a href="https://github.com/neuecc/MagicOnion">MagicOnion</a>(gRPCの上に構築したMessagePackを使うC# RPC)のα版からの脱出も諦めてません。んで、今もHTTP/1 Gatewayはあるんですが、どちらかというとSwaggerを動かすためだけの開発用で、プロダクションに使えるレベルのものではないんですね。<a href="https://github.com/grpc-ecosystem/grpc-gateway">grpc-gateway</a>とか<a href="https://github.com/improbable-eng/grpc-web">grpc-web</a>レベルのものになれば、HTTP/1のいわゆるREST APIみたいなものもMagicOnionで書きおこせるようになる。そのためには納得がいくレベルの高速さと拡張性を備えたJSONシリアライザが必要で(JSON.NETは拡張性はOKだけど性能がダメ、Jilは性能はまぁ良いとしても拡張性がダメ。MagicOnionはただシリアライズ-デシリアライズしてるだけじゃなくて、MessagePack for C#が微妙にメタい処理を挟んで高性能を実現するような設計になってるので)、なんと悲しいことに空席で存在してなかった。Utf8Jsonならそれを満たせます。メデタシメデタシ。実際ほんと困ってたので出来てよかった。この辺、シリアライザを自分で用意できると融通が効きまくって最高に良い。出来ることの幅がかなり広がる。</p>
+<p>と、いうわけで、かなり良いライブラリに仕上がったと思うので（特に、基礎レベルの出来はMessagePack for C#で証明済みというか、沢山issueを貰って改善してった歴史があった積み重ねが乗っかってる）、ぜひぜひ使ってみてくださいな。</p>
+</div>
+<h1><a href="http://neue.cc/2017/0828_558.html">MessagePack for C#におけるオートマトンベースの文字列探索によるデシリアライズ速度の高速化</a></h1>
+<ul class="date"><li>2017-08-28</li></ul>
+<div class="entry_body"><p><a href="https://github.com/neuecc/MessagePack-CSharp">MessagePack for C#</a> 1.6.0出しました。目玉機能というか、かなり気合い入れて実装したのは文字列キー(Map)時のデシリアライズ速度の高速化です。なんと前バージョンに比べて2.5倍も速くなっています！！！</p>
+<p><img src="https://user-images.githubusercontent.com/46207/29755040-33e8ecf6-8bcc-11e7-9f7e-0671582dd10e.png" alt="image" /></p>
+<p>他のシリアライザと比較してみましょう。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/29755047-4ef69836-8bcc-11e7-9cae-6c48646963bf.png" alt="image" /></p>
+<p>IntKey, StringKey, Typeless_IntKey, Typeless_StringKeyがMessagePack for C#です。MessagePack for C#はどのオプションにおいても、デシリアライズのプロセスにおいてメモリを一切消費しません。(56Bはデシリアライズ後の戻り値のサイズのみです）</p>
+<p>JSONの二種はStringからとbyte[]からStreamReaderの2つの計測を入れてます。これは、通常byte[]でデータは届くので、計測的にはそこも入れないとダメですよね、ということで。StreamReader通すとオーバーヘッドがデカくなりすぎて（UTF8デコードが必要というのもある）、どうしてもかなり速度が落ちてしまうんですよね。なので、JSONは、バイナリ系に比べると現実的なケースではかなり遅くなりがちなのは避けられません。見慣れない<a href="https://github.com/akkadotnet/Hyperion">Hyperion</a>はAkka.NETのためのシリアライザでWireのForkです。この辺はシリアライザマニアしか知らないものなのでどうでもいいでしょう（</p>
+<p>さて、MessagePack for C#の数字キー(Array)が一番速いです。文字列キーの3倍速い、ただしこれは数字キーのケースがヤバいぐらいむしろ速すぎなんで、別に文字列キーが遅いわけじゃあないというのは、他と比べれば分かるでしょう(文字列キー時ですらprotobuf-netより高速！)。数字キーのほうが高速になるのは、原理を考えると当然の話で、数字キーはMessagePackのArray、文字列キーはMapを使ってシリアライズするのですが、デシリアライズ時にArrayの場合は read array length, for(array length) { binary decode } という感じのデシリアライズを試みます。Mapの場合は read map length, for(map length) { decode key, lookup by key, binary decode } という具合に、キーのデコードと、どのメンバーに対してデシリアライズすればいいのかのルックアップの、2つの余計なコストがかかってくるので、どうしても遅くなってしまいます。</p>
+<p>とはいえ、文字列キーは中々に有用で、コントラクトレス(属性つけなくていお手軽エディション)やJSONの気楽な置き換え、より固い他言語との相互通信やバージョニング耐性、より自己記述的なスキーマあたりのメリットがあり、割と使われてます。実際、結構使われているっぽいです。もともと数字キーはエクストリームにチューニングされていて激速だったんですが、文字列キーはそれほどでもなかったので、文字列キーのデシリアライズ速度の高速化が急務でした。</p>
+<p>最終的にはオートマトンベースの文字列探索をIL生成時インライン化で埋め込むことにより高速化を達成したのですが（インライン化が効果あるのは<a href="http://neue.cc/2017/07/09_554.html">MicroResolver - C#最速のDIコンテナライブラリと、最速を支えるメタプログラミングテクニック</a>の実装時に分かっていたので、そのアイディアを転用してます)、とりあえずそこに至るまでのステップを見ていきましょうでしょう。</p>
+<h2>文字列のデコードを避ける</h2>
+<p>素朴な実装、MessagePack for C#のついこないだまで（前の前のバージョン）の実装では、文字列キーをStringにデコードしていました。そこから引っ張ってくる、という。</p>
+<pre><code class="language-csharp">// 文字列をキーにしたDictionaryをキャッシュとして持つというのはあるあよくある。
+static Dictionary&lt;string, TValue&gt; cache = new Dictionary&lt;string, TValue&gt;();
+
+// ネットワークからデータが来る場合はUTF8Stringのbyte[]の場合が非常に多い
+// で、キャッシュからデータを引くためにstringにデコードしなければらない
+var key = Encoding.UTF8.GetString(bytes, offset, count);
+var v1 = d1[key];
+
+// この場合、keyは無駄 of 無駄で、デコードなしに辞書が引けたら
+// デコードコストがなくなってパフォーマンスも良くなる＆一時ゴミを作らないので全面的にハッピー
+</code></pre>
+<p>ということです。シチュエーションとして、なくはないんじゃないでしょうか？実際具体的なところとしては、MessagePack for C#の文字列キーオブジェクトのデコードでは、このケースにとても当てはまります。Fooというプロパティがあったら Dictionary&lt;string, MemberInfo&gt; にTryGetValue(&quot;Foo&quot;)でMemberInfoを取り出す。みたいな感じです。</p>
+<pre><code class="language-csharp">public class MyClassFormatter : IMessagePackFormatter&lt;MyClass&gt;
+{
+    Dictionary&lt;string, int&gt; jumpTable;
+
+    public MyClassFormatter()
+    {
+        // MyProperty1, 2, 3の3つのプロパティのあるクラスのためのプロパティ名 -&gt; ジャンプ番号のテーブル
+        jumpTable = new Dictionary&lt;string, int&gt;(3)
+        {
+            { &quot;MyProperty1&quot;, 0 },
+            { &quot;MyProperty2&quot;, 1 },
+            { &quot;MyProperty3&quot;, 2 },
+        };
+    }
+
+    public MyClass Deserialize(byte[] bytes, int offset, IFormatterResolver formatterResolver, out int readSize)
+    {
+        // ---省略
+
+        // 中では Encoding.UTF8.GetString(bytes, offset, count)
+        var key = MessagePackBinary.ReadString(bytes, offset, out readSize);
+
+        if (!jumpTable.TryGetValue(key, out var jumpNo)) jumpNo = -1;
+
+        // 以下それ使ってデシリアライズ...
+        switch (jumpNo)
+        {
+            case 0:
+                break;
+            default:
+                break;
+        }
+    }
+}
+</code></pre>
+<p>ちなみにswitch(string)は<a href="http://engineering.grani.jp/entry/2017/02/20/175816">C#のswitch文のコンパイラ最適化について</a>に書きましたが、コンパイラがバイナリサーチに変換するだけなので、そこまで夢ある速度は出ません（こういうケースでバイナリサーチとハッシュテーブル、どっちが速いかは微妙なラインというかむしろハッシュテーブルのほうが速い）。あとIL生成でそれやるのは面倒なので、現実的な実装では辞書引きが落とし所になります。</p>
+<p>とはいえまぁ、そのデコードって無駄なんですよね。byte[]で届いてくるのを、辞書から引くためだけにデコードしてる。byte[]のまま比較すればデコードコストはかからないのに！</p>
+<p>そこで、byte[]のまま辞書引きができるようなEqualityComparerを実装しましょう。そうすると</p>
+<pre><code class="language-csharp">// 別に辞書のKeyとして引くだけなら、 byte[]そのもので構わないので、こうする。
+Dictionary&lt;ArraySegment&lt;byte&gt;, TValue&gt; d2;
+
+// そのためにはArraySegment&lt;byte&gt;のEqualityComparerが必要
+d2 = new Dictionary&lt;ArraySegment&lt;byte&gt;, TValue&gt;(new ByteArraySegmentEqualityComparer());
+
+// すると、byte[] + offset + countだけでキーを引ける。
+var v2 = d2[new ArraySegment&lt;byte&gt;(bytes, offset, count)];
+</code></pre>
+<p>ハッピーっぽい。さて、実はこれ、ようするにC#で入る入る詐欺中の<a href="https://github.com/dotnet/corefxlab">UTF8String</a>です。Dictionary&lt;UTF8String&gt;で持てばデコード不要でマッチできますよね、という。しかし、残念ながらUTF8Stringの実装は中途半端な状態で、ぶっちけ使いものにならないレベルなので、存在は無視しておきましょう（少なくとも辞書のキーとして使うにはGetHashCodeのコードが仮すぎて話にならないんで、絶対にやめるべき、ていうかいくら仮でもあの実装はない）。いつか正式に入った時は、そちらを使えば大丈夫ということになるとは思います。まぁ、まだ当分は先ですね。</p>
+<h2>ByteArraySegmentEqualityComparerを実装する</h2>
+<p>Dictionaryの仕組みとしてはGetHashCodeでオブジェクトが入ってる可能性がありそうな連結リストを引いて、その後にEqualsで正確な比較をする。という感じになっています。二段構え。なので、Equalsをオーバーライドする時は必ずGetHashCodeもオーバーライドしなければならない、の理由はその辺この辺ということです。</p>
+<pre><code class="language-csharp">public class ByteArraySegmentEqualityComparer : IEqualityComparer&lt;ArraySegment&lt;byte&gt;&gt;
+{
+    public int GetHashCode(ArraySegment&lt;byte&gt; obj)
+    {
+        throw new NotImplementedException();
+    }
+
+    public bool Equals(ArraySegment&lt;byte&gt; x, ArraySegment&lt;byte&gt; y)
+    {
+        throw new NotImplementedException();
+    }
+}
+</code></pre>
+<p>さて、GetHashCodeはどうしましょう。アルゴリズムは色々ありますが、素朴に実装するなら<a href="https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function">FNV1-a Hash</a>というのがよく使われます。</p>
+<pre><code class="language-csharp">public int GetHashCode(ArraySegment&lt;byte&gt; obj)
+{
+    var x = obj.Array;
+    var offset = obj.Offset;
+    var count = obj.Count;
+
+    uint hash = 0;
+    if (x != null)
+    {
+        var max = offset + count;
+
+        hash = 2166136261;
+        for (int i = offset; i &lt; max; i++)
+        {
+            hash = unchecked((x[i] ^ hash) * 16777619);
+        }
+    }
+
+    return unchecked((int)hash);
+}
+</code></pre>
+<p>先に出たswitch(string)の中でのハッシュコード算出でもこのアルゴリズムが使われています(つまりC#コンパイラの中にこれの生成コードが埋まってます)。</p>
+<p>素朴にそれを実装してもいいんですが、見た通り、なんか別にそんな速くなさそうなんですよね、見た通り！ハッシュコード算出のアルゴリズムは実は色々あるんですが、もっと良いのはないのか、ということで色々と調べて試して回ったのですが、最終的に<a href="https://github.com/google/farmhash/">FarmHash</a>が良さそうでした。これは一応Googleで実装され使われているという謳い文句になっていて、できたのが2014年と比較的新しめです。詳細はその前身の<a href="https://web.stanford.edu/class/ee380/Abstracts/121017-slides.pdf">CityHashのスライド</a>を読んで下さい。</p>
+<p>一応特性としては特に文字列に対してイケてるっていうのと、短めの文字列にたいしても最適化されているというのが、良いところです。</p>
+<p>何故なら、今回のターゲットは文字列、そしてメンバー名は通常4~12あたりが最も多いからです。実際にFarmHashのコードの一部を引いてくると、こんな感じです。</p>
+<pre><code class="language-csharp">static unsafe ulong Hash64(byte* s, uint len)
+{
+    if (len &lt;= 16)
+    {
+        if (len &gt;= 8)
+        {
+            ulong mul = k2 + len * 2;
+            ulong a = Fetch64(s) + k2;
+            ulong b = Fetch64(s + len - 8);
+            ulong c = Rotate64(b, 37) * mul + a;
+            ulong d = (Rotate64(a, 25) + b) * mul;
+            return HashLen16(c, d, mul); // 中身はMurmurっぽいの(^ * mulを4回ぐらいやる)
+        }
+        // if(len &gt;= 4, len &gt; 0)
+    }
+    // if(len &lt;= 32, 64, 128...)
+}
+</code></pre>
+<p>と、文字列の長さ毎に、算出コードに細かい分岐が入っていて、なんかいい感じです。Fetch64というのはlongで引っ張ってくるとこなので、8~16文字の時の処理は Fetch, Fetch, Rotate, Rotate, MulMul。まぁ、細かい話はおいておいて、FNV1-aより計算回数は少なそうです。</p>
+<p>そんなFarmHash、使いたければ<a href="https://nickbabcock.github.io/Farmhash.Sharp/">Farmhash.Sharp</a>というC#移植があるので、それを使えばいいでしょう。ただ、MessagePack for C#の場合は微妙にそれではダメだったので(Farmhash.SharpはOffsetが0から前提だった……)、自分で必要な分だけ移植しました。そのバージョンはMessagePack.Internal.FarmHashの中にInternalという名に反してpublicで置いてあるので、MessagePack for C#を引っ張ってくれば使えます。</p>
+<p>GetHashCodeについてはそのぐらいにしておいて、Equalsについてですが、ようはmemcmp。なのですがC#にはありません。最近だと<a href="https://www.nuget.org/packages/System.Memory/">System.Memory</a>に入っているReadOnlySpanを使ってSequenceEqualを使うと、それっぽい実装が入っているので割と良いのですが、まだpreviewなので自前実装にしておきましょう。ここは素朴にループ回してもよいのですが、unsafeにしてlong単位で引っ張ってやったほうが高速といえば高速です。</p>
+<pre><code class="language-csharp">public unsafe class ByteArraySegmentEqualityComparer : IEqualityComparer&lt;ArraySegment&lt;byte&gt;&gt;
+{
+    static readonly bool Is64Bit = sizeof(IntPtr) == 8;
+
+    public int GetHashCode(ArraySegment&lt;byte&gt; obj)
+    {
+        // 特に文字列が前提のシナリオでFarmHashは高速
+        if (Is64Bit)
+        {
+            return unchecked((int)MessagePack.Internal.FarmHash.Hash64(obj.Array, obj.Offset, obj.Count));
+        }
+        else
+        {
+            return unchecked((int)MessagePack.Internal.FarmHash.Hash32(obj.Array, obj.Offset, obj.Count));
+        }
+    }
+
+    public unsafe bool Equals(ArraySegment&lt;byte&gt; left, ArraySegment&lt;byte&gt; right)
+    {
+        var xs = left.Array;
+        var xsOffset = left.Offset;
+        var xsCount = left.Count;
+        var ys = right.Array;
+        var ysOffset = right.Offset;
+        var ysCount = right.Count;
+
+        if (xs == null || ys == null || xsCount != ysCount)
+        {
+            return false;
+        }
+
+        fixed (byte* px = xs)
+        fixed (byte* py = ys)
+        {
+            var x = px + xsOffset;
+            var y = py + ysOffset;
+
+            var length = xsCount;
+            var loooCount = length / 8;
+
+            // 8byte毎に比較
+            for (var i = 0; i &lt; loooCount; i++, x += 8, y += 8)
+            {
+                if (*(long*)x != *(long*)y)
+                {
+                    return false;
+                }
+            }
+
+            // あまったら4byte比較
+            if ((length &amp; 4) != 0)
+            {
+                if (*(int*)x != *(int*)y)
+                {
+                    return false;
+                }
+                x += 4;
+                y += 4;
+            }
+
+            // あまったら2byte比較
+            if ((length &amp; 2) != 0)
+            {
+                if (*(short*)x != *(short*)y)
+                {
+                    return false;
+                }
+                x += 2;
+                y += 2;
+            }
+
+            // 最後1byte比較
+            if ((length &amp; 1) != 0)
+            {
+                if (*x != *y)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+}
+</code></pre>
+<p>まぁこんなもんでしょう。これらのコードはMessagePack.Internal.ByteArrayComparerに埋まっているので、internalだけどpublicなので、MessagePack for C#を入れてもらえればコピペせずとも使えます。</p>
+<p>実際、これでStringデコードしてくるよりも高速になりました！素晴らしい！終了！</p>
+<h2>オートマトンによる文字列探索</h2>
+<p>と思って、実際実装もしたんですが、そしてまぁ確かに速くはなったんですが、しかし満足行くほど速くはならなかったのです。いや、別に遅くはないんですが、それでもなんというかすっごく不満。もっと速くできるだろうという感じで。</p>
+<p>んで、こうしてGetHashCodeとEqualsを全部手実装して思ったのは、GetHashCodeを消し去りたい。しょーがないんですが、Equals含めるとこれbyte[]を二度読みしてることになってるわけで。DictionaryはO(1)かもしれんがbyte[n]に対して、O(n * 2)じゃん、的な。しかもデシリアライズって全プロパティを見るので、クラス単位でDictionaryを作ると、というか作るわけですが、普通は一個か二個はハッシュテーブルの原理的に衝突します。衝突するので、Equalsはもう少し何度か呼ばれることになる。なんかもういけてない！ていうかそれがIntKeyに対しての速度が出ない要因なわけです。</p>
+<p>これをなんとかするための案として出てきたのが<a href="https://ja.wikipedia.org/wiki/%E3%82%AA%E3%83%BC%E3%83%88%E3%83%9E%E3%83%88%E3%83%B3">オートマトン</a>で探索かけること。これはもともと<a href="https://github.com/kevin-montrose/Jil">Jil</a>の最適化トリックで言及されていたので、いつかやりたいなあ、と前々から思っていたので、今しかないかな、と。ついでにオートマトン化して探索を埋め込めるようになると、IL的なインライン化もより進められるので一石二鳥。MicroResolverの実装時にILインライン化が効果あったのは分かっていたので、もはややはりやるしかない。</p>
+<p>具体的にはこんなイメージです。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/29754771-216b40e2-8bc7-11e7-8310-1c3602e80a08.png" alt="image" /></p>
+<p>&quot;MyProperty1&quot;という文字列はUTF8だと&quot;77 121 80 114 111 112 101 114 116 121 49&quot;というbyte[]。で、それを1byteずつ比較するのはアレなので、long(8 byte)単位で取り出すと&quot;8243118316933118285, 3242356&quot;になる（8byteに足りない部分は0埋めします、UTF8文字列前提ならその処理でもコンフリクトはなく大丈夫、多分……）。で、それで分岐かけた探索に変換する、と。オートマトンといいつつも、一方向の割と単純なツリー（ようするところトライ木）ではある。</p>
+<p>これによって、long単位でのFetch二回と、比較二回だけでメンバー検索処理が済む！実際にジェネレートされるコードは以下のような感じです。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/29755760-96159c48-8bd7-11e7-8feb-337c582ebb67.png" alt="image" /></p>
+<p>定数は実行時に生成されて埋め込まれるので、実行マシンのエンディアンの影響は受けません。メンバー数が多くなっている場合は、そこは二分検索コードを生成してILで埋め込みます。実際のシチュエーションだと、最初の8byteのところに集中するので、そこが二分検索、あとは普通は一本道なのでひたすらlongで取り出して比較、ですね。通常メンバ名は16文字以下なので、1回の二分検索と1回の比較で済むはずです。仮に多くなっても文字数 / 8の比較程度なので、そこまで大きくはならないでしょう。</p>
+<p>完全に手書きじゃ無理な最適化ということで、いい感じです。さて、mpc.exe(事前コード生成)による生成は、ここまでの対応はしていないので、Unityだとここまで速くはなってないです、しょぼん（ただDictionary likeなオートマトン検索は行います、インライン化されないということなんで、いうてそこそこ悪くはないです）。事前生成で定数を埋め込むことに日和ってるので、まぁ別にLittleEndianだしいいじゃん、に倒してもいいかもしれないし、いくないかもしれないしでなんともかんともというところ。</p>
+<h2>まとめ</h2>
+<p>オートマトン化のIL実装は結構苦戦して、今回の土日は延々と試行錯誤してました。土曜だけで終わらせるはずが……。まぁ、結果としてできてよかった。</p>
+<p>というわけでエクストリーム高速化されました。ここまで徹底的にやってるシリアライザは存在しないので、そりゃ速いよね。性能面では文句ないわけですが、機能面でも既に他を凌駕しています。目標は性能面でも機能面でも究極のシリアライザを作る、ということになってきたので以下ロードマップとか、私の考えているシリアライザの機能とはこういうのです、というラインナップ。</p>
+<ul>
+<li>Generics - 普通の。最初から実装済み。</li>
+<li>NonGenerics - フレームワークから要求されることが多い。最初から実装済み。</li>
+<li>Dynamic - Dynamicで受け取れるデシリアライズ、Ver 1.2.0から実装済み。</li>
+<li>Object Serialize - シリアライズ時はObject型を具象型でシリアライズする必要がある。Ver 1.5.0から実装済み（実はつい最近ようやく！）</li>
+<li>Union(Polymorphism, Surrogate, Oneof) - 複数型がぶら下がるシリアライズ。最初から実装済み。</li>
+<li>Configuration - Resolverで概ね賄えるけれど、一部のプリミティブが最適化のためオミットされるので、そこの調整が必要。</li>
+<li>Extensibility - 拡張性。Resolverにより最初から実装済み。Ver 1.3.0から MessagePackFormatterAttribute により簡易的な拡張も可能。</li>
+<li>Compression - 圧縮。LZ4で最初から実装済み。</li>
+<li>Stream - ストリーミングデシリアライズ。Ver 1.3.3から限定サポート(readStrict:trueでサイズ計算して必要な分だけStreamから読み取れる)。</li>
+<li>Async - 現状だとむしろ遅くなるのでやる気あんまなし、System.IO.Pipelinesが来たら考える。ただStream APIに関しては入れてもいいかも入れよう。</li>
+<li>Reader/Writer - Primitive API(MessagePackBinary)として最初から実装済み。ちょいちょいAPIは足していて、あらゆるユースケースに対応できる状態に整備されたはず。</li>
+<li>JSON - JSONとの相互変換。ToJson, FromJsonがVer 1.3.1から実装済み。</li>
+<li>Private - プライベートフィールドへのアクセス。コード生成的にひとひねり必要なのでまだ未実装。</li>
+<li>Circular reference - 循環参照。ID振って色々やる俺々拡張実装が必要で一手間なので当分未実装。</li>
+<li>IDL(Schema) - MessagePack自体に存在しないのでないが、C#クラス定義がそれになるような形で最初から実装済み。</li>
+<li>Pre Code Generation - シリアライザ事前生成。最初から実装済み。ただしWindowsのみでMacはまだ未対応。</li>
+<li>Typeless(self-describing) - 型がバイナリに埋まってるBinaryFormatter的なもの。ver 1.4.0から実装済み。</li>
+<li>Overwrite(Merge) - デシリアライズ時に生成せず上書き、Protobufにはある。現在実装中。</li>
+<li>Deferred - デシリアライズを遅延する。FlatBuffersやZeroFormatterのそれ。コンセプト実装中。</li>
+</ul>
+<p>Overwriteは結構面白いと思っていて、例えばUnityだとMonoBehaviourに直接デシリアライズを投げ込むとかが可能になります。デシリアライズのための中間オブジェクトを作らなくて済むのでメモリ節約度がかなり上がるので、普通のAPI通信だと大したことないんですが、リアルタイム通信で頻度が多いようだと、かなりいけてるかなー、と思います。構造体を使うといっても、レスポンス型が大きい場合は構造体は逆に不利ですからね（巨大な構造体はコピーコストが嵩むので）。</p>
+<p>DeferredはZeroFormatterアゲイン。アゲインってなんだよって感じですが。なんですかね。</p>
+<p>とはいえ、やってると本当にキリがないので、ちょっと一端は実装は後回しにしたいので、もう少し先になります。というのも、<a href="https://github.com/neuecc/UniRx">UniRx</a>（放置中！）とか<a href="https://github.com/neuecc/MagicOnion">MagicOnion</a>（放置中！）とか、先にやるべきことがアリアリなので……！現実逃避してる場合ではない……！</p>
+</div>
+<h1><a href="http://neue.cc/2017/0820_557.html">C#のベンチマークドリブンで同一プロジェクトの性能向上を比較する方法</a></h1>
+<ul class="date"><li>2017-08-20</li></ul>
+<div class="entry_body"><p>ある日のこと、<a href="https://github.com/neuecc/MessagePack-CSharp/">MessagePack for C#</a>のTypeless Serializerが<a href="https://github.com/neuecc/MessagePack-CSharp/issues/102">ふつーのと比べて10倍遅いぞ、というIssue</a>が来た。なるほど遅い。Typelessはあんま乗り気じゃなくて、そもそも実装も私はコンセプト出しただけでフィニッシュまでやったのは他の人で私はプルリクマージしただけだしぃ、とかいうダサい言い訳がなくもないのですが、本筋のラインで使われるものでないとはいえ、実装が乗ってるものが遅いってのは頂けない。直しましょう直しましょう。</p>
+<p>速くするのは、コード見りゃあどの辺がネックで手癖だけで何をどうやりゃよくて、どの程度速くなるかはイメージできるんで割とどうでもいいんですが（実際それで8倍高速化した）、とはいえ経過は計測して見ていきたいよね。ってことで、Before, Afterをどう調べていきましょうか、というのが本題。</p>
+<p>基本的には<a href="https://github.com/dotnet/BenchmarkDotNet">BenchmarkDotNet</a>を使っていきます。詳しい使い方は<a href="http://engineering.grani.jp/entry/2017/07/28/145035">C#でTypeをキーにしたDictionaryのパフォーマンス比較と最速コードの実装</a>で紹介しているので、そちらを見てくださいね、というわけでベンチマークをセットアップ。</p>
+<pre><code class="language-csharp">class Program
+{
+    static void Main(string[] args)
+    {
+        var switcher = new BenchmarkSwitcher(new[]
+        {
+            typeof(TypelessSerializeBenchmark),
+            typeof(TypelessDeserializeBenchmark),
+        });
+
+        switcher.Run(args);
+    }
+}
+
+internal class BenchmarkConfig : ManualConfig
+{
+    public BenchmarkConfig()
+    {
+        Add(MarkdownExporter.GitHub);
+        Add(MemoryDiagnoser.Default);
+
+        // ダルいのでShortRunどころか1回, 1回でやる
+        Add(Job.ShortRun.With(BenchmarkDotNet.Environments.Platform.X64).WithWarmupCount(1).WithTargetCount(1));
+    }
+}
+
+[Config(typeof(BenchmarkConfig))]
+public class TypelessSerializeBenchmark
+{
+    private TypelessPrimitiveType TestTypelessComplexType = new TypelessPrimitiveType(&quot;John&quot;, new TypelessPrimitiveType(&quot;John&quot;, null));
+
+    [Benchmark]
+    public byte[] Serialize()
+    {
+        return MessagePackSerializer.Serialize(TestTypelessComplexType, TypelessContractlessStandardResolver.Instance);
+    }
+}
+
+// Deserializeも同じようなコードなので省略。
+</code></pre>
+<p>ベンチマークコードは本体のライブラリからプロジェクト参照によって繋がっています。こんな感じ。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/29488116-23872168-853f-11e7-9537-c718ca96e4d9.png" alt="image" /></p>
+<p>というわけで、これでコード書き換えてけば、グングンとパフォーマンスが向上してくことは分かるんですが、これだと値をメモらなきゃダメじゃん。Before, Afterを同列に比較したいじゃん、という至極当然の欲求が生まれるのであった。そうじゃないと面倒くさいし。</p>
+<h2>2つのアセンブリ参照</h2>
+<p>古いバージョンをReleaseビルドでビルドしちゃって、そちらはDLLとして参照しちゃいましょう。とやると、うまくいきません。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/29488160-3ba9dbe0-8540-11e7-94ca-c994f1b37db9.png" alt="image" /></p>
+<p>同一アセンブリ名のものは2つ参照できないからです。ということで、どうするかといったら、まぁプロジェクトは自分自身で持ってるので、ここはシンプルにアセンブリ名だけ変えたものをビルドしましょう。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/29488237-c3ba0478-8541-11e7-9276-9b0a712cb886.png" alt="image" /></p>
+<p>これを参照してやれば、一旦はOK。</p>
+<h2>extern alias</h2>
+<p>2つ、同じMessagePackライブラリが参照できたわけですが、今度はコード上でそれを使い分けられなければなりません。そのままでは出し分けできないので（同一ネームスペース、同一クラス名ですからね！）、次にaliasを設定します。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/29488244-eea0a9b2-8541-11e7-84d8-2cef1c321097.png" alt="image" /></p>
+<p>対象アセンブリのプロパティで、Aliasesのところに任意のエイリアスをつけます。今回は1_4_4にはoldmsgpack, プロジェクト参照している最新のものにはnewmsgpackとつけてみました。</p>
+<p>あとはコード上で、extern aliasとoldmsgpack::といった::によるフル修飾で、共存した指定が可能です。</p>
+<pre><code class="language-csharp">// 最上段でextern aliasを指定
+extern alias oldmsgpack;
+extern alias newmsgpack;
+
+[Config(typeof(BenchmarkConfig))]
+public class TypelessSerializeBenchmark
+{
+    private TypelessPrimitiveType TestTypelessComplexType = new TypelessPrimitiveType(&quot;John&quot;, new TypelessPrimitiveType(&quot;John&quot;, null));
+
+    [Benchmark]
+    public byte[] OldSerialize()
+    {
+        // フル修飾で書かなきゃいけないのがダルい
+        return oldmsgpack::MessagePack.MessagePackSerializer.Serialize(TestTypelessComplexType, oldmsgpack::MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance);
+    }
+   
+    [Benchmark(Baseline = true)]
+    public byte[] NewSerialize()
+    {
+        return newmsgpack::MessagePack.MessagePackSerializer.Serialize(TestTypelessComplexType, newmsgpack::MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance);
+    }
+}
+</code></pre>
+<p>これで完成。実行すれば</p>
+<p><img src="https://user-images.githubusercontent.com/46207/29488345-c03a2628-8543-11e7-8850-5c6b3ef7ba95.png" alt="image" /></p>
+<p>最終的に、以前と比較して9倍ほど速くなりました。実際には、何度か実行していって、速くなったことを確認しながらやっています。</p>
+<p>クソ遅かったのね！って話なのですが、Typelessは実際クソ遅かったのですが、それ以外の普通のは普通にちゃんと速かったので、一応、大丈夫です、はい、あくまでTypelessだけです、すみません……。</p>
+<h2>まとめ</h2>
+<p>ある程度完成している状態になっているならば、ベンチマークドリブンデベロップメントは割とかなり効果的ですね。改善はまずは計測から、とかいっても、結局、その数値が速いのか遅いのかの肌感覚がないとクソほども役に立たないわけですが（ただたんに漠然と眺めるだけの計測には本当に何の意味もないし、数値についての肌感覚を持っているかいないかの経験値は、ツールが充実している今でもなお重要だと思います。肌感覚に繋げていくことを意識して、経験を積みましょう）、さすがにBefore, Afterだととてもわかりやすくて、導入としてもいい感じです。</p>
+<p><a href="https://github.com/neuecc/MessagePack-CSharp/">MessagePack for C#</a>は、昨日ver 1.5.0を出しまして、最速モード(Object-Array)以外の部分(Object-Map)でも性能的にかなり向上したのと、object型のシリアライズがみんなの想像する通りのシリアライズをしてくれるようにようやくなりまして、本気で死角なし、になりました。Typelessの性能向上は次のアップデート。それと、もう一つ大型の機能追加（とても役に立ちます！特にUnityで！）を予定しているので、まだまだ良くなっていきますので期待しといてください。</p>
+</div>
+<a href="./publish/2">Prev |</a>
+<a href="./publish/4">| Next</a>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

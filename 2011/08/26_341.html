@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - ReactiveProperty : Rx + MVVMへの試み</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2011/0826_341.html">ReactiveProperty : Rx + MVVMへの試み</a></h1>
+<ul class="date"><li>2011-08-26</li></ul>
+<div class="entry_body"><p><a href="http://msdn.microsoft.com/en-us/data/gg577609" title="Reactive Extensions">Reactive Extensions</a>といったら非同期、じゃなくて、その前にイベントですよ！イベント！というわけで、随分手薄になっていたイベント周りの話を増強したいこの頃です。イベントと一口に言っても色々あります。UI(クリックやマウスムーブ)、センサー、変更通知(INotifyPropertyChanged)などなど。中でも一番よく使うのは、UI周りのイベントでしょう。</p>
+<p>しかし、UIの持つTextChangedイベントだのから直接FromEventPatternで変換してしまったら、Viewと密接に結びついてしまってよろしくない。ここはMVVM的にやりましょう。でも、どうやって？</p>
+<p>View(UI)が持つネイティブなイベントを、ViewModelの持つ更新通知付きのプロパティに変換します。これはバインディングにより可能です。そこはWPF/SLの仕組みに任せましょう。ということで、RxでUIに対してプログラミングするというのは、ViewModelの通知に対してプログラミングするという形になります。</p>
+<p>テキストボックスの変更に反応して、1秒ディレイをかけた後に表示する、という簡単な例を(何の面白みもありません、すみません)</p>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="50px">
+  <param name="source" value="http://neue.cc/wp-content/uploads/silverlight/ReactiveProperty.SL4.xap"/>
+  <param name="background" value="white" />
+  <param name="minRuntimeVersion" value="3.0.40624.0" />
+  <param name="autoUpgrade" value="true" />
+  <a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=3.0.40624.0" style="text-decoration:none">
+      <img src="http://go.microsoft.com/fwlink/?LinkId=108181" alt="Microsoft Silverlight を入手" style="border-style:none"/>
+  </a>
+</object>
+</p>
+<pre><code class="language-csharp">public class ToaruViewModel : INotifyPropertyChanged
+{
+    private string input;
+    public string Input
+    {
+        get { return input; }
+        set { input = value; RaiseEvent(&quot;Input&quot;); }
+    }
+
+    private string output;
+    public string Output
+    {
+        get { return output; }
+        set { output = value; RaiseEvent(&quot;Output&quot;); }
+    }
+
+    public ToaruViewModel()
+    {
+        Observable.FromEvent&lt;PropertyChangedEventHandler, PropertyChangedEventArgs&gt;(
+                h =&gt; (sender, e) =&gt; h(e),
+                h =&gt; this.PropertyChanged += h, h =&gt; this.PropertyChanged -= h)
+            .Where(e =&gt; e.PropertyName == &quot;Input&quot;) // Inputが更新されたら
+            .Select(_ =&gt; Input) // Inputの値を
+            .Delay(TimeSpan.FromSeconds(1)) // 1秒遅らせて
+            .ObserveOnDispatcher() // Dispatcherで(Silverlightではこれ必要・WPFでは不要)
+            .Subscribe(s =&gt; Output = &quot;入力が1秒後に表示される:&quot; + s); // Outputへ代入
+    }
+
+    // この辺は別途、ライブラリを使って持ってくるほうが良いかも
+    public void RaiseEvent(string propertyName)
+    {
+        var handler = PropertyChanged;
+        if (handler != null) handler(this, new PropertyChangedEventArgs(propertyName));
+    }
+
+    public event PropertyChangedEventHandler PropertyChanged;
+}
+
+// xaml.csはInitializeだけ、xamlのバインディングは各プロパティへ当てるだけ。
+// ただしSL/WP7はUpdateSourceTrigger=PropertyChangedに対応してないので別途Behaviorの適用が必要
+// 詳しくは、最後にソース配布(WPF/SL/WP7全て含む)URLを置いているのでそちらを見てください
+</code></pre>
+<p>……実にダサい。はい。全くいけてないです。バインディング可能なのはプロパティなので、そういった中間レイヤへの中継が発生していて、冗長だし、美味しさがかなり損なわれています。わかりきったINotifyPropertyChangedのWhere, Selectは無駄そのもので。勿論、簡単にDelayを混ぜられるといった時間の扱いの容易さはRxならでは、ではあるのですけれど。</p>
+<h2>ReactiveProperty</h2>
+<p>中継が手間ならば、中間レイヤだけを抜き出してやればいい。通知処理を内包したIObservable&lt;T&gt;があれば解決する。というわけで、ReactivePropertyと名付けたものを作りました。それを使うと、こうなります。</p>
+<pre><code class="language-csharp">public class SampleViewModel : INotifyPropertyChanged
+{
+    public ReactiveProperty&lt;string&gt; ReactiveIn { get; private set; }
+    public ReactiveProperty&lt;string&gt; ReactiveOut { get; private set; }
+
+    public SampleViewModel()
+    {
+        // UIから入力されるものはnewで作成、デフォルト値も同時に指定出来る。
+        ReactiveIn = new ReactiveProperty&lt;string&gt;(_ =&gt; RaiseEvent(&quot;ReactiveIn&quot;), &quot;でふぉると&quot;);
+
+        // UIへ出力するIO&lt;T&gt;はToReactivePropertyで、初期値での発火も自動的にされます。
+        ReactiveOut = ReactiveIn
+            .Delay(TimeSpan.FromSeconds(1))
+            .Select(s =&gt; &quot;入力が1秒後に表示される:&quot; + s)
+            .ToReactiveProperty(_ =&gt; RaiseEvent(&quot;ReactiveOut&quot;));
+    }
+
+    // 通常は、他のMVVMフレームワークなりを使い、それの更新通知システムを利用するといいでしょう
+    // Rxを使ったからって、決してMVVMフレームワークと競合するわけではなく、むしろ協調すると考えてください
+    public void RaiseEvent(string propertyName)
+    {
+        var handler = PropertyChanged;
+        if (handler != null) handler(this, new PropertyChangedEventArgs(propertyName));
+    }
+
+    public event PropertyChangedEventHandler PropertyChanged;
+}
+</code></pre>
+<pre><code class="language-xml">// これはWPF版のもの
+&lt;Window x:Class=&quot;ReactiveProperty.MainWindow&quot;
+        xmlns=&quot;http://schemas.microsoft.com/winfx/2006/xaml/presentation&quot;
+        xmlns:x=&quot;http://schemas.microsoft.com/winfx/2006/xaml&quot;
+        xmlns:l=&quot;clr-namespace:ReactiveProperty&quot;
+        Title=&quot;MainWindow&quot; Height=&quot;350&quot; Width=&quot;525&quot;&gt;
+    &lt;Window.DataContext&gt;
+        &lt;l:SampleViewModel /&gt;
+    &lt;/Window.DataContext&gt;
+    &lt;StackPanel&gt;
+        &lt;TextBox Text=&quot;{Binding ReactiveIn.Value, UpdateSourceTrigger=PropertyChanged}&quot; /&gt;
+        &lt;TextBlock Text=&quot;{Binding ReactiveOut.Value}&quot; /&gt;
+    &lt;/StackPanel&gt;
+&lt;/Window&gt;
+</code></pre>
+<p>XAMLではPathに必ず.Valueまで指定します。これによりGetが求められれば最新の値を返し、値をSetされればPushするようになります。</p>
+<p>今回はUI-&gt;ReactiveProperty-&gt;クエリ演算-&gt;ReactiveProperty-&gt;UIという風に戻してやりましたが、勿論、UIからの入力をModelに流してそれで止めてもいいし、Modelからの値をUIに流すだけでもいいし、トリガーはタイマーであってもいいし、その辺は完全に自由です。普通の通知プロパティと何も変わりません。また普通のプロパティとして使いたい時は.Valueで値を取り出す/セットできます。</p>
+<p>かなりシンプルに仕上がります。通知付きプロパティは、本質的に値の変更毎に通知される無限長のIObservable&lt;T&gt;と見なせるので、そのことにより表現がより自然になっています。書き味も、リアクティブプログラミング(といわれてパッと浮かばれる値が自動更新されるという奴)にかなり近い感じの風合い。XAMLでのバインドも簡単ですし、VMの実装も自動実装プロパティだけで書けるので記述が楽チン。</p>
+<p>そして、Rxを使うことによる最大の利点である、他のイベント(他の変更通知プロパティ)と合成しやすかったり、時間が扱いやすくなったり、非同期と混ぜても同じように扱えたり、スレッドの切り替えが簡単であったり、などを最大限に甘受できます。VMとして独立している、かつ全てがRxに乗っているため、単体テストも非常に作成しやすい状態です(時間軸を扱う処理のテストは通常難しいのですが、Rxの場合は自分で時間をコントロール可能なSchedulerを中間に挟むと、好きなように時間を進められるようになります、イベントのテストも、この状態ならばプロパティを変更するだけで生成されますし)。また、決して他のMVVMフレームワークと競合が起こるわけではない(多分……)のも見逃せない利点です。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/ReactivePropertyModel.jpg">
+</p>
+<p>単純な例なのでModelがありませんが、まあこんな感じ？(それと今はコマンドがないので単純なデータバインドのみの図です)。Modelへのアクセスは通常恐らくRx:Query内で行い、Modelの形態は色々だと思いますが、通信してデータを処理して返す、みたいなものはRxになっているとVMのReactiveProperty側での合成処理が容易なので、非同期にしてIObservable&lt;T&gt;で返すと良いのではかと思います。自身が通知を持つReactivePropertyになっていてもいいですね。そうなると、コードのほとんどがLINQになるという素敵な夢が見れる気がしますが気のせいです。</p>
+<h2>実装</h2>
+<p>ReactivePropertyの実装はこんな感じです。ご自由にコピペって使ってみてください。</p>
+<pre><code class="language-csharp">using System;
+#if WINDOWS_PHONE
+using Microsoft.Phone.Reactive;
+#else
+using System.Reactive.Linq;
+using System.Reactive.Subjects;
+#endif
+
+public class ReactiveProperty&lt;T&gt; : IObservable&lt;T&gt;, IDisposable
+{
+    T latestValue;
+    IObservable&lt;T&gt; source;
+    Subject&lt;T&gt; anotherTrigger = new Subject&lt;T&gt;();
+    IDisposable sourceDisposable;
+
+    public ReactiveProperty(Action&lt;T&gt; propertyChanged, T initialValue = default(T))
+        : this(Observable.Never&lt;T&gt;(), propertyChanged, initialValue)
+    { }
+
+    public ReactiveProperty(IObservable&lt;T&gt; source, Action&lt;T&gt; propertyChanged, T initialValue = default(T))
+    {
+        this.latestValue = initialValue;
+
+        var merge = source.Merge(anotherTrigger)
+            .DistinctUntilChanged()
+            .Publish(initialValue);
+        this.sourceDisposable = merge.Connect();
+
+        // PropertyChangedの発火はUIスレッドで行うことにする
+        // UIへの反映の際に、WPFでは問題ないが、SL/WP7ではUIスレッドから発行しないと例外が出るため
+        merge.ObserveOnDispatcher().Subscribe(x =&gt;
+        {
+            latestValue = x;
+            propertyChanged(x);
+        });
+
+        this.source = merge;
+    }
+
+    public T Value
+    {
+        get
+        {
+            return latestValue;
+        }
+        set
+        {
+            latestValue = value;
+            anotherTrigger.OnNext(value);
+        }
+    }
+
+    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
+    {
+        return source.Subscribe(observer);
+    }
+
+    public void Dispose()
+    {
+        sourceDisposable.Dispose();
+    }
+}
+
+// 拡張メソッド
+public static class ObservableExtensions
+{
+    public static ReactiveProperty&lt;T&gt; ToReactiveProperty&lt;T&gt;(this IObservable&lt;T&gt; source, Action&lt;T&gt; propertyChanged, T initialValue = default(T))
+    {
+        return new ReactiveProperty&lt;T&gt;(source, propertyChanged, initialValue);
+    }
+}
+</code></pre>
+<p>Valueで値の中継をしているという、それだけです。Publish(value)はBehaviorSubjectというものを使った分配で、必ず最新の値一つをキャッシュとして持っていて、Subscribeされると同時に、まずその値で通知してくれます。これにより「初期値での自動発火」が自然に行える、という仕組みになっています。また、プロパティの変更時に同値の場合は変更通知をしない、というよくあるほぼ必須処理も、ここでDistinctUntilChangedを挟んで行っています(オプションで選択制にしてもいいかもしれない)。</p>
+<h2>それReactiveUI？</h2>
+<p><a href="http://www.reactiveui.net/">ReactiveUI</a>というRxを前提にしたMVVMフレームワークがあって、それに用意されているObservableAsPropertyHelperと、ReactivePropertyはかなり近いです(ということにプロトタイプ作ってから気づいた、ReactiveUIはこれまで名前は知ってたけど中身完全ノーチェックだったので)。ただ、機能的にはOAPHは双方向バインディングに対応していないので、ReactivePropertyのほうが上です。また、OAPHは使い勝手もあまり良くないし、名前がダサい(ObservableAsPropertyHelperは長すぎるし型名として宣言させるにはイマイチに思える……)などなどで、あまり気に入るものではなかったです。</p>
+<p>ReactiveUIは全体的には軽く眺めた程度なのですが、今ひとつ私には合わない。ちょっと、いや、かなり気にいらない。なので、私としてはそのうち他のMVVMライブラリをベースに置いた上での拡張として、Rx用のUI周りライブラリを作りたい。独自に上から下まで面倒を見るフレームワーク、という指針は今一つに思えるので、Rxならではの特異な部分だけを、最初から他のMVVMフレームワークの拡張として用意していく、という方向性のほうが良いものが作れると思っています。素のままのRxでは辛いので、何かしらの中間層が必要なのは間違いないので。</p>
+<p>次は、ReactiveCommandを！あー、あとReactiveCollectionも必要かしら。Validationとかも……。まあ、そういうところは普通に書けばいいんですよ、何も全部Rxでやる必要はないですからね。</p>
+<h2>まとめ</h2>
+<p>WPFのバインディングの美味しさをRxで更に美味しくする、ということでした。世の中的には弱参照が～などなどというお話もありますが、それには全然追いついてませんので、おいおいちかぢかそのうち。</p>
+<p>今回のコードの全体(WPF/SL/WP7)は<a href="https://bitbucket.org/neuecc/reactiveproperty" title="neuecc / ReactiveProperty / overview — Bitbucket">neuecc / ReactiveProperty /Bitbucket</a>に置いてありますので、好きに見てください。例が単純すぎると美味しさもよくわからないので、もう少し複雑な例で、サンプル準備中なのでしばしお待ちを。</p>
+<p>ところで9/15にいよいよRx本が出ます。</p>
+<iframe src="http://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as4&m=amazon&f=ifr&ref=ss_til&asins=1430237473" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<p>オライリーで出ているProgramming C#の著者と、ReactiveUIの作者(元Microsoft Office Labs、つい最近Githubに転職した模様)の共著です。私も買いますので、うーん、読書会とかやったら来てくれる方います？</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

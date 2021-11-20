@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - Razorで空テンプレートとセパレータテンプレート</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2013/0202_395.html">Razorで空テンプレートとセパレータテンプレート</a></h1>
+<ul class="date"><li>2013-02-02</li></ul>
+<div class="entry_body"><p>Razorに限らずT4でもなんでもいいんですが、テンプレートで素のforeachだと、セパレータだったり空の時の代替テンプレートだったりを、どういう風に表現すればいいのかなあ、と悩ましいのです、どうなっているのでしょう実際世の中的に。</p>
+<p>WebFormsのRepeaterだとSeparatorTemplateタグと、拡張すればEmptyTemplateなども作れますね。Smarty(PHPのテンプレート、最近ペチパーなので)には{foreachelse}で配列が空の時のテンプレートが吐かれます。カスタムの構文を定義すれば、勿論なんだってありです。</p>
+<p>RepeaterにせよSmartyにせよ、よーするところ独自のテンプレート構文だから好き放題できますが、俺々構文って、それ自体の覚える手間もあり、あんまスッキリしないんですよねえ。RazorのIs not a new language、だからEasy to Learn。は大事。また、そういった独自拡張がないからこそ、Compact, Expressive, and Fluidが実現できる(開き@だけで閉じタグレスはやっぱ偉大)し、フルにIntelliSenseなどエディタサポートも効くわけだし。</p>
+<p>やりたいことって、コード上のノイズが限りなく少なく、かつ、HTMLという&quot;テキスト&quot;を最大限コントロールの効く形で吐くこと。なわけで、その辺を損なっちゃあ、見失っちゃあ、いけないね。</p>
+<p>で、しかしようするところ、やりたいのはforeachを拡張したい。foreachする時に空の時の出力とセパレータの時の出力を足したい。あと、どうせならインデックスも欲しい。あと、最初の値か、とか最後の値か、とかも欲しい（最初はともかく「最後」はindexがないものを列挙すると大変）</p>
+<p>そのうえで、Razorの良さである素のC#構文（と、ほぼほぼ同じものとして扱える）というのを生かしたうえで、書きやすくするには(例えばHtmlヘルパーに拡張メソッド定義して、引数でテンプレートやラムダ渡したり、というのは閉じカッコが増えたり空ラムダが出たりして書きづらいしグチャグチャしてしまいクリーンさが消える)、と思って、考えたのが、foreachで回すアイテム自体に情報載せればいいな、と。</p>
+<pre><code class="language-csharp">&lt;table&gt;
+    @foreach (var item in source.ToLoopItem(withEmpty: true, withSeparator: true))
+    {
+        // empty template
+        if (item.IsEmpty)
+        {
+        &lt;tr&gt;
+            &lt;td colspan=&quot;2&quot;&gt;中身が空だよ！&lt;/td&gt;
+        &lt;/tr&gt;
+        }
+
+        // separator
+        if (item.IsSeparator)
+        { 
+        &lt;tr&gt;
+            &lt;td colspan=&quot;2&quot;&gt;------------&lt;/td&gt;
+        &lt;/tr&gt;
+        }
+
+        // body
+        if (item.IsElement)
+        {
+        &lt;tr style=&quot;@(item.IsLast ? &quot;background-color:red&quot; : null)&quot;&gt;
+            &lt;td&gt;@item.Index&lt;/td&gt;
+            &lt;td&gt;@item.Item&lt;/td&gt;
+        &lt;/tr&gt;
+        }
+    }
+&lt;/table&gt;
+</code></pre>
+<p>何も足さない何も引かない。とはいえどっかに何か足さなきゃならない。C#として崩さないで足すんなら、単独の要素の一つ上に包んで情報を付与してやりゃあいいんだね、と。foreachで回す時にToLoopItem拡張メソッドを呼べば、情報を足してくれます。</p>
+<p>IsEmptyは全体が空の時、IsSeparatorは要素の間の時、IsElementが本体の要素の列挙の時、を指します。Elementの時は、更にIsFirst, IsLast, Indexが取れる。item.Itemはちょっと間抜けか。ともあれ、実際にRazorで書いてみた感触としても悪くなく収まってる。</p>
+<p>Emptyだけならばループの外で@if(!source.Any()) /* 空の時のテンプレート */ としてやればいいし、そのほうが綺麗感はある。けれど、それだとsourceがIEnumerableの時キモチワルイ（二度列挙開始が走る）とかもあるし、コレクションに関わるものはforeachのスコープ内に全部収まったほうがスッキリ感も、なくもない。</p>
+<p>IndexとIsLastだけが欲しいなら、空テンプレートとセパレータはオプションだから、withEmpty, withSeparatorを共にfalseにすれば、全部Elementなので、if(item.IsElement)は不要になる。</p>
+<p>それにしてもRazor V2で属性にnull渡すと属性自体を吐かないでくれる機能は素敵ですなあ。クリーンは正義！</p>
+<p>実装はこんな感じ。</p>
+<pre><code class="language-csharp">public struct LoopItem&lt;T&gt;
+{
+    public readonly bool IsEmpty;
+    public readonly bool IsSeparator;
+    public readonly bool IsElement;
+    public readonly bool IsFirst;
+    public readonly bool IsLast;
+    public readonly int Index;
+    public readonly T Item;
+
+    public LoopItem(bool isEmpty = false, bool isSeparator = false, bool isElement = false, bool isFirst = false, bool isLast = false, int index = 0, T item = default(T))
+    {
+        this.IsEmpty = isEmpty;
+        this.IsSeparator = isSeparator;
+        this.IsElement = isElement;
+        this.IsFirst = isFirst;
+        this.IsLast = isLast;
+        this.Index = index;
+        this.Item = item;
+    }
+
+    public override string ToString()
+    {
+        return (IsEmpty) ? &quot;Empty&quot;
+             : (IsSeparator) ? &quot;Separator&quot;
+             : Index + &quot;:&quot; + Item.ToString();
+    }
+}
+
+public static class LoopItemEnumerableExtensions
+{
+    public static IEnumerable&lt;LoopItem&lt;T&gt;&gt; ToLoopItem&lt;T&gt;(this IEnumerable&lt;T&gt; source, bool withEmpty = false, bool withSeparator = false)
+    {
+        if (source == null) source = Enumerable.Empty&lt;T&gt;();
+
+        var index = 0;
+        using (var e = source.GetEnumerator())
+        {
+            var hasNext = e.MoveNext();
+            if (hasNext)
+            {
+                while (true)
+                {
+                    var item = e.Current;
+                    hasNext = e.MoveNext();
+                    if (hasNext)
+                    {
+                        yield return new LoopItem&lt;T&gt;(index: index, isElement: true, isFirst: (index == 0), item: item);
+                    }
+                    else
+                    {
+                        yield return new LoopItem&lt;T&gt;(index: index, isElement: true, isFirst: (index == 0), isLast: true, item: item);
+                        break;
+                    }
+
+                    if (withSeparator) yield return new LoopItem&lt;T&gt;(index: index, isSeparator: true);
+                    index++;
+                }
+            }
+            else
+            {
+                if (withEmpty)
+                {
+                    yield return new LoopItem&lt;T&gt;(isEmpty: true);
+                }
+            }
+        }
+    }
+}
+</code></pre>
+<p>大事なのは、IEnumerable&lt;T&gt;へのループは必ず一回にすること、ね。よくあるAny()で調べてから、ループ本体を廻すと、二度列挙実行が走る（Anyは最初を調べるだけですが、もしIEnumerable&lt;T&gt;が遅延実行の場合、そのコストは読めない）というのは、精神衛生上非常に良くない。</p>
+<p>あとIsLastを取るために、一手先を取得してからyield returnをしなければならないので、少しゴチャついてしまいましたが、まあ、こういうのがViewの表面上に現れる苦難を思えば！</p>
+<p>最近、イミュータブルな入れ物を作りたい時はコンストラクタにずらずら引数並べるでファイナルアンサー。と思うようになりました、一周回って。名前付き引数で書かせれば、数が多くても可読性落ちたりとかないですし、これでいいでしょう。名前付きで書かせることを強制したいけれど、それは無理なので適度に諦めるとして。</p>
+<p>最後にユニットテストを置いておきます。例によってMSTest + <a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>で。</p>
+<pre><code class="language-csharp">[TestClass]
+public class LoopItemTest
+{
+    [TestMethod]
+    public void Empty()
+    {
+        Enumerable.Empty&lt;int&gt;().ToLoopItem(withEmpty: false).Any().IsFalse();
+        Enumerable.Empty&lt;int&gt;().ToLoopItem(withEmpty: true).Is(new LoopItem&lt;int&gt;(isEmpty: true));
+        ((IEnumerable&lt;int&gt;)null).ToLoopItem(withEmpty: false).Any().IsFalse();
+        ((IEnumerable&lt;int&gt;)null).ToLoopItem(withEmpty: true).Is(new LoopItem&lt;int&gt;(isEmpty: true));
+    }
+
+    [TestMethod]
+    public void Separator()
+    {
+        Enumerable.Range(1, 3).ToLoopItem(withSeparator: false).Is(
+            new LoopItem&lt;int&gt;(index: 0, item: 1, isFirst: true, isElement: true),
+            new LoopItem&lt;int&gt;(index: 1, item: 2, isElement: true),
+            new LoopItem&lt;int&gt;(index: 2, item: 3, isLast: true, isElement: true)
+        );
+
+        Enumerable.Range(1, 1).ToLoopItem(withSeparator: true).Is(
+            new LoopItem&lt;int&gt;(index: 0, item: 1, isFirst: true, isLast: true, isElement: true)
+        );
+
+        Enumerable.Range(1, 3).ToLoopItem(withSeparator: true).Is(
+            new LoopItem&lt;int&gt;(index: 0, item: 1, isFirst: true, isElement: true),
+            new LoopItem&lt;int&gt;(index: 0, isSeparator: true),
+            new LoopItem&lt;int&gt;(index: 1, item: 2, isElement: true),
+            new LoopItem&lt;int&gt;(index: 1, isSeparator: true),
+            new LoopItem&lt;int&gt;(index: 2, item: 3, isLast: true, isElement: true)
+        );
+
+        Enumerable.Range(1, 4).ToLoopItem(withSeparator: true).Is(
+            new LoopItem&lt;int&gt;(index: 0, item: 1, isFirst: true, isElement: true),
+            new LoopItem&lt;int&gt;(index: 0, isSeparator: true),
+            new LoopItem&lt;int&gt;(index: 1, item: 2, isElement: true),
+            new LoopItem&lt;int&gt;(index: 1, isSeparator: true),
+            new LoopItem&lt;int&gt;(index: 2, item: 3, isLast: false, isElement: true),
+            new LoopItem&lt;int&gt;(index: 2, isSeparator: true),
+            new LoopItem&lt;int&gt;(index: 3, item: 4, isLast: true, isElement: true)
+        );
+    }
+}
+</code></pre>
+<p>structだと同値比較のために何もしなくていいのが楽ですね、けれどChaining AssertionならIsStructuralEqualがあるので、もしclassでも、やっぱり楽です！</p>
+<h2>まとめ</h2>
+<p>RazorだけじゃなくT4でコレクション回す時なんかにも使えます。なにかと毎度毎度、悩みの種なんですよねー。他に、こういうやり方もいいんでないー？とかあったら教えてください。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

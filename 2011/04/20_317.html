@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - Expression Treeのこね方・入門編 - 動的にデリゲートを生成してリフレクションを高速化</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2011/0420_317.html">Expression Treeのこね方・入門編 - 動的にデリゲートを生成してリフレクションを高速化</a></h1>
+<ul class="date"><li>2011-04-20</li></ul>
+<div class="entry_body"><p>Expression Treeは、IQueryableの中心、Code as Dataなわけですが、それ以外にも用途は色々あります。ただたんに名前を取り出すだけ(考えてみると贅沢な使い方よね)とか、デリゲートを生成したりとか。varはLinqのために導入されたものだからそれ以外に無闇に使うのは良くない(ｷﾘｯ とか言う人は、式木も同じ考えなんですかね、匿名型へも同じ態度で？導入された、そして発展させたのはLinqだとしても、別にそれ以外に使ってもいいんだよって。縛られた考えイクナイ。</p>
+<p>というわけで、今更に、初歩からの式木再入門。特に.NET 4から大幅に拡張されて式だけじゃなく文までいけるようになって、何でも表現出来るようになりました。式木の用途は多岐に渡るわけですが、今回はリフレクションの高速化をお題にしたいと思います。プロパティ名の文字列からPropertyInfoを取ってGetValueといったように、動的に値のGet/Setをするわけですが、それを動的コード生成で高速化しよう！</p>
+<p>方針としては、プロパティアクセスのデリゲートを生成します。GetだったらFunc&lt;object, object&gt;を作って、引数が対象インスタンス、戻り値が取得結果の値、といった具合です。まんまPropertyInfoのGetValueがデリゲートになったもの、といった具合。</p>
+<p>では、実際に書きながら見ていきます。というわけで、私の書き方などりを順を追って。まず、何をやりたいかを明確にするため、実際のコードで、具体的なラムダ式を書いてコンパイル通します。</p>
+<pre><code class="language-csharp">// 適当なクラス
+class MyClass
+{
+    public int MyProperty { get; set; }
+}
+
+static void Main(string[] args)
+{
+    // これで書くと(.NET 4以降の)代入やループはサポートされてないので、Funcでも全然いいです
+    // ただ、デバッガで生成された式の結果が見えるので、Expressionでコンパイル通せたほうが楽かな
+    Expression&lt;Func&lt;object, object&gt;&gt; expr =
+        target =&gt; ((MyClass)target).MyProperty;
+}
+</code></pre>
+<p>コンパイル通るということは、それで書けるということ。机上で、頭の中だけで考えてもいいことありません。ささっとコンパイラ使いませう。そして一旦デバッガでexprを覗いてみますと</p>
+<pre><code class="language-csharp">// ToString()
+// target =&gt; Convert(Convert(target).MyProperty)
+
+// DebugView
+.Lambda #Lambda1&lt;System.Func`2[System.Object,System.Object]&gt;(System.Object $target) {
+    (System.Object)((Program+MyClass)$target).MyProperty
+}
+</code></pre>
+<p>Expressionで宣言して書くというのは、コンパイラがコンパイル時に式木を生成するということです。見た目はFuncに毛が生えた程度なのに、コンパイル結果は大違い。なんて恐ろしい！そして、なんて素晴らしい！ともあれ、結果から逆算してくのが手っ取り早い。大枠は機械生成に任せてしまって、微調整だけを手動でやればいいわけで。無から作るのは大変ですが、枠組みが出来ているなら簡単だもの。このToStringとDebugViewは大変便利です。なお、リフレクタで生成結果を見るという夢のない方法もあります。</p>
+<p>上記結果から、具体的な成分に置き換えた、何を書くのかの式をイメージ。</p>
+<pre><code class="language-csharp">// (object target) =&gt; (object)((T)target).PropertyName
+</code></pre>
+<p>もう、あとは機械的に置き換えていくだけ！というわけで、具体的にこねこねしていきますが、まずパラメータとラムダ本体を用意します。この二つは、最終的にデリゲートの生成を目指した式木の作成では定型句みたいなものなので何も考えず用意。</p>
+<pre><code class="language-csharp">// まず、引数のパラメータとLambda本体を書く
+var target = Expression.Parameter(typeof(object), &quot;target&quot;);
+
+var lambda = Expression.Lambda&lt;Func&lt;object, object&gt;&gt;(
+    /* body */
+    , target);
+</code></pre>
+<p>基本的に、埋めやすいところから埋めていくのがいいのではないかなー。そして、Expressionは最後の引数が一番埋めやすいので、外から内に向かって書いていくことになります。最初のLambdaは、引数パラメータを最初に置いてしまって、bodyは後回しにする。というわけで、これで左辺は終了しました。次は右辺。外周から構築されるので、まずobjectへのキャスト。これはExpression.Convertです。</p>
+<pre><code class="language-csharp">var lambda = Expression.Lambda&lt;Func&lt;object, object&gt;&gt;(
+    Expression.Convert(
+        /* body */
+        , typeof(object))
+    , target);
+</code></pre>
+<p>当然ですが、ちゃんとインデントつけたほうがいいです。カンマ前置は気持ち悪いですが、こうして後ろから埋めていく時は、こっちのほうが書きやすいかなー。気持ち悪ければ最後にまとめて直せばいいのではないかと。</p>
+<p>次はTへのキャスト、ではなくプロパティ呼び出し。実行の順番はTにキャスト→プロパティ呼び出し→objectにキャストですからね。プロパティ呼び出しはExpression.Property。ですが、フィールドも似たようなものだし、幸いExpressionには両者を区別しないPropertyOrFieldがあるので、そちらを使いましょう。名前はstringで渡しますが、とりあえず&quot;PropertyName&quot;で。</p>
+<pre><code class="language-csharp">var lambda = Expression.Lambda&lt;Func&lt;object, object&gt;&gt;(
+    Expression.Convert(
+        Expression.PropertyOrField(
+            /* body */
+            , &quot;PropertyName&quot;)
+        , typeof(object))
+    , target);
+</code></pre>
+<p>最後は((T)target)。(T)は後で置き換えるとして、とりあえずMyClassにしておきますか。targetは、最初に作った右辺のパラメータです。</p>
+<pre><code class="language-csharp">var target = Expression.Parameter(typeof(object), &quot;target&quot;);
+
+var lambda = Expression.Lambda&lt;Func&lt;object, object&gt;&gt;(
+    Expression.Convert(
+        Expression.PropertyOrField(
+            Expression.Convert(
+                target
+                , typeof(MyClass))
+            , &quot;PropertyName&quot;)
+        , typeof(object))
+    , target);
+</code></pre>
+<p>埋まった！埋まったらとりあえずまずコンパイル。するとPropertyNameはMyClassにないよ、と例外出て終了。ふむふむ。ところで、ここでチェック入るんですね、へー。それでは、別関数に分けることを意識して、(ようやく)変数用意しますか。</p>
+<pre><code class="language-csharp">// あとで関数の引数にするとして
+var type = typeof(MyClass);
+var propertyName = &quot;MyProperty&quot;;
+
+var target = Expression.Parameter(typeof(object), &quot;target&quot;);
+
+var lambda = Expression.Lambda&lt;Func&lt;object, object&gt;&gt;(
+    Expression.Convert(
+        Expression.PropertyOrField(
+            Expression.Convert(
+                target
+                , type)
+            , propertyName)
+        , typeof(object))
+    , target);
+</code></pre>
+<p>コンパイル通ったー。そしたら、とりあえずデバッガでlambda変数を観察。ToString結果とDebugViewプロパティを見るといいでしょう。</p>
+<pre><code class="language-csharp">// lambda.ToString()
+target =&gt; Convert(Convert(target).MyProperty)
+
+// lambda.DebugView
+.Lambda #Lambda1&lt;System.Func`2[System.Object,System.Object]&gt;(System.Object $target) {
+    (System.Object)((Program+MyClass)$target).MyProperty
+}
+</code></pre>
+<p>問題なさそうですね！この二つは作るときに非常に便利なので、大きめのを書くときは断片を書いてこれでチェック、みたいにするといいかも。では、最後にデリゲート生成(Compile)を。</p>
+<pre><code class="language-csharp">// デリゲート生成！
+var func = lambda.Compile();
+
+// てすと
+var test = new MyClass { MyProperty = 200 };
+var result = func(test);
+Console.WriteLine(result);
+</code></pre>
+<p>というわけでした。DynamicMethodでILもにゃもにゃ(敷居高すぎ！)とか、Delegate.CreateDelegateだのでもにゃもにゃ(面倒くさい！)に比べると、随分素直に書けて素敵。.NET 4.0からはブロックやループなど、式だけではなく全ての表現が可能になったので、動的コード生成が身近になりました。</p>
+<p>Setのほうも同様な感じに書けます。</p>
+<pre><code class="language-csharp">// (object target, object value) =&gt; ((T)target).memberName = (U)value
+static Action&lt;object, object&gt; CreateSetDelegate(Type type, string memberName)
+{
+    var target = Expression.Parameter(typeof(object), &quot;target&quot;);
+    var value = Expression.Parameter(typeof(object), &quot;value&quot;);
+
+    var left =
+        Expression.PropertyOrField(
+            Expression.Convert(target, type), memberName);
+
+    var right = Expression.Convert(value, left.Type);
+
+    var lambda = Expression.Lambda&lt;Action&lt;object, object&gt;&gt;(
+        Expression.Assign(left, right),
+        target, value);
+
+    return lambda.Compile();
+}
+
+// Test
+static void Main(string[] args)
+{
+    var target = new MyClass { MyProperty = 200 };
+    var accessor = CreateSetDelegate(typeof(MyClass), &quot;MyProperty&quot;);
+
+    accessor(target, 1000); // set
+    Console.WriteLine(target.MyProperty); // 1000
+}
+</code></pre>
+<p>Expression.Assignが代入なのと、objectで渡されるvalueは、プロパティに代入する際にプロパティの型へキャストする必要があるので、left.Typeで取り出しています。これ、Lambdaの中に一気に書いてしまうと値が取れないので、外で書く必要があるのが少々面倒かしらん。とりあえず、コメントで生成後の式を書いておいてあげると見る人に(少しだけ)優しい。</p>
+<p>今回のSet/Getは微妙に汎用的なものにするため全てobjectで扱っていますが、ジェネリクスにすれば、余計なExpression.Convertがなくてスッキリ記述＋パフォーマンスも向上、が狙えそうですねん。</p>
+<h2>何で突然？</h2>
+<p>思うところあって、じゃなくて、WP7にSQLCE搭載の報を受けて、以前書いたデータベース用ユーティリティを書き直そうと思いまして。そして、コマンドパラメータの受け渡しには匿名型を使おうかな、と。そうすると、書くのがとても簡単になるんですね。凄く軽快で。これは良い。のですけど、実行の度にPropertyInfoを取ってきてNameとGetValueでの値取り出しはどうかと思ったわけです。そりゃねーよ、と。そこで、じゃあ、キャッシュしよう。キャッシュするならPropertyInfoをキャッシュしたってそんな速くはない、やるならデリゲート生成までやろう。と、紆余曲折あってそうなりました。</p>
+<p>パラメータだけではなくて、簡易マッパー(selectの各カラムの名前とプロパティ名からインスタンス生成)も用意しているのですが、それもデリゲートのキャッシュで高速化効いてくるかなー、と。</p>
+<p>で、速いのかというと、うーん、生成のコストが結構高いので、平均取ると、PropertyInfoのキャッシュと比べると、数千回実行しないとコスト回収出来ないかも。PropertyInfoのGetValueも遅い遅いというほどにそんな遅くないのかなあ、いや、デリゲートと比べると十数倍ぐらいは違うんですが、しかし。マッパー的に使って、一回の実行に100行取ってくる、とかだったら余裕ですぐ回収出来ますが、コマンド程度だとどうだろうなー。まあ、ASP.NET MVCなんかはTypeDescriptor(正直遅い)経由でやってるみたいだし、それと比べれば悪くないかもはしれない。でもWP7を見ると、アプリケーションのキャッシュ生存期間を考えると、ペイ出来そうな気がしない。</p>
+<p>とはいえ、初回に少し重くてあとは高速、のほうがユーザーエクスペリエンス的にはいいかな、と思うので(あと、どちらにせよたかが知れてる！)、式木デリゲートキャッシュは採用の方向で。スッキリしてて、C#らしい美しさなところも好き。で、まあ一応、速度を気にしてのことなので、ベンチマークを取ったりするわけですが、生成時間が気になる……。エクストリームにハイパフォーマンスなシリアライザを作る！とかってわけじゃないので、あんまキチキチに気にしてもしょうがないのですが、でもちょっと気になる。Boxingが～、とかも少し、でもそれは放置として。</p>
+<p><a href="http://d.hatena.ne.jp/machi_pon/20090821/1250813986">リフレクションは遅いから情報をキャッシュするとかのお話 - Usa*Usa日記</a> <a href="http://ufcpp.net/study/csharp/misc_dynamic.html">[雑記] 動的コード生成のパフォーマンス (C# によるプログラミング入門)</a> <a href="http://ugaya40.net/wpf/mvvm-dynamic-proxy-viewmodel.html">動的プロキシなViewModelの実装とパフォーマンスの比較(MVVMパターン) - the sea of fertility</a> <a href="http://d.hatena.ne.jp/NyaRuRu/20070216/p1">効率の良い実行時バインディングとインターフェイス指向プログラミングでの boxing の回避テクニック - NyaRuRuの日記</a> <a href="http://d.hatena.ne.jp/NyaRuRu/20070925/p1">パフォーマンスのための Delegate, LCG, LINQ, DLR (を後で書く) - NyaRuRuの日記</a> <a href="http://www.atmarkit.co.jp/fdotnet/dotnetdeepdive/dotnetdeepdive01/dotnetdeepdive01_03.html">インライン・メソッド・キャッシュによる動的ディスパッチ高速化 － ＠IT</a> <a href="http://d.hatena.ne.jp/matarillo/20100120/p1">ByRef parameter and C# - 猫とC#について書くmatarilloの日記</a> <a href="http://stackoverflow.com/questions/1722096/how-does-protobuf-net-achieve-respectable-performance">c# - How does protobuf-net achieve respectable performance? - Stack Overflow</a> <a href="http://www.codeproject.com/KB/cs/HyperPropertyDescriptor.aspx">HyperDescriptor: Accelerated dynamic property access - CodeProject</a> <a href="http://msmvps.com/blogs/jon_skeet/archive/2008/08/09/making-reflection-fly-and-exploring-delegates.aspx">Making reflection fly and exploring delegates - Jon Skeet: Coding Blog</a> <a href="http://entlib.codeplex.com/">patterns &amp; practices – Enterprise Library(Data)</a> <a href="http://msdn.microsoft.com/ja-jp/library/system.data.linq.mapping.metaaccessor.aspx">MetaAccessor クラス (System.Data.Linq.Mapping)</a> <a href="http://msdn.microsoft.com/ja-jp/library/system.componentmodel.typedescriptor(v=VS.100).aspx">TypeDescriptor クラス (System.ComponentModel)</a>  <a href="http://automapper.codeplex.com/">AutoMapper</a> <a href="https://github.com/kazuki/msgpack/tree/master/csharp/msgpack">csharp/msgpack at master from kazuki/msgpack - GitHub</a> <a href="https://github.com/yfakariya/msgpack/tree/master/cli/src/MsgPack">cli/src/MsgPack at master from yfakariya/msgpack - GitHub</a></p>
+<p>ネタ元。先人が百億光年前に辿ってきた話だ、的な何か。コードは、シリアライザやマッパーはこの辺の仕組み載せてるよね、という当たりをつけて、ソースコードをPropertyInfoやDictionaryで検索してヒットした周辺を眺めるなど。で、まあ、分かったような分からないような。キャッシュの仕組みと含めて、上手くまとまったらDynamicJsonにも載せようと思っているんですが。一週間ぐらい延々と弄ってるんですが、どうも固まらなくて。この辺、コード書きの遅さに定評のある私です(ｷﾘｯ。</p>
+<p>ちなみにWP7には今のところExpression.Compileはないんですけどね！(Betaの頃はあったけど削られたよう)。SQLCE搭載でLinq to Hogeも搭載するはずなので、それと一緒に復活するはずと信じています。あとSL4相当じゃないとExpression.AssignやUnboxが使えなくてどちらにせよ困るので、MangoではSL4相当にグレードアップしてくれないと。もし一切変わらなかったら、IL生成はもとから出来ないし将来も搭載されないと思うので、適当に何かでお茶濁しますか。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - Re:FromEvent vs FromEventPattern</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2011/0910_342.html">Re:FromEvent vs FromEventPattern</a></h1>
+<ul class="date"><li>2011-09-10</li></ul>
+<div class="entry_body"><p>現在のRxで最大の分かりにくいポイントになっているFromEventとFromEventPattern。以前に<a href="http://neue.cc/2011/07/06_332.html" title="neue cc - Rxでのイベント変換まとめ - FromEvent vs FromEventPattern">Rxでのイベント変換まとめ - FromEvent vs FromEventPattern</a>として軽くまとめましたが、改めて、詳細に考えてみたいと思います。なお、ここでいうFromEventPatternはWP7版のRxではFromEventを指しています（ここも分かりにくいポイントです）。そして、ここでいうFromEventはWP7版のRxには未搭載です、あらあらかしこ。</p>
+<p>ネタ元ですが、<a href="http://techblog.hilife-jp.info/2011/09/silverlight-5-3-doubleclicktrigger-rx.html?spref=tw" title="銀の光と藍い空: Silverlight 5 の新機能その3 番外編 DoubleClickTrigger をRxっぽくしてみた">銀の光と藍い空: Silverlight 5 の新機能その3 番外編 DoubleClickTrigger をRxっぽくしてみた</a>を拝見して、FromEventに関して実行時に例外が出るとのことなので、その部分の説明を書こうかと。最初コメント欄に書いたのですが、少しコメントにトチってしまったので、自分のブログに書かせていただきます、どうもすみません……。</p>
+<p>FromEventとFromEventPatternの最大の違いは、FromEventがAction&lt;EventArgs&gt;を対象にしていて、FromEventPatternはAction&lt;object, EventArgs&gt;を対象にしているということです。Action&lt;object, EventArgs&gt;は、つまりEventHandler。ではAction&lt;EventArgs&gt;って何なんだよ、というと、通常は存在しません。というのもeventはデリゲートなら何でもアリということに仕様上はなっていますが、慣例としてobject sender, EventArgs eを引数に持つデリゲートを選択しているはずですから。</p>
+<p>さて、デリゲート間には同じ引数の型・同じ戻り値の型を持っていても、型自体に互換性がないので（例えばEventHandlerとEventHandler&lt;T&gt;）、FromEventもFromEventPatternも、引数を3つ持つオーバーロードの第一引数は
+conversionという、デリゲートの型を変換するラムダ式を受け入れるようになっています。よって</p>
+<pre><code class="language-csharp">Observable.FromEventPattern&lt;MouseButtonEventHandler, MouseButtonEventArgs&gt;(
+    h =&gt; h.Invoke,
+    h =&gt; AssociatedObject.MouseLeftButtonDown += h,
+    h =&gt; AssociatedObject.MouseLeftButtonDown -= h);
+</code></pre>
+<p>これが、リフレクションなしで変換出来る形式になります。conversionが不要なオーバーロードもあるのですが(+=と-=を書くだけ)、それはリフレクションを使ってデリゲートの変換をしていて今一つ効率が悪いので、わざわざ+=, -=を書いているのだから、もう一手間かけて、 h =&gt; h.Invoke を書いておいたほうがお得です。（もし対象がEventHandler&lt;T&gt;の場合は事情が違ってconversionが不要なので+=と-=だけで済みます、この辺の事情の違いが面倒臭く混乱を招きがちなんですよね…… Rxチームには「便利そうだから」機能を追加する、とかやる前に、もう少し深く考えてくださいと苦情を言いたい）</p>
+<p>h =&gt; h.Invoke だけで何故変換出来ているのかを詳しく説明します。これは正しく書くのならば</p>
+<pre><code class="language-csharp">(EventHandler&lt;MouseButtonEventArgs&gt; h) =&gt; new MouseButtonEventHandler(h)
+</code></pre>
+<p>が正解です。(左側の型に関しては省略可能ですが、説明用には型を書いていたほうが分かりやすいので明記しておきます、また、この最初からEventHandler&lt;T&gt;であることが、対象がEventHandler&lt;T&gt;である場合はconversionが不要な理由になっています）。ただし、関数を直接渡すとコンパイラがデリゲートの型を変換してくれるため、h =&gt; h.Invokeを渡した場合は</p>
+<pre><code class="language-csharp">h =&gt; new MouseButtonEventHandler(h.Invoke)
+</code></pre>
+<p>という風に内部的には自動で整形してくれます。そのため、new MouseButtonEventHandlerを書く手間が省けるということになっています。h と h.Invoke はやってることは完全一緒なのですけど、この辺はコンパイラの仕組みの都合に合わせるという感じで。むしろ仕組みの隙間をついたやり方といいましょうか。</p>
+<p>では、FromEventなのですが、まず正しく変換出来る形を見ると</p>
+<pre><code class="language-csharp">Observable.FromEvent&lt;MouseButtonEventHandler, MouseButtonEventArgs&gt;(
+    h =&gt; (sender, e) =&gt; h(e),
+    h =&gt; AssociatedObject.MouseLeftButtonDown += h,
+    h =&gt; AssociatedObject.MouseLeftButtonDown -= h);
+</code></pre>
+<p>です。もし第一引数を省いた場合はAction&lt;EventArgs&gt;を探してリフレクションをかけるようになっていて、そして、通常はそんなイベントを使うことはないので、十中八九例外が出るのではかと思われます（だからこういう混乱を招くだけのオーバーロードを入れるなとRxチームには苦情を言いたい）。</p>
+<p>型まで明記すれば</p>
+<pre><code class="language-csharp">Action&lt;MouseButtonEventArgs&gt; h =&gt; (object sender, MouseEventArgs e) =&gt; h(e)
+</code></pre>
+<p>となっているわけで、senderを捨ててMouseEventArgsだけを引数に渡す独自のconversionを渡しています。これですが、FromEventPatternであっても</p>
+<pre><code class="language-csharp">h =&gt; (sender, e) =&gt; h(sender, e)
+</code></pre>
+<p>とも書けるので(つまるところ h.Invoke って何かといえば (sender, e) =&gt; h(sender,e) なのです)、それのsender抜きバージョンを渡しているということになります。</p>
+<p>わかりづらい？例えば</p>
+<pre><code class="language-csharp">.Subscribe(Console.WriteLine)
+.Subscribe(x =&gt; Console.WriteLine(x))
+</code></pre>
+<p>この二つはやってること一緒なんですよ、ということですね。ラムダ式が入れ子になるとワケガワカラナイ度が加速されるので、私は関数型言語erにはなれないな、と思ったり思わなかったり。</p>
+<h2>まとめ</h2>
+<p>ただたんに使うにあたっては、こんなことは知ってる必要はなくh =&gt; h.Invoke と h =&gt; (sender, e) =&gt; h(e) を定型句だと思って暗記してもらうだけで十分です。はい。本来は、こういう部分はちゃんと隠蔽されてたほうがいいんですけれど、まあ、C#の限界としてはそうはいかないというとこですね(F#だとイベントがもう少し扱いやすいんですが)。</p>
+<p>また、FromEventにせよFromEventPatternにせよFromAsyncPatternにせよ、実際に使うコードに直接書いてくにはノイズが多すぎるので、<a href="http://neue.cc/2011/07/06_332.html" title="neue cc - Rxでのイベント変換まとめ - FromEvent vs FromEventPattern">Rxでのイベント変換まとめ - FromEvent vs FromEventPattern</a>で書いたように、拡張メソッドに隔離するのを私はお薦めしています。そうこうして裏側で地道に努力することでF#とC#の壁を縮める！とかなんとかかんとか。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

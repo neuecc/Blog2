@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - XStreamingReader - Linq to Xml形式でのストリーミングXml読み込み</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2010/0716_267.html">XStreamingReader - Linq to Xml形式でのストリーミングXml読み込み</a></h1>
+<ul class="date"><li>2010-07-16</li></ul>
+<div class="entry_body"><p><a href="http://xstreamingreader.codeplex.com/" title="XStreamingReader - Streaming for Linq to Xml">CodePlex : XStreamingReader - Streaming for Linq to Xml</a></p>
+<p>1クラスライブラリシリーズ。もしくはストリーミングをIEnumerableに変換していこうシリーズ。またはシンプルだけど小粒でピリッと隙間にぴったりはまるシリーズ(を、目指したい)。といったわけで、100行程度ではあるのですが、表題の機能を持つコードをCodePlexに公開しました。それとおまけとして、XMLファイルからC#クラス自動生成T4 Templateも同梱。</p>
+<p>Linq to Xml風にXmlを読み込めるけれど、ツリーを構築せずストリームで、完全遅延評価で実行します。Linq to Xmlには、書き込み用にXStreamingElementというものがあるため、それと対比した読み込み用という位置付けのつもりです。メモリの厳しいモバイル機器や、巨大なXMLを読み込む際に使えるんじゃないかと思っています。</p>
+<h2>利用例</h2>
+<p>ぶっちゃけまるっきりXElementと同じです。例として<a href="http://weather.yahoo.co.jp/weather/public/rss.html">Yahoo!天気情報</a>のRSSから京都と東京を取り出し。</p>
+<pre><code class="language-csharp">// XElement
+var kyoto = XElement.Load(@&quot;http://rss.weather.yahoo.co.jp/rss/days/6100.xml&quot;)
+    .Descendants(&quot;item&quot;)
+    .Select(x =&gt; new
+    {
+        Title = (string)x.Element(&quot;title&quot;),
+        Description = (string)x.Element(&quot;description&quot;),
+        PubDate = (DateTime)x.Element(&quot;pubDate&quot;)
+    })
+    .Where(a =&gt; !a.Title.StartsWith(&quot;[PR]&quot;)) // itemが広告の場合は除外
+    .ToArray();
+
+// XStreamingReader
+var tokyo = XStreamingReader.Load(@&quot;http://rss.weather.yahoo.co.jp/rss/days/4410.xml&quot;)
+    .Descendants(&quot;item&quot;)
+    .Select(x =&gt; new
+    {
+        Title = (string)x.Element(&quot;title&quot;),
+        Description = (string)x.Element(&quot;description&quot;),
+        PubDate = (DateTime)x.Element(&quot;pubDate&quot;)
+    })
+    .Where(a =&gt; !a.Title.StartsWith(&quot;[PR]&quot;)) // itemが広告の場合は除外
+    .ToArray();
+</code></pre>
+<p>Load/Parseで生成し、ElementsやDescendantsで抽出。あとは、IEnumerable&lt;XElement&gt;となっているので、SelectしたりWhereしたり。完全にLinq to Xmlと同じAPIです。同じすぎてこれだけだと利点がさっぱり見えませんが、100%遅延評価＋ストリーミング読み込みで逐次生成という違いがあります。詳しくは次のセクションで。</p>
+<h2>バックグラウンド</h2>
+<p>Androidでは性能のためにDOMじゃなくてSAXでXML扱うんだ。という話を良く聞いて、確かにただデータ取るためだけにDOM構築ってのは嫌だし、そりゃ避けたい。対象がDOMなら素直にそう思いますが、しかし、もしそれがLinq to Xmlならどうだろう？Windows Phone 7だったらLinq to Xml使うに決まってるよ、と言いたいのですが、これってDOMと同じく、すぐに(LoadなりParseなりした直後)ツリーを構築しています。Elements()なりDescendants()なりの戻り値がIEnumerableなため、遅延評価かと思ってしまうわけですが、遅延評価されるのはツリーの探索が、というだけであって、構築自体は即時でされています。</p>
+<p>DOMに比べて軽量(という謳い文句)であることと、非常に軽々と書けるため抵抗感がないわけですが、考えてみれば Load.Descendants.Select みたいな、API叩いて何らかのクラスなり匿名型なりに変換するという程度の、しかしよくある定型作業は、わざわざツリー作る必要はなくストリーミングで取れるし、それならばストリーミングで取るべきではある。しかし、今時XmlReaderを直で触るなんて、時代への逆行のようなことはやりたくない。</p>
+<p>ストリームはIEnumerableに変換するのがLinq以降のC#の常識。というのを日々連呼しているので、今回はXmlReaderをIEnumerable&lt;T&gt;に変換しなければなりません。しかし、困ったのが、&lt;T&gt;のTを何にすればいいのか、ということ。ファイル読み込みなら一行のString。データベースなら、IDataRecord(<a href="http://neue.cc/2010/04/07_250.html">DbExecutorというライブラリ</a>としてCodePlexに公開しています)を用いましたが、XmlReaderだと適当なのが見当たらない。XmlReaderを直接渡すのは危なっかしいし、そもそも渡したところで面倒くさいことにかわりなくてダメだ。何か適切なコンテナが……。</p>
+<p>と、考えたり考えなかったりで、Twitterでもにょもにょと言っていたら</p>
+<blockquote>
+<p>@neuecc Linq to Xml を使うにしても XmlReaderからReadSubtreeで切り出した断片に対してかなー、XML全体をオンメモリさせる必然性がなければStreamから読んで処理した端からGCに捨てて貰えるようにしておきたいだけだけど<br />
+<a href="http://twitter.com/kazuk/status/18193188205">http://twitter.com/kazuk/status/18193188205</a></p>
+</blockquote>
+<p>うぉ！うぉぉぉぉぉ！なるほど、断片をXElementに変換してそれを渡せば、操作しやすいし感覚的にもXElement.Loadなどと変わらないしでベストだ！言われてみればそりゃそうだよねー、ですが全然頭になかった、まさにコロンブスの卵。こういうことがサラッと出てくることこそが、凄さだよね。</p>
+<p>と、感嘆しつつ、それそのまま頂き、というわけで、TをXElementにするという形で解決しました。</p>
+<pre><code class="language-csharp">public IEnumerable&lt;XElement&gt; Descendants(XName name)
+{
+    using (var reader = readerFactory())
+    {
+        while (reader.ReadToFollowing(name.LocalName, name.NamespaceName))
+        {
+            yield return XElement.Load(reader.ReadSubtree());
+        }
+    }
+}
+</code></pre>
+<p>Descendantsの実装はこんな感じで、断片から都度XElement生成しているという、それだけの単純明快な代物です。そのため挙動はXElement.Load.Descendantsと完全同一というわけじゃありません。例えばサブツリー中に同名の要素がある場合、XElementでDescendantsの場合はサブツリー中の要素も列挙しますが、XStreamingReaderではトップ要素のものだけが拾われます。</p>
+<p>他に注意点としては、それぞれのXElementは完全に独立しているため、ParentやNextNodeなどは全てnullです。よってAncestorsで先祖と比較しながらの複雑な抽出、などといったことも出来ません。TwitterのAPIのような、ウェブサービスとして用意されているXMLなら素直な構造なので問題はありませんが、<a href="http://neue.cc/2010/03/02_244.html">SGMLReaderでLinq to HTML</a>などといった場合は、結構複雑なクエリで抽出することになるため使えないでしょう。その場合は素直にXElement.Loadを使うのが良いと思います。</p>
+<h2>おまけ(Xml→自動クラス生成)</h2>
+<p>Xmlから人力でClass作るのって定型作業で面倒だよねー。ということで、自動生成するT4 Templateも同梱しました。プロパティ定義だけではなく(ちゃんとPascalCaseに直します)、コンストラクタにXElementを投げるとマッピングもしてくれます。つまりは、XStreamingReaderの仕様に合わせたものです。</p>
+<p>.ttの上の方にある3つの項目を適当に書き換えると</p>
+<pre><code class="language-csharp">string XmlString = new WebClient().DownloadString(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
+const string DescendantsName = &quot;status&quot;; // select class root
+const string Namespace = &quot;Twitter&quot;; // namespace
+</code></pre>
+<pre><code class="language-csharp">namespace Twitter
+{
+    public class Status
+    {
+        public string CreatedAt { get; set; }
+        public string Id { get; set; }
+        // snip...
+        public User User { get; set; }
+        public string Geo { get; set; }
+
+        public Status(XElement element)
+        {
+            this.CreatedAt = (string)element.Element(&quot;created_at&quot;);
+            this.Id = (string)element.Element(&quot;id&quot;);
+            this.User = new User(element.Element(&quot;user&quot;));
+            this.Geo = (string)element.Element(&quot;geo&quot;);
+        }
+    }
+    
+    public class User
+    {
+        public string Id { get; set; }
+        public string Name { get; set; }
+        public string ScreenName { get; set; }
+        // snip...
+        public string FollowRequestSent { get; set; }
+
+        public User(XElement element)
+        {
+            this.Id = (string)element.Element(&quot;id&quot;);
+            this.Name = (string)element.Element(&quot;name&quot;);
+            this.ScreenName = (string)element.Element(&quot;screen_name&quot;);
+            this.FollowRequestSent = (string)element.Element(&quot;follow_request_sent&quot;);
+        }
+    }
+}
+</code></pre>
+<p>こんなのが生成されます。型は全部stringになるので、手動で直してください。半自動生成。T4で生成→新しいクラスファイル作って生成結果をコピペ→型を直す。みたいな使い方をイメージしています。完全自動生成じゃないと変更に対する自動追随ってのが出来ないので、自動生成する意味が半減。しかし、型かあ、スキーマないと無理ですな。まあ、ウェブサービスのAPIなどは基本的には固定で変化がないでしょうから、ある程度は手間を省けるんじゃないかと思われます。</p>
+<h2>まとめ</h2>
+<p>断片とはいえ、XElement作るのは無駄じゃないの？というと、無駄ではあります。抽出したらすぐ用済みでポイなわけなので、純粋にパフォーマンスの観点から言えばXmlReaderを直で触ったほうが良いに決まっています。しかし、さすがにそこまで来ると無視して良いと思うわけです。例えばLinqで一時的な匿名型は使わないって？ああ、むしろLinqなんてやめて全部forループにでもします？言いだいたらキリがない。</p>
+<p>今回で大事なのは、ストリーミング化しても、決して使いやすさは損なわれていないということです。ツリー構築型と全く同じように快適に書ける。それが何より大切。「性能のために書きやすさが犠牲になるぐらいなら性能なんていらない！」と、現実は言えなくても心では言ってしまいます。ユーザー視点だと逆ですが……。ただ、中長期的には、スパゲティコードは開発者を幸せにしない→機能追加速度低下/洗練が鈍る→ユーザーも不幸せになる、のループが回るので綺麗さは重要。勿論、そこが性能上本当にボトルネックになっているならば気合入れて叩く必要がありますが、気分的に、もしくはマイクロベンチマーク的にちょっと性能Downな程度でパフォーマンスチューニングとか言い出すのならシバいてよし。</p>
+<p>といったわけかで、私なりにWindows Phone 7プログラミングへの準備を進めています。これで、準備になってる？……だと？ご冗談を。ですね、はい、すみません。開発キットのベータ版が出たので、次回はWindows Phone 7で何か作ろう紹介でも書く予定は未定。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

@@ -1,0 +1,2526 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2015/0413_510.html">UniRx 4.8 - 軽量イベントフックとuGUI連携によるデータバインディング</a></h1>
+<ul class="date"><li>2015-04-13</li></ul>
+<div class="entry_body"><p><a href="https://github.com/neuecc/UniRx">UniRx(Reactive Extensions for Unity)</a>のVer 4.8が昨日、AssetStoreにリリースされました。UniRxとはなにか、というと、巷で流行りのReactive Programming、の.NET実装のReactive Extensions、のUnity実装で、私が去年ぐらいからチマチマと作っています。実際のところ細かいリリースは何度も行っているんで（差分は<a href="https://github.com/neuecc/UniRx/releases">GitHubのReleases</a>に書いてあります)、開発/アップデートはかなりアクティブな状態でした。その間に、Google PlayやiOSのAppStoreでもチラホラと使用しているタイトルがあったりと（ありがとうございます！！！）、案外存外しっかりRealWorldしていました。GitHubのStarも順調に伸びていて、まぁまぁメジャーになってきた気はします。</p>
+<p>その間に、いくつか素晴らしいプレゼン資料も作っていただきました！<a href="https://twitter.com/torisoup">@torisoup</a>さんの<a href="http://www.slideshare.net/torisoup/unity-unirx">未来のプログラミング技術をUnityで -UniRx-</a>は、分かりやすく魅力を感じさせてくれる内容になっていて、とても素晴らしいです。読むべし読むべし。<a href="http://qiita.com/toRisouP">toRisouPさんはQiita</a>でも多くの記事を書いてくださっていて、（私がｇｄｇｄ書くよりも）はるかに分かりやすくていいですね！</p>
+<p>また、<a href="https://twitter.com/Grabacr07">@Grabacr07</a>さんの<a href="https://speakerdeck.com/grabacr07/unirx-toka-reactive-property-toka">UniRx とか ReactiveProperty とか</a>は、今回紹介するuGUI連携についての話が、分かりやすく綺麗に紹介されているので、こちらも必読です。必読。</p>
+<p>UniRxの最初の発表は2014/04/19の<a href="http://www.slideshare.net/neuecc/unityrx-reactive-extensions-for-unity">UniRx - Reactive Extensions for Unity</a>というところで、発端は非同期処理の解消、という一面からスタートしていたのですが、すぐにUnityの発する色々なイベント処理をRxで行おうという、本来の、でありつつも応用的なところが盛んに試されるようになったのは素晴らしいことだなぁ、と思っています。これはゲームプログラミングの持つ複雑さが、Reactive Programmingの使い道を無数に産むという、相性の良さがあるのかしらん。非同期だけじゃない、データバインドだけじゃないRealなReactive Programmingがここにあり、プログラミングを、C#の可能性を、パラダイムシフトを大いに楽しめる環境です。是非楽しんでください。もちろん、実用性もありますしね！</p>
+<ul>
+<li><a href="https://github.com/neuecc/UniRx">GitHub - UniRx</a></li>
+<li><a href="http://u3d.as/7tT">UnityAssetStore - UniRx</a></li>
+</ul>
+<p>当然（？）フリーです。</p>
+<h2>ObservableTriggers</h2>
+<p>UniRx 4.8から、MonoBehaviourのイベントハンドリング手法をObservableTriggersという概念に全面移行しました。どういうことかというと、まず、ObservableMonoBehaviourは廃止です:) Obsoleteはつけていないし、動作はしますが、非推奨になりました。その代わりとなるのがObservableTriggersです。まず利用例を。</p>
+<pre><code class="language-csharp">using UniRx;
+using UniRx.Triggers; // この名前空間以下にTriggerは入ってるのでusingしときましょう
+
+public class MyComponent : MonoBehaviour
+{
+    void Start()
+    {
+        // AddComponentでTriggerを付与する
+        var trigger = this.gameObject.AddComponent&lt;ObservableUpdateTrigger&gt;();
+
+        // すると*Event*AsObservableが使えるようになる
+        trigger.UpdateAsObservable()
+            .SampleFrame(30)
+            .Subscribe(x =&gt; Debug.Log(x), () =&gt; Debug.Log(&quot;destroy&quot;));
+
+        // 3秒後に自殺:)
+        GameObject.Destroy(this, 3f);
+    }
+}
+</code></pre>
+<p>Triggerは対象GameObjectがDestroyされると、OnCompletedを流してイベント発火を終了します。</p>
+<p>ObservableMonoBehaviourを継承するのではなく、AddComponentで必要なイベントのためのTriggerを与えてください。そうすれば、そのイベントがRxで取り扱えるようになります。標準では ObservableAnimatorTrigger, ObservableCollision2DTrigger, ObservableCollisionTrigger, ObservableDestroyTrigger, ObservableEnableTrigger, ObservableFixedUpdateTrigger, ObservableUpdateTrigger, ObservableLastUpdateTrigger, ObservableMouseTrigger, ObservableTrigger2DTrigger, ObservableTriggerTrigger, ObservableVisibleTrigger, ObservableTransformChangedTrigger, ObservableRectTransformTrigger, ObservableCanvasGroupChangedTrigger, ObservableStateMachineTrigger, ObservableEventTrigger を用意してあります。「ほぼ」全部です。4.6から追加された新しいイベント(OnTransformChildrenChangedとか)も網羅しています。（とはいえ全部ではないので、足りなくて必要なものがあったら自分で追加するか、私にリクエストください、単純にあまり需要なさそうだと勝手に判断したものはオミットしちゃっているので……）</p>
+<p>また、AddComponentが面倒くさい！ので、GameObject/Componentに対して、UniRx.Triggersをusingしている場合は、XxxAsObservableメソッドを直接拡張メソッドから呼べて、するとTriggerが自動付与されるようになっています。</p>
+<pre><code class="language-csharp">using UniRx;
+using UniRx.Triggers; // 必ずこのusingが必要です
+
+public class DragAndDropOnce : MonoBehaviour
+{
+    void Start()
+    {
+        // OnMouseDownAsObservableが生えてる
+        this.OnMouseDownAsObservable()
+            .SelectMany(_ =&gt; this.UpdateAsObservable()) // UpdateAsObservableが生えてる
+            .TakeUntil(this.OnMouseUpAsObservable()) // OnMouseUpAsObservableが生えてる
+            .Select(_ =&gt; Input.mousePosition)
+            .Subscribe(x =&gt; Debug.Log(x));
+    }
+}
+</code></pre>
+<p>なので、通常使う場合は、Triggerに関しては意識する必要はありません。(ObservableEventTrigger(uGUI用)とObservableStateMachineTrigger(Animation用)だけは自動付与がないので、これらの場合だけ自分で意識的に付与する必要があります)</p>
+<p>ObservableMonoBehaviourは継承が必要だったり（基底クラスが強制される！）、baseメソッドの呼び出しが必須だったり、空イベントの呼び出しが必ず含まれるパフォーマンス低下などなど、決して使い勝手の良いものではありませんでした。というか使い勝手は最悪でした。なんで当初からObservableTriggerのようなやり方じゃなかったか、というと……、まぁ、単純に私のUnityへの理解不足です、すびばせん。ObservableTriggerは、Unityのコンポーネント指向を活かしつつ、Rxによってイベントを自然に外側で取り出せるようになっているので、圧倒的に便利な形になったのではないかなと思います。</p>
+<h2>uGUI</h2>
+<p>uGUIのイベントがUniRxでパーフェクトにハンドリングできます！この辺の話は前述のスライド<a href="https://speakerdeck.com/grabacr07/unirx-toka-reactive-property-toka">UniRx とか ReactiveProperty とか</a>に綺麗にまとまっているのですが、例えばボタンとかが</p>
+<pre><code class="language-csharp">// インスペクタから貼っつけるとか
+public Button MyButton;
+
+// こんな感じで取る(onClick.AsObservable もしくは OnClickAsObservable)
+MyButton.onClick.AsObservable().Subscribe(_ =&gt; Debug.Log(&quot;clicked&quot;));
+</code></pre>
+<p>ほぅ……。普通だ。どうでも良さそうだ。と、いう具合にuGUIのEvent + AsObservableでイベントハンドリングができるようになっています。もう少し例を出すと</p>
+<pre><code class="language-csharp">// ビューからのコントロールはインスペクタでペタペタ貼り付ける
+public Toggle MyToggle;
+public InputField MyInput;
+public Text MyText;
+public Slider MySlider;
+
+// Startとかで宣言的にUIを記述していきましょう
+void Start()
+{
+    // チェックボックスのオン/オフでボタンの有効/非有効が切り替わるようにします
+    // OnValueChangedAsObservableは.onValueChanged.AsObservableのヘルパーで、単純に省略が楽という他に、
+    // 初期値(最初のisOnの値)がSubscribe時に流れていきます
+    // また、SubscribeToInteractableはUniRxのヘルパーで、 x =&gt; .interactable = x を省略できます
+    MyToggle.OnValueChangedAsObservable().SubscribeToInteractable(MyButton);
+
+    // 入力文字は1秒後にテキストラベルに反映されます
+    MyInput.OnValueChangeAsObservable()
+        .Where(x =&gt; x != null)
+        .Delay(TimeSpan.FromSeconds(1))
+        .SubscribeToText(MyText); // SubscribeToTextを使うと簡単に紐付けできます
+
+    // SubscribeToTextの人間の読める形に変換したい場合用ヘルパ
+    MySlider.OnValueChangedAsObservable()
+        .SubscribeToText(MyText, x =&gt; Math.Round(x, 2).ToString());
+}
+</code></pre>
+<p>こんな風になります。uGUIの標準コントロールに関しては直接EventAsObservableできるように拡張されてます。ともあれ、uGUIのイベントハンドリングはスクリプトで行いましょう。uGUI標準のAddHandlerなどはやりづらいですが、UniRxはそれを簡単に行える仕組みが用意してあります。uGUIのチュートリアルや解説本では、インスペクタのイベントの部分をクリックしてメソッドと紐付けてー、などとやるかもしれませんが、あのやり方は最低最悪なので忘れましょう。スクリプトレスでイベント設定できるとか幻想なんで、少なくともRxを使おうとしているようなプログラマなら、一切見なかったことにしましょう。100億パーセントどうでもいい次元の話なので無視しておきましょう。やりづらいだけです。</p>
+<p>unityEvent.AsObservableのかわりに、全てのUnityコントロールにはUnityEventAsObservableが定義されています。ButtonのonClickの場合は違いはないのですが、一部の値が流れるものに関しては違いがあって、コントロールに直接生えているものは初期値が流れるようになっています。この初期値が流れる、という性質は非常に重要です。と、いうのも、今回のようにUIを宣言的に記述した場合、初期値が流れないと、初期値を設定して回らなければならなくて全体の構築が狂ってしまうからです。と、いうわけで、基本的にはコントロールに生えているAsObservableを使いましょう。</p>
+<h2>ReactiveProperty</h2>
+<p>UniRx 4.8からReactivePropertyという特別な型が用意されています（あとReactiveCollectionとReactiveDictionary）。これは何かというと、通知可能なプロパティ。なんのこっちゃ。うーん、イベントと値がセットになった型。うーん、なんのこっちゃ……。</p>
+<pre><code class="language-csharp">// 変更通知付きなモデル
+public class Enemy
+{
+    // HPは変更あったら通知して他のところでなんか変化を起こすよね？
+    public ReactiveProperty&lt;long&gt; CurrentHp { get; private set; }
+
+    // 死んだら通知起こすよね？
+    public ReadOnlyReactiveProperty&lt;bool&gt; IsDead { get; private set; }
+
+    public Enemy(int initialHp)
+    {
+        // 宣言的に記述していく。
+        // ReactivePropertyはそれ自体がIObservable&lt;T&gt;なので、Rxでチェーン可能で、更にそれをReactivePropertyに変換も可能
+        // 死んだかどうかというのはHPが0以下になったら、で表現できる         
+        CurrentHp = new ReactiveProperty&lt;long&gt;(initialHp);
+        IsDead = CurrentHp.Select(x =&gt; x &lt;= 0).ToReadOnlyReactiveProperty();
+    }
+}
+
+// こんなふうにして使う
+// ボタンクリックしたらHPが99減ってくとする（実際はなんかCollision受けたら減るとか色々）
+// ReactivePropertyの値は.Valueで取り出せる)
+MyButton.OnClickAsObservable().Subscribe(_ =&gt; enemy.CurrentHp.Value -= 99);
+
+// その変更を受けてUIに変更を戻す
+enemy.CurrentHp.SubscribeToText(MyText); // とりあえず現在HPをTextに表示
+
+// もし死んだらボタンクリックできないようにする
+enemy.IsDead.Select(isDead =&gt; !isDead).SubscribeToInteractable(MyButton);
+</code></pre>
+<p>今まではイベント＋普通の値で表現していたものが、プロパティ一個で表現できるようになります。また、イベント自体の取り扱いもRxなので合成可能になっていて、取り回しが向上します。というわけで、めちゃくちゃ便利。実際便利。通知が必要な値は片っ端からReactivePropertyにしましょう、それで幸せになれます！</p>
+<p>更にReactivePropertyはInspectorで利便性が向上しています。</p>
+<p><img src="https://raw.githubusercontent.com/neuecc/UniRx/master/StoreDocument/RxPropInspector.png" alt="" /></p>
+<p>IntRxPropのところ、インスペクタに値を表示しているのですが、これの値をインスペクタで変更すると、紐付けていたイベント(.Subscribeしているもの)への通知も飛んでいきます。地味に捗る神機能。注意点としては、ジェネリックの型はインスペクタに表示できないという制限を引き継いでいるので、インスペクタに表示したいReactiveProeprtyは、専用のReactivePropertyを使いましょう。例えばIntReactivePropertyやBoolReactiveProperty、Vector2ReactivePropertyなどが標準では用意されています。EnumをReactiveProeprtyとして表示したい、というシチュエーションも多いと思います。その場合はSpecializedなReactivePropertyを定義していきましょう。例えば</p>
+<pre><code class="language-csharp">// こんなEnumがあるとして
+public enum Fruit
+{
+    Apple, Grape
+}
+
+// こういう特化したReactiveProeprtyを作ればOK
+[Serializable]
+public class FruitReactiveProperty : ReactiveProperty&lt;Fruit&gt;
+{
+    public FruitReactiveProperty()
+    {
+    }
+
+    public FruitReactiveProperty(Fruit initialValue)
+        :base(initialValue)
+    {
+    }
+}
+
+// また、InspectorDisplayDrawerにたいしてCustomPropertyDrawerを指定するとインスペクタでの表示が向上/イベント通知が可能になるので
+// 特化ReactiveProeprtyの作成とワンセットで行いましょう
+// ExtendInspectorDisplayDrawer自体は一個あればそれで大丈夫です
+[UnityEditor.CustomPropertyDrawer(typeof(FruitReactiveProperty))]
+[UnityEditor.CustomPropertyDrawer(typeof(YourSpecializedReactiveProperty2))] // 他、沢山ここにtypeofを追加していく
+public class ExtendInspectorDisplayDrawer : InspectorDisplayDrawer
+{
+}
+</code></pre>
+<p>といった感じに拡張することで、より便利になっていきます。</p>
+<h2>MV(R)P</h2>
+<p>これらのUIの作り方を指して、Model-View-(Reactive)Presenterパターンというものを提唱します。</p>
+<p><img src="https://raw.githubusercontent.com/neuecc/UniRx/master/StoreDocument/MVP_Pattern.png" alt="" /></p>
+<p>なぜMVPか、なんでMVVMではないか。まず、Unityはバインディングエンジンを持っていません。一般的にMVVMはViewとViewModelの間をバインディングエンジンが受け持ちます。なので、素の状態ではそもそもMVVMはできません。じゃあバインディングエンジンを作るか、となると、そんなレイヤーを挟むのは複雑になるしパフォーマンスも低下するし、デメリットがメリットを上回るバインディングエンジンを作るのは難しい。バインディングは誰かが動的レイヤーを引き受けなければならなくて（例えばName直書きなINotifyPropertyChangedであったり)、ピュアC#の世界とは相性が悪い。それをWPFではXAMLに押し付けているが、動的コード生成高速化の手段が取れないUnityでは、無理して実現する価値はない。</p>
+<p>そんなわけで、MVVMはやらない。やらないとなると、バインディング機構が存在しない都合上、どこかで、だれかが、Vを知る必要がある(じゃなきゃViewのUpdateがかけれない)。というわけでVMは存在できず、Presenterを立てる。Model自体はPresenterにも依存しないし、Viewは知らない。ただしViewまで伝搬するため通知は可能でなければならない。それらをRxが繋ぎます。従来のMVPはステートの複雑化や伝搬に困難があったが、Observableはバインディングのようにシンプルに通知を行うことができるし、Viewへの適用もバインディングであるかのように綺麗に見せることができる。Rxを介すことによって、アプリケーションを作る上での問題が解消する。しかもレイヤー的にはないに等しく薄いので、一切のデメリットはない。</p>
+<p>再度、コードと当てはめてみましょう。</p>
+<pre><code class="language-csharp">// Presenter(Canvasのルートだったり、Prefabやパーツ分割単位のルート)
+public class ReactivePresenter : MonoBehaviour
+{
+    // PresenterはViewのコンポーネントを知っている（さわれる）
+    public Button MyButton;
+    public Toggle MyToggle;
+    
+    // ModelからのState-Change-EventsはReactivePropertyによって伝搬される
+    // Modelの変更は基本的に自身が上層に通知可能であり、それはReactiveProeprtyで表現される
+    Enemy enemy = new Enemy(1000);
+
+    void Start()
+    {
+        // Viewからのuser eventsはRxによって伝搬され、Modelにまでリアクティブに浸透していく
+        MyButton.OnClickAsObservable().Subscribe(_ =&gt; enemy.CurrentHp.Value -= 99);
+        MyToggle.OnValueChangedAsObservable().SubscribeToInteractable(MyButton);
+
+        // Modelからの伝搬もまた、Presenterを介してRxによってViewのUpdateをかける
+        enemy.CurrentHp.SubscribeToText(MyText);
+        enemy.IsDead.Where(isDead =&gt; isDead == true)
+            .Subscribe(_ =&gt;
+            {
+                MyToggle.interactable = MyButton.interactable = false;
+            });
+    }
+}
+</code></pre>
+<p>この場合、ViewとPresenterの紐付けはUnityのインスペクタでやります、ぴっ、ぴっ、ぴっってドラッグアンドドロップですねん。ふつーの（？）MVPだと、このViewをIViewとしてモックと差し替え可能にしたりもしたりしなかったりですが、そこまでやってもメリットゼロなんでそんなことはやらないでダイレクトにViewの実体とひもづける形でOK。</p>
+<p><img src="https://raw.githubusercontent.com/neuecc/UniRx/master/StoreDocument/MVRP_Loop.png" alt="" /></p>
+<p>それぞれの伝搬ポイントにUniRxのメソッドやクラスが用意されているので、全てをシームレスに、Reactiveにつなぎ合わせることが可能です。UniRxならね。これの何が嬉しいかというと、見通しが良く、コード量が減ります。それがもう単純に嬉しい。また、イベントの関連付けはスクリプト側に寄っているので、インスペクタがカオティックにならずに済みます。かなりUnity(+Rx)の現実に沿った作り方なのではないかなー、と思うのですがどうでしょう？この辺は意見大募集中といったところです。</p>
+<h2>カスタムトリガーを作ろう</h2>
+<p>そんな風にアプリケーションを作っていくと、イベントはRx的に発動させるのが都合が良い、ということがわかってきます。実際そう。で、SubjectやReactivePropertyなどを駆使することによりModelをRx的に作っていくのは可能なのですが、ViewからのイベントをRx的に流すためにはどうすればいいのか。標準ではTriggerが用意されてますが、それだけじゃ足りない、例えばロングタップ作りたいとかジェスチャー作りたいとか……。という場合はTriggerを自作します。作り方は、ObservableTriggerBaseを継承して……</p>
+<pre><code class="language-csharp">public class ObservableLongPointerDownTrigger : ObservableTriggerBase, IPointerDownHandler, IPointerUpHandler
+{
+    public float IntervalSecond = 1f;
+
+    Subject&lt;Unit&gt; onLongPointerDown;
+
+    float? raiseTime;
+
+    void Update()
+    {
+        if (raiseTime != null &amp;&amp; raiseTime &lt;= Time.realtimeSinceStartup)
+        {
+            if (onLongPointerDown != null) onLongPointerDown.OnNext(Unit.Default);
+            raiseTime = null;
+        }
+    }
+
+    void IPointerDownHandler.OnPointerDown(PointerEventData eventData)
+    {
+        raiseTime = Time.realtimeSinceStartup + IntervalSecond;
+    }
+
+    void IPointerUpHandler.OnPointerUp(PointerEventData eventData)
+    {
+        raiseTime = null;
+    }
+
+    public IObservable&lt;Unit&gt; OnLongPointerDownAsObservable()
+    {
+        return onLongPointerDown ?? (onLongPointerDown = new Subject&lt;Unit&gt;());
+    }
+
+    protected override void RaiseOnCompletedOnDestroy()
+    {
+        if (onLongPointerDown != null)
+        {
+            onLongPointerDown.OnCompleted();
+        }
+    }
+}
+</code></pre>
+<p>こんな感じ、これで他のTriggerと同じノリ、OnPointerDownAsObservableでタップを拾えるように、OnLongPointerDownAsObservableでロングタップを拾えるようになります。Subjectでイベント通知することと、RaiseOnCompletedOnDestroyのところでOnCompletedを発行するのが原則です。こういう形でイベントを拡張すると、よりスムーズにRxで全てが繋がっていきます！</p>
+<h2>ライフサイクル管理</h2>
+<p>で、全部がRxになると、イベントをSubscribeしたのをどこで解除すればいーんですかー、って話になってきたりこなかったりする。基本的にTrigger系は自身が死んだ時に終了するからいいんですが、それ意外のもの、例えばObservable.TimerやObservable.EveryUpdateは自動的に止まらないので、自分で登録解除する必要があります。そのためのヘルパーとして、IDisposable.AddToがUniRxには用意されています。また、CompositeDisposableがSubscriptionの管理に使えます。</p>
+<pre><code class="language-csharp">// CompositeDisposableはList&lt;IDisposable&gt;のようなもので、複数のIDisposableが管理できます
+CompositeDisposable disposables = new CompositeDisposable(); // これをfieldにおいておいて
+
+void Start()
+{
+    Observable.EveryUpdate().Subscribe(x =&gt; Debug.Log(x)).AddTo(disposables); // AddToで詰める
+}
+
+void OnTriggerEnter(Collider other)
+{
+    // .Clear() =&gt; 中の全てのdisposableのDisposeが呼ばれて、Listが空になります
+    // .Dispose() =&gt; 中の全てのdisposableのDisposeが呼ばれて、以降はAddされたら即対象をDisposeするようになります
+    disposables.Clear();
+}
+</code></pre>
+<p>よくあるシチュエーションとして、Destroyした瞬間に解除したい、というのがあると思います。その場合AddTo(gameObject/component)が使えます。</p>
+<pre><code class="language-csharp">void Start()
+{
+    // 自分が消滅したらDispose
+    Observable.IntervalFrame(30).Subscribe(x =&gt; Debug.Log(x)).AddTo(this);
+}
+</code></pre>
+<p>DisposeじゃなくてOnCompletedを出して欲しい、という場合にはTakeWhile, TakeUntil, TakeUntilDestroy, TakeUntilDisable辺りが使えます。</p>
+<pre><code class="language-csharp">Observable.IntervalFrame(30).TakeUntilDisable(this)
+    .Subscribe(x =&gt; Debug.Log(x), () =&gt; Debug.Log(&quot;completed!&quot;));
+</code></pre>
+<p>イベントを「繰り返す」場合に、Repeatが通常使われますが、実は危険です。源流がOnCompletedを発行すると無限ループ化するからです。ObservableTriggersが終了するとOnCompletedを発行するため、安易なRepeatの使用は無限ループ行きとなります。それを避けるには、RepeatUntilDestroy(gameObject/component), RepeatUntilDisable(gameObject/component), RepeatSafeが使えます。RepeatUntilDestroyとかは文字通りなんですが、RepeatSafeは連続してOnCompltedが発行された場合はRepeatを取りやめるという、無限ループ禁止機構のついたRepeatです。ベンリ。</p>
+<p>最後に、ObserveEveryValueChangedを紹介します。これは、ラムダ式で指定した値を変更のあった時にだけ通知するという、つまり変更通知のない値を変更通知付きに変換するという魔法のような（実際ベンリ！）機能です（実際は毎フレーム監視してるんで、ポーリングによる擬似的なPull→Push変換）</p>
+<pre><code class="language-csharp">// watch position change
+this.transform.ObserveEveryValueChanged(x =&gt; x.position).Subscribe(x =&gt; Debug.Log(x));
+</code></pre>
+<p>これは監視対象がGameObjectの場合はDestroy時にOnCompletedを発行して監視を止めます。通常のC#クラス（POCO）の場合は、GCされた時に、同様にOnCompletedを発行して監視を止めるようになっています（内部的にはWeakReferenceを用いて実装されています）。ただのポーリングなので多用すぎるとアレですが、お手軽でベンリには違いないので適宜どうぞ。</p>
+<h2>パフォーマンス</h2>
+<p>パフォーマンスの話は一口で言うには結構難しいところです。まずいうと、RxとLINQを関連付けてLINQだからパフォーマンスがー、というのは微妙にあてはまりません。RxはPush型、最初のタイミングでパイプラインを構築し、それを（大抵の場合）かなり長い期間（最長でObjectが消滅するまで）購読する形になります。つまり、ライフサイクルが非常に長い。だから、パイプライン構築のためのオブジェクト（のGC）のコストというのは、そんなでもないと思ってもらっていいでしょふ。Updateの度に頻繁に数千構築/解体を繰り返すようなものではない、ということですねん。パイプラインに流れる値に関しては、その頻度と書きよう次第ですけれど。また、Rxのメソッドも軽いメソッドと重いメソッドがあるので、それ次第という面もあります。とはいえそこまで気にするほどではないかなー、と。</p>
+<p>全体的にRxを適用すると、アプリケーションはPushベースで構築されることになるので、頻繁な問い合わせ処理(Pullベース)が消え、つまり更新駆動の最小限の差分処理だけが走るので、逆にパフォーマンスは上がる、という見方もできなくもないですが、まぁさすがにそれは都合の良すぎる捉え方でしょう:) ともあれ、そういったアプリケーション構築手法の変革もあるので、そこのところも含めて評価しなければなりません。</p>
+<p>単純なコルーチンの代替、非同期通信処理の代替レベルでなら、実質ない、と言っても過言ではないところなので、それぐらいならばもうまるっきり気にせず、ですね。また、今まではObservableMonoBehaviourが不要な場合にも空イベントを回していて、それが若干の消費があったのですが、今回からは軽量なTriggerベースで必要なものにしかイベントを付与しないスタイルになったので、全体的にはかなり取り回しよくなってきたんじゃないかなー、と思います。</p>
+<p>まだまだ全然パフォーマンスチューニングできる領域は沢山あるので、都度行っていくつもりです（分かりやすく効果の出るところでいえばWhere.Where.Whereチェーンは1個のWhereにできたり、かなり多用されるWhere.Selectチェーンも1個のWhereSelectチェーンにまとめあげられたり、などなど）</p>
+<h2>LINQ to GameObject</h2>
+<p>あと、これはUniRxとは関係ないのですがLINQ to GameObjectもアップデートしてます。</p>
+<ul>
+<li><a href="https://github.com/neuecc/LINQ-to-GameObject-for-Unity">GitHub - LINQ to GameObject</a></li>
+<li><a href="http://u3d.as/content/neuecc/linq-to-game-object">UnityAssetStore - LINQ to GameObject</a></li>
+</ul>
+<p><img src="https://raw.githubusercontent.com/neuecc/LINQ-to-GameObject-for-Unity/master/Images/axis.jpg" alt="" /></p>
+<p>メインはLINQ風メソッドでtransformを自在に辿れるってところで、それは<a href="http://neue.cc/2014/11/11_482.html">LINQ to GameObjectによるUnityでのLINQの活用</a>を読んでいたたきたいのですが、もう一つの機能に、階層上の任意の位置にGameObjectをAddしたりMoveしたりするメソッドもあります。今回のアップデートで、これがuGUIのRectTransformに対応しました！uGUIはヒエラルキーの位置を表示情報としてかなり大事に扱うため、それのコントロールが容易になるLINQ to GameObjectは役立つはずです。</p>
+<h2>まとめ</h2>
+<p>今回のObservableTrigger、uGUI連携、そしてLifetime管理といった機能によって、より様々なところに導入しやすくなった、より使いやすくなったのではないでしょうか！</p>
+<p>直近では4/16 18:30~の<a href="http://kbkz.connpass.com/event/12597/">歌舞伎座.tech#7「Reactive Extensions」</a>で「Observable Everywhere - UniRxによるUnityでのReactive Programming」と題して発表を行います。こちらはニコ生での放送もあるようなので、見るといいんじゃないかなー、ということで！</p>
+</div>
+<h1><a href="http://neue.cc/2015/0402_509.html">Microsoft MVP for .NET(C#)を再々々々受賞しました</a></h1>
+<ul class="date"><li>2015-04-02</li></ul>
+<div class="entry_body"><p>今年も受賞で、5年目です。実は今年から受賞分野がC#が.NETに統合されたので、エキスパタイズとしてはfor .NETになります。</p>
+<p>会社は第一段階が終わり、といった感じで、それに付随する活動内容としても総まとめみたいなものが多かったかな、といったところでしょうか。今年はまた次の段階の始まりということで、より新しい勝負が必要になってきています。今、私が主に力を入れているのはUnityと、そのReactive Extensions実装の<a href="https://github.com/neuecc/UniRx">UniRx</a>で、特にUniRxはかなりヒットさせられたとは思います。が、まだまだ兆しといったところなので、確固たるものにしなければならない。また、それを基盤にして、C#の強さというのを、ただの今までの.NETコミュニティにだけに留まらず、幅広い世界に届ける、伝えていきたいし、幸いにして私はそれが出来る立場にいると思っています。</p>
+<p>より力強く、Real World C#というのを示し続けてきます。そんなわけで引き続き、今年もよろしくお願いします。</p>
+</div>
+<h1><a href="http://neue.cc/2015/0325_508.html">グラニのC#フレームワークの過去と未来、現代的なASP.NETライブラリの選び方</a></h1>
+<ul class="date"><li>2015-03-25</li></ul>
+<div class="entry_body"><p><a href="http://www.buildinsider.net/event/meetup/grani01">Build Insider MEETUP with Grani</a>というイベントで、グラニのC#フレームワーク（というほどのものはない！）の今までとこれからってのを話しました。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/46267391" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/a-framework-for-light-up-applications-of-grani" title="A framework for light up applications of grani" target="_blank">A framework for light up applications of grani</a> </strong> from <strong><a href="//www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>そのうちBuild Insiderで文字起こしとか公開されると思います。</p>
+<p>2015年の今、どういうライブラリを選んだか、とかNLog大脱却、とかって話が見どころですかね。うちの考えるモダンなやり方、みたいな感じです。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2015/03/dotnetlibraries2015.png' alt='' />
+</p>
+<p>実際、<a href="https://msdn.microsoft.com/ja-jp/library/system.diagnostics.tracing.eventsource.aspx">EventSource</a>や<a href="https://msdn.microsoft.com/en-us/library/dn440729.aspx">Semantic Logging Application Block</a>は良いと思いますので、触ってみるといいですね。少なくとも、イマドキにハイパーヒューマンリーダブル非構造化テキストログはないかなぁ、といったところです。</p>
+<p>スライドにしたら判別不能になったOWINのStartup部分も置いておきます、参考までに。</p>
+<pre><code class="language-csharp">// 開発環境用Startup（本番では使わないミドルウェア/設定込み）
+public class Startup
+{
+    public void Configuration(IAppBuilder app)
+    {
+        app = new ProfilingAppBuilder(app); // 内製Glimpse表示用AppBuilderラッパー(Middlewareトラッカー)
+        app.EnableGlimpse(); // Glimpse.LightNdoe同梱ユーティリティ
+        app.Use&lt;GlobalLoggingMiddleware&gt;(); // 内製ロギングミドルウェア
+        app.Use&lt;ShowErrorMiddleware&gt;(); // 内製例外時表示ミドルウェア
+
+        app.Map(&quot;/api&quot;, builder =&gt;
+        {
+            var option = new LightNodeOptions(AcceptVerbs.Get | AcceptVerbs.Post,
+                new LightNode.Formatter.Jil.JilContentFormatter(),
+                new LightNode.Formatter.Jil.GZipJilContentFormatter())
+            {
+                OperationCoordinatorFactory = new GlimpseProfilingOperationCoordinatorFactory(),
+                ErrorHandlingPolicy = ErrorHandlingPolicy.ThrowException,
+                OperationMissingHandlingPolicy = OperationMissingHandlingPolicy.ThrowException,
+            };
+
+            builder.UseLightNode(option);
+        });
+        // Indexはデバッグ画面に回す
+        app.MapWhen(x =&gt; x.Request.Path.Value == &quot;/&quot; || x.Request.Path.Value.StartsWith(&quot;/DebugMenu&quot;), builder =&gt;
+        {
+            builder.UseFileServer(new FileServerOptions()
+            {
+                EnableDefaultFiles = true,
+                EnableDirectoryBrowsing = false,
+                FileSystem = new PhysicalFileSystem(@&quot;.\DebugMenu&quot;),
+            });
+        });
+        // それ以外は全部404
+        app.MapWhen(x =&gt; !x.Request.Path.Value.StartsWith(&quot;/Glimpse.axd&quot;, StringComparison.InvariantCultureIgnoreCase), builder =&gt;
+        {
+            builder.Run(ctx =&gt;
+            {
+                ctx.Response.StatusCode = 404;
+                return Grani.Threading.TaskEx.Empty;
+            });
+        });
+    }
+}
+</code></pre>
+<p>インデックスでアクセスすると表示するページはGlimpse.axdと、シングル全画面ページで表示できるローンチ部分へのリンクを貼っつけてあります。</p>
+<pre><code class="language-xml">&lt;!DOCTYPE html&gt;
+&lt;html xmlns=&quot;http://www.w3.org/1999/xhtml&quot;&gt;
+&lt;head&gt;
+    &lt;title&gt;Debug Index&lt;/title&gt;
+&lt;/head&gt;
+&lt;body&gt;
+    APIのデバッグ&lt;br /&gt;
+    &lt;p&gt;
+        &lt;a href=&quot;../../Glimpse.axd?n=glimpse_redirect_popup&quot;&gt;Glimpse Launch&lt;/a&gt;
+    &lt;/p&gt;
+    &lt;p&gt;
+        &lt;a href=&quot;../../glimpse.axd&quot;&gt;Glimpse Config&lt;/a&gt;
+    &lt;/p&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+</code></pre>
+<p>まぁ、こういうのあると、Glimpseへのアクセスが近くで非常に便利です。</p>
+<p>あと最後に、OWINでやるならこーいうのどうでしょう、というWeb.config。Owin Middlewareと機能重複して鬱陶しいからHttpModule丸ごと消そうぜ、という過激派な案ですにゃ。</p>
+<pre><code class="language-xml">&lt;?xml version=&quot;1.0&quot; encoding=&quot;utf-8&quot;?&gt;
+
+&lt;!-- OWIN向けウェブコン --&gt;
+&lt;!-- Glimpse系のはリリース時にはxsltでまるっと消す --&gt;
+&lt;configuration&gt;
+    &lt;configSections&gt;
+        &lt;section name=&quot;glimpse&quot; type=&quot;Glimpse.Core.Configuration.Section, Glimpse.Core&quot; /&gt;
+    &lt;/configSections&gt;
+    &lt;connectionStrings configSource=&quot;&lt;!-- 接続文字列は外部に回す(DebugとReleaseでxsltで変換して別参照見るように) --&gt;&quot; /&gt;
+    &lt;appSettings&gt;
+        &lt;!-- なんかここに書いたり外部ファイルとmergeしたり:) --&gt;
+    &lt;/appSettings&gt;
+    &lt;system.web&gt;
+        &lt;!-- system.web配下のは片っ端から消してしまう --&gt;
+        &lt;httpModules&gt;
+            &lt;clear /&gt;
+            &lt;add name=&quot;Glimpse&quot; type=&quot;Glimpse.AspNet.HttpModule, Glimpse.AspNet&quot; /&gt;
+        &lt;/httpModules&gt;
+        &lt;httpHandlers&gt;
+            &lt;clear /&gt;
+            &lt;add path=&quot;glimpse.axd&quot; verb=&quot;GET&quot; type=&quot;Glimpse.AspNet.HttpHandler, Glimpse.AspNet&quot; /&gt;
+        &lt;/httpHandlers&gt;
+        &lt;roleManager&gt;
+            &lt;providers&gt;
+                &lt;clear /&gt;
+            &lt;/providers&gt;
+        &lt;/roleManager&gt;
+        &lt;customErrors mode=&quot;Off&quot; /&gt;
+        &lt;trace enabled=&quot;false&quot; /&gt;
+        &lt;sessionState mode=&quot;Off&quot; /&gt;
+        &lt;httpRuntime targetFramework=&quot;4.5&quot; requestPathInvalidCharacters=&quot;&quot; /&gt;
+        &lt;globalization culture=&quot;ja-jp&quot; uiCulture=&quot;ja-jp&quot; /&gt;
+        &lt;!-- リリース時にxsltでfalseにする --&gt;
+        &lt;compilation debug=&quot;true&quot; /&gt;
+    &lt;/system.web&gt;
+    &lt;system.webServer&gt;
+        &lt;validation validateIntegratedModeConfiguration=&quot;false&quot; /&gt;
+        &lt;globalModules&gt;
+            &lt;clear /&gt;
+        &lt;/globalModules&gt;
+        &lt;modules&gt;
+            &lt;!-- モジュールも全消し --&gt;
+            &lt;remove name=&quot;OutputCache&quot; /&gt;
+            &lt;remove name=&quot;Session&quot; /&gt;
+            &lt;remove name=&quot;UrlRoutingModule-4.0&quot; /&gt;
+            &lt;!-- 以下デフォで読まれるモジュール名が延々と続く(system.webServer下は一括clearが使えなくて辛い)... --&gt;
+            &lt;add name=&quot;Glimpse&quot; type=&quot;Glimpse.AspNet.HttpModule, Glimpse.AspNet&quot; preCondition=&quot;integratedMode&quot; /&gt;
+        &lt;/modules&gt;
+        &lt;handlers&gt;
+            &lt;add name=&quot;Glimpse&quot; path=&quot;glimpse.axd&quot; verb=&quot;GET&quot; type=&quot;Glimpse.AspNet.HttpHandler, Glimpse.AspNet&quot; preCondition=&quot;integratedMode&quot; /&gt;
+        &lt;/handlers&gt;
+    &lt;/system.webServer&gt;
+    &lt;!-- おまじない（笑）セクション --&gt;
+    &lt;system.net&gt;
+        &lt;connectionManagement&gt;
+            &lt;add address=&quot;*&quot; maxconnection=&quot;1024&quot; /&gt;
+        &lt;/connectionManagement&gt;
+        &lt;settings&gt;
+            &lt;servicePointManager expect100Continue=&quot;false&quot; useNagleAlgorithm=&quot;false&quot; /&gt;
+        &lt;/settings&gt;
+    &lt;/system.net&gt;
+    &lt;!-- WebServiceでやるならPersistResultsで（当然このセクションもリリースでは消す） --&gt;
+    &lt;glimpse defaultRuntimePolicy=&quot;PersistResults&quot; endpointBaseUri=&quot;~/Glimpse.axd&quot;&gt;
+        &lt;tabs&gt;
+            &lt;ignoredTypes&gt;
+                &lt;add type=&quot;Glimpse.AspNet.Tab.Cache, Glimpse.AspNet&quot; /&gt;
+                &lt;add type=&quot;Glimpse.AspNet.Tab.Routes, Glimpse.AspNet&quot; /&gt;
+                &lt;add type=&quot;Glimpse.AspNet.Tab.Session, Glimpse.AspNet&quot; /&gt;
+                &lt;add type=&quot;Glimpse.Core.Tab.Trace, Glimpse.Core&quot; /&gt;
+            &lt;/ignoredTypes&gt;
+        &lt;/tabs&gt;
+        &lt;runtimePolicies&gt;
+            &lt;ignoredTypes&gt;
+                &lt;add type=&quot;Glimpse.Core.Policy.ControlCookiePolicy, Glimpse.Core&quot; /&gt;
+                &lt;add type=&quot;Glimpse.Core.Policy.StatusCodePolicy, Glimpse.Core&quot; /&gt;
+                &lt;add type=&quot;Glimpse.Core.Policy.AjaxPolicy, Glimpse.Core&quot; /&gt;
+                &lt;add type=&quot;Glimpse.AspNet.Policy.LocalPolicy, Glimpse.AspNet&quot; /&gt;
+                &lt;add type=&quot;Glimpse.Core.Tab.Trace, Glimpse.Core&quot; /&gt;
+            &lt;/ignoredTypes&gt;
+        &lt;/runtimePolicies&gt;
+    &lt;/glimpse&gt;
+&lt;/configuration&gt;
+</code></pre>
+<p>Web API的なサービスでもGlimpse使えるよ！ってのはもっと知ってほしいかしらん。その辺は<a href="http://neue.cc/2015/02/16_505.html">LightNode 1.0、或いはWeb APIでのGlimpseの使い方</a>で詳しく解説しています。</p>
+</div>
+<h1><a href="http://neue.cc/2015/0216_505.html">LightNode 1.0、或いはWeb APIでのGlimpseの使い方</a></h1>
+<ul class="date"><li>2015-02-16</li></ul>
+<div class="entry_body"><p>こないだ、Redisクライアントの<a href="http://neue.cc/2015/02/06_504.html">CloudStructuresを1.0にしたばかり</a>ですが、今回は大昔に作った自作Web APIフレームワークのLightNodeを1.0にしました。なんでドタバタやってるのかというと、<a href="https://github.com/aspnet/XRE">.NET XRE</a>(ASP.NET vNext)を様子見してたんですが、そろそろ今年一年どうしていくかの態度を決めなければならなくて、結論としては、OWINで行くことにしたからです。ちゃんちゃん。その辺の理由なんかは後ほど。</p>
+<p>さて、<a href="http://getglimpse.com/">Glimpse</a>です。なにはなくともGlimpseです。イマドキでC#でウェブ作るんなら、まずはGlimpse入れましょう。絶対必須です。使ったことないんなら今すぐ使ってください。圧倒的なVisual Profiling！ボトルネックが一目瞭然。コンフィグも一覧されるので、普段気にしていなかったところも丸見え。データアクセスが何やってるかも一発で分かる。ちなみに、競合としては昔あったMiniProfilerは窓から投げ捨てましょう。ASP.NET開発はもはやGlimpse以前と以後で分けられると言っても過言ではない。</p>
+<p>で、LightNode 1.0です。変更点はGlimpseにフル対応させたことで、ついでに細かいとこ直しまくりました、と。ともあれGlimpse対応が全てです。</p>
+<ul>
+<li><a href="https://github.com/neuecc/LightNode">GitHub - LightNode</a></li>
+<li><a href="https://www.nuget.org/packages/LightNode.Server/">NuGet- PM&gt; Install-Package LightNode.Server</a></li>
+</ul>
+<p>で、作ってる間にGlimpseをWeb API(ASP.NET Web APIとは言ってない)系で使ったり、Owinと合わせて使ったりすることのノウハウも溜まったので、LightNodeの話というかは、そっちのことを放出したいな、というのがこの記事の趣旨ですね！</p>
+<h2>OwinでGlimpseを使う</h2>
+<p>Glimpse自体はOwinに対応していません。勿論、vNextへの対応も含めてSystem.Webへの依存を断ち切ろうとしたGlimpse v2の計画は随分前から始まっているんですが、Issueをずっと見ている限り、かなり進捗は悪く、難航しているようです。正直、いつ完了するか全く期待持てない感じで、残念ながら待っていても使えるようにはなりません。</p>
+<p>しかし、そもそもGlimpseのシステムはただのHttpModuleとHttpHandlerで動いています。つまり、Microsoft.Owin.Host.SystemWebでホストしている限りは、Owinであろうと関係なく動きます。動くはずです。実際Glimpse.axdにアクセスすれば表示されるし、一見動いています。そしてGlimpseにはページ埋め込みの他、Standaloneでの起動が可能(Glimpse.axdでの右側)なのでそこから起動すると……</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/glimpse_standalone_launch.jpg" />
+</p>
+<p>いくらOwinでページ作ってアクセスしても何も表示されません、データがHistoryに蓄積されません。これにめっちゃハマって以前は諦めたんですが、今回LightNodeをOwinに何が何でも対応させたくて改めて調べた結果、対策分かりました。原因としては、Glimpseはリクエストの完了をPostReleaseRequestStateで受け止めているんですが、Microsoft.Owin.Host.SystemWebでホストしてOwinによるリクエストハンドリングでは、完了してもPostReleaseRequestStateが呼ばれません。結果的にOwinでふつーにやってる限りではGlimpseでモニタできない。</p>
+<p>対策としては、単純に手動でEndRequestを叩いてやればいいでしょう。Middlewareを作るなら</p>
+<pre><code class="language-csharp">public Task Invoke(IDictionary&lt;string, object&gt; environment)
+{
+    return next(environment).ContinueWith((_, state) =&gt;
+    {
+        ((state as HttpContext).Application[&quot;__GlimpseRuntime&quot;] as IGlimpseRuntime).EndRequest();
+    }, System.Web.HttpContext.Current);
+}
+</code></pre>
+<p>ということになります。このMiddlewareを真っ先に有効にしてやれば、全てのOwinパイプラインが完了した際にEndRequestが叩かれる、という構造が出来上がります。System.Webをガッツリ使ったMiddlewareなんて気持ち悪いって？いやいや、まぁいーんですよ、そもそもGlimpseがSystem.Webでしか現状動かないんだから、ガタガタ言うでない。</p>
+<p>さて、LightNodeのGlimpse対応DLLにはこのMiddlewareを最初から同梱してあります。LightNodeでGlimpse対応のConfigurationを書く場合は、以下のようになります。</p>
+<pre><code class="language-csharp">public void Configuration(Owin.IAppBuilder app)
+{
+    app.EnableGlimpse();
+    app.MapWhen(x =&gt; !x.Request.Path.Value.StartsWith(&quot;/glimpse.axd&quot;, StringComparison.OrdinalIgnoreCase), x =&gt;
+    {
+        x.UseLightNode(new LightNodeOptions()
+        {
+            OperationCoordinatorFactory = new GlimpseProfilingOperationCoordinatorFactory()
+        });
+    });
+}
+</code></pre>
+<p>まずEnableGlimpse、これが先のEndRequestを手動で叩くものになってます。次にMapWhenで、Glimpse.axdだけOwinパイプラインから外してやることで、LightNodeと共存させられます！ついでに、LigthNodeでのGlimpseモニタリングを有効にする場合はGlimpseProfilingOperationCoordinatorFactoryをOptionに渡してあげれば全部完了。</p>
+<h2>LightNode+GlimpseによるWeb APIモニタリング</h2>
+<p>何ができるようになるの？何が嬉しいの？というと、勿論当然まずはTimelineへの表示。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/glimpse_lightnode_timeline.jpg" width="640" />
+</p>
+<p>フィルター(Before/After)とメソッド本体がTimeline上で見えるようになります。これは中身何もないですが、勿論DatabaseやRedis、Httpアクセスなどがあれば、それらもGlimpseは全部乗っけることができるし、それらをWeb APIでも見ることができる。圧倒的に捗る。</p>
+<p>そしてもう一つがLightNodeタブ。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/lightnode_glimpse_infotab.jpg" width="640" />
+</p>
+<p>一回のリクエストのパラメータと、戻り値が表示されます。API開発の辛さって、戻り値が見えない（クライアント側でハンドリングして何か表示したりするも、領域的に見づらかったりする）のが結構あるなーって私は思っていて、それがこのLightNodeタブで解消されます。ちなみにもし例外があった場合は、ちゃんと例外を表示します。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/glimpse_infotab_exception.jpg" width="640" />
+</p>
+<p>また、ExecutionのPhaseが以降はすべてExceptionになってるので、フィルターが遠ったパスも確認しやすいはずです。</p>
+<h2>Web APIのためのGlimpseコンフィグ</h2>
+<p>Web APIのためにGlimpseを使う場合、ふつーのWeb用のコンフィグだと些か不便なところがあるので、調整したほうがいいでしょう。私のお薦めは以下の感じです。</p>
+<pre><code class="language-xml">&lt;!-- GlimpseはHUDディスプレイ表示のためなどでレスポンスを書き換えることがありますが、勿論APIには不都合です。
+     デフォルトはPersistResults（結果のHistory保存のみ）にしましょう --&gt;
+&lt;glimpse defaultRuntimePolicy=&quot;PersistResults&quot; endpointBaseUri=&quot;~/Glimpse.axd&quot;&gt;
+    &lt;tabs&gt;
+        &lt;ignoredTypes&gt;
+            &lt;!-- OWINで使うならこれらは不要でしょう、出てるだけ邪魔なので消します --&gt;
+            &lt;add type=&quot;Glimpse.AspNet.Tab.Cache, Glimpse.AspNet&quot; /&gt;
+            &lt;add type=&quot;Glimpse.AspNet.Tab.Routes, Glimpse.AspNet&quot; /&gt;
+            &lt;add type=&quot;Glimpse.AspNet.Tab.Session, Glimpse.AspNet&quot; /&gt;
+        &lt;/ignoredTypes&gt;
+    &lt;/tabs&gt;
+    &lt;runtimePolicies&gt;
+        &lt;ignoredTypes&gt;
+            &lt;!-- クライアントがクッキー使うとは限らないので、無視しましょう、そうしないとHistoryに表示されません --&gt;
+            &lt;add type=&quot;Glimpse.Core.Policy.ControlCookiePolicy, Glimpse.Core&quot; /&gt;
+            &lt;!-- 404とかもAPIならハンドリングして表示したい --&gt;
+            &lt;add type=&quot;Glimpse.Core.Policy.StatusCodePolicy, Glimpse.Core&quot; /&gt;
+            &lt;!-- Ajaxじゃないなら --&gt;
+            &lt;add type=&quot;Glimpse.Core.Policy.AjaxPolicy, Glimpse.Core&quot; /&gt;
+            &lt;!-- リモートで起動（APIならそのほうが多いよね？）でも有効にする --&gt;
+            &lt;add type=&quot;Glimpse.AspNet.Policy.LocalPolicy, Glimpse.AspNet&quot; /&gt;
+        &lt;/ignoredTypes&gt;
+    &lt;/runtimePolicies&gt;
+&lt;/glimpse&gt;
+</code></pre>
+<p>defaultRuntimePolicyと、そして特にControlCookiePolicyが重要です。利用シチュエーションとしてStandalone Glimpseで起動してHistoryから結果を見る、という使い方になってくるはずなので（というかWeb APIだとそうしか方法ないし）、Cookieで選別されても不便すぎるかな、ブラウザからのAjaxならともかくモバイル機器から叩かれてる場合とかね。</p>
+<p>さて、それは別として、様々なクライアントからのリクエストが混ざって判別できないというのも、それはそれで不便です。これを区別する手段は、あります。それは、クッキーです（笑） 判別用にクッキーでID振ってやるとわかりやすくていいでしょう。例えば以下の様な感じです。</p>
+<pre><code class="language-csharp">var req = WebRequest.CreateHttp(&quot;http://localhost:41932/Member/Random?seed=13&quot;);
+// &quot;glimpseid&quot; is Glimpse's client grouping key
+req.CookieContainer = new CookieContainer();
+req.CookieContainer.Add(new Uri(&quot;http://localhost:41932&quot;), new Cookie(&quot;glimpseid&quot;, &quot;UserId:4&quot;));
+</code></pre>
+<p>glimpseidというのがキーなので、例えばそこにユーザーIDとか振っておくと見分けがついてすごく便利になります。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/glimpse_history_clientgrouping.jpg" />
+</p>
+<p>こんな感じです。これはデバッグビルド時のみといった形で、クライアントサイドで埋め込んであげたいですね。</p>
+<h2>LightNodeを使う利点</h2>
+<p>というわけでGlimpseとの連携が超強力なわけですが、LightNode自体はまず言っておくと、誰にでも薦めはしません。この手のフレームワークで何より大事なのが標準に乗っかることです。C#での大正義はASP.NET Web APIです、そこは揺るぎません。その上でLightNodeの利点は「シンプルなAPIがシンプルに作れる」「Glimpseによる強力なデバッグ支援」「クライアントコード自動生成」です。特に非公開のインターナルなWeb API層向けですね。反面お薦めしないのは、RESTfulにこだわりたい人です。LightNodeは設計思想として徹底的にRESTfulを無視してるんで、準拠するつもりは1ミリもありません。例えば、インターナルなAPIでRESTfulのために1つのURIを決めるのに3日議論するとか、凄まじく馬鹿げているわけで。LightNodeは悩みを与えません、そもそもメソッド書くしかできないという制約を与えているから。</p>
+<p>凝ったルーティングもアホくさい。インターナルなWeb APIで、モバイル機器からのアクセスを前提にすると、クライアントサイドでのAPIライブラリを書くことになりますが、ルーティングが凝っていれば凝っているほど対応が面倒くさいだけ、という。嬉しさなんて0.1ミリもない。結局、ルールはある程度固定のほうが良いんですよ。さすがにパブリックAPIなら長いものに適当に巻かれて適当に誤魔化しますが。</p>
+<p>というわけで、どういう人に薦めるかというと「とりあえずサクッとWeb API作りたい人」「モバイルクライアントからアクセスするインターナルなWeb APIを作りたい人」ですかねー。別にパブリックなのも作れないことはないですけど、別にそこまで違和感あるURLになるわけでもないですしね。</p>
+<p>ちなみに、MVCとの共存は可能です。例えば</p>
+<pre><code class="language-csharp">public void Configuration(IAppBuilder app)
+{
+    app.Map(&quot;/api&quot;,  x =&gt;
+    {
+        x.UseLightNode();
+    });
+}
+</code></pre>
+<p>といった感じにapi以下をLightNodeのパスってことにすればOK。それ以外のパスではASP.NET MVCが呼ばれます。ルートが変わるだけなので、他のコンフィグは不要です。あんまり細かくゴチャゴチャやると辛いだけなので、このぐらいにしておくのがいいですね。ちなみに、Owinで困るのはHttpModuleとの共存だったりします。実行順序もグチャグチャになるし(一応、少しはOwin側でコントロールかけられますが、辛いしね)同じようなものが複数箇所にあるというのは、普通にイけてない。これはMiddlewareのほうに寄せていきたいところ。脱HttpModule。</p>
+<h2>まとめ</h2>
+<p>あ、で、OWINな理由って言ってませんでしたっけ。なんかねー、XREは壮大すぎて危険な香りしかしないんですよ。少なくとも、今年の頭（今）に、今年に使う分のテクノロジーを仕込むには、賭けられないレベルで危なっかしい。Previewで遊びながら生暖かく見守るぐらいがちょうどいいです。まあ、アタリマエだろっていえばアタリマエ(ベータすら出てないものを実運用前提で使い出すとかマジキチである)ですけどね、だから別にXREがダメとかそういう話じゃないですよ。むしろXREはまだ評価できる段階ですらないし。</p>
+<p>で、今は過渡期で宙ぶらりんなのが凄く困る話で、そのブリッジとしてOWINはアリかな、と。OWIN自体の未来は、まぁ<a href="http://blog.xin9le.net/entry/2015/01/18/161631">ASP.NET 5はどうしてOWIN上に乗らなかったのか</a>にあるように、Deadでしょう。しかし、今から来年の分(XREが実用になった世代)を仕込むには、System.Webへの依存の切り離しや、Owin的なパイプラインシステムへの適用は間違いなく重要。OWINならコーディングのノリもASP.NET 5と変わらないしコードの修正での移行も容易になる、最悪互換レイヤーを挟んで適用できるので、「今」の選択としては、消極的にアリです。</p>
+<p>ASP.NET Web APIは、うーん、ASP.NET MVCとの統合が見えてる今、改めて選びたくない感半端ないんだよねぇ。GlimpseはASP.NET Web API対応しないの？というと、そういう話もあるにはあったようですが、色々難航していて、PullRequestで物凄く時間かけて（70レス以上！一年近く！）、それでも結局取り込まれてないんですよ。ここまで来るともはやGlimpse v2でのvNext対応でMVC統合されてるんだからそれでいいじゃん、に落ち着きそうで、恐らくもう動きはないでしょう。とか、そういう周辺のエコシステムの動きも今のASP.NET Web APIは鈍化させる状況にあるわけで、あんまポジティブにはなれないなぁ。とはいえ、現状のスタンダードなWeb API構築フレームワークとして消極的にアリ、と言わざるをえないけれど。ちなみにNancyは個人的には全くナシです、あれのどこがいいのかさっぱりわからない。</p>
+<p>Glimpseの拡張は、ちょうど社内用拡張も全部書き換えたりして、ここ数日でめちゃくちゃ書きまくったんで、完全に極めた！うぉぉぉぉ、というわけで拡張ガイダンスはいつかそのうち書くかもしれませんし、多分書きません。つーかGlimpseちゃんと日本の世の中で使われてます？大丈夫かなー、さすがにGlimpseは圧倒的に良いので標準レベルで使われなければならないと思うのですけれど。</p>
+<p>あー、で、LightNodeは、まあ良く出来てますよ、用途の絞り方というか課題設定が明確で、実装もきっちりしてありますし。うん、私は好きですけど（そりゃそうだ）、人に薦めるかといったら、Microsoftの方針がOwin的なオープンの流れから、やっぱり大Microsoft的なところに一瞬で戻ったりしてるんで(Hanselmanには少し幻滅している)、まぁ長いものには巻かれておきましょう。</p>
+</div>
+<h1><a href="http://neue.cc/2015/0206_504.html">CloudStructures 1.0 - StackExchange.Redis対応、RedisInfoタブ(Glimpse)</a></h1>
+<ul class="date"><li>2015-02-06</li></ul>
+<div class="entry_body"><p>CloudStructures、というRedisライブラリを以前に作ってたわけなのですが(<a href="http://neue.cc/2013/04/05_403.html">CloudStructures - ローカルとクラウドのデータ構造を透過的に表現するC# + Redisライブラリ</a>)、2013年末にGlimpseプラグインを追加してから一切音沙汰がなかった。私お得意の作るだけ作って放置パターンか！と思いきや、ここにきて突然の大更新。APIも破壊的大変更祭り。バージョンもどどーんと上げて1.0。ほぅ……。</p>
+<ul>
+<li>GitHub - <a href="https://github.com/neuecc/CloudStructures">neuecc/CloudStructures</a></li>
+<li>NuGet - <a href="https://nuget.org/packages/CloudStructures/">CloudStructures</a></li>
+</ul>
+<p>一番大きいのが、ベースにしてるライブラリが<a href="https://code.google.com/p/booksleeve/">BookSleeve</a>から<a href="https://github.com/StackExchange/StackExchange.Redis">StackExchange.Redis</a>になりました。StackExchange.RedisはBookSleeveの後継で、そして<a href="http://azure.microsoft.com/ja-jp/documentation/articles/cache-dotnet-how-to-use-azure-redis-cache/">Azure Redis Cacheのドキュメント</a>でもマニュアルに使用されているなど、今どきの.NETにおけるRedisクライアントのデファクトの位置にあると言ってよいでしょう。当然、移行する必要があったんですが腰が重くて……。</p>
+<p>APIを変えた理由は、以前は「ローカルとクラウドのデータ構造を透過的に表現」というのに拘ってIAsyncCollection的に見せるのに気を配ってたんですが、Redis本来のコマンド表現と乖離があって、かなり使いづらかったんでやめたほうがいーな、と。メソッド名が変わっただけで使い方は一緒なんですが、とりあえずRedisのコマンド名が露出するようになりました。ま、このほうが全然イイですね。抽象化なんて幻想だわさ、特に名前の。</p>
+<h2>CloudStructuresの必要性</h2>
+<p>こんな得体のしれない野良ライブラリなんて使いたくねーよ、StackExchange.Redisを生で使えばいいじゃん。と、思う気持ちは至極当然でまっとうな感覚だと思います。私もそう思う。そして、単純なStringGet/Setぐらいしか使わないならそれでOKです、本当にただのキャッシュストアとして使うだけならば。しかし、本気でRedisを使い倒す、本気でRedisの様々なデータ構造を活用していこうとすると、StackExchange.Redisを生で使うのは限界が来ます。戻り値のオブジェクトへのマッピングすらないので、そこら中にSeiralize/Deserializeしなければならなくなる。ADO.NETのDbDataReaderを生で使うようなもので、そうなったら普通はなんかラップするよね？ADO.NETにはDapperのようなMicro ORMからEntity FrameworkのようなフルセットのORMまである。StackExchange.Redisが生ADO.NETを志向するならば（これは作者も言明していて、付随機能は足さない方針のようです）ならば、そこにO/R(Object/Redis)マッパーが必要なのは自然のことで、それがCloudStructuresです。</p>
+<p>CloudStructuresが提供するのは自動シリアライズ/デシリアライズ、キーからの分散コネクション（シャーディング）、コマンドのロギング、Web.configからの接続管理、そしてGlimpse用の各種可視化プロファイラーです。元々、というか今もCloudStructuresはうちの会社でかなりヘヴィに使ってて（このことは何度か記事でも推してます、技評の<a href="http://gihyo.jp/dev/serial/01/grani/0001">グラニがC#にこだわる理由</a>とか)、コマンドのロギングとかは執拗に拘ってます。今回はそうした長い利用経験から、やっぱイケてない部分も沢山あったので徹底的に見直しました。</p>
+<p>シャーディングは、StackExchange.RedisはそもそもConnectionMultiplexerという形で内部で複数の台への接続を抱えられるんですが、これはどちらかというと障害耐性的な機能(Master/Slaveや障害検知時の自動昇格など)が主なので、Memcached的なクライアントサイドでの分散はBookSleeveの時と変わらず持っていません。なので引き続きシャーディングはCloudStructures側の機能として提供しています。</p>
+<p>そもそも<a href="http://redis.io/">Redis</a>が必要かどうかだと、んー、私としては規模に関わらず絶対に入れたほうがいいと思ってます。RDBMSの不得意なところを綺麗に補完できるので、RDBMSだけで頑張るよりも、ちょっとしたとこに使ってやると物凄く楽になると思います。導入も<a href="http://azure.microsoft.com/ja-jp/services/cache/">Azure Redis Cache</a>やAWSの<a href="http://aws.amazon.com/jp/elasticache/">ElastiCache for Redis</a>のようにマネージドのキャッシュサービスが用意されているので、特にクラウド環境ならば簡単に導入できますしね。</p>
+<h2>使い方の基本</h2>
+<p>RedisSettingsまたはRedisGroupを保持して、各データ構造用のクラスをキー付きで作って、メソッド（全部async）を呼ぶ、です。</p>
+<pre><code class="language-csharp">// 設定はスタティックに保持しといてください
+public static class RedisServer
+{
+    public static readonly RedisSettings Default = new RedisSettings(&quot;127.0.0.1&quot;);
+}
+
+// こんなクラスがあるとして
+public class Person
+{
+    public string Name { get; set; }
+    public int Age { get; set; }
+}
+
+// RedisStringという型を作って... (RedisSettings.Default.String&lt;Person&gt;(&quot;key&quot;)でも作れます)
+var redis = new RedisString&lt;Person&gt;(RedisServer.Default, &quot;test-string-key&quot;);
+
+// コマンドをがしがし呼ぶ、何があるかはIntelliSenseで分かる
+await redis.Set(new Person { Name = &quot;John&quot;, Age = 34 });
+
+// 取得もそのまま呼ぶ 
+var copy = await redis.Get();
+
+// Listも同じ感じ
+var list = new RedisList&lt;Person&gt;(RedisServer.Default, &quot;test-list-key&quot;);
+await list.LeftPush(new[] { new Person { Name = &quot;Tom&quot; }, new Person { Name = &quot;Mary&quot; } });
+
+var persons = await list.Range(0, 10);
+</code></pre>
+<p>難しいところはなく、割と直感的。StackExchange.Redisのままだと、特にListが辛かったりするんで、相当楽になれるかな。</p>
+<p>メソッド名は基本的にStackExchange.Redisのメソッド名からデータ構造名のプリフィックスとAsyncサフィックスを抜いたものになってます。例えばSetAddAsync()はRedisSet.Add()になります。SetAddなんて最悪ですからね、そのまんま扱いたくない名前。Asyncをつけるかどうかはちょっと悩ましかったんですが、まぁ全部Asyncだしいっか、と思ったんで抜いちゃいました。</p>
+<p>他の特徴としては全てのセット系のメソッドにRedisExpiryという引数を足してます。これは、SetのついでにExpireを足すって奴ですね。標準だとStringSetぐらいにしかないんですが、元々Redisは個別にExpireを呼べば自由につけれるので、自動でセットでつけてくれるような仕組みにしました。なんだかんだでExpireはつける必要があったりして、今までは毎回Task.WhenAllでまとめててたりしてたんですがすっごく面倒だったので、これで相当楽になれる、かな？</p>
+<p>RedisExpiryはTimeSpanかDateTimeから暗黙的変換で生成されるので、明示的に作る必要はありません。</p>
+<pre><code class="language-csharp">var list = new RedisList&lt;int&gt;(settings);
+await list.LeftPush(1, expiry: TimeSpan.FromSeconds(30));
+await list.LeftPush(10, expiry: DateTime.Now.AddDays(1));
+</code></pre>
+<p>こんな感じ。これは、StackExchange.RedisがRedisKey(stringかbyte[]から暗黙的に変換可能)やRedisValue(基本型に暗黙的/明示的に変換可能)な仕組みなので、それに似せてみました。違和感なく繋がるのではないかな。</p>
+<h2>コンフィグ</h2>
+<p>Web.configかapp.cofingから設定情報を引っ張ってこれます。トランスフォームとかもあるので、なんのかんのでWeb.configは重宝しますからねー、あると嬉しいんじゃないでしょうか。</p>
+<pre><code class="language-xml">&lt;configSections&gt;
+    &lt;section name=&quot;cloudStructures&quot; type=&quot;CloudStructures.CloudStructuresConfigurationSection, CloudStructures&quot; /&gt;
+&lt;/configSections&gt;
+
+&lt;cloudStructures&gt;
+    &lt;redis&gt;
+        &lt;group name=&quot;Cache&quot;&gt;
+            &lt;!-- Simple Grouping(key sharding) --&gt;
+            &lt;add connectionString=&quot;127.0.0.1,allowAdmin=true&quot; db=&quot;0&quot; /&gt;
+            &lt;add connectionString=&quot;127.0.0.1,allowAdmin=true&quot; db=&quot;1&quot; /&gt;
+        &lt;/group&gt;
+        &lt;group name=&quot;Session&quot;&gt;
+            &lt;!-- Full option --&gt;
+            &lt;add connectionString=&quot;127.0.0.1,allowAdmin=true&quot; db=&quot;2&quot; valueConverter=&quot;CloudStructures.GZipJsonRedisValueConverter, CloudStructures&quot;  commandTracer=&quot;Glimpse.CloudStructures.Redis.GlimpseRedisCommandTracer, Glimpse.CloudStructures.Redis&quot; /&gt;
+        &lt;/group&gt;
+    &lt;/redis&gt;
+&lt;/cloudStructures&gt;
+</code></pre>
+<p>こんな感じに定義して、</p>
+<pre><code class="language-csharp">public static class RedisGroups
+{
+    // load from web.config
+    static Dictionary&lt;string, RedisGroup&gt; configDict = CloudStructures.CloudStructuresConfigurationSection
+        .GetSection()
+        .ToRedisGroups()
+        .ToDictionary(x =&gt; x.GroupName);
+
+    // setup group
+    public static readonly RedisGroup Cache = configDict[&quot;Cache&quot;];
+    public static readonly RedisGroup Session = configDict[&quot;Session&quot;];
+
+    static RedisGroups()
+    {
+        // 後述しますがGlimpseのRedisInfoを有効にする場合はここで登録する
+        Glimpse.CloudStructures.Redis.RedisInfoTab.RegisiterConnection(new[] { Cache, Session });
+    }
+}
+</code></pre>
+<p>こんな風にstatic変数に詰めてやると楽に扱えます。</p>
+<h2>シリアライズ</h2>
+<p>CloudStructuresは基本型（int, double, string, etc）はそのまま格納し、オブジェクトはシリアライザを通します。シリアライザとして標準ではJSONシリアライザの<a href="https://github.com/kevin-montrose/Jil">Jil</a>を使っています。理由は、速いから。JilはJSON.NETと違って、JsonReader/Writerも提供しないし、複雑なカスタムオプションもフォールバックもありません（多少の（特にDateTime周りの）オプションはありますが）。単純にJSONをシリアライズ/デシリアライズする、もしくはdynamicで受け取る。それだけです。まぁ、CloudStructuresの用途には全然合ってる。</p>
+<p>以前は<a href="https://code.google.com/p/protobuf-net/">protobuf-net</a>を使っていたんですが、今後はやめようと思ってます。理由は、DataMemberをつけて回るのが面倒だから、ではなくて、空配列/空文字列/nullのハンドリングが凄く大変だったり（ネストしたオブジェクトの空配列がデシリアライズしたらnullになってた、とかね……これは正直ヤバすぎた）、バージョニング（特にEnumの！）が辛かったり、型がないとデシリアライズできないのでちょっとしたDumpすらできなかったりと、実運用上クリティカルすぎる案件が多くてそろそろもう無理。</p>
+<p>かわりに、ではないですが圧縮することを提案します。CloudStructuresは標準でGZipJsonRedisValueConverterというものも用意していまして、それに差し替えることでJSONをGZipで圧縮して格納/展開します。圧縮は、特にデカい配列を突っ込んだりするときに物凄く効きます。めちゃくちゃ容量縮みます。protobufにせよmsgpackにせよ、シリアライザは圧縮、ではないんで、バイナリフォーマットとして小さくはなっても、配列にたいしてめちゃくちゃ縮むとかそういうことは起こり得ません（勿論、別にmsgpack+GZipとか併用するのは構わないけれど）。</p>
+<p>圧縮の欠点は圧縮なんで、圧縮/解凍にそれなりにパフォーマンスを取られること。と、いうわけでCloudStructuresでは<a href="https://code.google.com/p/lz4/">LZ4</a>で圧縮するものも用意しました。LZ4はfastest compression algorithmということで、GZipと比べて数倍、圧縮/解凍が速い、です（ただしサイズ自体はGZipよりは縮まない)。この手の用途ではかなり適しているかなー、と。LZ4のライブラリは<a href="http://lz4net.codeplex.com/">LZ4 for .NET</a>を用いてます。</p>
+<ul>
+<li>NuGet - <a href="https://nuget.org/packages/CloudStructures.LZ4/">CloudStructures.LZ4</a></li>
+</ul>
+<p>インストールはNuGetから入れてもらった後に、LZ4JsonRedisValueConverterに差し替えるだけ。</p>
+<p>ふつーはそのまま生JSON、気にしたいけど色々入れたくない人はGZip、エクストリームに頑張ってみたい人はLZ4を選べばいいと思います。更にもっとやりたい人はObjectRedisValueConverterBaseを継承して、自作のRedisValueConverterを作ってみてくださいな。</p>
+<h2>Glimpseプラグイン</h2>
+<p>もはやASP.NET開発で<a href="http://getglimpse.com/">Glimpse</a>は絶対に欠かせません。使わないのはありえないレベル。あ、<a href="http://miniprofiler.com/">MiniProfiler</a>はもういらないので投げ捨てましょう。というわけでCloudStructuresはGlimpse用のプラグインをしっかり用意してあります。相当気合入れて作りこんであるので、これのためにもRedis使うならCloudStructuresで触るべき、と言えます。マジで。</p>
+<ul>
+<li>NuGet - <a href="https://nuget.org/packages/Glimpse.CloudStructures.Redis/">Glimpse.CloudStructures.Redis</a></li>
+</ul>
+<p>インストールはNuGetから本体とは別に。それとGlimpseを使う場合は、commandTracerにGlimpseRedisCommandTracerを渡しておいてあげてください。またRedisInfoで情報を出す場合、接続文字列でallowAdminをtrueにしておく必要があります。</p>
+<pre><code class="language-xml">&lt;add connectionString=&quot;127.0.0.1,allowAdmin=true&quot; db=&quot;0&quot; commandTracer=&quot;Glimpse.CloudStructures.Redis.GlimpseRedisCommandTracer, Glimpse.CloudStructures.Redis&quot; /&gt;
+</code></pre>
+<p>まず、Timeline。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/RedisTimeline.png" width="640" />
+</p>
+<p>コマンドの並列実行具合がしっかりタイムラインで確認できます。</p>
+<p>Redisタブ。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/RedisTab.png" width="640" />
+</p>
+<p>コマンド名、キー名、送受信オブジェクトのダンプとサイズ、Expire時間と処理にかかった時間、そしてキーとコマンドで重複して発行してたら警告。これを見れば一回のページリクエストの中でどうRedisを使ったかが完全に分かるようになってます。不足してる情報は一切なし、とにかく全部出せる仕組みにしました。</p>
+<p>最後にRedisInfoタブ。RedisInfoタブを使うには、最初に言ったallowAdmin=trueにすることと、もう一つ、最初に情報表示に使うRedisGroupを登録しておく必要があります。</p>
+<pre><code class="language-csharp">Glimpse.CloudStructures.Redis.RedisInfoTab.RegisiterConnection(new[] { Cache, Session });
+</code></pre>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/RedisInfoTab.png" width="640" />
+</p>
+<p>ServerInfoからCmdStat、コンフィグ、クライアント側のコンフィグやコネクションの状態を全部表示します。全部。全部。出せそうな情報は全部収集してきてます。こういうの何気に結構地味に相当大事だったりしますのよ、特にRedisサーバーの情報やコンフィグなんて普段は見ないですからね、こうして超絶カジュアルに見れるっての、かなりありがたい。</p>
+<h2>まとめ</h2>
+<p>そんなわけで凄く良くなったんで、かなりお薦めデス。ネーミングが直球なものしか付けないことの多い私にしては、CloudStructuresってライブラリ名はかなりカッコイイという点でもお薦めですね！</p>
+<p>問題は旧CloudStructuresとの互換性が、かなり無いので既に使ってる場合は移行が大変ってことデスネ。うちはどうしたんだって？移行してないよ！どーしようかなぁ、うーん、そこはちょっとかなり悩ましい……。</p>
+<p>まぁCloudStructuresを使うかどうかはともかくとして、RedisはC#界隈でももっとばんばん使われて欲すぃですねー、そして使うならStringGet/Setだけじゃもったいない。</p>
+</div>
+<h1><a href="http://neue.cc/2015/0114_503.html">Open on GitHub - Visual StudioからGitHubのページを開くVS拡張</a></h1>
+<ul class="date"><li>2015-01-14</li></ul>
+<div class="entry_body"><p>を、作りました。</p>
+<img src='http://neue.cc/wp-content/uploads/2015/01/wp_openongithub.jpg' alt='' />
+<p>機能は見たまんま？です。ソースコード上で右クリックすると「Open on GitHub」メニューが出るので、そこからmasterかbranchかrevisionを選ぶと、該当のGitHubのブロブページが開きます。便利。</p>
+<ul>
+<li><a href="https://visualstudiogallery.msdn.microsoft.com/79bf2ea3-9e78-4212-b22f-cdcdd75e791d">Visual Studio Gallery - Open on GitHub</a></li>
+<li><a href="https://github.com/neuecc/Open-on-GitHub">GitHub - Open-on-GitHub</a></li>
+</ul>
+<p>インストールはVisual Studio Galleryからどうぞ。例によってソースコードはGitHubで公開しています。</p>
+<h2>How to make VSIX</h2>
+<p>VS拡張はドキュメントがあるんだかないんだか、一応あるんですけど、どうも取っ付きが悪いのが難点。今回は<a href="http://msdn.microsoft.com/en-us/library/vstudio/bb165739.aspx">Walkthrough: Adding a Submenu to a Menu</a>をベースに弄ってます。といってもやることは簡単なので、そんな大したことはないですが。</p>
+<p>まず、メニュー系は全部vsctというクソ書きづらいXMLを弄って作っていきます。テンプレートは「Visual Studio Package」でウィザードで「Menu Command」を選んどくといいでしょふ、というかそれ以外だと詰む。で、vsctのうち</p>
+<pre><code class="language-xml">&lt;Group guid=&quot;guidOpenOnGitHubCmdSet&quot; id=&quot;ContextMenuGroup&quot; priority=&quot;0x0600&quot;&gt;
+    &lt;Parent guid=&quot;guidSHLMainMenu&quot; id=&quot;IDM_VS_CTXT_CODEWIN&quot; /&gt;
+&lt;/Group&gt;
+</code></pre>
+<p>Parentを「guidSHLMainMenu, IDM_VS_CTXT_CODEWIN」にするとエディタのコンテキストメニューに出てきます。あとはまぁ、適当にどうぞ。<a href="https://github.com/neuecc/Open-on-GitHub/blob/master/OpenOnGitHub/OpenOnGitHub.vsct">OpenOnGitHub.vsct</a>と<a href="https://github.com/neuecc/Open-on-GitHub/blob/master/OpenOnGitHub/OpenOnGitHubPackage.cs">OpenOnGitHubPackage.cs</a>が全て。分かれば難しくない、分かるまでがダルい。</p>
+<p>と、ここまでが普通の感じなんですが<a href="http://msdn.microsoft.com/en-us/library/bb164699.aspx">VSCT(Visual Studio Command Table)</a>は闇が深くて、IDM_VS_CTXT_CODEWINだとcshtmlとかjsonとかcssでは出てきません！これは別のParentを設定する必要があります。しかも、そのGUIDとかはノーヒント……。既存の拡張を観て研究してもいいんですが、本質的には<a href="http://blogs.msdn.com/b/dr._ex/archive/2007/04/17/using-enablevsiplogging-to-identify-menus-and-commands-with-vs-2005-sp1.aspx">Using EnableVSIPLogging to identify menus and commands with VS 2005 + SP1</a>の記事にある、レジストリ弄ってEnableVSIPLoggingをオンにして、直接対象ウィンドウのGUIDとCmdIdを取得するほうがいいかと思われます。取得したIDとかの使い方はOpenOnGitHub.vsctに載ってるので興味ある人は見てくださいな。</p>
+<p>あと、Gitの解析に<a href="https://libgit2.github.com/">libgit2</a>を使っているんですが、VSIXでネイティブバイナリを同梱するためにcsprojに</p>
+<pre><code class="language-xml">&lt;Content Include=&quot;NativeBinaries\amd64\git2-91fa31f.dll&quot;&gt;
+  &lt;CopyToOutputDirectory&gt;PreserveNewest&lt;/CopyToOutputDirectory&gt;
+  &lt;IncludeInVSIX&gt;true&lt;/IncludeInVSIX&gt;
+&lt;/Content&gt;
+</code></pre>
+<p>といったようにIncludeInVSIXをつけなきゃいけないとか、VSIX自体の署名を切らないといけない（テンプレートから作ると入ってるのでカットする）とか、細かいのをこなしていけば出来上がり！</p>
+<h2>最近のWindowsでGit</h2>
+<p><a href="http://www.sourcetreeapp.com/">SourceTree</a>がゴミクズすぎて困る。ので、最近はVSのGit使ってたりします。割といいです。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2015/01/wp_vsgit.jpg' alt='' />
+</p>
+<p>コミットウィンドウが切り離せることに気付いてから、切り離して使ってます。そうするとまぁまぁコミットしやすい。Commit and Syncはなんのかんのいってベンリだし、SourceTreeよりもPushPullも気持ち早い。DiffとかがVS上で行えるのはサイキョーなので、あとはツリー表示さえあれば完璧だなぁ。ともあれ、VSのGit、いいです。見直しましょう。とにかくSourceTreeは使っててストレスで禿げるのでメインVS、サブSourceTreeぐらいの感じが今のとこ一番いい。</p>
+<h2>まとめ</h2>
+<p>ともあれOpen on GitHubはマジベンリ。うちの会社はGitHubでリポジトリ管理してるんですが、いっつも社内チャットに貼り付けるURLとか探してくるのひぢょーにダルくて、ずっと欲しかったのよね。やっと重い腰を上げて作りました。ほんとベンリ。もっと早くに作っておけば良かった。</p>
+</div>
+<h1><a href="http://neue.cc/2014/1230_500.html">2014年を振り返る</a></h1>
+<ul class="date"><li>2014-12-30</li></ul>
+<div class="entry_body"><p>振り返るシリーズ第三弾。12/30日にやってるのは誕生日なので、まぁ今年もそれで、と。今年は<a href="http://grani.jp/">グラニ</a>設立2年目になったわけですが、去年のまとめでは</p>
+<blockquote>
+<p>ここ数年は、毎年ジェットコースター状態で目まぐるしく変化していて。けれど、大きな目標からはブレないで、年々近づけている気がします。一番最初に若くない人サイドに入ったとか、新陳代謝とか言いましたが、来年はそういうことが起こる状態を作っていきたいですね。C#が、若い人がこぞって使うような言語になってればいい、と。そのためにできること。人がすぐに思い浮かべられる、メジャーなアプリケーションの創出と、C#による圧倒的な成果、C#だからこその強さ、というのを現実に示していくこと。雇用の創出、の連鎖。</p>
+</blockquote>
+<p>なるほど。達成度でいうと、今年は残念ながら弱いかなぁ、うむむむ。そこに向けて突き進んでいるというのは変わらないのですが、来年に向けての準備といった感になってしまったかも。あとは、どちらかというと一年目の総まとめみたいな感じ。一番大きなセッションは<a href="http://www.awssummittokyo.com/">AWS Summit Tokyo 2014</a>での発表、<a href="http://www.slideshare.net/neuecc/aws-windowscnet">AWS + Windows(C#)で構築する.NET最先端技術によるハイパフォーマンスウェブアプリケーション開発実践</a>かな？一端の成果を示したうえで、次のステップへ、といったような。</p>
+<h2>C#</h2>
+<p>今年は大分記事数少なめになってしまってます！過去最小かも。かわりにライブラリは過去最多で作ったかもしれません。</p>
+<p>去年に引き続き、前半は<a href="https://github.com/neuecc/LightNode">LightNode</a>の作成続き。OWIN上に作られたMicro RPC/REST  フレームワーク。コンセプトはいいと思うし実装もかなりいいと思うし、既にプロダクションに突っ込んで稼働してるんで、ちゃんと使えるし作って良かったとは思ってます。ASP.NET MVC 6で<a href="http://blog.shibayan.jp/entry/20141123/1416746894">Action FilterがOWIN風デリゲートチェーンになってる</a>のなんかはLightNodeでは最初からそうしてるし、絶対そのほうがいいでしょﾄﾞﾔｧ、言ったとおりでしょ！といった先見の明もある！が、しかし、コミット止まって完全に息切れしてますね（笑）</p>
+<p>というのも、うーん、まぁ去年後半から今年前半にかけてはOWINへの傾倒もあったのですけれど、ASP.NET vNextがね……。アレによって完全にOWIN無価値になりましたから。思想的/コードのふいんき的な面では親しいところがあるので、今やるならOWINベースで書くのは良いと思ってます。そうすればvNextへの「移植」が容易になりますから。でも、移植なんですよね、そのまま持ってく（一応互換レイヤーで持ってけますが）わけではないところからして、萎える……かなりOne ASP.NET(笑)感があって、割と嫌な気分ですねー。誰かマジに<a href="http://r.jazug.jp/event/goazure/">来日するScott Hanselman</a>に突っ込んでくださいよ（私は行きません）。とはいえ良くなってる面も理解できるんで、来年は気持ちを切り替えてvNextやりますよ、はい。ちなみにLightNode自体は、vNextベースで、ちょっと違う形で生まれ変わるはずです、という計画があります、やるやる詐欺。</p>
+<p><a href="http://neue.cc/2014/03/11_447.html">RespClient</a>というPowerShell向けのRedisクライアント/コマンドレットも今年作りました。これはまぁ、たまに私自身も便利にツカッテマス。メンテは<a href="http://tech.guitarrapc.com/">guitarrapc先生</a>に譲りました。Redisは相変わらずモリモリ使ってまして、素晴らしいKVSだと思います。来年はやはりこれも放置気味な<a href="https://github.com/neuecc/CloudStructures">CloudStructures</a>をStackExchange.Redisに対応させないと、という……。</p>
+<p>そして今年最大の気合の入れ方でリリースしたのが<a href="https://github.com/neuecc/UniRx">UniRx - ReactiveExtensions for Unity</a>。絶対に必要になる、と、こそこそ作ってたんですが、実際良いもの、欠かせないものになったと思ってます。そして、成功した！と言ってもいいかなー。uFrameに同梱されるようになったとか、海外でも反響あったうえに、国内でもじわじわ話題になりだしていて、かなりいい感じです。来年もがんがん更新していきたい（ちなみに現在AssetStoreでアップデート申請中！）。また、UnityコミュニティとC#コミュニティには若干の断絶がありますが、そこも埋められたらな、といったところですね。</p>
+<p>ちなみにUnity関連では、他に<a href="http://neue.cc/2014/11/11_482.html">LINQ to GameObject</a>という小品もリリースしたりしたり。</p>
+<p><a href="http://neue.cc/2014/09/24_479.html">LINQ to BigQuery</a>というGoogle BigQuery用のライブラリも結構な大物でした、と作るの大変だった（というか面倒だった）度合い的に。BigQueryは、正直、凄い。.NETの人もAzureの人も、とりあえず使うべき。うちの会社も基本AWSですが、BigQueryだけはBigQuery。BigQueryに突っ込むためのロギング周りについても一家言できたのですが、その辺は<a href="https://github.com/neuecc/EtwStream/">EtwStream</a>という作りかけの謎プロジェクトがあるので、それが完成した時にでも、お話しましょう（実際作りきりたいとはオモッテマス）</p>
+<p>今年はUniRx(Rx), LINQ to BigQuery(Queryable), LINQ to GameObject(LINQ to XML)を通して、改めてLINQとは何ぞやか、というのを掲示できたのも良かったかと思います。口で説明するよりモノで黙らせたほうが早いというアレソレ。</p>
+<h2>会社</h2>
+<p>いいところは、今年も非常に強力なメンバーが多くJOINしてくれた！人は会社の原動力ですからね、うちを選んでくれたことに大変感謝です。「C#」では本当に、類を見ないほど力のある会社となっているのではないかな、と。より能力を発揮してもらうような環境を作りたいですね。</p>
+<p>さて、今年はやけにCTOの役割とは！みたいなテーマが盛り上がったところですが、私の場合どうかしらん。広告塔代わりであったり求人面であったりなんかは、十二分すぎるほど果たせたとは思います。技術選定なんかも適度に先駆的に、的確だった。少なくとも失敗はない。合間合間にガッと作ってるライブラリ郡も（会社でコソッと作る時間も少し持ってますが、基本的には家で仕上げてますよ）、戦略的に根幹をなすようにしたりで、よくやれたんじゃないかなー。</p>
+<p>とはいえ反省点は多かったり。割と勢いだけで突っ走れた1年目と違って2年目は中々むつかしく。特に時間が細切れになるのは避けられなくて、どうも集中しきれず成果としてはかなりイマイチ。この辺は受け入れつつ細切れでも効率的に作業できるよう自分を律するしかないですかね、といった感。そんなわけで自社のプログラムにがっつり関われたかというとかなりそうでもないのが、もにょもにょ。かなり良くない。総論するとどーも歯切れ悪い感じ。来年はドヤッ！といえるようにならないとかな。</p>
+<h2>ゲーム</h2>
+<p>PS4やXbox Oneも買ったのですが、うーん。結局やっぱりあんまプレイしてないのよねー。ただまぁPS4&gt;超えられない壁&gt;Xbox Oneというのは痛感しました、これはキビシイ……。Kinect2も割とガッカリ系。そんなわけで<a href="http://thelettervsixtim.es/">vvvvvv</a>のiOS移植が一番楽しんだのかも。</p>
+<h2>音楽</h2>
+<p>今年中頃からはずっと<a href="http://oomoriseiko.info/">大森靖子</a>聞いてましたね、ライブにも行ったし……。YouTube動画だと弾き語りの<a href="https://www.youtube.com/watch?v=Ww1H_BIOgGQ">大森靖子 LIVE @ TIF2013</a>とバンド編成の<a href="https://www.youtube.com/watch?v=a6DdaXvtW_0">大森靖子＆THEピンクトカレフ＠ZeppDiverCity</a>あたりがお薦め。エキセントリックな情報とかインターネット時代の戦略とか、うーん、まぁ、パンクですよ、パンク（適当）。</p>
+<h2>来年</h2>
+<p>テーマは「クライアントサイドとサーバーサイドをC#で統一することのメリットの実証」「さらにリアルタイムネットワークもC#で統一」「のためのヒットアプリケーションの創出」です。指向はあんま変わってないんですが、より具体的に。来年は動く年かな、といったところなので是非期待してください。</p>
+</div>
+<h1><a href="http://neue.cc/2014/1218_499.html">Unityのコルーチンの分解、或いはUniRxのMainThreadDispatcherについて</a></h1>
+<ul class="date"><li>2014-12-18</li></ul>
+<div class="entry_body"><p>この記事は<a href="http://qiita.com/advent-calendar/2014/unity">Unity Advent Calendar 2014</a>のための記事になります。昨日はkomiyakさんの<a href="http://d.hatena.ne.jp/komiyak/20141216/1418760578">Unity を使いはじめたばかりの頃の自分に伝えたい、Unity の基本 【2014年版】</a>でした。いやー、これはまとまってて嬉しい情報です。ところでカレンダー的には穴開けちゃってます（遅刻遅延！）、すみません……。</p>
+<p>さて、今回の内容ですが、私の作っている<a href="https://github.com/neuecc/UniRx">UniRx</a>というReactive Programming（バズワード of 2014！)のためのライブラリを、最近ありがたいことに結構使ってみたーという声を聞くので、Rxの世界とUnityの世界を繋ぐ根幹である、MainThreadDispatcherと、その前準備に必要なコルーチンについて書きます。</p>
+<h2>Coroutine Revisited</h2>
+<p>コルーチンとはなんぞや。なんて今更ですって！はい。とりあえず、Unityは基本的にシングルスレッドで動いています。少なくともスクリプト部分に関しては。Unityのコルーチンは、IEnumeratorでyield returnすると、その次の処理を次フレーム（もしくは一定秒数/完了後などなど）に回します。あくまでシングルスレッド、ということですね。挙動について。簡単な確認用スクリプトを貼っつけて見てみると……</p>
+<pre><code class="language-csharp">void Start()
+{
+    Debug.Log(&quot;begin-start:&quot; + Time.frameCount);
+    StartCoroutine(MyCoroutine());
+    Debug.Log(&quot;end-start&quot; + Time.frameCount);
+}
+
+IEnumerator MyCoroutine()
+{
+    Debug.Log(&quot;start-coroutine:&quot; + Time.frameCount);
+
+    yield return null;
+    Debug.Log(&quot;after-yield-null:&quot; + Time.frameCount);
+
+    yield return new WaitForSeconds(3);
+    Debug.Log(&quot;end-coroutine:&quot; + Time.frameCount);
+}
+</code></pre>
+<p>呼ばれる順番とframeCountを考えてみようクイズ！意外と引っかかるかもしれません。答えのほうですが……</p>
+<pre><code class="language-text">begin-start:1
+start-coroutine:1
+end-start:1
+after-yield-null:2
+end-coroutine:168
+</code></pre>
+<p>となります。最後の秒数のフレームカウントはどうでもいいとして、start-coroutineが呼ばれるのはend-startの前ってのがちょっとだけヘーってとこかしら。IEnumerator自体はUnity固有の機能でもなく、むしろC#の標準機能で、通常は戻り値を持ってイテレータを生成するのに使います（Pythonでいうところのジェネレータ）</p>
+<pre><code class="language-csharp">// 偶数のシーケンスを生成
+IEnumerable&lt;int&gt; EvenSequence(int from, int to)
+{
+    for (int i = from; i &lt;= to; i++)
+    {
+        if (i % 2 == 0)
+        {
+            yield return i;
+        }
+    }
+}
+
+void Run()
+{
+    var seq = EvenSequence(1, 10);
+
+    // シーケンスはforeachで消費可能
+    foreach (var item in seq)
+    {
+        Debug.Log(item);
+    }
+
+    // あるいはEnumeratorを取得し回す(foreachは↓のコードを生成する)
+    // Unityでのコルーチンでの利用され方はこっちのイメージのほうが近い
+    using (var e = seq.GetEnumerator())
+    {
+        while (e.MoveNext())
+        {
+            Debug.Log(e.Current);
+        }
+    }
+}
+</code></pre>
+<p>Unityのコルーチンとしてのイテレータの活用法は、戻り値を原則使わず(宣言がIEnumerator)、yield returnとyield returnの間に副作用を起こすために使うということですね。これはこれで中々ナイスアイディアだとは思ってます。</p>
+<p>言語システムとしてはC#そのままなので、誰かがIEnumeratorを消費しているということになります。もちろん、それは<a href="http://docs.unity3d.com/ScriptReference/MonoBehaviour.StartCoroutine.html">StartCoroutine</a>で、呼んだ瞬間にまずはMoveNext、その後はUpdateに相当するようなタイミングで毎フレームMoveNextを呼び続けているようなイメージ。</p>
+<p>擬似的にMonoBehaviourで再現すると</p>
+<pre><code class="language-csharp">public class CoroutineConsumer : MonoBehaviour
+{
+    public IEnumerator TargetCoroutine; // 何か外からセットしといて
+
+    void Update()
+    {
+        if (TargetCoroutine.MoveNext())
+        {
+            var current = TargetCoroutine.Current;
+            // 基本的にCurrent自体はそんな意味を持たないで次フレームに回すだけ
+            if (current == null)
+            {
+                // next frame
+            }
+            // ただしもし固有の何かが返された時はちょっとした別の挙動する
+            if (current is WaitForSeconds)
+            {
+                // なんか適当に秒数待つ（ThreadをSleepするんじゃなく挙動的には次フレームへ）
+            }
+            else if (current is WWW)
+            {
+                // isDoneになってるまで適当に待つ（ThreadをSleepするんじゃなく挙動的には次フレームへ）
+            }
+            // 以下略
+        }
+    }
+}
+</code></pre>
+<p>こんな感じでしょうか！yield returnで返す値が具体的にUnityのゲームループにおいてどこに差し込まれるかは、Unityのマニュアルの<a href="http://docs.unity3d.com/Manual/ExecutionOrder.html">Script Lifecycle Flowchart</a>の図を見るのが分かりやすい。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2014/12/unitylifecycle.jpg' alt='' />
+</p>
+<p>nullが先頭でWaitForEndOfFrameは末尾なのね、とか。yield returnで返して意味を持つ値は<a href="http://docs.unity3d.com/ScriptReference/YieldInstruction.html">YieldInstruction</a>、ということになっているはずではあるんですが、実際のとこWWWはYieldInstructionじゃないし、YieldInstruction自体はカスタマイズ不能で自分で書けるわけじゃないんで（イマイチすぎる……）なんだかなぁー。Lifecycle Flowchartに書かれていない中でyield可能なのは<a href="http://docs.unity3d.com/ScriptReference/AsyncOperation.html">AsyncOperation</a>かな？</p>
+<p>もしイテレータの挙動について更に詳しく知りたい人は、私の以前書いたスライド<a href="http://www.slideshare.net/neuecc/an-internal-of-linq-to-objects-29200657">An Internal of LINQ to Objects</a>の14Pを参照してくださいな。</p>
+<h2>UniRx.FromCoroutine</h2>
+<p>というわけかで（一旦）コルーチンの話はおしまい。ここからはUniRxの話。UniRxについては<a href="http://neue.cc/2014/08/23_476.html">neue cc - A Beginners Guide to Reactive Extensions with UniRx</a>あたりをどうぞ。UniRxはFromCoroutineメソッドにより、コルーチンをUniRxの基盤インターフェースであるIObservable&lt;T&gt;に変換します。</p>
+<pre><code class="language-csharp">// こんなのがあるとして
+IEnumerator CoroutineA()
+{
+    Debug.Log(&quot;a start&quot;);
+    yield return new WaitForSeconds(1);
+    Debug.Log(&quot;a end&quot;);
+}
+
+// こんなふうに使える
+Observable.FromCoroutine(CoroutineA)
+    .Subscribe(_ =&gt; Debug.Log(&quot;complete&quot;));
+    
+// 戻り値のあるバージョンがあるとして
+IEnumerator CoroutineB(IObserver&lt;int&gt; observer)
+{
+    observer.OnNext(100);
+    yield return new WaitForSeconds(2);
+    observer.OnNext(200);
+    observer.OnCompleted();
+}
+
+// こんなふうに合成もできる
+var coroutineA = Observable.FromCoroutine(CoroutineA);
+var coroutineB = Observable.FromCoroutine&lt;int&gt;(observer =&gt; CoroutineB(observer));
+
+// Aが終わった後にBの起動、Subscribeには100, 200が送られてくる
+var subscription = coroutineA.SelectMany(coroutineB).Subscribe(x =&gt; Debug.Log(x));
+
+// Subscribeの戻り値からDisposeを呼ぶとキャンセル可能
+// subscription.Dispose();
+</code></pre>
+<p>IObservable&lt;T&gt;になっていると何がいいかというと、合成可能になるところです。Aが終わった後にBを実行する、Bが失敗したらCを実行する、などなど。また、戻り値を返すことができるようになります。そして、コルーチンに限らず、あらゆるイベント、あらゆる非同期がIObservable&lt;T&gt;になるので、全てをシームレスに繋ぎ合わせることができる。そこが他のライブラリや手法と一線を画すRxの強みなんです、が、長くなるのでここでは触れません:)</p>
+<p>また、MonoBehaviour.StartCoroutineを呼ばなくてもコルーチンが起動しています。これは結構大きな利点だと思っていて、というのも、コルーチンを使うためだけにMonoBehaviourにする必要がなくなる。やはり普通のC#クラスのほうが取り回しが良いので、MonoBehaviourにする必要がないものはしないほうがいい。けれど、コルーチンは使いたい。そうした欲求に応えてくれます。</p>
+<p>更にFromCoroutine経由にするとEditor内部では通常は動かせないコルーチンを動かすことができます！（これについては後で説明します）</p>
+<p>といった応用例はそのうちやるということで、とりあえずFromCoroutineの中身を見て行きましょう。</p>
+<pre><code class="language-csharp">// Func&lt;IEnumerator&gt;はメソッド宣言的には「IEnumerator Hoge()」になる
+public static IObservable&lt;Unit&gt; FromCoroutine(Func&lt;IEnumerator&gt; coroutine, bool publishEveryYield = false)
+{
+    return FromCoroutine&lt;Unit&gt;((observer, cancellationToken) =&gt; WrapEnumerator(coroutine(), observer, cancellationToken, publishEveryYield));
+}
+
+// ↑のはWrapEnumeratorを介してこれになっている
+public static IObservable&lt;T&gt; FromCoroutine&lt;T&gt;(Func&lt;IObserver&lt;T&gt;, CancellationToken, IEnumerator&gt; coroutine)
+{
+    return Observable.Create&lt;T&gt;(observer =&gt;
+    {
+        var cancel = new BooleanDisposable();
+
+        MainThreadDispatcher.SendStartCoroutine(coroutine(observer, new CancellationToken(cancel)));
+
+        return cancel;
+    });
+}
+
+// WrapEnumeratorの中身は(ｵｪｪｪｪ
+static IEnumerator WrapEnumerator(IEnumerator enumerator, IObserver&lt;Unit&gt; observer, CancellationToken cancellationToken, bool publishEveryYield)
+{
+    var hasNext = default(bool);
+    var raisedError = false;
+    do
+    {
+        try
+        {
+            hasNext = enumerator.MoveNext();
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                raisedError = true;
+                observer.OnError(ex);
+            }
+            finally
+            {
+                var d = enumerator as IDisposable;
+                if (d != null)
+                {
+                    d.Dispose();
+                }
+            }
+            yield break;
+        }
+        if (hasNext &amp;&amp; publishEveryYield)
+        {
+            try
+            {
+                observer.OnNext(Unit.Default);
+            }
+            catch
+            {
+                var d = enumerator as IDisposable;
+                if (d != null)
+                {
+                    d.Dispose();
+                }
+                throw;
+            }
+        }
+        if (hasNext)
+        {
+            yield return enumerator.Current; // yield inner YieldInstruction
+        }
+    } while (hasNext &amp;&amp; !cancellationToken.IsCancellationRequested);
+
+    try
+    {
+        if (!raisedError &amp;&amp; !cancellationToken.IsCancellationRequested)
+        {
+            observer.OnNext(Unit.Default); // last one
+            observer.OnCompleted();
+        }
+    }
+    finally
+    {
+        var d = enumerator as IDisposable;
+        if (d != null)
+        {
+            d.Dispose();
+        }
+    }
+}
+</code></pre>
+<p>WrapEnumeratorの中身が長くてオェェェって感じなんですが何やってるかというと、元のコルーチンを分解して、Rx的に都合のいい形に再構築したコルーチンに変換してます。都合のいい形とは「キャンセル可能」「終了時（もしくは各yield時）にObserver.OnNextを呼ぶ」「全ての完了時にObserver.OnCompletedを呼ぶ」「エラー発生時にObserver.OnErrorを呼ぶ」を満たしているもの。コルーチン自体がC#の標準機能のままで、なにも特別なことをしていないなら、別に自分で回す(enumerator.MoveNextを手で呼ぶ)ことも、何も問題はない、わけです。</p>
+<p>そんなラップしたコルーチンを動かしているのがMainThreadDispatcher.SendStartCoroutine。今の<a href="https://github.com/neuecc/UniRx/blob/master/Assets/UniRx/Scripts/UnityEngineBridge/MainThreadDispatcher.cs">MainThreadDispatcher.cs</a>は諸事情あって奇々怪々なんですが、SendStartCoroutineのとこだけ取り出すと</p>
+<pre><code class="language-csharp">public sealed class MainThreadDispatcher : MonoBehaviour
+{
+    // 中略
+    
+    /// &lt;summary&gt;ThreadSafe StartCoroutine.&lt;/summary&gt;
+    public static void SendStartCoroutine(IEnumerator routine)
+    {
+#if UNITY_EDITOR
+        if (!Application.isPlaying) { EditorThreadDispatcher.Instance.PseudoStartCoroutine(routine); return; }
+#endif
+
+        if (mainThreadToken != null)
+        {
+            StartCoroutine(routine);
+        }
+        else
+        {
+            Instance.queueWorker.Enqueue(() =&gt; Instance.StartCoroutine_Auto(routine));
+        }
+    }
+
+    new public static Coroutine StartCoroutine(IEnumerator routine)
+    {
+#if UNITY_EDITOR
+        if (!Application.isPlaying) { EditorThreadDispatcher.Instance.PseudoStartCoroutine(routine); return null; }
+#endif
+
+        return Instance.StartCoroutine_Auto(routine);
+    }
+}
+</code></pre>
+<p>if UNITY_EDITORのところは後で説明するのでスルーしてもらうとして、基本的にはInstance.StartCoroutine_Autoです。ようはMainThreadDispatcherとは、シングルトンのMonoBehaviourであり、FromCoroutineはそいつからコルーチンを起動しているだけなのであった。なんだー、単純。汚れ仕事（コルーチンの起動、MonoBehaviourであること）をMainThreadDispatcherにだけ押し付けることにより、それ以外の部分が平和に浄化される！</p>
+<p>コルーチンの起動が一極集中して、それで実行効率とか大丈夫なの？というと存外大丈夫っぽいので大丈夫。実際、私の会社ではこないだ一本iOS向けにゲームをリリースしましたがちゃんと動いてます。しかしそうなるとStartCoroutineはMonoBehaviourのインスタンスメソッドではなく、静的メソッドであって欲しかった……。</p>
+<p>その他、SendStartCoroutineはスレッドセーフ（他スレッドから呼ばれた場合はキューに突っ込んでメインスレッドに戻ってから起動する）なのと、UnityEditorからの起動を可能にしています（EditorThreadDispatcher.Instance.PseudoStartCoroutine経由で起動する）。なので、普通にStartCoroutineを呼ぶ以上のメリットを提供できているかな、と。</p>
+<h2>UnityEditorでコルーチンを実行する</h2>
+<p>Editorでコルーチンを動かせないのは存外不便です。WWWも動かせないし……。UniRxではFromCoroutine経由で実行すると、内部でMainThreadDispatcher.SendStartCoroutine経由になることにより、Editorで実行できます。使い方は本当にFromCoroutineしてSubscribeするだけ、と、通常時のフローとまるっきり一緒です。ここで毎回エディターの時は、通常の時は、と書き分けるのはカッタルイですからね。汚れ仕事はMainThreadDispatcherが一手に引き受けています。そんな汚れ仕事はこんな感じの実装です。</p>
+<pre><code class="language-csharp">class EditorThreadDispatcher
+{
+    // 中略
+    
+    ThreadSafeQueueWorker editorQueueWorker= new ThreadSafeQueueWorker();
+
+    EditorThreadDispatcher()
+    {
+        UnityEditor.EditorApplication.update += Update;
+    }
+    
+    // 中略
+    
+    void Update()
+    {
+        editorQueueWorker.ExecuteAll(x =&gt; Debug.LogException(x));
+    }
+
+    // 中略
+
+    public void PseudoStartCoroutine(IEnumerator routine)
+    {
+        editorQueueWorker.Enqueue(() =&gt; ConsumeEnumerator(routine));
+    }
+
+    void ConsumeEnumerator(IEnumerator routine)
+    {
+        if (routine.MoveNext())
+        {
+            var current = routine.Current;
+            if (current == null)
+            {
+                goto ENQUEUE;
+            }
+
+            var type = current.GetType();
+            if (type == typeof(WWW))
+            {
+                var www = (WWW)current;
+                editorQueueWorker.Enqueue(() =&gt; ConsumeEnumerator(UnwrapWaitWWW(www, routine)));
+                return;
+            }
+            else if (type == typeof(WaitForSeconds))
+            {
+                var waitForSeconds = (WaitForSeconds)current;
+                var accessor = typeof(WaitForSeconds).GetField(&quot;m_Seconds&quot;, BindingFlags.Instance | BindingFlags.GetField | BindingFlags.NonPublic);
+                var second = (float)accessor.GetValue(waitForSeconds);
+                editorQueueWorker.Enqueue(() =&gt; ConsumeEnumerator(UnwrapWaitForSeconds(second, routine)));
+                return;
+            }
+            else if (type == typeof(Coroutine))
+            {
+                Debug.Log(&quot;Can't wait coroutine on UnityEditor&quot;);
+                goto ENQUEUE;
+            }
+
+        ENQUEUE:
+            editorQueueWorker.Enqueue(() =&gt; ConsumeEnumerator(routine)); // next update
+        }
+    }
+
+    IEnumerator UnwrapWaitWWW(WWW www, IEnumerator continuation)
+    {
+        while (!www.isDone)
+        {
+            yield return null;
+        }
+        ConsumeEnumerator(continuation);
+    }
+
+    IEnumerator UnwrapWaitForSeconds(float second, IEnumerator continuation)
+    {
+        var startTime = DateTimeOffset.UtcNow;
+        while (true)
+        {
+            yield return null;
+
+            var elapsed = (DateTimeOffset.UtcNow - startTime).TotalSeconds;
+            if (elapsed &gt;= second)
+            {
+                break;
+            }
+        };
+        ConsumeEnumerator(continuation);
+    }
+}
+</code></pre>
+<p>ようは、UnityEditor.EditorApplication.updateでジョブキューを回しています。コルーチン(Enumerator)を手動で分解して、EditorApplication.updateに都合の良い形に再編しています。yield return nullがあったらキューに突っ込んで次のupdateに回すことで、擬似的にStartCorotineを再現。WaitForSecondsだったらリフレクションで内部の秒数を取ってきて（ひどぅい）ぐるぐるループを展開。などなど。</p>
+<p>仕組み的には単純、なんですが結構効果的で便利かな、と。ユーザーは全くそれを意識する必要がないというのが一番いいトコですね。</p>
+<p>ちなみにアセットストアからダウンロードできるバージョンでは、まだこの仕組みは入ってません（すびばせん！）。GitHubの最新コードか、あとは、ええと、近いうちにアップデート申請しますので来年には使えるようになっているはずです。。。</p>
+<h2>まとめ</h2>
+<p>コルーチンをコルーチンたらしめているのは消費者であるStartCoroutineであって、IEnumerator自体はただのイテレータにすぎない。なので、分解も可能だし、他の形式に展開することもできる。</p>
+<p><a href="https://github.com/neuecc/UniRx">UniRx</a>経由でコルーチンを実行すると「色々なものと合成できる」「（複数の）戻り値を扱える」「キャンセルが容易」「MonoBehaviourが不要」「スレッドセーフ」「エディターでも実行可能」になる。いいことづくめっぽい！Reactive Programmingの力！そんな感じに、UniRxはなるべくシームレスにRxの世界とUnityの世界を繋げるような仕組みを用意しています。是非ダウンロードして、色々遊んでみてください。</p>
+</div>
+<h1><a href="http://neue.cc/2014/1208_496.html">VS2015+RoslynによるCodeRefactoringProviderの作り方と活用法</a></h1>
+<ul class="date"><li>2014-12-08</li></ul>
+<div class="entry_body"><p>この記事は<a href="http://qiita.com/advent-calendar/2014/csharp">C# Advent Calendar 2014</a>のための記事になります。私は去年のAdvent Calendarでは<a href="http://neue.cc/2013/12/04_435.html">非同期時代のLINQ</a>というものを書いていました、うん、中々良い記事であった（自分で言う）。今年のテーマはRoslynです。</p>
+<p>先月に<a href="http://neue.cc/2014/11/20_485.html">VS2015のRoslynでCode Analyzerを自作する(ついでにUnityコードも解析する)</a>という記事を書きましたが、VS2015 PreviewではRoslynで作る拡張にもう一つ、Code Refactoringがあります。こちらも簡単に作れて、中々ベンリなので（前にVS2015のRoslynは以前から後退して「あんま大したことはできない」と言いましたが、それはそれでかなり役立ちです）、是非作っていきましょう。Code Analyzerと同じく非常に簡単に作れるのと、テンプレートがよくできていてちゃんとガイドになってるので、すんなり入れるかと思います。なお、こちらはCode Analyzerと違いNuGet配布やプロジェクト単位での参照は不可能、VSIXのみ。そこはちょっと残念……。</p>
+<h2>Code Refactoring</h2>
+<p>下準備としてはCode Analyzerの時と同じく<a href="http://www.visualstudio.com/downloads/visual-studio-2015-downloads-vs">Visual Studio 2015 Preview</a>のインストールの他に、<a href="http://www.visualstudio.com/downloads/visual-studio-2015-downloads-vs">Visual Studio 2015 Preview SDK</a>と<a href="https://visualstudiogallery.msdn.microsoft.com/849f3ab1-05cf-4682-b4af-ef995e2aa1a5">.NET Compiler Platform SDK Templates</a>、そして<a href="https://visualstudiogallery.msdn.microsoft.com/70e184da-9b3a-402f-b210-d62a898e2887">.NET Compiler Platform Syntax Visualizer</a>を入れてください。</p>
+<p>さて、まずテンプレートのVisual C#→Extensibilityから「Code Refactoring(VSIX)」を選びます。とりあえずこのテンプレート（がサンプルになってます）をCtrl+F5で実行しましょう。これで立ち上がるVSは通常のVSに影響を及ぼさず自作拡張がインストールされる特殊なインスタンスになってます（devenv.exeを引数「/rootsuffix Roslyn」で立ち上げてる、のがDebugのとこで確認できる）。というわけで、このテンプレートの拡張によりクラス名をCtrl+.することにより</p>
+<p><img src="http://neue.cc/wp-content/uploads/2014/12/roslyn_reverse.jpg" alt="" /></p>
+<p>クラス名が逆になる、という（実にどうでもいい）機能拡張が追加されました！と、いうわけで、Code RefactoringはCode Analyzerと同じく「Light Bulb」によるCode Actionが実装可能になります。Code AnalyzerはDiagnosticが起点でしたが、こちらは、指し示された位置を起点にコードの削除/追加/変更を行えるという感じ。「リファクタリング」というとコード修正のイメージが個人的には強いんですが、RoslynのCode Refactoringはどちらかというと「コード生成」に使えるな、という印象です。例えばプロパティを選択してCode RefactoringでINotifyPropertyChangedのコードに展開してしまうとか。大量に作る場合、一個一個コードスニペットで作るより、そっちのほうが速く作れそうですよね？など、色々使い手はあるでしょふ。結構可能性を感じるし、良い機能だと思っています（それR#で今までも出来たよ！とかそれEclipseで既に！とか言いたいことはあるかもしれませんが！）</p>
+<p>ただまあ、Code Refactoringって名前は好きじゃない。けれど、じゃあ何がいいかっていうと、なんでしょうねぇ。Code Generate、ジェネレートだけじゃないから、まぁCode Actionかなぁ。AnalyzerもCode Actionだから区別付かなくて嫌だって可能性もあるか、うーん、うーん、ま、いっか……。</p>
+<h2>ArgumentNullExceptionProvider</h2>
+<p>サンプルコードがたった1ファイルのように、作るのはとても簡単です。CodeRefactoringProviderを継承してComputeRefactoringsAsyncを実装する、だけ。適当にシンタックスツリーを探索して、もしLight Bulbを出したければcontext.RegisterRefactoringにCodeActionを追加する、と。</p>
+<p>というわけで早速何か一個作ってみましょう。実用的なのがいいなぁ、ということでnullチェック、if(hoge == null) throw new ArgumetNullException(); というクソ面倒くさい恒例のアレを自動生成しよう！絶対使うし、あるとめちゃくちゃ捗りますものね！</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/2014/12/roslyn_argnullfix2.jpg" />
+</p>
+<p>上の画像のが完成品です。便利そう！便利そう！</p>
+<p>さて、まずはLight Bulbをどこで出したいか。メソッドの引数で出すんで、引数を選択してたらそれは対象にしたいかなぁ？あと、一々選択するのも面倒だから、メソッド名でも出しましょうか。ふむ、とりあえず実装が簡単そうなメソッド名だけで行きましょう。何事も作る時は単純なところから広げていくのが一番、特に初めてのものはね。</p>
+<pre><code class="language-csharp">// ArgumentNullExceptionProviderという名前でプロジェクト作ったらクラス名が酷いことに、その辺はちゃんと調整しましょふ
+[ExportCodeRefactoringProvider(ArgumentNullExceptionProviderCodeRefactoringProvider.RefactoringId, LanguageNames.CSharp), Shared]
+internal class ArgumentNullExceptionProviderCodeRefactoringProvider : CodeRefactoringProvider
+{
+    public const string RefactoringId = &quot;ArgumentNullExceptionProvider&quot;;
+
+    public sealed override async Task ComputeRefactoringsAsync(CodeRefactoringContext context)
+    {
+        // とりあえずコード全体を取る（これはほとんど定形）
+        var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
+        
+        // SemanticModel(コードをテキストとしてではなく意味を持ったモデルとして取るようにするもの、これもほぼ必須)
+        var model = await context.Document.GetSemanticModelAsync(context.CancellationToken).ConfigureAwait(false);
+        
+        // context.Spanが選択位置、ということで選択位置のコードを取る（この辺もほぼ定形かな）
+        // もし選択範囲に含まれてるものから一部のものを取り出す、とかならroot.DescendantNodes(context.Span).OfType&lt;XxxSyntax&gt;() という手とか色々
+        var node = root.FindNode(context.Span);
+        
+        // メソッド定義じゃなかったら無視
+        var methodDecl = node as MethodDeclarationSyntax;
+        if (methodDecl == null) return;
+        
+        // コード生成作る
+        var action = CodeAction.Create(&quot;Generate ArgumentNullException&quot;, c =&gt; GenerateArgumentNullException(context.Document, model, root, methodDecl, c));
+        
+        // とりあえず追加
+        context.RegisterRefactoring(action);
+    }
+
+    async Task&lt;Document&gt; GenerateArgumentNullException(Document document, SemanticModel model, SyntaxNode root, MethodDeclarationSyntax methodDecl, CancellationToken cancellationToken)
+    {
+        // あとで書く:)
+        return document;
+    }
+}
+</code></pre>
+<p>まずはこんなとこですね、ようはサンプルからClassDeclarationSyntaxをMethodDeclarationSyntaxに変えただけ + CodeActionを作るところの引数にSemanticModelとrootのSyntaxNodeを足してあります。この辺はほとんど定形で必要になってくるので、とりあえず覚えておくといいでしょう。さて、一旦こいつで実行してみて、ちゃんとLight Bulbが思ったところに出るか確認してから次に行きましょー。続いて本題のコード生成部分。</p>
+<pre><code class="language-csharp">Task&lt;Document&gt; GenerateArgumentNullException(Document document, SemanticModel model, SyntaxNode root, MethodDeclarationSyntax methodDecl, CancellationToken cancellationToken)
+{
+    // 引数はParameterListから取れる。
+    // この辺はVSでMethodDeclarationSyntaxをF12で飛んで、metadataからそれっぽいのを探しだすといいんじゃないかな？
+    // ドキュメントがなくてもVisual StudioとIntelliSenseがあれば、なんとなく作れてしまうのがC#のいいところだからね！
+    var parameterList = methodDecl.ParameterList;
+
+    // ただのType(TypeSyntax)はコード上のテキスト以上の意味を持たない、
+    // そこからstructかclassか、など型としての情報を取るにはSemanticModelから照合する必要がある
+    var targets = parameterList.Parameters
+        .Where(x =&gt;
+        {
+            var typeSymbol = model.GetTypeInfo(x.Type).Type;
+            return typeSymbol != null &amp;&amp; typeSymbol.IsReferenceType;
+        });
+
+    // C#コードを手組みするのは(Trivia対応とか入れると)死ぬほど面倒なのでParseする
+    var statements = targets.Select(x =&gt;
+    {
+        var name = x.Identifier.Text;
+        // String Interpolationベンリ(ただし文法はまだ変更される模様……)
+        return SyntaxFactory.ParseStatement(&quot;if (\{name} == null) throw new ArgumentNullException(nameof(\{name}));&quot;);
+    }).ToArray();
+
+    // 追加、メソッドBodyはBody以下なのでそこの先頭に(AddStatementsだと一番下に置かれてしまうのでダメ、nullチェックは「先頭」にしたい)
+    var newBody = methodDecl.Body.WithStatements(methodDecl.Body.Statements.InsertRange(0, statements));
+
+    // 入れ替え
+    var newRoot = root.ReplaceNode(methodDecl.Body, newBody);
+    var newDocument = document.WithSyntaxRoot(newRoot);
+
+    return Task.FromResult(newDocument);
+}
+</code></pre>
+<p>SemanticModelがキーです。SyntaxTreeから取ってきただけのものは、何の情報も持ってません、ほんとただのコード上の字面だけです。今回で言うとnullチェックしたいのは参照型だけですが、それを識別することが出来ません。そこからTypeInfoを取り出すことができるのがSemanticModelになります。例えば「Dictionary」から「System.Collections.Generic.Dictionary」といったフルネームを取り出したりなど、とかくコード操作するには重要です。今回はこれでIsReferenceTypeを引き出しています。</p>
+<p>あとは、コードの手組みは辛すぎるのでSyntaxFactory.ParseXxxを活用して済ませちゃうのは楽です。その後は、rootからReplaceと、documentから丸っと差し替えなどは定形ですね。あ、そうそう、あとnameofはC# 6.0の新機能です。ベンリベンリ。</p>
+<p>では、実際使ってみると……。</p>
+<pre><code class="language-csharp">// これが
+static void Hoge(string[] a, string b, Dictionary&lt;int, int&gt; huga, int tako)
+{
+}
+
+// こうなる、あ、れ……？
+static void Hoge(string[] a, string b, Dictionary&lt;int, int&gt; huga, int tako)
+{
+if (a == null) throw new ArgumentNullException(nameof(a));if (b == null) throw new ArgumentNullException(nameof(b));if (huga == null) throw new ArgumentNullException(nameof(huga));}
+</code></pre>
+<p>はい。ちゃんと機能するコードができてはいます。が、なんじゃこりゃーーーーー。なんでかっていうとTrivia（空白とか改行）が一切考慮されてないから、なんですね。Code Refactoringを作る上でメンドウクサイのは、こうしたTriviaへの考慮です。置換なら既存のTriviaをそのまま使えるんですが、コード追加系だと、自分でTrivia入れたり削ったりの調整しないと見れたもんじゃなくなります。というわけで、こっから先が地獄……。まぁ、頑張りましょう。さすがにそのままだと使えないので、調整しましょう。</p>
+<p>まずは改行です。改行は結構簡単で、（大抵の場合）TrailingTrivia（後方のTrivia（空白や改行など））にCRLFを仕込むだけ。</p>
+<pre><code class="language-csharp">// statementsのところをこう変更すると
+var statements = targets.Select(x =&gt;
+{
+    var name = x.Identifier.Text;
+    var statement = SyntaxFactory.ParseStatement(&quot;if (\{name} == null) throw new ArgumentNullException(nameof(\{name}));&quot;);
+    // TrailingTriviaは行末、というわけで改行を仕込む
+    return statement.WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed);
+})
+.ToArray();
+
+        // 置換結果はこうなります、だいぶ良くなった！
+        static void Hoge(string[] a, string b, Dictionary&lt;int, int&gt; huga, int tako)
+        {
+if (a == null) throw new ArgumentNullException(nameof(a));
+if (b == null) throw new ArgumentNullException(nameof(b));
+if (huga == null) throw new ArgumentNullException(nameof(huga));
+        }
+</code></pre>
+<p>だいぶいい線いってますね！このぐらいできれば、あとは実行後にCtrl+K, D（ドキュメントフォーマット）押してね、で済むんで全然妥協ラインです。が、もう少し完璧にしたいならインデントも挟みましょうか。インデントの量は直前の{から引っ張ってきて調整してみましょふ。</p>
+<pre><code class="language-csharp">// WithLeadingTriviaの追加
+var statements = targets.Select(x =&gt;
+{
+    var name = x.Identifier.Text;
+    var statement = SyntaxFactory.ParseStatement(&quot;if (\{name} == null) throw new ArgumentNullException(nameof(\{name}));&quot;);
+
+    // LeadingTriviaに「{」のとこのインデント + 4つ分の空白を入れる
+    return statement
+        .WithLeadingTrivia(methodDecl.Body.OpenBraceToken.LeadingTrivia.Add(SyntaxFactory.Whitespace(&quot;    &quot;)))
+        .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed);
+})
+.ToArray();
+
+        // 置換結果はこうなります、完璧！
+        static void Hoge(string[] a, string b, Dictionary&lt;int, int&gt; huga, int tako)
+        {
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (huga == null) throw new ArgumentNullException(nameof(huga));
+        }
+
+</code></pre>
+<p>こんなところですね。さて、勿論このコードはOpenBraceTokenが改行された位置にあることを前提にしているので、後ろに{を入れるスタイルのコードには適用できません。また、空白4つをインデントとして使うというのが決め打ちされています。また、なんども実行しても大丈夫なように既にthrow new ArgumentNullExceptionが記述されてる引数は無視したいよねえ、などなど、完璧を求めるとキリがありません。キリがないということは、適当なところでやめておくのが無難ということです、適度な妥協大事！</p>
+<h2>フォーマットする</h2>
+<p>とはいえ、フォーマットはもう少しきちんとやりたいところです。実は簡単にやる手段が用意されていて、.WithAdditionalAnnotations(Formatter.Annotation) を呼ぶことで、その部分だけフォーマットがかかります。正確にはフォーマットが可能になるタイミングでフォーマットがかかるようになります、どういうことかというと、例えばインデントのフォーマットは前後のコード情報がなければかけることは出来ません。このコード例でいうとif()...は前後空白もない完全一行だけなのでフォーマットもなにもできない。なのでAnnotationのついたコード片がフォーマット可能なドキュメントにくっついたタイミングで自動でかかるようになります。AnnotationはRoslynの構文木内でのみ使われるオプション情報とでも思ってもらえれば。</p>
+<pre><code class="language-csharp">var statements = targetParameters
+    .Select(x =&gt;
+    {
+        var name = x.Identifier.Text;
+        var statement = SyntaxFactory.ParseStatement(&quot;if (\{name} == null) throw new ArgumentNullException(nameof(\{name}));&quot;);
+
+        // Formatter.Annotationつけてフォーマット
+        return statement
+            .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed)
+            .WithAdditionalAnnotations(Formatter.Annotation);
+    })
+    .ToArray();
+</code></pre>
+<p>これは簡単でイイですね！！！なのでTriviaの付与は、最低限のCRLFぐらいを部分的に入れるだけでOK。これは、これからもめちゃくちゃ多用するのではかと思われます。他にAnnotationにはSimplifier.Annotationなどが用意されてます。</p>
+<h2>フルコード</h2>
+<p>最初に妥協した（？）引数を選択してたらそれも対象に、ってコードも入れましょうか。というのを含めたフルコードは以下になります。</p>
+<pre><code class="language-csharp">using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CodeActions;
+using Microsoft.CodeAnalysis.CodeRefactorings;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Formatting;
+using System.Collections.Generic;
+using System.Composition;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace Grani.RoslynTools
+{
+    [ExportCodeRefactoringProvider(GenerateArgumentNullExceptionCodeRefactoringProvider.RefactoringId, LanguageNames.CSharp), Shared]
+    internal class GenerateArgumentNullExceptionCodeRefactoringProvider : CodeRefactoringProvider
+    {
+        public const string RefactoringId = &quot;GenerateArgumentNullException&quot;;
+
+        public sealed override async Task ComputeRefactoringsAsync(CodeRefactoringContext context)
+        {
+            // とりあえずコード全体を取る（これはほとんど定形）
+            var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
+
+            // SemanticModel(コードをテキストとしてではなく意味を持ったモデルとして取るようにするもの、これもほぼ必須)
+            var model = await context.Document.GetSemanticModelAsync(context.CancellationToken).ConfigureAwait(false);
+
+            // context.Spanが選択位置、ということで選択位置のコードを取る（この辺もほぼ定形かな）
+            var node = root.FindNode(context.Span);
+
+            // パラメータリストの場合はそれだけ、クラス名だったらその定義の全部の引数を取る
+            MethodDeclarationSyntax methodDecl;
+            IEnumerable&lt;ParameterSyntax&gt; selectedParameters;
+            if (node is MethodDeclarationSyntax)
+            {
+                methodDecl = (MethodDeclarationSyntax)node;
+                selectedParameters = methodDecl.ParameterList.Parameters;
+            }
+            else
+            {
+                // 単品選択のばやい(名前の部分選択でParameterSyntax、型の部分選択でParentがParameterSyntax)
+                if (node is ParameterSyntax || node.Parent is ParameterSyntax)
+                {
+                    var targetParameter = (node as ParameterSyntax) ?? (node.Parent as ParameterSyntax);
+                    // 親方向にMethodDeclarationSyntaxを探す
+                    methodDecl = targetParameter.Ancestors().OfType&lt;MethodDeclarationSyntax&gt;().FirstOrDefault();
+                    selectedParameters = new[] { targetParameter };
+                }
+                else
+                {
+                    // 選択範囲から取り出すばやい
+                    var parameters = root.DescendantNodes(context.Span).OfType&lt;ParameterSyntax&gt;().ToArray();
+                    if (parameters.Length == 0) return;
+                    methodDecl = parameters[0].Ancestors().OfType&lt;MethodDeclarationSyntax&gt;().FirstOrDefault();
+                    selectedParameters = parameters;
+                }
+            }
+            if (methodDecl == null) return;
+
+            // ただのType(TypeSyntax)はコード上のテキスト以上の意味を持たない、
+            // そこからstructかclassか、など型としての情報を取るにはSemanticModelから照合する必要がある
+            var replaceTargets = selectedParameters
+                .Where(x =&gt;
+                {
+                    var typeSymbol = model.GetTypeInfo(x.Type).Type;
+                    // ジェネリック型で型引数がclassでstructでもない場合はIsXxxが両方false、これはif(xxx == null)の対象にする
+                    return typeSymbol != null &amp;&amp; typeSymbol.IsReferenceType || (!typeSymbol.IsReferenceType &amp;&amp; !typeSymbol.IsValueType);
+                })
+                .ToArray();
+
+            if (replaceTargets.Length == 0) return;
+
+            // コード生成作る(nameof利用の有無で2つ作ってみたり)
+            var action1 = CodeAction.Create(&quot;Generate ArgumentNullException&quot;, c =&gt; GenerateArgumentNullException(context.Document, root, methodDecl, replaceTargets, true, c));
+            var action2 = CodeAction.Create(&quot;Generate ArgumentNullException(unuse nameof)&quot;, c =&gt; GenerateArgumentNullException(context.Document, root, methodDecl, replaceTargets, false, c));
+
+            // 追加
+            context.RegisterRefactoring(action1);
+            context.RegisterRefactoring(action2);
+        }
+        
+        Task&lt;Document&gt; GenerateArgumentNullException(Document document, SyntaxNode root, MethodDeclarationSyntax methodDecl, ParameterSyntax[] targetParameters, bool useNameof, CancellationToken cancellationToken)
+        {
+            // nameof版と非nameof版を用意
+            var template = (useNameof)
+                ? &quot;if ({0} == null) throw new ArgumentNullException(nameof({0}));&quot;
+                : &quot;if ({0} == null) throw new ArgumentNullException(\&quot;{0}\&quot;);&quot;;
+
+            var statements = targetParameters
+                .Select(x =&gt;
+                {
+                    // C#コードを手組みするのは(Trivia対応とか入れると)死ぬほど面倒なのでParseする
+                    var name = x.Identifier.Text;
+                    var statement = SyntaxFactory.ParseStatement(string.Format(template, name));
+
+                    // Formatter.Annotationつけてフォーマット
+                    return statement
+                        .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed)
+                        .WithAdditionalAnnotations(Formatter.Annotation);
+                })
+                .ToArray();
+
+            // 追加
+            var newBody = methodDecl.Body.WithStatements(methodDecl.Body.Statements.InsertRange(0, statements));
+
+            // 入れ替え
+            var newRoot = root.ReplaceNode(methodDecl.Body, newBody);
+            var newDocument = document.WithSyntaxRoot(newRoot);
+
+            return Task.FromResult(newDocument);
+        }
+    }
+}
+</code></pre>
+<p>まずLight Bulbを出すためのチェックがFindNodeだけでは済まなくなるので、root.DescendantNodes(context.Span)が活躍します。あとは、もう、色々もしゃもしゃと。とにかくコーナーケース探していくとかなり面倒くさかったり。例えば、引数の型の部分を選択した時と、名前の部分を選択した時の対処、などなど……。しょうがないけれどね。</p>
+<p>それと、もしメソッドの中に参照型の引数がなかったらLight Bulbを出さないようにするため、replaceTargetsの生成をRegisterRefactoringの前に変更しています。それと、ジェネリックな型引数の場合で制約がついてない状態も生成対象に含めるよう微調整。といったような、この辺の細かい調整はある程度出来上がってからやってくのが良いでしょうねー。</p>
+<h2>Portable？</h2>
+<p>ところで、CodeRefactoringにせよAnalyzerにせよ、テンプレートではコア部分はPCLで生成されています。ということは、実は、System.IOとか使えない。これ、ちょっと色々な邪道な操作したい時に不便なんですよ……。ていうかVisual Studio前提なんだからPCLである必要ないじゃん！いみわからない、なんでもPCLって言っておけばいいってもんでもないでしょう！あー、もう私はPCL大嫌いだよぅー。しかもPCLで生成されたプロジェクトは普通のプロジェクトタイプには簡単には戻せないんですよ、うわぁ……。</p>
+<p>まあcsprojを手で書き換えればできます。やりかたは</p>
+<pre><code class="language-xml">&lt;!-- こいつを消す --&gt;
+&lt;ProjectTypeGuids&gt;{786C830F-07A1-408B-BD7F-6EE04809D6DB};{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}&lt;/ProjectTypeGuids&gt;
+
+&lt;!-- こいつを消す --&gt;
+&lt;TargetFrameworkProfile&gt;Profile7&lt;/TargetFrameworkProfile&gt;
+
+&lt;!-- こいつを消して --&gt;
+&lt;Import Project=&quot;$(MSBuildExtensionsPath32)\Microsoft\Portable\$(TargetFrameworkVersion)\Microsoft.Portable.CSharp.targets&quot; /&gt;
+&lt;!-- かわりにこれを追加 --&gt;
+&lt;Import Project=&quot;$(MSBuildToolsPath)\Microsoft.CSharp.targets&quot; /&gt;
+</code></pre>
+<p>なんだかなぁー。</p>
+<h2>ビルトイン拡張</h2>
+<p>VS2015ではビルトインで幾つかCode Refactoringが入っています。が、ノーヒント（Ctrl+.を押すまではLight Bulbが出ない)なので、宝探し状態です！例えばプロパティを選択すると「Generate Constructor」が出てきたり。まぁ、これはそのうちリストが公開されるでしょう。</p>
+<h2>まとめ</h2>
+<p>拡張を作るのは簡単！うーん、んー、簡単？まぁ簡単！少なくとも今までよりは比較的遥かに簡単カジュアルに作れるようになりました。こうした自動生成って、一般的なものだけではなく、プロジェクト固有で必要になるものもあると思います。例えばうちの会社ではシリアライザに<a href="https://code.google.com/p/protobuf-net/">protobuf-net</a>を使っているので、クラスのプロパティの各属性にDataMemberをつけて回る必要がある。ちゃんとOrderの順番を連番にして。でも手作業は面倒、そこで、CodeRefactoring。</p>
+<p><img src="http://neue.cc/wp-content/uploads/2014/12/roslyn_adddatamember.jpg" alt="" /></p>
+<p>こんな風にプロパティを選択してCtrl+.でほいっと生成できる。このコードはちゃんと属性の振り直しとかも配慮してある（場合によって追加、場合によって置き換え、とかのコードを書くのはやっぱり結構面倒！フルコードは<a href="https://gist.github.com/neuecc/cc1578e8ee85b3ddadcf">neuecc/AddDataMemberWithOrderCodeRefactoringProvider.cs</a>に置いておきます、使いたい方 もしくは CodeRefactoring作りの参考にどうぞ）</p>
+<p>こうしたプロジェクト固有の必要な自動生成のためのコードがサクッと作れるようになったのは地味に革命的かなぁ、なんて思ってます。どんどん活用されていくといいですね、少なくともうちの会社（グラニ）では社内用に皆で色々作って配布していこうかなあと計画しています（ところで<a href="http://grani.jp/">グラニ</a>はまだまだアクティブにエンジニアの求人してます！最先端のC#に興味のある方は是非是非どうぞ、「今から」VS2015を使い倒しましょう）。</p>
+<p>AnalyzerもCode Refactoringも、すっごくミニマムな仕様に落ち着いていて、限りなく削っていった形なんだろうなぁ、と想像します。すごく小さくて、でも、すごく使い手がある。いい落とし所だと思ってます。あとはもう活用するもしないも全て自分達次第。とにかくまずは、是非触ってみてください。可能性を感じましょう。</p>
+</div>
+<h1><a href="http://neue.cc/2014/1203_491.html">kpm wrapでVS2015 Previewでもcsprojをkprojで参照する</a></h1>
+<ul class="date"><li>2014-12-03</li></ul>
+<div class="entry_body"><p>この記事は土壇場駆け込みで爆誕した<a href="http://qiita.com/advent-calendar/2014/aspnet">ASP.NET Advent Calendar 2014</a>の3日目の記事です。昨日は<a href="http://gooner.azurewebsites.net/2014/12/02/jil-json-serializer/">ASP.NET Web API で Jil JSON Serializer を使ってみる</a>でした。Jilいいよね、うん、使われるようになるといいと思ってます。</p>
+<p>さて、次のASP.NET(ASP.NET 5/vNext)は、もうみんな薄々気付いていると思いますが、Web APIとかOwinとかは結局vNextにおいて……。口には出せなくても！絶対にオフィシャルにアナウンスされることはなくても！ふむ、まぁ、その辺は置いておきましょう、はい。そんな不穏なことはね！ね！というわけでそんなことは全く関係なく今回はkpm wrapの話です。何それ、というと、多分、今の間しか使うことはないと思います。いや、むしろ今の間だからこそ直接使う人はそんないないと思います。つまり、誰にとっても全く役に立たないお話。</p>
+<h2>失われたプロジェクト参照</h2>
+<p>なんとASP.NET 5(旧vNext、ちなみにMVCは6なので割と紛らわしいネーミングじゃ)のプロジェクトでは、csprojが参照できません。へー、どーいうことなのー？というとこーいうことです。</p>
+<img src='http://neue.cc/wp-content/uploads/2014/12/cannotreference.jpg' alt='' />
+<p>参照設定でプロジェクト選んでも参照できない！何がnot supportedだよ、クソが！じゃあどうするか、というと、ASP.NET 5 Class Libraryという新設されたK専用のクラスライブラリプロジェクトを選べば作れる。ほぅ……、そんなポータブルじゃなさすぎるクラスライブラリ作ってたまるか、何が嬉しくてクラスライブラリをウェブ専用（っぽく）しなきゃならんのだ！</p>
+<p>別の道としてはNuGet経由でdllを渡すとか、そーいうアプローチが推奨されてて、それは一見良いように見えて全然よくないです。csprojを参照してソースコードと直にひっつくってのはすごく大事なんです。クラスライブラリもF12でソースにダイレクトに飛べる環境を作るのはめちゃくちゃ大事なんです。NuGetでdllで分離して理想的！だとかそんなお花畑理論に乗っかるきは毛頭ない。</p>
+<h2>kpm wrap</h2>
+<p>そんなわけでものすごく憤慨して、Kマジダメだわー、ありえないわー、センスないわー、ぐらいに思ってたりなかったりしたんですが、さすがに突っ込まれる。さすがに気づく。というわけで、最新のKRuntimeは、ちゃんとkprojでもcsprojを参照できるようになっています。また、一定の手順を踏めばVS2015でも参照が可能になります。さすがに次のバージョンのVS2015では(アルファ？ベータ？）対応してくると思うので、短い寿命のお話、或いはそういう風な仕組みになっているのねのお話。</p>
+<p>まず、<a href="https://github.com/aspnet/home">aspnet/Home</a>からDownload ZIPしてkvm.cmdを拾ってきます。こっから先はcmdで叩いていきます。まずkvm listすると1.0.0-beta1が入ってるのを確認できるはず。VS2015 Preview同梱がそれなんですね。というわけで、1.0.0-beta2を入れましょう。「kvm install latest」コマンドだと恐らく最新のmasterバージョンになってしまってよろしくないので、バージョン指定しましょう。<a href="https://www.myget.org/gallery/aspnetvnext">MyGet - aspnetvnext</a>を見るとバージョン確認できるので、そこから任意にバージョン指定でいれましょう。しかしそれでも404 NotFoundが返ってきてうまく入れられないことがあります！その場合は上のURLのところからKRE-CLR-x86のアイコンをクリックすれば生のnupkgが拾えるのでそいつを手で解凍して↓の場所に配置しましょう、nupkgをzipに変えるだけですがちゃんとNuGet.exeで展開してもいいです（どうでもいい）</p>
+<p>あとは「%UserProfile%.kre\packages\」のbeta2のbinのとこにkpmが転がってるので、そいつでkpm wrapコマンドを叩けばOK。あとすると</p>
+<pre><code class="language-cmd">kpm wrap &quot;c:\ToaruWebApp\src\ToaruClassLibrary&quot;
+
+Wrapping project 'ToaruClassLibrary' for '.NETFramework,Version=v4.5'
+  Source c:\ToaruWebApp\src\ToaruClassLibrary\ToaruClassLibrary.csproj
+  Target c:\ToaruWebApp\wrap\ToaruClassLibrary\project.json
+  Adding bin paths for '.NETFramework,Version=v4.5'
+    Assembly: ../../src/ToaruClassLibrary/obj/{configuration}/ToaruClassLibrary.dll
+    Pdb: ../../src/ToaruClassLibrary/obj/{configuration}/ToaruClassLibrary.pdb
+</code></pre>
+<p>というありがたいメッセージによりラッピングが完了します。あとはGUIからAdd Referenceすれば……、まぁ当然not supportedと怒られます。が、project.jsonを手編集すればいけるようになります！dependenciesに</p>
+<pre><code class="language-cmd">&quot;ToaruClassLibrary&quot;: &quot;1.0.0.0&quot;
+</code></pre>
+<p>とでも足してやれば（ちゃんとIntelliSenseも効いてる）あら不思議、謎の空っぽいASP.NETライブラリが追加されてリファレンスにもきちんと追加されてコードでも参照できるようになる（ようになる時もある、なんかむしろあんまうまく行かないことのほうが多いので、なんか別の条件というか再現手順間違えてるかも……とりあえず動かなかったらしょーがないということで！）</p>
+<h2>仕組み？</h2>
+<p>wrapコマンドを実行するとglobal.jsonが</p>
+<pre><code class="language-json">{
+  &quot;sources&quot;: [
+    &quot;src&quot;,
+    &quot;test&quot;,
+    &quot;wrap&quot;
+  ]
+}
+</code></pre>
+<p>になってます。global.jsonについては<a href="http://miso-soup3.hateblo.jp/entry/2014/11/14/043310">miso_soup3 Blog - ASP.NET 5 について一部</a>に詳しく書いてありますが、プロジェクトを探すためのルートですね。で、増えたのはwrapで、wrapフォルダにこの場合だとToaruClassLibraryというASP.NET 5クラスライブラリプロジェクトができています。wrapコマンドにより生成される実体はこいつで、こいつのproject.jsonは</p>
+<pre><code class="language-json">{
+  &quot;version&quot;: &quot;1.0.0.0&quot;,
+  &quot;frameworks&quot;: {
+    &quot;net45&quot;: {
+      &quot;wrappedProject&quot;: &quot;../../src/ToaruClassLibrary/ToaruClassLibrary.csproj&quot;,
+      &quot;bin&quot;: {
+        &quot;assembly&quot;: &quot;../../src/ToaruClassLibrary/obj/{configuration}/ToaruClassLibrary.dll&quot;,
+        &quot;pdb&quot;: &quot;../../src/ToaruClassLibrary/obj/{configuration}/ToaruClassLibrary.pdb&quot;
+      }
+    }
+  }
+}
+</code></pre>
+<p>何が何なのかは、十分想像できそうですね。</p>
+<p>というわけで、KのウェブプロジェクトがASP.NET 5 クラスライブラリしか参照できないという原則に変化はありません。ただしkpm wrapコマンドを叩くことでcsprojのdllから参照を作ってくれます。まぁ、dllということでビルドしないと反映されないじゃん！とかありますが、とりあえず一応実用上は問題ないレベルにまではなっている、かな……？（もしSubModuleとかで参照されてる共通ライブラリのcsprojが更新されたとして、各自のローカルで明示的にそれをリビルドしないと変更反映されないことになって不便そうだなあ、とか辛そうな点は幾らでも探せますけね）</p>
+<h2>まとめ</h2>
+<p>まぁ、VS上だとすっごく不安定で、動いたり動かなかったりって感じなんで、現状あんま実用性はない、かな……。とりあえず、次のバージョンぐらいではcsprojの参照も行けるようになった、という確認が取れた、というだけで十二分です。ASP.NET 5は仕組みがやりすぎに複雑で、VSとの統合もうまくいってるんだかいってないんだか（例えばVS2015でついにできるようになったウォッチウィンドウ上でのラムダ式が何故かASP.NETプロジェクトでは効かない、とか）ってところですが、まぁリリース版にはその辺も解決されるでしょう、と思いたい！</p>
+<p>さて、明日の<a href="http://qiita.com/advent-calendar/2014/aspnet">ASP.NET Advent Calendar 2014</a>はDapperの話のようです。Dapperは私もヘヴィに使ってますからね！楽しみです（ついちょっと前まで埋まってなかったんですがギリギリ繋がったようでホッ）</p>
+</div>
+<h1><a href="http://neue.cc/2014/1120_485.html">VS2015のRoslynでCode Analyzerを自作する(ついでにUnityコードも解析する)</a></h1>
+<ul class="date"><li>2014-11-20</li></ul>
+<div class="entry_body"><p><a href="http://www.visualstudio.com/downloads/visual-studio-2015-downloads-vs">Visual Studio 2015 Preview</a>が発表されました！この中にはC# 6.0やRoslynも含まれていて、今から試すことができます。C#の言語機能は他の人が適当にまとめてくれるので私はノータッチということで、新機能である<a href="https://roslyn.codeplex.com/">Roslyn</a>で拡張を作っていきましょう。</p>
+<p>Roslynによる拡張は、ン年前に最初のPreviewが出た時は、Visual Studioの解析エンジン自体がRoslynになるから簡単にアレもコレも出来るぜ！と夢いっぱいのこと言ってましたが、実のところ最終的に現在(VS2015 Preview)ではかなり萎んでしまいました。「Code Refactoring」と「Diagnostic with Code Fix」だけです。何ができるかは、まぁ名前から察しということで、あんま大したことはできないです。がっくし。とはいえ、しかし全然使いドコロはあるし簡単に作れはするので、とにかく見て行きましょう。</p>
+<p>下準備としてVS2015 Previewのインストールの他に、<a href="http://www.visualstudio.com/downloads/visual-studio-2015-downloads-vs">Visual Studio 2015 Preview SDK</a>と<a href="https://visualstudiogallery.msdn.microsoft.com/849f3ab1-05cf-4682-b4af-ef995e2aa1a5">.NET Compiler Platform SDK Templates</a>、そして<a href="https://visualstudiogallery.msdn.microsoft.com/70e184da-9b3a-402f-b210-d62a898e2887">.NET Compiler Platform Syntax Visualizer</a>を入れてください。</p>
+<h2>Diagnostic with Code Fix</h2>
+<p>今回は「Diagnostic with Code Fix」を作ります。まずテンプレートのVisual C#→Extensibilityから「Diagnostic with Code Fix(NuGet + VSIX)」を選んでください。NuGet + VSIXというのが面白いところなんですが、とりあえずこのテンプレート（はサンプルになってます）をビルドしましょう(Testプロジェクトは無視していいです)。そして、ReferencesのAnalyzers（ここがVS2015から追加されたものです！）からAdd Analyzerを選び、さっきビルドしたdllを追加してみてください。</p>
+<img src='http://neue.cc/wp-content/uploads/2014/11/add_analyzer.jpg' />
+<p>するとコード解析が追加されて、クラス名のところにQuick Fixが光るようになります。</p>
+<img src='http://neue.cc/wp-content/uploads/2014/11/analyzer_window1.jpg' />
+<p>サンプルコードのものはMakeUpperCaseということで、クラス名に小文字が含まれていたら警告を出す＆全部大文字に修正するQuickFixが有効になります。</p>
+<p>つまりDiagnostic with Code Fixは、よーするに今までもあったCode Analysis、FxCopです。ただし、Roslynによって自由に解析でき、追加できます。また、ReferencesのAnalyzersに追加できるということで、ユーザーのVisual Studio依存ではなく、プロジェクト内に直接含めることができます。追加/インストールはdllをNuGetで配ることが可能（だからVSIX + NuGetなんですね、もちろんVSIXでも配れます）。より気軽に、よりパワフルにコード解析が作れるようになったということで、地味に中々革命的に便利なのではないでしょうか？</p>
+<p>このまま、そのサンプルコードのMakeUpperCaseの解説、をしてもつまらないので、続けて実用的（？）なものを一個作りました。</p>
+<h2>namespaceの修正</h2>
+<p>うちの会社ではUnityを使ってモバイルゲーム開発を行っていますが、LINQもガリガリ使います。その辺のことは<a href="http://neue.cc/2014/11/11_482.html">LINQ to GameObjectによるUnityでのLINQの活用</a>にも書いたのですが、困ったことに標準UnityではLINQ to Objectsを使うとAOTで死にます。<a href="http://neue.cc/2014/07/01_474.html">Unity + iOSのAOTでの例外の発生パターンと対処法</a>で書いたように対処事態は可能なんですが、最終的に標準LINQを置き換える独自実装をSystem.LinqExネームスペースに用意することになりました。で、それを使うには「using System.LinqEx;」する必要があります。「using System.Linq;」のかわりに。むしろ「using System.Linq;」はAOTで死ぬので禁止したいし、全面的に「using System.LinqEx;」して欲しい。すみやかに。どうやって……？</p>
+<p>そこでDiagnostic with Code Fixなんですね。既存コードの全てに検査をかけることもできるし（ソリューションエクスプローラーから対象プロジェクトを右クリックしてAnalyze→Run Code Analysis）、書いてる側からリアルタイムに警告も出せるし、ワンポチでSystem.LinqExに置き換えてくれる。このぐらいなら全ファイルから「using System.Linq;」を置換すりゃあいいだけなんですが、リアルタイムに警告してくれるとうっかり忘れもなくなるし（CIで警告すればいいといえばいいけど、その前に自分で気づいて欲しいよね）、もっと複雑な要件でも、RoslynでSyntaxTreeを弄って置き換えるので、テキスト置換のような誤爆の可能性があったり、そもそも複雑で警告/置換不能、みたいなことがなくなるので、とても有益です。</p>
+<p>というわけで「using System.Linq;」を見つけたら「using System.LinqEx;」に書き換える拡張を作りましょう！（うちの会社にとっては）実用的で有益で、かつ、はぢめての拡張のテーマとしてもシンプルで作りやすそうでちょうどいいですね！</p>
+<h2>DiagnosticAnalyzer</h2>
+<p>コード解析はDiagnosticAnalyzer、コード置換はCodeFixProviderが担当します。必要なファイルはこの2ファイルだけ（シンプル！）、コード置換が不要ならDiagnosticAnalyzerだけ用意すればOK。というわけで、以下がDiagnosticAnalyzerのコードです。</p>
+<pre><code class="language-csharp">using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Diagnostics;
+using System.Collections.Immutable;
+
+namespace UseLinqEx
+{
+    [DiagnosticAnalyzer(LanguageNames.CSharp)]
+    public class UseLinqExAnalyzer : DiagnosticAnalyzer
+    {
+        // この辺はテンプレートのままに適当に書き換え
+        public const string DiagnosticId = &quot;UseLinqEx&quot;;
+        internal const string Title = &quot;System.Linq is unsafe in Unity. Must use System.LinqEx.&quot;;
+        internal const string MessageFormat = &quot;System.Linq is unsafe in Unity. Must use System.LinqEx.&quot;; // 同じの書いてる(テキトウ)
+        internal const string Category = &quot;Usage&quot;; // Categoryの適切なのってナンダロウ
+
+        internal static DiagnosticDescriptor Rule = new DiagnosticDescriptor(DiagnosticId, Title, MessageFormat, Category, DiagnosticSeverity.Warning, isEnabledByDefault: true);
+
+        public override ImmutableArray&lt;DiagnosticDescriptor&gt; SupportedDiagnostics { get { return ImmutableArray.Create(Rule); } }
+
+        // namespaceを引っ掛ける
+        public override void Initialize(AnalysisContext context)
+        {
+            // なにをRegisterすればいいのか問題、テンプレではRegisterSymbolActionですが、
+            // SymbolActionにはなさそうだなー、と思ったら他のRegisterHogeを使いましょう
+            // ここではRegisterSyntaxNodeActionでSyntaxKind.UsingDirectiveを呼びます
+            // SyntaxKindの判定はRoslyn Syntax Visualizerに助けてもらいましょう
+            context.RegisterSyntaxNodeAction(Analyze, SyntaxKind.UsingDirective);
+        }
+
+        static void Analyze(SyntaxNodeAnalysisContext context)
+        {
+            // Nodeの中身はSyntaxKindで何を選んだかで変わるので適宜キャスト
+            var syntax = (UsingDirectiveSyntax)context.Node;
+            if (syntax.Name.NormalizeWhitespace().ToFullString() == &quot;System.Linq&quot;)
+            {
+                var diagnostic = Diagnostic.Create(Rule, syntax.GetLocation());
+                context.ReportDiagnostic(diagnostic);
+            }
+        }
+    }
+}
+</code></pre>
+<p>SupportedDiagnosticsより上のものは見た通りのコンフィグなので、まぁ見たとおりに適当に弄っておけばいいでしょう。コード本体はInitializeです。ここで、対象のノードの変更があったら起こすアクションを登録します。で、まずいきなり難しいのは、何をRegisterすればいいのか！ということだったりして。そこで手助けになるのがSyntax Visualizerです。入れましたか？入れましたよね？View -&gt; Other Window -&gt; Roslyn Syntax Visualizerを開くと、あとはエディタ上で選択している箇所のSyntaxTreeを表示してくれます。例えば、今回の対象であるusingの部分を選択すると「using System.Linq;」は……</p>
+<img src='http://neue.cc/wp-content/uploads/2014/11/roslynsyntaxvis.jpg' />
+<p>と、いうわけで、たかがusingの一行ですが、めっちゃいっぱい入ってます。Node(でっかいの), Token（こまかいの）, Trivia（どうでもいいの）というぐらいに覚えておけばいいでしょう（適当）。さて、というわけでusingの部分はUsingDirectiveであることが大判明しました。これ以外にもとにかくSyntaxTreeの操作は、何がどこに入ってて何を置換すればいいのかを見極める作業が必要なので、Syntax Visualizerはマストです。めっちゃ大事。めっちゃ助かる。超絶神ツール。</p>
+<p>あとは、まぁ、見たまんまな感じで、これで警告は出してくれます。WarningじゃなくてErrorにしたいとか、Infoにしたいとかって場合はRuleからDiagnosticSeverityを変えればOK。</p>
+<h2>CodeFixProvider</h2>
+<p>続いてCodeFixProviderに行きましょう。まずはコード全体像を。</p>
+<pre><code class="language-csharp">using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CodeActions;
+using Microsoft.CodeAnalysis.CodeFixes;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using System.Collections.Immutable;
+using System.Composition;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace UseLinqEx
+{
+    [ExportCodeFixProvider(&quot;UseLinqExCodeFixProvider&quot;, LanguageNames.CSharp), Shared]
+    public class UseLinqExCodeFixProvider : CodeFixProvider
+    {
+        public sealed override ImmutableArray&lt;string&gt; GetFixableDiagnosticIds()
+        {
+            // このDiagnosticIdでAnalyzerと起動するCodeFixProviderが紐付けられてる
+            return ImmutableArray.Create(UseLinqExAnalyzer.DiagnosticId);
+        }
+
+        public sealed override FixAllProvider GetFixAllProvider()
+        {
+            return WellKnownFixAllProviders.BatchFixer;
+        }
+
+        public sealed override async Task ComputeFixesAsync(CodeFixContext context)
+        {
+            // ドキュメントのルート
+            var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
+
+            var diagnostic = context.Diagnostics.First(); // 警告だしてるとこ
+            var diagnosticSpan = diagnostic.Location.SourceSpan; // の、ソース上の位置みたいなの
+
+            // ↑を使って、目的のモノを見つける独自コードを書く！
+            // 何が何だか分からないので、ウォッチウィンドウで手探るに書きまくって探し当てるといいでしょふ
+
+            // &quot;UsingDirectiveSyntax UsingDirective using System.Linq;&quot; が見つかる
+            var usingDirective = root.FindNode(diagnosticSpan);
+
+            // で、作って登録する
+            var codeAction = CodeAction.Create(&quot;ReplaceTo System.LinqEx&quot;, c =&gt; ReplaceToLinqEx(context.Document, root, usingDirective, c));
+            context.RegisterFix(codeAction, diagnostic);
+        }
+
+        static Task&lt;Document&gt; ReplaceToLinqEx(Document document, SyntaxNode root, SyntaxNode usingDirective, CancellationToken cancellationToken)
+        {
+            // たんなるusingDirectiveでも、中にはキーワード・スペース、;や\r\nが含まれているので、
+            // 純粋に新しいusingを作って置換するだけだと、付加情報がうまく置換できない可能性が高い
+            // ので、（面倒くさくても）既存ノードからReplaceしていったほうが無難
+            var linqSyntax = usingDirective.DescendantNodes().OfType&lt;IdentifierNameSyntax&gt;().First(x =&gt; x.ToFullString() == &quot;Linq&quot;);
+            var linqEx = usingDirective.ReplaceNode(linqSyntax, SyntaxFactory.IdentifierName(&quot;LinqEx&quot;));
+
+            // ルートのほうにリプレースリプレース
+            var newRoot = root.ReplaceNode(usingDirective, linqEx);
+            var newDocument = document.WithSyntaxRoot(newRoot); // ルート差し替えでフィニッシュ
+
+            return Task.FromResult(newDocument);
+        }
+    }
+}
+</code></pre>
+<p>ここでの作業は、変更対象のノードを見つけることと、差し替えることです。ノードを見つけるための下準備に関しては、とりあえずサンプルコードのまんま(diagnostic/diagnosticSpan)でいいかな、と。そこから先は独自に探し出す必要があります。今回はUsingDirectiveを見つけたかったんですが、幸いルートからのFindNode一発で済みました、楽ちん。あとは置換するだけです。</p>
+<p>置換に関しては、コード上に書いたように、大きい単位で新しいSyntaxNodeを作って差し替える、のはやめたほうがいいです。そうするとトリビアを取りこぼす可能性が高く、うまく修正かけられなかったりします。面倒くさくても、置き換えたいものをピンポイントに絞って置換かけましょう。ノードを探索するにはLINQ to XMLスタイルでのDescendantsやAncestors、ChildNodesとかがあります。LINQ to SyntaxTreeってところで、この辺はまさに<a href="http://neue.cc/2014/11/11_482.html">LINQ to XMLとは何であるのか。ツリー構造に対するLINQ的操作のリファレンスデザインだと捉えることができる</a>って感じですね。</p>
+<p>さて、置換といっても、Roslynのコードは全てイミュータブル（不変）なので、戻り値をうまく使ってルートに伝えていく必要があります。Replace一発では済まないのです。これは面倒くさいんですが、まぁ慣れればこんなものかなー、と思えるでしょう、多分きっと。</p>
+<p>ともあれ、これで出来上がりました！ちなみにデバッグはVsixプロジェクトをデバッグ実行すれば、拡張ロード済みの新しいVSが立ち上がる＆アタッチされているので、サクッとデバッグできます。これは相当楽だし助かる（いかんせん慣れないRoslynプログラムは試行錯誤しまくるので！）。また、生成物に関してはAnalyzersにdllを手配置もいいですが、ビルドプロジェクト自体に.nupkg生成が含まれているので、そいつを使ってもいいでせう。その辺のことはテンプレートに入ってるReadMe.txtに書いてあるので一回読んでおくといいかな。</p>
+<h2>Unityで使う</h2>
+<p>新しいVSが出ると拡張が対応してくれるか、が最大の懸念になるのですが、なんとVisual Studio Tools for Unity(VSTU/旧UnityVS)は初日から対応してくれました！まさにMicrosoft買収のお陰という感じで、非常に嬉しい。遠慮無く<a href="https://visualstudiogallery.msdn.microsoft.com/8d26236e-4a64-4d64-8486-7df95156aba9">Visual Studio 2015 Preview Tools for Unity</a>を入れましょう。VSTUについては<a href="http://neue.cc/2014/04/10_450.html">Visual Studio Tools for Unity(UnityVS) - Unity開発におけるVisual Studioのすすめ</a>を見てね。</p>
+<p>基本的にはUnityのプロジェクトにも全く問題なくAnalyzerを追加できて解析できます。素晴らしい！んですが、問題が一点だけあります。それはVSTUはUnity側に何か変更があった時に.csprojを自動生成するんですが、その自動生成によってせっかく追加したAnalyzerも吹っ飛びます。Oh……。</p>
+<p>という時のためにVSTUは<a href="http://unityvs.com/documentation/api/project-file-generation/">Project File Generation</a>という仕組みを用意してくれています。これによってプロジェクトとソリューションの自動生成をフックできます（ちなみに実例として、うちの会社ではソリューションにサーバーサイドとか色々なプロジェクトをぶら下げてるのでソリューション自動生成を抑制したり、Unityプロジェクト側に<a href="http://msdn.microsoft.com/ja-jp/library/bb126445.aspx">T4テンプレート</a>を使った自動生成コードを入れているので、VSTUのcsprojの自動生成時に.ttファイルを復元してやったり、とか色々な処理を入れてます）</p>
+<p>今回は自動生成で消滅するAnalyzerを復元してやる処理を書きましょう。Editor拡張として作るので、Editorフォルダ以下にProjectFileHook.csを追加し、以下のコードを追加。</p>
+<pre><code class="language-csharp">using System.IO;
+using System.Linq;
+using System.Text;
+using System.Xml.Linq;
+using UnityEditor;
+
+[InitializeOnLoad]
+public class ProjectFileHook
+{
+    // necessary for XLinq to save the xml project file in utf8
+    private class Utf8StringWriter : StringWriter
+    {
+        public override Encoding Encoding
+        {
+            get { return Encoding.UTF8; }
+        }
+    }
+
+    static ProjectFileHook()
+    {
+        SyntaxTree.VisualStudio.Unity.Bridge.ProjectFilesGenerator.ProjectFileGeneration += (string name, string content) =&gt;
+        {
+            // ファイルがない場合はスルー（初回生成時）
+            if (!File.Exists(name)) return content;
+
+            // 現在のcsprojをnameから引っ張ってきてAnalyzerを探す
+            var currentContent = XDocument.Load(name);
+            var ns = currentContent.Root.Name.Namespace;
+            var analyzers = currentContent.Descendants(ns + &quot;Analyzer&quot;).ToArray();
+
+            // content(VSTUが生成した新しいcsprojにAnalyzerを注入)
+            var newContent = XDocument.Parse(content);
+            newContent.Root.Add(new XElement(ns + &quot;ItemGroup&quot;, analyzers));
+
+            // したのを返す
+            using (var sw = new Utf8StringWriter())
+            {
+                newContent.Save(sw);
+
+                return sw.ToString();
+            }
+        };
+    }
+}
+</code></pre>
+<p>nameにファイルパス、contentにVSTUが生成した新しいcsprojのテキストが渡ってくるので、それを使ってモニョモニョ処理。csprojはXMLなので、LINQ to XML使ってゴソゴソするのが楽ちんでしょう。</p>
+<p>これでUnityでもRoslynパワーを100%活かせます！やったね！</p>
+<h2>まとめ</h2>
+<p>あんだけ盛大に吹聴してたわりには、コード解析とリファクタリングだけかよ……、という感はなきにしも非ずですが、そのかわりすっごく簡単に作れる、追加できる仕組みを用意してくれたのは評価できます（えらそう）。かなり便利なので、早速是非是非遊んでみるといいんじゃないかな、とオモイマス。</p>
+<p>ところで今回の例、CodeFixProviderはナシにしてAnalyzerだけにして、AnalyzerのレベルをWarningではなくDiagnosticSeverity.Errorにすることで、「LINQ禁止」を暗黙のルールじゃなくコンパイル不可能レベルで実現できます。拡張メソッドを明示的に呼び出せば回避できますが、ルールにプラスしてEnumerableの静的メソッドも殺せば、もう完全に死亡！恐ろしい恐ろしい。あ、勿論やらないでくださいね！</p>
+</div>
+<h1><a href="http://neue.cc/2014/1111_482.html">LINQ to GameObjectによるUnityでのLINQの活用</a></h1>
+<ul class="date"><li>2014-11-11</li></ul>
+<div class="entry_body"><p>Unityで、LINQは活用されているようでされていないようで、基本的にはあまりされていない気配を非常に感じます。もったいない！というわけじゃないんですが、以前に私の勤務先と別の会社さんとで勉強会/交流会したのですが、そこで作ったスライドがあるので（若干手直ししたものを）公開します。LINQについて全くの初心者の人向けにLINQの良さを説明しようー、みたいな感じです、でもちょびっとだけ踏み込んだ内容もね、みたいな。勉強会自体は5月ぐらいにやったので、ずいぶんと公開まで開いてしまった……。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/41364443" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/linq-in-unity" title="LINQ in Unity" target="_blank">LINQ in Unity</a> </strong> from <strong><a href="//www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>その私の勤務先（まどろっこしい言い方だ……）<a href="http://grani.jp/">グラニ</a>では会社間での勉強会は大歓迎なので、もし、やりたい！という人がいらっしゃいましたら是非是非私のほうまでー。オフィスは六本木にあるのでその周囲ほげkmぐらいまでなら出張りますです（他のオフィスを見てみたい野次馬根性）。私の持ちネタとしてはC#, LINQ, Rxぐらいならなんでもどこまでもいけます。</p>
+<p>さて、そんなわけでLINQは有益です、という話なんですが(AOT問題はスライドに書きましたが頑張れば解決できる！）、LINQを活用するためにはデータソースを見つけなきゃいけません。逆にデータソースさえ見つかれば幾らでも使えます。今回（本題）着目したのはGameObjectのヒエラルキーで、これを丸々とLINQと親和性の高い形で探索/操作できるアセット「LINQ to GameObject」を作りました。GitHubでソースコード、Unity Asset StoreではFREEで公開しています。</p>
+<ul>
+<li><a href="https://github.com/neuecc/LINQ-to-GameObject-for-Unity">GitHub - LINQ to GameObject</a></li>
+<li><a href="http://u3d.as/content/neuecc/linq-to-game-object">AssetStore(FREE) - LINQ to GameObject</a></li>
+</ul>
+<p>実際のトコロ、多分、みんな絶対に作って手元に持ってるちょっとしたユーティリティ、です。これもまた一つの俺々ユーティリティ。ちょっと違うところがあるとしたら、このライブラリは、ツリー階層構造へのLINQスタイルの操作ということで、<a href="http://msdn.microsoft.com/ja-jp/library/bb387098.aspx">LINQ to XML</a>からインスパイアされていて、API体系を寄せています。既に実績があり、そして実際に良さが保証されている(LINQ to XMLは非常に良いのです！問題はXMLを操作する機会がJSONに奪われてしまって近年少なくなってしまっただけでLINQ to XML自体は非常に良い！）APIとほぼ同一なので、ある程度のクオリティが担保されている、ということでしょうか。</p>
+<h2>ツリー探索とLINQ</h2>
+<p>探索のAPIは図にすると、以下の様な形になっています。</p>
+<img src='http://neue.cc/wp-content/uploads/2014/11/linq_to_gameobject_axis.jpg' alt='' />
+<p>起点を元に親方向(Parent/Ancestors)か、子孫方向(Child/Children/Descendants)か、兄弟方向(ObjectsBeforeSelf/ObjectsAfterSelf)かに並んでいるGameObjectをIEnumerable&lt;GameObject&gt;として列挙します。</p>
+<pre><code class="language-csharp">// 以下の様な形に抽出される
+origin.Ancestors();   // Container, Root
+origin.Children();    // Sphere_A, Sphere_B, Group, Sphere_A, Sphere_B
+origin.Descendants(); // Sphere_A, Sphere_B, Group, P1, Group, Sphere_B, P2, Sphere_A, Sphere_B
+origin.ObjectsBeforeSelf(); // C1, C2
+origin.ObjectsAfterSelf();  // C3, C4
+</code></pre>
+<p>これは<a href="http://ja.wikipedia.org/wiki/XML_Path_Language">XPath</a>(今となっては懐かしい響き！)の「軸」と同じもので、考えられる全ての列挙方向/方法を満たしています。特徴的なのは全てがIEnumerable&lt;GameObject&gt;になることで、LINQ to Objectsとシームレスに繋がり、フィルタやコレクションの変形を連続して行うことができます。</p>
+<pre><code class="language-csharp">// 子孫方向のゲームオブジェクトの近いものトップ5を配列に固める(ただforeachするだけなら配列にしなくていい/しないほうがいいよ！)
+var nearObjects = origin.Descendants()
+    .OrderBy(x =&gt; (x.transform.position - this.transform.position).sqrMagnitude)
+    .Take(5)
+    .ToArray();
+
+// 子孫方向の全ゲームオブジェクトのうちtagが&quot;foobar&quot;のオブジェクトを破壊
+origin.Descendants().Where(x =&gt; x.tag == &quot;foobar&quot;).Destroy();
+
+// 自分を含む子ノードからBoxCollider2Dを抽出
+var colliders = origin.ChildrenAndSelf().OfComponent&lt;BoxCollider2D&gt;();
+
+// 全ての方法を組み合わせで満たせる、例えば兄弟方向に下のノードの全子孫はObjectsAfterSelf + Descendants
+// これは ObjectsAfterSelf().SelectMany(x =&gt; x.Descendants()) のシンタックスシュガー
+origin.ObjectsAfterSelf().Descendants();
+</code></pre>
+<p>SelectしてOrderByして、あれやこれや、なども自由に幾らでも行えます。また、繋がった状態での定形操作ということで、LINQ to GameObjectでは更にIEnumerable&lt;GameObject&gt;に対してDestoryとOfComponentという拡張メソッドを用意しています。それとちなみに性能面でも余計な中間コレクションを作らないため、（理屈上は）優位です。この理屈上ってのが、まぁ、あんまり踏み込みません:）</p>
+<h2>階層へのオブジェクトの追加</h2>
+<p>ところで利用法ですが、全てのメソッドはGameObjectへの拡張メソッドとして実装しています！暴力的に大雑把に！なので</p>
+<pre><code class="language-csharp">using Unity.Linq;
+</code></pre>
+<p>としてもらえれば、全部のメソッドがにょきにょきっと生えます。メソッド一覧は<a href="https://github.com/neuecc/LINQ-to-GameObject-for-Unity#reference">リファレンス</a>にあります。</p>
+<p>オブジェクトを追加する、というのは階層を意識して追加していくわけですが、素でやるとparentにアタッチしてsiblingを弄って、というのは非常にカッタルイ話で絶対にみんな何とかゆーてぃりてぃを持っているとは思うのですが、LINQ to GameObjectにもあります。これも同様にLINQ to XMLと同じAPIを採用し、全ての方向/方法を網羅しています。</p>
+<pre><code class="language-csharp">var root = GameObject.Find(&quot;root&quot;); 
+var cube = Resources.Load(&quot;Prefabs/PrefabCube&quot;) as GameObject; 
+
+// Addは子の末尾に追加
+// Parentの設定の他にレイヤーの統一とlocalPosition/Scale/Rotationを調整します
+// 追加された子はCloneされていて、戻り値はそのCloneされたものを返します
+var clone = root.Add(cube);
+
+// 兄弟方向、自分の下に追加
+// オブジェクトを追加する際は配列で渡せば複数一気に追加され、クローンされたオブジェクトをListで受け取れます
+var clones = root.AddAfterSelf(new[] { cube, cube, cube });  
+
+// 他にAddFirst（子の先頭に追加）とAddBeforeSelf（兄弟方向、自分の上）がある
+// 追加の向きとしてはこれで全パターンでしょう！
+
+// ついでに（？）Destoryの拡張メソッドもあり
+// nullかどうかのチェック + 一旦階層から外してDestoryします
+root.Destroy();
+</code></pre>
+<p>Addなんていう超汎用的くさい名前をGameObjectへの拡張メソッドにするってのがすっごく極悪なんですが、まぁいっか、みたいな。いいんですかね、いや、いいでしょう、はい、多分、うん。</p>
+<h2>LINQ to XMLはツリーへのLINQ的操作のリファレンスデザイン</h2>
+<p><a href="http://neue.cc/2014/09/24_479.html">LINQ to BigQuery - C#による型付きDSLとLINQPadによるDumpと可視化</a>で、LINQの定義を</p>
+<blockquote>
+<p>LINQがLINQであるためにはクエリ構文はいらない。Query Providerもいらない。LINQ to XMLがLINQなのは何故？Parallel LINQがLINQであるのは何故？Reactive ExtensionsがLINQであるのは何故？linq.jsがLINQであるのは何故？そこにあるのは……、空気と文化。</p>
+</blockquote>
+<blockquote>
+<p>LINQと名乗ること自体はマーケティングのようなもので、形はない。使う人が納得さえすれば、LINQでしょう。そこにルールを求めたがる人がいても、ないものはないのだから規定しようがないよ？LINQらしく感じさせる要素をある程度満たしてればいい。FuncもしくはExpressionを使ってWhereでフィルタしSelectで射影する（そうすればクエリ構文もある程度は使えるしね）。OrderBy系の構文はOrderBy/OrderByDescending/ThenBy/ThenByDescendingで適用される。基本的な戻り値がシーケンスっぽい何かである。うん、だんだん満たせてくる。別に100%満たさなくても、70%ぐらい満たせばLINQらしいんだよ。</p>
+</blockquote>
+<blockquote>
+<p>極論言えば私がLINQだって言ってるんだからLINQなのですが（何か文句ある？）、多くの人には十分納得してもらえると考えています</p>
+</blockquote>
+<p>と、かなり乱暴な感じに「勝手に」定義しましたが（つまり今回のLINQ to GameObjectも私がLINQだって言ってるんだからLINQなのだ！）、実際、LINQ to GameObjectからはLINQらしさを感じ取れるんじゃないかと思います。何故か？当然理由はあるし、そうなるように意識してデザインしてます。</p>
+<p>LINQ to XMLとは何であるのか。ツリー構造に対するLINQ的操作のリファレンスデザインだと捉えることができます。ツリー構造はLINQになる、そのガイドライン。LINQ to Objectsと非常に相性の良い探索の抽象化。もちろん、それ自体はXML向けだけど、「軸」を意識すればJSONにも適用できるし、そして、LINQ to GameObjectにも適用できた。</p>
+<p>もしツリーを見かけたら、そこにLINQがなかったら、同じように作ることができるし、そうすればLINQの全てのメリットを甘受できる。データソースを発見していくこと。これは視点の問題で、そう捉えれば見えるようになる。それがLINQをただ漠然と使うことから一歩踏み出せるんじゃないのかな。</p>
+<h2>ユニットテスト</h2>
+<p>今回はじめて<a href="http://u3d.as/65h">Unity Test Tools</a>をちょろっとだけ使ってみました。UniRxではファイルをリンクとしてコピーして普通の.NET上、Visual Studio上のMSTestで動かすという荒っぽいことをしてて、それはそれで楽ちんでいいんですけど、GameObjectへの操作とかUnityEngineに依存するものはさすがに無理で、今回のライブラリは100%それなので困ったなー、と。で、そこで、Unity Test Toolsの出番だったわけですね。</p>
+<img src='http://neue.cc/wp-content/uploads/2014/11/unittestsrunr.jpg' alt='' />
+<p>うん、まあ、普通ですね！いや、普通で、普通に悪くないです。ロジックのテストには全然いい。便利だよ。で、アサーションは普通にNUnitなんですが、私はAssert.AreEqualとかAssert.Thatとか嫌いなのです！嫌いなのでふつーのC#用には<a href="http://neue.cc/2011/02/24_306.html">Chaining Assertion</a>というライブラリを作って/公開しているんですが、それのUnity版を用意しました。</p>
+<p>AssetStoreに投稿するほどのものかなーってことで、とりあえずLINQ to GameObjectのリポジトリ内にあるだけなんですが、気になる人は<a href="https://github.com/neuecc/LINQ-to-GameObject-for-Unity/blob/master/Assets/Editor/ChainingAssertion.cs">Editor/ChainingAssertion.cs</a>をどうぞ。この.csファイル一個だけです。これで</p>
+<pre><code class="language-csharp">[Test]
+public void Children()
+{
+    Origin.Children().Select(x =&gt; x.name)
+        .IsCollection(&quot;Sphere_A&quot;, &quot;Sphere_B&quot;, &quot;Group&quot;, &quot;Sphere_A&quot;, &quot;Sphere_B&quot;);
+
+    Origin.Children(&quot;Sphere_B&quot;).Select(x =&gt; x.name)
+        .IsCollection(&quot;Sphere_B&quot;, &quot;Sphere_B&quot;);
+
+    Origin.ChildrenAndSelf().Select(x =&gt; x.name)
+        .IsCollection(&quot;Origin&quot;, &quot;Sphere_A&quot;, &quot;Sphere_B&quot;, &quot;Group&quot;, &quot;Sphere_A&quot;, &quot;Sphere_B&quot;);
+
+    Origin.ChildrenAndSelf(&quot;Sphere_A&quot;).Select(x =&gt; x.name)
+        .IsCollection(&quot;Sphere_A&quot;, &quot;Sphere_A&quot;);
+}
+</code></pre>
+<p>みたいな感じにテスト書けます/書きました。</p>
+<h2>まとめ</h2>
+<p>LINQは良い。LINQを使うにはIEnumerableが必要。LINQ to GameObjectはそのIEnumerableを作り出すので、UnityでよりLINQを活用できる！ので使いましょう。</p>
+<p>（ところでObjectsAfterSelfはAfterSelfのほうが良いですね……すっごく失敗した……次のバージョンで変更するかも、というかします、はい……)。</p>
+<p>あとLINQ to XMLの大きな要素として<a href="http://msdn.microsoft.com/ja-jp/library/bb387019.aspx">関数型構築</a>があるんですが、勿論LINQ to GameObjectにも用意しました！ただ、実用性は(LINQ to XMLと違ってUnityの性質上)ビミョーなので、ここでは紹介しません。とりあえずとにかく、「ツリーを上下左右に探索できて」「ツリーの上下左右に追加できて」「関数型構築できれば」ツリーへのLINQ。と言えます、きっと。</p>
+<p>それと<a href="https://github.com/neuecc/UniRx">UniRx</a>なんですが、スライドで少し触れましたが、<a href="https://www.assetstore.unity3d.com/en/#!/content/14381">uFrame</a>というUnity用のフレームワークに採用されて同梱されるようになりました。結構いい具合に躍進してきてるんで、UniRxも是非是非チェックを。ブログは全然書いてないんですが（！）機能拡充はずっと続けているんで、また近いうちに何か書きませう。</p>
+</div>
+<h1><a href="http://neue.cc/2014/1029_481.html">RxJava Night振り返り（Reactive Extensionsの歴史）</a></h1>
+<ul class="date"><li>2014-10-29</li></ul>
+<div class="entry_body"><p><a href="http://connpass.com/event/9061/">RxJava Night</a>というイベントで、Rxの歴史！というほど大仰なものでもないですが、誕生から今に至るまでをサラッと振り返った資料でLTしてきました。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/40812232" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/the-history-of-reactive-extensions" title="The History of Reactive Extensions" target="_blank">The History of Reactive Extensions</a> </strong> from <strong><a href="//www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>普段は時間オーバー常習犯なんですが、今回はちゃんと時間を意識して収めましたよ！中身的にはまだまだアレもコレも詰めたい欲もあったりなかったりですが、まぁむしろこのぐらいが丁度良いのかもしれません。幸い、わりかし評判も良かったようで何よりです。</p>
+<h2>Rx across languages</h2>
+<p>改めて実感したのは、もうRxは.NETだけのものじゃない、ということです。むしろ他言語のほうがずっと盛り上がっているというのは実感するところで、ReactiveCocoa、そしてRxJava。こちらのほうが熱い。それはもう事実として。勿論いいことです。とはいえそうなると、もはや.NETのReactive Extensionsの存在すら知らない人も沢山いるというところなので、そこを少し知ってもらえたら何よりですね。会場のマック率が99%だったりC#erが2人ぐらいだったりと、ひぢょーにゲンジツを感じました！</p>
+<p>もしこれ、RxJavaがRx***という名前付けないで別の名前だったら、それで普及して、完全にReactive Extensionsに言及されることはなくなっていたんだろうなあ、ということを思うと、名前が残って良かった良かった（笑）</p>
+<p>.NETでRxがそんなに目立って使われないのはいくつか理由がなきにしもあらずなんですが、一番大きな理由は、今回の勉強会でも一番大きく言及されていた非同期関連においてはそんなに重宝しない、というとこかなあ、と思います。重宝しないというか、C# 5.0でasync/awaitが搭載されたので、そちらでやったほうがかなりスッキリ書けるという。</p>
+<p>並列処理に関してはgihyoでの<a href="http://gihyo.jp/dev/serial/01/grani/0001">グラニがC#にこだわる理由 第1回　神獄のヴァルハラゲートの裏側をCTOが語り尽くす！</a>の図の1の部分を見てもらいたいのですが、さっくり書けてますよね、と。コードは</p>
+<pre><code class="language-csharp">var frontHPs = await field.OwnGuild.Members
+    .Where(x =&gt; x.Position == Position.Front)
+    .Select(async x =&gt; new
+    {
+        Name = await x.Name,
+        CurrentHP = (await x.UserStatus).CurrentHP
+    })
+    .WhenAll();
+</code></pre>
+<p>とかね。これも含めてサーバーサイド全般での活用に関してはAWS Summit Tokyo 2014で発表した以下の資料をどうぞ。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/37121424" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/aws-windowscnet" title="AWS + Windows(C#)で構築する.NET最先端技術によるハイパフォーマンスウェブアプリケーション開発実践" target="_blank">AWS + Windows(C#)で構築する.NET最先端技術によるハイパフォーマンスウェブアプリケーション開発実践</a> </strong> from <strong><a href="//www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>非同期系はそれとして、今回Androidのかたが多かったようにバインディングとかはどーなのか、というと、もともとC#にはView側がXAMLというバインディング前提のHTMLみたいなUIマークアップ言語があったので、Rxにフルに頼る必要がない、という事実はあります。なので、そこまで切羽詰まってない、みたいな。もちろん、組み合わせて使うというのは有り得るパターンで、GitHubでも使われている（というか作ってる人が中の人な）<a href="https://github.com/reactiveui/ReactiveUI">ReactiveUI</a>や、私の作った（現在の機能向上は完全にokazukiさんに渡してます）<a href="https://github.com/runceel/ReactiveProperty">ReactiveProperty</a>といったライブラリもあります。それらのAndroid(+ Xamarin)への活用はamay077さんが<a href="http://qiita.com/amay077/items/9ee28c18ff9fc519ae58">Xamarin.Forms と ReactiveProperty で快適MVVM生活</a>といった記事も書かれていますし、色々ありますねというか、別に冷め切ってるわけでもなくて、やっぱRx熱いよ！ってのは全然あります！はい！</p>
+<h2>LINQ</h2>
+<p>C#erがRxを理解するにはLINQから入って考えるんですが、他言語の人はRxから入るんですよね。その辺が一番大きなギャップかもしれません。私的にはLINQから入って、IEnumerableとIObservableの関係性とか意識しながらのほうがスムースだったんですが（例えばIObservableでScanを考えるのは大変、この<a href="https://github.com/ReactiveX/RxJava/wiki/Transforming-Observables#scan">RxJava WikiのScanの図</a>の意味不明さ！でも、IEnumerableでScanを考えるのは、まだ容易！）どーなんでしょふ。別にLINQじゃなくてStream APIとか、自分の言語のコレクション処理と少し付きあわせてみるといいかなあ、というのは本当に思っています。なぜ<a href="http://ja.wikipedia.org/wiki/%E5%8F%8C%E5%AF%BE">双対</a>のソの字も出してないか。IEnumerableが前提じゃないから。そこの説明をする時間はない！(Erik Meijerの起こした会社の名前、<a href="http://www.applied-duality.com/">Applied Duality</a>は勿論dualityから来てる)</p>
+<h2>Rxが流行るには？</h2>
+<p>懇親会で話したことなんですが、どーなんですかねえ、RxJava流行りますか！？個人的には勿論流行って欲しいんですが！言語関係なく共通のお話ができますし、悩みも活用も応用例も、言語が増えれば増えるほど盛り上がる、嬉しい、んですが、実際どうでしょう。まず、ラムダは必須。無名クラスで書くのは無理ですねえ。こういうの、IDEの自動生成でなんとかなるものとなんともならないものがあって、Rxぐらいラムダを使いまくるものは無名クラスで自動生成しまくると、生成後のブツの可読性が悪すぎて辛すぎます。AndroidではまだJava8対応していないようですし、いつするかもわからないということで、辛いですねえ。Groovyのほうがまだ可能性はありそうだけど、AndroidでGroovy、どうなんでしょう、それはそれでそれもまた流行るための壁が二段階増えてる感は否めない気もする。</p>
+<p>学習コストは間違いなく大きい。うーん、Streamの時点でもそれなりに高いとは思うんですが、でもやってやれないこともないし、慣れてしまえば凄まじく便利でOKだと思います。ただ、Rxもそれと同じといえるかというとそうでもない。次元が1個増えたような感じなんですよね、シーケンス的な考え方に「時間」と「スレッド」の概念が混ざってくるので、慣れてても複雑に絡み合ったRxのチェーンを読み解くのは大変。二次元なら見えるけど四次元は辛いよね？的な。ただ、それはじゃあ普通に書いても複雑なステートになっているはずなので、Rxが悪いわけじゃあないといえばないんですがねえ。</p>
+<p>Rxで非同期やるなら、下の層から上の層までIObservableで通す必要があると思っていて（そうでなければ途中の層でブロックしているということだ！）、ある種の非同期汚染みたいなのが発生します。これはC# 5.0のasync/awaitにもいえて、下から上までTask(Future/Promiseみたいなの)が貫く必要がある。そういった根本的な変化が生じるので、やるんならむしろ徹底的にやってしまったほうが大きな結果が得られるかな、と。</p>
+<p>最後に全く関係なくそういえば懇親感で少し話したUnityでのLINQのAOT問題。<a href="http://neue.cc/2014/07/01_474.html">Unity + iOSのAOTでの例外の発生パターンと対処法</a>ではmonoからEnumerable.csを持ってきたらどーよ？と書いたんですが、OrderByは落ちます。で、うちの会社では(OrderBy以外にも)それなりに手を加えて調整しまくって、今現在はほとんど落ちない状態になっているんですが、とりあえずOrderByの改造点だけ。以下の様な変更をいれれば大丈夫です。</p>
+<pre><code class="language-csharp">-abstract class OrderedEnumerable&lt;TElement&gt; : System.Linq.IOrderedEnumerable&lt;TElement&gt;
++public abstract class OrderedEnumerable&lt;TElement&gt; : IEnumerable&lt;TElement&gt;, IEnumerable
+
+-abstract class SortContext&lt;TElement&gt; : IComparer&lt;int&gt;
++public abstract class SortContext&lt;TElement&gt; : IComparer&lt;int&gt;
+
+-enum SortDirection
++public enum SortDirection
+</code></pre>
+<p>IOrderedEnumerableだけを露出させると危ないので、abstract classをpublicにしちゃいます。そうした調整のせいでSortContextとか本来はprivateにしてたいものも露出してっちゃって望ましくないんですが、まぁそこは背に腹は代えられないということで妥協しましょう。妥協は大事です。理想よりも現実が一番偉いんです。</p>
+</div>
+<h1><a href="http://neue.cc/2014/1005_480.html">BigQueryで数列生成とC#クラスからのTable生成とデータインサート</a></h1>
+<ul class="date"><li>2014-10-05</li></ul>
+<div class="entry_body"><p>連番を作りましょう！突然！SQL的なものを見ると、まず連番を作りたくなるのは<a href="http://codezine.jp/article/detail/1076">SQLで数列を扱う</a>からなのですが、というわけでBigQueryでも作りますし作れます。実際、Enumerable.Rangeはダイジですからね？また、地味にLINQ to BigQueryもver 0.3.3になってました。ひっそり。そんなわけで、LINQで書くと何が嬉しいのかPart2です。</p>
+<p>LINQ to BigQuery（やBigQuery）については、最初の記事<a href="http://neue.cc/2014/09/24_479.html">LINQ to BigQuery - C#による型付きDSLとLINQPadによるDumpと可視化</a>をどーぞ。</p>
+<h2>0-9を作る</h2>
+<p>TempTableにInsertというわけにもいかないので、まずは愚直にUNION ALLで並べましょう。BigQueryのUNION ALLはFromをカンマで並べること(ふつーのSQLとそこが違います）で、また、Subqueryも突っ込めます。ド単純に書くとこうなる。</p>
+<pre><code class="language-csharp">// 以下contextとでてきたらコレのこと
+var context = new BigQueryContext(/* BigqueryService */, /* projectId */);
+
+var seq = Enumerable.Range(0, 10).Select(x =&gt; context.Select(() =&gt; new { num  = x }));
+context.From(seq)
+    .Select(x =&gt; new { x.num })
+    .Run()
+    .Dump(); // DumpはLINQPadのDumpね。
+    
+// ↓で、こんなクエリが出てくる
+/*
+SELECT
+  [num]
+FROM
+(
+  SELECT
+    0 AS [num]
+),
+(
+  SELECT
+    1 AS [num]
+),
+// 以下9まで続くので（略） */
+</code></pre>
+<p>普通に動きはしますが、馬鹿っぽいですね！少しだけカッコヨク書いてみましょうか。どうやって列を増やすか、が割と課題なのですが、BigQueryではSplitを使って増やせます。</p>
+<pre><code class="language-csharp">// LINQPadでRun().Dump()って書くの面倒いのでまとめちゃう:)
+public static class MyExtensions
+{
+    public static QueryResponse&lt;T&gt; DumpRun&lt;T&gt;(this IExecutableBigQueryable&lt;T&gt; source)
+    {
+        return source.Run().Dump();
+    }
+}
+
+// SELECT query which references non constant fields or uses aggregation functions
+// or has one or more of WHERE, OMIT IF, GROUP BY, ORDER BY clauses must have FROM clause.
+context.Select(() =&gt; new { digit = BqFunc.Integer(BqFunc.Split(&quot;0123456789&quot;, &quot;&quot;))}).DumpRun();
+</code></pre>
+<p>怒られました！FROM句を含めないとSplitが使えないそーですなので、wordはサブクエリに分離しましょう。この辺は覚えられないので怒られたらそーいうものなんだ、って感じに対応していきましょふ。案外エラーメッセージは（親切な時は）親切です。親切じゃない時は何言ってるのか分からないエラーメッセージを吐いてきますが、まぁ7割ぐらいは分かりやすいエラーメッセージを吐いてくれます、偉い。</p>
+<pre><code class="language-csharp">context
+    .Select(() =&gt; new { word = &quot;0123456789&quot; })
+    .AsSubquery()
+    .Select(x =&gt; new { digit = BqFunc.Integer(BqFunc.Split(x.word, &quot;&quot;))})
+    .DumpRun();
+</code></pre>
+<p><img src="http://neue.cc/wp-content/uploads/image/bq_word_linqpad.jpg" alt="" /></p>
+<p>さすがにFROM句に並べまくるよりは、綺麗に書けてる感が出てる気がします！</p>
+<h2>0-99を作る</h2>
+<p>0-9が出来たら、あとは簡単に増やせます。ここはCROSS JOINです。0-9と0-9の直積を取ればおｋ。LINQでBigQueryを書くことの利点に変数にクエリを渡せて、合成可能という点が挙げられます（また、合成可能というのはLINQらしい感じさせるための重要な要素でもある）。0-9を変数に置いてやれば、コピペで同じSQLを書かないでも済みます。</p>
+<pre><code class="language-csharp">var digit = context.Select(() =&gt; new { word = &quot;0123456789&quot; })
+    .Into()
+    .Select(x =&gt; new { digit = BqFunc.Integer(BqFunc.Split(x.word, &quot;&quot;))});
+
+// これは動かないけどネ
+// Cannot query the cross product of repeated fields 
+digit.Into()
+    .JoinCross(digit, (d1, d2) =&gt; new { d1, d2 })
+    .Select(x =&gt; new { seq = x.d1.digit + x.d2.digit * 10 })
+    .DumpRun();
+</code></pre>
+<p>ネ。まぁこれは動かないんですけどネ。例によってエラーメッセージが出てから対処すればいいんですが、これはSplitで生成したカラムがrepeated fieldになってるのでcross joinできないよ、とのこと。FLATTENを使えば解決します。あとOrderByを忘れてるのでOrderByも足してやりましょうか。</p>
+<pre><code class="language-csharp">var digit = context.Select(() =&gt; new { word = &quot;0123456789&quot; })
+    .Into()
+    .Select(x =&gt; new { digit = BqFunc.Integer(BqFunc.Split(x.word, &quot;&quot;))})
+    .Into()
+    .Flatten(x =&gt; x.digit);
+    
+digit.JoinCross(digit, (d1, d2) =&gt; new { d1, d2 })
+     .Select(x =&gt; new { seq = x.d1.digit + x.d2.digit * 10 })
+     .OrderBy(x =&gt; x.seq)
+     .DumpRun();
+</code></pre>
+<pre><code class="language-sql">SELECT
+  ([d1.digit] + ([d2.digit] * 10)) AS [seq]
+FROM FLATTEN(
+(
+  SELECT
+    INTEGER(SPLIT([word], '')) AS [digit]
+  FROM
+  (
+    SELECT
+      '0123456789' AS [word]
+  )
+), [digit]) AS [d1]
+CROSS JOIN FLATTEN(
+(
+  SELECT
+    INTEGER(SPLIT([word], '')) AS [digit]
+  FROM
+  (
+    SELECT
+      '0123456789' AS [word]
+  )
+), [digit]) AS [d2]
+ORDER BY
+  [seq]
+</code></pre>
+<p><img src="http://neue.cc/wp-content/uploads/image/bq_seq_linqpad.jpg" alt="" /></p>
+<p>この辺まで来ると、圧倒的に手書きよりも捗るのではないでしょうか。というか、LINQならサクサク書けますが（エラー来たら、ああはいはいIntoね、みたいに対処するだけだし）、手書きSQLはシンドイ。むしろ無理。その上で、別に意図と全然違うクエリが吐かれるわけではない、というラインはキープされてると思います。</p>
+<p>それとネストが深くなるクエリはどう整形したらいいか悩ましいものなのですが(Stackoverflowには可読性ゼロのめちゃくちゃなインデントのBigQueryのクエリの質問が沢山転がっている！実際きちんと書くのむつかしい）、LINQ to BigQueryは、まぁまぁ読みやすい感じにきっちりフォーマットして出してくれます。若干冗長に思えるところもあるかもですが、まぁそこはルールなのだと思ってもらえれば。見やすいフォーマットといえるものにするため、微調整を繰り返したコダワリがあります。</p>
+<h2>パラメータを使う</h2>
+<p>もう一個LINQ to BigQueryのいいとこは、パラメータが使えるとこです。パラメータというか、クエリ文字列にたいして値を埋め込めるの。例えば</p>
+<pre><code class="language-csharp">// こんなメソッドを作るじゃろ
+Task&lt;string[]&gt; GetTitleBetweenRevision(int revisionIdFrom, int revisionIdTo, int limit)
+{
+    return context.From&lt;wikipedia&gt;()
+        .Where(x =&gt; BqFunc.Between(x.revision_id, revisionIdFrom, revisionIdTo))
+        .Select(x =&gt; x.title)
+        .Limit(limit)
+        .ToArrayAsync();
+}
+
+// こういうふうに使いますね、的な 
+var rows = await GetTitleBetweenRevision(1, 200, 100);
+</code></pre>
+<pre><code class="language-sql">-- 1と200が文字列置換なくSQLに埋め込まれる
+SELECT
+  [title]
+FROM
+  [publicdata:samples.wikipedia]
+WHERE
+  ([revision_id] BETWEEN 1 AND 200)
+LIMIT 100
+</code></pre>
+<p>その場でのクエリ書きには使いませんが、プログラムに埋め込んで発行する場合なんかは当然ながらあるといいですよね、と。文字列置換や組み立てはかなり手間かかるので、ずっとぐっと遥かに楽になれるかと思います。LINQなら条件によってWhereを足したり足さなかったり、みたいな書き方も簡単です。</p>
+<p>（この機能は0.3.1から入れました！アタリマエのように見えて、ExpressionTreeを操作する上で、地味に微妙に面倒くさいのですよー。とはいえ実用性考えるとこういうのないとアリエナイというか私が使ってて不便したんでようやっと入れました）</p>
+<p>クエリ書きに使うのに便利といえば日付の操作は圧倒的に楽になります。例えば昨日の20時というのをBigQueryだけでやると……</p>
+<pre><code class="language-csharp">context // 走査範囲を狭くするために適当に5日前ぐらいからのRangeにしてる
+    .From&lt;github_timeline&gt;(&quot;[githubarchive:github.timeline]&quot;).WithRange(TimeSpan.FromDays(5))
+    .Where(x =&gt; x.type==&quot;CreateEvent&quot; 
+        &amp;&amp; BqFunc.ParseUtcUsec(x.repository_created_at) &gt;= BqFunc.ParseUtcUsec(BqFunc.StrftimeUtcUsec(BqFunc.TimestampToUsec(BqFunc.DateAdd(BqFunc.UsecToTimestamp(BqFunc.Now()), -1, IntervalUnit.Day)), &quot;%Y-%m-%d 20:00:00&quot;))
+        &amp;&amp; x.repository_fork == &quot;false&quot;
+        &amp;&amp; x.payload_ref_type == &quot;repository&quot;)
+    .Select(x =&gt; x.repository_name)
+    .DumpRun();
+    
+// SQL
+SELECT
+  [repository_name]
+FROM
+  [githubarchive:github.timeline@-432000000-]
+WHERE
+  (((([type] = 'CreateEvent') AND (PARSE_UTC_USEC([repository_created_at]) &gt;= PARSE_UTC_USEC(STRFTIME_UTC_USEC(TIMESTAMP_TO_USEC(DATE_ADD(USEC_TO_TIMESTAMP(NOW()), -1, 'DAY')), '%Y-%m-%d 20:00:00')))) AND ([repository_fork] = 'false')) AND ([payload_ref_type] = 'repository'))
+</code></pre>
+<p>結構しんどいです。厄介な日付部分を取り出すと</p>
+<pre><code class="language-sql">PARSE_UTC_USEC(STRFTIME_UTC_USEC(TIMESTAMP_TO_USEC(DATE_ADD(USEC_TO_TIMESTAMP(NOW, -1, 'DAY')), '%Y-%m-%d 20:00:00'))))
+</code></pre>
+<p>ですからね！結構かなり絶望的……。これをC#のDateTimeで操作すれば</p>
+<pre><code class="language-csharp">// 今日から一日引いてその日付のみのほうを取って20時間足す
+var yesterday = DateTime.UtcNow.AddDays(-1).Date.AddHours(20);
+
+context
+    .From&lt;github_timeline&gt;(&quot;[githubarchive:github.timeline]&quot;).WithRange(TimeSpan.FromDays(5))
+    .Where(x =&gt; x.type==&quot;CreateEvent&quot; 
+        &amp;&amp; BqFunc.Timestamp(x.repository_created_at) &gt;= yesterday // ほら超スッキリに！
+        &amp;&amp; x.repository_fork == &quot;false&quot;
+        &amp;&amp; x.payload_ref_type == &quot;repository&quot;)
+    .Select(x =&gt; x.repository_name)
+    .DumpRun();
+    
+// 日付比較部分のSQLはこう出力される
+TIMESTAMP([repository_created_at]) &gt;= '2014-10-03 20:00:00.000000')
+</code></pre>
+<p>その場で書いてクエリ実行する分には、別に日付が埋め込まれようとNOW()からSQLで全部操作しようと変わらない話ですからね。楽な方でやればいいし、日付操作は圧倒的にC#で操作して持ってたほうが楽でしょう、明らかに。</p>
+<h2>Tableを作る、データを投げる</h2>
+<p>サンプルデータを扱ってるのもいいんですが、やっぱ自分でデータ入れたいですね、テーブル作りたいですね。基本的には(Google API SDKの)BigqueryServiceを使え！っていう感じなのですが、それはそれでやっぱりそれもプリミティブな感じなので、テーブル作成に関してはちょっとしたユーティリティ用意してみました。以下の様な感じで作れます。</p>
+<pre><code class="language-csharp">// DataTypeUtility.ToTableFieldSchemaでTableFieldSchema[]を定義から作れる
+// 匿名型を渡す以外に既存クラスだったら&lt;T&gt;やtypeof(T)を渡すのもOK
+// もちろん手でTableFieldSchema[]を作って渡すのも構わない
+new MetaTable(&quot;project_id&quot;, &quot;mydata&quot;, &quot;people&quot;)
+    .CreateTable(service, DataTypeUtility.ToTableFieldSchema(new
+    {
+        firstName = default(string), // STRING REQUIRED
+        lastName = default(string), // STRING REQUIRED
+        age = default(int?), // INTEGER NULLABLE
+        birth = default(DateTimeOffset) // TIMESTAMP REQUIRED
+    }));
+</code></pre>
+<p>Web Interfaceから作ると、「空のテーブルが作れない」「スキーマはなんかカンマ定義で指定してかなきゃいけなくてダルい」という点があって存外ダルいです。bqも同様。やはり時代はLINQPad、で作る。ちなみにSTRING NULLABLEはクラス定義から抽出するのが不可能だったので（こういうところが不便なのよね……）、まあTableFieldSchema[]を作ってから schemas[1].Mode = &quot;NULLABLE&quot; とでも書いてください。</p>
+<p>データの投下も同じようにMetaTableを作ってInsertAllAsyncで。</p>
+<pre><code class="language-csharp">// ExponentialBackOffを渡した場合はそれにのっとってリトライをかける
+await new MetaTable(&quot;project_id&quot;, &quot;mydata&quot;, &quot;people&quot;)
+    .InsertAllAsync(service, new[]
+    {
+        new { firstName = &quot;hoge&quot;, lastName = &quot;huga&quot;, age = 20, birth = new DateTime(2010,1,1,12,13,14, DateTimeKind.Utc)},
+        new { firstName = &quot;tako&quot;, lastName = &quot;bcbc&quot;, age = 30, birth = new DateTime(1983,3,1,10,33,24, DateTimeKind.Utc)},
+        new { firstName = &quot;oooo&quot;, lastName = &quot;zzzz&quot;, age = 45, birth = new DateTime(2043,1,3,11,4,43, DateTimeKind.Utc)},
+    }, new Google.Apis.Util.ExponentialBackOff(TimeSpan.FromMilliseconds(250), 5));
+</code></pre>
+<p>これでBigQueryのStreming Insertになります。ひどーきなので別テーブルに並走して書きたい場合は複数書いてWhenAllすれば高速で良いでしょふ。Streaming Insertはそんな頻繁、ではないですけれどそれなりに失敗することもあるので、引数にExponentialBackOff（これ自体はGoogle API SDKに含まれている）を渡せば<a href="http://en.wikipedia.org/wiki/Exponential_backoff">Exponential backoff</a>でリトライを試みます。</p>
+<h2>まとめ</h2>
+<p>基本的な機能は完全に実装完了したかなあ、という感じ。0.1 ~ 0.3.3の間に自分で使っててイラッとした細かい部分をチクチク修正してきましたが、そろそろ完全に満足！といったところです。不満ない！完璧！パーフェクち！というわけで、残るはRECORD型サポートに向けて改装すれば敵なし、LINQったらサイキョーね！</p>
+<p>な、わけですが、まぁ.NET + BigQueryというニッチに二乗かけたようなアレなので、興味関心、はあっても使ってみた！という人は少ないでしょう、というかいないでしょう、残念無念。でもBigQueryは本当に凄く良いので使ってみて欲しいんだなー。ビッグデータなんてアタクシには無縁、と思ってる人も、実は使い出、使いドコロって、絶対あります。まずはログを片っ端から突っ込んでみましょう、から始めてみませんか？</p>
+</div>
+<h1><a href="http://neue.cc/2014/0924_479.html">LINQ to BigQuery - C#による型付きDSLとLINQPadによるDumpと可視化</a></h1>
+<ul class="date"><li>2014-09-24</li></ul>
+<div class="entry_body"><p>と、いうものを作りました。<a href="https://cloud.google.com/products/bigquery/">BigQuery</a>はGoogleのビッグデータサービスで、最近非常に脚光を浴びていて、何度もほってんとりやTwitterに上がってきたりしてますね。詳細は<a href="https://speakerdeck.com/naoya/google-bigquery-falsehua-number-gcpja">Google BigQuery の話</a>とか<a href="http://qiita.com/kazunori279/items/10ac0066ac9b0b5aaaf3">Googleの虎の子「BigQuery」をFluentdユーザーが使わない理由がなくなった理由</a>あたりがいいかな、超でかいデータをGoogleパワーで数千台のサーバー並べてフルスキャンするから、超速くて最強ね、という話。で、実際凄い。超凄い。しかも嬉しいのが手間いらずなところで、最初<a href="http://aws.amazon.com/jp/redshift/">Amazon RedShift</a>を検討して試していたのですが、列圧縮エンコードとか考えるのすっごく大変だし、容量やパワーもインスタンスタイプと睨めっこする必要がある。それがBigQueryだと容量は格安だから大量に格納できる、チューニング設定もなし、この手軽さ！おまけにウェブインターフェイスが中々優れていてクエリが見やすい。<a href="https://developers.google.com/bigquery/query-reference">Query Reference</a>もしっかり書かれてて非常に分かりやすい。もう非の打ち所なし！</p>
+<p>触ってすぐに気に入った、んですが、C#ドライバがプリミティブすぎてデシリアライズすらしてくれないので、何か作る必要がある。せっかく作るならSQLっぽいクエリ言語なのでLINQだろう、と。それとIQueryableは幻想だと思っていたので、じゃあ代替を作るならどうするのか、を現実的に示したくて、ちょうど格好の題材が出現！ということで、LINQで書けるようなライブラリを作りました。</p>
+<ul>
+<li><a href="https://github.com/neuecc/LINQ-to-BigQuery">GitHub - LINQ-to-BigQuery</a></li>
+<li>PM&gt; Install-Package <a href="https://www.nuget.org/packages/LINQ-to-BigQuery">LINQ-to-BigQuery</a></li>
+</ul>
+<p>ダウンロードは例によってNuGetからできます。今年はそこそこ大きめのライブラリを作ってきていますが、LINQ to BigQueryは特に初回にしては大きめで割と充実、非常に気合入ってます！是非使ってみてねー。GitHubのReadMe.mdはこのブログ記事で力尽きたので適当です、あとでちゃんと書く……。</p>
+<h2>簡単なDEMO</h2>
+<p>BigQueryの良い所にサンプルデータが豊富というところがあります、というわけでGitHubのデータを扱って色々集計してみましょう。データは[publicdata:samples.github_timeline]を使ってもいいのですが、それは2011年時点のスナップショットでちょっとツマラナイ。<a href="http://www.githubarchive.org/">GitHub Archive</a>から公開データを引っ張ってくれば、現時点での最新の、今ついさっきのリアルタイムの情報が扱えて非常に素敵（あとBigQueryはこういうpublicなDataSetが幾つかあるのが本当に最高に熱い）。ひっぱてくるやり方は書いてありますが（超簡単）、テーブル名は[githubarchive:github.timeline]です。</p>
+<p>まずは単純なクエリということで、プログラミング言語だけでグループ化して個数を表示してみます。github.timelineは、例えばPushしたとかBranch作ったとか、雑多な情報が大量に入っているので、別にリポジトリ数のランキングではなくて、どちらかといえばアクティビティのランキング、ぐらいに捉えてもらえれば良さそうです。とりあえずトップ5で。</p>
+<p><img src="http://neue.cc/wp-content/uploads/image/bq_linqpad_first.jpg" alt="" /></p>
+<p>この例では記述と表示は<a href="http://www.linqpad.net/">LINQPad</a>で行っています。LINQPadは非常に優れていて、C#コードが入力補完付きでサクッと書けるほか、実行結果をDumpして色々表示させることも可能です。DumpChartはLINQ to BigQueryのために独自に作ったDumpなのですが、それにより結果のグラフ化がXとYを指定するだけのたった一行</p>
+<pre><code class="language-csharp">.DumpChart(x =&gt; x.repository_language, x =&gt; x.count)
+</code></pre>
+<p>だけで出来てしまう優れものです。描画は.NET標準のチャートライブラリを使っているため、棒グラフの他にも円グラフでも折れ線グラフでも、<a href="http://msdn.microsoft.com/ja-jp/library/system.windows.forms.datavisualization.charting.seriescharttype.aspx">SeriesChartType</a>にある35個の表示形式が選べます。見たとおり、Tooltip表示もあるので個数が大量にあっても全然確認できるといった、チャートに求められる基本的な機能は満たしているので、ちょっとしたサクッと書いて確認する用途ならば上等でしょう。</p>
+<p>（DumpChartやQuery.GetContextのコードはこの記事の末尾にコード貼り付けてあるので、それで使ってください）</p>
+<p>Resultsタブのほうを開けば、クエリ結果の詳細が見れます。</p>
+<p><img src="http://neue.cc/wp-content/uploads/image/bq_linqpad_results.jpg" alt="" /></p>
+<p>クエリ文字列はBigQueryの性質上、色々なところで使うはずです。そうした他所で使える可搬性のために、生成結果を人間の読める綺麗なものにする事にこだわりました(TypeScript的な）。純粋なクエリビルダとして使う(ちなみにToString()すればRunしなくてもクエリを取り出せます）ことも十分可能でしょう。Rowsに関しては切り離してグリッド表示も可能で、そうすれば簡単なソートやCSVへの書き出しといった、データベース用IDEに求められる基本的な機能も満たしています。</p>
+<p>TotalBytesProcessedが読みづらかったのでひゅーまんりーだぶるな形に直してあるのも用意してあるところが優しさ（普通に自分が使ってて困ったので足しただけですが）。</p>
+<p>BigQueryはウェブインターフェイスが非常に優れている、これは正直感動ポイントでした。いやぁ、RedShift、データベース管理用のIDEがろくすっぽなくて(PostgreSQL互換といいつつ違う部分で引っかかって動かないものが非常に多い）どうしたもんか、と苦労してたんですが、BigQueryはそもそも標準ウェブインターフェイスが超使いやすい。スキーマも見やすいしクエリも書きやすい。まさに神。</p>
+<p>てわけでウェブインターフェイスには割と満足してるんですが、表示件数をドバッと表示したかったり、グラフ化もサクッとしたいし（何気にGoogle SpreadSheet連携は面倒くさい！）、日頃からデータベースもSQL Server Management StudioやHeidi SQLといったデスクトップツールを使って操作するWindows野郎としては、デスクトップで使えるIDE欲しいですね、と。それに分析やる以上、結構複雑なクエリも書くわけで、そういう時に型が欲しいなーとは思ってしまったり。LINQ to BigQueryはAlt BigQuery Query、Better BigQuery Queryとして、ただたんにC#で書けます以上のものを追求しました。そして、LINQPadとの組み合わせは、現存するBigQuery用のIDEとして最も良いはずです（そもそもBigQuery用のIDEは標準ウェブインターフェイス以外にあるのかどうか説もあるけれど）。日常使い、カジュアルな分析にも欠かせない代物となることでしょう。</p>
+<h2>Why LINQ?</h2>
+<p>LINQ to BigQueryで書く場合の良い点。一つは型が効いているので、間違っていたらコンパイルエラーで(Visual Studioで書けばリアルタイムにエラー通知で)弾かれること。別にカラム名の名前間違いなどといったことだけじゃなくて、文字列であったりタイムスタンプであったりといった型も厳密に見えているので、型の合わない関数を書いてしまうといったミスもなくせます。例えばDate and time functionsの引数が文字列なのかタイムスタンプなのかUNIX秒なのか、そして戻り値もまた文字列なのかタイムスタンプなのかUNIX秒なのか、ってのは全く覚えてられないんですが、そんな苦痛とはオサラバです。</p>
+<p><img src="http://neue.cc/wp-content/uploads/image/bq_intellisense.jpg" alt="" /></p>
+<p>github_timelineのカラム数はなんと200個。さすがに覚えてられませんし、それの型だってあやふやってものです(例えばboolであって欲しいフォークされたリポジトリなのかを判定するrepository_forkというカラムには&quot;false&quot;といったような文字列でやってくるんですぜ！？）。</p>
+<p><img src="http://neue.cc/wp-content/uploads/image/bq_intellisense_func.jpg" alt="" /></p>
+<p>全ての関数はBqFuncの下にぶら下がっていて、引数と戻り値、それにドキュメント付きです。これなら覚えてなくても大丈夫！ちなみに、ということはクエリ中の全ての関数呼び出しにBqFunc.がついてきて見た目がウザいという問題があるのですが、それはC# 6.0のusing staticを使えば解決します。</p>
+<pre><code class="language-csharp">// C# 6.0 Using Static
+using BigQuery.Linq.BqFunc;
+</code></pre>
+<p>楽しみに待ちましょう(C# 6.0は多分2015年には登場するんじゃないかな？）。</p>
+<p>LINQ to BigQueryはO/Rマッパーじゃありません。いや、もちろんクエリの構築やC#オブジェクトへのマッピングは行いますが、リレーションの管理はしません。かわりに、書いたクエリがほとんどそのままの見た目のクエリ文字列になります。なので意図しない酷いクエリが発行されてるぞー、というありがちななことは起きません。そして、LINQ to BigQueryで99%のクエリが記述できます、LINQで書けないから文字列でやらなきゃー、というシチュエーションはほぼほぼ起きません。LINQとクエリ文字列を1:1に、あえてほぼ直訳調にしているのはそのためです。</p>
+<p>また、順序を強く規制してあります、無効なクエリ順序での記述（例えばGroupBy使わずにHaving書くとかLimitの後にWhere書いてしまうとか）やSelectなしの実行はコンパイルエラーで、そもそも書けないようにしています。</p>
+<p><img src="http://neue.cc/wp-content/uploads/image/bq_linqflow.jpg" alt="" /></p>
+<p>左はWhereの後のメソッド、これが全部でSelectとOrderByとWhere（ANDで連結される）しか使えない。右はSelect後で、GroupBy（奇妙に思えるかもしれませんが、GroupByの中でSelectの型が使えることを考えるとこの順序が適正）やLimit、そしてRunなどの実行系のメソッドが使えるようになっています。</p>
+<p>これらにより、LINQ to BigQueryで書いたクエリは一発で実行可能なことが期待できるものが作れます（文字列で書くと、カラムの参照周りとかで案外つまづいてエラりやすい）。さすがにExpressionの中身は検査できないんですが、概ね大丈夫で、&quot;守られてる感&quot;はあるかと思います。ちなみにこんな順序で書けます。</p>
+<pre><code class="language-text">From(+TableDecorate) -&gt; Join -&gt; Where -| -&gt; OrderBy(ThenBy) -&gt; Select -&gt;                     | -&gt; Limit -&gt; IgnoreCase
+                                       | -&gt; Select | -&gt; GroupBy -&gt; Having -&gt; OrderBy(ThenBy) | -&gt; IgnoreCase
+                                                   | -&gt; OrderBy(ThenBy) -&gt;                   |
+</code></pre>
+<p>そういうの実現するためにLINQ to BigQueryはIQueryableじゃないんですが、そのことはこの長いブログ記事の後ろのほうでたっぷりポエム書いてるので読んでね！あと、こんな割とザルな構成でもしっかり機能しているように見えるのは、BigQueryのSQLがかなりシンプルなSQLだから。標準SQLにできることは、あんま出来ないんですね。で、私はそこが気に入ってます。好きです、BigQueryのSQL。別に標準SQLにがっつし寄せる必要はあんまないんじゃないかなー、SQL自体は複雑怪奇に近いですから、あんまり良くはない。とはいえ、ある程度の語彙は共用されていたほうが親しめるので、そういったバランス的にもBigQueryのSQLはいい塩梅。</p>
+<p>最後に、<a href="https://developers.google.com/bigquery/table-decorators">Table Decorators</a>や<a href="https://developers.google.com/bigquery/query-reference#tablewildcardfunctions">Table wildcard functions</a>が圧倒的に記述しやすいのも利点です。</p>
+<pre><code class="language-csharp">// Table Decorators - WithRange(relative or absolute), WithSnapshot 
+
+// FROM [githubarchive:github.timeline@-900000-]
+.From&lt;github_timeline&gt;().WithRange(TimeSpan.FromMinutes(15))
+
+// FROM [githubarchive:github.timeline@1411398000000000]
+.From&lt;github_timeline&gt;().WithSnapshot(DateTimeOffset.Parse(&quot;2014-09-23&quot;))
+
+// Table wildcard functions - FromDateRange, FromDateRangeStrict, FromTableQuery
+
+// FROM (TABLE_DATE_RANGE([mydata], TIMESTAMP('2013-11-10'), TIMESTAMP('2013-12-01')))
+.FromDateRange&lt;mydata&gt;(&quot;mydata&quot;, DateTimeOffset.Parse(&quot;2013-11-10&quot;), DateTimeOffset.Parse(&quot;2013-12-1&quot;))
+
+// FROM (TABLE_QUERY([mydata], &quot;([table_id] CONTAINS 'oo' AND (LENGTH([table_id]) &gt;= 4))&quot;))
+.FromTableQuery&lt;mydata&gt;(&quot;mydata&quot;, x =&gt; x.table_id.Contains(&quot;oo&quot;) &amp;&amp; BqFunc.Length(x.table_id) &gt;= 4)
+
+// FROM (TABLE_QUERY([mydata], &quot;REGEXP_MATCH([table_id], r'^boo[\d]{3,5}')&quot;))
+.FromTableQuery&lt;mydata&gt;(&quot;mydata&quot;, x =&gt; BqFunc.RegexpMatch(x.table_id, &quot;^boo[\\d]{3,5}&quot;))
+</code></pre>
+<p>Table decoratorは、例えばログ系を突っ込んでる場合は障害対応や監視で、直近1時間から引き出したいとか普通にあるはずで、そういう場合に走査範囲を簡単に制御できる非常に有益な機能です。が、しかし、普通に書くとUNIXタイムスタンプで記述しろということで、ちょっとムリゲーです。それがC#のTimeSpanやDateTime、DateTimeOffsetが使えるので比較にならないほど書きやすい。</p>
+<p>FromTableQueryも文字列指定だったりtable_idってどこから来てるんだよ！？という感じであんま書きやすくないのですが、LINQ to BigQueryでは型付けされたメタテーブル情報が渡ってくるので超書きやすい。(ところでCONTAINSだけ、BqFuncじゃなくてstring.Containsが使えます、これはCONTAINSの見た目がこれだけ関数じゃないので、ちょっと特別扱いしてあげました、他の関数は全部BqFuncのみです)</p>
+<p>Table DecoratorsとTable wildcard functionsは非常に有益なので、テーブル名の設計にも強く影響を及ぼします。これらが有効に使える設計である必要があります。TABLE_DATE_RANGEのために（垂直分割するなら）末尾はYYYYMMDDである必要があるし、Range decoratorsを有効に使うためには極力、水平シャーディングは避けたほうが良いでしょう。そこのところを無視して、ただ単にシャーディング、シャーディングって言ってたりするのは、ちょっと、ないなー。</p>
+<h2>複雑なDEMO</h2>
+<p>ひと通り紹介は終わったので、より複雑なクエリを一つ。同じく最新のGitHubのデータを扱って、一ヶ月毎に、新しく作られたリポジトリを言語毎で集計して表示してみます。まずはグラフ化の結果から。</p>
+<p><img src="http://neue.cc/wp-content/uploads/image/bq_linqpaddemo_graph.jpg" alt="" /></p>
+<p>LINQPadではちゃんと多重グラフもメソッド一発で書けるようにしてます。コードは後で載せるとしてグラフの説明ですが、縦がパーセント、横が日付、それぞれの折れ線グラフが言語。一番上はJavaScriptで今月は43000件の新規リポジトリが立ち上がっていて全体の19%を占めてるようです。2位はJava、3位はCSS、そしてRuby、Python、PHPと続いて、この辺りまでが上位組ですね。C#はその後のC++、Cと来た次の9位で9251件・全体の4%でした。</p>
+<p>コードは、ちょっと長いよ！</p>
+<pre><code class="language-csharp">Query.GetContext()
+    .From&lt;github_timeline&gt;()
+    .Where(x =&gt; x.repository_language != null &amp;&amp; x.repository_fork == &quot;false&quot;)
+    .Select(x =&gt; new
+    {
+        x.repository_url,
+        x.repository_created_at,
+        language = BqFunc.LastValue(x, y =&gt; y.repository_language)
+            .PartitionBy(y =&gt; y.repository_url)
+            .OrderBy(y =&gt; y.created_at)
+            .Value
+    })
+    .Into()
+    .Select(x =&gt; new
+    {
+        x.language,
+        yyyymm = BqFunc.StrftimeUtcUsec(BqFunc.ParseUtcUsec(x.repository_created_at), &quot;%Y-%m&quot;),
+        count = BqFunc.CountDistinct(x.repository_url)
+    })
+    .GroupBy(x =&gt; new { x.language, x.yyyymm })
+    .Having(x =&gt; BqFunc.GreaterThanEqual(x.yyyymm, &quot;2010-01&quot;))
+    .Into()
+    .Select(x =&gt; new
+    {
+        x.language,
+        x.yyyymm,
+        x.count,
+        ratio = BqFunc.RatioToReport(x, y =&gt; y.count)
+            .PartitionBy(y =&gt; y.yyyymm)
+            .OrderBy(y =&gt; y.count)
+            .Value
+    })
+    .Into()
+    .Select(x =&gt; new
+    {
+        x.language,
+        x.count,
+        x.yyyymm,
+        percentage = BqFunc.Round(x.ratio * 100, 2)
+    })
+    .OrderBy(x =&gt; x.yyyymm)
+    .ThenByDescending(x =&gt; x.percentage)
+    .Run()  // ↑BigQuery
+    .Dump() // ↓LINQ to Objects(and LINQPad)
+    .Rows
+    .GroupBy(x =&gt; x.language)
+    .DumpGroupChart(x =&gt; x.yyyymm, x =&gt; x.percentage);
+</code></pre>
+<p>規模感は全体で153GBで行数が2億5千万行ぐらいだけど、この程度は10秒ちょいで返してきますね、速い速い（多分）。</p>
+<p>メソッドチェーンがやたら続いているのですが、実際のところこれはサブクエリで入れ子になってます。随所に挟まれてるIntoメソッドで入れ子を平らにしてます。入れ子の形で書くこともできるんですが、フラットのほうが直感的で圧倒的に書きやすいく、（慣れれば）読みやすくもあります。こういう書き方が出来るのもLINQ to BigQueryの大きなメリットだとは、書いてればすぐに実感できます。</p>
+<p>(BqFunc.GreaterThanEqualが奇妙に思えるかもしれないのですが、これは文字列だけの特例です。数値やタイムスタンプの場合は記号で書けるようにしてあるのですが、文字列はそもそもC#自体に演算子オーバーロードが定義されていないのでコンパイラに弾かれる、けどBigQuery的には書きたい時がある、というのの苦肉の策でLessThan(Equal)/GreaterThan(Equal)を用意してあります）</p>
+<p>チャート化はGroupBy.DumpGroupChartを叩くだけなんですが、ちょっと面白いのは、ここのGroupByはLINQ to Objects(C#で結果を受け取った後にインメモリで処理)のGroupByなんですよね。</p>
+<pre><code class="language-csharp">.Run()  // ↑BigQuery
+.Dump() // ↓LINQ to Objects(and LINQPad)
+.Rows
+.GroupBy(x =&gt; x.language)
+.DumpGroupChart(x =&gt; x.yyyymm, x =&gt; x.percentage);
+</code></pre>
+<p>二次元のクエリ結果を、シームレスに三次元に起こし直せるってのもLINQの面白いところだし、強いところです。モノによっては無理にSQLでこねくり回さなくてもインメモリに持ってきてから弄ればいいじゃない？という手が簡単に打てるのが嬉しい（もちろん全件持ってこれるわけがないのでBigQuery側で処理できるものは基本処理しておくのは前提として、ね）。</p>
+<p>例えば、実のところこれの結果は、言語-日付という軸だと歯抜けがあって、全ての月に1つは言語がないと、チャートが揃いません。グラフの見た目の都合上、今回は2010-01以降にHAVINGしてありますが、その後に新しく登場した言語(例えばSwift)なんかはうまく表示できません。まぁ主要言語は大丈夫なので今回スルーしてますが、厳密にやるため、その辺の処理を、しかしSQLのままやるのは存外面倒くさい。でも、こういう処理、C#でインメモリでやる分には簡単なんですよね。なんで、一旦ローカルコンピューター側に持ってきてから、少しだけC#で処理書くか、みたいなのがカジュアルにできちゃうのもLINQ to BigQuery + LINQPadのちょっと良いところ。</p>
+<p>さて、実際に吐かれるSQLは以下。</p>
+<pre><code class="language-sql">SELECT
+  [language],
+  [count],
+  [yyyymm],
+  ROUND(([ratio] * 100), 2) AS [percentage]
+FROM
+(
+  SELECT
+    [language],
+    [yyyymm],
+    [count],
+    RATIO_TO_REPORT([count]) OVER (PARTITION BY [yyyymm] ORDER BY [count]) AS [ratio]
+  FROM
+  (
+    SELECT
+      [language],
+      STRFTIME_UTC_USEC(PARSE_UTC_USEC([repository_created_at]), '%Y-%m') AS [yyyymm],
+      COUNT(DISTINCT [repository_url]) AS [count]
+    FROM
+    (
+      SELECT
+        [repository_url],
+        [repository_created_at],
+        LAST_VALUE([repository_language]) OVER (PARTITION BY [repository_url] ORDER BY [created_at]) AS [language]
+      FROM
+        [githubarchive:github.timeline]
+      WHERE
+        (([repository_language] IS NOT NULL) AND ([repository_fork] = 'false'))
+    )
+    GROUP BY
+      [language],
+      [yyyymm]
+    HAVING
+      [yyyymm] &gt;= '2010-01'
+  )
+)
+ORDER BY
+  [yyyymm], [percentage] DESC
+</code></pre>
+<p>まず、ちゃんと読めるクエリを吐いてくれるでしょ？というのと、これぐらいになってくると手書きだと結構しんどいです、少なくとも私は。ウィンドウ関数もあんま手で書きたくないし、日付の処理の連鎖は型が欲しい。それと、サブクエリ使うとプロパティを外側に伝搬していく必要がありますが、それがLINQだと入力補完が効くのでとっても楽。Into()ですぐにサブクエリ化できるので、すごくカジュアルに、とりあえず困ったらサブクエリ、とぶん投げることが可能でめちゃくちゃ捗る。大抵のことはとりあえずサブクエリにして書くと解決しますからね！処理効率とかはどうせBigQueryなので何とかしてくれるだろうから、ふつーのMySQLとかで書く時のように気遣わなくていいので、めっちゃカジュアルに使っちゃう。</p>
+<p>ところでどうでもいい余談ですが、LAST_VALUEウィンドウ関数はリファレンスに載ってません。他にも載ってない関数は幾つかあったりして（追加された時にブログでチラッと告知はされてるようなんですけどね、リファレンスにもちゃんと書いてくださいよ……）。LINQ to BigQueryならそういうアンドキュメントな関数もちゃんと網羅したんでひじょーにお薦めです！</p>
+<h2>Generate Schema</h2>
+<p>型付けされてるのがイイのは分かったけれど、それの定義が面倒なのよねー。と、そこで耳寄りな情報。まず、全部のテーブルのちょっとした情報(table_idとかサイズとか)はGetAllTableInfoという便利メソッドで取ってこれるようにしてます（実際便利！）。で、そこから更にテーブルスキーマが取り出せるようになってます。更にそこからオマケでC#コードをstringで吐き出せるようになってます。</p>
+<pre><code class="language-csharp">var context = new BigQueryContext(/* BigqueryService, projectId */);
+// Get All tableinfo(table_id, creation_time, row_count, size_bytes, etc...)
+var tableInfos = context.GetAllTableInfo(&quot;mydataset&quot;);
+// ToString - Human readable info
+tableInfos.Select(x =&gt; x.ToString()).Dump();
+
+// Get TableSchema
+var schema = tableInfos[0].GetTableSchema(context.BigQueryService);
+
+// Build C# class definition
+schema.BuildCSharpClass().Dump();
+</code></pre>
+<p>まあ、そんなに洗練されたソリューションじゃないんでアレですが、一時凌ぎには良いでしょふ。publicdataとか自分のプロジェクト下にないものは直接MetaTableクラスを作ってからスキーマ取れるようになってます。</p>
+<pre><code class="language-csharp">new MetaTable(&quot;publicdata&quot;, &quot;samples&quot;, &quot;github_timeline&quot;)
+	.GetTableSchema(Query.GetContext().BigQueryService)
+	.BuildCSharpClass();
+
+// =&gt;
+
+[TableName(&quot;[publicdata:samples.github_timeline]&quot;)]
+public class github_timeline
+{
+    public string repository_url { get; set; }
+    public bool? repository_has_downloads { get; set; }
+    public string repository_created_at { get; set; }
+    public bool? repository_has_issues { get; set; }
+    // snip...(200 lines)
+	public string url { get; set; }
+	public string type { get; set; }
+}
+</code></pre>
+<p>TableName属性がついたクラスはFrom句でテーブル名を指定しなくてもそこから読み取る、っていう風になってます（今までのコードでテーブル名を指定してなかったのはそのお陰）</p>
+<h2>リアルタイムストリーミングクエリ</h2>
+<p>Streaming Insertによりリアルタイムにログを送りつけてリアルタイムに表示することが可能に！というのがBigQuery超イカス。今までうちの会社は監視系のログは<a href="http://www.sumologic.com/">Sumo Logic</a>を使っていたのですが、もう全部BigQueryでいいね、といった状態になりました、さようなら、Sumo……。</p>
+<p>で、リアルタイムなんですが、リアルタイム度によりけりですが、1分ぐらいの遅延やそれ以上のウィンドウを取るクエリならBigQueryで十分賄えますね。Range decoratorsが最高に使えるので、定期的にそれで叩いてやればいい。そして最近流行りのReactive ProgrammingがC#でも使えるというかむしろC#はReactive Programmingの第一人者みたいなもんなので、Reactiveに書きましょふ。Rxの説明は……しないよ？</p>
+<pre><code class="language-csharp">// まぁgithub.timelineがリアルタイムじゃないからコレに関しては意味ないヨ、ただの例
+
+// [githubarchive:github.timeline@1411511274158000-1411511574167000]
+// [githubarchive:github.timeline@1411511574167000-1411511874174000]
+// [githubarchive:github.timeline@1411511874174000-1411512174175000]
+// ...
+Observable.Timer(TimeSpan.Zero, TimeSpan.FromMinutes(5))
+    .Timestamp()
+    .Buffer(2, 1) // Buffer Window
+    .SelectMany(xs =&gt;
+    {
+        var context = Query.GetContext();
+        context.UseQueryCache = false;
+        return context.From&lt;github_timeline&gt;().WithRange(xs[0].Timestamp, xs[1].Timestamp)
+            .Select(x =&gt; new { x.repository_name, x.created_at })
+            .ToArrayAsync();
+    })
+    .Dump();
+</code></pre>
+<p>アプリケーション側のStreaming Insertの間隔（バッファとかもするだろうし本当のリアルタイムじゃあないでしょう？）と、そしてBigQueryのクエリ時間（数秒）の絡みがあるので、まぁ1分ぐらいからでしょうかねー、でもまぁ、多くのシチュエーションでは十分許容できるんじゃないかと思います、障害調査で今すぐログが欲しい！とかってシチュエーションであっても間に合う時間だし。</p>
+<p>よほどの超リアルタイム（バッファもほとんど取らず数秒がマスト）でなければ、もはや<a href="http://aws.amazon.com/jp/kinesis/">Amazon Kinesis</a>のような土管すらもイラナイ感じですね。ストレージとしてもBigQueryは激安なので、Streaming Insertが安定するならば、もうBigQuery自体を土管として使って、各アプリはBigQueryから取り出して配信、みたいな形でも良いというかむしろそれでいい。Range decoratorsが効いてるなら走査範囲も小さいんで速度も従量課金も全く問題ないしねぇ。BigQuery最強すぎる……。</p>
+<h2>データ転送</h2>
+<p>本筋じゃないのでちょっとだけ話ますが、C#ってことは基本Windows Server(AWS上に立ってる)で、データをどうやってBigQueryに送るのー？と。もちろんFluentdは動かないし、（Windowsブランチあるって？あー、うーん、そもそも動かしたい気がない）、どうしますかね、と。ストレージに突っ込んでコピーは簡単明快でいいんですが、まぁ↑に書いたようにStreamingやりたいね、というわけで、うちの会社((株)グラニ。gihyoに書いた<a href="http://gihyo.jp/dev/serial/01/grani/0001">神獄のヴァルハラゲートの裏側をCTOが語り尽くす！</a>とか読んでくださいな)では基本的にStreaming Insertのみです。ETW/EventSource(簡単な説明は<a href="http://blogs.msdn.com/b/vancem/archive/2012/08/13/windows-high-speed-logging-etw-in-c-net-using-system-diagnostics-tracing-eventsource.aspx">Windows high speed logging: ETW in C#/.NET using System.Diagnostics.Tracing.EventSource</a>を)経由でログを送って、<a href="https://slab.codeplex.com/">Semantic Logging Application Block(SLAB)</a>のOut-of-process Serviceで拾って、自家製のSink（ここは今のところ手作りする必要あり、そのうちうちの会社から公開するでしょふ）でStreaming Insert(AWS-&gt;BigQueryでHTTP経由)。という構成。</p>
+<p>今のとこリトライは入ってますが完全インメモリなんでまるごと死んだらログはロスト。といった、Fluentdが解決している幾つかの要素は解決されてないんですが、それなりに十二分に実用には使えるところかな、と。速さとかの性能面は全く問題ありません、ETWがとにかく強いし、そっから先もasync/awaitを活かした並列インサートが使えるので他のでやるよりはずっと良いはずきっと。</p>
+<h2>TODO:</h2>
+<p>実はまだRecord型に対応してません！なのでそれに関係するFLATTENやWITHIN句も使えません！99%のクエリが再現できる、とか言っておきながら未対応……。おうふ、ま、まぁ世の中のほとんどは入れ子な型なんて使ってませんよね……？そんなことはないか、そうですね、さすがに対応は必須だと思ってるので、早めに入れたいとは思ってます。</p>
+<p>あと、LINQPadにはDataExplorerがあって、ちゃんとスキーマ情報の表示やコネクション保持とか出来るんですねー。というわけで、真面目にそのLINQPadドライバは作りたいです、というか作ろうとしていましたし、割と作れる感触は掴んだんです、が、大きな障壁が。LINQPadドライバは署名付きであることを要求するのですが、Google APIs Client Library for .NETが、署名されてない……。署名付きDLLは全部の参照DLLが署名付きであること必要があって、肝心要のGoogleライブラリが使えないという事態に。俺々署名してもInternalVisibleToがどうのこうのとかエラーの嵐で一歩も進めないよー。Googleが署名さえしてくれてれば全部解決なのに！だいたい著名なライブラリで署名されてないのなんかGoogleぐらいだよ！もはやむしろありえないレベル！なんとかして！</p>
+<h2>IQueryable is Dead. Long live Expression!</h2>
+<p>ちょっとだけC#の話もしよふ。以下、LINQ好きだからポエム書くよ！</p>
+<p>LINQ to BigQueryはIQueryableじゃあ、ありません。この手のクエリ系のLINQはIQueryableでQuery Providerである必要が……、あるの？IQueryableは確かにその手のインフラを提供してくれるし、確実にLINQになる。けれど、絶対条件、なの？</p>
+<p>私がLINQ to BigQueryで絶対譲れない最優先の事項として考えたのは、LINQで書けないクエリをなくすこと。全てのクエリがLINQで書ける、絶対に文字列クエリを必要としないようにする。そのためにはIQueryableの範囲を逸脱する必要があった。そして同時に強く制約したかった、順序も規定したいし、不要なクエリは(NotSupported!)そもそも書けないようにしたかった。これらはIQueryableに従っていては絶対に実現できないことだった。</p>
+<p>LINQがLINQであるためにはクエリ構文はいらない。Query Providerもいらない。LINQ to XMLがLINQなのは何故？Parallel LINQがLINQであるのは何故？Reactive ExtensionsがLINQであるのは何故？linq.jsがLINQであるのは何故？そこにあるのは……、空気と文化。</p>
+<p>LINQと名乗ること自体はマーケティングのようなもので、形はない。使う人が納得さえすれば、LINQでしょう。そこにルールを求めたがる人がいても、ないものはないのだから規定しようがないよ？LINQらしく感じさせる要素をある程度満たしてればいい。FuncもしくはExpressionを使ってWhereでフィルタしSelectで射影する（そうすればクエリ構文もある程度は使えるしね）。OrderBy系の構文はOrderBy/OrderByDescending/ThenBy/ThenByDescendingで適用される。基本的な戻り値がシーケンスっぽい何かである。うん、だんだん満たせてくる。別に100%満たさなくても、70%ぐらい満たせばLINQらしいんだよ。SelectManyがなくたって、いい。どうせNotSupportedExceptionが投げられるのなら、最初からないのと何が違うというの？</p>
+<p>LINQ to BigQueryからはLINQらしさを感じられると思っています。最優先事項の全てのBigQueryのクエリを書けるようにすることやNotSupportedを投げないことなどを持ちつつも、可能な限りLINQらしさを感じさせるよう細心の注意を払ってデザインしました。極論言えば私がLINQだって言ってるんだからLINQなのですが（何か文句ある？）、多くの人には十分納得してもらえると考えています。LimitをTakeで&quot;書けない&quot;とかね、BigQueryらしくすることも使いやすさだし、LINQらしくすることも使いやすさ。この辺は私の匙加減。</p>
+<p>と、いうわけでIQueryableは、データベース系クエリの抽象化というのが幻想で、無用の長物と化してしまったのだけど、しかし役に立たなかったかといえば、そうじゃあない。LINQだと感じさせるための文化を作る一翼をIQueryableは担っていたから。データベース系へのクエリはこのように定義されていると&quot;らしい&quot;感じになる。その意識の統一にはIQueryableは必要だった、間違いなく。しかし時は流れて、もう登場から6年も経ってる。もう、同時にかかった呪いからは解放されていいんじゃないかな？みんなでIQueryableを埋葬しよう。</p>
+<p>と、いうのがIQueryableを使ってない理由。死にました。殺しました。IQueryableは死んだのですが、しかしExpressionは生きています！LINQ to BigQueryも当然Expressionで構成されています。空前のExpression Tree再評価の機運が！で、まぁしかしだからってふつーのアプリのクエリをExpression Treeでやりたいかは別の話ね。やっぱ構築コストとか、そもそもBigQueryは比較的シンプルなSQLだから表現しきれたけどふつーのSQLは複雑怪奇で表現できないだろー、とか、色々ありますからね。まぁ、あんま好ましく思ってないのは変わりません。</p>
+<p>コストの話は、BigQueryの場合は完全に無視できるのよね。クエリのレスポンスが普通のDBだったら数msだけど、BigQueryは数千~数万msと桁が4つも5つも違う。リクエスト数もふつーのクエリは大量だけどBigQueryはほとんどない（一般ユーザーが叩くものじゃないからね）。なので、ほんとうの意味でExpression Treeの構築や解釈のコストは無視できちゃう。そういう、相当富豪的にやっても何の問題もないというコンテキストに立っています。だからLINQ to BigQueryはあらゆる点で完全無欠に有益。</p>
+<h2>LINQPad用お土産一式</h2>
+<p>Query.GetContextとかDumpChartとかは、LINQPadの左下のMy Extensionsのとこに以下のコードをコピペってください。それで有効になります。本当はLINQPad Driver作ってそれ入れれば有効になるようにしたかったんですが、とりあえず今のところはこんなんで勘弁してくだしあ。こんなんでも、十分使えますので。</p>
+<pre><code class="language-csharp">// Import this namespaces
+BigQuery.Linq
+System.Windows.Forms.DataVisualization.Charting
+Google.Apis.Auth.OAuth2
+Google.Apis.Bigquery.v2
+Google.Apis.Util.Store
+Google.Apis.Services
+
+public static class Query
+{
+    public static BigQueryContext GetContext()
+    {
+        BigQueryContext context;
+        // Replace this JSON. OAuth2 JSON Generate from GCP Management Page. 
+        var json = @&quot;{&quot;&quot;installed&quot;&quot;:{&quot;&quot;auth_uri&quot;&quot;:&quot;&quot;https://accounts.google.com/o/oauth2/auth&quot;&quot;,&quot;&quot;client_secret&quot;&quot;:&quot;&quot;&quot;&quot;,&quot;&quot;token_uri&quot;&quot;:&quot;&quot;https://accounts.google.com/o/oauth2/token&quot;&quot;,&quot;&quot;client_email&quot;&quot;:&quot;&quot;&quot;&quot;,&quot;&quot;redirect_uris&quot;&quot;:[&quot;&quot;urn:ietf:wg:oauth:2.0:oob&quot;&quot;,&quot;&quot;oob&quot;&quot;],&quot;&quot;client_x509_cert_url&quot;&quot;:&quot;&quot;&quot;&quot;,&quot;&quot;client_id&quot;&quot;:&quot;&quot;&quot;&quot;,&quot;&quot;auth_provider_x509_cert_url&quot;&quot;:&quot;&quot;https://www.googleapis.com/oauth2/v1/certs&quot;&quot;}}&quot;;
+
+        using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(json)))
+        {
+            // Open Browser, Accept Auth
+            var userCredential = GoogleWebAuthorizationBroker.AuthorizeAsync(ms,
+                new[] { BigqueryService.Scope.Bigquery },
+                &quot;user&quot;,
+                CancellationToken.None, new FileDataStore(@&quot;LINQ-to-BigQuery&quot;)) // localcache
+                .Result;
+
+            var bigquery = new BigqueryService(new BaseClientService.Initializer
+            {
+                ApplicationName = &quot;LINQ to BigQuery&quot;,
+                HttpClientInitializer = userCredential
+            });
+
+            context = new BigQueryContext(bigquery, &quot;write your project id&quot;);
+        }
+        // Timeout or other options
+        context.TimeoutMs = (long)TimeSpan.FromMinutes(1).TotalMilliseconds;
+        return context;
+    }
+}
+
+public static class MyExtensions
+{
+    public static IEnumerable&lt;T&gt; DumpChart&lt;T&gt;(this IEnumerable&lt;T&gt; source, Func&lt;T, object&gt; xSelector, Func&lt;T, object&gt; ySelector, SeriesChartType chartType = SeriesChartType.Column, bool isShowXLabel = false)
+    {
+        var chart = new Chart();
+        chart.ChartAreas.Add(new ChartArea());
+        var series = new Series { ChartType = chartType };
+        foreach (var item in source)
+        {
+            var x = xSelector(item);
+            var y = ySelector(item);
+            var index = series.Points.AddXY(x, y);
+            series.Points[index].ToolTip = item.ToString();
+            if (isShowXLabel) series.Points[index].Label = x.ToString();
+        }
+        chart.Series.Add(series);
+        chart.Dump(&quot;Chart&quot;);
+        return source;
+    }
+
+    public static IEnumerable&lt;IGrouping&lt;TKey, T&gt;&gt; DumpGroupChart&lt;TKey, T&gt;(this IEnumerable&lt;IGrouping&lt;TKey, T&gt;&gt; source, Func&lt;T, object&gt; xSelector, Func&lt;T, object&gt; ySelector, SeriesChartType chartType = SeriesChartType.Line)
+    {
+        var chart = new Chart();
+        chart.ChartAreas.Add(new ChartArea());
+        foreach (var g in source)
+        {
+            var series = new Series { ChartType = chartType };
+            foreach (var item in g)
+            {
+                var x = xSelector(item);
+                var y = ySelector(item);
+                var index = series.Points.AddXY(x, y);
+                series.Points[index].ToolTip = item.ToString();
+            }
+            chart.Series.Add(series);
+        }
+        chart.Dump(&quot;Chart&quot;);
+        return source;
+    }
+}
+</code></pre>
+<p>GCPの管理ページからOAuth2認証用のJSONをベタ貼りするのとプロジェクトIDだけ書いてもらえれば使えるかと。最初にブラウザ立ち上がって認証されます、2回目以降はローカルフォルダにキャッシュされてるので不要。まぁ色々ザルなんですが、軽く使う分にはいいかな、と。</p>
+<h2>まとめ</h2>
+<p>いやもう本当に、この手のソリューションではBigQueryが群を抜いて凄い。Azure使ってる人もAWS使ってる人（実際、うちのプロダクトはAWS上で動かしてますがデータはBigQueryに投げてます）もオンプレミスの人もBigQuery使うべきだし、他のものを使う意味が分からないレベル。とにかく試せ、であり、そして試すのは皆Googleアカウントは絶対持ってるはずだからワンポチするだけで立ち上がってるし、最初から膨大なサンプルデータがあるので簡単に遊べるし、一発で気にいるはず、間違いない。</p>
+<p>そしてWindows(C#)の人には、LINQ to BigQuery + LINQPadがベストなツールとなってくれるはず。むしろあらゆるBigQueryを扱う環境の中でC#こそが最高といえるものになってくれるよう、色々やっていきたいですね。</p>
+</div>
+<a href="./publish/6">Prev |</a>
+<a href="./publish/8">| Next</a>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

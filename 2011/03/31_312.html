@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - Windows Phone 7でJSONを扱う方法について(+ Bing APIの使い方)</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2011/0331_312.html">Windows Phone 7でJSONを扱う方法について(+ Bing APIの使い方)</a></h1>
+<ul class="date"><li>2011-03-31</li></ul>
+<div class="entry_body"><p>C#と親和性の高いデータ形式はXMLです。何と言ってもLinq to Xmlが強力です。また、SOAPも悪くない、というのもVisual Studioの自動生成が効くので何も考えずともホイホイ使えます。ではJSONは、というと、これは割と扱いづらいところがあるのが正直なところ。しかしWindows Phone 7においては、JSONを選択すべきでしょう。なにせ、モバイル機器。ネットワークがとても貧弱。データは小さいに越したことはない。XMLとJSONとでは、雲泥の差です。</p>
+<p>WPFではJsonReaderWriterFactory(と、内部にそれを用いた<a href="http://dynamicjson.codeplex.com/" title="DynamicJson">DynamicJson</a>)、SilverlightではSystem.Jsonなどが用意されていますが、WP7には一切ありません。じゃあどうするかといえば、シリアライザを使います。WP7ではDataContractJsonSerializerが標準で用意されている(WPF, SLにもあります)ので、それを使ってデシリアライズしてJSONをオブジェクトに変換するのが基本戦略となります。</p>
+<p>外部ライブラリ、<a href="http://json.codeplex.com/" title="Json.NET">Json.NET</a>を使うという手も勿論ありますが。</p>
+<h2>BingからのJSONの取得</h2>
+<p>何はともあれ、サンプル題材のJSONを拾ってきましょう。Webからの取得というと、最近はいつもTwitterのPublic Timelineでマンネリ飽き飽きなので、別のものを。WP7なので、<a href="http://www.bing.com/developers" title="Bing Developer Center">Bing API</a>を使いましょう！Bing APIはIDを取得しないと使えないのでサンプル的にどうよ、というところもありますが、IDの取得は簡単(ほんとワンクリックです)だしWP7と親和性の高いAPIでもあるので、これを機に、試しに取ってみるのも良いのではと思います。画像検索、翻訳など色々種類があるのですが、今回はWeb検索(sources=web)にします。</p>
+<pre><code class="language-csharp">// 標準WP7テンプレのMainPage.xaml.csにベタ書き
+
+const string AppId = &quot;&quot;; // AppIdは登録してください
+
+Uri CreateQuery(params string[] words)
+{
+    // countなどは変数で置き換えれるようにするといいのではと思います、ここでは固定決め打ちですが
+    var query =
+          &quot;?Appid=&quot; + AppId
+        + &quot;&amp;query=&quot; + Uri.EscapeUriString(string.Join(&quot; &quot;, words))
+        + &quot;&amp;sources=web&quot;
+        + &quot;&amp;version=2.0&quot;
+        + &quot;&amp;Market=ja-jp&quot;
+        + &quot;&amp;web.count=20&quot;
+        + &quot;&amp;web.offset=0&quot;;
+
+    return new Uri(&quot;http://api.search.live.net/json.aspx&quot; + query);
+}
+
+public MainPage()
+{
+    InitializeComponent();
+
+    var wc = new WebClient();
+
+    Observable.FromEvent&lt;DownloadStringCompletedEventHandler, DownloadStringCompletedEventArgs&gt;(
+            h =&gt; h.Invoke, h =&gt; wc.DownloadStringCompleted += h, h =&gt; wc.DownloadStringCompleted -= h)
+        .ObserveOnDispatcher()
+        .Subscribe(e =&gt;
+        {
+            var json = e.EventArgs.Result; // ダウンロード結果(json文字列)
+            MessageBox.Show(json);
+        });
+
+    wc.DownloadStringAsync(CreateQuery(&quot;地震&quot;));
+}
+</code></pre>
+<p>json.aspxにクエリ文字列をつけてGETするだけなので割とお手軽。クエリ文字列がゴチャゴチャして分かりづらいのですが、基本的に弄るのはqueryとweb.countぐらいかな、と思います。BingのReferenceは、生成元のクラス構造がまんま掲示されているだけで、恐ろしく分かりづらいので、適当にサンプルから当たりをつける感じで。</p>
+<p>非同期通信の実行は<a href="http://msdn.microsoft.com/en-us/data/gg577609" title="Reactive Extensions">Reactive Extensions(Rx)</a>で行います。Windows Phone 7では標準で入っているのでSystem.ObservableとMicrosoft.Phone.Reactiveを参照に加えてください。非同期通信を生でやるなんてありえませんから！Rx利用を推奨します。</p>
+<p>得られるJSONは下記のものです。</p>
+<pre><code class="language-javascript">{
+    &quot;SearchResponse&quot;: {
+        &quot;Version&quot;: &quot;2.0&quot;,
+        &quot;Query&quot;: {
+            &quot;SearchTerms&quot;: &quot;地震&quot;
+        },
+        &quot;Web&quot;: {
+            &quot;Total&quot;: 88,
+            &quot;Offset&quot;: 0,
+            &quot;Results&quot;: [
+                {
+                    &quot;Title&quot;: &quot;地震情報 - Yahoo!天気情報&quot;,
+                    &quot;Description&quot;: &quot;Yahoo!天気情報は、市区町村の天気予報、世界の天気...&quot;,
+                    &quot;Url&quot;: &quot;http://typhoon.yahoo.co.jp/weather/jp/earthquake/&quot;,
+                    &quot;DisplayUrl&quot;: &quot;typhoon.yahoo.co.jp/weather/jp/earthquake&quot;,
+                    &quot;DateTime&quot;: &quot;2011-03-29T19:11:00Z&quot;
+                },
+                {
+                    &quot;Title&quot;: &quot;地震情報 :: ウェザーニュース&quot;,
+                    &quot;Description&quot;: &quot;最新の地震の震度、震源地、震度分布を速報で届けます...&quot;,
+                    &quot;Url&quot;: &quot;http://weathernews.jp/quake/&quot;,
+                    &quot;DisplayUrl&quot;: &quot;weathernews.jp/quake&quot;,
+                    &quot;DateTime&quot;: &quot;2011-03-28T09:10:00Z&quot;
+                },
+                // 配列上なので幾つも...
+            ]
+        }
+    }
+}        
+</code></pre>
+<p>JSONに関しては<a href="http://jsonviewer.codeplex.com/">JSON Viewer</a>をVisual StudioのVisualizerに組み込むとかなり快適にプレビュー出来るようになります。が、カスタムVisualizerはWP7では実行出来ないのでテキストで見て、スタンドアロンのものにコピペってのを実行ですね、しょんぼり。</p>
+<h2>DataContractJsonSerializer</h2>
+<p>では、JSONをオブジェクトに変換しましょう。基本的には、1:1に対応するクラスを作るだけ。必要に応じて System.Runtime.Serializationの参照を加えDataContract, DataMember属性なども加えればよし。</p>
+<pre><code class="language-csharp">public class BingWebRoot
+{
+    public SearchResponse SearchResponse { get; set; }
+}
+
+public class SearchResponse
+{
+    public string Version { get; set; }
+    public Query Query { get; set; }
+    public Web Web { get; set; }
+}
+
+public class Query
+{
+    public string SearchTerms { get; set; }
+}
+
+public class Web
+{
+    public int Total { get; set; }
+    public int Offset { get; set; }
+    public Results[] Results { get; set; }
+}
+
+public class Results
+{
+    public string Title { get; set; }
+    public string Description { get; set; }
+    public string Url { get; set; }
+    public string DisplayUrl { get; set; }
+    public string DateTime { get; set; }
+}
+</code></pre>
+<p>JSONは、JavaScriptのオブジェクトとほぼ同一の記述ですが、ようするに{}になっている部分はクラスで、[]になっている部分は配列で、置き換えていけばいい、ということで。難しくはないのですが、面倒くさいには大変面倒くさい。なお、JSONの構造を全部記述する必要はなく、必要なものだけでも構いません、例えばVersionやQueryはいらないから省くとか、全然アリです。</p>
+<p>そして、 System.ServiceModel.Web を参照設定に加え、DataContractJsonSerializerを使います。</p>
+<pre><code class="language-csharp">var wc = new WebClient();
+
+Observable.FromEvent&lt;OpenReadCompletedEventHandler, OpenReadCompletedEventArgs&gt;(
+        h =&gt; h.Invoke, h =&gt; wc.OpenReadCompleted += h, h =&gt; wc.OpenReadCompleted -= h)
+    .ObserveOnDispatcher()
+    .Subscribe(e =&gt;
+    {
+        using (var stream = e.EventArgs.Result)
+        {
+            var serializer = new DataContractJsonSerializer(typeof(BingWebRoot));
+            var result = (BingWebRoot)serializer.ReadObject(stream);
+
+            MessageBox.Show(result.SearchResponse.Web.Results[0].Title);
+        }
+    });
+
+wc.OpenReadAsync(CreateQuery(&quot;地震&quot;));
+</code></pre>
+<p>デシリアライズはReadObject、シリアライズはWriteObjectで行います。基本はstreamを渡すだけでオブジェクトの出来上がり。</p>
+<h2>with Reactive Extensions</h2>
+<p>ですが、まあ、Resultsが欲しいだけなのにSearchResponse.Web.Resultsは長げーよ、とか、DateTimeがstringでイヤだー、とか色々あります。そういう場合はJSONとのマッピング用のクラスとは別に、アプリケーション側で使うクラスを別に立ててやればいいんぢゃないかしら。</p>
+<pre><code class="language-csharp">public class SearchResults
+{
+    public string Title { get; set; }
+    public string Url { get; set; }
+    public DateTime DateTime { get; set; }
+
+    public override string ToString()
+    {
+        return DateTime + &quot; : &quot; + Title + &quot; : &quot; + Url;
+    }
+}
+</code></pre>
+<p>TitleとUrlとDateTimeしかいらない！という具合で。これを、今度はWebRequestを使って書くと</p>
+<pre><code class="language-csharp">var req = WebRequest.Create(CreateQuery(&quot;ほむほむ&quot;));
+
+Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)()
+    .Select(r =&gt;
+    {
+        using (var stream = r.GetResponseStream())
+        {
+            var serializer = new DataContractJsonSerializer(typeof(BingWebRoot));
+            return (BingWebRoot)serializer.ReadObject(stream);
+        }
+    })
+    .SelectMany(x =&gt; x.SearchResponse.Web.Results)
+    .Select(x =&gt; new SearchResults { DateTime = DateTime.Parse(x.DateTime), Title = x.Title, Url = x.Url })
+    .ObserveOnDispatcher()
+    .Subscribe(x =&gt; 
+    {
+        // 加工は全部終わってるのでここで色々自由に処理
+        Debug.WriteLine(x);
+    });
+</code></pre>
+<p>となります。最初のSelectは非同期の結果、次のSelectManyではResults[]、つまり普通の配列を平坦化して、以降は普通のLinqのようなコレクション処理をしています。</p>
+<p>非同期リクエストとオブジェクトのコレクション処理が、完全にシームレスに溶け込んでいます。これが、RxがLinqとして存ることの真価の一つです。記述が統一され、かつ限りなくシンプルになる。Rxは非同期が、イベントが、時間が、簡単に扱えます。でも、本当の真価は単独で使うというだけでなく、それらが全てPush型シーケンスに乗っていることで、統合することが可能だというところにあります。</p>
+<p>でも、むしろ分かりにくい？ふむむ……。慣れの問題、などというと全く説得力がなくてアレですが、しかし、慣れです。記述がシンプルになり、柔軟性と再利用性が増していることには間違いないわけで、後は一度全て忘れてLINQの世界に飛び込んでしまえばいいと思うんだ。</p>
+<p>Linqは各処理の単位が細分化されている(Selectは射影、Whereはフィルタ)ことも特徴ですが、これは思考の再利用可能性を促します。非同期-&gt;オブジェクト配列=SelectManyなど、単純な定型パターンに落とし込めます。C#はもとより強力なIntelliSenseにより、ブロックを組み立てるかの如きなプログラミングを可能にしていますが、Linqでは、それが更に先鋭化されていると見れます。</p>
+<h2>まとめ</h2>
+<p>これも現在製作中のWP7アプリからの一部です。最近Bing API利用に切り替えたので。無駄に汎用化して作りこみつつきりがないので適度なところできりあげつつ。ユニットテスト作ってあったので移行自体は幸いすんなりいった。良かった良かった。テスト大事。</p>
+<p>Bing APIの前は諸事情あってGoogleからのスクレイピングでした。スクレイピングはグレーだろうということで代替案をずっと探していて、何とかBingに落ち着きました。最初はどうにも使い物にならない、と思ったのですが、検索パラメータを色々変えて、ある程度望む結果が出るようにはなったかな、と。Bingは結構癖があって、調整大変ですね。その話は後日、WP7アプリが完成したときにでも……。</p>
+<p>コード的にはスクレイピングのほうも割と凝ってたんですけどねー、バッサリとゴミ箱行き。復活することは、ないかな。もったいないけどしょうがない。いつかそのうち紹介する日は、来るかも来ないかも。</p>
+<p>そんなわけで延々と足踏みしていて実装は相変わらず一歩も進んでませんが(！) 順調に制作は進行中なので乞うご期待。いやほんと。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

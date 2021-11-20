@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - 何故C#には(Javaの)Collections.sortに相当するものがないのか</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2010/0225_243.html">何故C#には(Javaの)Collections.sortに相当するものがないのか</a></h1>
+<ul class="date"><li>2010-02-25</li></ul>
+<div class="entry_body"><p><a href="http://ap.atmarkit.co.jp/bbs/core/fdotnet/20105">Java は Collections.sort があるのに .NET は List 自身が Sort メソッドを持っているのはなぜ？</a></p>
+<p>だそうです。あまり疑問でもないです。だってIListはSortないし。比較するならIList - ListでありList<T> - ArrayList<T>でしょう。とはいっても、JavaのArrayListはほとんどList(Javaのほうの)と同じようなものですが、そうなってくるとむしろメソッドがなくて不便！って思ってしまうのはC#脳。</p>
+<p>そして何故かスレッドの話は迷走していて不思議。パフォーマンス？ んー……。勝手な印象論ですみませんが、1さん(名前を出すのもアレなので1さん、ということにさせてください)はJavaのCollections.sortの性能を勘違いしているんじゃないかな？ 配列のコピーを問題にしてるようだけど、Javaの方式はコピー、してますよ。もっとも最初の方の発言(効率は重要じゃない)と後ろの発言(コピーが嫌)が矛盾していますが。ともかく、実際のSunの実装を見てみましょう。</p>
+<pre><code class="language-java">public static &lt;T extends Comparable&lt;? super T&gt;&gt; void sort(List&lt;T&gt; list) {
+    Object[] a = list.toArray();
+    Arrays.sort(a);
+    ListIterator&lt;T&gt; i = list.listIterator();
+    for (int j=0; j&lt;a.length; j++) {
+        i.next();
+        i.set((T)a[j]);
+    }
+}
+</code></pre>
+<p>toArrayしてコピー。それをsortして、forで詰め替え。C#で同じような外部Sort関数を書くのならば以下のようになります。厳密には違いますが、それは最後に述べます。</p>
+<pre><code class="language-csharp">static void Sort&lt;T&gt;(IList&lt;T&gt; list)
+{
+    T[] array = new T[list.Count];
+    list.CopyTo(array, 0);
+    Array.Sort(array); // List&lt;T&gt;のSortもArray.Sortを利用しています
+
+    for (int i = 0; i &lt; array.Length; i++)
+    {
+        list[i] = array[i];
+    }
+}
+</code></pre>
+<p>forで詰め替えている様は、マジマジと見ると微妙。実際、このコードには問題があります。クイズだと思って、どこが問題なのか考えてみてください、答えは最後に述べます。</p>
+<p>List&lt;T&gt;のSortは、内部に配列を持っているため、CopyToとforでの詰め替えが不要です。パフォーマンスで言えば理想的な形になっているわけです。
+ゲッタとセッタ経由でソートの入れ替えすればいいぢゃん、というのはそうですね、違います。配列のほうが速いし！というのもそうでしょうが、それ以前にListインターフェイスの実装は自由です。例えばLinkedListのゲッタを考えてみたらどうでしょう。getの度に前(もしくは後ろ)から走査があるため、パフォーマンスが悲惨な事になるのは容易に想像出来ます。ListはArrayListだけじゃないので、ゲッタ/セッタに頼るのは無理がある。汎用的に、Listインターフェイスならば何でも受け入れるという設計にする以上、コピーを作るのは不可避です。</p>
+<p>というわけで、パフォーマンス云々を言うならば、内部を知っているListクラスがSortを持つのはベストな選択でしょう。そして利便性を考えてもベストな選択。ならばいったい何処に不満があるのでしょうか？</p>
+<p>Javaのほうが優れているのは、「自前でIListを実装したクラス」を破壊的ソートするのに、クラスにSortメソッドを用意したくない。といったところでしょうか。Sortの実装自体は通常はArray.Sortを呼ぶだけなので簡単なので別に手間でもないのですけどね……。というか、この手の基本アルゴリズムを自前実装したのを使うのは悪です(勉強用に、なら当然すべきで悪なのは自前実装の妄信です)。</p>
+<p>ようするところ、Sortメソッドを自前で用意したくないけど破壊的ソートが欲しい、ということになる。ふーむ、個人的にはなくてもいいかな。非破壊的なソートがLinqのOrderByを使うことで可能なので、破壊的のほうを欲しいとはあまり思わない。</p>
+<h2>ListIterator</h2>
+<p>では本題。何でC#には破壊的ソートをしてくれる外部関数がないの？というと、インターフェイスの都合上、不可能だから。が理由だと私は考えています(そもそも必要性薄いから、が最大の理由だと思いますがそれはそれとして)。Javaのsortと私の書いたC#のSortを見比べてください。大きな違いがあります。それは、forでソートした配列をリストに詰め直している部分。</p>
+<pre><code class="language-java">i.set((T)a[j]); // Java
+list[i] = array[i]; // C#
+</code></pre>
+<p>C#の場合、listがLinkedListのようなものだった場合は悲惨なことになります。それに比べて、JavaではListIteratorを用いているため、配列と同じ処理効率で値をセット出来ます。C#には、このJavaのListIteratorに相当するものがないので、全てのIListに対して問題なく性能を発揮する破壊的ソート関数を作成することは不可能です。</p>
+<p>「LinkedListのようなもの」という歯切れの悪い言い方をしたのは、.NETのLinkedList<T>はIListを実装していないからです。インデクサで気楽にアクセスすることは出来ません。これは、大変素晴らしい決断だと思います。軽い操作だと勘違いさせるような重たい処理は最初から用意しない。(なお、どうしてもindexで取得したい場合はLinqのElementAtが使えます)。JavaのLinkedListと比較してC#のは貧弱すぎて困るぜ！とか思っていたならば、それは大間違いで、むしろJavaのLinkedListが危険すぎて困る。</p>
+<p>ただ、IListのインデクサは取得にコストがかからないことを期待、してもいいとは思います。そんなのを一々気にしてたら何も作れない。それにちゃんと、.NETのLinkedListはIListじゃないしね。ね。というわけで上のほうで出したクイズは、問題があるかないかは何とも言えない微妙ラインです。んーと、つまりはfor(int i;i &lt; hoge.length(); i++)の問題点はどこだー！みたいな話で、基本的にはhoge.length()なんてコストがかからないのを期待して問題ないし、コストがかかるんならそのクソクラスが悪い、みたいな。</p>
+<p>ついでに個人的な意見ですがListインターフェイスにListIteratorはそこまで必要ではない。普通のIteratorと機能がかなり被る割には、使う機会はとても少ない。おまけに、ListIteratorのsetってoptionalで、実装されていることが保証されてない。この手の、実装しなくてもいいインターフェイスって撲滅した方がいいと思うんですけどねー。私は怖くて呼べません。</p>
+<p>とはいえ、保証されないインターフェイスを完全に撲滅など出来はしません。例えばList(Java)/IList(C#)のAddは実行出来ることが保証されていない。JavaならArrays.asList(1, 2, 3).add(4)を、C#なら(array as IList<int>).Add で簡単にNotSupportedを吐きます。他にもReadOnlyにしたコレクションにインデクサで値をセットしようとすれば、これまた同様に例外。コレクションフレームワークにおいてインターフェイスの完全保証を実現しようとするのは大変難しい。とは、私じゃなくて <a href="http://java.sun.com/javase/ja/6/docs/ja/technotes/guides/collections/designfaq.html">Java コレクション API の設計に関する FAQ</a>でSunが妥協した、と言うぐらいなので、無理なのでしょう。</p>
+<p>まとまってませんが、結論としては疑問に思ったらソース読むのが手っ取り早い、とかそんなところで。Javaの良いところはC#に比べてフレームワークのコードへのアクセスが簡単なところですね。C#は部分的にはコードは公開されていて大変タメになるのですが、色々と面倒くさいし、公開されてない範囲も少なくないし……。.NET Reflectorのお世話になりまくってイリーガルな気分を味わうのはもう嫌ぽ。嘘。リフレクタ大好きですがそれはそれ。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - C# Linqでクイックソート</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2009/0930_206.html">C# Linqでクイックソート</a></h1>
+<ul class="date"><li>2009-09-30</li></ul>
+<div class="entry_body"><pre><code class="language-haskell">qsort []     = []
+qsort (x:xs) = qsort elts_lt_x ++ [x] ++ qsort elts_greq_x
+                 where
+                   elts_lt_x   = [y | y &lt;- xs, y &lt; x]
+                   elts_greq_x = [y | y &lt;- xs, y &gt;= x]
+</code></pre>
+<p>これはHaskellのコードで、良く見かける定番のQuickSort。うん、短い。というわけでLinqでそれをやる。というネタは既出のン番煎じなのですが、気にせずやる。</p>
+<pre><code class="language-csharp">// LinqでHaskell風のクイックソート
+public static IEnumerable&lt;T&gt; QuickSort&lt;T&gt;(IEnumerable&lt;T&gt; source)
+    where T : IComparable&lt;T&gt;
+{
+    if (!source.Any()) return source;
+    var pivot = source.First();
+    return source
+        .GroupBy(x =&gt; x.CompareTo(pivot))
+        .OrderBy(g =&gt; g.Key) // OrderBy使うのはどうかなー、というところはある
+        .SelectMany(g =&gt; (g.Key == 0) ? g : QuickSort(g));
+}
+</code></pre>
+<p>GroupBy-&gt;SelectManyと流れるように書けて美しいー。これならHaskellにも引けを取らないですね！但し問題なのは、OrderByを使用しているところ。CompareToの結果である-1, 0, 1を並べ替えるために使っているのだけど、OrderByの中身はシュワルツ変換の挟まったクイックソートそのものなので邪道な感は否めない。OrderBy使うなら、そもそもsource.OrderBy(x =&gt; x)でもいいぢゃん、って話になってしまう。</p>
+<pre><code class="language-csharp">// 非GroupBy版。LookupはGroupByの即時評価版と考えていい。
+public static IEnumerable&lt;T&gt; QuickSort&lt;T&gt;(IEnumerable&lt;T&gt; source)
+    where T : IComparable&lt;T&gt;
+{
+    if (!source.Any()) return source;
+    var pivot = source.First();
+    var lookup = source.ToLookup(x =&gt; x.CompareTo(pivot));
+    return QuickSort(lookup[-1]).Concat(lookup[0]).Concat(QuickSort(lookup[1]));
+}
+</code></pre>
+<p>GroupByをToLookupに書き変えました。ToLookupはGroupByの即時評価版といった感じで、インデクサによるアクセスが可能。インデクサ使わないでそのままforeachで列挙する、なんて時はGroupByを使った方が良いです。今回はインデクサで順番を明示的に指定するため、ToLookupでパーティション切って、Concatで繋いでやれば出来あがり。やってることが非常に分かりやすくて良い。ソースの見た目も中々綺麗じゃないでしょうか。Haskellのものとも非常に近いです(ようするに++がConcatなので) ToLookupではなくWhereを使えば、見た目は更にHaskellに近づきますが、列挙が二回になるので、ここはToLookupで。</p>
+<pre><code class="language-csharp">// 普通に？書いた場合。
+public static void QuickSort&lt;T&gt;(IList&lt;T&gt; source, int lowerBound, int upperBound)
+    where T : IComparable&lt;T&gt;
+{
+    var pivot = source[lowerBound + ((upperBound - lowerBound) &gt;&gt; 1)];
+    var left = lowerBound - 1;
+    var right = upperBound + 1;
+    while (true)
+    {
+        while (source[++left].CompareTo(pivot) &lt; 0) ;
+        while (source[--right].CompareTo(pivot) &gt; 0) ;
+        if (left &gt;= right) break;
+        var temp = source[left];
+        source[left] = source[right];
+        source[right] = temp;
+    }
+    if (lowerBound &lt; left - 1) QuickSort(source, lowerBound, left - 1);
+    if (right + 1 &lt; upperBound) QuickSort(source, right + 1, upperBound);
+}
+</code></pre>
+<p>今度は非Linqに一般的？な書き方で。あまりヘタな書き方するとアレだなあ、と思ったので<a href="http://blog.livedoor.jp/dankogai/archives/51182235.html">404 Blog Not Found:javascript - Array#sortはオレquicksortより遅い by Chrome</a>のコードをC#に移植しました。<a href="http://dic.nicovideo.jp/a/%E3%81%82%E3%81%9F%E3%81%97%E3%81%93%E3%81%AE%E3%83%91%E3%82%A4%E5%AB%8C%E3%81%84%E3%81%AA%E3%81%AE%E3%82%88%E3%81%AD">あたしこの書き方嫌いなのよね</a>、という感じにゴチャゴチャした印象は否めないというか、まあ、嫌いなのよね。一本の配列で頑張るところが、ゆとりな私としてはしんどい。ビットシフトも嫌よね。</p>
+<pre><code class="language-csharp">public static IEnumerable&lt;T&gt; QuickSort&lt;T&gt;(IEnumerable&lt;T&gt; source)
+    where T : IComparable&lt;T&gt;
+{
+    var enumerator = source.GetEnumerator();
+    if (!enumerator.MoveNext()) yield break;
+
+    var pivot = enumerator.Current;
+    var less = new List&lt;T&gt;();
+    var equal = new List&lt;T&gt;();
+    var greater = new List&lt;T&gt;();
+    do
+    {
+        switch (enumerator.Current.CompareTo(pivot))
+        {
+            case -1: less.Add(enumerator.Current); break;
+            case 0: equal.Add(enumerator.Current); break;
+            case 1: greater.Add(enumerator.Current); break;
+        }
+    } while (enumerator.MoveNext());
+
+    foreach (var item in QuickSort(less)) yield return item;
+    foreach (var item in equal) yield return item;
+    foreach (var item in QuickSort(greater)) yield return item;
+}
+</code></pre>
+<p>最後に、非Linqで、ToLookup版を再現してみたものを。do-whileがToLookupでforeachの連発がConcat。ようするに富豪的にListを作りまくるってわけなんですね！書きやすいし分かりやすいので、一本配列版よりも遥かに好き度高い。現代人はListを贅沢に大量に好きなだけ使うのです。まあ、Linq版がない状態でこの書き方が浮かぶ or 実行に移せるかどうかといったら、かなり無理ですけど。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

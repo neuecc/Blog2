@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - C#でTwitterのStreaming APIを使ってリスト自動追加</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2009/1105_213.html">C#でTwitterのStreaming APIを使ってリスト自動追加</a></h1>
+<ul class="date"><li>2009-11-05</li></ul>
+<div class="entry_body"><p><a href="http://neue.cc/software/xboxinfotwit" title="neue cc - XboxInfoTwit">XboxInfoTwit</a>の認証数は現在450を越えて、近いうちに500には届きそうです。現在の実装はIEを裏で動かすという、しょーもないものになっていて、それに起因する不具合や、どうしょうもない点が幾つかあるため、クローラー部分は全面的に書き変えようと思っています。あと、エラーメッセージがド不親切とか至らない点だらけでした、すみません。そんな次期バージョンの作業は全然捗ってないのですが、せめて年内ぐらいには何とかしたいです。</p>
+<h2>@のお話</h2>
+<p>ゲーム名に@が含まれるものをポストする(例えばTHE IDOLM@STER)と、STERさんに@が飛んで迷惑。というお話を見たので検証してみました。@は行頭かスペース + @ + 数字/アルファベットのものがあると飛びます。つまり、@の前にアルファベットがあれば@は飛びません。なので、別にIDOLM@STERだからってSTERさんに@が飛びまくる、なんてことはありません。正規表現で表すと「(?&lt;=^| )@[a-zA-Z0-9_]+」になります。ついでに、ハッシュタグのほうも軽く検証してみました。基本的には@と同じですが、英単語以外にもリンクが張られるようなので、正規表現は「(?&lt;=^| )#[^ ]+」になるようです。</p>
+<h2>List</h2>
+<p>Twitterにリストが実装されました。そこで、<a href="https://twitter.com/neuecc/xboxinfotwitusers" title="Twitter / @neuecc/XboxInfoTwitUsers">XboxInfoTwitユーザーのリスト</a>を作ってみることにしました。手動で探して登録も大変なので、プログラムでクロールして追加していきましょう。パブリックイタイムラインからXboxInfoTwit利用者(Source=XboxInfoTwit)の人を片っ端からリスト登録するという方針で行きます。以下、C#でのTwitterストリーミングAPIの使用法と実際のコードになります。同じようなことをやりたい人は、適当に書き替えてどうぞ使ってください。突っ込みどころ多数なのでむしろ突っ込んで欲しい……。</p>
+<p>2010/4/29 追記：このコードはストリームAPIの利用法にしては冗長すぎるので、書き直しました → <a href="http://neue.cc/2010/04/29_255.html" title="neue cc - C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions">neue cc - C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions</a> ストリームAPI取得コードを参考にする場合は、新しいほうを見てください。</p>
+<pre><code class="language-csharp">using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Net;
+using System.IO;
+using System.Xml.Linq;
+using System.Collections.Specialized;
+using System.Threading;
+using System.Xml;
+
+static class Program
+{
+    // ザ・決めうち文字列s
+    const string UserName = &quot;neuecc&quot;; // 自分のアカウントのユーザー名を
+    const string Password = &quot;password&quot;; // 同じくパスワードを
+    const string ListName = &quot;xboxinfotwitusers&quot;; // リストを、入力ですです
+    const string StreamApi = &quot;http://stream.twitter.com/1/statuses/sample.xml&quot;;
+    const string ListMembersApiFormat = &quot;http://twitter.com/{0}/{1}/members.xml&quot;;
+
+    /// &lt;summary&gt;指定リストにメンバーを追加する&lt;/summary&gt;
+    static void AddMemberToList(string userName, string listName, int id)
+    {
+        var url = string.Format(ListMembersApiFormat, userName, listName);
+        var wc = new WebClient { Credentials = new NetworkCredential(UserName, Password) };
+        wc.UploadValues(url, new NameValueCollection() { { &quot;id&quot;, id.ToString() } });
+    }
+
+    /// &lt;summary&gt;指定リストのメンバーIDを全て取得する&lt;/summary&gt;
+    static IEnumerable&lt;int&gt; EnumerateListMemberID(string userName, string listName)
+    {
+        var format = string.Format(ListMembersApiFormat, userName, listName) + &quot;?cursor={0}&quot;;
+        var cursor = -1L;
+        var xmlReaderSettings = new XmlReaderSettings
+        {
+            XmlResolver = new XmlUrlResolver { Credentials = new NetworkCredential(UserName, Password) }
+        };
+        while (true)
+        {
+            using (var xr = XmlReader.Create(string.Format(format, cursor), xmlReaderSettings))
+            {
+                var xEle = XElement.Load(xr);
+                foreach (var item in xEle.Descendants(&quot;user&quot;).Select(x =&gt; (int)x.Element(&quot;id&quot;)))
+                {
+                    yield return item;
+                }
+                cursor = long.Parse(xEle.Element(&quot;next_cursor&quot;).Value);
+                if (cursor == 0) yield break;
+            }
+        }
+    }
+
+    /// &lt;summary&gt;ストリームAPIのパブリックタイムラインから無限に取得&lt;/summary&gt;
+    static IEnumerable&lt;XElement&gt; EnumeratePublicTimeline(StreamReader reader)
+    {
+        while (true)
+        {
+            var xmlString = reader.EnumerateLines()
+                .TakeWhile(s =&gt; s != &quot;&lt;?xml version=\&quot;1.0\&quot; encoding=\&quot;UTF-8\&quot;?&gt;&quot;)
+                .Join();
+            if (xmlString == &quot;&quot;) continue;
+            yield return XElement.Parse(xmlString);
+        }
+    }
+
+    /// &lt;summary&gt;サーバーが死んでないか確認&lt;/summary&gt;
+    static bool IsServerStatusOK()
+    {
+        var req = WebRequest.Create(&quot;http://twitter.com/help/test.xml&quot;);
+        HttpWebResponse res = null;
+        try
+        {
+            res = (HttpWebResponse)req.GetResponse();
+            if (res.StatusCode == HttpStatusCode.OK) return true;
+        }
+        catch (WebException e) { Console.WriteLine(e); }
+        finally { if (res != null) res.Close(); } // どうでもいいと思っていたり
+
+        return false;
+    }
+
+    static void Main(string[] args)
+    {
+        ServicePointManager.Expect100Continue = false; // おまじない(笑)
+        var count = 0; // モニタリング用のカウント変数(動作的には別に使わない)
+
+        var following = new HashSet&lt;int&gt;(EnumerateListMemberID(UserName, ListName));
+        var webRequest = (HttpWebRequest)HttpWebRequest.Create(StreamApi);
+        webRequest.KeepAlive = true;
+        webRequest.Credentials = new NetworkCredential(UserName, Password);
+
+    LOOP:
+        using (var res = webRequest.GetResponse())
+        using (var stream = res.GetResponseStream())
+        using (var reader = new StreamReader(stream))
+        {
+            try
+            {
+                // 例外が発生しなければ、無限リピートになっているのでこの部分を永久に続けます
+                EnumeratePublicTimeline(reader)
+                    .Do(_ =&gt; { if (++count % 100 == 0) Console.WriteLine(&quot;{0} : {1}&quot;, DateTime.Now, count); }) // 確認表示用
+                    .Where(x =&gt; x.Name == &quot;status&quot;)
+                    .Select(x =&gt; new
+                    {
+                        Source = x.Element(&quot;source&quot;).Value,
+                        ID = (int)x.Element(&quot;user&quot;).Element(&quot;id&quot;),
+                        Name = x.Element(&quot;user&quot;).Element(&quot;screen_name&quot;).Value
+                    })
+                    .Where(a =&gt; a.Source.Contains(&quot;XboxInfoTwit&quot;))
+                    .Do(a =&gt; Console.WriteLine(&quot;Found:{0}&quot;, a.Name)) // ここでも確認表示用
+                    .Where(a =&gt; following.Add(a.ID))
+                    .ForEach(a =&gt;
+                    {
+                        AddMemberToList(UserName, ListName, a.ID);
+                        Console.WriteLine(&quot;{0} : {1} : {2}&quot;, a.Name, DateTime.Now, count); // 確認表示用
+                    });
+            }
+            catch (IOException e)
+            {
+                Console.WriteLine(e); // 接続が閉じられてたりするのでー。
+                while (!IsServerStatusOK())
+                {
+                    Thread.Sleep(TimeSpan.FromMinutes(5)); // サーバー死んでたら5分間お休み
+                }
+            }
+            finally
+            {
+                webRequest.Abort(); // これ呼ぶ前にCloseするとハング
+            }
+        }
+        goto LOOP; // goto! goto!
+    }
+
+    // Extension Methods
+
+    public static IEnumerable&lt;string&gt; EnumerateLines(this StreamReader streamReader)
+    {
+        while (!streamReader.EndOfStream)
+        {
+            yield return streamReader.ReadLine();
+        }
+    }
+
+    public static string Join&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+    {
+        return source.Aggregate(new StringBuilder(), (sb, s) =&gt; sb.Append(s)).ToString();
+    }
+
+    public static void ForEach&lt;T&gt;(this IEnumerable&lt;T&gt; source, Action&lt;T&gt; action)
+    {
+        foreach (var item in source)
+        {
+            action(item);
+        }
+    }
+
+    public static IEnumerable&lt;T&gt; Do&lt;T&gt;(this IEnumerable&lt;T&gt; source, Action&lt;T&gt; action)
+    {
+        foreach (var item in source)
+        {
+            action(item);
+            yield return item;
+        }
+    }
+}
+</code></pre>
+<p>ストリーミングAPIとは無関係のリスト関連の処理や、投げやりなtry-catch-gotoがあって、ちょっとゴチャゴチャしてますが、基本的にはusing三段重ねの部分だけです。無限にXMLが継ぎ足されてくるので、接続を切らさずひたすらReadLine。XMLの切れ目は、XML宣言部を使うことにしましたが、今一つスマートではないです。文字列にしてParseってのもあまり良い感じじゃなく。あ、あと例外処理は全然出来てませんので何かあると平然と死にます。</p>
+<p>コードは、書き捨て感全開。例によって何でもLinq、何でもIEnumerable。コレクションになりそうな気配があると、すぐにじゃあyieldね、と考える癖がついてしまっていて。細かいことは後段に任せればいーんだよ、というのが楽ちんでして。リストメンバー全件取得の部分なんかは、わりとスマートに書けてるかと思うのですがどうでしょう。</p>
+<p>なお、このストリーミングAPIは全件を漏れなく取得出来るわけではないので、それなり、というかかなり漏れが出ます。なのでXboxInfoTwit使ってるのに登録されねーぞ、という場合は、しょーがない。です。そのうち登録されると思います。あと、このプログラムはサーバー上で24時間動かしているわけじゃなく、私のローカルPC上で動かしているだけなので、私の気まぐれで動かしてたり動かしてなかったりします。私が寝てる間はPCがウルサイので動いてませんし、私が家に居ない時は省エネのために動いてません。なので、むしろ登録されるほうが珍しいです。レアです。効率的には20000件に1人登録出来るか出来ないか、って感じでした。一時間に一人見つかるかどうかも怪しいぐらいの頻度。とてもレア。ぶっちゃけgoogle経由で引っ張ってくるとかしたほうが遙かに効率良さそうですが、まあ、Streaming API使ってみたかったというだけなので。</p>
+<p>そういえばですが、逆にリストに登録されてUZEEEE、という場合は、現状はリスト機能がベータのせいなのか拒否は出来ないようです。すみません。UZEEEE、と思っても我慢してください。どうしても嫌な場合は私の方にメッセージをくれれば、リストからの撤去と、プログラムから以後の追加をしないようなコードを入れたいと思っています。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

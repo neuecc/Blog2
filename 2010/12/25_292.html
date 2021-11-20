@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - Rx Christmas Release 2010によるPublishの変化解説</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2010/1225_292.html">Rx Christmas Release 2010によるPublishの変化解説</a></h1>
+<ul class="date"><li>2010-12-25</li></ul>
+<div class="entry_body"><p>メリークルシミマス。Happyなことに、<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Reactive Extensions for .NET (Rx)</a>が更新されました。なんと、WP7に標準搭載されたことだし安定性・互換性はある程度保証されてきたよねー、とか思った側から完全に互換を崩壊させる素晴らしいBreaking Changesをかましてきました！常識では計り知れない大胆な所業。そこにしびれるあこがれれぅ。</p>
+<p>さて、今回の変化はJoin/GroupJoin/Windowの新規搭載とPublish系の変更です。Joinについてはまた後日ということで、今回はPublishの変更について解説します。で、ですねえ、これはもう100%変わってます。昨日ちょうどPublishによる分配、とか書いたわけですが、出したコードは全部動かないです！素晴らしいタイミング！Ouch！</p>
+<p>端的に言えばPublishは引数にISubjectを受け取るよう変化。Prune/ReplayはPublishに統合されたことにより消滅。何でかというと、元々、分配ソースにSubjectを使うのがPublish、BehaviorSubjectを使うのが初期値付きPublish、AsyncSubjectを使うのがPrune、ReplaySubjectを使うのがReplayでした。分配ソースを任意で受け取るようになったため、メソッドが分かれる意味がなくなったというわけですね。</p>
+<p>ナンタラSubjectの解説は、まあまた後日にでも。簡単に言えばSubjectは普通のイベントと同じで素直な挙動、つまりOnNextしたら値が流れる。AsyncSubjectは非同期を模していて、OnNextされたら値を一つだけキャッシュし、OnCompletedされたらキャッシュした値を流す。以降はSubscribeされるたびにキャッシュした値を即座に流し、OnCompletedも発行。ReplaySubjectはOnNextされる度に値をキャッシュし、それを流す。Subscribeされるとキャッシュした値を全て即座に流す。BehaviorSubjectはOnNextされる度に最新の値一つのみをキャッシュし、それを流す。Subscribeされるとキャッシュした値を即座に流す。</p>
+<p>イマイチ分かりづらいですね:) というわけで本当に詳しいことは後日で。AsyncSubjectだけは、今までにも、そういう挙動であることの意味とかしつこく書いてきましたが。</p>
+<p>そして、IConnectableObservableが戻り値となるものはMulticastというメソッド名になりました。引数は勿論、ISubjectを受け取るという形に。では、<a href="http://neue.cc/2010/12/24_291.html" title="neue cc - Reactive ExtensionsとPublishによるシーケンスの分配">昨日のコード</a>で例を。新旧比較ということで。</p>
+<pre><code class="language-csharp">Observable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()))
+    .Publish(new Subject&lt;int&gt;(), xs =&gt; xs.Min().Zip(xs.Max(), (min, max) =&gt; new { min, max }))
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>Publishの第一引数にSubjectを突っ込みました。第二引数にはそれで分配されたIObservableが渡ってくるという塩梅です。</p>
+<pre><code class="language-csharp">var input = Observable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()))
+    .Multicast(new Subject&lt;int&gt;());
+
+input.Min().Zip(input.Max(), (min, max) =&gt; new { min, max })
+    .Subscribe(Console.WriteLine);
+
+input.Connect();
+</code></pre>
+<p>こちらがMulticastです。まあ、普通にISubjectを受け取るようになったというだけで、今までのPublishでIConnectableObservableが返ってくるのと同じです。さて、ISubjectを受け取るということは、外部のISubjectを渡してもOKです。新しくこんな分配が可能になりました。</p>
+<pre><code class="language-csharp">var input = new ReplaySubject&lt;int&gt;();
+
+Observable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()))
+    .Publish(input) // 流れてくる値をReplaySubjectに保存する
+    .Max()
+    .Subscribe(i =&gt; Console.WriteLine(&quot;Max:&quot; + i));
+
+var inputArray = input.ToEnumerable().ToArray(); // 入力値を配列に変換
+</code></pre>
+<p>といっても、この例は全く意味がなくて、Max()で止めておいて、その戻り値をinputとして受ければいいだけの話なのですが。上手い利用例が浮かばなかったのです！まあ、色々と応用しどころというのは生まれてくるのではないかと思います。</p>
+<h2>まとめ</h2>
+<p>この破壊的変更ですが、私としては好意的に捉えたいです。如何せんPruneというメソッド名は意味不明でしたし、オーバーロードが8つもあるという状況も良くなかった。今回整理されたことで、使いやすくなったと思います。が、しかし、WP7版との互換性が切れてしまったのは相当痛い。今までusingをプリプロセッサディレクティブで#if WINDOWS_PHONE using Microsoft.Phone.Reactive という感じに切り替えてWPF/SL/WP7で互換を取っていたのですが、ここまで派手に互換性なくなるとなあ。</p>
+<p>ちなみにWP7標準搭載&quot;ではない&quot;DevLabs版のRx for WP7というのも用意されているので、そちらを使えばいいわけなのですが、それはそれでどうかなー、どうかなー、困った話で。</p>
+<p>それと、この変更はまだ追随されていませんが、そのうち System.Interactive(Ix.NET/EnumerableEx) や RxJS にも派生してくるような気がするので、再びAPI安定していない状態に戻った感がありますねー。要チェックで要注意で。Rxチームは大変なクリスマスプレゼントを贈ってきました。そして、Rxが.NET 4 SP1に入るの？入らないの？的な希望観測もあったわけですが、私個人の印象としては、SP1入りな可能性はなくなったな、という気がしてます。まだまだ作り替える気満々だもの、これ。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

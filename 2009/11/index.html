@@ -1,0 +1,1343 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - 2009-11</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2009/1129_226.html">Reactive Extensions for .NET (Rx) メソッド探訪第六回:exception handling</a></h1>
+<ul class="date"><li>2009-11-29</li></ul>
+<div class="entry_body"><p>.NET Reactive FrameworkからReactive Extensions for .NET (Rx)に名称が変わったようなので、タイトルも変更。長いね。というわけで久しぶりなのですが、今回はざっとexception handling operators、つまり「Catch, Finally, Retry, OnErrorResumeNext」を見てみることにします。それとRun(ForEachなので説明不要ですが)。Rxって何？という人は<a href="http://neue.cc/2009/11/24_222.html" title="neue cc - Hello, Reactive Extensions">Hello, Reactive Extensions</a>をまず参照下さい。</p>
+<p>Rxの花形はイベント合流系のメソッドにあると思うので、ひたすら脇役ばかりを紹介してちっとも本流に入ろうとしないのはどうかと思うのですけど、EnumerableExのCatchを見て、あー、こりゃ便利だ、ヤバい、便利だ、用途すぐ浮かんでしまった、というわけでしてCatchを紹介します。まずは、その浮かんだ例であるTwitterのタイムライン取得をどうぞ。例はIEnumerableに対してのものですが、IObservableに対してのものも同じです。</p>
+<pre><code class="language-csharp">class Twitter
+{
+    public string Text { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+static IEnumerable&lt;Twitter&gt; EnumerateUserTimeline(string userName)
+{
+    // {0}はユーザー名、{1}はページ番号 公開ユーザーのものを取得なら認証不要
+    var format = &quot;http://twitter.com/statuses/user_timeline/{0}.xml?page={1}&quot;;
+    foreach (var page in Enumerable.Range(1, 1000))
+    {
+        var query = XDocument.Load(string.Format(format, userName, page))
+            .Descendants(&quot;status&quot;)
+            .Select(e =&gt; new Twitter
+            {
+                Text = e.Element(&quot;text&quot;).Value,
+                CreatedAt = DateTime.ParseExact(e.Element(&quot;created_at&quot;).Value,
+                    &quot;ddd MMM dd HH:mm:ss zzzz yyyy&quot;,
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal)
+            });
+        foreach (var item in query) yield return item;
+    }
+}
+
+static void Main(string[] args)
+{
+    // 2009/11/23から今日までの投稿を古い順に並べるというもの
+    var test = EnumerateUserTimeline(&quot;neuecc&quot;)
+        .TakeWhile(t =&gt; t.CreatedAt &gt;= new DateTime(2009, 11, 23))
+        .OrderBy(t =&gt; t.CreatedAt)
+        .ToArray();
+    
+    // これで基本的には問題ないわけですが、TwitterにはAPI制限があるので
+    // ちゃんと全部取得出来るわけではなく、API制限発動 =&gt; 死亡になる可能性がある
+    // 死んでもいいんだけど、せっかく取った死ぬ前のデータはがめておきたいよねえ
+    // というわけで、そこで出番なのがRxのCatch！
+
+    var test2 = EnumerateUserTimeline(&quot;neuecc&quot;)
+        .TakeWhile(t =&gt; t.CreatedAt &gt;= new DateTime(2009, 11, 23))
+        .Catch((Exception e) =&gt; Enumerable.Empty&lt;Twitter&gt;())
+        .OrderBy(t =&gt; t.CreatedAt)
+        .ToArray();
+
+    // 例外が発生したら握りつぶして、代わりにEnumerable.Emptyを返します
+    // なので、例外発生前のデータは全て取得出来ています、素晴らしい！
+}
+</code></pre>
+<p>といった感じです。つまりCatchは、そのまんまCatchです。Linqで全部書くのも良いんだけど、例外処理が出来なくてなあ、という不満がこれで解消されます。残りのFinally, Retry, OnErrorResumeNextですが、全部Catchの派生みたいなものです。とりあえず簡単な例を。</p>
+<pre><code class="language-csharp">static IEnumerable&lt;int&gt; Iterate1To5()
+{
+    yield return 1;
+    yield return 2;
+    throw new DivideByZeroException(); // 嘘例外でも投げておく
+    yield return 4;
+    yield return 5;
+}
+
+static void Main(string[] args)
+{
+    // 1,2
+    Iterate1To5().Catch((Exception e) =&gt; Enumerable.Empty&lt;int&gt;()).Run(Console.WriteLine);
+    // 1,2,100,200
+    Iterate1To5().Catch((Exception e) =&gt; new[] { 100, 200 }).Run(Console.WriteLine);
+    // 1,2 -&gt; 例外発生(ArgumentNullExceptionはDivideByZeroExceptionじゃないのでCatchしない)
+    Iterate1To5().Catch((ArgumentNullException e) =&gt; new[] { 100, 200 }).Run(Console.WriteLine);
+    // 1,2,100,200。つまりCatchの簡略版
+    Iterate1To5().OnErrorResumeNext(new[] { 100, 200 }).Run(Console.WriteLine);
+    // 1,2,Finally。これでtry-catch-finallyが出来あがる
+    Iterate1To5()
+        .Catch((Exception e) =&gt; Enumerable.Empty&lt;int&gt;())
+        .Finally(() =&gt; Console.WriteLine(&quot;Finally&quot;))
+        .Run(Console.WriteLine);
+    // 1,2 -&gt; 1,2 -&gt; 例外発生。例外を検知したら最初から列挙し直しての再試行
+    // EnumerableExのRetryはバグっぽくてObservableとは違う動きをする
+    // 明らかにオカシイのでそのうち修正されるでしょう
+    Iterate1To5().ToObservable().Retry(2).Subscribe(Console.WriteLine);
+}
+</code></pre>
+<p>最後に、中身をちゃんと知るには自分で実装するに限る、ということでIEnumerableでの拡張メソッドで再現してみました。Catchは本当に便利なので、わざわざRx使うのも、と思う場合は以下のコードを是非コピペして使ってくださいな。</p>
+<pre><code class="language-csharp">// ループをぶん回すだけ、というもの(linq.jsではForce()が同様の働き)
+public static void Run&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source)
+{
+    source.Run(_ =&gt; { });
+}
+
+// ようするにForEach
+public static void Run&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source, Action&lt;TSource&gt; action)
+{
+    foreach (var item in source) action(item);
+}
+
+// try-catch句の中でyield returnが使えないので回りっくどいことに
+public static IEnumerable&lt;TSource&gt; Catch&lt;TSource, TException&gt;(this IEnumerable&lt;TSource&gt; source,
+    Func&lt;TException, IEnumerable&lt;TSource&gt;&gt; handler) where TException : Exception
+{
+    using (var enumerator = source.GetEnumerator())
+    {
+        while (true)
+        {
+            TException exception = null;
+            var hasNext = false;
+            try
+            {
+                hasNext = enumerator.MoveNext();
+            }
+            catch (Exception e)
+            {
+                exception = e as TException;
+                if (exception == null) throw;
+            }
+
+            if (exception != null)
+            {
+                foreach (var item in handler(exception)) yield return item;
+            }
+            if (hasNext) yield return enumerator.Current;
+            else yield break;
+        }
+    }
+}
+
+// Rxにはこういう、handlerがActionのオーバーロードが欲しいです
+// わざわざ空のシーケンス投げるのは面倒くさいし、匿名型に対応できないじゃないか！
+public static IEnumerable&lt;TSource&gt; Catch&lt;TSource, TException&gt;(this IEnumerable&lt;TSource&gt; source,
+    Action&lt;TException&gt; handler) where TException : Exception
+{
+    return source.Catch((TException e) =&gt; { handler(e); return Enumerable.Empty&lt;TSource&gt;(); });
+}
+
+// OnErrorResumeNextはCatchの簡略版みたいなもんですね、別に必要ないような
+public static IEnumerable&lt;TSource&gt; OnErrorResumeNext&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source, IEnumerable&lt;TSource&gt; next)
+{
+    return source.Catch((Exception e) =&gt; next);
+
+}
+
+// ToList().ForEach()とRun()ではactionの出るタイミングが変わることに注意
+public static IEnumerable&lt;TSource&gt; Finally&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source, Action action)
+{
+    try { foreach (var item in source) yield return item; }
+    finally { action(); }
+}
+
+// 本当は無限でやるべきなんでしょうが、int.MaxValueで。
+public static IEnumerable&lt;TSource&gt; Retry&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source)
+{
+    return source.Retry(int.MaxValue);
+}
+
+// EnumerableExのRetryがバグ臭いのでObservable.Retryの挙動を採用しました
+public static IEnumerable&lt;TSource&gt; Retry&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source, int retryCount)
+{
+    var count = 0;
+    Exception exception = null;
+    while (count &lt; retryCount)
+    {
+        exception = null;
+        foreach (var item in source.Catch((Exception e) =&gt; exception = e))
+        {
+            yield return item;
+        }
+        if (exception == null) yield break;
+        count++;
+    }
+    throw exception;
+}
+</code></pre>
+<p>どれもCatchの派生のようなものです、CatchイイよCatch。これは使いまくりたくなる。それにしてもtry-catchの中でyield returnが使えないのを、はじめて知りました。こんなことやろうとしたことがなかったので。あと、EnumerableEx.Retryはひっじょーにバグ臭いです。ちなみにEnumerableEx.Mergeもバグ臭い。全体的にEnumerableExはバグ臭さ全開です。明らかに(Observableから)適当に移植した感漂ってます。ヤバい。</p>
+</div>
+<h1><a href="http://neue.cc/2009/1127_225.html">TwitterのTL過去ログをHTMLにするツール</a></h1>
+<ul class="date"><li>2009-11-27</li></ul>
+<div class="entry_body"><p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/twittertltohtml.jpg">
+</p>
+<ul>
+<li><a href="http://neue.cc/software/twittertltohtml" title="neue cc - TwitterTL to HTML">neue cc - TwitterTL to HTML</a></li>
+</ul>
+<p>Twitterの他の人のポストは全部読みたいと思っています。数千もフォローしてるアルファーツイッタッターでは無理でしょうけど、せいぜい百ちょいぐらいなら全然いけるわけです。と、思っていたのですが、たかだか200を超えたところで、ん、無理……？と思える感じになってきてしまいました。ツール的限界で。Webから過去ログを見ようとすると、限界点に到達してしまって未読があるのに過去ログが見れない状態になってしまって。ていうか、そもそもWebでログを見るというのはダルい。まあ、ないですよね。私がTwitterで使っているツールはEchofonで、これは過去ログ見るのに適さないし全然昔の見れないし、というわけでどうしたものかなー、と思っていたんですが、作ればいいわけですよね、過去ログ閲覧専用Twitterクライアント。</p>
+<p>と、考えてはみたものの、そもそもわざわざツール作るまでもなく、ログをHTMLで吐けばいいんじゃね？と気付いた。YesYesYes。流し読みなら、むしろへっぽこ専用ツールよりもブラウザのほうが見やすいし。家でガッとHTML取得しといてモバイルに転送して電車でゆったり見る、とか出来るし。というわけで、可能な限り過去ログを掘ってHTMLに吐きだすプログラムを書きました。可能な限り、といってもAPI制限の都合上で最大800件まで、のようです。うーん、これじゃあ半日ぐらい前、程度ですよねえ。18-24時とかだと一瞬で吹っ飛びそうかも。3000件ぐらいまでは欲しいとこなのですが……。なお、API消費はたった4か5なので安心です。一回につき200件取れるので。</p>
+<p>デザインはCSSで行えます。例えばimgのwidthとheightを0pxにすればアイコン表示を消せます。これで学校や会社で見る時にアニメアイコンが並んで恥ずかしい思いをしなくて済む！ あとまあ、デフォルトのCSSはショボい(私がCSSの知識ないので……。float良く分からん、高さ揃わない、50pxで決め打ち！とか)ので、適当に改良して使ってください。</p>
+<p>あと、コード(C# 3.0)も同梱してあるので適当に見て突っ込んでくださいな。HTML組み立て部分はLINQ to XMLです。</p>
+<pre><code class="language-csharp">var urlPattern = new Regex(&quot;(s?https?://[-_.!~*'()a-zA-Z0-9;/?:@&amp;=+$,%#]+)&quot;);
+var xhtml = new XElement(&quot;html&quot;,
+    new XElement(&quot;head&quot;,
+        new XElement(&quot;link&quot;, new XAttribute(&quot;rel&quot;, &quot;stylesheet&quot;), new XAttribute(&quot;href&quot;, &quot;style.css&quot;))),
+    new XElement(&quot;body&quot;,
+            new XElement(&quot;ul&quot;,
+            EnumerateHomeTimeline(username, password).Select((t, i) =&gt;
+                new XElement(&quot;li&quot;, new XAttribute(&quot;class&quot;, (i % 2 == 0 ? &quot;even&quot; : &quot;odd&quot;)),
+                    new XElement(&quot;div&quot;,new XAttribute(&quot;class&quot;,&quot;name&quot;), t.ScreenName),
+                    new XElement(&quot;div&quot;,new XAttribute(&quot;class&quot;,&quot;date&quot;),t.CreatedAt.ToString(&quot;G&quot;)),
+                    new XElement(&quot;div&quot;,
+                        new XAttribute(&quot;class&quot;,&quot;image&quot;),
+                        new XElement(&quot;img&quot;,new XAttribute(&quot;src&quot;, t.ProfileImageUrl))),
+                    new XElement(&quot;div&quot;,
+                        new XAttribute(&quot;class&quot;,&quot;text&quot;),
+                            urlPattern.Split(t.Text).Select(s=&gt;
+                            {
+                                var href = urlPattern.Match(s);
+                                return (!href.Success) 
+                                    ? (XNode)new XText(s)
+                                    : new XElement(&quot;a&quot;,new XAttribute(&quot;href&quot;,href.Value),href.Value);
+                            })))))));
+</code></pre>
+<p>えーと…… 汚い、ですね！それでも、このLINQ to XMLの関数型構築がなければどれだけ悲惨なことになっていたか！やはりLINQ to XMLは素晴らしい。さて、しかし困ったのがリンクのaタグ付け。文字列で扱っていれば普通に置換すれば済む話なのですが、XTextにそれを放り込むとタグはエスケープされます。最初驚いたのですが、考えてみると当然ですね、XMLとして不正なものは許されないので。しょうがないのでSplitしてXMLとして組み立ててやりました。</p>
+<p>json/xmlを拾ってきてHTMLに整形するだけなのだから、JavaScriptで書いてうぇぶあぷり、的なものにしたほうが利便性とか何とかかんとかが良好なんじゃございませんこと？とか思わなくもなかったのですが、C#、楽なので、ほんと。良い言語なんですって。</p>
+</div>
+<h1><a href="http://neue.cc/2009/1127_223.html">ver.2.1.0.0</a></h1>
+<ul class="date"><li>2009-11-27</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://neue.cc/software/xboxinfotwit" title="neue cc - XboxInfoTwit">neue cc - XboxInfoTwit</a></li>
+</ul>
+<p>未知のエラーが発生する原因の一つを解消しました。私の確認出来た範囲では、フレンドの中にNetflixを使っている人がいると100%エラーが発生するようでした。原因はプレイ中状況が&lt;Translated text&gt;で、この&lt;がエスケープされてないせいでタグとして認識してたせいでパースに失敗してるせいでした。適当に検索したところTranslated textはちょっと特殊な状況表示？で他のゲームでも出現するようですね、何だろう、翻訳しようと思ったけどまだ出来てませんって感じでしょうか(笑)</p>
+<p>で、えーと、これはXbox.comが悪いですよ、ほんと、Microsoftはもっとしっかりサイト作って欲しいなあ。いつぞやかの実績暴走の件だってそもそも……。と、言ってみたところでユーザーからはプログラムがタコなせいにしか見えないわけですし、Xbox.comはXbox.comで、イレギュラーなアクセスをしてる輩のことなんて別に考える必要はないわけで、やっぱり悪いのはプログラムですね、あはは。</p>
+<p>さて、今回は&lt;Translated text&gt;を丸ごと置換するという頭悪すぎな方法での応急処置をしたのですが、今後も平然と&lt;がエスケープ抜きで登場するようなケースは、ありそうですね……。というわけで、何とかすべきところではあるのですが、汎用的な置換表現を作るのはほぼ不可能だし、全てに対応しようにも如何せん何処に出現するかも不定すぎて無理げ。別の問題が出た時にまた考えることにします。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/xit_option.jpg">
+</p>
+<p>機能追加が一つ。指定文字列が含まれる場合には投稿しない、という機能を足しました。例えば「Xbox 360 ダッシュボード|Halo Waypoint」にすれば、ダッシュボードとHalo Waypoint再生時は投稿しないようになります。なお、大文字と小文字やスペースの有無を完全に区別しますので、利用するときは一度Twitterに投稿されたものをコピペすると良いと思います。なお、ver.1にあった「ダッシュボードは無視」機能に似ていますが、ver.2のものは起動時投稿設定にも適用されるため、100%、ver.1と同じというわけではありません。うーん、ver.1の起動時設定のみ特別扱いってのがどうかなー、と思っていたので今回の仕様に変更されたわけですが、どうなんでしょうねえ。</p>
+</div>
+<h1><a href="http://neue.cc/2009/1124_222.html">Hello, Reactive Extensions</a></h1>
+<ul class="date"><li>2009-11-24</li></ul>
+<div class="entry_body"><p>Reactive Frameworkが<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Reactive Extensions for .NET (Rx)</a>として、DevLabsで公開されました。紫のうなぎアイコンが可愛い。これは(消滅してしまった)Microsoft Voltaと同様のものなのですが、開発チームが同じだからだそうです。DevLabsには他にAxumやSTM.NETなど、興味深いプロジェクトがいっぱいありますが、日本語による情報がほとんど手に入らないので手を出しづらいところがあります。RxもDevLabsに登場したことでグッと情報が増えましたが、英語ソースによるものばかりなので、私の脳みそ的には相当シンドイことになっています。英語辛いよぅ。</p>
+<p>とはいえ、小細工しなくても.NET3.5 SP1上で動かせるのは素敵なので是非試しましょう！ Silverlight Toolkitにこっそり収録版からも、かなりパワーアップしています。メソッド大増量、そしてToolkit版でバグい挙動していたのが本当にバグなのか私のやり方が悪いのか悩んでいた部分がサクッと修正されいてホッとしたり。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/rx_inst.jpg">
+</p>
+<p>インストールディレクトリに置いてあるchmのヘルプを見ることも出来るし、IntelliSenseも動きますので、前に比べると触りやすくなりました。ただまあ、例ぐらいは入れてよって感じで、簡素極まりない一行説明から理解するのは、やっぱり難しい。</p>
+<h2>System.Interactive.ｄll</h2>
+<p>Rxには興味ないよ、という人にも大変役立ちなのがこのdll。デフォで参照設定に加えることは確定的に明らか。中のクラスはSystem.Linq.EnumerableExのみで、ようするに拡張メソッド集です。EnumerableExという名の通り、Linq.Enumerableに対する追加版となっています。基本的にはIObservableに用意されていたメソッドをIEnumerable用に持ってきたという感じです。Repeat(value)による無限リピートやReturn(value)による単体シーケンス作成、Generate(所謂Unfold)など、欲しかった生成メソッドが沢山用意されています。</p>
+<p>更に当然のようにIEnumerableに対する拡張メソッドもたっぷり。Zip(.NET 4に搭載)やMemoize、それにDo(副作用専用のActionメソッド)、Run(ようはForEachです、そう、ForEachですよ！)が非常にうれしい。他、挙げればキリがない用途不明の拡張メソッドがテンコ盛りなので要研究ですね。</p>
+<p>例えばフィボナッチ数列。</p>
+<pre><code class="language-csharp">EnumerableEx.Generate(
+    new { v1 = 0, v2 = 1 }, // initialState
+    _ =&gt; true, // condition
+    a =&gt; a.v1, // resultSelector
+    a =&gt; new { v1 = a.v2, v2 = a.v1 + a.v2 } // iterate
+)
+.Take(30)
+.Run(i =&gt; Console.WriteLine(i));
+
+// conditionが無限ならこうも書ける(第二引数の戻り値がIEnumerable、だけど平たくされる？)
+EnumerableEx.Generate(
+    new { v1 = 0, v2 = 1 }, // initial
+    a =&gt; EnumerableEx.Return(a.v1), // resultSelector
+    a =&gt; new { v1 = a.v2, v2 = a.v1 + a.v2 }); // iterate
+</code></pre>
+<p>んね、素敵。</p>
+<h2>System.CoreEx.dll/System.Threading.dll</h2>
+<p>CoreEx.dllにはAction, FuncのT16まで版(.NET 4に搭載)やUnit(voidを表す型)が主なところ。他にIEventやNotificationがありますが、これらは主にRxで使うためのものですね。Threading.dllはLazy, Task, Parallelといった、.NET 4に搭載されるメソッドの先取りといった感じのものががが。真剣に追っかけると大変なのでスルー。</p>
+<h2>System.Reactive.dll</h2>
+<p>以前のに比べるとメソッドが増えているのは当然なのですが、目立つところではSystem.Joins.Patternクラスの追加が目新しいです。何に使うのかはまだ知りません。ふむ。自分でお題を探すのも大変なので、Forumで出てる内容を幾つか紹介します。</p>
+<ul>
+<li><a href="http://social.msdn.microsoft.com/Forums/en-US/rx/thread/0663ac98-60b0-4b88-9c7e-3b2c75c971d8" title="Observable.Cons?">Observable.Consはどこにいったの？</a></li>
+</ul>
+<pre><code class="language-csharp">// 100,1,2,3,....,10
+Observable.StartWith(Observable.Range(1, 10), 100);
+// 順番が奇妙なのは拡張メソッドとして使えるようにしたため
+Observable.Range(1, 10).StartWith(100);
+</code></pre>
+<p>ConsはStartWithに改名されました。ついでに順番がちょっと変わりました。先頭に付け足すのに、第二引数というのが違和感全開なのは否めない。これは、拡張メソッドとして利用できるようにしたためでしょうね。メソッドチェインを崩さずに、先頭に値を足すことが出来るようになりました。ObservableだけではなくEnumerableにもあります。</p>
+<ul>
+<li><a href="http://social.msdn.microsoft.com/Forums/en-US/rx/thread/50d01578-9217-43d3-8ccb-e3f859040a68" title="Hit by CS1911 when trying to use non-generic overload of Observable.FromEvent">FromEventの使い方わかんね</a></li>
+</ul>
+<pre><code class="language-csharp">public static IObservable&lt;IEvent&lt;MouseEventArgs&gt;&gt; GetMouseDown(this Control control)
+{
+    return Observable.FromEvent&lt;MouseButtonEventHandler, MouseEventArgs&gt;(
+        h =&gt; (sender, e) =&gt; h(sender, e),
+        h =&gt; control.MouseDown += h,
+        h =&gt; control.MouseDown -= h);
+}
+</code></pre>
+<p>h =&gt; (sender, e) =&gt; h(sender, e)っていうのが混乱しますな。第一引数のhはEventHandler&lt;MouseEventArgs&gt;です。ここでhをMouseButtonEventHandlerに変換します。この辺も、ActionやFuncと同じく、EventHandler&lt;TEventArgs&gt;だけあればいいのに、その他のゴチャゴチャしたデリゲートは消滅してしまえばいいのに、とか思わなくもないのですがしょうがない。「sender,e =&gt; h(sender,e)」は引数がobject,MouseEventArgsで戻り値がvoidのよくあるイベント用のデリゲートです。素の状態でこのラムダ式を書くと型が決まらないので動作しませんが、FromEventの型宣言時にMouseButtonEventHandlerだと明示しているので、変換出来ます。ここで変換されるので、第二、第三引数のhはMouseButtonEventHandlerになります。</p>
+<p><a href="http://neue.cc/2009/09/04_197.html" title="neue cc - .NET Reactive Framework メソッド探訪第一回:FromEvent">メソッド探訪の第一回</a>で警告が出る、とか書いてしまったのですが、こういう風に記述すれば警告も出ず、文字列メソッド名を使わずに利用できたようです。言われてみればなるほど、って感じなのですが、気付けなかったなあ……。</p>
+<ul>
+<li><a href="http://social.msdn.microsoft.com/Forums/en-US/rx/thread/fe833566-fd54-4f19-80d4-79df5c85350b" title="What is the Amb extension?">Ambって何？</a></li>
+</ul>
+<p>ambはLISPのambを由来として、ambiguous(不明瞭)の略。だそうです。Rxでは、例えば……</p>
+<pre><code class="language-csharp">var first = Observable.Range(1, 3).Delay(300);
+var second = Observable.Range(4, 3).Delay(100);
+var third = Observable.Range(7, 3).Delay(200);
+Observable.Amb(first, second, third).Subscribe(s =&gt; Console.WriteLine(s));
+
+Console.ReadLine();
+</code></pre>
+<p>Delayは発火を指定ミリ秒だけ遅らせるメソッドです。では、何が表示されるでしょうか。答えは、&quot;4,5,6&quot;です。んじゃあthirdをDelay(0)にしたら？ &quot;7,8,9&quot;が表示されます。なるほど、分かってきた。つまり最初に到達したものを採用する、というわけです。この例ではわざとらしくDelayを足したシーケンスを投げてみましたが、例えば幾つかのイベントを並べて、最初にイベントが発火したものを。みたいな用途が考えられなくもない。</p>
+<pre><code class="language-csharp">EnumerableEx.Amb(
+        new[] { 1, 2, 3 }
+            .Select(i =&gt; i + i)
+            .Select(i =&gt; i + i),
+        new[] { 7, 8, 9 }
+            .Select(i =&gt; i + i))
+    .Run(i =&gt; Console.WriteLine(i));
+</code></pre>
+<p>IObservableは分かるとして、何故かIEnumerableにもAmbがあります。上の例は何が表示されるでしょうか？答えは、8割は14,16,18です。残り2割は4,8,12です。チェインを沢山繋いだ方が原則的には「時間がかかる」ため、チェイン数の少ない方が採用される場合が多い。ただし、内部ではThreadを立てているので、必ずしもそうなるわけじゃない。というわけで、結果は非常に不確定で不明瞭で、使い道は完全に謎。</p>
+</div>
+<h1><a href="http://neue.cc/2009/1124_221.html">ver.2.0.1.0</a></h1>
+<ul class="date"><li>2009-11-24</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://neue.cc/software/xboxinfotwit" title="neue cc - XboxInfoTwit">neue cc - XboxInfoTwit</a></li>
+</ul>
+<p>一部タイトル、例えばアジア版GoW2で実績が取得出来ないという不具合を修正しました。あと、今現在、私の方でもたまに「未知のエラー」が出るのは確認出来ているのですが、ちょっと原因が掴めていない状態なので修正にはもう少し時間がかかりそうです。それと、そもそもXbox.comへのログインに失敗するというのは全く分かってませんので、もう少しどころじゃなく時間がかかりそうです。</p>
+<p>そういえば説明を忘れていたのですが、ver.2からver.1にあった「投稿の際ダッシュボードは無視」機能は削ってしまいました。これは、どうやっても綺麗に多言語対応と混ぜることが出来なかったので……。日本語だけに限定すれば決めうちで簡単なのですけどね。利便性的には多言語対応なんかよりもこっちのほうが遙かに上だろ！と突っ込みたい気持ちはとても分かりますが、そんなこんなな事情なので復活させることは恐らくありません。</p>
+<p>もう一つ、ver.2からLiveのステータスが離席中になった際もオフライン扱いにしちゃっています。ver.1では中途半端な無視の仕方をしていて、潜在的なバグの危険性があったので、すっぱりとオフラインということにしてしまいました。本体を10分放置しているとスクリーンセーバーが動いて、Liveのステータスも自動的に離席中になるようなのですが、もし本体放置で離席中になるのを拒否したい場合はスクリーンセーバーをオフにすればLiveステータスもずっとオンラインのままになります。スクリーンセーバーの切り替えは本体設定から「システム設定→本体の設定→画面→スクリーンセーバー」で入れます。</p>
+</div>
+<h1><a href="http://neue.cc/2009/1120_220.html">ver.2.0.0.0</a></h1>
+<ul class="date"><li>2009-11-20</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://neue.cc/software/xboxinfotwit" title="neue cc - XboxInfoTwit">neue cc - XboxInfoTwit</a></li>
+</ul>
+<p>XboxInfoTwitの認証数が<a href="http://ja.wikipedia.org/wiki/%E5%B2%A1%E6%9C%AC%E5%90%89%E8%B5%B7" title="岡本吉起 - Wikipedia">岡本641本吉起</a>を超えた記念、というわけでもないのですが大幅に変更しました。例によって全然テストしてないので動かないとか色々あるかもなので、生暖かい目で見守ってください。というか、ボソッとTwitterでxxで動かねえ、とでも言って貰えると非常に助かります。</p>
+<p>今回の更新の主な内容は、クローラーを刷新しIEを使用しなくなった。です。それによって「メモリ消費量激減」(というか前が多すぎた、というか完全にメモリリークしてた) 「スクリプトエラー消滅」「IEでのログイン状態に左右されない」「ページ遷移のクリック音UZEEと無縁」などなど、まあ、これで安心して使えるかと思います。環境依存的に動かなかった人も動くようになった、はず、きっと。そんなこんなで、今回から中身が全く別物になっているので、環境依存、もしくはバグによる動かないケースが(また)増えそうなので、その辺は見つかり次第早めに対処したいと思います。当面は不安定かもしれませんがご了承ください。</p>
+<p>挙動の変更としては、実績解除の投稿が必ず行われるようにしました。今までは実績解除後、投稿されるまでの間にXbox360の電源を落としたり別のゲームに変えてしまったりすると解除の投稿を行わなかったのですが、今回からは、電源を落としても別のゲームに変えても実績解除の投稿を行います。ちなみにまだ一回も実績解除を試してないので(デバッグ用にデータをごそごそ弄って解除したフリ、ぐらいはやりましたが)本当に上手く動いてくれるのかは謎です。</p>
+<p>あと、エラーメッセージが親切になりました(今まで一律に通信エラーで理解不能だったので) でもタイミング次第では平然と「未知のエラー」とかいう素っ気ない応答しか出しません。酷い。この辺は追々直していこうかな、とは思ってるのですが。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/xit2_lang.jpg">
+</p>
+<p>機能追加その一、別言語からの取得が可能に！今まではja-JPだけでしたが、英語ならen-USを、台湾語(中国語？)ならzh-TWを指定することによって、他の言語のデータが投稿されます。別にja-JPしか使わないとは思いますが、将来的にアプリケーション自体を多言語対応にして海外版もリリースしたいなあ、と思っているので(そのタイミングでコードも公開しようと考えてます)そのための下準備の一つです。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/xit2_hash.jpg">
+</p>
+<p>機能追加その二、ハッシュタグの自動付加。新しくプレイしたタイトルはタイトル名が記録されて、設定画面のハッシュタグタブの一覧に自動的に追加されます(任意での追加は不可能です)。ここでリストに、例えば「モダン・ウォーフェア2」だったら「MW2」と入力すれば、モダン・ウォーフェア2をプレイ時の投稿全ての末尾に「 #MW2」が付加されます。#に関しては付けなくても自動的に付けます(なのでハッシュタグとしてではなく、フッタとしての利用は現状不可能です)</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/xit2_tip.jpg">
+</p>
+<p>機能追加その三、バルーンによる投稿通知。私的にはどうでもいいと思ってごほごほ。</p>
+<h2>2.0.0.1</h2>
+<p>例によって不具合発覚。20-30分ぐらい使ってると未知のエラーで死ぬようです。あまりにもの未知のエラー祭りは酷すぎた、のでとりあえず様子見で暫定的に対処してみました。うまくいってるかは不明。たかだか10数分間連続利用のテストすらしていないという！すみませんすみません。とりあえず今日は発売日に買ったけど全然プレイしてない(実績数がそれを物語ってる)Fallout3(OBLIVIONは超はまったのにFallout3はさっぱり琴線に触れず)をじっくりプレイしながらテストします、はい。</p>
+</div>
+<h1><a href="http://neue.cc/2009/1117_219.html">AutoHotKeyによるマウスカスタマイズとマルチディスプレイのためのスクリプト</a></h1>
+<ul class="date"><li>2009-11-17</li></ul>
+<div class="entry_body"><p>タイトルがAutoHotKeyによるカスタマイズ、なのですが、前置きが長かったり、一部設定が新しく購入したマウス前提になってる部分もあります。とはいえ基本的には汎用的に使える設定を書いているので、自分にはあまり関係ないな、と思う部分は適当に読み飛ばしてください。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/Steelseries_Xai.jpg">
+</p>
+<p>長年使ってきたロジクールのマウス、MX Revolutionが相当ガタがきていて(シングルクリックがダブルクリックになるとか、ドラッグアンドドロップ中にリリースされちゃうとか)、おまけに電池もヘタれて、その上に充電端子の接触が悪くて中々充電されないというイライラ。耐えられない。というわけで、マウスを買い替えました。MX-R自体は結構気に入っていたはずなのですが、如何せん晩年の状態が最悪すぎたので何だか印象が随分と悪くなってしまいました。SetPoint(ロジクールのマウスドライバ)クソだし。</p>
+<p>新しいマウスはSteelSeries Xaiです。究極のゲーミングマウスとして突き詰められた性能は、確かにカッチリと動く。ただ、あまりPCでゲームしないのでそこまでは分からない。とりあえず<a href="http://www.4gamer.net/games/037/G003732/20090805053/" title="4Gamer.net ― SteelSeriesの偉い人，Kim Rom氏に聞く新型マウス「Xai」「Kinzu」――キーワードは「パーソナライゼーション」（SteelSeries）">インタビュー読んでたら</a>欲しくなったというだけでして(笑) 売り文句が上手いです。ゲーミングマウスにありがちな派手派手しい外観じゃないのも好印象。マウスパッドもメーカー推奨のセットで揃えちゃいました。握った印象やポインティング性能は申し分ない。ホイールだけはMX-Rは群を抜いて素晴らしかったかな、まあ、しょうがないか。</p>
+<iframe src="http://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=B002J9G5B8" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<iframe src="http://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=B002J9G5AO" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<iframe src="http://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=B002J9G5AE" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<p>マウス変更は無線-&gt;有線への回帰でもあるのですが、無線マウスはダメです。省電力のために細かくスリープに入り、マウスを動かすとワンテンポ遅れて復帰する。このワンテンポの遅れがイライラしました。晩年の、MX-Rがヘタれてしまった状態だからそうなのかもしれませんが、とにかく無線への印象は最悪。何のかんのでマウス重いし。軽さは、大事、だよ。と、Xaiを触りながら思ったのでした。思えばXbox360も絶対有線コントローラー主義者なわけで(無線コンは窓から投げ捨てよう！) ほんと、NO WIRE, NO COMPUTING.</p>
+<p>Xaiのアサイン可能ボタン数は7。一時は多ボタンキチガイだった私であり、MX-Rのアサイン可能ボタン数11から、Xaiの7へとの大減少は些かどうしたものか、と思いましたが、そんなに多用しない、マウスと独立してる操作、例えばウィンドウのモニタ移動系なんかはキーボードのほうにマクロ割り振ればいいぢゃん？という思想に変わってしまっているので、7へと減少したことはそこまで痛手、ではありません。何でもマウスでやる中二病から、バランスよく割り振る高二病へと進化したわけでさあ。</p>
+<h2>マウスカスタマイズ</h2>
+<p>Xaiはドライバレスで動作します。設定用ソフトウェアはありますが、これはただたんに設定項目をマウスに送るだけであり、キーカスタマイズにせよ移動速度にせよ、項目は全てマウス本体に記録されます。なので、Xai＋AutoHotKeyは究極のポータビリティを誇ります。いつでもどこでも自分のお気に入りの設定で扱える。OS再インストール時の設定作業等も不要。これは……嬉しいですね。再インストールの度にクソSetPointを触らなきゃいけないのは気が滅入る話だったので。</p>
+<pre><code class="language-ini">MButton::Shift
+;左手前
+XButton1::BackSpace
+;左奥
+XButton2::Send,!{F4}
++XButton2::Send,^!{F4}
+;右手前
+Pause::SearchSelectedText()
+;右奥
+ScrollLock::WinMinimize, A
++ScrollLock::WinSet,AlwaysOnTop,TOGGLE,A
+
+;選択したテキスト内容でぐぐる
+SearchSelectedText()
+{
+    bk = %ClipboardAll%
+    Clipboard=
+    Send,^c
+    ClipWait, 1
+    if(Clipboard != &quot;&quot;)
+        Run,http://www.google.com/search?q=%Clipboard%
+    Clipboard = %bk%
+}
+</code></pre>
+<p>Xaiの形状は左右対称で、カスタマイズ出来る箇所は7つ。左右クリック・ホイールクリック・サイドボタンが左右に二つずつ。カスタマイズはAutoHotKeyで行うので、Xaiでの設定はほとんどしません、ほとんどデフォルトで。但しWindowsの扱えるボタン数は5つなので、Windows管轄外のボタン二つ(右のサイドボタン)には普段キーボードで使わないキーを割り振って、それで代替しましょう。具体的には、私はScroolLockとPauseを割り振りました。ソフトウェアドライバで制御に自由の効くものなら、F13-F24といったキーボードに存在しないキーを使うのですが、XaiではF13を認識しなかったので、しょうがなくの対処でした。</p>
+<p>ほとんどデフォルトと言いましたが、マウスの中央ボタンだけは潰して、Shiftにしました。マウスの中央ボタンって大して使わないでしょう。第一級の位置にゴミキーを置いておくなんて勿体ない。せいぜい、マウスジェスチャーの起動キーとして使うぐらい？私はジェスチャーが大嫌いなので、他のマウスボタンとの組み合わせ用としてShiftを選びました。Ctrlのほうが便利と言えば便利なのですが、ScrollLockやBreakと組み合わせると思ったような挙動をしないので、しょうがなく妥協しました。</p>
+<p>サイドボタン左側、BackSpaceは言わずもがなに便利。「戻る」だけじゃなく、「削除」として利用できるのが高ポイント。奥側のAlt+F4も便利。もう右上の×ボタンをクリックしにいく必要なんてないんですよ！後で述べますが、AutoHotKeyのアプリケーション固有設定で、タブのあるアプリケーションに対してはタブを閉じる(Ctrl+W)を振っておくと楽。ついでにShift+XButton2をAlt+F4にすれば、タブ有りアプリでも右上の×を使う必要はなくなる。</p>
+<p>サイドボタン右側、選択文字列のGoogle検索は問答無用に便利。Firefox内でのみ、とかIE内でのみ、ではなくあらゆるアプリケーションからワンクリックでキーワード検索出来るというのは非常に大事です。実行するのに手間がかかると、どうしても人は躊躇ってしまうものなんですね。たかだかツークリックであってもダメ。無意識に重たいコストになってる。ちょっと気になったらとりあえず検索する。その習慣を根付かせるためにも、ワンクリックで出来る必要があります。</p>
+<p>サイド右奥の最小化ですが、私は何のかんので結構使ったりするので設定してます。Shiftとの組み合わせは最前面に固定で、これもやっぱり頻繁に使ってます。無いと、困る。</p>
+<p>さて、Shift＋サイドボタン左右の手前はデフォルトでは何も割り振っていません。この二つを、各アプリケーション固有設定用ボタンとして使います。たった二つ！なのですけど、このぐらい潔く割り切った方が「覚えやすい」し、結局は「使いやすい」かな、と思っています。せっかく割り振ってもあまり使わなかったら、別にキーボードショートカットでいいぢゃん、ということになりますし。</p>
+<pre><code class="language-ini">; Firefox
+#IfWinActive,ahk_class MozillaUIWindowClass
+XButton2::Send,^w
+^XButton2::Send,!{F4}
++XButton1::Send,^{Left} ;タブを左に移動(Firefox側でキーカスタマイズ済み)
++Pause::Send,^{Right}
+
+;Visual Studio
+#IfWinActive,ahk_class wndclass_desked_gsk
+^w::Send,^{F4} ;タブを閉じる
+XButton2::Send,^{F4}
++XButton2::Send,!{F4}
++XButton1::Send,^- ;定義から戻る
++Pause::Send,{F12} ;定義へ移動
+</code></pre>
+<p>IfWinActive以下にアプリケーション固有設定を記述。例としてFirefoxとVisualStudioのものを。左右なので、直感的には「移動」系がそれっぽく扱えるかな、と思っています。(今現在の設定だとFirefoxでのタブ移動が今一つ思った感じに動いてくれなくて要改善だったりはする)</p>
+<h2>マルチディスプレイのためのスクリプト</h2>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/dispimage.jpg">
+</p>
+<p>```ini
+; 無変換との組み合わせによる十字キー
+vk1Dsc07B & e::Send,{Up}
+vk1Dsc07B & s::Send,{Left}
+vk1Dsc07B & d::Send,{Down}
+vk1Dsc07B & f::Send,{Right}
+;矢印キー(マルチディスプレイでのウィンドウ移動)
+vk1Dsc07B & Left::SendToTargetMonitor(3)
+vk1Dsc07B & Right::SendToTargetMonitor(1)
+vk1Dsc07B & Up::SendToTargetMonitor(4)
+vk1Dsc07B & Down::SendToTargetMonitor(2)
+<p>; 指定番号のモニタサイズを取得する
+GetMonitor(monitorNo, ByRef mX, ByRef mY, ByRef mW, ByRef mH)
+{
+SysGet, m, MonitorWorkArea, %monitorNo%
+mX := mLeft
+mY := mTop
+mW := mRight - mLeft
+mH := mBottom - mTop
+}</p>
+<p>;対象モニタにアクティブウィンドウを移動する(高さリサイズ)
+SendToTargetMonitor(monitorNo)
+{
+WinGetPos, x, y, w, h, A
+GetMonitor(monitorNo, mX, mY, mW, mH)
+Random, rand, 50, 200
+WinMove, A,, mX + rand, mY, w, mH
+}</p>
+<pre><code class="language-&lt;/p&gt;">
+無変換なんて使わないでしょ？カタカナに変換したいならCtrl+Iがお薦め。というわけで、これを潰して無変換＋ESDFを十字キーにするのは、もはやないと死ぬ。右手をホームポジションから放して十字キーとか遠すぎるし！というわけで、問答無用でお薦め。hjkl なんかよりもずっと直感的ですし。FPSライクでもある。WASDでなくESDFなのは、ホームポジションを崩さない位置だから。上記コードには載せていませんが、他に無変換＋Q,AでのHome,Endや無変換+Z,CでのCtrl+←,Ctrl+→なんかを割り振っています。プログラミング時の文字移動が大分楽になります。
+
+そして、ウィンドウの座標即時移動はマルチディスプレイ環境なら便利というか必需だと思います。私の環境は4画面なので、無変換 +  ←↑→↓で各対応するモニタにウィンドウ座標を移動させます。ディスプレイの縦サイズがそれぞれ異なるので、縦サイズは対象ディスプレイの高さいっぱいに引き延ばすようにしています。私はほとんどのアプリケーションを縦いっぱいに広げて使っているのでこの仕様で問題ないというか、むしろそれであって欲しいのですが、高さが変化すると困る人は適当に改良してください。WinMoveでmYを指定しているところyにすれば、高さは変えない、になります。X座標は、モニタの左端を基準に、50-200の範囲でランダムにバラつくようにしています。これは複数のウィンドウを送り飛ばした時に、完全に重なると扱いづらくなるのを避けるためです。
+
+```ini
+;Windowsキー
+;アクティブモニタの半分サイズにして左右に寄せる
+#Left::
+    GetActiveMonitor(x, y, w, h)
+    WinGet, id, ID, A
+    WinMove, ahk_id %id%,,x, y, w / 2 , h
+    return
+#Right::
+    GetActiveMonitor(x, y, w, h)
+    WinGet, id, ID, A
+    WinMove, ahk_id %id%,,x + w / 2, y, w / 2 , h
+    return
+;最小化と復元
+#Up::RestoreAll()
+#Down::#d
+
+;全てのアプリケーションを元に戻す
+RestoreAll()
+{
+    WinGet, id, list
+    Loop, %id%
+    {
+        StringTrimRight, this_id, id%a_index%, 0
+        WinRestore, ahk_id %this_id%
+    }
+}
+</code></pre>
+<p>Windowsキー＋十字キーも対応するようにカスタマイズ。Windows7からは、一応モニタ移動系が割り振られていますが無視して上書き。まず左右ですが、モニタの半分サイズにして右寄せ左寄せです。これは、2つのアプリケーションを並べて比較したい時に重宝します。</p>
+<p>Win+下はお馴染みのデスクトップ表示。そして上は「全てのウィンドウを元に戻す」です。例えばデスクトップに置いてあるフォルダを開きたい場合、Win+Dを使ってデスクトップを表示してフォルダを開く。そこから先、作業を終えたら、全て復元したいはずです、が、素のWindowsだと出来ません。一度フォルダを開くと、状態保存がなくなってしまうので、再度Win+Dを使っても、元には戻らず再びデスクトップ表示になってしまう。こんな不満も、AutoHotKeyなら簡単に解決出来ます。今回は単純に、起動している全てのアプリケーションに対し「元に戻す」を実行するというものにしました。</p>
+<p>無変換＋矢印といい、Win＋矢印といい、ウィンドウ移動操作を多用してるのですが、狭い領域を有効活用というよりも、モニタ領域が広すぎる(2560x1600+(2048x1152)x2+1920x1200)からこそ移動類を充実させざるを得なかった、という側面があったりして。センターディスプレイ(30インチ2560x1600)はマルチディスプレイの中でも、当然一番見やすいモニタになるので、長めの作業を行う際は、普段は別のモニタに置いてあるアプリケーションもセンターに寄せて使います。なので、ワンタッチでセンターに寄せたり、左右に並べたりしたいわけです。それと私はゲーム(Xbox360)もセンターディスプレイに繋いでいるのでゲーム中はセンターが潰れます。ブラウザで攻略サイトを見たい、と思った時にセンターにブラウザがあると(基本はセンターに置いているので)移動させるのが面倒くさいので、これもまたワンタッチでサイドディスプレイに寄せたい、となるわけです。ゲーム終えたら、またワンタッチでセンターへ戻す。</p>
+<h2>AutoHotKey.ini</h2>
+<p><a href="http://neue.cc/wp-content/uploads/file/AutoHotkey.ini">現時点で私の使っているiniファイル</a>を置いておきますので、ご自由に使ってやってください。環境依存の部分が少なからずあるので、その辺は適当に除去しといてください。</p>
+</div>
+<h1><a href="http://neue.cc/2009/1116_218.html">ver.1.3.0.8</a></h1>
+<ul class="date"><li>2009-11-16</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://neue.cc/software/xboxinfotwit" title="neue cc - XboxInfoTwit">neue cc - XboxInfoTwit</a></li>
+</ul>
+<p>暴走してしまいました。大変申し訳ありませんでした。Xbox.comが半メンテナンスで、壊れたデータを放出していたのですが(例えばFallout3の最大実績が620になったり)、それを取得して解析していた結果、実績を超連続投稿するということが発生しました。今回のものは暴走抑止用の暫定対策版となっています。しかし確実に防げる保証はないので、利用はXbox.comが安定してからにしてください。また、お願いなのですがXboxInfoTwitが不調な場合は、またXboxInfoTwitのクソが不安定だぜ、と思うのは当然なのですけど、少しだけXbox.comのほうも疑ってあげてください。そして、Xbox.comが怪しかったら、その日は利用を控えるという形でお願いします。これからは、データが怪しい場合は弾くような処理も増やしていこうとは思いますが、それでも全ての怪しいケースを弾けるわけではないので。</p>
+<p>暴走抑止のほか、とりあえず実績連続投稿の最大数は10に設定しました。5だと、場合によっては少ないケースも出てきそうなのでとりあえず10で。それと、今回のアップデートは全くテストしていないので、そもそも正常動作するかも分かりません。その辺は、Xbox.comが落ち着いたら見ていきたいと思っています。</p>
+<p>あと、責任はとても重く感じています……。公開停止しようとも思ったのですが、誰もがこのサイトを見に来ているわけでは当然ないので、まずは修正して新しく起動する人が、自動アップデートで最低限の回避をするのが第一だと思いました。今後の公開停止ですが、既に相当数の利用者がいる状態なので、公開停止にしてメンテ放置するよりは、問題が起こった際にちゃんと面倒を見る方が重要だと考え、当分は公開を続けることにします。</p>
+<h2>ver.1.3.0.9</h2>
+<p>連続ですがまた更新。1.3.0.8では実績解除自体が100%投稿できない状態になってました。風呂に入って頭冷やしてたら思い違いに気づいてああああああ、となりました、はは。それと、暴走の原因らしきものが見えたので(原因自体はXbox.comのデータ壊れなのですが、どの部分がどういう風に壊れていたのか、というのが私自体が遭遇してないので想像でしかないのですよー) とりあえずそれへの対策を重点的に追加してみました。原因が見込み違いだったり、他の原因だった場合は、まあ、しょうがない。そういえば今日ダッシュボード機能追加なんですね。毎回、機能追加前はXbox.comも合わせてドタバタしますが、しかし今回ほど酷いこともなかった。ちなみにもう一つの実績解除ツールも暴走していたので、今回のは本当に本当に不測の事態というかXbox.comのデータの壊れ方が誰にとっても想定外でした。天下のMSなのだから、メンテ時でもしっかりやってくれ、というのは贅沢ですかね。</p>
+</div>
+<h1><a href="http://neue.cc/2009/1111_215.html">ver.1.3.0.7</a></h1>
+<ul class="date"><li>2009-11-11</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://neue.cc/software/xboxinfotwit" title="neue cc - XboxInfoTwit">neue cc - XboxInfoTwit</a></li>
+</ul>
+<p>CoD4やMW2、L4Dなんかで顕著に見られるようですが、オンライン対戦時の他プレイヤーが「参加可能」時にデータの取得に失敗して、ゲーム名に参加可能が付いていたり実績が0/0になっていたりするような件を修正しました。実のところ、これver1.3.0.1の時に修正したはずだったんですが、いつのまにやらその時対策したはずのコードが元に戻ってました。あらららら……。</p>
+<p>といったように、非常にいい加減な開発姿勢なので今回のリリースでも更にバグ埋め込んだりする可能性大です。バグ見つけたら怒ってやってください。Twitter検索でキーワード「XboxInfoTwit」を始終チェックしてますので、もし不具合があったらTwitterでの投稿時に「XboxInfoTwit」と文中に混ぜておけば、例えば「XboxInfoTwitクソ、***で動かねえ」とか言ってくれれば私の方で巡回して気づくと思いますので、気楽に苦情文句要望バグ報告してやってください。</p>
+<p>そういえばというわけでもないのですけど、利用ユーザー数が500超えました。いやー、ビックリですね。当初は2桁台に行けばいいなあ、とか言ってたぐらいだったり、実際致命的な不具合があったのに3ヶ月放置してたり(誰も使わないので気づかなかった！)などだったはずが。嬉しいです。が、現在のコード品質は相当アレなので、なるべく早く、せめて今年中には全面的に書き換えたver2.0を出せるといいなあ、なんて思っています。</p>
+<p>ちなみに、amazonアサマシゲイツポイントの購入者数はゼロに近かったりします(買ってくれた人は本当に本当にありがとうございます)。いやまあ、別にネタなのでいいんですけどね。はは。</p>
+</div>
+<h1><a href="http://neue.cc/2009/1109_214.html">F# TutorialをC#と比較しながらでF#を学ぶ</a></h1>
+<ul class="date"><li>2009-11-09</li></ul>
+<div class="entry_body"><p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/fsharpTutorial.jpg">
+</p>
+<p>F#はMicrosoft発の関数型言語で、Visual Studio 2010に標準搭載されます。<a href="http://msdn.microsoft.com/ja-jp/vstudio/dd582936(en-us).aspx" title="Visual Studio 2010 and .NET Framework 4 Beta 2">Visual Studio 2010 Beta 2</a>も出たことだし、話題の？新言語を少し勉強してみることにします。F#の新規プロジェクト一覧にTutorialというのが用意されているので、これの中身を、C#と比較しながら見ていきたいと思います。追記：<a href="http://www.microsoft.com/japan/visualstudio/products/2010/default.mspx" title="Microsoft Visual Studio 2010 First Look">Microsoft Visual Studio 2010 First Look</a> Beta 2日本語版も公開されました。</p>
+<h2>基本</h2>
+<p>```fsharp
+open System
+let int1 = 1
+let int2 = int1 + 3
+```
+<pre><code class="language-csharp">using System;
+var int1 = 1;
+var int2 = int1 + 3;
+```&lt;/p&gt;
+
+名前空間の利用の設定と基本的な変数の代入方法。といったところでしょうか。そのまんまだし、別にC#と違いは特にないっぽい。C#ではvar、F#ではlet。どちらも推論が効くのでほとんど同じ。末尾セミコロンはいらないようです。#lightがどうたらこうたら、というのは略。それともう一つ、F#はこのように定義したint1に再代入は出来ません。int1 = 100とすると、比較になります(==ではなく=が比較)。再代入的なint1 &lt;- 1000はコンパイルが通らない。不変(immutable)なのです。C#だとreadonly、はフィールドにしかつけられないので、同じことを再現するのは無理なよう。
+
+Print
+---
+```fsharp
+printfn &quot;peekResult = %d&quot; peekResult
+printfn &quot;listC = %A&quot; listC
+</code></pre>
+<p>F# TutorialではPrintは最後にあるのですが、あのですね、出来ればprintは冒頭にしていただきたいです。なんというか、私がF#で一番戸惑ったのが、printfn int1ってのが出来ないことなんですね。いやほら、とりあえずlet int1 = 1って書いたじゃないですか、最初に。で、書いたらとりあえず表示して確認したいでしょ？Console.WriteLineにあたるのはprintfnか、って来るわけです。でも、書いても動かないの。で、まあ、つまるところstring.Format的なものであり書式指定が必要、というところまで行くわけですが、そこで書式って何を書けばいいの？ということになるわけです。&quot;%d&quot;とか予告なく言われても分からないし。もうブチ切れですよ。え、Cの書式指定と一緒だって？いやあ、Cの書式指定も全然覚えてられません、あれあんま良くないと思うんですが……(ついでに言えば私はC#の書式指定も全然覚えてない、必要な度にMSDN見に行ってる)。しかもF#のは書式も色々拡張されてない？より一層分からん！int1の出力で挫折する！</p>
+<p>ということなので、もっと頭の方にprintfnのきちんとした解説を載せてくれないと辛いです。ただ、どうしてもアレならConsole.WriteLine int1とでも書けば動く。おお、いきなり.NET Frameworkがそのまま使えることの有難味が(笑) と、冗談はさておき、この「書式指定に何が使えるのか分からない」状態はひっじょーに気持ち悪いので、検索してすぐ分かるような場所に一覧が、欲しい、です。真面目にこれは挫折理由になってます。しょうがないので検索して出てきた
+<a href="http://books.google.co.jp/books?id=NcrMkjVxahMC&amp;pg=PA91&amp;dq=F%23+using+printf&amp;as_brr=3&amp;ei=HAT4SpvrG5OilQTrx6nSBQ#v=onepage&amp;q=F%23%20using%20printf&amp;f=false" title="Expert F# - Google ブックス">Google BooksのExpert F#の解説</a>を見てようやくホッとできた。</p>
+<p>%b(bool), %s(string), %d(10進), %f(float), %O (Object.ToString()) それと%A(Any)を覚えておけば問題ない、でしょーか。ほんと予告なく%Aとか言われても困るんですよ、泣きたいですよ。%Oとの違いは、人間が見た時に良い感じに整形してくれるのが%A、でしょうか。文字列は&quot;&quot;で囲まれ、配列は展開して出力してくれる。</p>
+<p>C#ではcw-&gt;TabTab-&gt;変数名、といった感じにコードスニペットを活かして手早く記述出来たわけですが、それに比べるとF#は書式指定が必要な時点で、非常にカッタルイ。カッタルイのですが、かわりに、より型に厳格です。printfn &quot;%s&quot; trueとか書くとコンパイル通らない。良し悪し、でしょうか。でも学習用にやってる間は面倒くさいだけですね。どうしても嫌ならば「let p x = printfn &quot;%A&quot; x」とでも定義しておけば良いのでしょうけれど。</p>
+<p>gdgd言う前に<a href="http://msdn.microsoft.com/en-us/library/dd233181(ja-jp,VS.100).aspx">F C# 言語リファレンス</a>を見ろ、って話なのかもしれない。私は情けないことにここから書式指定を記した部分を見つけられませんでしたが。あと、選択範囲で囲んでAlt+EnterでF# Interactiveに送られるのでそれ見て確認しろって話も少しはありそう。</p>
+<h2>関数</h2>
+<p>```fsharp
+let f x = 2*x*x - 5*x + 3
+let result = f (int2 + 4)
+let rec factorial n = if n=0 then 1 else n * factorial (n-1)
+```
+<pre><code class="language-csharp">Func&lt;int, int&gt; f = x =&gt; 2 * x * x - 5 * x + 3;
+var result = f(int2 + 4);
+Func&lt;int, int&gt; factorial = null;
+factorial = n =&gt; (n == 0) ? 1 : n * factorial(--n);
+```&lt;/p&gt;
+
+Tutorialには最大公約数を求めるものもありましたがfactorialと同じなので省略。F#は関数型言語ということで、やっぱ関数ですよね！キーワードはletのままで、ふつーの変数と区別なく定義できる。 C#では汎用デリゲートであるFuncとActionを使うことでそっくり再現できる。C#では型を書いてやらなければならないのだけど、F#ではより強力に推論が効くようで型の明示は不要、のようです。
+
+再帰は、F#はlet recキーワードでそのまま書けるのに対し、C#では一度nullを代入して名前を事前に宣言しておかなければならない。というぐらいで、見た目はほとんど変わらない。そういえばifが式ですね。なのでelseは省略できないようです。else ifの連打はelifで。というわけで、このif式（？）はC#の三項演算子とほとんど同じような感じです。
+
+```fsharp
+let add1 x y = x + y
+printfn &quot;%A&quot; (add1 1.0 2.0)
+printfn &quot;%A&quot; (add1 1 2) // Compile Error
+let add2 x y = x + y
+printfn &quot;%A&quot; (add2 1 2)
+printfn &quot;%A&quot; (add2 1.0 2.0) // Compile Error
+</code></pre>
+<p>少し脱線して型推論の話を。C#の推論は単純なだけ分かりやすくて、これは型書いてやらないといけないな、推論させるための材料を与えてあげないといけないな、というのが結構直感的だったんですが、F#だと強力な分だけ、どう推論されるのか難しい。今は漠然と、全体を見るんだなー、ぐらいにしか分かっていません。例のコードですが、add1はfloat-&gt;float-&gt;floatで、add2はint-&gt;int-&gt;intに推論されます。let add1 x y = x + yの時点ではxの型もyの型も分からないけれど、「最初に呼ばれた時に」引数の型は判明する、ということは戻り値の型も判明する。なので、その型で決定する。ということなのかなー、と。この部分はC#と全然違っていて、面白いし強力だなー、と。</p>
+<h2>Tuple</h2>
+<p>```fsharp
+let data = (1, "fred", 3.1415)
+let Swap (a, b) = (b, a)
+```
+<pre><code class="language-csharp">var data = Tuple.Create(1, &quot;hogehoge&quot;);
+static Tuple&lt;T2,T1&gt; Swap&lt;T1,T2&gt;(Tuple&lt;T1,T2&gt; tuple)
+{
+    return Tuple.Create(tuple.Item2, tuple.Item1);
+}
+```&lt;/p&gt;
+
+TupleはC#4.0から導入されます。F#は括弧で括るという専用記法があるので簡単に記述出来る。のに対して、C#ではふつーのclassなのでふつーにclassとして使うしかないのが残念。Swapですが、Tupleはimmutable(不変)なので、新しく生成する。だけ。です。temp用意して入れ替えて、などしない。潔く新しく作る。
+
+Boolean, Strings
+---
+&lt;p&gt;```fsharp
+let boolean1 = false
+let boolean2 = not boolean1 &amp;&amp; (boolean1 || false)
+let stringA  = &quot;Hello&quot;
+let stringB  = stringA + &quot; world.&quot;
+</code></pre>
+<pre><code class="language-csharp">var boolean1 = false;
+var boolean2 = !boolean1 &amp;&amp; (boolean1 || false);
+var stringA = &quot;Hello&quot;;
+var stringB = stringA + &quot;world.&quot;;
+```&lt;/p&gt;
+
+F#では否定が!ではなくnotなのですね。あとは一緒。
+
+List
+---
+&lt;p&gt;```fsharp
+let listA = [ ]
+let listB = [ 1; 2; 3 ]
+let listC = 1 :: [2; 3]
+let oneToTen = [1..10]
+let squaresOfOneToTen = [ for x in 0..10 -&gt; x*x ]
+</code></pre>
+<pre><code class="language-csharp">var listA = Enumerable.Empty&lt;object&gt;();
+var listB = new[] { 1, 2, 3 }.ToList();
+var listC = Enumerable.Repeat(1, 1).Concat(new[] { 2, 3 }).ToList();
+var oneToTen = Enumerable.Range(1, 10 - 1 + 1).ToList();
+var squaresOfOneToTen = Enumerable.Range(0, 10 - 0 + 1).Select(x =&gt; x * x).ToList();
+```&lt;/p&gt;
+
+リストを扱うとC#と大分差が出てきます。まず第一に、空リストは、C#だと該当するものは作れない。と思う。とりあえずobjectで代替することにしましたが、多分正しくありません。listBはただの整数リストなわけですが、F#だと;で区切るようです。一応、配列とリストは違うということで、C#側のコードはListにしていますがListとも違うので、まあ、気分だけ。listCの::はConsということで、一つの値とリストを連結するものです。C#に該当する関数はありません。しいていえばConcatが近いので、Repeat(value, 1)で長さ1のシーケンスを作って連結、という手を取ることにしました。
+
+F#は[1..10]で最小値-最大値の連続したリストが作れるのですが、これはC#のEnumerable.Rangeとは、違います。Rangeの第二引数は最大値ではなく個数なので。正直言って、個数よりも最大値のほうが使いやすいと思うのだけどなー。というわけで、最大値-最小値+1 = 個数。ということにしています。最後のリスト内包表記は、うん、ええと、私は苦手です。値の動きが右行ったり左行ったりなのが嫌です。Linqのほうが好き。C#でイメージするなら、foreach (var x in [0..10]) yield return x * x; ってとこですかね。
+
+パターンマッチ
+---
+&lt;p&gt;```fsharp
+let rec SumList xs =
+    match xs with
+    | []    -&gt; 0
+    | y::ys -&gt; y + SumList ys
+let listD = SumList [1; 2; 3]  
+</code></pre>
+<pre><code class="language-csharp">Func&lt;IEnumerable&lt;int&gt;, int&gt; SumList = null;
+SumList = xs =&gt; (!xs.Any())
+    ? 0
+    : xs.First() + SumList(xs.Skip(1));
+
+var sum1 = SumList(new[] { 1, 2, 3 });
+var sum2 = new [] { 1, 2, 3 }.Sum(); // こらこら
+```&lt;/p&gt;
+
+まず、listDとかF# Tutorialには書いてあるんですが、これintなのでlistじゃないでしょ！紛らわしい。さて、match with | -&gt;という目新しい記述がパターンマッチという奴ですね？ 引数のリストxs(リストは通常変数名にxsとかysとかを用いるようです)が空配列の時は0を、そうでない時はyとysに分解して、ysの方は再帰して足し合わせる。ふむぬん。C#に直すとif-else if-else ifの連打。値を返すから、三項演算子のネストですな。という程度の理解しかしていません。三項演算子ネストより綺麗に書けて素敵。という浅すぎる理解しか、今はしていません。まあ、そのうちそのうち。
+
+y::ysという表記ですが、これは配列中の最初のものがy、それ以外がysになります。つまりLinqだとFirst()とSkip(1)ですね。let x::xs = [3..5]とすれば、xが3でxsが4,5になる。警告出ますが。基本はパターンマッチ時用ってことなのかしらん。この辺はちょっと良く分かりません。
+
+C#のほうの、IEnumerableのままSkipをゴロゴロと繋げていくのは実行効率がアレな悪寒。かといってToArrayを毎回使うのもなあ、というわけで上手い落し所が見つからない。QuickSortのように一本の配列に対し、境界の数字を渡していくってのやるとゴチャゴチャするし。あ、でもF#のも結局ysってのはxsとは別の、新しい配列ですよね？C#で表すのならば、xs.Skip(1).ToArray()ということかしらん。だとしたら、この程度の「効率」なんて奴は、気にしたら負けだと思っている。でいいのかもしれない。よくないかもしれない。
+
+配列・コレクション
+---
+&lt;p&gt;```fsharp
+let arr = Array.create 4 &quot;hello&quot;
+arr.[1] &lt;- &quot;world&quot;
+arr.[3] &lt;- &quot;don&quot;
+let arrLength = arr.Length        
+let front = arr.[0..2]
+let lookupTable = dict [ (1, &quot;One&quot;); (2, &quot;Two&quot;) ]
+let oneString = lookupTable.[1]
+</code></pre>
+<pre><code class="language-csharp">var arr = Enumerable.Repeat(&quot;hello&quot;, 4).ToArray();
+arr[1] = &quot;world&quot;;
+arr[3] = &quot;don&quot;;
+var arrLength = arr.Length;
+var front = new string[3];
+Array.Copy(arr, 0, front, 0, 3);
+// もしくはSkip-&gt;Take. 実行効率は劣りますが、私はこちらの記述方法のほうが好き
+var front2 = arr.Skip(0).Take(3).ToArray();
+var lookupTable = new Dictionary&lt;int, string&gt; { { 1, &quot;One&quot; }, { 2, &quot;Two&quot; } };
+var oneString = lookupTable[1];
+```&lt;/p&gt;
+
+配列とlistとの違い。listは不変(immutable)で、配列は可変(mutable)ということかしらん。あと配列なら.NET Frameworkのメソッド・プロパティが全部使える。mutableなものへの値の再代入は=ではなく&amp;lt;-で行う。あとは、Array.createは中身がnullな配列ではなく、初期値を指定して全部それで埋めるメソッドのようです。ふむ。あ、最後のslicing notationはいいですね。C#だとArray.Copyを使うのが等しいでしょうけど、記述が冗長すぎてねえ……。どうせ実行時間に対して差は出ないでしょ、と思う場合はLinqでSkip-&gt;Takeにしたほうがすっきり書けて良い。あ、あとインデクサは.[]が対応してるようです。ドット。ドット。
+
+辞書の初期化は、タプルを放り投げるだけ。素晴らしい！見た目に分かりやすくスッキリするのがいいです。C#だとコレクション初期化子で近い形にはなりますが、{ {と、全て波括弧で記述するのはどうかなあ、と思うところがあるので。あとは一応、[C# 3.0 における疑似 Map 生成リテラル - NyaRuRuの日記](http://d.hatena.ne.jp/NyaRuRu/20071211/p3)なんてことも出来ますけれど、やりませんものね。
+
+関数(その2)
+---
+&lt;p&gt;```fsharp
+let Square x = x*x              
+let squares1 = List.map Square [1; 2; 3; 4]
+let squares2 = List.map (fun x -&gt; x*x) [1; 2; 3; 4]
+let squares3 = [1; 2; 3; 4] |&gt; List.map (fun x -&gt; x*x) 
+let SumOfSquaresUpTo n = 
+  [1..n] 
+  |&gt; List.map Square 
+  |&gt; List.sum
+</code></pre>
+<pre><code class="language-csharp">public static IEnumerable&lt;TR&gt; Map&lt;T, TR&gt;(this Func&lt;T, TR&gt; selector, IEnumerable&lt;T&gt; source)
+{
+    return source.Select(selector);
+}
+
+// ↑という拡張メソッドを定義して
+
+Func&lt;int, int&gt; Square = x =&gt; x * x;
+var squares1 = Map(Square, new[] { 1, 2, 3, 4 });
+var squares2 = new Func&lt;int, int&gt;(x =&gt; x * x).Map(new[] { 1, 2, 3, 4 });
+var squares3 = new[] { 1, 2, 3, 4 }.Select(x =&gt; x * x).ToArray();
+// もしくは Array.ConvertAll(new[] { 1, 2, 3, 4 }, x =&gt; x * x)
+Func&lt;int, int&gt; SumOfSquaresUpTo = n =&gt;
+    Enumerable.Range(1, n - 1)
+        .Select(i =&gt; Square(i))
+        .Sum();
+```&lt;/p&gt;
+
+関数が先で、それに適用する配列を渡す、という順序はC#ばかり触ってる身としては、新鮮な印象です。そういえば[Achiral](http://d.hatena.ne.jp/NyaRuRu/20080115/p1)にも同種のオーバーロードが沢山定義されているのですが、私は違和感から、IEnumerable始点のものばかり使っています。あとSelect-&gt;ToArrayはArray.ConvertAllで書けるのですが、私はLinqで書くほうが好き。というかArrayの静的メソッドは、基本Obsoleteなぐらいの気持ちでいたりいなかったりする。
+
+ラムダ式は「fun 引数 -&gt; 本体」ですね。C#のほうがキーワードが必要ない分だけすっきりしてガガガ。でもnew Func&lt;型&gt;という不格好なものをつけなければならなかったりする悪夢。var hoge = (int x) =&gt; x * xもダメなんですよねえ。理由は、例えば「delegate int Func2(int i);」というのが定義出来るから。引数intで戻り値intだから、Func&lt;int, int&gt;とFunc2は同じ。でも型は違う。なので、見分けがつかず推論できないので、どのデリゲートを使うか、まで指定する必要がある。これは、悲しくウザい話です。ActionとFunc以外のデリゲート型なんて滅びてしまえばいいのに。
+
+「|&gt;」という見慣れない演算子が、パイプライン演算子で、左から右に値を流す。C#だと、Listに対してはLinqで、値に対しては、そういえば前に書いたような……。[neue cc - ver 1.3.0.3 / ちょっとした拡張メソッド群](http://neue.cc/2009/07/16_177.html)のTapの一個目が近い感じでしょーか。いいですよね、こういうの。
+
+Mutable
+---
+&lt;p&gt;```fsharp
+let mutable sum = 0
+for i in 0..10 do
+  sum &lt;- sum + i
+while sum &lt; 100 do
+  sum &lt;- sum + 5
+</code></pre>
+<pre><code class="language-csharp">var sum = 0;
+foreach (var i in Enumerable.Range(0, 10))
+{
+    sum += i;
+}
+while (sum &lt; 100)
+{
+    sum += 5;
+}
+```&lt;/p&gt;
+
+最初にF#の値はimmutableだと書きましたが、mutableにしたい時は、mutableキーワードを足せばおｋ。再代入時は&amp;lt;-演算子を使う、と。C#だとデフォルトがmutableなので、まんまです。そして、このforは、foreachですね。インデントが波括弧代わりなので、doだけどendは要りません。普通のforは「for i = 1 to 10 do」ですが、これならforeachでいいやあ、という気はする。
+
+Types: unions
+---
+&lt;p&gt;```fsharp
+type Expr = 
+  | Num of int
+  | Add of Expr * Expr
+  | Mul of Expr * Expr
+  | Var of string
+  
+let rec Evaluate (env:Map&lt;string,int&gt;) exp = 
+    match exp with
+    | Num n -&gt; n
+    | Add (x,y) -&gt; Evaluate env x + Evaluate env y
+    | Mul (x,y) -&gt; Evaluate env x * Evaluate env y
+    | Var id    -&gt; env.[id]
+  
+let envA = Map.of_list [ &quot;a&quot;,1 ;
+                         &quot;b&quot;,2 ;
+                         &quot;c&quot;,3 ]
+             
+let expT1 = Add(Var &quot;a&quot;,Mul(Num 2,Var &quot;b&quot;))
+let resT1 = Evaluate envA expT1
+```&lt;/p&gt;
+
+F# Tutorialですが、ここで途端に説明が無くなって放り出されます。鬼すぎる。今までのわりとゆるふわなところから途端にコレです。意味分からないし。unionsとか言われても分けわからない。と、嘆いていても始まらないので理解するよう頑張ります。そういえば(env:Map&amp;lt;string,int&gt;)も初出なのよね。推論じゃなく明示的に型を与える時は、こうするそうです。型定義がC#とは逆で、コロン後の末尾。違和感がシンドい。ActionScriptなんかも同じで非常にシンドい。
+
+unionはC#だとenumが近いかなー、と思うのですが、enumがintのみなのに対し、F#のunionはそれぞれが別の型を持てる。といった認識。更に値は外から定義可能。というわけでenumとは全然違いますな。むしろ普通にclassに近い。of intで型を定義している(Expr * ExprはTuple)し、値は外から与えているし(コンストラクタのように！) けれど、値は一個。
+
+じゃあclassで作れるかと言ったら、どうだろー。戻り値の型がバラバラになるので、interfaceで一個に纏められるわけでもなく上手いやり方ってあるのかしらん。パターンマッチと同じく、C#には無い概念、と素直にとらえた方が良いかも。一応、interface、じゃなくてダミーに近い型の下にぶら下げて、Evaluateのところでisで派生型を判定して分岐、といった感じでやってみましたが、ゴミですね……。
+
+```csharp
+public class Expr
+{
+    // privateにしたいつもり(これは酷い)
+    public class _Num : Expr
+    {
+        public int Value { get; set; }
+    }
+    public class _Add : Expr
+    {
+        public Expr E1 { get; set; }
+        public Expr E2 { get; set; }
+    }
+    public class _Mul : Expr
+    {
+        public Expr E1 { get; set; }
+        public Expr E2 { get; set; }
+    }
+    public class _Var : Expr
+    {
+        public string Value { get; set; }
+    }
+
+    private Expr() { }
+
+    public static Expr Num(int value)
+    {
+        return new _Num { Value = value };
+    }
+    public static Expr Add(Expr e1, Expr e2)
+    {
+        return new _Add { E1 = e1, E2 = e2 };
+    }
+    public static Expr Mul(Expr e1, Expr e2)
+    {
+        return new _Mul { E1 = e1, E2 = e2 };
+    }
+    public static Expr Var(string value)
+    {
+        return new _Var { Value = value };
+    }
+}
+
+static int Evaluate(IDictionary&lt;string, int&gt; env, Expr exp)
+{
+    return // どうしょうもなく酷い
+          (exp is Expr._Num) ? ((Expr._Num)exp).Value
+        : (exp is Expr._Add) ? Evaluate(env, ((Expr._Add)exp).E1) + Evaluate(env, ((Expr._Add)exp).E2)
+        : (exp is Expr._Mul) ? Evaluate(env, ((Expr._Mul)exp).E1) + Evaluate(env, ((Expr._Mul)exp).E2)
+        : (exp is Expr._Var) ? env[((Expr._Var)exp).Value]
+        : 0;
+}
+
+static void Main(string[] args)
+{
+    var envA = new Dictionary&lt;string, int&gt; { { &quot;a&quot;, 1 }, { &quot;b&quot;, 2 }, { &quot;c&quot;, 3 } };
+    var expT1 = Expr.Add(Expr.Var(&quot;a&quot;), Expr.Mul(Expr.Num(2), Expr.Var(&quot;b&quot;)));
+    var resT1 = Evaluate(envA, expT1);
+    Console.WriteLine(resT1); // 確認
+}
+</code></pre>
+<p>見なかったことにしてください。私の脳みそなんてこんなもんです。</p>
+<h2>Types: records</h2>
+<p>```fsharp
+type Card = { Name  : string;
+              Phone : string;
+              Ok    : bool }
+              
+let cardA = { Name = "Alf" ; Phone = "(206) 555-8257" ; Ok = false }
+let cardB = { cardA with Phone = "(206) 555-4112"; Ok = true }
+let ShowCard c = 
+  c.Name + " Phone: " + c.Phone + (if not c.Ok then " (unchecked)" else "")
+```
+<pre><code class="language-csharp">class Card
+{
+    public string Name { get; set; }
+    public string Phone { get; set; }
+    public bool Ok { get; set; }
+
+    public Card() { }
+
+    public Card(Card with)
+    {
+        // structならthis=withで一発なのですが
+        // F#のrecordはstructじゃないとのことなので
+        this.Name = with.Name;
+        this.Phone = with.Phone;
+        this.Ok = with.Ok;
+    }
+}
+
+var cardA = new Card { Name = &quot;Alf&quot;, Phone = &quot;(206) 555-8257&quot;, Ok = false };
+var cardB = new Card(cardA) { Phone = &quot;(206) 555-4112&quot;, Ok = true };
+Func&lt;Card, string&gt; ShowCard = c =&gt;
+    c.Name + &quot; Phone: &quot; + c.Phone + (!c.Ok ? &quot; (unchecked)&quot; : &quot;&quot;);
+```&lt;/p&gt;
+    
+こちらは割とすんなりと何なのか分かる。withでコピーが作れているところが面白い。ふーむ、C#だとむしろ匿名型のほうが近い感じに見えるかもしれない。
+
+Types: classes
+---
+&lt;p&gt;```fsharp
+type Vector2D(dx:float, dy:float) = 
+    let length = sqrt(dx*dx + dy*dy)
+    member v.DX = dx
+    member v.DY = dy
+    member v.Length = length
+    member v.Scale(k) = Vector2D(k*dx, k*dy)
+</code></pre>
+<pre><code class="language-csharp">class Vector2D
+{
+    public float DX { get; private set; }
+    public float DY { get; private set; }
+    public float Length { get; private set; }
+    public Func&lt;int, Vector2D&gt; Scale { get; private set; }
+
+    public Vector2D(float dx, float dy)
+    {
+        var length = (float)Math.Sqrt(dx * dx + dy * dy);
+        this.DX = dx;
+        this.DY = dy;
+        this.Length = length;
+        this.Scale = new Func&lt;int, Vector2D&gt;(k =&gt; new Vector2D(k * dx, k * dy));
+    }
+}
+```&lt;/p&gt;
+
+コンストラクタと定義が一体化していて、随分とシンプルに記述出来るようです。JavaScriptっぽい、なんて思ってしまったりして。C#で再現するとプロパティでメソッドかいな、という違和感があったりなかったり。private変数で蓄える必要がないから、定義が楽といえば楽。ところで思うのは、F#のv.DXとかの、vって何処から来てるの……？ これ、別にhogehogeにしてもaaaaaaにしても動くので、何でもいいみたいですが……。
+
+Types: interfaces
+----
+&lt;p&gt;```fsharp
+type IPeekPoke = 
+    abstract Peek: unit -&gt; int
+    abstract Poke: int -&gt; unit
+
+type Widget(initialState:int) = 
+    let mutable state = initialState
+    interface IPeekPoke with 
+        member x.Poke(n) = state &lt;- state + n
+        member x.Peek() = state 
+    member x.HasBeenPoked = (state &lt;&gt; 0)
+
+let widget = Widget(12) :&gt; IPeekPoke
+widget.Poke(4)
+let peekResult = widget.Peek()
+</code></pre>
+<pre><code class="language-csharp">interface IPeekPoke
+{
+    int Peek();
+    void Poke(int n);
+}
+
+class Widget : IPeekPoke
+{
+    private int state;
+    public bool HasBeenPoked { get { return state != 0; } }
+
+    public Widget(int initialState)
+    {
+        state = initialState;
+    }
+
+    public int Peek()
+    {
+        return state;
+    }
+
+    public void Poke(int n)
+    {
+        state = state + n;
+    }
+}
+
+static void Main(string[] args)
+{
+    var widget = (IPeekPoke)new Widget(12);
+    widget.Poke(4);
+    var peekResult = widget.Peek();
+}
+```&lt;/p&gt;
+
+interfaceはabstractな型定義を並べる。ということらしい。定義方法は「メソッド名:引数-&gt;引数-&gt;戻り値」ですねん。unitはC#でいうところのvoidみたいなもの。で、interfaceの実装は、そのまま中に記述してしまえばいいらしい。これは楽ちん。見慣れない「:&gt;」はキャストの記号。とても、カッコイイです……。
+
+結論
+---
+
+以上、複数回に分けようかとも思ったのですが一気にやってみました。最初F# Tutorialを開いて、少な！こんなんでチュートリアルになってるの？と思ったのですが、意外とギッシリ詰まってた感じです。しっかりチュートリアルになってました。ただ、やっぱチュートリアルなのでこれを覚えたぐらいじゃF#凄い！F#嬉しい！的にはなりません(比較対象がC#2.0だとなったかもしれませんが)でした。日常的に使って、手に馴染ませないと、良さの理解まではいけなさそうです。
+
+あとまあ、やっぱほとんど説明のない、このTutorialのコードだけじゃ適当な理解になってそうで怖い。きちんと時間割いてMSDN見るなりしないと……。ただ、今のとこがっつし覚えよう！と思えてないところはある。本音として、C#でいいぢゃん、と思っているところがかなりあります。これがJava-&gt;Scalaの関係だったら違ったかもしれないんですが、うーん。まあ、あとVisualStudioの補完具合とかかな。IntelliSenseに乗ってゴリゴリ書けるような感触がF#にはないので。別に補完効いてないってわけじゃあないのですけど。
+</code></pre>
+</div>
+<h1><a href="http://neue.cc/2009/1105_213.html">C#でTwitterのStreaming APIを使ってリスト自動追加</a></h1>
+<ul class="date"><li>2009-11-05</li></ul>
+<div class="entry_body"><p><a href="http://neue.cc/software/xboxinfotwit" title="neue cc - XboxInfoTwit">XboxInfoTwit</a>の認証数は現在450を越えて、近いうちに500には届きそうです。現在の実装はIEを裏で動かすという、しょーもないものになっていて、それに起因する不具合や、どうしょうもない点が幾つかあるため、クローラー部分は全面的に書き変えようと思っています。あと、エラーメッセージがド不親切とか至らない点だらけでした、すみません。そんな次期バージョンの作業は全然捗ってないのですが、せめて年内ぐらいには何とかしたいです。</p>
+<h2>@のお話</h2>
+<p>ゲーム名に@が含まれるものをポストする(例えばTHE IDOLM@STER)と、STERさんに@が飛んで迷惑。というお話を見たので検証してみました。@は行頭かスペース + @ + 数字/アルファベットのものがあると飛びます。つまり、@の前にアルファベットがあれば@は飛びません。なので、別にIDOLM@STERだからってSTERさんに@が飛びまくる、なんてことはありません。正規表現で表すと「(?&lt;=^| )@[a-zA-Z0-9_]+」になります。ついでに、ハッシュタグのほうも軽く検証してみました。基本的には@と同じですが、英単語以外にもリンクが張られるようなので、正規表現は「(?&lt;=^| )#[^ ]+」になるようです。</p>
+<h2>List</h2>
+<p>Twitterにリストが実装されました。そこで、<a href="https://twitter.com/neuecc/xboxinfotwitusers" title="Twitter / @neuecc/XboxInfoTwitUsers">XboxInfoTwitユーザーのリスト</a>を作ってみることにしました。手動で探して登録も大変なので、プログラムでクロールして追加していきましょう。パブリックイタイムラインからXboxInfoTwit利用者(Source=XboxInfoTwit)の人を片っ端からリスト登録するという方針で行きます。以下、C#でのTwitterストリーミングAPIの使用法と実際のコードになります。同じようなことをやりたい人は、適当に書き替えてどうぞ使ってください。突っ込みどころ多数なのでむしろ突っ込んで欲しい……。</p>
+<p>2010/4/29 追記：このコードはストリームAPIの利用法にしては冗長すぎるので、書き直しました → <a href="http://neue.cc/2010/04/29_255.html" title="neue cc - C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions">neue cc - C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions</a> ストリームAPI取得コードを参考にする場合は、新しいほうを見てください。</p>
+<pre><code class="language-csharp">using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Net;
+using System.IO;
+using System.Xml.Linq;
+using System.Collections.Specialized;
+using System.Threading;
+using System.Xml;
+
+static class Program
+{
+    // ザ・決めうち文字列s
+    const string UserName = &quot;neuecc&quot;; // 自分のアカウントのユーザー名を
+    const string Password = &quot;password&quot;; // 同じくパスワードを
+    const string ListName = &quot;xboxinfotwitusers&quot;; // リストを、入力ですです
+    const string StreamApi = &quot;http://stream.twitter.com/1/statuses/sample.xml&quot;;
+    const string ListMembersApiFormat = &quot;http://twitter.com/{0}/{1}/members.xml&quot;;
+
+    /// &lt;summary&gt;指定リストにメンバーを追加する&lt;/summary&gt;
+    static void AddMemberToList(string userName, string listName, int id)
+    {
+        var url = string.Format(ListMembersApiFormat, userName, listName);
+        var wc = new WebClient { Credentials = new NetworkCredential(UserName, Password) };
+        wc.UploadValues(url, new NameValueCollection() { { &quot;id&quot;, id.ToString() } });
+    }
+
+    /// &lt;summary&gt;指定リストのメンバーIDを全て取得する&lt;/summary&gt;
+    static IEnumerable&lt;int&gt; EnumerateListMemberID(string userName, string listName)
+    {
+        var format = string.Format(ListMembersApiFormat, userName, listName) + &quot;?cursor={0}&quot;;
+        var cursor = -1L;
+        var xmlReaderSettings = new XmlReaderSettings
+        {
+            XmlResolver = new XmlUrlResolver { Credentials = new NetworkCredential(UserName, Password) }
+        };
+        while (true)
+        {
+            using (var xr = XmlReader.Create(string.Format(format, cursor), xmlReaderSettings))
+            {
+                var xEle = XElement.Load(xr);
+                foreach (var item in xEle.Descendants(&quot;user&quot;).Select(x =&gt; (int)x.Element(&quot;id&quot;)))
+                {
+                    yield return item;
+                }
+                cursor = long.Parse(xEle.Element(&quot;next_cursor&quot;).Value);
+                if (cursor == 0) yield break;
+            }
+        }
+    }
+
+    /// &lt;summary&gt;ストリームAPIのパブリックタイムラインから無限に取得&lt;/summary&gt;
+    static IEnumerable&lt;XElement&gt; EnumeratePublicTimeline(StreamReader reader)
+    {
+        while (true)
+        {
+            var xmlString = reader.EnumerateLines()
+                .TakeWhile(s =&gt; s != &quot;&lt;?xml version=\&quot;1.0\&quot; encoding=\&quot;UTF-8\&quot;?&gt;&quot;)
+                .Join();
+            if (xmlString == &quot;&quot;) continue;
+            yield return XElement.Parse(xmlString);
+        }
+    }
+
+    /// &lt;summary&gt;サーバーが死んでないか確認&lt;/summary&gt;
+    static bool IsServerStatusOK()
+    {
+        var req = WebRequest.Create(&quot;http://twitter.com/help/test.xml&quot;);
+        HttpWebResponse res = null;
+        try
+        {
+            res = (HttpWebResponse)req.GetResponse();
+            if (res.StatusCode == HttpStatusCode.OK) return true;
+        }
+        catch (WebException e) { Console.WriteLine(e); }
+        finally { if (res != null) res.Close(); } // どうでもいいと思っていたり
+
+        return false;
+    }
+
+    static void Main(string[] args)
+    {
+        ServicePointManager.Expect100Continue = false; // おまじない(笑)
+        var count = 0; // モニタリング用のカウント変数(動作的には別に使わない)
+
+        var following = new HashSet&lt;int&gt;(EnumerateListMemberID(UserName, ListName));
+        var webRequest = (HttpWebRequest)HttpWebRequest.Create(StreamApi);
+        webRequest.KeepAlive = true;
+        webRequest.Credentials = new NetworkCredential(UserName, Password);
+
+    LOOP:
+        using (var res = webRequest.GetResponse())
+        using (var stream = res.GetResponseStream())
+        using (var reader = new StreamReader(stream))
+        {
+            try
+            {
+                // 例外が発生しなければ、無限リピートになっているのでこの部分を永久に続けます
+                EnumeratePublicTimeline(reader)
+                    .Do(_ =&gt; { if (++count % 100 == 0) Console.WriteLine(&quot;{0} : {1}&quot;, DateTime.Now, count); }) // 確認表示用
+                    .Where(x =&gt; x.Name == &quot;status&quot;)
+                    .Select(x =&gt; new
+                    {
+                        Source = x.Element(&quot;source&quot;).Value,
+                        ID = (int)x.Element(&quot;user&quot;).Element(&quot;id&quot;),
+                        Name = x.Element(&quot;user&quot;).Element(&quot;screen_name&quot;).Value
+                    })
+                    .Where(a =&gt; a.Source.Contains(&quot;XboxInfoTwit&quot;))
+                    .Do(a =&gt; Console.WriteLine(&quot;Found:{0}&quot;, a.Name)) // ここでも確認表示用
+                    .Where(a =&gt; following.Add(a.ID))
+                    .ForEach(a =&gt;
+                    {
+                        AddMemberToList(UserName, ListName, a.ID);
+                        Console.WriteLine(&quot;{0} : {1} : {2}&quot;, a.Name, DateTime.Now, count); // 確認表示用
+                    });
+            }
+            catch (IOException e)
+            {
+                Console.WriteLine(e); // 接続が閉じられてたりするのでー。
+                while (!IsServerStatusOK())
+                {
+                    Thread.Sleep(TimeSpan.FromMinutes(5)); // サーバー死んでたら5分間お休み
+                }
+            }
+            finally
+            {
+                webRequest.Abort(); // これ呼ぶ前にCloseするとハング
+            }
+        }
+        goto LOOP; // goto! goto!
+    }
+
+    // Extension Methods
+
+    public static IEnumerable&lt;string&gt; EnumerateLines(this StreamReader streamReader)
+    {
+        while (!streamReader.EndOfStream)
+        {
+            yield return streamReader.ReadLine();
+        }
+    }
+
+    public static string Join&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+    {
+        return source.Aggregate(new StringBuilder(), (sb, s) =&gt; sb.Append(s)).ToString();
+    }
+
+    public static void ForEach&lt;T&gt;(this IEnumerable&lt;T&gt; source, Action&lt;T&gt; action)
+    {
+        foreach (var item in source)
+        {
+            action(item);
+        }
+    }
+
+    public static IEnumerable&lt;T&gt; Do&lt;T&gt;(this IEnumerable&lt;T&gt; source, Action&lt;T&gt; action)
+    {
+        foreach (var item in source)
+        {
+            action(item);
+            yield return item;
+        }
+    }
+}
+</code></pre>
+<p>ストリーミングAPIとは無関係のリスト関連の処理や、投げやりなtry-catch-gotoがあって、ちょっとゴチャゴチャしてますが、基本的にはusing三段重ねの部分だけです。無限にXMLが継ぎ足されてくるので、接続を切らさずひたすらReadLine。XMLの切れ目は、XML宣言部を使うことにしましたが、今一つスマートではないです。文字列にしてParseってのもあまり良い感じじゃなく。あ、あと例外処理は全然出来てませんので何かあると平然と死にます。</p>
+<p>コードは、書き捨て感全開。例によって何でもLinq、何でもIEnumerable。コレクションになりそうな気配があると、すぐにじゃあyieldね、と考える癖がついてしまっていて。細かいことは後段に任せればいーんだよ、というのが楽ちんでして。リストメンバー全件取得の部分なんかは、わりとスマートに書けてるかと思うのですがどうでしょう。</p>
+<p>なお、このストリーミングAPIは全件を漏れなく取得出来るわけではないので、それなり、というかかなり漏れが出ます。なのでXboxInfoTwit使ってるのに登録されねーぞ、という場合は、しょーがない。です。そのうち登録されると思います。あと、このプログラムはサーバー上で24時間動かしているわけじゃなく、私のローカルPC上で動かしているだけなので、私の気まぐれで動かしてたり動かしてなかったりします。私が寝てる間はPCがウルサイので動いてませんし、私が家に居ない時は省エネのために動いてません。なので、むしろ登録されるほうが珍しいです。レアです。効率的には20000件に1人登録出来るか出来ないか、って感じでした。一時間に一人見つかるかどうかも怪しいぐらいの頻度。とてもレア。ぶっちゃけgoogle経由で引っ張ってくるとかしたほうが遙かに効率良さそうですが、まあ、Streaming API使ってみたかったというだけなので。</p>
+<p>そういえばですが、逆にリストに登録されてUZEEEE、という場合は、現状はリスト機能がベータのせいなのか拒否は出来ないようです。すみません。UZEEEE、と思っても我慢してください。どうしても嫌な場合は私の方にメッセージをくれれば、リストからの撤去と、プログラムから以後の追加をしないようなコードを入れたいと思っています。</p>
+</div>
+<h1><a href="http://neue.cc/2009/1101_212.html">Replace, Intersperse, Init</a></h1>
+<ul class="date"><li>2009-11-01</li></ul>
+<div class="entry_body"><pre><code class="language-csharp">static void Main(string[] args)
+{
+    // 1,2,3,4,5,6,7,8,9,10
+    var source = Enumerable.Range(1, 10);
+    // 偶数を-1に置換する
+    var replace = source.Replace(i =&gt; i % 2 == 0, -1);
+    // 値を挟み込む(1,100,2,100,...9,100,10)
+    var intersperse = source.Intersperse(100);
+    // 末尾一個を省く(1..9)
+    var init1 = source.Init();
+    // 末尾三個を省く(1..7)
+    var init2 = source.Init(3);
+}
+
+public static IEnumerable&lt;T&gt; Replace&lt;T&gt;(this IEnumerable&lt;T&gt; source, Func&lt;T, bool&gt; predicate, T replacement)
+{
+    foreach (var item in source)
+    {
+        if (predicate(item)) yield return replacement;
+        else yield return item;
+    }
+}
+
+public static IEnumerable&lt;T&gt; Intersperse&lt;T&gt;(this IEnumerable&lt;T&gt; source, T value)
+{
+    var isFirst = true;
+    foreach (var item in source)
+    {
+        if (!isFirst) yield return value;
+        yield return item;
+        isFirst = false;
+    }
+}
+
+public static IEnumerable&lt;T&gt; Init&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    return source.Init(1);
+}
+
+public static IEnumerable&lt;T&gt; Init&lt;T&gt;(this IEnumerable&lt;T&gt; source, int count)
+{
+    if (count == 0)
+    {
+        foreach (var item in source) yield return item;
+        yield break;
+    }
+
+    var q = new Queue&lt;T&gt;(count);
+    foreach (var item in source)
+    {
+        if (q.Count == count) yield return q.Dequeue();
+        q.Enqueue(item);
+    }
+}
+</code></pre>
+<p>という拡張メソッド。もういい加減いつになるのか分からなくなってしまって悲しいlinq.jsの次のリリースにはこれらを入れます。IntersperseとInitの元ネタは<a href="http://anonsvn.mono-project.com/viewvc/trunk/rocks/Mono.Rocks/" title="[Mono] Index of /trunk/rocks/Mono.Rocks">Mono.Rocks</a>から。それの更に元はHaskellのようですねん。</p>
+<p>Initは何度となく欲しい！と思ったシーンがあるので、きっと便利。長さが不定で前から後ろに走るLinqでは、後ろから幾つ、というのは標準では出来ないんですね。ReverseしてSkipしてReverseするか、一度ToArrayしてから切り出したりしか手がなくて。最後の一個だけ省きたいとか、よくあります。しかしInitって関数名は意味不明で少々アレかも。Mono.RocksではExceptLastに改称されていました。そうですねえ、CarとかCdrを引き摺る必要はないように、ExceptLastのほうが良さそうですね。</p>
+<p>実のところInitがあればIntersperseも標準Linq演算子で定義出来ます。</p>
+<pre><code class="language-csharp">var intersperse = source
+    .SelectMany(i =&gt; Enumerable.Repeat(i, 1).Concat(Enumerable.Repeat(100, 1)))
+    .Init();
+</code></pre>
+<p>Initの便利さが分かる。そう、こういうのやると、どうしても末尾に一個ゴミが付いてきちゃて、それをスマートに除去するのは出来ないのですよね。あって良かったInit。そしてSelectManyの万能さは異常。Repeat(value, 1)とかRepeat(value, int.MaxValue)も超多用。記述があまりにも冗長になって泣けますが。</p>
+<p>RxFrameworkにはObservable.Return(value)という、Repeat(value, 1)と同様のものが定義されていたりします。それとObservable.Cons(value,IObservable)というConcatの単体バージョンみたいなものもあります(lispのconsと同じイメージです)。だから、上のをRxでやるならば</p>
+<pre><code class="language-csharp">var intersperse = Observable.Range(1, 10)
+    .SelectMany(i =&gt; Observable.Cons(i, Observable.Return(100)))
+    .ToEnumerable();
+    .Init();
+</code></pre>
+<p>となります。あまりスッキリしてない？ まあ、そうかも。でも、決め打ちの1って書くの嫌なものなので、それが省けるってのは嬉しいものです。定数を使うなら(int)decimal.Oneという手もありますが、まあ、馬鹿らしい。私はstring.Emptyよりも&quot;&quot;を使う派なので、それはちょっとありえない。ちなみに、&quot;&quot;を選ぶ理由は、タイプ数が少ないという他に、文字列であることが色分けされて表示されるため、string.Emptyよりも遥かに視認性が良いからです。こういうのはIDEを含めて考えないとね。パフォーマンス云々の話は些細なことなので個人的にはどうでもいい。</p>
+<p>Rxの記事は、細かいネタは溜まっているので、近いうちにまた書きたいと思います。VS2010 Beta2ではIObservableが標準搭載されていますし。</p>
+</div>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

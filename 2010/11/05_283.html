@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - 実践例から見るReactive Extensinosを用いた非同期処理</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2010/1105_283.html">実践例から見るReactive Extensinosを用いた非同期処理</a></h1>
+<ul class="date"><li>2010-11-05</li></ul>
+<div class="entry_body"><p>私は<a href="http://neue.cc/software/xboxinfotwit" title="neue cc - XboxInfoTwit">XboxInfoTwit</a>という、Xbox.comからデータをスクレイピングで取り出してTwitterに投稿するという、大変不届き者なアプリケーションを公開しています。お陰様で認証者数も2500人を超えて、割と活況。このアプリケーションでのデータ取得ですが、正規なルートでの情報取得ならばAPI叩けば一発、というケースも少なくないですが、いかんせんルートがアレなので一回の取得で取れる情報は断片。あちらこちらから値を受け渡し組み立てなければならないという、入り組んだ通信手順になっています。これを、もし全部非同期でやろうとしたら目眩がするなあ。ふむ。そこでReactive Extensions。むしろ良いネタがあるじゃないか！というわけでクローラーのコア部分を完全非同期 + Reactive Extensinosで全面的に書きなおしてみました。</p>
+<p><a href="https://bitbucket.org/neuecc/xboxinfotwitcore" title="neuecc / XboxInfoTwitCore / overview – Bitbucket">neuecc / XboxInfoTwitCore / overview – Bitbucket</a></p>
+<p>dllでライブラリという形体を取っていますが、基本的には誰にも使い道がないものかと思われます。というわけで、このXboxInfoTwitCoreの内容自体はどうでもいいとスルーして、この現実的な課題(？)にReactive Extensinosがどう簡単にしてくれたかを見ていきます。</p>
+<h2>非同期通信の連続</h2>
+<p>まずは、手順について図で。最近、パワーポイントでのポンチ絵を書く練習を兼ねて、しかしこんなヘタクソで大丈夫か？？</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/xboxinfotwitcore_flow.jpg">
+</p>
+<p>プレイ状況の取得は、<a href="http://live.xbox.com/ja-jp/MyXbox/Profile" title="プロフィール - Xbox.com">MyXbox/Profile</a>から取得、実績内容の取得はそこからゲームのタイトルIDを取り出して、個別のゲーム画面のURLを作り取得。最終的には両者を結合してデータを作り出します。ただし、ログイン前にMyXbox/Profileにアクセスすると認証フォームにリダイレクトされるので、そこでごそごそと処理してlive.comの認証クッキーを取得する必要があります。この認証クッキー取得が若干ややこしい。一度分かってしまえばそんなでもないのですけれど、ちょびっと嫌らしい造りになっています(恐らくこの認証部分はWindows Liveで共通だと思うので、SkyDriveをモニョモニョしたい、など考えている人は参考にでもどうぞ)</p>
+<p>ちなみに非同期のPOSTってのは、BeginGetRequestStreamで非同期でRequestStreamを呼び出して書き込む(POST)してから、BeginGetResponseで非同期でレスポンスを取得するので、ネスト量2倍。クッキー認証部分だけで、普通に書くと7つぐらいネストするわけです……。</p>
+<h2>Asynchronus Query</h2>
+<p>細部を見る前に、最終的にどうなったか、を。</p>
+<pre><code class="language-csharp">var fetcher = new LiveTokenFetcher(&quot;userid&quot;, &quot;password&quot;);
+var locale = new Locale(&quot;ja-JP&quot;, &quot;日本&quot;);
+
+// 非同期クエリ組み立て
+var asyncQuery =
+    from crawler in
+        from cookie in fetcher.GetLoginCookie(new XboxUrlBuilder(locale).Profile())
+        select new XboxInfoCrawler(cookie, locale)
+    from pi in crawler.GetPlayerInfo()
+    from ai in pi.GameInfo.TitleId != 0
+        ? crawler.GetAchievement(pi.GameInfo.TitleId)
+        : Observable.Return&lt;AchievementInfo&gt;(null)
+    select pi.Tap(x =&gt; x.GameInfo.AchievementInfo = ai); // Tapについては解説しな...い
+
+// 実行
+asyncQuery.Subscribe(pi =&gt; Console.WriteLine(&quot;{0} - {1}&quot;, pi.GamerTag, pi.PlayerState));
+</code></pre>
+<p>(私にしては珍しく)クエリ構文を使っていますが、こう見ると本当に、非同期処理がLinqに統合された形で問い合わせられる、ということが良く伝わるのではないでしょうか？処理の順序が一見イミフ、というのは慣れの問題です！解説します。</p>
+<p>GetLoginCookie、GetPlayerInfo、GetAchievementがIObservable&lt;T&gt;を返す、非同期処理。GetLoginCookieはポンチ絵で言うところの、クッキー取得で、GetPlayerInfoが中央左、GetAchievementが中央右で、最後のselectがマージというわけです。ややこしくネストするはずの非同期が非常にあっさりと記述できました。</p>
+<h2>GETとPOSTの連続</h2>
+<p>一番面倒くさいログインクッキー取得の部分について。</p>
+<pre><code class="language-csharp">public IObservable&lt;CookieCollection&gt; GetLoginCookie(string url)
+{
+    return Observable.Defer(() =&gt; CreateWebRequest(url).GetResponseAsObservable())
+        .Select(res =&gt; res.TransformResponseHtml(xml =&gt; new
+        {
+            Cookie = ConstructCookie(res.Headers[&quot;Set-Cookie&quot;]),
+            PostUrl = GetPostUrl(xml),
+            PPFT = GetInputValue(xml, &quot;PPFT&quot;),
+            PPSX = GetInputValue(xml, &quot;PPSX&quot;)
+        }))
+        .SelectMany(a =&gt; CreateWebRequest(a.PostUrl, MethodType.Post, a.Cookie)
+            .UploadValues(new Dictionary&lt;string, string&gt;
+            {
+                {&quot;LoginOptions&quot;, &quot;3&quot;},
+                {&quot;PPFT&quot;, a.PPFT},
+                {&quot;PPSX&quot;, a.PPSX},
+                {&quot;PwdPad&quot;, PwdPadBase.Substring(0, PwdPadBase.Length - password.Length)},
+                {&quot;login&quot;, loginId},
+                {&quot;passwd&quot;, password}
+            }))
+        .Select(res =&gt; res.TransformResponseHtml(xml =&gt; new
+        {
+            PostUrl = GetPostUrl(xml),
+            Anon = GetInputValue(xml, &quot;ANON&quot;),
+            T = GetInputValue(xml, &quot;t&quot;)
+        }))
+        .SelectMany(a =&gt; CreateWebRequest(a.PostUrl, MethodType.Post)
+            .Tap(r =&gt; r.AllowAutoRedirect = false)
+            .UploadValues(new Dictionary&lt;string, string&gt;
+            {
+                {&quot;ANON&quot;, a.Anon},
+                {&quot;t&quot;,Uri.EscapeDataString(a.T)}
+            }))
+        .Select(res =&gt; ConstructCookie(res.Headers[&quot;Set-Cookie&quot;]));
+}
+</code></pre>
+<p>となってます。長くて一瞬ウゲ、となりますが、基本的にはSelectとSelectManyしか使っていません。Selectは流れてくる値を変換。SelectManyは、次の非同期処理の実行。そう覚えて貰えれば、どうでしょう？</p>
+<p>先頭から見るとurl(MyXbox/Profile)に対して非同期でのGetResponseを開始。認証フォームにリダイレクトされるので、HTMLをスクレイピングしてPOSTに必要なデータ(PPFT,PPSXなど)を集める。そして非同期でポスト(UploadValuesは、詳細はソースコードを参照してもらうとして非同期で投稿してIObservable&lt;WebResponse&gt;を返す自前定義の拡張メソッドです)。続いて、スクレイピングして次のPOSTに必要なデータ(ポスト先URL,Anon,T)を生成、そして再びUploadValuesで非同期ポスト。するとWebResponseに認証クッキーがあるので、ヘッダーの&quot;Set-Cookie&quot;からクッキーを取ってCookieCollectionを生成したものを返す。</p>
+<p>となってます。流れるように！また、最後がSelectで終わっているように、流れは終わっていません。利用者が、ここから更に非同期での流れを繋いでいくわけです。</p>
+<h2>SelectとSelectMany、そしてクエリ構文</h2>
+<p>御大層なことを言いつつ、SelectとSelectManyしか使ってないじゃないか！というと、はい、その通りです。それでいいんです。ふつーのシチュエーションでの非同期処理って、そういうものでしょう？データを加工するSelectと、ネストをフラットにするSelectMany。これだけ覚えれば十分であり、そして、役立ちなのです。</p>
+<p>ところで、冒頭の例で（メソッド構文信者な私が）何でクエリ構文を使ったかというと、そこそこ綺麗に見えるかなー、とか思ったのともう一つは、割と必要に迫られたから。書き方は色々あります。例えばクエリ構文をベースにするなら、他にも</p>
+<pre><code class="language-csharp">// クエリ構文とメソッド構文を混ぜるのも時には分かりやすさに繋がる
+from crawler in fetcher.GetLoginCookie(new XboxUrlBuilder(locale).Profile())
+                       .Select(cookie =&gt; new XboxInfoCrawler(cookie, locale))
+from pi in crawler.GetPlayerInfo() // 以下略
+
+// select intoを使うことで完全フラットに流すことも可能です
+from cookie in fetcher.GetLoginCookie(new XboxUrlBuilder(locale).Profile())
+select new XboxInfoCrawler(cookie, locale) into crawler
+from pi in crawler.GetPlayerInfo() // 以下略
+</code></pre>
+<p>と出来るでしょう。特に後者のselect intoを使った書き方は冒頭のものより良いかもしれません。ネストして順番が上下するのは複雑さの現れになりますから。では、メソッド構文で書くと？</p>
+<pre><code class="language-csharp">var asyncQ = fetcher.GetLoginCookie(new XboxUrlBuilder(locale).Profile())
+    .Select(cookie =&gt; new XboxInfoCrawler(cookie, locale)) // クッキーをラップしたもの
+    .SelectMany(crawler =&gt; crawler.GetPlayerInfo())
+    .SelectMany(playerInfo =&gt; crawler.GetAchievement(playerInfo.GameInfo.TitleId));
+    // と、書きたいのですが、SelectManyでplayerInfoに変換されているのでcrawlerはスコープ外でこうは書けない！
+</code></pre>
+<p>SelectManyは、前方の値が使えません。GetLoginCookieのように前の値は一切使わないのならば何ら問題ないのですが、GetAchievement（実績取得）はクッキーとGetPlayerInfoで得られたタイトルIDの&quot;両方&quot;が必要。この両方、というシチュエーションの時に、上から流れて変形するだけのSelectManyだと非常に、書きづらい。ではメソッド構文ではどうするか、というと、クエリ構文のように考える。</p>
+<pre><code class="language-csharp">var asyncQ = fetcher.GetLoginCookie(new XboxUrlBuilder(locale).Profile())
+    .Select(cookie =&gt; new XboxInfoCrawler(cookie, locale))
+    .SelectMany(crawler =&gt; crawler.GetPlayerInfo().Select(playerInfo =&gt;
+        new { crawler, playerInfo })
+    .SelectMany(a =&gt; a.crawler.GetAchievement(a.playerInfo.GameInfo.TitleId)));
+</code></pre>
+<p>下側のフローに二つ以上の値を持ち越したいのならば、二つ以上の値を格納した匿名型を作ればいいぢゃない。ということですね。クエリ構文の実態もこうなっています。正直、メソッド構文でこれを書くのは二つだけならまだいいですが、幾つも繋いでいくとなると相当汚くなるので、これはもう素直にクエリ構文の出番だな、と私は思いました。</p>
+<p>奇怪なるクエリ構文の実態については<a href="http://d.hatena.ne.jp/ufcpp/20080304/1204633735" title="多重 from の展開結果 - ++C++; // 管理人の日記">多重 from の展開結果 - ++C++; // 管理人の日記</a>で書かれています。って、よくみるとTrackbackに昔の私が送ってますね、ふむふむ、<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">Linq to ObjectsのJavaScript移植であるlinq.js</a>で書くとこうなるようですよ？</p>
+<pre><code class="language-csharp">// クエリ
+var apart = Enumerable.Range(1, 5);
+var query = apart
+   .SelectMany(function(baker){ return apart
+   .SelectMany(function(cooper){ return apart
+   .SelectMany(function(fletcher){ return apart
+   .SelectMany(function(miller){ return apart
+   .Select(function(smith){ return {
+       baker: baker, cooper: cooper, fletcher: fletcher, miller: miller, smith: smith}})})})})})
+   .Where(&quot;Enumerable.From($).Distinct('$.Value').Count() == 5&quot;)
+   .Where(&quot;$.baker != 5&quot;)
+   .Where(&quot;$.cooper != 1&quot;)
+   .Where(&quot;$.fletcher != 1 &amp;&amp; $.fletcher != 5&quot;)
+   .Where(&quot;$.miller &gt; $.cooper&quot;)
+   .Where(&quot;Math.abs($.smith - $.fletcher) != 1&quot;)
+   .Where(&quot;Math.abs($.fletcher - $.cooper) != 1&quot;);
+
+// 出力
+var result = Enumerable.From(query.Single()) // 答えは一つなのでSingle,そしてobjectをKeyValuePair[]に分解
+   .OrderBy(&quot;$.Value&quot;)
+   .ToString(&quot;, &quot;, &quot;$.Key + ':' + $.Value&quot;); // シーケンスを文字列に結合
+
+alert(result); // smith:1, cooper:2, baker:3, fletcher:4, miller:5
+</code></pre>
+<p>linq.jsは&quot;完全な&quot;移植なので、.NETで動くコードが動かない、ということはありません。JavaScriptにもLinqの革命を！と、宣伝はさておき、SelectManyで下方に値を持ち出しているのに、毎回匿名型を作っていません。SelectManyのresultSelectorの部分でネストさせることで、値を下の方まで持ち運ぶ事が可能です。これはJavaScriptだけでなくC#でのLinq/Rxでも有効です。一つのパターンというかテクニックというか。C#ではわざわざこんなことやるぐらいならクエリ構文使えという気がしますが、クエリ構文の使えないReactive Extensions for JavaScript(RxJS)では活きるかもしれません。</p>
+<p>ただ、この手のインデントの細工による対策は、IDEの自動整形と相性悪いんですよね。上のSelectManyのものも、コードフォーマッタにかけるとボロボロに崩れ去ります。基本的には私は、インデントは機械任せでやるべき。人が調整するものではないし調整してはならない。と思っているので、残念ながら上記テクニックは使うことはないかもなー、いや、どうだろう、積極的にはやらないという程度かしら。</p>
+<h2>The Future of C#(async/await)</h2>
+<p>つい数日前に開催されたPDC2010で、C#設計者のAnders Hejlsbergが、The Future of C#と題してC#5.0(とは言ってませんが、恐らくそうなる)のFeatureを語りました。一つは今まで言われていたCompiler as a Service。もう一つが、asynchronusの言語統合。C# 2.0でのyield returnによるIEnumerable<T>生成のようなコンパイル時生成で非同期をコードの見た目上、完全に同期のように扱うことが出来ます。</p>
+<p><a href="http://msdn.microsoft.com/en-us/vstudio/async.aspx" title="Asynchronous Programming for C# and Visual Basic">Asynchronous Programming for C# and Visual Basic</a>にてVisual Studio Async CTPが出ていて既に試してみることが可能なので(要：英語版VS2010)、実際にXboxInfoTwitCoreをasync/awaitで書き直してみました。全体はbitbucketのリポジトリ上にあるので興味あればそちらもどうぞ。以下は、ログインクッキーを取得する部分。</p>
+<pre><code class="language-csharp">private async static Task&lt;WebResponse&gt; UploadValuesAsync(WebRequest request, IDictionary&lt;string, string&gt; parameters)
+{
+    var bytes = parameters.ToQueryParameter().Pipe(Encoding.UTF8.GetBytes);
+    using (var stream = await request.GetRequestStreamAsync())
+    {
+        await stream.WriteAsync(bytes, 0, bytes.Length);
+    }
+    return await request.GetResponseAsync();
+}
+
+public async Task&lt;CookieCollection&gt; GetLoginCookie(string url)
+{
+    var res = await CreateWebRequest(url).GetResponseAsync();
+    var prepare = res.TransformResponseHtml(xml =&gt; new
+    {
+        Cookie = ConstructCookie(res.Headers[&quot;Set-Cookie&quot;]),
+        PostUrl = GetPostUrl(xml),
+        PPFT = GetInputValue(xml, &quot;PPFT&quot;),
+        PPSX = GetInputValue(xml, &quot;PPSX&quot;)
+    });
+
+    var req2 = CreateWebRequest(prepare.PostUrl, MethodType.Post, prepare.Cookie);
+    var res2 = await UploadValuesAsync(req2, new Dictionary&lt;string, string&gt;
+    {
+        {&quot;LoginOptions&quot;, &quot;3&quot;},
+        {&quot;PPFT&quot;, prepare.PPFT},
+        {&quot;PPSX&quot;, prepare.PPSX},
+        {&quot;PwdPad&quot;, PwdPadBase.Substring(0, PwdPadBase.Length - password.Length)},
+        {&quot;login&quot;, loginId},
+        {&quot;passwd&quot;, password}
+    });
+
+    var prepare2 = res2.TransformResponseHtml(xml =&gt; new
+    {
+        PostUrl = GetPostUrl(xml),
+        Anon = GetInputValue(xml, &quot;ANON&quot;),
+        T = GetInputValue(xml, &quot;t&quot;)
+    });
+
+    var req3 = CreateWebRequest(prepare2.PostUrl, MethodType.Post);
+    req3.AllowAutoRedirect = false;
+
+    var res3 = await UploadValuesAsync(req3, new Dictionary&lt;string, string&gt;
+    {
+        {&quot;ANON&quot;,prepare2.Anon},
+        {&quot;t&quot;,Uri.EscapeDataString(prepare2.T)}
+    });
+
+    return ConstructCookie(res3.Headers[&quot;Set-Cookie&quot;]);
+}
+</code></pre>
+<p>まあ見事にベッタベタに書かれているのが良く見えますねえ。このasync/awaitですが、非同期として扱うものにasyncを宣言したメソッドを用意。あとは同期のように書くだけ。yield returnのかわりにawait + XxxAsync と書くだけ。それで、まるで同期のように書けてしまいます。あまりにもお手軽。魔法のように。Silverlightのネック（そして初心者キラー）なところは、分かりづらい非同期でしたが、ウルトラC的に解決……。</p>
+<p>この発表を見た時は普通にショックで、更に一日経って冷静に考えると更にショックで寝こむ勢いでしたね(笑) 正直なところ、被ります。単純な非同期の簡易化という点だけで考えればめっちゃ被ります。それはTaskとRxが被るよねー、Rxのほうが書きやすいっすよー、とか少し前に言っていた程度にはモロ被ります。実際問題Taskはあまり使いやすいとは言えないのですが、コンパイラサポートがガッツシ来てしまったら、それは話は別ですな。</p>
+<p>勿論、RxのメリットはIEnumerable&lt;T&gt;や、イベントやタイマーなどの他のIObservable&lt;T&gt;とのシームレスな連携にもあるので、非同期を利用するシーンにおいてasync/awaitが完全に置き換えるもの、とは言いませんけれど。そして、私はそういった統合っぷりに魅力を感じているのでasync/awaitはあまり使わないかなー、という気がしてなくはないのですが、ちょっとその辺、判断が難しい。</p>
+<p>さて、ところで両者を置き換えるのは非常に簡単です。戻り値がTask&lt;T&gt;かIObservable&lt;T&gt;か。RxではSelectManyだった位置にawaitを置く。それだけです。これは覚えておいて損はないかもです。そういう意味でも普通にかぶってるよな、とか思いつつ。awaitが分かればRx-SelectManyも簡単だし、その逆もまた然り。</p>
+<h2>SilverlightとWindows Phone 7</h2>
+<p>Silverlightは同期APIがないので、Rxで組むことで互換性が狙えます。このXboxInfoTwitCoreはフル非同期・フルRxなので、Silverlight/Windows Phone 7にも対応させ、られませんでした！えー。CookieExceptionが発生したり取れる最終的なCookieが何か違ったりと、Cookieが鬼門すぎて無理でした、とほほほ。マジワケワカラン。ええと、一応はWPF-Silverlight-WP7で完全なコード共有を実現する、という点もRxの強力な武器であり、使う理由になるとは思っています。それを示したかったのですが、うーむ。完全に同一なファイルで非同期としての挙動は問題なく取れているのですが、実際にデータが出せないとねえ……。カッコワルイ。</p>
+<h2>SgmlReader for Silverlight/Windows Phone 7</h2>
+<p>XboxInfoTwitCoreではHtml to Xml変換にSgmlReaderを使用しています。<a href="http://neue.cc/2010/03/02_244.html" title="neue cc - C#でスクレイピング:HTMLパース(Linq to Html)のためのSGMLReader利用法">以前に紹介を書きました</a>が、これは本当に重宝します。ストリームとXElement.Loadの間に置くことで、不正なXMLである(ためXElement.Loadに渡すと例外が発声する)ネット上のHTMLをLinq to Xmlで扱えるようになります。しかし、元のコードベースが古いのと開発が活況とは言い難い状況であるために、SilverlightやWindows Phone 7に対応していません。大変困った。困ったので、Silverlight/Windows Phone 7で動くように少々コード弄ったところ、問題なく動いた！ので、こちらもbitbucketにあげときました。</p>
+<p><a href="http://bitbucket.org/neuecc/sgmlreader.sl" title="neuecc / SgmlReader.SL / overview – Bitbucket">neuecc / SgmlReader.SL / overview – Bitbucket</a></p>
+<p>基本的にはデスクトップ版と全く同じ感覚で使えます。</p>
+<pre><code class="language-csharp">var req = WebRequest.Create(&quot;http://google.com/&quot;);
+req.BeginGetResponse(ar =&gt;
+{
+    var res = req.EndGetResponse(ar);
+    using (var stream = res.GetResponseStream())
+    using (var sr = new StreamReader(stream))
+    using (var sgmlReader = new SgmlReader { DocType = &quot;HTML&quot;, CaseFolding = CaseFolding.ToLower, InputStream = sr })
+    {
+        var xml = XElement.Load(sgmlReader); // これ。
+        Dispatcher.BeginInvoke(() =&gt; MessageBox.Show(xml.ToString()));
+    }
+}, null);
+</code></pre>
+<p>プロパティにURLを渡すと例外で落ちます(同期通信は許可されていません！)。というわけで、WebRequestなどから非同期でウェブからStreamを取り出して、それをInputStreamプロパティに渡すという形を取ってください。この制限は、SilverlightではXElement.Load(&quot;url&quot;)が許可されていないのと同じことです。</p>
+<h2>XboxInfoTwitの今後</h2>
+<p>ここまで見てくれた人がXboxInfoTwit本体の利用者とは思えません！のですが、とりあえず書きますと、コア部分は書き換わったので、あとはGUIというか設定画面を複数言語に対応させてCodePlexで公開。を目指しています。が、いかんせんGUIは難敵です……。今のXboxInfoTwitも一応WPFなんですが見よう見まねで組んだXAMLで汚いので、きっちりと綺麗に書き換えたい、のですが、それをやるにはあまりにもWPF/XAMLの知識がなさすぎる。そのため、今日明日でフル改装で公開！というわけにもいきません。もう少し時間がかかりそうです。</p>
+<p>Twitterへの投稿に関しては、以前書いた<a href="http://reactiveoauth.codeplex.com/" title="ReactiveOAuth">ReactiveOAuth</a>(完全なRxベースのOAuthライブラリ)があるので、シームレスに統合出来そう（こちらも幾つか課題が溜まっているので更新しないと……）。あとは、今使ってる自動アップデートプログラムがタコな出来なので、これも作り直したいなあ。なんて思っていたり。</p>
+<h2>まとめ</h2>
+<p>ふつーの非同期で書いてネストしまくりで、こんなの書いてられないだろほれみろバーカバーカ、とか言ってみたかったのですが気力がなくてそれは断念。ともあれ、今ある非同期の厳しさへの現実解として、Rxはアリ、です。非同期処理が、かなり綺麗にLinqクエリとして溶け込む様は分かるのではないかと思います。C#5.0のasync/awaitと比較してみても、awaitの位置にSelectMany、というだけの話ですしね。そして何よりも、async/awaitは今日明日に出るわけじゃないのです！ Visual Studio 2005 -&gt; 2008 -&gt; 2010のペースで考えるならば2013年。まだ2年も先です。</p>
+<p>async/awaitがないから「しょうがなく」使う、ってスタンスもアレゲ。いえいえ、喜んで使うのです。Rxならではのメリットが、当然あります。ただの非同期処理の一本化というだけに終わらず、イベントやタイマーなど他のソースとの融合は魅力です。そう、そもそも、Rxの持つ側面は3つ。「Asynchronus」「Event」「Pull to Push」。ここ最近はAsynchronusのことしか書いてなかったですが、他の2つのほうも見逃せないというか、むしろRxは最初はLinq to Eventsとして紹介されていたぐらいだしEventのほうがメインですよ？</p>
+<p>ところで話は全く変わりますが、Bitbucket使い始めました。バージョン管理は当然Mercurialです。Mercurialは非常にいいです。もうSubversionは使う気になれない。Team Foundation Serverは使ったことないので知らないけれど(あれはオールインワンなところに価値がある気がしつつ、まあ、重量級ですよね)Mercurialのサクサク感は、バージョン管理はしっくりこないんです！とかほざいていた私にガツーンとバージョン管理がないともう生きていけない！ちょっとしたプロジェクトもhg initするし！な心構えに変えさせる威力がありました。あとちょっとした変更でもローカルでコミット、な素敵さとか。</p>
+<p><a href="http://tortoisehg.bitbucket.org/">TortoiseHg</a>は、若干UIの導線がイケてないとは思いつつ、まあまあ使いやすく(日本語化もデフォルトでされています←要環境変数にLANG=ja)、Visual Studio拡張の<a href="http://visualhg.codeplex.com/">VisualHG</a>も素敵な使い勝手。というか、UI部分はTortoiseHgを呼び出しているだけというシンプルさがいい。私はEclipse下では<a href="http://www.vectrace.com/mercurialeclipse/">Mercurial Eclipse</a>を使ってますが、こちらは独自にがっつし作りこんであって、それが今一つな使い勝手で。私はVisual Hgの方向性を支持します。</p>
+<p>最後に、毎回嘘っぱちな次回予告ですが（SelectManyの解説をすると言い続けて半年以上経過）、ポーリングをイベントとしてRx化してPushで共通化とか何とかかんとか、を予定。引き続き題材はXboxInfoほげほげを使うつもりです。乞うご期待しない。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

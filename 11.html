@@ -1,0 +1,2018 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2013/0105_392.html">C#でローカル変数からDictionaryを生成する</a></h1>
+<ul class="date"><li>2013-01-05</li></ul>
+<div class="entry_body"><p>どうもPHPerです。あ、すぐC#のコード出しますので帰らないで！というわけで、PHPには<a href="http://php.net/manual/ja/function.compact.php">compact</a>というローカル変数からハッシュテーブルを作るという関数があります。割と多用します。その逆のextractという関数もありますが、そちらはカオスなのでスルー。</p>
+<pre><code class="language-php">$name = &quot;hogehoge&quot;;
+$age = 35;
+
+// {&quot;name&quot;:&quot;hogehoge&quot;, &quot;age&quot;:35}
+$dict = compact(&quot;name&quot;, &quot;age&quot;);
+</code></pre>
+<p>へー。いいかもね。これをC#でやるには？もったいぶってもshoganaiので先に答えを出しますが、匿名型を使えばよいです。</p>
+<pre><code class="language-csharp">var name = &quot;hogehoge&quot;;
+var age = 35;
+
+// Dictionary&lt;string, object&gt; : {&quot;name&quot;:&quot;hogehoge&quot;, &quot;age&quot;:35}
+var dict = Compact(new { name, age });
+</code></pre>
+<p>はい。別にPHPと見比べても面倒くさいことは全然ないです。C#はLLですから（嘘）</p>
+<p><a href="http://msdn.microsoft.com/ja-jp/library/bb397696.aspx">匿名型</a>は「メンバー名を指定しなかった場合、コンパイラによって、初期化に使用するプロパティと同じ名前が付けられます。」ので、それを利用すればローカル変数の名前をキャプチャできる、という至極単純な仕組み。</p>
+<h2>Reflection vs FastMember</h2>
+<p>Compactメソッドの中身ですが、リフレクションでプロパティなめてDictionaryに吐き出しているだけです。LINQを使えば瞬殺。</p>
+<pre><code class="language-csharp">static Dictionary&lt;string, object&gt; Compact(object obj)
+{
+    return obj.GetType().GetProperties()
+        .Where(x =&gt; x.CanRead)
+        .ToDictionary(pi =&gt; pi.Name, pi =&gt; pi.GetValue(obj));
+}
+</code></pre>
+<p>CanReadは、一応、匿名型以外を流し込む時のことも考慮しましょうか、的に。</p>
+<p>さて、リフレクションを使うと実行速度がー気になってーカジュアルにー使いたくないー、のが人情というものです。個人的にはそこまで遅くもないので、そう気にしなければカジュアルに使ってもいいと思ってたりしますが、まあ気になるならShoganaiし、気にするのはいいことです。</p>
+<p>そこで取り出すは<a href="http://code.google.com/p/fast-member/">FastMember</a>。超高速シリアライザで有名なprotobuf-netの作者が作った、シンプルなプロパティアクセス高速化ライブラリです。</p>
+<p>これを使って書くと</p>
+<pre><code class="language-csharp">static Dictionary&lt;string, object&gt; Compact(object obj)
+{
+    var type = FastMember.TypeAccessor.Create(obj.GetType());
+    return type.GetMembers().ToDictionary(x =&gt; x.Name, x =&gt; type[obj, x.Name]);
+}
+</code></pre>
+<p>というように、書き方的にはそんなに違いはないですが、生成速度は数倍上昇します。TypeAccessor.Createして、GetMembersでプロパティ情報の列挙(TypeとNameがあるだけ)、PropertyInfoのGetValue的なのはインデクサを使います。FastMemberにはTypeAccessorの他にObjectAccessorがありますが、使い方は似たような感じなので略（インデクサの第一引数に対象オブジェクトを渡す必要がなくなる）。</p>
+<p>FastMemberの仕組みですが、初回実行時にはリフレクションでプロパティ舐めています。別に魔法が存在するわけではないので、プロパティ名を取りたければ、リフレクション以外の選択肢はありません。そして取得したデータを基にしてILの動的生成を行いキャッシュし、以降のアクセス時はキャッシュから取得したアクセサ経由となるため、素のリフレクションよりも高速となっています。</p>
+<p>よって、初回実行時に限れば、実行時間はむしろかなり遅くなります（IL生成は軽い処理ではない）。単純な平均で考えれば、1万アクセスぐらいないとペイしません（要素数による、多ければ多いほどFastMemberのほうが有利です）。という程度には、リフレクションもそんなに遅くはないです。ただまあ、初回に目をつむって以降の実行速度重視のほうがユーザー体験での満足度は高いケースがほとんどとは思われますので、個人的にはFastMember使って済ませるほうがいいな、とは思います。気分的にもスッキリしますしね。</p>
+<p>ちなみに.NETでリフレクションにはTypeDescriptorという手段も標準で用意されていますが、アレはクソがつくほど遅いので、アレだけはやめておきましょう。少なくとも素のリフレクションを避けてあっちを使う理由がない。</p>
+<h2>名前大事</h2>
+<p>Compactという名前はPHP臭が激しいしC#的にはイミフなので、ちゃんとした名前をつけたほうがいいでしょう、ToDictionaryとか、ね。</p>
+<h2>匿名型 as Dictionary</h2>
+<p>Compact、という例を出すから何だか新しい感じがしなくもない誤魔化しでして、実のところ、ようするに、ただの匿名型→Dictionaryです。ASP.NET MVCではそこら中に見かけるアレです。ソレです。コレです。</p>
+<p>その辺のアレコレは<a href="http://nyaruru.hatenablog.com/entry/20080706/p1">ややニッチな Anonymous Types の使い方をまとめてみる (C# 3.0) - NyaRuRuが地球にいたころ</a>にまとまっているので見ていただくとして、以上終了。</p>
+<p>実際問題、Dictionary&lt;string, object&gt;を要求するシチュエーションというのは少なくありません。パラメータ渡すところなんて、そうですよね。一々Dictionaryを使うのは、カッタルイってものです。なので、別にASP.NET MVCに限らず、↑のようなメソッドを作って、objectも受け入れられるようにしてあげるってのは、現代のC#的にはアリだと私は考えています。</p>
+<pre><code class="language-csharp">// Dictionaryの初期化は割と面倒くさい
+var hoge = ToaruMethod(new Dictionary&lt;string, object&gt;
+{
+    {&quot;screen_name&quot;, &quot;hogehoge&quot;},
+    {&quot;count&quot;, 10},
+    {&quot;since_id&quot;, 12345}
+});
+
+// 書きやすい！素敵！抱いて！
+var hoge = ToaruMethod(new
+{
+    screen_name = &quot;hogehoge&quot;,
+    count = 10,
+    since_id = 12345
+});
+</code></pre>
+<p>んね。</p>
+<p>そうなるとメソッドの引数にobjectというものが出てしまって、安全性がショボーンになってしまいますので、やたらめったら使うのもまたアレですけれど。</p>
+<p>匿名型がIAnonymousTypeとか、何らかのマーカーついてたらなあ、なんて思わなくもなかったりもしなかったりしましたが、こういう用途で使う時って、普通のクラスからも変換したかったりするので、匿名型に限定したほうが不便なんですね。幾ばくかの安全性は増しますが。ともあれともあれ、普通のクラスと匿名型に違いなんてない、と考えると、区別できないことは自然だから別にいいかなあ、なんて、ね、思ってます。where T : classと引数に制限つけるぐらいが丁度良いんではないでしょうか。</p>
+<h2>まとめ</h2>
+<p>PHPの良いところってどこなのか非常に悩ましい。その辺のほげもげに関してはいつか特に言いたいことはなくもないけどとくにない（去年の年末に勉強会というか技術交流会というかで、PHPの会社に行ってPHP vs C#なプレゼンはしてきましたが）。</p>
+<p>というわけで、C#はLightweightだという話でした。ん？</p>
+</div>
+<h1><a href="http://neue.cc/2012/1230_391.html">2012年を振り返る。</a></h1>
+<ul class="date"><li>2012-12-30</li></ul>
+<div class="entry_body"><p>12/30は私の誕生日でして(どうでもいい)、まだかろうじて20代です。 というわけで、今年を振り返りますかー。今年は1/1から動きがありましたから、というか転職でしたね、<a href="http://gloops.com/">gloops</a>に入社しました。入社するまでドッキドキでしたねえ、正月とかあんま落ち着かない感じで過ごしてたのを思い出しました。 <a href="http://neue.cc/2011/12/30_361.html">2011年の振り返り</a>では</p>
+<blockquote>
+<p>ここで言うことか？という話ではありますが、12月で会社を退職し(て)ました。1月からは新しい会社で働くことになります。次の会社でもC#をメインにやっていきます（ということで雇われるわけでもありますので）。しっかり成果を出していきたいし、事例やコードなんかも、出せるならガシガシ出したいと思っています。その辺のことは追々。</p>
+</blockquote>
+<p>と言ってましたが、結果はどうだったかしらん。C#とLINQとVisual Studioの社内布教には尽力できたし、割とよくやれたとは思います。コードは出せなかったけれど、事例は、うーん、事例というほどではないですが、割とよく露出して会社と関係なくC#のことを喋るお仕事はしてた気がします。Windows Developer Daysへの登壇とかね。<a href="http://channel9.msdn.com/Events/Windows-Developer-Days/Windows-Developer-Days-2012/PO-006">LINQ to Everything : データソース・言語を超える LINQ の未来</a>だってお！とかまあ、色々それなりにそこそこよくやってたんじゃないでしょーか。</p>
+<p>7月頃に海外勤務の話が上がったというか、実際に1か月ほどシンガポールに行ってまして、そのまま割と長めにいるはずだったのが、色々あってお流れに！ぐぬぬぬ。ここが一番ぐぬぬぬだったり、ピー（禁則事項です）。まあ、特に面白い話はありません！</p>
+<p>そんなわけで10/19に<a href="http://neue.cc/2012/10/20_384.html">gloopsを退職</a>して、今はニート。ではなく、謎社にいます。謎社ってなんだよというか伏せる意味は特にないんですが、まぁまだ伏せておきます。実際のとこ出来たばかりの会社でして、だいたいほぼほぼ創立メンバーとして働いてます。そして現在のところPHPが95%でC#が5%といったところですが（私もPHP書いてますよ！毎日吐き気が！）、直近の目標はC#比率を高めることです（笑）</p>
+<h2>プログラミング</h2>
+<p>gloopsがASP.NETな会社だから、というのもあって、ブログネタが急速にうぇぶけーに傾いた気がします。<a href="http://neue.cc/2012/06/02_375.html">エクストリームWebForms</a>とかね。Advent Calendarネタの<a href="http://neue.cc/2012/12/03_389.html">MemcachedTranscoder</a>なども、まさに仕事ネタでした。LINQネタはちょいちょい、Rxネタは、今年は非同期と合わせたのが少しというだけで、ほとんどなかった……。などなど、やっぱ仕事成分多くなるとshoganaiのかなあとか思いつつも、shomonaiですねえ。</p>
+<p>gloopsで割と忙しかったというのもあって、ライブラリ類のメンテナンスが完全に止まってましたね、うわぁ。Pull Requestの放置に定評のある私です(ｷﾘｯ とか言ってる場合ではない。</p>
+<h2>LINQ</h2>
+<p>2011年から続いて<a href="http://www.loveinq.com/">LinQ</a>はかなりメジャー感が増して全国的な知名度も高くなりTwitterの検索が完全に役立たなくなるなど素晴らしい躍進でした、まる。</p>
+<p><a href="http://linqjs.codeplex.com/">linq.js ver.3</a>のプロジェクトを本格的に動かして、延々とやった割には、いまだBeta 4という状況がとてもアレ。来年の初頭にはリリースしたいです。各方面にも絶賛ご迷惑おかけ、というかver.2とver.3では何もかもが違うので、ver.2が普及すればするほど、いくない状況になってしまうので、早いところ手を打ちたいのは本当です。<a href="http://www.slideshare.net/neuecc/linqjs-ver3-and-visual-studio-2012-in-javascript">linq.js ver.3のスライド</a>は10000viewを超えていて、まあそれなりに期待されてるのかなあ、なんて、ね。思いますので。</p>
+<p>そういえば<a href="http://neue.cc/2012/10/24_386.html">LINQ to XML for JavaScript</a>の登場も大きなトピックでした。BetaということもあってDL数も思ったよりも全然伸びてないのですが、Betaな理由は私が悪いので、もう本当に申し訳なすぎる……。</p>
+<p>あと、実は<a href="https://rx.codeplex.com/">Rxのオープンソース化</a>にともなってRxチームのボスである<a href="http://research.microsoft.com/en-us/um/people/emeijer/">Erik Meijer</a>氏からメールを貰ったものの、一度返信しただけで、その後の返信は一切放置という失礼極まりない態度を取ってしまって激しく後悔中。英語で返事考えるの大変だなー、と置いておいたら、なんかもう出すに出せなくなってしまい……。</p>
+<h2>講演</h2>
+<p>講演というか勉強会の発表側ですが、今年は今までになくやった気がする。gloopsでの発表もそうだし、ふつーに勉強会のとしても。<a href="http://www.slideshare.net/neuecc/asynchronous-rx-andtask">C#次世代非同期処理概観 - Task vs Reactive Extensions</a>なんかは20000view行ってるし、テーマがキャッチーだとその後の資料の閲覧の伸びもいい。というのは至極当たり前にゃ。</p>
+<p>メールの放置にも定評のある私なのですが、来年はちゃんとした応対を取れるまっとうな人間になろう、と心がけたいところです。そんなメール対応でタイトルが仮だった<a href="https://itmedia.smartseminar.jp/public/seminar/view/465">第1回 業開中心会議 .NET技術の断捨離</a>も、ちゃんとタイトル決まりましたので、来年早々の2013年1月26日（土）にはよろしくおねがいします。もう定員埋まっちゃいましたが！</p>
+<p>諸事情あって見返したいというわけでもないですが、来年はむしろ増量したい感があったりなかったり。そしてC#を布教する！実際、つい一昨日ぐらいにはぴーHPの会社に行ってC#ばんざーいしてきたりとか、野良だからこそできる不躾気味な野良活動も色々やってきたいですねー。まあ、会社が落ち着いたらの話ですががが。</p>
+<h2>ネット</h2>
+<p>Twitter廃人度が増した。いや、別にフォローもフォロワーも並程度でしかないし発言数もさして多いわけじゃあないんですが、四六時中眺めててストリームが常に更新されている程度にはフォロワーがいて、でも頑張れば全部読めちゃう程度で、つまり、全てを漏らさず眺めようとしてしまい……。時間ドブに捨ててる度ヤバすぎる。これねえ、よくなさすぎるねえ。どうにかしなければ……。</p>
+<h2>ゲーム</h2>
+<p>ソーシャルゲームをつまむ程度にプレイしてたぐらいで、ぜーんぜんやってない。待ちに待ったSkyrimすら未開封なのでゲーマーとして完全にｵﾜﾀｵﾜﾀｵﾜﾀ……。いや、やりたいんですよ、というかですね、やってないとゲーム的な感覚が完全に抜けてしまっててすっごく良くない。ゲームに対してどこがいいとか悪いとか、感性抜けきってて何も考えられないの。ムは無関心のム、ですよ。昔はあんなに文句たらしまくって感想だの書きたくってたのにねえ（このサイトの前身はXboxゲームの攻略サイトでした）、むしろ意図的に考えないようにしてる(ｷﾘｯ とか言ってたら感性が完全に死んじゃったのね、笑えない。内心では、やればちゃんとゲームについて評価できるもん！とか思ってても、実際はもう出来やしないのね。という現実。と向き合わなきゃ。</p>
+<p>というわけで、来年はゲームリハビリ元年にしたいかな。割と本気で。</p>
+<h2>来年</h2>
+<p>今年が今まで生きてきた中で、一番変化のあった年でした。来年は変化というよりは進化、↑で書いたとおりにゲームを、じゃあなくて会社を前身させるのに全力で突き進む、というわっかりやすい目標があるんで、そのとーりに邁進しましょう。C#といったら謎社！みたいな、C#を使う人が憧れるぐらいな立ち位置の会社にできればいいなと思っています。ただ、それは一従業員の私の思いであって会社の方針とは何ら関係ありません！が、結構本気なので期待してください。興味ある人は今からでも私にコソッと言ってくだしあ、です。いやほんと。</p>
+<p>ともあれ、来年はより面白い感じにすごせそーなので、いいことです。</p>
+</div>
+<h1><a href="http://neue.cc/2012/1211_390.html">Micro-ORMとC#(とDapperカスタマイズ)</a></h1>
+<ul class="date"><li>2012-12-11</li></ul>
+<div class="entry_body"><p>C#に続き、<a href="http://atnd.org/events/33667">ASP.NET Advent Calendar 2012</a>です。前日は84zumeさんの<a href="http://84zume.wordpress.com/2012/12/10/best-three-controls/">WebFormっぽいコントロールベスト3</a>でした。私はC#では<a href="http://neue.cc/2012/12/03_389.html">MemcachedTranscoder - C#のMemcached用シリアライザライブラリ</a>を書きまして、ああ！これこそむしろASP.NETじゃねえか！と悶絶したりなどして、日付逆にすれば良かったよー、困ったよー。しかもあんまし手持ちの札にASP.NETネタがない！というわけで、ASP.NETなのかビミョーですが押し通せば大丈夫だろう、ということでMicro-ORMについて。</p>
+<h2>Micro-ORM?</h2>
+<p>最近タイムリーなことに、またORM論争が起こっていて。で、O/R Mapperですが、私としては割と否定派だったりして。C#にはLINQ(to SQL/Entities)があります！はい、色々な言語のORMを見ても、LINQ(to SQL/Entities)の完成度はかなり高いほうに入ると思われます。それもこれもC#の言語機能(Expression Tree, 匿名型, その他その他)のお陰です。言語は実現できる機能にあんま関係ないとかいう人が割とたまにじゃばにいますが、んなことは、ないでしょ。</p>
+<p>で、ORMと一口に言うとややこしいので、分解しよう、分解。一つはクエリビルダ。SQL文を組み立てるところです。ORMといったら、まず浮かぶのはここでしょう、そして実際、ここの部分の色々のもやもやを振り払うために、世の中のORMは色々腐心しているのではかと思います。</p>
+<p>残りは、クエリを発行してDBに投げつける実行部分。コネクション作ってコマンド作ってパラメータ作って、とかがお仕事。最後に、結果セットをマッピングするところ。この2つは地味ですね、ORMという時に、特に意識されることはないでしょう。</p>
+<p>で、Micro-ORMはクエリビルダはないです。あるのは実行とマッピングだけです。生SQL書いてオブジェクトにマッピングされたのが返ってくる。つまり、ORMと言ったときにまず浮かべる部分が欠けてます。だからORMって、RelationalとはMappingしてないんならもうDataMapperとかTableMapperとか言ったほうがいいのでは、感もありますが、つまるところそういうわけでMicro-ORMはORMじゃないですね。</p>
+<p>ORM or その他、といった時に、ORM(DataSet, NHibernate, LINQ to SQL, Entity Framework)を使わない、となると、その次が生ADO.NETに吹っ飛ぶんですよね、選択肢。それ、えっ？って。生ADO.NETとか人間が直に触るものじゃあない、けど、まあ昔からちょっとしたお手製ヘルパぐらいは存在していたけれど、それだけというのもなんだかなー。という隙間に登場したのがMicro-ORMです。</p>
+<h2>Not ORM</h2>
+<p>つまりORMじゃあない。LINQという素敵な完成系があるのに、違うのを選びたくなる。何故？LINQという素敵なもので夢を見させてくれた、それでなお、ダメかもね、という結論に至ってしまう。じゃあもうORMって無理じゃない？</p>
+<p>SQLは全然肯定できません。30年前のしょっぱい構文、の上にダラダラ足されていく独自拡張。じゃあ標準万歳かといえば、全然そんなことはないのでにっちもさっちもいかずだし、そもそもその標準の時点で相当しょっぱいっつーの。でも、それでも、ORMにまつわる面倒ごとであったり制限を押しのけてまで欲しいかい？と言われると、いらない。になる。</p>
+<p>結局、データベースはデータベースであり、オブジェクトはオブジェクトであり。</p>
+<p>EF CodeFirstって凄く滑稽。オブジェクトをそのまんまDBに投げ込むのなんて幻想で。だからデータベースを意識させて、クラスじゃないクラスを作る。リレーションを手でコードで張っていく、そんな、おかしいよ！まともなクラスじゃないクラスを手で書かされるぐらいなら、SQL Server Management Studioでペトペト作って、DBからクラス生成するほうがずっといい（勿論EFはそれできます）。</p>
+<p>オブジェクト入れたいならさ、<a href="http://redis.io/">Redis</a>とかも検討できる、そっちのほうがずっと素直に入る。勿論、データベースをやめよう、じゃないよ。ただ、データベースはデータベースである、というだけなんだ。</p>
+<p>SQLだってすごく進化しているのに（書きやすさは置いておいてね）、ORMの抽象はそれらに完璧に対応できない。だって、データベース毎に、違うんだものね、同じ機能なかったりするものね。RDBMSは同じだ、というのが、まず、違うんじゃないかな、って。</p>
+<p>良い面がいっぱいあるのは分かるよ！where句を文字列で捏ね捏ねするよりもオブジェクト合成したいし、LINQのタイプセーフなところは凄く魅力的なんだ！それでもね、厄介な挙動と複雑な学習コスト、パフォーマンスの問題、その他諸々。それらとは付き合わない、という選択もね、あっていいよね。</p>
+<h2>Dapper</h2>
+<p>具体例として<a href="http://code.google.com/p/dapper-dot-net/">Dapper</a>を扱います。もっともポピュラーだから。速いしね。で、チマッとした具体例は、出してもつまらないので省略。それは↑の公式サイトで見ればいいでしょ。</p>
+<h2>拡張しよう</h2>
+<p>基本的にマッピングはプロパティ名とDBのカラム名が一致してないとダメです。ダメ絶対。しかし、世の中往々にして一致してるとは限らないケースが少なくもない。例えばDBのカラム名はsnake_caseでつけられていたりね。勿論、その場合C#のプロパティ名もsnake_caseにすりゃあいんですが、きんもーっ。嫌なんだよね、それ。</p>
+<p>というわけでDapperには救済策が用意されていて、マッピングルールを型毎に設定することが可能です。この辺はリリース時にはなかったんですが後から追加されてます。そしてドキュメントが一向に更新されないため、何が追加されてるのとか、はためにはさっぱり分かりません。何気に初期リリースから地味に随分と機能が強化されていたりなかったりするんですんが、この辺は定期的にSourceとTest見れってとこですねー、shoganai。</p>
+<p>方法としてはCustomPropertyTypeMapを作って、SqlMapper.SetTypeMapに渡してやればOK。CustomPropertyTypeMapではTypeとDBのカラム名が引数にくるので、そこからPropertyInfoを返してやればOK。一度定義されたマッピングファイルは初回のクエリ実行時にIL生成＆キャッシュされ、二度呼ばれることはないので高速に動作します。</p>
+<p>例えばsnake_caseをPascalCaseにマッピングさせてやるには</p>
+<pre><code class="language-csharp">// こーいう関数を用意してやると
+static void SetSnakeToPascal&lt;T&gt;()
+{
+    var mapper = new CustomPropertyTypeMap(typeof(T), (type, columnName) =&gt;
+    {
+        //snake_caseをPascalCaseに変換
+        var propName = Regex.Replace(columnName, @&quot;^(.)|_(\w)&quot;, x =&gt; x.Groups[1].Value.ToUpper() + x.Groups[2].Value.ToUpper());
+        return type.GetProperty(propName);
+    });
+
+    SqlMapper.SetTypeMap(typeof(T), mapper);
+}
+
+// こんなクラスがあるとして
+public class Person
+{
+    // DBではid, first_name, last_name, created_at
+    public int Id { get; set; }
+    public string FirstName { get; set; }
+    public string LastName { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+static void Main()
+{
+    // MyClassをカラム名snake_cake → プロパティ名PascalCaseにマッピングするようセット
+    SetSnakeToPascal&lt;Person&gt;();
+                
+    using (var conn = new MySqlConnection(&quot;せつぞくもじれつ&quot;))
+    {
+        conn.Open();
+        var result = conn.Query&lt;Person&gt;(&quot;select * from people&quot;); // 無事マッピングできてる
+    }
+}    
+</code></pre>
+<p>といった感じ。SqlMapper.SetTypeMapをどこで呼ばせるか＆管理面倒くせー、という問題は無きにしも非ずですが、まあその辺はやりようは幾らでもあるので(例えばクラスに専用の属性でも貼り付けておいてApplication_Startでリフレクションで全部舐めて登録してしまうとか)、大した問題ではないでしょう。</p>
+<p>Dapperは何もかもの面倒は見てくれません。必要なものは随時、自分で足す。作る。でも、それでいいんじゃない？どうせ、出来あいの代物が自分達の要求に100%合致するなんてことはなくて、大なり小なり、自分達で足回り部分は作るでしょう。なら、そのついでです。大したことじゃあない。むしろ余計な面倒がなくていい。</p>
+<p>ところでちなみに何でMySqlConnectionなのかというと、手元にあるDBが諸事情でMySQLだからです。諸事情！そこはdoudemoiiとして、DapperならMySQLでも繋げやすいという利点がありますね。DB選びません。C#はSQL Server専用みたいなものでしょ？なんてことはないのです。</p>
+<h2>Query Builder for Dapper</h2>
+<p>Dapperは純粋な実行とマッピングのみとなるように作られています、というのが設計やIssueの返信などからも見て取れます。生ADO.NETの一つ上の層として存在する、混じり気なしの代物にするのが目標だ、と。つまり、Dapper自身に、ちょっとしたPKで取ってくるだけのもの、Findとかよく言われるようなヘルパメソッドが乗ったりすることはありません。が、欲しいですよね、それ、そういうの。生で使ってもいいんですが、もう一枚、ほんの少しだけ、薄いの、被せたい。</p>
+<p>そんなわけで、そのDapperの更に一枚上にのった、ちょっとしたCRUDヘルパーがDapperExtensionsやDapper.Rainbowなのですけれど、ビミョー。しょーじきビミョー。なので、作りましょう。自分で。例えばこういうのよくなくないですか？</p>
+<pre><code class="language-csharp">// これで↓のクエリに変換される
+// select * from Person p where p.FirstName = @0 &amp;&amp; p.CreatedAt &lt;= @1
+var sato = conn.Find&lt;Person&gt;(x =&gt; x.FirstName == &quot;佐藤&quot; &amp;&amp; x.CreatedAt &lt;= new DateTime(2012, 10, 10));
+
+// updateもこんな感じで update .... values ... が生成、実行される
+conn.Update(sato, x =&gt; x.Id == 10)
+</code></pre>
+<p>Expression Treeから、タイプセーフなクエリ生成をする。select-where程度の、PKで取ってきたり、ちょっとした条件程度のものならさくっと書ける。InsertやUpdateも、そんまんまぶん投げて条件入れるだけなので単純明快。ところで、このまま拡張していくと、事前のマッピングクラス生成が不要な即席Queryable、LINQ to DBみたいなものができなくない？たとえばconn.AsQueryable().Where().OrderBy().Select() といったように。</p>
+<p>結論を言えば、できる。が、やらないほうがいいと思ってます。一つは、どこかでQueryableのクエリ抽象の限界に突き当たること。生SQLで書いたほうがいいのか、Queryableで頑張ればいいのか。もしくは、これはQueryableでちゃんとサポートしているのか。そういう悩み、無駄だし意味ないし。select-whereならヘルパある、それ以外は生SQL書け。それぐらい単純明快なルールが敷けたほうが、シンプルでいいんじゃないかな。どうでもいい悩みを減らすためにやっているのに、また変な悩みを増やすようじゃやってられない。</p>
+<p>もう一つは、Queryableを重ねれば重ねるほどパフォーマンスロスが無視できなくなっていくこと。たった一つの、↑のFindみたいなExpression Treeの生成/解析なんてたかがしれていて、無視できる範囲に収まっています。あ、これはちゃんと検証して言ってますよん。遅くなるといえば遅くなってますが、Entity Frameworkのクエリ自動コンパイルは勿論、手動コンパイルよりも速いです、逐次解析であっても。</p>
+<p>Queryableを重ねれば重ねるほど遅くなるので、手動コンパイル(＆キャッシュ)させなければならなくて、しかし手動コンパイルはかなり手間で滑稽なのでやりたくない。EFの自動コンパイルは悪くない！のですが、やっぱ相応に、そこまで速くはなくて、ね……。</p>
+<p>実際に実装すると、こんな風になります。</p>
+<pre><code class="language-csharp">// Expression Treeをなめなめする下準備
+public static class ExpressionHelper
+{
+    // Visitorで舐めてx =&gt; x.Hoge == xxという形式のExpression Treeから値と演算子のペアを取り出す
+    public static PredicatePair[] GetPredicatePairs&lt;T&gt;(Expression&lt;Func&lt;T, bool&gt;&gt; predicate)
+    {
+        return PredicateExtractVisitor.VisitAndGetPairs(predicate);
+    }
+
+    class PredicateExtractVisitor : ExpressionVisitor
+    {
+        readonly ParameterExpression parameterExpression; // x =&gt; ...のxなのかを比較判定するため保持
+        List&lt;PredicatePair&gt; result = new List&lt;PredicatePair&gt;(); // 抽出結果保持
+
+        public static PredicatePair[] VisitAndGetPairs&lt;T&gt;(Expression&lt;Func&lt;T, bool&gt;&gt; predicate)
+        {
+            var visitor = new PredicateExtractVisitor(predicate.Parameters[0]); // x =&gt; ... の&quot;x&quot;
+            visitor.Visit(predicate);
+            return visitor.result.ToArray();
+        }
+
+        public PredicateExtractVisitor(ParameterExpression parameterExpression)
+        {
+            this.parameterExpression = parameterExpression;
+        }
+
+        // Visitぐるぐるの入り口
+        protected override Expression VisitBinary(BinaryExpression node)
+        {
+            // &amp;&amp; と || はスルー、 &lt;, &lt;=, &gt;, &gt;=, !=, == なら左右の解析
+            PredicatePair pair;
+            switch (node.NodeType)
+            {
+                case ExpressionType.AndAlso:
+                    pair = null;
+                    break;
+                case ExpressionType.OrElse:
+                    pair = null;
+                    break;
+                case ExpressionType.LessThan:
+                    pair = ExtractBinary(node, PredicateOperator.LessThan);
+                    break;
+                case ExpressionType.LessThanOrEqual:
+                    pair = ExtractBinary(node, PredicateOperator.LessThanOrEqual);
+                    break;
+                case ExpressionType.GreaterThan:
+                    pair = ExtractBinary(node, PredicateOperator.GreaterThan);
+                    break;
+                case ExpressionType.GreaterThanOrEqual:
+                    pair = ExtractBinary(node, PredicateOperator.GreaterThanOrEqual);
+                    break;
+                case ExpressionType.Equal:
+                    pair = ExtractBinary(node, PredicateOperator.Equal);
+                    break;
+                case ExpressionType.NotEqual:
+                    pair = ExtractBinary(node, PredicateOperator.NotEqual);
+                    break;
+                default:
+                    throw new InvalidOperationException();
+            }
+
+            if (pair != null) result.Add(pair);
+
+            return base.VisitBinary(node);
+        }
+
+        // 左右ノードから抽出
+        PredicatePair ExtractBinary(BinaryExpression node, PredicateOperator predicateOperator)
+        {
+            // x.hoge == xx形式なら左がメンバ名
+            var memberName = ExtractMemberName(node.Left);
+            if (memberName != null)
+            {
+                var value = GetValue(node.Right);
+                return new PredicatePair(memberName, value, predicateOperator);
+            }
+            // xx == x.hoge形式なら右がメンバ名
+            memberName = ExtractMemberName(node.Right);
+            if (memberName != null)
+            {
+                var value = GetValue(node.Left);
+                return new PredicatePair(memberName, value, predicateOperator.Flip()); // &gt;, &gt;= と &lt;, &lt;= を統一して扱うため演算子は左右反転
+            }
+
+            throw new InvalidOperationException();
+        }
+
+        string ExtractMemberName(Expression expression)
+        {
+            var member = expression as MemberExpression;
+
+            // ストレートにMemberExpressionじゃないとUnaryExpressionの可能性あり
+            if (member == null)
+            {
+                var unary = (expression as UnaryExpression);
+                if (unary != null &amp;&amp; unary.NodeType == ExpressionType.Convert)
+                {
+                    member = unary.Operand as MemberExpression;
+                }
+            }
+
+            // x =&gt; xのxと一致してるかチェック
+            if (member != null &amp;&amp; member.Expression == parameterExpression)
+            {
+                var memberName = member.Member.Name;
+                return memberName;
+            }
+
+            return null;
+        }
+
+        // 式から値取り出すほげもげ色々、階層が深いと面倒なのね対応
+        static object GetValue(Expression expression)
+        {
+            if (expression is ConstantExpression) return ((ConstantExpression)expression).Value;
+            if (expression is NewExpression)
+            {
+                var expr = (NewExpression)expression;
+                var parameters = expr.Arguments.Select(x =&gt; GetValue(x)).ToArray();
+                return expr.Constructor.Invoke(parameters); // newしてるけどアクセサ生成で高速云々
+            }
+
+            var memberNames = new List&lt;string&gt;();
+            while (!(expression is ConstantExpression))
+            {
+                if ((expression is UnaryExpression) &amp;&amp; (expression.NodeType == ExpressionType.Convert))
+                {
+                    expression = ((UnaryExpression)expression).Operand;
+                    continue;
+                }
+
+                var memberExpression = (MemberExpression)expression;
+                memberNames.Add(memberExpression.Member.Name);
+                expression = memberExpression.Expression;
+            }
+
+            var value = ((ConstantExpression)expression).Value;
+
+            for (int i = memberNames.Count - 1; i &gt;= 0; i--)
+            {
+                var memberName = memberNames[i];
+                // とりまリフレクションだけど、ここはアクセサを生成してキャッシュして高速可しよー
+                dynamic info = value.GetType().GetMember(memberName)[0];
+                value = info.GetValue(value);
+            }
+
+            return value;
+        }
+
+    }
+}
+
+// ExpressionTypeだと範囲広すぎなので縮めたものを
+public enum PredicateOperator
+{
+    Equal,
+    NotEqual,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual
+}
+
+// x.Hoge == 10 みたいなのの左と右のペアを保持
+public class PredicatePair
+{
+    public PredicateOperator Operator { get; private set; }
+    public string MemberName { get; private set; }
+    public object Value { get; private set; }
+
+    public PredicatePair(string name, object value, PredicateOperator predicateOperator)
+    {
+        this.MemberName = name;
+        this.Value = value;
+        this.Operator = predicateOperator;
+    }
+}
+
+public static class PredicatePairsExtensions
+{
+    // SQL文作るー、のでValueのほうは無視気味。
+    public static string ToSqlString(this PredicatePair[] pairs, string parameterPrefix)
+    {
+        var sb = new StringBuilder();
+        var isFirst = true;
+        foreach (var pair in pairs)
+        {
+            if (isFirst) isFirst = false;
+            else sb.Append(&quot; &amp;&amp; &quot;); // 今は&amp;&amp;連結だけ。||対応は面倒なのよ。。。
+
+            sb.Append(pair.MemberName);
+            switch (pair.Operator)
+            {
+                case PredicateOperator.Equal:
+                    if (pair.Value == null)
+                    {
+                        sb.Append(&quot; is null &quot;);
+                        continue;
+                    }
+                    sb.Append(&quot; = &quot;).Append(parameterPrefix + pair.MemberName);
+                    break;
+                case PredicateOperator.NotEqual:
+                    if (pair.Value == null)
+                    {
+                        sb.Append(&quot; is not null &quot;);
+                        continue;
+                    }
+                    sb.Append(&quot; &lt;&gt; &quot;).Append(parameterPrefix + pair.MemberName);
+                    break;
+                case PredicateOperator.LessThan:
+                    if (pair.Value == null) throw new InvalidOperationException();
+                    sb.Append(&quot; &lt; &quot;).Append(parameterPrefix + pair.MemberName);
+                    break;
+                case PredicateOperator.LessThanOrEqual:
+                    if (pair.Value == null) throw new InvalidOperationException();
+                    sb.Append(&quot; &lt;= &quot;).Append(parameterPrefix + pair.MemberName);
+                    break;
+                case PredicateOperator.GreaterThan:
+                    if (pair.Value == null) throw new InvalidOperationException();
+                    sb.Append(&quot; &gt; &quot;).Append(parameterPrefix + pair.MemberName);
+                    break;
+                case PredicateOperator.GreaterThanOrEqual:
+                    if (pair.Value == null) throw new InvalidOperationException();
+                    sb.Append(&quot; &gt;= &quot;).Append(parameterPrefix + pair.MemberName);
+                    break;
+                default:
+                    throw new InvalidOperationException();
+            }
+        }
+
+        return sb.ToString();
+    }
+}
+
+public static class PredicateOperatorExtensions
+{
+    // 演算子を反転させる、 &lt;= と &gt;= の違いを吸収するため
+    public static PredicateOperator Flip(this PredicateOperator predicateOperator)
+    {
+        switch (predicateOperator)
+        {
+            case PredicateOperator.LessThan:
+                return PredicateOperator.GreaterThan;
+            case PredicateOperator.LessThanOrEqual:
+                return PredicateOperator.GreaterThanOrEqual;
+            case PredicateOperator.GreaterThan:
+                return PredicateOperator.LessThan;
+            case PredicateOperator.GreaterThanOrEqual:
+                return PredicateOperator.LessThanOrEqual;
+            default:
+                return predicateOperator;
+        }
+    }
+}
+</code></pre>
+<pre><code class="language-csharp">public static T Find&lt;T&gt;(this IDbConnection conn, Expression&lt;Func&lt;T, bool&gt;&gt; predicate)
+{
+    var pairs = ExpressionHelper.GetPredicatePairs(predicate);
+    // とりあえずテーブル名はクラス名で
+    var className = typeof(T).Name;
+    var condition = pairs.ToSqlString(&quot;@&quot;); // とりま@に決めうってるけどDBによっては違いますなー
+
+    var query = string.Format(&quot;select * from {0} where {1}&quot;, className, condition);
+
+    // 匿名型でなく動的にパラメータ作る時はDynamicParameterを使う
+    var parameter = new DynamicParameters();
+    foreach (var pair in pairs)
+    {
+        parameter.Add(pair.MemberName, pair.Value);
+    }
+
+    // Dapperで実行. 勿論、FirstではないFindAllも別途用意するとヨシ。
+    return conn.Query&lt;T&gt;(sql: query, param: parameter, buffered: false).First();
+}
+
+static void Main(string[] args)
+{
+    using (var conn = new MySqlConnection(&quot;せつぞくもじれつ&quot;))
+    {
+        conn.Open();
+        // ↓のようなクエリ文になる
+        // select * from Person where FirstName = @FirstName &amp;&amp; CreatedAt &lt;= @CreatedAt
+        var sato = conn.Find&lt;Person&gt;(x =&gt; x.FirstName == &quot;佐藤&quot; &amp;&amp; x.CreatedAt &lt;= new DateTime(2012, 10, 10));
+    }
+</code></pre>
+<p>といった、Expression TreeベースのタイプセーフなMicro Query Builderを中心にしたMicro-ORMが、<a href="http://dbexecutor.codeplex.com/">DbExecutor</a> ver.3で、実際に作っていました。水面下で。そしてお蔵入りしました！お蔵入りした理由は色々お察し下さい。まぁまぁ悪くないセンは行ってたかなー、とは思うのでお蔵入りはMottainai感が若干あるものの、全体的には今一つだったなあ、というのが正直なところで、&quot;今&quot;だったら違う感じになったかな、と思っちゃったりだから、あんまし後悔はなく没でいいかな。某g社の方々へは申し訳ありません、と思ってます。</p>
+<p>そんなわけでMicro Query Builderというコンセプトを継いで、マッピング部分はDapperを使うDapper拡張として作り直したものは、近日中にお目見え！はしません。しませんけれど（タスクが山積みすぎてヤバい）、そのうちに出したいというか、絶対に出しますので、乞うご期待。謎社の今後にも乞うご期待。</p>
+<h2>まとめ</h2>
+<p>あんましFull ORM使わなきゃー、とか悩む必要はないです。XXが便利で使いたいんだ！というなら使えばいいですし、逆にXXがあってちょっと嫌なんだよなー、というならば、使わない、が選択肢に入っていいです。.NETだって選択の自由はあるんですよ？そこ勘違いしちゃダメですよ？自由度を決めるのは、Microsoftでもコミュニティーの空気でもなく、自分達ですから。</p>
+<p>さて、<a href="http://atnd.org/events/33667">ASP.NET Advent Calendar 2012</a>、次はMicrosoft MVP for Windows Azureの<a href="http://d.hatena.ne.jp/waritohutsu/">割と普通さん</a>です。AzureとWeb Sitesについて聞けるようですよ！ｗｋｔｋ！</p>
+</div>
+<h1><a href="http://neue.cc/2012/1203_389.html">MemcachedTranscoder - C#のMemcached用シリアライザライブラリ</a></h1>
+<ul class="date"><li>2012-12-03</li></ul>
+<div class="entry_body"><p>今年もAdvent Calendarの季節がやってきました。というわけで、この記事は<a href="http://atnd.org/events/33905">C# Advent Calendar 2012</a>用の話となります。去年は<a href="http://neue.cc/2011/12/16_359.html">Modern C# Programming Style Guide</a>という記事を書きまして、結構好評でした。また、去年は他Silverlight Advent Calendar 2011で<a href="http://neue.cc/2011/12/10_357.html">.NETの標準シリアライザ(XML/JSON)の使い分けまとめ</a>というシリアライザの話をしました。今年も路線は引き続きで、モダンなシリアライザの話をしましょう。</p>
+<h2>MemcachedTranscoder</h2>
+<p>そんなわけで、表題のものを作りました。dllのインストールはNuGet経由でお願いします。</p>
+<ul>
+<li><a href="https://github.com/neuecc/MemcachedTranscoder">MemcachedTranscoder - GitHub</a></li>
+</ul>
+<p>Memcachedは言わずと知れた分散キャッシュ。C#で最もメジャーなMemcachedのライブラリは<a href="https://github.com/enyim/EnyimMemcached">Enyim.Memcached</a>です。これを使って、オブジェクトをGet、Setするわけだー。さて、オブジェクトをSetするというのは、最終的にbyte[]に落とす必要があります。ただたんにポーンとオブジェクト投げたらSetできたー、にはなりませんですのよ。では、どうやってbyte[]に変換しているの？というと、シリアライザが内部で動いてます。</p>
+<p>シリアライザについては以前に<a href="http://neue.cc/2010/05/29_261.html">.NET(C#)におけるシリアライザのパフォーマンス比較</a>という記事も書いたりしていて、結構うるさいんで割と気にするほうです。さて、そんなEnyim.Memcachedのシリアライザは、デフォルトではBinaryFormatterです。はい、これは、あまり速くないしファイルサイズも結構かさんでゲンニョリ系シリアライザ。</p>
+<p>ただしEnyim.MemcachedはそれらをTranscoderと呼んでいて、自由に差し替えが可能になっています。つまりBinaryFormatterがゲンニョリならば自分で差し替えればいいじゃない！ちなみに純正オプションとしてNetDataContractSerializerも用意されているのですが、これは……話にならないぐらいサイズがデカくなるので、ないわー。</p>
+<p>そんなわけで.NET最速シリアライザの<a href="http://code.google.com/p/protobuf-net/">Protobuf-net</a>と、やっぱ時代はJSONよねということで、.NETで最もスタンダードなJSONライブラリである<a href="http://json.codeplex.com/">JSON.NET</a>と、新進気鋭の<a href="https://github.com/msgpack/msgpack-cli">MsgPack-Cli</a>の3種のTranscoderを作りました。</p>
+<h2>使い方</h2>
+<p>app.configかweb.configのMemcachedのTranscoderの設定行に、それぞれ使いたいTranscoderのものを指定して、dllを実行ファイルと同ディレクトリにでも置いてください。</p>
+<pre><code class="language-xml">&lt;?xml version=&quot;1.0&quot; encoding=&quot;utf-8&quot; ?&gt;
+&lt;configuration&gt;
+    &lt;configSections&gt;
+        &lt;sectionGroup name=&quot;enyim.com&quot;&gt;
+            &lt;section name=&quot;memcached&quot; type=&quot;Enyim.Caching.Configuration.MemcachedClientSection, Enyim.Caching&quot; /&gt;
+        &lt;/sectionGroup&gt;
+    &lt;/configSections&gt;
+    &lt;enyim.com&gt;
+        &lt;memcached protocol=&quot;Binary&quot;&gt;
+            &lt;servers&gt;
+                &lt;add address=&quot;127.0.0.1&quot; port=&quot;11211&quot;/&gt;
+            &lt;/servers&gt;
+            &lt;transcoder type=&quot;MemcachedTranscoder.ProtoTranscoder, ProtoTranscoder&quot; /&gt;
+        &lt;/memcached&gt;
+    &lt;/enyim.com&gt;
+&lt;/configuration&gt;
+</code></pre>
+<p>Transcoderのバリエーションは以下の感じ。</p>
+<pre><code class="language-xml">&lt;transcoder type=&quot;MemcachedTranscoder.ProtoTranscoder, ProtoTranscoder&quot; /&gt;
+&lt;transcoder type=&quot;MemcachedTranscoder.JsonTranscoder, JsonTranscoder&quot; /&gt;
+&lt;transcoder type=&quot;MemcachedTranscoder.MessagePackTranscoder, MessagePackTranscoder&quot; /&gt;
+&lt;transcoder type=&quot;MemcachedTranscoder.MessagePackMapTranscoder, MessagePackMapTranscoder&quot; /&gt;
+</code></pre>
+<p>ProtoTranscoderはProtocol Buffers、JsonTranscoderはJSON、MessagePackTranscoderはMsgPackをArrayモードで、MessagePackMapTranscoderはMsgPackをMapモードでオブジェクトを変換します。</p>
+<h2>型とデシリアライズ</h2>
+<p>使い方を説明して終わり、というのもつまらないので、もっと深く見ていきましょう。Enyim.MemcachedはGetもSetもobjectでしかできません。ジェネリックなのもあるように見せかけて、最終的にはobjectに落ちます。ITranscoderのところには型が伝達されないのです。以下のがITranscoderインターフェイスね。</p>
+<pre><code class="language-csharp">public interface ITranscoder
+{
+    object Deserialize(CacheItem item);
+    CacheItem Serialize(object value);
+}
+</code></pre>
+<p>何が困るって？シリアライザは型が必要なんですよ！デシリアライズの時に！DataContractSerialize作るのにtypeofで型を渡しているでしょう？Protobuf.Serialize&lt;T&gt;でしょう？MessagePackSerializer.Create&lt;T&gt;でしょう？(JsonConvert.DeserializeObjectは、一見デシリアライズ可能にみえて、それJObjectが帰ってくるから意味ないです)</p>
+<p>例えばMyClassクラスというint MyProperty{get;set;}だけがある、なんてことのないクラスがあるとして、ふつーにJSONにシリアライズした結果は</p>
+<pre><code class="language-javascript">{&quot;MyProperty&quot;:100}
+</code></pre>
+<p>こんな感じになります。が、これだとこれがMyClassという情報は一切ありません。HogeClassかもしれないしHugaClassかもしれない。つまりデシリアライズ不能です。よって、外から型を与える必要があります。Deserialize&lt;MyClass&gt;、といったように。これがもし</p>
+<pre><code class="language-javascript">{
+    &quot;Type&quot; : &quot;MyClass&quot;,
+    &quot;Properties&quot; : [
+        {&quot;MyProperty&quot;:100}
+    ]
+}
+</code></pre>
+<p>このように、値が型情報も持っていれば、型がMyClassだと分かるので、型を渡すのは不要になります。BinaryFormatterやNetDataContractSeiralizerが型不要でSerialize/Deserializeできているのは何故か、というと、シリアライズした後の形に型が付与されているからなのです。そして、なぜEnyim.Memcachedが標準でBinaryFormatterとNetDataContractSerializerを用意しているのか、あるいは何故他のものが用意できないのか、というと、型情報が必要だからです。</p>
+<p>じゃあ型入れとけばいいじゃーん、といったところですが、こうすると型情報の分だけファイルサイズが嵩んでしまいます。また、.NET固有の型を埋め込むというのは、他の言語と通信するのにあたっては、かなりビミョウです。</p>
+<p>だから、理想的には型は外から与えられるといいな、って思うのです。とはいえ、実際問題、Transcoderは型の渡せないインターフェイスなので、どうにかしなきゃあいけません。</p>
+<h2>型を埋める</h2>
+<p>そんなわけで、解法は、手動で型を埋める、になります。(他には全てのAPIを型付きにラップしてそれ経由でしかアクセスさせないで、Serializeを呼ぶときはbyte[]に崩してから呼ぶとかいう方法もあるですかしらん)。どういうこっちゃ、というと、伝わりやすいであろうJSON版のTranscoderで見てみましょうか。</p>
+<pre><code class="language-csharp">protected override ArraySegment&lt;byte&gt; SerializeObject(object value)
+{
+    var type = value.GetType();
+    var typeName = writeCache.GetOrAdd(type, TypeHelper.BuildTypeName); // Get type or Register type
+
+    using (var ms = new MemoryStream())
+    using (var tw = new StreamWriter(ms))
+    using (var jw = new Newtonsoft.Json.JsonTextWriter(tw))
+    {
+        jw.WriteStartArray(); // [
+        jw.WriteValue(typeName); // &quot;type&quot;,
+        jsonSerializer.Serialize(jw, value); // obj
+
+        jw.WriteEndArray(); // ]
+
+        jw.Flush();
+
+        return new ArraySegment&lt;byte&gt;(ms.ToArray(), 0, (int)ms.Length);
+    }
+}
+</code></pre>
+<p>[&quot;型名&quot;, {objectのシリアライズ結果}]といった風に埋めてます。長さ2の配列で決め打ち！0番目は型名の文字列！1番目が実態！これなら、まあ他の言語で触るのも問題ないし(多少は不恰好ですけどね)、ファイルサイズ増大もほぼほぼ型名だけで抑えられています。MessagePack用のTranscoderも同じような実装です。このアイディアはMsgPack-Cli作者の
+<a href="http://yfakariya.blogspot.jp/">@yfakariya</a>さんから頂きました。</p>
+<p>JSON, MsgPackはそうなのですけれど、Protocol Buffers版は……違います。</p>
+<h2>ProtoTranscoder</h2>
+<p>Enyim.Memcached用のProtocol BuffersなTranscoderは、もともとprotobuf-net作者のMarc Gravell氏が作成し公開しています。<a href="http://marcgravell.blogspot.jp/2010/01/distributed-caching-with-protobuf-net.html">Distributed caching with protobuf-net</a>。</p>
+<p>しかし、幾つかの理由により、このコードを使用することはお薦めしません、というかやめたほうがいいです。</p>
+<ul>
+<li>1.対応しているProtobufやEnyim.Memcachedが古いので若干手直しが必要</li>
+<li>2.配列や辞書など、効果の高いコレクション系に対してシリアライズしてくれない(BinaryFormatterが使われる)</li>
+<li>3.そもそもバグっていて、ジェネリックなクラスを突っ込むと壊れる</li>
+</ul>
+<p>1はそのまま。2は、そういうif文が入っているからです。別にコレクションだけ避けるようになっている、というわけじゃなくて、ある種の保険でそういう条件分岐があるのですが、結果としてコレクションが避けられることになってしまっていて、効果が薄くなってしまうな、と。そして3ですが、これは致命的です。どこがバグってるかというと、以下のところ。</p>
+<pre><code class="language-csharp">string typeName = type.AssemblyQualifiedName;
+int i = typeName.IndexOf(','); // first split
+if (i &gt;= 0) { i = typeName.IndexOf(',', i + 1); } // second split
+if (i &gt;= 0) { typeName = typeName.Substring(0, i); } // extract type/assembly only
+</code></pre>
+<p>型情報を埋め込む、つまりは型から型情報の文字列を取ってこなければなりません。それ自体は<a href="http://msdn.microsoft.com/ja-jp/library/system.type.assemblyqualifiedname.aspx">AssemblyQualifiedName</a>を呼ぶだけの、造作もないことなのですけれど</p>
+<pre><code class="language-csharp">// System.Int32, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089
+Console.WriteLine(typeof(int).AssemblyQualifiedName);
+</code></pre>
+<p>Versionとか、Cultureとか、PublicKeyTokenとか、いらないね。型名とアセンブリ名、それだけ分かればそれでいい、それがいい。なので、それら無駄な情報を除去しようとしているのが↑↑のコードです。</p>
+<p>実際うまくいきます。ジェネリックを含まなければ。</p>
+<pre><code class="language-csharp">var type = typeof(List&lt;int&gt;);
+
+string typeName = type.AssemblyQualifiedName;
+int i = typeName.IndexOf(','); // first split
+if (i &gt;= 0) { i = typeName.IndexOf(',', i + 1); } // second split
+if (i &gt;= 0) { typeName = typeName.Substring(0, i); } // extract type/assembly only
+
+// ↓のtypeNameは壊れてる
+// System.Collections.Generic.List`1[[System.Int32, mscorlib
+Console.WriteLine(typeName);
+</code></pre>
+<p>見事に欠落してしまいます。AssemblyQualifiedNameが、ジェネリックを含むクラスだと形が若干変わるので、この決め打ちSubstringでは対応しきれてません。</p>
+<p>でもバグってるから使えない、というだけじゃ勿体ない！.NET最速シリアライザが使えないとか！というわけかで、私の作成したProtoTranscoder半分は氏のコードをベースにしています。また、型情報を埋め込むといったことの元ネタもこのコードからです。</p>
+<p>んで、このバグッてた型情報を削るところですが、AssemblyQualifiedNameが実際どういう形を取るのか、もしくはどういう形が読み込めるものなのか、というのは<a href="http://msdn.microsoft.com/ja-jp/library/w3f99sx1.aspx">MSDNのType.GetTypeメソッド解説</a>に例付きで詳しく書いてあります。非常に複雑で正面からきっちりパースしようとすると苦戦します。なので、正規表現でサクッと削ることにしました。</p>
+<pre><code class="language-csharp">internal static class TypeHelper
+{
+    static readonly Regex SubtractFullNameRegex = new Regex(@&quot;, Version=\d+.\d+.\d+.\d+, Culture=\w+, PublicKeyToken=\w+&quot;, RegexOptions.Compiled);
+
+    internal static string BuildTypeName(Type type)
+    {
+        return SubtractFullNameRegex.Replace(type.AssemblyQualifiedName, &quot;&quot;);
+    }
+}
+</code></pre>
+<p>一応テストは書いてありまして、<a href="https://github.com/neuecc/MemcachedTranscoder/blob/master/MemcachedTranscoder.Tests/TypeHelperTest.cs">TypeHelperTest.cs</a>、色々並べたてた限り問題ないようなので、問題ないと思われます。</p>
+<p>あと、型情報の埋め込みですが、JsonTranscoderは配列にして型情報を入れていましたが、ProtoTranscoderはbyte[]の先頭に直接埋め込んでいます。先頭4バイトが型情報の長さを表し(int)、その後に続く長さの分だけ型情報の文字列(UTF8)があり、その後ろが実体。配列がどうこうとかないので、サイズ的にも処理的にも有利です。ただ、Memcachedに格納された値自体は不正なProtocol Buffersの値となるわけで、相互運用性には難ありといったところ（他のデシリアライズするもの側でもストリーム先頭の型情報部分をスキップするようにすれば、回避できるといえばできます）。最初から相互運用性ゼロのBinaryFormatter(他の言語ではこれでシリアライズされた後の形を解釈できない)よりは遥かにマシ、ではありますね。</p>
+<h2>Memcached is dead. Long live Redis!</h2>
+<p>バグってるとか、いーのかよー、という感じですが、そもそも、使われてないんですよね。Stackoverflowのキャッシュ層は<a href="http://redis.io/">Redis</a>ですので。完全にノーメンテ。(Stackoverflowのアーキテクチャは<a href="http://highscalability.com/blog/2011/3/3/stack-overflow-architecture-update-now-at-95-million-page-vi.html">Stack Overflow Architecture Update - Now At 95 Million Page Views A Month</a>で。これも2011/3のものなので、今は更に進化してるんだろうねえ。StackoverflowはかなりRedis好きみたいで、Memcached is dead. Long live Redis!ってStackoverflowのエンジニア(Marc氏ではない)が言ってた。</p>
+<p>私もRedis好きですね。超好き。アレは超良いものだ……。ちなみにRedisのライブラリは<a href="http://code.google.com/p/booksleeve/">BookSleeve</a>と<a href="https://github.com/ServiceStack/ServiceStack.Redis">ServiceStack.Redis</a>がありまして、この辺に関して詳しくは、そのうち書きましょう。いや、ほんとRedis良いしC#との相性もいいし、たまらんです。</p>
+<p>そんなわけで放置されていたんですが、昨日の今日で、新しいのがリリースされました。<a href="http://nuget.org/packages/protobuf-net.Enyim">protobuf-net.Enyim</a>。そして、バグはそのままでした……。というわけで、そのことは<a href="https://twitter.com/marcgravell/status/275036496065613824">Twitterで伝えた</a>ので、そのうち直るでしょう(Twitterは連絡手段として非常に気楽でいいですなあ)。でも、プリミティブ型の配列などにProtobufが使われない、とかTypeCacheからのTypeの取得部分がforeachぐるぐるるーぷ、などはそのままなので、私の作ったもののほうが良いです。多分ね。</p>
+<h2>パフォーマンス</h2>
+<p>性能ですが、まず、シリアライザはシリアライズする対象によって速度は変わります。だから、一概にどれが速いとか遅いとか言いにくいところはあります。そのうえで、以下のクラスと、それの配列（長さ10）を用意しました。</p>
+<pre><code class="language-csharp">[ProtoContract]
+[Serializable]
+public class TestClass
+{
+    [ProtoMember(1)]
+    [MessagePackMember(0)]
+    public string MyProperty1 { get; set; }
+    [ProtoMember(2)]
+    [MessagePackMember(1)]
+    public int MyProperty2 { get; set; }
+    [ProtoMember(3)]
+    [MessagePackMember(2)]
+    public DateTime MyProperty3 { get; set; }
+    [ProtoMember(4)]
+    [MessagePackMember(3)]
+    public bool MyProperty4 { get; set; }
+}
+
+// シンプルなPOCOとしての対象
+var obj = new TestClass
+{
+    MyProperty1 = &quot;hoge&quot;,
+    MyProperty2 = 1,
+    MyProperty3 = new DateTime(1999, 12, 11),
+    MyProperty4 = true
+};
+
+// オブジェクト配列としての対象
+var array = Enumerable.Range(1, 10)
+    .Select(i =&gt; new TestClass
+    {
+        MyProperty1 = &quot;hoge&quot; + i,
+        MyProperty2 = i,
+        MyProperty3 = new DateTime(1999, 12, 11).AddDays(i),
+        MyProperty4 = i % 2 == 0
+    })
+    .ToArray();
+</code></pre>
+<p>これを100000回シリアライズ/デシリアライズした速度と、一個のファイルサイズの検証結果が以下になります。あと、これはTranscoderを介した速度検証であって、決してシリアライザ単体での速度測定ではないことには留意してください。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/mem_poco.jpg">
+</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/mem_array.jpg">
+</p>
+<pre><code class="language-text">Simple POCO************************
+S DefaultTranscoder:735
+D DefaultTranscoder:750
+Size:305
+S DataContractTranscoder:775
+D DataContractTranscoder:1642
+Size:746
+S ProtoTranscoder:99
+D ProtoTranscoder:142
+Size:88
+S JsonTranscoder:772
+D JsonTranscoder:892
+Size:167
+S MessagePackTranscoder:256
+D MessagePackTranscoder:535
+Size:89
+S MessagePackMapTranscoder:327
+D MessagePackMapTranscoder:783
+Size:137
+
+Array******************************
+S DefaultTranscoder:4234
+D DefaultTranscoder:4186
+Size:712
+S DataContractTranscoder:3874
+D DataContractTranscoder:9532
+Size:4525
+S ProtoTranscoder:2189
+D ProtoTranscoder:3040
+Size:255
+S JsonTranscoder:5618
+D JsonTranscoder:6275
+Size:1043
+S MessagePackTranscoder:752
+D MessagePackTranscoder:2696
+Size:256
+S MessagePackMapTranscoder:1453
+D MessagePackMapTranscoder:5088
+Size:736
+</code></pre>
+<p>単体ではProtobufが最速。これは予想通り。配列にすると、MsgPack-Cliが爆速。ほええー。理由は分かりません！また、BinaryFormatterが決して悪くないのね。速度もそうだし、サイズも、特に配列にしたときにそんなにサイズが膨れないのは偉い、結果的にJSONより小さくなってるしね。これは、JSONは律儀に全部の配列の値に対してプロパティ名を入れますが、BinaryFormatterは先頭に型情報を一つ定義し、あとはその定義への参照という形で廻しているから、でしょうね。BinaryFormatterのデータ構造の仕様は<a href="http://msdn.microsoft.com/en-us/library/cc236844.aspx">.NET Remoting: Binary Format Data Structure</a>にありますが、別に読まなくてもいいと思いますん。</p>
+<p>私はバイナリアンじゃないのでバイナリと睨めっこはあんましたくないですね、<a href="http://www.est.co.jp/">前々職</a>で<a href="http://www.microsoft.com/typography/SpecificationsOverview.mspx">TrueType Fontの仕様</a>と睨めっこしてバイナリほじほじした時は、それはそれで楽しくはあったけれど、好んでやりたくない感はあったり。ゆるふわゆとり世代ですものー。</p>
+<h2>Azure Caching</h2>
+<p><a href="http://blogs.msdn.com/b/tsmatsuz/archive/2012/07/09/what-s-new-in-windows-azure-caching-preview-role-based-caching-june-2012.aspx">Windows Azure CachingもMemcachedプロトコルをサポート</a>ということなので、今回の話はまんま使えますね！まあ、既存のものの移し替え、とかでなければ、Enyim... よりもAzure Cachingのライブラリ使ったほうがいいとは思いますが。「Enyim cache client API で入れたデータを Windows Azure caching API (Client Api) で取得すると、例外が発生します。(その逆も同様です。)」というのは、書いてある通りにシリアライザが違うからですねー。<a href="http://msdn.microsoft.com/en-us/library/windowsazure/jj663548.aspx">デフォルトはNetDataContractSerializer</a>ということで、まあ、アレですね、悲しいですね、Azure Caching使うなら<a href="http://msdn.microsoft.com/en-us/library/windowsazure/hh552969.aspx">Custom Serializer</a>作ったほうがいいんじゃないですかね(これがEnyim...のTranscoderにあたる)。まあ、Memcached ProtocolにしてEnyim... を使ってもいいでしょうけれど、Enyim...もビミョいといえばビミョいので、その辺は何とも。</p>
+<p>まあ、私はAzureは知らないので、きっとAzureの誰かが言ってくれるでせう。あ、 Azure Cachingのシリアライズコストが発生しない云々は ローカルキャッシュのみの話で、外側に行くなら原理的にシリアライズ/デシリアライズが発生するのは当たり前です、というのは一応。</p>
+<h2>まとめ</h2>
+<p>NetDataContractSerializerは論外として、BinaryFormatterは決して悪くはないので、エクストリームなパフォーマンスを求めないなら、そのまんまでいい気がしました。求めるんなら、やっぱProtobufに安定感ありますねえ。しかしMsgPackも良いんですね。可搬性ならJSONにしちゃうのも良いかなー。結局、アレだ、好きなもの選ぶのがいいと思いますですよ、と。</p>
+<p>ところで、これはもともと、前職の<a href="http://gloops.com/">gloops</a>で使うつもりで用意していたのですが、辞めちゃったとかあったので、投入するところまでは行きませんでした。というわけで今のところ利用実績はないです！まあ、多分大丈夫だと思うんですがその辺は投下してみてもらわないと何とも言えません。要は勇気が自己責任。ともあれ、コードの公開を許可してくれたgloopsに感謝します。</p>
+<p>そんなこんなで、謎社でもC#でエクストリームな性能を求めたい方を求めております。パブリックに詳しく言えるのは予定は未定なので、そういったことをやりたいという方は、こっそり私のほうに聞いてくれると嬉しいですね。あ、これは割とマジな話ですよ。それとAzureの営業かけるなら今のうちなのでそれも私のほうまで（謎）</p>
+</div>
+<h1><a href="http://neue.cc/2012/1128_388.html">Chaining Assertion 1.7.0.1 - 値比較の追加</a></h1>
+<ul class="date"><li>2012-11-28</li></ul>
+<div class="entry_body"><p>EqualsやGetHashCodeをオーバーライドするかと言ったら、そういう目的があるなら当然するし、そうでないならしない。という極当たり前なところに落ち着いたりはする。目的ってどういう時かといったら、LINQでDistinctの対象にしたい時とかですかね、まあ、よーするに値で比較したい！時です、まんまですね。</p>
+<p>なので、逆にそれ以外の用途であえてこれらをオーバーライドすることはないです。特にテストのためにオーバーライドというのは、はっきしいって、良くないって思ってます。Equalsというのはクラスとして非常に重要な意味のあるところなので、そこにテスト都合が混じりこむのはNGです。</p>
+<p>でも、テスト都合で値で比較したかったりは割とあるんですよね。じゃあどうするかって、まあ、ふつーにアサート側で構造比較したほうがいいでしょ、テスト都合なんだから。QUnitなんてdeepEqualが基本で、それが存外使いイイんですよ。</p>
+<p>と、いうよくわからない前振りですが、つまるところChaining Assertionに値で比較できるIsStructuralEqualを足しました。</p>
+<ul>
+<li><a href="http://chainingassertion.codeplex.com/">Chaining Assertion - CodePlex</a></li>
+</ul>
+<p>いやあ、一年ぶりの更新です！というか、もう一年前ですかー、早いものだ。もうAssert.ThatをDisるのも忘れてたぐらいに昔の話ですねー、あ、今も当然Assert.ThatとかFluent何ちゃらは嫌いですよ、と、それはさておき。かなり前の話なのでChaining Assertionについておさらい。メソッドチェーンな感じにさらさらっとAssertを書けるテスト補助ライブラリです。詳しくは<a href="http://neue.cc/2011/02/24_306.html">メソッドチェーン形式のテスト記述ライブラリ</a>という1.0出した時の説明をどうぞー。主にMSTestやNUnitに対応しています。勿論NuGetでも入りますのでChainingAssertionで検索を。</p>
+<p>今回追加したのはIsStructuralEqual(もしくはIsNotStructuralEqual)で、構造を再帰的に辿って値としての一致で比較します。</p>
+<pre><code class="language-csharp">// こんなクラスがあるとして
+class MyClass
+{
+    public int IntProperty { get; set; }
+    public string StrField;
+    public int[] IntArray { get; set; }
+    public SubMyClass Sub { get; set; }
+}
+
+class SubMyClass
+{
+    public DateTime Date { get; set; }
+}
+
+
+[TestMethod]
+public void TestMethod1()
+{
+    var mc1 = new MyClass
+    {
+        IntProperty = 100,
+        StrField = &quot;hoge&quot;,
+        IntArray = new[] { 1, 2, 3, 4, 5 },
+        Sub = new SubMyClass
+        {
+            Date = new DateTime(1999, 12, 31)
+        }
+    };
+
+    var mc2 = new MyClass
+    {
+        IntProperty = 100,
+        StrField = &quot;hoge&quot;,
+        IntArray = new[] { 1, 2, 3, 4, 5 },
+        Sub = new SubMyClass
+        {
+            Date = new DateTime(1999, 12, 31)
+        }
+    };
+
+    mc1.IsNot(mc2); // mc1とmc2は全て同じ値ですが、参照比較では当然違います
+
+    mc1.IsStructuralEqual(mc2); // IsStructuralEqualでは全てのプロパティを再帰的に辿って比較します
+}
+</code></pre>
+<p>なんのかんので便利で使っちゃいますね、多用しちゃいますね、きっと。ちなみに、ただたんに値比較したいだけなら、JSONにでもDumpして、文字列一致取ればいいだけなんですけれど。自前で辿ることによって、誤った箇所へのメッセージは割と親切かな、と思います。あとIEquatableの扱いとか型の扱いとか、ただのDumpとは色々若干と違うので、まあ、こちらのほうが望ましい具合な結果が得られると思います。</p>
+<pre><code class="language-csharp">var mc1 = new MyClass
+{
+    IntProperty = 100,
+    StrField = &quot;hoge&quot;,
+    IntArray = new[] { 1, 2, 3, 4, 5 },
+    Sub = new SubMyClass
+    {
+        Date = new DateTime(1999, 12, 31)
+    }
+};
+
+// 間違い探し！
+var mc2 = new MyClass
+{
+    IntProperty = 100,
+    StrField = &quot;hoge&quot;,
+    IntArray = new[] { 1, 2, 3, 100, 5 }, // 4番目が違う
+    Sub = new SubMyClass
+    {
+        Date = new DateTime(1999, 12, 31)
+    }
+};
+
+// 以下のようなエラーメッセージが出ます
+// is not structural equal, failed at MyClass.IntArray.[3], actual = 4 expected = 5
+mc1.IsStructuralEqual(mc2);
+
+// こんどはStrFieldが違う
+var mc3 = new MyClass
+{
+    IntProperty = 100,
+    StrField = &quot;hage&quot;,
+    IntArray = new[] { 1, 2, 3, 4, 5 },
+    Sub = new SubMyClass
+    {
+        Date = new DateTime(1999, 12, 31)
+    }
+};
+
+// 以下のようなエラーメッセージが出ます
+// is not structural equal, failed at MyClass.StrField, actual = hoge expected = hage
+mc1.IsStructuralEqual(mc3);
+
+</code></pre>
+<p>割と十分、分かりやすい。かな？</p>
+<p>コードは結構好き勝手感です。PropertyInfoとFieldInfoは共にMemberInfoを継承してるが、GetValueは同じメソッドシグネチャだけど、MemberInfoに定義されてるわけじゃなくてPropertyInfo, FieldInfoにそれぞれあるから共通でまとめられないよー→dynamicで受ければGetValue使えて大解決。とか、まあふつーのコードではやらないようなことも、UnitTest用だから若干の効率低下は無視でなんでもありで行くよ！というのが割と楽しいですね。</p>
+<h2>その他</h2>
+<p>ついでにjsakamotoさんからPull Request来ていたIsInstanceOfでメソッドチェーンできるようになったり(Pull Requestの放置に定評のある私です！というか初めてacceptしたわー)、IsTrueとIsFalseを足した(いやあ、Is(true)ってやっぱ面倒くさかったよ、あはは)りなどしました。</p>
+<p>さて、お次はWinRT対応とWindows Phone 8対応を、といったところなのですが、それはそのうち近いうちに！WinRT対応はねえ、リフレクション回りがドサッと変わってるので面倒といえば面倒なんですよねえ。まあ、勉強のためのちょうどいい題材ではあるので、手を付けたいとは思ってるのですけれど。</p>
+<p>あとね、正直NUnitはいいとしてもMbUnitやxUnit、SLやWP7に対応させるの超面倒くさい。やりすぎた。これのせいでちょっとした修正ですら大仕事なわけですよ。このメンテコスト最悪すぎる状態がどうにもねえ、それでいてNUnitはともかく、その他なんてほとんど使われてないですからねえ。分かってはいたのですが、こうシンドイと結構限界。というわけで、WP7とSilverlightは削除しました。この二つはもういらないぢゃん？さようなら……。</p>
+<p>ああ、あとFakes FrameworkのためのVerifierも入れたいしねえ、やりたいことは割と多いんですが、ニートもこれはこれでいて忙しくて手が回らないのですよー。</p>
+</div>
+<h1><a href="http://neue.cc/2012/1103_387.html">Microsoft Fakes Frameworkの使い方</a></h1>
+<ul class="date"><li>2012-11-03</li></ul>
+<div class="entry_body"><p>Fakes FrameworkはVisual Studio 2012から搭載されたユニットテスト用のもっきゅっきゅライブラリです。いや、ライブラリというには大掛かりなので、やっぱFrameworkでしょうか。ともあれ、そんなもののようなものです。ドトネトだと競合で最も有名なのは<a href="http://code.google.com/p/moq/">Moq</a>ですね。競合との大きな違いは、通常のもっきゅっきゅライブラリがinterfaceやvirtualなメソッド類しか上書きできないのに対して、FakesはStaticメソッドやふつーの非virtualメソッドすらも上書き出来ちゃうところにあります。つまり、なんでもできます。</p>
+<p>そして、Visual Studio Ultimateじゃないと使えません。……うぉーん。と、いうわけで、強力さはよーく分かるんですが、Ultimateでしか使えないところに萎えていたりしました。が、Visual Studioへの要望を出すForumで<a href="http://visualstudio.uservoice.com/forums/121579-visual-studio/suggestions/2919309-provide-microsoft-fakes-with-all-visual-studio-edi">Provide Microsoft Fakes with all Visual Studio editions</a>といった投票が以前からあり(私もVote済みです)、そこでついに最近、全エディションに搭載するよう検討するから待っててね！というMSからの返答が！やったね！あ、まだVoteしてない人はVoteしましょう。</p>
+<p>さて、Fakesは元々Molesという名前で、PexというMicrosoft Researchで開発されていた（今はメンテされてるのかなあ、怪しいなあ）自動テストツールの付属品みたいな感じで存在していました。できることは、既存のクラスの静的/インスタンスメソッドやプロパティの動作を、自由に置き換えることです。もうこれ本当に素晴らしくて、一度使うとMoles抜きのテストとか考えられないぐらいで、このサイトでも<a href="http://neue.cc/2011/03/10_309.html">Rx + MolesによるC#での次世代非同期モックテスト考察</a>とか<a href="http://neue.cc/2011/12/21_360.html">RxとパフォーマンスとユニットテストとMoles再び</a>といった記事で紹介してきました。どちらもRxとセットで書いていますが、Moles自体は別にRx関係ありません。</p>
+<p>ちなみに同様のことができるライブラリには<a href="http://www.typemock.com/isolator-product-page">Typemock Isolator</a>や<a href="http://www.telerik.com/products/mocking.aspx">Just Mock</a>がありますが、何れも有償です（結構お高い、まぁVisual Studio Ultimateほどではないですが！）。Fakesとそれら(やMoq)の違いはもうひとつあって、Fakesは自動生成が基盤になっているので、メソッドやプロパティの置き換えが同様の定義をラムダ式で渡すだけという、非常にスムーズなやりかたで済みます。他のものは、基本的にはSetUp.Returnsとか、流れるようなインターフェースが基調になっていて、そんな書きやすいわけではないんですね。機能が強力だという他に、モック定義が超簡単、というのもFakesの大きな魅力です。</p>
+<h2>使い方</h2>
+<p>詳細な使い方とかガイドは<a href="http://msdn.microsoft.com/en-us/library/hh549175.aspx">Isolating Code under Test with Microsoft Fakes</a>にありますが、まあ簡単に見てきましょうか。ユニットテストプロジェクトの参照設定でSystemを右クリックしてFakesアセンブリに追加をクリック。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/msfakes1.jpg">
+</p>
+<p>するとFakesフォルダの下にmscorlib.fakesとSystem.fakesが作られます。そして、暫く待つとmscorlib.4.0.0.0.FakesとSystem.4.0.0.0.Fakesが追加されます。これ、バックグラウンドに必死に解析しているといった感じなので、割と待たされます（せめてステータスバーで通知してくれてれば分かりやすいのですが）。すぐにFakesが追加されなくてオカシイなー、とかドーナッテンダー、とか思うかもですが、まあゆるりと待ちましょう。待つといっても1分は待たないかな、さすがに、マシン性能にもよるでしょうが。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/msfakes2.jpg">
+</p>
+<p>これでとりあえず準備完了。</p>
+<p>一番単純かつよく使うかつ有意義かつそこらじゅーで紹介されている例としては、DateTime.Nowの差し替えなので、まずそれを見ますか、定番お馴染みですけれど。Assertには別ライブラリの<a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>を使います。Assert.AreEqual(25, Math.Pow(5, 2))がMath.Pow(5, 2).Is(25)といったようにメソッドチェーンでサクッと書けて可読性良くて実にいい(宣伝)。</p>
+<pre><code class="language-csharp">[TestClass]
+public class UnitTest1
+{
+    [TestMethod]
+    public void TestMethod1()
+    {
+        // Shim&quot;s&quot;Contextで囲むとその中でShim使える(Stubだけ利用なら不要)
+        using (ShimsContext.Create())
+        {
+            // DateTime.Nowを1999年12月31日に差し替え！
+            ShimDateTime.NowGet = () =&gt; new DateTime(1999, 12, 31);
+
+            // なのでDateTime.Nowは1999年です！
+            DateTime.Now.Year.Is(1999);
+        }
+    }
+}
+</code></pre>
+<p>どーでもいーんですがShimContextと間違えて、でてこないなあ、と悩んだりはよくしてました。正しくはShimsContextですねん。ともあれ、超簡単に難問であるDateTimeの差し替えに成功しました！素晴らしい！</p>
+<p>さて、もっきゅっきゅライブラリによくある機能はもう一つ、差し替えたメソッドが呼ばれたかどうかの検証があります。これに関してはFakesは特にライブラリ側でサポートはしていません。自前でやります。例えば……</p>
+<pre><code class="language-csharp">var calledCount = 0;
+var stub = new StubIEnumerable&lt;int&gt;
+{
+    GetEnumerator = () =&gt; { calledCount++; return Enumerable.Range(1, 10).GetEnumerator(); }
+};
+
+stub.Count().Is(10); // LINQのCountを使ってGetEnumeratorを呼んだ
+
+calledCount.Is(1); // 1回呼ばれた、という検証
+</code></pre>
+<p>StubはふつーのMoqライブラリで定義可能なのと同じで、interfaceかvirtualなメソッドを置き換えられます。ラムダ式で定義出来るのが、やっぱ簡単でイイですね。で、検証のやり方は、単純に外部に変数定義してそれ呼んでやって、という地味ーで原始的な手法が正解。手間といえば手間ですが、Moq定義がシンプルなので、違和感は全然ないです。</p>
+<h2>Verify用拡張の実装</h2>
+<p>とはいえ、定形パターンでラムダの外に変数置いてどうこう、というのも面倒くさいので、Verify用にちょっと作ってみました。例えばこんな風に使います。</p>
+<pre><code class="language-csharp">[TestMethod]
+public void IListUseCountByLINQ()
+{
+    var enumerator = Verifier.Zero(&quot;IList.GetEnumerator&quot;); // 文字列入れておくとエラー時にどの検証で失敗したのか判別できる。
+    var count = Verifier.Once(); // 省略も可能だけどエラー時に不明になるので、メソッド内で検証は一個ののみとか限定で。
+
+    IEnumerable&lt;int&gt; list = new StubIList&lt;int&gt;()
+    {
+        // 各メソッド先頭でCalledを呼ぶと内部のカウンターがIncrementされる
+        GetEnumerator = () =&gt; { enumerator.Called(); return Enumerable.Empty&lt;int&gt;().GetEnumerator(); },
+        CountGet = () =&gt; { count.Called(); return 10; },
+    };
+
+    list.Count(); // LINQのCount()メソッドを使う
+
+    Verifier.VerifyAll(count, enumerator); // Countは一度呼ばれてGetEnumeratorは一度も呼ばれてないことの検証実行
+}
+</code></pre>
+<p>もしこれでvar enumerator = Verifier.Once(&quot;IList.GetEnumerator&quot;) にすると、VerifyAllのところで「System.Exception: Verify Error - Key:IList.GetEnumerator, Condition:(x == 1), CalledCount:0」という例外が発生して、実行されたかの検証が行える、みたいな感じですん。エラーメッセージもそこそこ親切。</p>
+<p>ちょっと面倒かなあ、いちいち変数定義するのダルいなあ、とかとも思いますが、まあ何もないよりは良いのではないでしょうか。以下はその実装。</p>
+<pre><code class="language-csharp">public class Verifier
+{
+    public static Verifier Zero(string key = &quot;&quot;)
+    {
+        return new Verifier(key, x =&gt; x == 0);
+    }
+
+    public static Verifier Once(string key = &quot;&quot;)
+    {
+        return new Verifier(key, x =&gt; x == 1);
+    }
+
+    public static Verifier Create(Expression&lt;Func&lt;int, bool&gt;&gt; condition)
+    {
+        return new Verifier(&quot;&quot;, condition);
+    }
+
+    public static Verifier Create(string key, Expression&lt;Func&lt;int, bool&gt;&gt; condition)
+    {
+        return new Verifier(key, condition);
+    }
+
+    public static void VerifyAll(params Verifier[] verifier)
+    {
+        foreach (var item in verifier)
+        {
+            item.Verify();
+        }
+    }
+
+    readonly Expression&lt;Func&lt;int, bool&gt;&gt; condition;
+    int count;
+    public int Count { get { return count; } }
+    public string Key { get; private set; }
+
+    private Verifier(string key, Expression&lt;Func&lt;int, bool&gt;&gt; condition)
+    {
+        this.Key = key;
+        this.count = 0;
+        this.condition = condition;
+    }
+
+    public void Called()
+    {
+        Interlocked.Increment(ref count);
+    }
+
+    public void Verify()
+    {
+        if (!condition.Compile().Invoke(count))
+        {
+            var msg = string.Format(&quot;Key:{0}, Condition:{1}, CalledCount:{2}&quot;, Key, condition.Body, count);
+            throw new Exception(&quot;Verify Error - &quot; + msg); // 例外は最終的に独自例外を使う
+        }
+    }
+}
+</code></pre>
+<p>複数回呼ばれることの検証はVerifier.Create(x =&gt; x == 10)とかVerifier.Create(x =&gt; x &gt;= 1)とかって書きます。ここをTimes.ExactlyだのTimes.AtMostOnceだのTimes.Betweenだのとメソッド名でやりくりさせる流れるようなインターフェース(笑)的なやり方は嫌いですねえ（Timesは別に流れてませんが）。ラムダ式あるんだからそれ使うべきでしょ常識的に考えて。</p>
+<p>これはただのコンセプトですが、もう少し練りこんだらChaining Assertionに入れましょう。</p>
+<h2>WebRequestのShimを作りたい場合</h2>
+<p>ところで、mscorlibとSystemのFakeが標準で作られるわけですが、それの中身、少ないですよね？WebClientはないし、WebRequestもStubばかりでShimがないし。どうなってるの？</p>
+<p>mscorlibとSystemは巨大なライブラリなため、全てのFakeを作っていると量が膨大すぎて処理に時間がかかります。だから、デフォルトでは生成されるものが限定的になっています。じゃあどうすればいいのか、というと、.fakesの中身(XML)を編集して、明示的に生成するものを指定してあげれば解決します。</p>
+<pre><code class="language-xml">&lt;Fakes xmlns=&quot;http://schemas.microsoft.com/fakes/2011/&quot;&gt;
+    &lt;Assembly Name=&quot;System&quot; Version=&quot;4.0.0.0&quot;/&gt;
+    &lt;ShimGeneration&gt;
+        &lt;Add FullName=&quot;System.Net.HttpWebRequest&quot; /&gt;
+    &lt;/ShimGeneration&gt;
+&lt;/Fakes&gt;
+</code></pre>
+<p>Visual Studioで編集すればIntelliSenseが効くので、迷いなくできるでしょう。StubGenerationに対するオプションがあったり、Disableのtrue/falseが指定できたりとか、IntelliSenseに従うだけで発見できます。書き換えたらビルドすれば、設定の反映されたDLLに置き換えられます。もし置き換わらなかったら、テストプロジェクトのFakesAssembliesフォルダの中身を全部消して再ビルドしてみましょう。それでも追加されていなかったら、.fakesの書き換えミスでしょうね。私はFullNameとTypeNameを間違って追加されねー、と悩んだりしたことあります。</p>
+<p>さて、じゃあ実際に↑のHttpWebRequestへのShimを使って、例えばHttpClientは最終的にWebRequestで実行されてるんだー、というのを検証するには……</p>
+<pre><code class="language-csharp">// 非同期メソッドをテスト対象にする時はTaskを戻り値にする
+[TestMethod]
+public async Task HttpClientIsWrapperOfHttpWebRequest()
+{
+    using (ShimsContext.Create())
+    {
+        var v = Verifier.Once();
+
+        // どこかで生成される全てのInstanceを対象にするには.AllInstances経由で
+        // 第一引数はそのインスタンスそのものがくる
+        ShimHttpWebRequest.AllInstances.BeginGetResponseAsyncCallbackObject = (instance, callback, state) =&gt;
+        {
+            v.Called();
+            // ExecuteWithoutShimsで差し替えていないオリジナルのものを呼べる
+            return ShimsContext.ExecuteWithoutShims(() =&gt; instance.BeginGetResponse(callback, state));
+        };
+
+        await new HttpClient().GetAsync(&quot;http://google.co.jp/&quot;);
+
+        v.Verify();
+    }
+}
+</code></pre>
+<p>といったように書けました。ExecuteWithoutShimsとか、色々配慮されてて良い感じですねー。</p>
+<p>ところでWebRequestは、IWebRequestCreateのStubを作ってWebRequest.RegisterPrefixにそれを登録するとWebRequest.Createは乗っ取ることが可能です、実は何気に。</p>
+<pre><code class="language-csharp">var webreq = new StubIWebRequestCreate { CreateUri = uri =&gt; { /* hogemoge */ } };
+WebRequest.RegisterPrefix(&quot;http://&quot;, webreq);
+</code></pre>
+<p>そして、これで実際WebClientのDownloadStringとかのWebRequest生成はフックできます。でも、これだと.NET 4.0から追加されたWebRequest.CreateHttpは乗っ取れないし、HttpClientにいたってはinternalなコンストラクタを使ってnew HttpWebRequestしているので、もはやそんな手法は実質完全無意味だ！ほんと、このあたりグダグダなので何も考えないほうがいいです。色々と幻想すぎる。</p>
+<h2>Shim vs Stub</h2>
+<p>vsというか、まずInterfaceはStubしか作れません。ある意味当たり前ですね。具象型は、Shimで作れば何でも差し替えられる、Stubで作るとvirtualなもののみ差し替えられる。具象型に関してはShimはStubの完全なる上位互換です。じゃあStub要らないのか、というと、割とそうでもなくて、Stubは軽量です。Shimは書き換えが入るので重たいです。このことはアプリケーションの設計全体に通しても言えて、Shimで何でも差し替えられるから、全面的にShimに頼ろう！みたいなのはダウトです。ダメ。それなりにテスタビリティを考慮した設計(= Stubで差し替え可能な状態)を作ったほうが良いです。</p>
+<p>ただ、理想的な形がShimがゼロな状態でもテスタビリティ100%にすること、だとは私は思ってません。テスト可能にするために、ある程度、素直な設計を犠牲にして、歪んだ形になることって往々にあるはずです。そういうところは素直にShim使ったほうが100億倍良いでしょう。まあ、そのバランスに関しては答えなんてないので、各自で適宜、線を引いていくしかないかなーって思ってます。</p>
+<p>あ、どうでもいいんですが、私はリポジトリパターンって嫌いで、いや、リポジトリパターンというか、ほぼほぼ100%テストのためだけにIHogeRepositryとHogeRepositryという実態作るとかIHogeとHogeImplが必ずといっていいほどセットなJxxxみたいじゃんというか、本当に嫌ですね！大嫌いですね！じゃあどうするかっつったら割とどうにもならないところもあるし、それをShimでサクッと殺すのがいいとは全然思いませんが、しかし私はShimで殺すことを選びますね。</p>
+<h2>まとめ</h2>
+<p>Fakes Frameworkは半端無く強力なので、とっとと全エディションに搭載されるといいなあ。Visual Studio 2012 SP1(いつ？)とかで、ね。いや、それじゃ遅すぎる、もっと早く！もっと早くに！Molesの頃はちょっと挙動に不安定さを感じた時もありましたが、さすがにプロダクト正式搭載なFakesは安定感もあってすっごくイイ。</p>
+</div>
+<h1><a href="http://neue.cc/2012/1024_386.html">ltxml.js - LINQ to XML for JavaScript</a></h1>
+<ul class="date"><li>2012-10-24</li></ul>
+<div class="entry_body"><p>以前、<a href="http://www.slideshare.net/neuecc/linqjs-ver3-and-visual-studio-2012-in-javascript">linq.js ver.3</a>のセッションの時に、ちょびっとだけ触れたLINQ to XML for JavaScriptが公開されました！</p>
+<ul>
+<li><a href="http://openxmldeveloper.org/blog/b/openxmldeveloper/archive/2012/10/23/new-open-source-project-linq-to-xml-for-javascript.aspx">New Open Source Project: LINQ to XML for JavaScript</a></li>
+</ul>
+<p>作者は私ではなく、Eric White氏です。誰？ってことですが、元Microsoftの人です。氏の<a href="http://blogs.msdn.com/b/ericwhite/archive/tags/linq+to+xml/">MS時代のMSDNブログのLINQ to XMLタグ</a>には超DEEPなLINQ to XMLの使いこなしが書いてあって必見。というわけで、非常にLINQ to XMLに詳しい、というか、MSDNの<a href="http://msdn.microsoft.com/ja-jp/library/bb387098.aspx">LINQ to XMLの解説ドキュメント</a>を書いたのは氏だそうです。なので、詳しいとかそういう次元じゃなく、普通に中の人ということですね。</p>
+<h2>概要</h2>
+<p>そんなわけで、ltxml.jsとは、C#のXML操作ライブラリであるLINQ to XMLのJavaScript移植です。C#のLINQ to XMLがLINQ to Objectsの上に構築されている（ElementsやDescendantsの戻り値がIEnumerableとなり、LINQベースのクエリ操作となる）ように、ltxml.jsはLINQ to ObjectsのJavaScript移植である<a href="http://linqjs.codeplex.com/">linq.js</a>の上に構築されています。ltxml.jsのelementsやdescendantsは、linq.jsのwhereやselectなどのクエリ操作によってXMLを展開できます。</p>
+<p>C#版と構造はほとんど一緒です。ただし、JavaScriptの慣習に則りメソッド名がlowerCamelCaseであることと、プロパティが.getHoge()であること(ただしECMAScript 5に対応しているならば.hogeといったようにプロパティでアクセスできます)、オペレーターオーバーロードが存在しないことによる挙動の違い程度です。また、C#版よりも機能向上している面もあります。それは、私がlinq.jsにおいてC#のLINQ to Objectsで物足りないと思った機能を追加していたようなもの、でしょうか、多分ね、きっと。</p>
+<p>また、パフォーマンス上の考慮により、descendantsなどは、デフォルトは即時実行で配列（をEnumerableでラップしたもの）を返します。.lazy = trueをXElementなどに投下することで、完全な遅延実行になります。もし巨大なXMLを扱うのならば、遅延実行が効果を発揮するでしょう。通常考えられるサイズのXMLならば、デフォルトのとおり即時実行のほうが良好だと思われます。</p>
+<h2>使い方</h2>
+<p>ぶっきらぼうにも、ドキュメントがほとんどないですね！まあ、それは追々紹介されていくことでしょう。ともあれ現状は、ファイルをダウンロードするとltxmlTest.htmlというファイルがあって、それがユニットテスト兼サンプルになっているので、とりあえずそれを読みましょう。また、JavaScript特有の違いはあるものの、基本的にはC#のそれと等しいので、MSDNの<a href="http://msdn.microsoft.com/ja-jp/library/bb387098.aspx">LINQ to XMLの解説ドキュメント</a>がまんま使えないこともないです。</p>
+<p>ともあれ、まずは簡単なXMLをパースしてみましょう。</p>
+<pre><code class="language-javascript">var xml =
+    &quot;&lt;Contacts&gt;\
+        &lt;Contact&gt;\
+            &lt;Name&gt;Peter Hage&lt;/Name&gt;\
+            &lt;Phone&gt;206-555-0144&lt;/Phone&gt;\
+        &lt;/Contact&gt;\
+        &lt;Contact&gt;\
+            &lt;Name&gt;John Hoge&lt;/Name&gt;\
+            &lt;Phone&gt;106-333-2222&lt;/Phone&gt;\
+        &lt;/Contact&gt;\
+        &lt;/Contacts&gt;&quot;;
+
+// parseでただの文字列からLINQ to XMLのXElementに変換
+var xElem = Ltxml.XElement.parse(xml);
+
+// 子孫ノードのNameを選択し、値だけ抽出
+var names = xElem.descendants(&quot;Name&quot;)
+    .select(function (x) { return x.getValue(); })
+    .toArray();
+
+alert(names); // Peter Hage, John Hoge
+</code></pre>
+<p>descendants.selectといったように、LINQです！完全に！これをLINQと言わずして何をLINQと言うか！</p>
+<h2>名前空間</h2>
+<p>ltxml.jsの全てのクラスはLtxmlオブジェクトの下に格納されています。グローバルを汚さない。しかし、いちいちLtxml.XElementなどと呼ぶのは面倒くさい話です。以下のようなショートカットを先頭に用意するのをお薦めします。</p>
+<pre><code class="language-javascript">var XAttribute = Ltxml.XAttribute;
+var XCData = Ltxml.XCData;
+var XComment = Ltxml.XComment;
+var XContainer = Ltxml.XContainer;
+var XDeclaration = Ltxml.XDeclaration;
+var XDocument = Ltxml.XDocument;
+var XElement = Ltxml.XElement;
+var XName = Ltxml.XName;
+var XNamespace = Ltxml.XNamespace;
+var XNode = Ltxml.XNode;
+var XObject = Ltxml.XObject;
+var XProcessingInstruction = Ltxml.XProcessingInstruction;
+var XText = Ltxml.XText;
+var XEntity = Ltxml.XEntity;
+var XEnumerable = Ltxml.XEnumerable;
+</code></pre>
+<p>また、C#版ではEnumerableへの拡張メソッドとして用意されていた幾つかのメソッドは、ltxml.jsではEnumerableに追加されているasXEnumerableを呼び、XEnumerableへと変換することで、呼び出すことができます。しかし、もしそれを手間だと思う場合は、linq.jsのEnumerableを拡張することで、よりスムーズに接続することが可能です。ただし、C#版ではジェネリックによって区別されていましたが、JavaScriptではジェネリックが存在しないので、汎用性のないシーケンスの要素がltxml.jsに固有でなければならないメソッドをEnumerableに追加することとなります。また、removeなどは、他の人の拡張と名前が衝突する可能性が高いことなどにも注意。</p>
+<pre><code class="language-javascript">Enumerable.prototype.elements = Ltxml.XEnumerable.prototype.elements;
+Enumerable.prototype.ancestors = Ltxml.XEnumerable.prototype.ancestors;
+Enumerable.prototype.ancestorsAndSelf = Ltxml.XEnumerable.prototype.ancestorsAndSelf;
+Enumerable.prototype.attributes = Ltxml.XEnumerable.prototype.attributes;
+Enumerable.prototype.descendantNodes = Ltxml.XEnumerable.prototype.descendantNodes;
+Enumerable.prototype.descendantNodesAndSelf = Ltxml.XEnumerable.prototype.descendantNodesAndSelf;
+Enumerable.prototype.descendants = Ltxml.XEnumerable.prototype.descendants;
+Enumerable.prototype.descendantsAndSelf = Ltxml.XEnumerable.prototype.descendantsAndSelf;
+Enumerable.prototype.elements = Ltxml.XEnumerable.prototype.elements;
+Enumerable.prototype.nodes = Ltxml.XEnumerable.prototype.nodes;
+Enumerable.prototype.remove = Ltxml.XEnumerable.prototype.remove;
+</code></pre>
+<p>私個人としては、Enumerableへの拡張はそんなに薦められないかな、という感じですが、ヘヴィにXMLを処理する局面では、拡張したほうがサクサク書けて良いのではかとも思います。この辺は好みでどうぞ。</p>
+<h2>関数型構築</h2>
+<p>XMLを作るときは、コンストラクタで可変長引数として連鎖させます。これをLINQ to XMLでは<a href="http://msdn.microsoft.com/ja-jp/library/bb387019.aspx">関数型構築</a>と呼んでいます。</p>
+<pre><code class="language-javascript">var xml =
+    new XElement(&quot;root&quot;,
+        new XElement(&quot;user&quot;, new XAttribute(&quot;id&quot;, 1),
+            new XElement(&quot;age&quot;, 100)));
+
+// &lt;root&gt;&lt;user id = '1'&gt;&lt;age&gt;100&lt;/age&gt;&lt;/user&gt;&lt;/root&gt;
+alert(xml.toString()); // toStringで文字列化
+</code></pre>
+<p>閉じタグが不要であったり、安全であったり(JavaScriptだってカッコ閉じ忘れとかは警告入るからね）と、生文字列で組み立てるのに比べて、遥かに利点があります。また、要素がlinq.jsのEnumerableである場合も、きちんと展開されます。</p>
+<pre><code class="language-javascript">// C#と同様にEnumerable&lt;XElement&gt;は展開される
+var users = Enumerable.range(1, 10)
+    .select(function (x) {
+        return new XElement(&quot;user&quot;, new XAttribute(&quot;id&quot;, x),
+                   new XElement(&quot;age&quot;, x * x));
+    });
+
+var xml = new XElement(&quot;root&quot;, users);
+
+// &lt;root&gt;
+//   &lt;user id = '1'&gt;
+//     &lt;age&gt;1&lt;/age&gt;
+//   &lt;/user&gt;
+//   &lt;user id = '2'&gt;
+//     &lt;age&gt;4&lt;/age&gt;
+//   &lt;/user&gt;
+//   (略)
+// &lt;/root&gt;
+alert(xml.toString(true)); // 引数にtrueを渡すとインデントつけて整形
+</code></pre>
+<p>どうでしょう、イメージつきます？</p>
+<h2>用途</h2>
+<p>Eric White氏が<a href="http://ja.wikipedia.org/wiki/Office_Open_XML">OpenXML</a>(Officeのxlsxとかがそれ)の専門家ということで、JavaScript上でOfficeファイルを容易に扱うことが可能になるでしょう。つまり、サーバーサイドでのコンバート処理など不要に、JavaScriptだけでビューワーであたり要素抽出であったりが、完結する未来があります。なんて興奮する話でしょう！</p>
+<p>とはいえ、それはあまりにも専門的すぎて、実に面白いし役立つでしょうけれど、実際にそれでもって作り上げる側に周るのは極少数の人に違いありません。では、他にXMLを使う局面なんてあるのか？ふむ……。恐らく、ブラウザ上で動くアプリケーションにとって機会はないでしょう、どこもかしこもJSONに集約される！AJAXのXはXMLのX！だった時もありました。いや、今もそうでしょうけれど。</p>
+<p>では、どこに？というと、Node.jsはどうだろう？結局、未だにXMLのサービスなどは多いのだ。RSSはJSONにならないでしょう。サーバーサイドで行うならXMLは無視できないのだ。またはクライアントアプリでも、TitaniumやPhoneGapはどうだ？またはWindows 8のアプリケーションはJavaScriptで作ることができる。そこではまだまだXMLは現役に違いない。JavaScriptの活躍範囲がブラウザを超えていけばいくほど、残り続けるXMLに遭遇する機会は増える。</p>
+<p>AtomPub(ああ！今はもうあまり名前を聞かない！)の構築に、LINQ to XMLの関数型構築は役に立つことでしょう。とにかく言えることは、XMLは決して死んでいないし、望まれるか望まれないかはともかくとして、生き残り続けるでしょう。そのために、私達には強力な武器が必要なのです、LINQ to XMLという。</p>
+<p>もしくは、単純にHTMLビルダーとして使ったっていいかもしれない。HTMLはXMLなのだもの、ええ、大丈夫、そのようにも使えます。文字列連結してHTMLを組み立てるなんてしなくていい。また、もちろん、HTMLのDOM操作にだって、ね（でもDOMの操作ならば、きっとjQuery使いますね）</p>
+<h2>未来</h2>
+<p>ところでしかし現状ltxml.jsはベータです。何故か。linq.jsがまだベータだからです。ver.3.0.3-Beta4ってなんだよクソが。すみませんすみません、なるべく早く正式リリース出来るよう鋭意努力します。NEETなので暇、じゃあないんですよねえ、残念ながら。でも急ぎます。さすがに！いやほんと私の作業ペースの遅さには我ながらどうかと思う感じですが、もうさすがに猶予ないですね！</p>
+<p>ちなみに7月31日に作ってるよー、ってメール貰って、そこから何度かやり取りしてました。ltxml.jsのコード自体、かなりパワフルにlinq.jsを使いこなしているので（私のアドバイスの賜物です！）そういう意味でも面白いですね。ちなみに、その時には8月中にlinq.jsリリースするって言ってたかなあ、今もう10月末ですねえ、どうなってるんでしょうねえ、ごめんなさいごめんなさい。</p>
+</div>
+<h1><a href="http://neue.cc/2012/1021_385.html">既存JavaScriptをTypeScriptとして修正する方法</a></h1>
+<ul class="date"><li>2012-10-21</li></ul>
+<div class="entry_body"><p>JavaScriptはTypeScriptです。ほぼほぼ。.jsを.tsとして変更すれば動きます。というほど世の中甘くなくて、まあ、大抵は動きません。えー、なにそれ、欠陥品じゃないの？と思われるかもですが、いえ、結構単純な話です。例えばですが</p>
+<pre><code class="language-csharp">var x = 0;
+x = &quot;hogehoge&quot;;
+</code></pre>
+<p>このコード、JavaScriptとしては正しいですが、TypeScriptとしては間違っていてコンパイル通りません。xがnumberとして推論されるので、&quot;hogehoge&quot;が代入できないからです。じゃあどうするの？というと、</p>
+<pre><code class="language-csharp">var x: any = 0;
+x = &quot;hogehoge&quot;;
+</code></pre>
+<p>anyとして型定義してやればいいんですね。もしくは</p>
+<pre><code class="language-csharp">var x = &lt;any&gt;0;
+x = &quot;hogehoge&quot;;
+</code></pre>
+<p>でもいいですが。&lt;&gt;はキャストみたいなものです。ちなみに、こういったことの実例はTypeScriptのソースをダウンロードしてきて、\src\harness\external\json2.ts に、<a href="http://www.json.org/js.html">json2.js</a>をtsに変換した例が見れます。ほんの2, 3箇所anyの注釈を入れているだけで、ほぼほぼそのままですね。実際のところ、↑みたいなゆるふわキャストなんて、たとえJSといえど多用してるわけがないので、作業的な手間はあまりありません。やることは、コンパイルエラーの出た箇所をポチポチとモグラたたきするだけなので、楽ちん。</p>
+<h2>実際にやってみる</h2>
+<p>理屈上はそうですが、実際やってみるとどうなんでしょうねえ、ということで、linq.jsでやってみました。(なお、linq.jsの型定義自体は<a href="http://neue.cc/2012/10/12_382.html">linq.jsのTypeScript対応とTypeScript雑感</a>で手付けですでにやってあります)。まず.tsにしてコンパイルかけてみると、赤波線が全体に出てきてわけわからんオワタ！エラー90件！</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/ts_linq_red.jpg" />
+</p>
+<p>で、まあ、こういう場合は問題は基底部分にあります。</p>
+<pre><code class="language-javascript">(function (root, undefined) {
+// 中略
+})(this);
+</code></pre>
+<p>問題なのはundefinedです。function(root, undefined) として定義しているのに、(this)ということで、呼んでないから。冷静に見てみれば、ただたんにメソッド呼ぶ引数が足りないぜ、って言ってるだけですな。ちなみにこのコード自体は、undefinedは代入可能な代物で破壊されている可能性があるから（あるわけないけど！）、安全なundefinedを作ろう、という古臭いイディオムです。</p>
+<p>エラーが90件もあってわけわかりませんが、一番最初のエラーが「Supplied parameters do not match any signature of call target」なので、やっぱり冷静に見てみれば、ちゃんと教えてくれていた、と。TypeScript優しいのね。</p>
+<p>なのでundefinedを抜けば真っ赤っ赤はなくなります。OK。だがまだエラーは続く。というかエラー件数は89件になっただけである。</p>
+<p>お次はEnumeratorがないぞ！というエラー。</p>
+<pre><code class="language-javascript">if (typeof Enumerator !== Types.Undefined) {
+if (typeof Windows === Types.Object &amp;&amp; typeof obj.first === Types.Function) {
+</code></pre>
+<p>このEnumeratorはIEのみに存在するオブジェクトで、Windows Script Hostで列挙するのに使ったり使わなかったりする、今では知らない人のほうが遥かに多いであろう謎オブジェクトです。Windowsのほうも同様に、Windows8用アプリケーションにしか存在しません。さて、これへの対処は、定義ファイルのない外部ライブラリを使う際と同じで、anyでdeclareします。ファイルの先頭に</p>
+<pre><code class="language-javascript">declare var Enumerator;
+declare var Windows
+</code></pre>
+<p>と書いておけばOK。しかしまだまだエラーは続くよ！該当箇所はここ。</p>
+<pre><code class="language-javascript">var Enumerable = function (getEnumerator) {
+    this.getEnumerator = getEnumerator;
+};
+
+// このUtilsで赤線
+Enumerable.Utils = {}; // container
+</code></pre>
+<p>このEnumerableが意図するところはコンストラクタです。new Enumerable()するためのものです。で、JavaScriptでは関数にもオブジェクトを生やせますが、TypeScriptでは生やせません。対処方法はまあ、面倒くさいのでEnumerableをanyにしましょう。</p>
+<pre><code class="language-javascript">var Enumerable: any = function (getEnumerator) {
+    this.getEnumerator = getEnumerator;
+};
+</code></pre>
+<p>これだけで割と一気に解決します！89件あったエラーが残りほんの数件に！any最強！dynamic！
+で、linq.jsでは同じようにOrderedEnumerableとArrayEnumerableというものが存在するので、同様にanyにしておきます。</p>
+<p>そんなわけで、なんとなくわかったと思いますが、ようするにエラーの出てるところを片っ端からanyにしていくだけです。ただしルート階層に近いものを優先的にany化すると、その下にぶら下がってるものは全部解決するので、意外とそんな手間じゃありません。</p>
+<p>あとは一番下にAMD対応もどきのとこがあるのですが、これはそもそも微妙なのでまるごと削除して解決（てきとー）。で、対応はほんとこれだけです。あっという間だし簡単ですなあ。TypeScriptのJavaScriptとの互換性は本物だ！</p>
+<h2>declarationsオプション</h2>
+<p>で、ここからが本題であって本題ではないのですが、TypeScriptはtsc -declarationsとオプションをつけてコンパイルすると、d.tsを吐いてくれます。ちゃんと型定義されたtsファイルならちゃんとしあd.tsを吐いてくれます。役立ちです。</p>
+<p>で、人間欲が出るもので、もしこれを、↑のように修正した.tsにかませてやるとどうなる？もし、たとえanyであっても定義テンプレを吐いてくれたら、そこから注釈入れてくだけですむわけで、随分と楽になりますよね？面倒くさい型定義よさようなら。</p>
+<p>というわけで、こいつをdeclarationsオプションをつけてコンパイルしましょう。</p>
+<pre><code class="language-text">tsc linq.js.ts -declarations
+</code></pre>
+<p>期待のlinq.js.d.tsの結果は</p>
+<pre><code class="language-javascript">var Enumerator;
+var Windows;
+</code></pre>
+<p>になります（笑）。はい、関数で丸ごと括った部分が消滅してしまいました。クソが。今回は定義ファイルが欲しいだけなので、関数で括る部分を除去して再度コンパイルすると</p>
+<pre><code class="language-javascript">var Enumerator;
+var Windows;
+var Functions: { Identity: (x: any) =&gt; any; True: () =&gt; bool; Blank: () =&gt; void; };
+var Types: { Boolean: string; Number: string; String: string; Object: string; Undefined: string; Function: string; };
+var Utils: { createLambda: (expression: any) =&gt; any; isIEnumerable: (obj: any) =&gt; bool; defineProperty: (target: any,methodName: any,value: any) =&gt; void; compare: (a: any,b: any) =&gt; number; dispose: (obj: any) =&gt; void; };
+var State: { Before: number; Running: number; After: number; };
+var IEnumerator: (initialize: any,tryGetNext: any,dispose: any) =&gt; void;
+var Yielder: () =&gt; void;
+var Enumerable: any;
+var OrderedEnumerable: any;
+var SortContext: any;
+var DisposableEnumerable: (getEnumerator: any,dispose: any) =&gt; void;
+var ArrayEnumerable: any;
+var WhereEnumerable: (source: any,predicate: any) =&gt; void;
+var WhereSelectEnumerable: (source: any,predicate: any,selector: any) =&gt; void;
+var Dictionary;
+var Lookup: (dictionary: any) =&gt; void;
+var Grouping: (groupKey: any,elements: any) =&gt; void;
+</code></pre>
+<p>外に出したくないもの(Yielderとか)は、まあ、あとで別途削除すればいいんですが、しかしそもそも肝心のEnumerableメソッドが全部出てないぞ！
+理由としては、ようするにanyつけちゃったから。うーん、これじゃ実用度ゼロですね。</p>
+<p>そもそもfunctionで定義したクラス（をコンストラクタとして使いたい）というのを、それがコンストラクタなのか関数なのかをどうやって区別するんだ？って話ですし、無理ですなー。(ファイル全てをなめてthis.してるのはクラスとか.prototype = hogehogeしてるのはクラスとか、曖昧な判定はできるでしょうけれど、それは危険ですしね)。</p>
+<p>夢は見ちゃダメ。でもMicrosoftならきっといつかはやってくれるはず！（実際、GWT用に空気読んでJavaScriptからJavaの定義を吐いてくれるものは存在するとか）</p>
+<h2>まとめ</h2>
+<p>プレーンなJavaScriptはほぼほぼTypeScriptになります。素晴らしい互換性です！一方、型定義自動生成のほうは無理でした。地道に頑張りましょう。</p>
+<p>あ、そうそう、今回の記事で言いたいのは別に表題通りの話じゃあないです。既存JSは既存JSとして使えばいいので、わざわざTypeScript化する必要なんて全然ありません。いえ、あります、ちゃんと型付けするならば。でも、今回のようにanyを付けて回る程度の話は全くの無意味です。じゃあどうでもいいかといえば、やっぱりそうじゃなくて、TypeScriptとJavaScriptの互換性というのはどういうものなのか、というとこは位置づけ的には大事ですからね、漠然とじゃあなく抑えておきたいところ。</p>
+</div>
+<h1><a href="http://neue.cc/2012/1020_384.html">gloopsを退職しました。</a></h1>
+<ul class="date"><li>2012-10-20</li></ul>
+<div class="entry_body"><p>今日というか昨日というか、金曜が最終出社日となりました。</p>
+<p>今年の1月1日に入社してから10ヶ月。非常に濃密だったのであっという間でしたね。良い経験ができたし、私の方からも十分に貢献できたとは自負しています(LINQの布教とかね！)。とはいえ、まだまだやり残していることは山のようにあり、時期的にも、まさにこれから！というタイミングなので、心残りは非常にあります。gloops自体は非常に良い会社ですし、これからますます技術的にも力強く、面白くなっていくところです。なので、その点は安心してください。ですが、個人的により大きな飛躍を目指したく決断と相成りました。</p>
+<p>円満、です。最後に社内勉強会でThe Patterns of LINQというセッションをやりまして、それが置き土産です。そんなこんなで温かく送っていただいて、本当にgloopsの皆様へ感謝！</p>
+<p>ちなみに日本にずっといます。いつぞやかにはシンガポールが、とかって話もありましたが、あれは種々諸々で爆散しました。それは凄く残念でしたね……、、海外への挑戦というのは、またいつか機会があればやりたいです。ともあれ今は、当面は地下に潜伏していますが、必ず浮上しますのでしばしお待ちくだしあ。</p>
+</div>
+<h1><a href="http://neue.cc/2012/1016_383.html">非同期WebRequestとTimeout処理の今昔</a></h1>
+<ul class="date"><li>2012-10-16</li></ul>
+<div class="entry_body"><p>最近はTypeScriptにお熱ですが、とはいえ、C#も大好きな私です。むしろC#は大好きです。今日はすっかり飽き飽きな非同期のTimeout処理について、おさらいすることにしましょう！題材はいつもどーりWebRequestでいいですよね。</p>
+<p>まず、都合のいいTimeoutをシミュレートできるAPIは探せば多分あるでしょうが、面倒なので自分で作りましょう。いえ、簡単です。「空のASP.NET WebApplication」を立ち上げてジェネリックハンドラを追加。とりあえずレスポンスを返すのに3秒かかるということにしときましょう。</p>
+<pre><code class="language-csharp">public class Timeout : HttpTaskAsyncHandler
+{
+    public override async Task ProcessRequestAsync(HttpContext context)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(3)); // 3秒かかるってことにする
+        context.Response.ContentType = &quot;text/plain&quot;;
+        context.Response.Write(&quot;Hello World&quot;);
+    }
+}
+</code></pre>
+<p>で、そのまま実行してIIS Expressで動いてもらってれば準備できあがり。</p>
+<h2>同期の場合</h2>
+<p>さて、そしてConsoleApplicationを立ちあげて、まずは同期でやる場合でも見ましょうか。</p>
+<pre><code class="language-csharp">var req = WebRequest.Create(&quot;http://localhost:18018/Timeout.ashx&quot;);
+req.Timeout = 1000; // 1秒でタイムアウト
+
+req.GetResponse();
+</code></pre>
+<p>これはちゃんとタイムアウトでWebExceptionを返してくれます。そりゃそーだ。</p>
+<h2>古き良き非同期の場合</h2>
+<p>じゃあBegin-Endパターンの非同期でやってみましょうか。</p>
+<pre><code class="language-csharp">var req = WebRequest.Create(&quot;http://localhost:18018/Timeout.ashx&quot;);
+req.Timeout = 1000; // 1秒でタイムアウトのつもり
+
+req.BeginGetResponse(ar =&gt;
+{
+    var res = req.EndGetResponse(ar);
+    Console.WriteLine(new StreamReader(res.GetResponseStream()).ReadLine());
+}, null);
+
+Console.ReadLine(); // 適当に待つ
+</code></pre>
+<p>この結果はなんと、普通にHello Worldと表示されてしまいます。はい、Timeout機能していません、全く。そう、WebRequestのTimeoutプロパティによる設定は同期限定なのだよ、なんだってー。このことはMSDNの<a href="http://msdn.microsoft.com/ja-jp/library/system.net.httpwebrequest.begingetresponse.aspx">BeginGetResponse</a>のとこにも書いてあって、「非同期要求の場合は、クライアント側のアプリケーションが独自のタイムアウト機構を実装する必要があります」ということになっています。</p>
+<h2>ThreadPool.RegisterWaitForSingleObject</h2>
+<p>なので、そこに書いてあるとおり、ThreadPool.RegisterWaitForSingleObjectで実装してみましょう。</p>
+<pre><code class="language-csharp">var req = WebRequest.Create(&quot;http://localhost:18018/Timeout.ashx&quot;);
+// req.Timeout = 1000; このTimeoutはイミナイのでイラナイ
+
+var result = req.BeginGetResponse(ar =&gt;
+{
+    var res = req.EndGetResponse(ar);
+    Console.WriteLine(new StreamReader(res.GetResponseStream()).ReadLine());
+}, null);
+
+ThreadPool.RegisterWaitForSingleObject(result.AsyncWaitHandle, (state, timeout) =&gt;
+{
+    // 引数で指定した時間の後にここの部分が発火する。
+    // そのとき非同期処理が完了していなければ(Timeoutしていれば)timeoutがtrue, 普通に終了してればfalse
+    if (timeout)
+    {
+        Console.WriteLine(&quot;TIMEOUT!!&quot;);
+
+        var _req = (WebRequest)state;
+        if (_req != null) _req.Abort(); // あぼーんでキャンセルというか打ち切る
+    }
+}, req, timeout: TimeSpan.FromSeconds(1), executeOnlyOnce: true);
+
+Console.ReadLine(); // 適当に待つ
+</code></pre>
+<p>うん、ややこしいですね。ウンザリです。しかし昔はこれぐらいしか手段がなかったのだからShoganai！</p>
+<h2>C# 5.0で救われよう</h2>
+<p>そんなこんなで一気に時代が進んで、C# 5.0です。GetResponseAsyncですね！GetResponseAsyncなら、GetResponseAsync先生ならやってくれる、と思っていた時がありました。</p>
+<pre><code class="language-csharp">static async Task Run()
+{
+    var req = WebRequest.Create(&quot;http://localhost:18018/Timeout.ashx&quot;);
+    req.Timeout = 1000; // ま、このTimeoutはイミナイですよ
+
+    var res = await req.GetResponseAsync();
+
+    Console.WriteLine(new StreamReader(res.GetResponseStream()).ReadLine());
+}
+
+static void Main(string[] args)
+{
+    Run().Wait();
+}
+</code></pre>
+<p>結果はBegin-Endの時と同じでTimeout指定は無視されます。はい残念残念。所詮別にBegin-Endと何も変わってはいないわけです。とはいえ、Taskならば、この辺、柔軟に処理を仕込めます。</p>
+<h2>Timeoutという拡張メソッドを作る</h2>
+<p>async/awaitやTaskといった道具立てはあるのですが、細かい色々なものはない(<a href="http://blogs.msdn.com/b/pfxteam/archive/2012/10/05/how-do-i-cancel-non-cancelable-async-operations.aspx">Cancelを足す</a>とかTimeoutを足すとかRetryを足すとか、この辺はよく使うであろうシチュエーションだと思うので、自分の道具箱に仕込んでおくと幸せになれます)ので、作りましょう。</p>
+<pre><code class="language-csharp">public static async Task Timeout(this Task task, TimeSpan timeout)
+{
+    var delay = Task.Delay(timeout);
+    if (await Task.WhenAny(task, delay) == delay)
+    {
+        throw new TimeoutException();
+    }
+}
+
+public static async Task&lt;T&gt; Timeout&lt;T&gt;(this Task&lt;T&gt; task, TimeSpan timeout)
+{
+    await ((Task)task).Timeout(timeout);
+    return await task;
+}
+</code></pre>
+<p>単純ですね。ポイントはTask.WhenAnyで、これは特殊なやり方ではなくて、イディオムです。C# 5.0を使っていくなら覚えておきましょう、絶対に。</p>
+<p>さて、これを使えば</p>
+<pre><code class="language-csharp">static async Task Run()
+{
+    var req = WebRequest.Create(&quot;http://localhost:18018/Timeout.ashx&quot;);
+    var res = await req.GetResponseAsync().Timeout(TimeSpan.FromSeconds(1));
+
+    Console.WriteLine(new StreamReader(res.GetResponseStream()).ReadLine());
+}
+
+static void Main(string[] args)
+{
+    Run().Wait();
+}
+</code></pre>
+<p>超シンプルになりました。やったね！</p>
+<h2>HttpClient</h2>
+<p>ちなみに.NET 4.5から入ったHttpClientは、非同期操作しか提供していない、だけに、ちゃんとTimeoutプロパティが非同期でも対応していますので、フツーはこっちを使うと良いでしょう。</p>
+<pre><code class="language-csharp">static async Task Run()
+{
+    var client = new System.Net.Http.HttpClient() { Timeout = TimeSpan.FromSeconds(1) };
+    var s = await client.GetStringAsync(&quot;http://localhost:18018/Timeout.ashx&quot;);
+
+    Console.WriteLine(s);
+}
+
+static void Main(string[] args)
+{
+    Run().Wait();
+}
+</code></pre>
+<p>吐いてくる例外はSystem.Threading.Tasks.TaskCanceledExceptionです。これは、中でCancellationTokenSource.CreateLinkedTokenSourceとリンクさせた上で、CancellationTokenSourceのCancelAfterによってTimeoutを処理しているからです。HttpClientも、最終的にネットワークとやり取りしている部分はWebRequestですから。</p>
+<h2>まとめ</h2>
+<p>まあ、今までは細かい罠があってクソが、となる局面も少なからず多かったわけですが、ようやく整理された、感があります。しょっぱいことは考えないで、甘受していきたいですねー。</p>
+</div>
+<h1><a href="http://neue.cc/2012/1012_382.html">linq.jsのTypeScript対応とTypeScript雑感</a></h1>
+<ul class="date"><li>2012-10-12</li></ul>
+<div class="entry_body"><p>Microsoftから<a href="http://www.typescriptlang.org/">TypeScript</a>という新言語が発表されました。驚くべきは、あのC#のAnders Hejlsbergが関わっている！これはもう触るしかない。そしてこれはコンパイル後にJavaScriptになる言語(CoffeeとかJSXとかみたいな)なわけで、じゃあlinq.jsを対応させるしかない！というわけで、させました。</p>
+<pre><code class="language-csharp">// TypeScript
+Enumerable.range(1, 10)
+    .where(x =&gt; x % 2 == 0)
+    .select(x =&gt; x * x)
+    .writeLine();
+
+// コンパイル後
+Enumerable.range(1, 10).where(function (x) {
+    return x % 2 == 0;
+}).select(function (x) {
+    return x * x;
+}).writeLine();
+</code></pre>
+<p>ひゃっはー、もうfunction() { return }とはオサラバだ！そしてこの記述性と最強のコレクション操作であるLINQが合わさると最強に見える。</p>
+<ul>
+<li><a href="http://linqjs.codeplex.com/releases/view/91395">linq.js ver.3.0.3-Beta4</a></li>
+</ul>
+<p>に型定義ファイルは同梱してありますので、是非是非お試しを。NuGetのlinq.js -Preでも入ります。NPMは予定はありますが、まだです、すみません。</p>
+<h2>TypeScriptについて</h2>
+<p>型安全なCoffee Script、といった印象ですね。基本的にはCoffee Scriptに近いと思います。JavaScriptにプラスアルファな構文を採用することで、既存のJSライブラリとの繋がりを良くすることと、綺麗なJavaScriptを吐くことに重きが置かれている。TypeScriptは、比較的素直にJavaScriptに読み解くことが出来て、独自のコード生成は、現状はほぼほぼ無いし、意図的に省かれているようです（例えば非同期にたいしてasync構文を入れたりすると、大量のコード生成が入り、出力されるJavaScriptが機械的に汚れがち）。</p>
+<p>そういった点、機能面では、TypeScriptには物足りなさを感じるところが多いかもしれません。じゃあJavaScriptに対する強みってどこなんだよ！といったら、一つはJavaScriptの冗長な記述性の補正(class,module, arrow function, Object.create/definePropertyとかも最低だしね)。もう一つは、無理なく自然に馴染んだ型付け。</p>
+<p>型はないよりあったほうがいい。でも、型を付けるのがあまりにも苦痛だったら？ちょっとしたコードを書くのにも型！型！型！と押し付けられたら？そりゃあ、嫌だ。というわけで、型推論によって、比較的スムースに書けるようになっています。</p>
+<p>型推論の性質というか範囲というか強さというかは、C#と非常に近いというかC#とまるで一緒なので、C#erならサクッと馴染めます。もっと強力な型推論のある言語に馴染んでいる人だと、え、ここで効かないの？みたいな違和感はあるかもですが。</p>
+<p>また、さすがはMicrosoftというかAnders Hejlsbergというか、入力補完のことを念頭に置いた言語設計になっているので、IDEとの相性が非常に良い。そして最初からVisual StudioによるIDE環境が用意されていることで、型のある利点の一つであるリアルタイムエラー通知や入力補完をたっぷり満喫できます。さらに、それは<a href="http://www.typescriptlang.org/Playground/">TypeScript Playground</a>によってWeb上でも体感できます。というか、もはやPlaygroundはWeb IDEとでも言うべき驚異的な動き！</p>
+<p>また、Windowsだけではなく、最初から<a href="http://blogs.msdn.com/b/interoperability/archive/2012/10/01/sublime-text-vi-emacs-typescript-enabled.aspx">Sublime, Vim, Emacs</a>の対応ファイルが用意されているというところからも、Windowsに限らず幅広く請求したい、という表れだと思います。そして実際、言語はプラットフォーム中立なわけです(最終的にはJavaScriptだしね！)。</p>
+<h2>Structural Subtyping</h2>
+<p>TypeScriptの最も面白いところは、ここです。C#とかのインターフェイスとLLのダックタイピングの中間、みたいな。実にゆるふわなJavaScriptと絶妙に合っててイイ！というかそもそも私はStructural Subtypingって名前だけでぜーんぜん分かってなかったのですが、TypeScriptだと自然と馴染めます。ほむ、どういうことか、というと、一例を。</p>
+<pre><code class="language-csharp">union(second: any[], compareSelector?: (element: any) =&gt; any): Enumerable;
+union(second: Enumerable, compareSelector?: (element: any) =&gt; any): Enumerable;
+union(second: { length: number;[index: number]: any; }, compareSelector?: (element: any) =&gt; any): Enumerable;
+</code></pre>
+<p>これはlinq.jsの型定義の一つでunion、和集合を生成するためのメソッドです。なので、元シーケンスと、対象シーケンス(second)が対象になるわけですが、じゃあシーケンスって何？と。列挙できればいいので、配列もそうだし、Enumerableもそう。そして、JavaScriptに特有の存在として、配列みたいだけど配列じゃあないもの(lengthを持っていてインデクサでアクセスできる)、例えばDOMのNodeListとか、もそう。</p>
+<p>で、そういった「lengthを持っていてインデクサでアクセスできる」という型の定義が{ length: number;[index: number]: any; }。これにより、DOMのNodeListやjQuery([0]とかでHTMLElementが取れる)など、配列みたいだけど配列じゃないもの全てが型安全に定義されました。やったね！</p>
+<p>もしC#だったら、対象はインターフェイスで指定するしかないので、IEnumerable&lt;T&gt;を実装していないクソコレクションクラスが存在したら、それは列挙不能になってしまいます。片っ端からオーバーロードを作るのは不可能だし、かといってdynamic secondなどとしてしまってはアレ。</p>
+<p>とはいえ、基本的にC#では最初から全てのシーケンスはIEnumerable&lt;T&gt;を実装している、という前提が成り立っているので、問題はおこらない。でも、JavaScriptは違う。配列みたいだけど配列じゃあないもの、が跋扈してる。でも、そこをanyとして何でも受け入れられるようにしたら型安全じゃあない。安全にしたい。そこをStructural Subtypingが華麗に解決してくれました！惚れた……。</p>
+<h2>TypeScriptはJavaScriptか？</h2>
+<p>JavaScriptコードはそのままTypeScriptだ！ということにYesと言えるかというと、イエスでもあり、しかし割とノーです。私がこの話を聞いて、最初に思ったのは、既存JSコード、つまりライブラリ類もそのままで動くのかな？と。答えはNOです。JS固有の、実行時に切った貼ったして構造作っていくの、ああいうのTypeScriptだと軒並みコンパイルエラーになるので、ダメです。ほとんどのライブラリが絶滅でしょう。</p>
+<p>と、勘違いしていたのですが(yharaさん指摘ありがとうございます！)</p>
+<pre><code class="language-csharp">declare var $; // jQuery
+declare var _; // underscore
+declare var Enumerable; // linq.js
+</code></pre>
+<p>とかって定義すると、これはそれぞれ $:any, _:any, Enumerable:any という扱いになって、以降はどんなチェーンを繋げてもエラーが起こらない、つまりライブラリが正常に読み込めたかのようになります。</p>
+<p>ただ、型チェックや入力補完が効かなくなるので、TypeScript用の型注釈ファイルはあったほうがいいですね。有名ライブラリはともあれ、無名プラグインとかは自前で型注釈書かなければならないかもり。手書きだとかったるいので、自動生成である程度テンプレート吐き出してくれないと、面倒くさい。この辺はMicrosoftだしやってくれるんじゃないかなあ、という淡い期待を抱いていますが……。</p>
+<p>とはいえ、ちょっとしたコンパクトなプラグインを使ったり、ライブラリ使うとしても一部分だけだしー、などというのに、わざわざ型定義も馬鹿らしいわけで、さくっと動的な感じにdeclareできちゃう、というのは素晴らしい話。</p>
+<p>そんなわけで、JavaScript→TypeScriptの相互運用性としては、繋がりはかなり良好。勿論、jQueryなどもスムースに扱うことができます。これは、文法がJavaScriptプラスアルファで構築されているがことの利点です。そしてTypeScript→JavaScriptは、というと、素直なJavaScriptを吐いてくれることもあり、良好です。TypeScriptで作られた生成物は、TypeScriptだけに閉じません。</p>
+<p>JavaScriptを中間言語とする選択肢が増えた。JavaScriptを介することで他の言語とも自由に繋がる。ここには、Webの互換性、中立性を崩す要素は一切ありません。独自言語による囲い込みとかではありません。素直に歓迎できるはずです。ただし、言語としてはあくまでTypeScriptはTypeScriptです。そこだけは、誤解しないほうがいいと思います。文法的に、ES6を若干取り入れているとはいえ、違う言語です。将来的にもTypeScriptはEcmaScriptにならないでしょうし、EcmaScriptはTypeScriptにはならないでしょう。TypeScriptはEcmaScript6のただの代替なのではない、別の価値ある言語です。</p>
+<p>変な期待をして、これJavaScriptじゃないじゃん、とかって難癖つけたりは、あまり良くないですね。</p>
+<h2>TypeScriptとVisual Studio</h2>
+<p>別にMicrosoft環境に閉じる言語ではないので、EmacsでもVimでもいいですが、やはりVisual Studioが第一な点は少なからずあります。LinuxでもIDEで書きたい？きっとJetBrainsがWebStormに搭載してくれるはずです！(実際、Voteはかなり集まってました)</p>
+<p>ともあれ、Visual Studioです。専用拡張のインストールはTypeScriptのサイトから出来ます。プロジェクトテンプレートが何故かC#のところにあって気づきにくいことに注意！それともう一つ、<a href="http://visualstudiogallery.msdn.microsoft.com/07d54d12-7133-4e15-becb-6f451ea3bea6">Web Essentials</a>を入れましょう。元々Coffee ScriptとLESSに対応していたのですが、今回TypeScriptにも対応してくれました。Web Essentialsを入れることで、保存時のコンパイル（通常の拡張だとビルド時のみ）と、ウィンドウ分割での出力後のJS表示、それとSourceMapファイルの出力を行ってくれます。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/typescript_vs.jpg" />
+</p>
+<p>勿論、IntelliSenseはフルに効くしエラーはリアルタイムでがんがん通知してくれます。TypeScript Playgroundと違うのは、エラーがあるとJSに変換してくれないところですね。まあ、それは正しい挙動なのでいいです。Playgroundで中途半端なエラーのある状態でもガンガン変更表示してくれるのは、それはそれで便利なので、それもまたいいです。</p>
+<p>ちなみに、TypeScript Playgroundでは赤波線が出ている状態は、一応、JSを出力してくれてますが、それはコンパイルエラーの状態で完全な出力がされていないと思って良いです。つまり、本来的には動いてないわけです。この動いていない出力を指して、(現状Firefoxにしか乗ってない)JavaScriptへの互換が不完全とかって難癖つけたりするのは、ほんと良くないですね……。</p>
+<h2>SourceMap</h2>
+<p>Web Essentialsの吐いてくれるSourceMapとは何ぞや、というと、これはTypeScriptのままデバッグができます。コンパイル時にJSを吐いてくれる系言語の欠点として、デバッガを使ったデバッグが困難、というのが挙げられますがSourceMapを使うとそれも解決、します。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/typescript_source.jpg" />
+</p>
+<p>現状、対応ブラウザはChromeと、まあ、他は知らないのですが、とりあえずChromeは対応しています。IE10(とVS2012内蔵デバッガ)も対応してくれると嬉しいなあ。Chromeのデバッガの不満点としては、ブレークポイントが行単位でしか貼れないことですね。ラムダ式の内側に貼れないと、特にLINQのような一行ラムダを多用するものではデバッグがとても不便でして。この辺、改善されていってくれると嬉しい話。</p>
+<h2>vs JavaScript(のIntelliSense)</h2>
+<p>実は、VisualStudio 2012のJavaScriptはかなりサポートが手厚く、裏で常にコードを実行して補完候補を出してくれたりします。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/typescript_js.jpg" />
+</p>
+<p>なので、純粋なIntelliSenseの効きだけでいうと、TypeScriptはJavaScriptに負けているかもしれない！如何せん、特にlinq.jsではシーケンスの要素がanyになってしまいますからね。JavaScript(を裏で動かして解釈する)ならば、ここも補完効いてしまうという。最近のJavaScript IDEは進化しすぎで恐ろしい……。</p>
+<h2>ジェネリクス</h2>
+<p>仕様書にも明言されていますが、正式リリースまでには搭載する予定があるそうです（ちなみに現在は0.8）。ジェネリクスが乗っかるとlinq.jsがすっごくパワフルになるんですよ。如何せん、今はシーケンスの要素の型が全てany扱いで補完が全く効かなくてTypeSafeでもなんでもないのですが、ここが型付けされると完璧なIntelliSense生活！C#並というかむしろC#超えるぐらいの勢いでパーフェクトなLINQ to Objects！なので、相当に待ち遠しいです。</p>
+<h2>Compiler as a Serviceの未来</h2>
+<p>TypeScriptのコンパイラはTypeScriptで書かれてます。これ、別にかっこつけとかでもなんでもなく、非常に重要な意味を持ちます。で、いきなり分かりやすく成果物として出してくれているのが<a href="http://www.typescriptlang.org/Playground/">TypeScript Playground</a>。構文解析がJavaScriptで可能だから、Web上で全て完結するIDEが作れる。C#も次のバージョンではC#コンパイラがC#で書かれるという計画があります。そのことがもたらす価値の一部分は、TypeScriptが教えてくれます。いや、むしろブラウザ上で全て完結というのは、C#以上の魅力がありますね、正直……。</p>
+<h2>結論</h2>
+<p>TypeScriptは、良い言語だと本当に本当に思います。私は、素のJavaScriptも別にそこまで嫌いではないのですけれど、やっぱ、違うなあ、と。なので今後は積極的に使っていきたいところです(CSSもLESSで！)。</p>
+<p>言語設計者が同じということもありますが、特にC#erには絶対馴染むと思うので、(linq.jsとセットで)今までJavaScriptとは無縁だった人も手を出して欲しいですね。きっと気に入りますし、視点が変わります。勿論、ネイティブJSerも是非是非触ってみるといいと思います！というか触ってほしいです。</p>
+<p>あ、あと、軽く流しましたがVisual StudioユーザーならWeb Essentialsも必ず入れておきましょう。これがあるのとないのとでは、TypeScriptの使い勝手全然違ってくるので、TypeScript試すならば必須です。</p>
+</div>
+<h1><a href="http://neue.cc/2012/0916_381.html">linq.js ver.3.0.2-RC, WinRT対応、最新RxJS対応など</a></h1>
+<ul class="date"><li>2012-09-16</li></ul>
+<div class="entry_body"><p>RCリリースしました！これでAPI弄りは終了で、あとはドキュメント周りの調整のみといったところです。</p>
+<ul>
+<li><a href="http://linqjs.codeplex.com/">linq.js - LINQ for JavaScript</a></li>
+</ul>
+<p>ダウンロードはダウンロードボタンからではなく、ダウンロードタブからlinq.js ver.3.0.2-RCを選択してください。というか<a href="http://linqjs.codeplex.com/releases/view/91395">ここからダイレクトに飛んでください</a>。</p>
+<p>Beta2から結構立ちましたが、その間に、ノートPCがぶっ壊れたり（今もサポートで修理中、ちょうどうっかり未Pushなコミットが溜まってた状態で逝ってしまったのが痛手でどぅーにもこーにも）、そもそも日本にいなかったり（シンガポールにいましたというか、今は日本にいますが、これからは基本的にシンガポール中心になる感）とか、まぁ色々で色々で捗らずで。</p>
+<p>さて、その間でもないですが、プログラミング生放送で8/25にセッションを持ちまして、そこでlinq.js ver.3の紹介をしましたので、スライド・録画ともどもにどうぞ。</p>
+<iframe src="http://www.slideshare.net/slideshow/embed_code/14066937" width="597" height="486" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC;border-width:1px 1px 0;margin-bottom:5px" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="http://www.slideshare.net/neuecc/linqjs-ver3-and-visual-studio-2012-in-javascript" title="linq.js ver.3 and JavaScript in Visual Studio 2012" target="_blank">linq.js ver.3 and JavaScript in Visual Studio 2012</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">neuecc</a></strong> </div>
+<iframe width="312" height="176" src="http://ext.nicovideo.jp/thumb/sm18738964" scrolling="no" style="border:solid 1px #CCC;" frameborder="0"><a href="http://www.nicovideo.jp/watch/sm18738964">【ニコニコ動画】linq.js ver.3 (Part 1/2) - プロ生勉強会第17回＠品川 #pronama</a></iframe>
+<iframe width="312" height="176" src="http://ext.nicovideo.jp/thumb/sm18739125" scrolling="no" style="border:solid 1px #CCC;" frameborder="0"><a href="http://www.nicovideo.jp/watch/sm18739125">【ニコニコ動画】linq.js ver.3 (Part 2/2) - プロ生勉強会第17回＠品川 #pronama</a></iframe>
+<p>Visual Studio 2012はJavaScript関係がハイパー強化されているのですけれど、そのビッグウェーブにフルに乗っかって強力なんだぞ！みたいな。そういったVS2012のパワーとかの部分は、デモの比率が高いので、時間に余裕があれば、是非とも録画を見ていただけると嬉しいです。</p>
+<p>あと、こそっとLINQ to XMLのアナウンスを、こそっと、ね。ふふり。</p>
+<p>あ、そうだ、スライドに関しては一点、嘘があります。VS2012にはjQueryのIntelliSenseドキュメントの日本語版は入っていません。英語のみです。本当にごめんなさい、これ、確認していなくて、VS2010では日本語訳されたのが入ってたからそうなんだろうなあ、とか思ってたのですが、そんなことはなかったです。予算的な都合なのでしょうか……？ともあれ、申し訳ありませんでした。</p>
+<h2>更新事項</h2>
+<p>今回も破壊的変更が入っていて、firstOrDefault, lastOrDefault, singleOrDefaultの引数が変わりました。</p>
+<pre><code class="language-javascript">// 以前
+.firstOrDefault(defaultValue, [predicate]);
+
+// これから
+.firstOrDefault([predicate], [defaultValue]);
+</code></pre>
+<p>です。ようするに引数が逆になりました。predicateが先にあるのがC#のLINQと同じ並び順なわけで、ここだけ、何故かlinq.jsはC#に従ってなかったのですね。理由としてはJavaScriptにはdefault(T)は存在しないのでdefaultValueの指定を強制するために、第一引数に持ってきてやらなければならない。と、当時、3年前は思ってたらしーんですが、別に普通にないならないでnullでいいだろ馬鹿が、むしろ引数がこれだけ違うとか紛らわしいだろクソが。ということにやっと至りまして、変えられるのは今しかない！ということで変えました。</p>
+<h2>コードスニペット</h2>
+<p>そういえば3.0.1-Beta2のリリース時にはブログ書いてませんでしたが、そこでコードスニペットを改良したのを入れました。linq.js ver.2に同梱してたものよりずっと良くなってるのでリプレースするといいです。非常に捗ります。というか、もうこれなしで書く気しないぐらいに。</p>
+<h2>RxJS</h2>
+<p><a href="https://github.com/Reactive-Extensions/RxJS">Reactive Extensions for JavaScript(RxJS)</a>がオープンソースになりました、完全にソースコード公開です、ぱちぱちぱち。今までは<a href="http://scriptsharp.com/">ScriptSharp</a>で変換してたような気配だったのですが、完全手書きに移行したようです。</p>
+<p>それに伴ってlinq.jsのRxJS連携も、若干手を加えました。ところで、今のところNuGetにあがっているものは、GitHubの最新に追随してません。古いままです。なので、NuGet版だとlinq.jsのRxJS連携は動かなかったりします(ビミョーに中身変わってるんですよ、いやはや……)</p>
+<p>今のところ新RxJSに関してはリリースとかも打たれていないので、ステータスがどうなっているのか、よくわかりません。まあ、近日中に、かなあ？どうなのでしょうね。とりあえず、動向には注目、ということで。</p>
+<h2>WinMD</h2>
+<p>Windows 8のアプリケーション(Metroとは言えなくなりました！)はJavaScriptでも開発できるわけでして＆C++やC#で作成されたライブラリも条件付きというか専用のコンポーネントとして作れば、JavaScriptでも読み込むことができます。
+コレクション周り、IList&lt;T&gt;はJavaScriptでは配列として扱えます。なので、これは何もなく普通に列挙できるし、今までのlinq.jsでも扱うことができました。しかし、IEnumerable&lt;T&gt;はIIterable&lt;T&gt;というものに化け、これは独特の列挙の仕方を要求するため、フツーには扱いづらく、また、今までのlinq.jsでも使えませんでした。</p>
+<p>が、ver.3.0.2-RCからは、IIterable&lt;T&gt;対応を入れたので、列挙可能です！</p>
+<pre><code class="language-javascript">// IIterable&lt;T&gt;を列挙できるのはlinq.jsだけ！
+var iterable = ToaruLib.GetIterable();
+Enumerable.from(iterable).forEach();
+</code></pre>
+<p>WSH(JScript)対応といい、Windows固有のニッチ需要に100%応えるのはlinq.jsだけ。いやほんと。</p>
+<h2>文字列ラムダと無名関数</h2>
+<p>これは今までもの話なのですが、文字列ラムダに抵抗あるー、というのは分かります。しかし、無名関数を渡すこともできますぜ、というのは、分かって欲しいというか、利用シーンとしては半々なイメージなんですよね。例えばですが二つのJSONをJoinするのに</p>
+<pre><code class="language-javascript">var jsArrayA = [{ &quot;projectid&quot;: 122, &quot;projecttype&quot;: &quot;radio&quot; },{ &quot;projectid&quot;: 133, &quot;projecttype&quot;: &quot;tv&quot; }];
+
+var jsArrayB = [ { &quot;actionid&quot;: 1, &quot;name&quot;: &quot;kuow&quot;, &quot;pid&quot;: 122 }, { &quot;actionid&quot;: 2, &quot;name&quot;: &quot;kplu&quot;, &quot;pid&quot;: 122 }, { &quot;actionid&quot;: 3, &quot;name&quot;: &quot;abc&quot;, &quot;pid&quot;: 133 }, { &quot;actionid&quot;: 4, &quot;name&quot;: &quot;espn&quot;, &quot;pid&quot;: 133 } ];
+
+var queryResult = Enumerable.from(jsArrayA)
+    .join(jsArrayB, &quot;$.projectid&quot;, &quot;$.pid&quot;, function (a, b) {
+        return {
+            projectid: a.projectid,
+            projecttype: a.projecttype,
+            actionid: b.actionid,
+            name: b.name,
+            pid: b.pid
+        }
+    })
+    .toArray();
+</code></pre>
+<p>これ、全部、無名関数で書くことも可能です。&quot;$.projectid&quot;をfunction(x){ return x.projectid} と書けばいいので。&quot;$.pid&quot;の部分もそうです。でも、それってすごくだるいですよね。</p>
+<p>LINQはプロパティ名を指定するだけの無名関数を要求するシーンが多いです。どうせ、JavaScriptは動的言語、コンパイルチェックも働かないのですから、文字列で指定しても一緒でしょう。また、これは、jQueryのセレクターと同じようなものです。そう考えれば、文字列指定にもさして抵抗感はないのではないでしょうか？短くサラッと文字列でプロパティ名を指定したほうが、書きやすいし可読性も高いです。</p>
+<p>同様に、最後のJOIN結果を新しいオブジェクトに変換しているところは、文字列ラムダで書くことも可能です。&quot;{projectid:$.projectid, projecttype:$.projecttype,....}&quot;といったように。でも、それって今度は逆にとても見づらくて可読性落ちますよね。長いコード、入り組んだコードになるようならば、素直に無名関数を使ってもらうのがいいな、と思っています。</p>
+<h2>次回</h2>
+<p>次は正式リリースです！いつになるかは、いつになるかしらん！8月末が正式リリースのつもりだったのに、一か月遅れでRCリリースですからねえ、んもぅー。ともあれ、間違いなく良い出来になっているので、楽しみにしてください。で、もうその前にRCじゃんじゃん使ってくだしあ。</p>
+</div>
+<h1><a href="http://neue.cc/2012/0810_380.html">複数の値とC# 5.0 Async再び、或いはAsyncEnumerableへの渇望とRx</a></h1>
+<ul class="date"><li>2012-08-10</li></ul>
+<div class="entry_body"><p>以前に<a href="http://neue.cc/2012/07/11_377.html">Reactive Extensions + asyncによるC#5.0の非同期処理</a>では、単体の値であったらasync、複数の値であったらIObservable&lt;T&gt;が使い分け、とかかんとかと言ってましたが、本当にそうなの？もしくは、そもそも複数の値のシチュエーションって分かるような分からないようななのだけど？などなどと思ったりする昨今を如何様にお過ごしでしょうか。というわけで、今回はグッとこの部分に深く迫ってみましょう。</p>
+<h2>同期的なシチュエーション</h2>
+<p>さて、例、なのですけれど、データベースで行きましょう。生DataReaderを転がしてます。</p>
+<pre><code class="language-csharp">// 接続文字列に Asynchronous Processing=true は非同期でやるなら欠かさずに
+const string ConnectionString = @&quot;Data Source=.;Initial Catalog=AdventureWorks2012;Integrated Security=True;Asynchronous Processing=true;&quot;;
+
+// こういうreader.Readが尽きるまで列挙するだけのヘルパーがあるだけで
+static IEnumerable&lt;IDataRecord&gt; EachReader(IDbConnection connection, string query)
+{
+    using (var command = connection.CreateCommand())
+    {
+        command.CommandText = query;
+        if (connection.State != ConnectionState.Open) connection.Open();
+
+        using (var reader = command.ExecuteReader())
+        {
+            while (!reader.IsClosed &amp;&amp; reader.Read()) yield return reader;
+        }
+    }
+}
+
+static void Main(string[] args)
+{
+    using (var conn = new SqlConnection(ConnectionString))
+    {
+        // LINQでSelectとかいろいろ出来る！便利！抱いて！
+        var result = EachReader(conn, &quot;select * from Sales.Customer&quot;)
+            .Select(x =&gt; new
+            {
+                CustomerID = x.GetInt32(0),
+                PersonID = !x.IsDBNull(1) ? (int?)x.GetValue(1) : null,
+                StoreID = !x.IsDBNull(2) ? (int?)x.GetValue(2) : null,
+                TerritoryID = !x.IsDBNull(3) ? (int?)x.GetValue(3) : null,
+                AccountNumber = !x.IsDBNull(4) ? x.GetString(4) : null
+            })
+            .ToArray();
+
+        // PKでとりたければFirstOrDefualtとかでいいわけです
+        var customer = EachReader(conn, &quot;select * from Sales.Customer where CustomerID = 100&quot;)
+            .Select(x =&gt; new
+            {
+                CustomerID = x.GetInt32(0),
+                PersonID = !x.IsDBNull(1) ? (int?)x.GetValue(1) : null,
+                StoreID = !x.IsDBNull(2) ? (int?)x.GetValue(2) : null,
+                TerritoryID = !x.IsDBNull(3) ? (int?)x.GetValue(3) : null,
+                AccountNumber = !x.IsDBNull(4) ? x.GetString(4) : null
+            })
+            .FirstOrDefault();
+    }
+}
+</code></pre>
+<p>ExecuteReaderの結果のIDataRederは、yield returnで列挙してやると、LINQで加工できるようになるので、SelectしてToArrayとか、SelectしてFirstOrDefaultとか、非常にやりやすくて便利なわけです。</p>
+<p>ここまでは、いいと思います。じゃあ、非同期でやると、どうするの、と。</p>
+<h2>内部イテレータ的に考える</h2>
+<p>.NET Framework 4.5からは主要な非同期メソッドに全てXxxAsyncという名前のものがつきました。ADO.NETにおいては、OpenAsyncやExecuteReaderAyncなどがあります。というわけで、試してみましょう。</p>
+<pre><code class="language-csharp">// 非同期だったこうしたい、でもこれはコンパイル通らない！
+static async Task&lt;IEnumerable&lt;DbDataReader&gt;&gt; EachReaderAsync(DbConnection connection, string query)
+{
+    using (var command = connection.CreateCommand())
+    {
+        command.CommandText = query;
+        if (connection.State != ConnectionState.Open) await connection.OpenAsync();
+
+        using (var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess)) // 基本的にはSequentialAccessにしておきたい
+        {
+            while (!reader.IsClosed &amp;&amp; reader.Read()) yield return reader;
+        }
+    }
+}
+</code></pre>
+<p>残念ながら、asyncとyield returnを共存させることはできないので、どうにもなりません。……はい。しかし出来ない、では困る。さすがに、非同期実行するところに全部生のままで、こんなCreateCommand..., ExecuteReaderAsync, .... なんて書いてられないし。</p>
+<p>じゃあどうするか、というと、内部イテレータ的にしましょう。つまりList&lt;T&gt;にあるようなForEachです。yield returnが外部イテレータ的であり、それが無理なら、内部イテレータ的にすればいいぢゃない。</p>
+<pre><code class="language-csharp">// ループを回してる最中に実行するaction引数をつけた(FuncじゃなくてAction&lt;DbDataReader&gt;のオーバーロードも作るとベター)
+static async Task ForEachAsync(DbConnection connection, string query, Func&lt;DbDataReader, Task&gt; action)
+{
+    using (var command = connection.CreateCommand())
+    {
+        command.CommandText = query;
+        if (connection.State != ConnectionState.Open) await connection.OpenAsync();
+
+        using (var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess)) // 基本的にはSequentialAccessにしておきたい
+        {
+            while (!reader.IsClosed &amp;&amp; reader.Read()) await action(reader);
+        }
+    }
+}
+
+static async Task&lt;List&lt;Customer&gt;&gt; GetCustomers()
+{
+    using (var conn = new SqlConnection(ConnectionString))
+    {
+        // これで、Selectっぽくできてないこともないと言えなくもない
+        var list = new List&lt;Customer&gt;();
+
+        await ForEachAsync(conn, &quot;select * from Sales.Customer&quot;, async x =&gt;
+        {
+            var customer = new Customer
+            {
+                CustomerID = await x.GetFieldValueAsync&lt;int&gt;(0),
+                PersonID = !x.IsDBNull(1) ? await x.GetFieldValueAsync&lt;int?&gt;(1) : null,
+                StoreID = !x.IsDBNull(2) ? await x.GetFieldValueAsync&lt;int?&gt;(2) : null,
+                TerritoryID = !x.IsDBNull(3) ? await x.GetFieldValueAsync&lt;int?&gt;(3) : null,
+                AccountNumber = !x.IsDBNull(4) ? await x.GetFieldValueAsync&lt;string&gt;(4) : null
+            };
+            list.Add(customer);
+        });
+
+        return list;
+    }
+}
+
+// LINQじゃないので匿名型は使えないのね
+public class Customer
+{
+    public int CustomerID { get; set; }
+    public int? PersonID { get; set; }
+    public int? StoreID { get; set; }
+    public int? TerritoryID { get; set; }
+    public string AccountNumber { get; set; }
+}
+</code></pre>
+<p>ForEachAsync！というわけで、Actionを渡してやって、そこでグルグルッとすることにより制限を回避もどき。ToArrayしたい？古き良きListにAddすればいいぢゃない、といったものですよ、ははは。LINQじゃないので匿名型は使えないがね！</p>
+<p>さて、匿名型が使えないのはいいとしても、問題は、LINQの特徴である合成可能性を欠いているところです。一番困るのは、これ、FirstOrDefaultできないね、って。全件取るんですか？まあ、PKだったら一件なのが保証されてるし、そうでないならtop 1とでも書いておけよ、と言えなくもないですが、しかしどうなのよこれ、と。</p>
+<p>そんなわけでForEachAsyncと、もう一つ、ExecuteSingleAsyncという名前で、一件のみを列挙するようなものを別途作る必要があります。とはいえ、それでも対応できているのは一件と全件だけ。例えばTakeWhileみたいなのがやりたい、SkipWhileみたいなのがやりたいとなったらどうするの、と。答えは、どうにもなりません。諦めるしかない。</p>
+<h2>AsyncEnumerableで救われる</h2>
+<p>どうしても諦められないのならば、AsyncEnumerableを授けましょう。NuGetから<a href="http://nuget.org/packages/Ix_Experimental-Async">Ix_Experimental-Async</a>を引っ張ってきます。Ix、そう、みんな大好きReactive Extensionsの兄弟なわけですが、しかし紹介しておいてアレですが、このIx_Experimental-Asyncはお薦めはしません！完全に実験的に、できるから、というだけで実装例を掲示してみせてくれたというだけなノリがぷんぷんしているからです。実際、最初のAsync CTPが出た時に公開されて、それから更新されてませんしね……。</p>
+<p>ともあれ、どんなコンセプトの代物なのかは見ておきましょう。</p>
+<pre><code class="language-csharp">// こういうDB列挙用のIAsyncEnumerable/Enumeratorを作る。
+// yield returnのようなコンパイラサポートはないので手書きするんだよ！
+public class AsyncDbEnumerable : IAsyncEnumerable&lt;DbDataReader&gt;, IAsyncEnumerator&lt;DbDataReader&gt;
+{
+    DbConnection connection;
+    DbCommand command;
+    DbDataReader reader;
+    string query;
+
+    public AsyncDbEnumerable(DbConnection connection, string query)
+    {
+        this.connection = connection;
+        this.query = query;
+    }
+
+    public IAsyncEnumerator&lt;DbDataReader&gt; GetEnumerator()
+    {
+        return this;
+    }
+
+    public DbDataReader Current
+    {
+        get { return reader; }
+    }
+
+    public async Task&lt;bool&gt; MoveNext(System.Threading.CancellationToken cancellationToken)
+    {
+        if (command == null)
+        {
+            if (connection.State != ConnectionState.Open) await connection.OpenAsync();
+
+            command = connection.CreateCommand();
+            command.CommandText = query;
+            reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess);
+        }
+
+        if (await reader.ReadAsync())
+        {
+            return true;
+        }
+        return false;
+    }
+
+    public void Dispose()
+    {
+        reader.Dispose();
+        command.Dispose();
+    }
+}
+
+static IAsyncEnumerable&lt;DbDataReader&gt; EachReaderAsync(SqlConnection connection, string query)
+{
+    return new AsyncDbEnumerable(connection, query);
+}
+
+static async Task Test()
+{
+    using (var conn = new SqlConnection(ConnectionString))
+    {
+        // 完全にLINQなのでSelectしてToArrayで匿名型もOK
+        var result = await EachReaderAsync(new SqlConnection(ConnectionString), &quot;select * from Sales.Customer&quot;)
+            .Select(x =&gt; new
+            {
+                CustomerID = x.GetFieldValue&lt;int&gt;(0),
+                PersonID = !x.IsDBNull(1) ? x.GetFieldValue&lt;int?&gt;(1) : null,
+                StoreID = !x.IsDBNull(2) ? x.GetFieldValue&lt;int?&gt;(2) : null,
+                TerritoryID = !x.IsDBNull(3) ? x.GetFieldValue&lt;int?&gt;(3) : null,
+                AccountNumber = !x.IsDBNull(4) ? x.GetFieldValue&lt;string&gt;(4) : null
+            })
+            .ToArray();
+
+        // 勿論FirstOrDefaultもできる
+        var customer = await EachReaderAsync(new SqlConnection(ConnectionString), &quot;select * from Sales.Customer where CustomerID = 100&quot;)
+            .Select(x =&gt; new
+            {
+                CustomerID = x.GetFieldValue&lt;int&gt;(0),
+                PersonID = !x.IsDBNull(1) ? x.GetFieldValue&lt;int?&gt;(1) : null,
+                StoreID = !x.IsDBNull(2) ? x.GetFieldValue&lt;int?&gt;(2) : null,
+                TerritoryID = !x.IsDBNull(3) ? x.GetFieldValue&lt;int?&gt;(3) : null,
+                AccountNumber = !x.IsDBNull(4) ? x.GetFieldValue&lt;string&gt;(4) : null
+            })
+            .FirstOrDefault();
+    }
+}
+</code></pre>
+<p>IAsyncEnumerableの実装は完全に手作りです！真面目に使うなら、AnonymousAsyncEnumerableとかを作って、それを使って構築しますが、今回はてきとーな感じに実装しておきました。てきとーと言っても、ちゃんと動きますよ、はい。</p>
+<p>さて、これによってIAsyncEnumerableに変換されたシロモノは、LINQのメソッドが全て使えます。おー、やったね、これなら完璧。</p>
+<p>と、言いたいのですが、よーくSelectの中のラムダ式を見ると、ForEachAsyncの時のものと違うのが分かるでしょうか？ForEachAsyncの時はGetFieldValueAsyncといった、値取得まで非同期のものを使いました。でも、今回はそれは使ってない。何故かというと、そこでasyncにしてしまうと戻り値がIAsyncEnumerable&lt;Task&lt;T&gt;&gt;になってしまうから。</p>
+<p>何がいけないのか、というと、例えばToArrayした結果で見るとresult[0]はTaskなんですよ。実態はresult[0].Resultとしなきゃあいけません。おまけに、全部Taskということは、実行中かもしれないわけです。じゃあ全部待てばいいのか、 await Task.WhenAll(result) とすればいいか、というと、そうなると、一つのコネクションで複数実行が走る、この場合Connectionは複数実行は許容されていないので、まあ例外が飛んできてしまうでしょう。</p>
+<p>じゃあasyncは諦めるの？というと、幾つか手はある。ひとつはAwaitとかいうような拡張メソッドを作って、IAsyncEnumerable&lt;Task&lt;T&gt;&gt; から IAsyncEnumerable&lt;T&gt; に戻すようなものを作ればいい。作るのは、まあ、難しくはないのだけど結局yield returnがないので完全手書きしなきゃならないので面倒なので例は割愛。</p>
+<p>もしくはSelectなどのselectorに、ラムダ式がasyncで書かれている場合(戻り値がTaskになっている場合)はawaitするようなオーバーロードがあっても良かったと思うのですがねえ。んー、まあ、それはさすがに大きなお世話っぽいからダメか……。</p>
+<p>もしくは、ToArrayなどで外に出すのではなく、ForEachAsyncというメソッドが用意されているので、それを使ってawaitするか。こうなると内部イテレータとやってること同じになってきますが。</p>
+<p>とはいえともかく、例に出したAwaitメソッドのような、そういうのがないと、実用性に欠けると言わざるを得ません。また、これはあくまでもAsyncEnumerableであって、IEnumerableへのLINQ to Objectsとは別物です。Select, Where, Firstなどは挙動が同じというだけで、中身は全然違います。で、当然ながらコンセプト実装なので、内部的にもあまりこなれてませんね。なので、Ix_Experimental-Asyncは所詮はコンセプト実装であり、面白いとは思いますし満喫はしましたが、実世的なものとは言いがたいと結論づけます。</p>
+<h2>IObservable&lt;T&gt;の中へ</h2>
+<p>と、ここまで見てきたので、最後はRxで〆ましょう。ちなみにRxはバージョンが幾つかありますが、私としてはRx 2.0-RCしか使う気はありません。正直、1.0系とは雲泥の差ですからねえ。</p>
+<pre><code class="language-csharp">static IObservable&lt;DbDataReader&gt; EachReaderAsync(DbConnection connection, string query)
+{
+    // CreateAsyncで作る。OnErrorなどは手書きですが、十分に書きやすい
+    return Observable.CreateAsync&lt;DbDataReader&gt;(async observer =&gt;
+    {
+        try
+        {
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = query;
+                if (connection.State != ConnectionState.Open) await connection.OpenAsync();
+
+                using (var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess))
+                {
+                    while (!reader.IsClosed &amp;&amp; reader.Read()) observer.OnNext(reader);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            observer.OnError(ex);
+            return;
+        }
+        observer.OnCompleted();
+    });
+}
+
+static async Task Test()
+{
+    using (var conn = new SqlConnection(ConnectionString))
+    {
+        // Rxなので完全にLINQ、awaitableなのでToArrayをawaitしたりも出来るのでノリは完全に一緒
+        var result = await EachReaderAsync(new SqlConnection(ConnectionString), &quot;select * from Sales.Customer&quot;)
+            .Select(x =&gt; new
+            {
+                CustomerID = x.GetFieldValue&lt;int&gt;(0),
+                PersonID = !x.IsDBNull(1) ? x.GetFieldValue&lt;int?&gt;(1) : null,
+                StoreID = !x.IsDBNull(2) ? x.GetFieldValue&lt;int?&gt;(2) : null,
+                TerritoryID = !x.IsDBNull(3) ? x.GetFieldValue&lt;int?&gt;(3) : null,
+                AccountNumber = !x.IsDBNull(4) ? x.GetFieldValue&lt;string&gt;(4) : null
+            })
+            .ToArray();
+
+        // もちろん、そのままSubscribeしたり、FirstOrDefaultAsyncしたりしてもいい
+    }
+}
+</code></pre>
+<p>というわけでRxでも生成はしやすいし、出力結果も相当扱いやすい。素晴らしい！けれど、これもIAsyncEnumerableと同様にSelectの中でasyncしちゃうと厄介なことになるので、基本的にはできない。</p>
+<p>Await拡張メソッドを作るのは簡単だけど、Rxの場合はスレッドセーフの問題が結構難しくて、うまく決めるのは難しい……。</p>
+<p>それに加えて、ほとんど決まりきっている、ただたんに列挙したいだけ、のものにRxを使うというのはやり過ぎ感があり、性能面でちょっとね、と。うーん、言うほど悪くはないし、今まで散々持ち上げといてなんだよそれって感じですが、目の前にTaskが転がっていて、そこまで利点が大きくない中で選ぶか？と迫られたら、選びにくいなあ、って。思ってしまうのです。</p>
+<h2>おまけ：Entity Framework 6について</h2>
+<p>Entity Frameworkはロードマップによりバージョン6から非同期対応すると明言しています。また、デザインノート<a href="http://entityframework.codeplex.com/wikipage?title=Task-based%20Asynchronous%20Pattern%20support%20in%20EF.">Task-based Asynchronous Pattern support in EF.</a>も公開されていたり、それとEFはソースコードが公開されているのですが、CodePlexから最新版を落としてくれば、そこには既にTaskによる実装が存在しています。</p>
+<p>軽く見たところ、EF内部で使う用のAsyncEnumerableを定義してありました。それを使って、非同期系を動かしてましたね。ただ、完全に内部用なので外からは使えないし、色々限定的ですけれど。また、最終的に出力する場合は、やはり内部イテレータ的に、await ForEachAsyncしてListに変換するなりしていました。ふんふん、なるほどねー、と、結構眺めてて面白いのでお薦めです。</p>
+<h2>まとめ</h2>
+<p>C# 5.0で非同期は簡単になった！そして、同様に非同期はやはり難しい！こうして案を見ていったわけですが、結局どれを選ぶの？というと、まあ、内部イテレータ案が一番無難で良いと思います。</p>
+<p>それにしても、いやあもう頭ぱっつんぱっつんです。で、何でDBがネタになっているかというと、新Micro-ORMライブラリを作成中で(DbExecutor v.Next)、今から作るなら非同期対応しないとかありえないよねー、ということで色々考えてはいるんですが、これが中々にビシッ！としっくり決めるのが大変で。結構良い感じにはなってきてつもりではあるんですが、全然まだまだで。あんま人に見られたくない段階なんですが諸事情で見れる人には見れるようになってしまってて恥ずかちい。</p>
+<p>そんなわけでVS2012登場まで、もうすぐです(MSDN会員は一週間切ってる、そうでない人も一ヶ月後)。C# 5.0への備え、できてますか？さあ、カオスな非同期時代に突入しましょう！</p>
+</div>
+<h1><a href="http://neue.cc/2012/0729_379.html">XboxInfoTwit - ver.2.4.0.4</a></h1>
+<ul class="date"><li>2012-07-29</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://neue.cc/software/xboxinfotwit" title="neue cc - XboxInfoTwit">neue cc - XboxInfoTwit</a></li>
+</ul>
+<p>Xbox.comが内部的にちょっと変わっていて動かなくなっていたので、それに対応しました。多分！</p>
+<p>ちょっと今シンガポールに来ていまして、Xbox360の実機がないので動作確認してません！うわぁぁぁ。shoganaiので、ちょっとこちらでXbox360を調達しようか割と考え中。まあともあれ、動いたか動かなかったか報告頂ければ嬉すぃなあ。</p>
+</div>
+<h1><a href="http://neue.cc/2012/0720_378.html">linq.js ver.3.0.0-beta, メソッドlowerCamelCase化、など</a></h1>
+<ul class="date"><li>2012-07-20</li></ul>
+<div class="entry_body"><p>ずっとやるやる詐欺だったlinq.js ver.3ですが、ようやく始まりました！</p>
+<ul>
+<li><a href="http://linqjs.codeplex.com/">linq.js - LINQ for JavaScript</a></li>
+</ul>
+<p>トップページのボタンはstableのものになるので、DOWNLOADSタブからver.3.0.0-betaを選んでください。また、NuGetを使っている人はInstall-Package linq.js -Preで入ります。他にlinq.js-jQuery -Pre, linq.js-RxJS -Pre, linq.js-QUnit -Preなどり。</p>
+<h2>lowerCamelCase化</h2>
+<p>はい。ようやくJavaScriptらしくなりました。UpperCamelCaseにはC#っぽいとか、キーワードで衝突しなくなるとか、ちょっとした利点はなくもないのですが、そもそも.NETっぽくないほうがいい、というかJavaScriptの世界にちゃんと馴染ませたいという思いのほうが強い。そして、.NETの人以外にも使って欲しくて。</p>
+<pre><code class="language-javascript">Enumerable.range(1, 10)
+    .where(function(x){ return x % 2 == 0})
+    .select(function(x){ return x * x});
+</code></pre>
+<p>当然ながら超破壊的変更です。ver.2までのコードは一切動かなくなります。やりすぎですが、しょうがない。痛くてしょうがないけれどしょうがない。さて、ならばとついでにメソッド名の見直しもしました。</p>
+<pre><code class="language-text">Return -&gt; make
+CascadeBreadthFirst -&gt; traverseBreadthFirst
+CascadeDepthFirst -&gt; traverseDepthFirst
+BufferWithCount -&gt; buffer
+ToString -&gt; toJoinedString
+Do -&gt; doAction
+Let -&gt; letBind
+MemoizeAll -&gt; memoize
+Catch -&gt; catchError
+Finally -&gt; finallyAction
+ToJSON -&gt; toJSONString
+</code></pre>
+<p>これを機に、というかこういう機会じゃないとやれないですから。toStringやtoJSONは、上書きしてしまうとマズいので別名にしています。toStringは、まあそのままなので分かると思うのですが、toJSONのほうは、JSON.stringifyで特別扱いされるメソッドなので、こっそり注意が必要なんですね、というか実際ハマッて気づくのに時間かかりました。</p>
+<h2>extendTo</h2>
+<p>prototype.js以降、prototype拡張は悪、でしたが、最近のJavaScriptはfor inで列挙しない形での拡張(Object.definePropertyでenumerable:falseにする)が可能になっています。それを全面に押し出した<a href="http://sugarjs.com/">Sugar</a>といったライブラリもあり、確かに便利なのですよね。</p>
+<p>さて、linq.jsでは配列などをLINQで扱うためにEnumerable.fromで包んでやる必要があって面倒でしたが、配列からそのままselectとかwhereとかが生えていれば、便利、ですよね？なので、任意に拡張できるようにしました。</p>
+<pre><code class="language-javascript">// Arrayを拡張する
+Enumerable.Utils.extendTo(Array);
+        
+[1, 3, 10, 1000].where(&quot;$%2==0&quot;).select(&quot;$*$&quot;);
+</code></pre>
+<p>Enumerable.Utils.extendToを一度呼べば、from不要で直接LINQのメソッドを呼ぶことができます。もしブラウザがObject.definePropertyに対応していなければ、その時はprototypeを直接拡張しています。</p>
+<p>さて、LINQのメソッド名とネイティブのメソッド名が被っている場合は、ネイティブのメソッド名を優先して、上書きはしません。例えばjoinとか、concatとか。その場合はByLinqがメソッド名の末尾につきます。joinByLinq、など。</p>
+<pre><code class="language-javascript">// 名称が被るものはByLinqというプリフィックスがつく
+[1, 3, 10].reverseByLinq();
+
+// もしくはasEnumerableメソッドを呼んであげればLINQのメソッドのみになります
+[1, 10, 100].asEnumerable().forEach(function(x, index){alert(x + &quot;:&quot; + index)});
+</code></pre>
+<p>forEachなどは古いブラウザではそのまま、新しいブラウザではforEachByLinqになる、といったようにブラウザ互換性がなくなるので、個人的にはByLinqの形で呼ぶよりかは、asEnumerableを使うことのほうをお薦めします。</p>
+<h2>Visual Studio 2012でのIntelliSense超拡張</h2>
+<p>VS2012でlinq.jsを使うと、ただでさえ充実していたIntelliSenseが更に超補完されます。どのぐらい補完されるか、というと、selector関数でオブジェクトの候補が並んでしまうぐらいに。</p>
+<p class="noindent">
+	<img src="http://act.neue.cc/linq.js_3.0_intellisense.jpg">
+</p>
+<p>もはや完全にC#。あまりの快適さにチビる。勿論、↑の図ではFooは文字列なので、x.Foo.で文字列のメソッド候補がIntelliSenseに並びます。動的言語とは思えない超補完っぷりがヤバい。そして入力補完が最大限に活きるように設計されているLINQなので、組み合わさった時の快適度は半端ない。</p>
+<h2>Chaining Assertion for QUnit</h2>
+<p>ユニットテストを書く際に、equal(actual, expected)と書くのが嫌いでした。どちらがactualなのかexpectedなのか一瞬悩むし、そもそも外側から包むのがかったるくて。かといってshouldといった、英語的表現なのも冗長なだけで全く良いとは思っていませんでした。そこでC#では<a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>といった、actual.Is(expected)でアサートが書けるライブラリを作ったのですが、それをJavaScript用に移植しました。</p>
+<pre><code class="language-javascript">// 流れるように.isと打ち込むだけ
+Math.pow(10, 2).is(100); // strictEqual(Math.pow(10, 2), 100)
+
+// コレクションに対する適用は可変長にカンマ区切りで値を並べるだけ。勿論、配列にも使えます。
+Enumerable.rangeTo(10, 15, 2).is(10, 12, 14); // deepEqual(Enumerable.rangeTo(10, 15, 2).toArray(), [10, 12, 14])
+
+// LINQと組み合わさることでコレクション系のチェックが遥かに容易になる！
+[1, 5, 10].all(&quot;$&lt;12&quot;).isTrue(); // collection assertion with linq.js!
+</code></pre>
+<p>といった感じに書けて、超楽ちんです。使うにはlinq.qunit.jsを別途読み込んでください。</p>
+<h2>その他</h2>
+<p>createEnumerable, createEnumerator, createLambdaといった、自作Enumerableメソッドを作るための道具を外部公開するようにしました。是非作っちゃってください。</p>
+<pre><code class="language-text">Enumerable.Utils.createLambda
+Enumerable.Utils.createEnumerable
+Enumerable.Utils.createEnumerator
+</code></pre>
+<p>更に、メソッドも追加されています。</p>
+<pre><code class="language-text">Enumerable.defer
+asEnumerable
+merge
+choose
+isEmpty
+distinctUntilChanged
+weightedSample
+log
+</code></pre>
+<p>それらの細かい使い方などは追々書いていきます。また、merge, zip, concatは複数のシーケンスを引数に受け取れるようになりました。</p>
+<p>そして、C#では、以前に<a href="http://neue.cc/2012/03/08_367.html">neue cc - LINQのWhereやSelect連打のパフォーマンス最適化について</a>という記事を書いた通り、Where連打やSelect連打、それにWhere-&gt;Selectといったよくあるパターンに対して最適化が入っているのですが、それをlinq.jsでも再現しました。なので、Where連打などによるパフォーマンス劣化が抑えられています。また、頻出パターンのWhere-&gt;Selectで高速化されたのはかなり大きいと思っています。</p>
+<p>それに加えてrange, rangeDown, rangeToといったよく使う生成関数の速度を大幅に上げました（以前はtoInfinity().take()で生成していたのを、独自生成に変更したため）。</p>
+<p>なので全体的にパフォーマンスも向上しています。</p>
+<p>それと最後に、jQueryのプラグインとしてのものは今回からやめました。なんか混乱するし意味ないな、と思ったので、jQueryとの連携はlinq.jquery.jsによるtoEnumerable/tojQueryを追加するファイルのみとなっています。RxJSに関しても最新版のRxJSと連携できるようにしました(linq.rx.js)</p>
+<h2>今後</h2>
+<p>VS2012に対するIntelliSenseの充実化がまだ1/5ぐらいしか出来ていないので、それの充実が優先です。あと、リファレンスやサンプルが書けてないので追加。それらが出来たら、いったんver.3として正式公開します。<a href="http://atnd.org/events/30344">プログラミング生放送勉強会 第17回＠品川 #pronama : ATND</a>で話すつもりなので、その日、8/25までには正式公開を目指します！というわけで是非是非聞きに来てください。</p>
+<p>あ、あとnode.js用にnpm公開も、ですね。</p>
+</div>
+<a href="./publish/10">Prev |</a>
+<a href="./publish/12">| Next</a>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

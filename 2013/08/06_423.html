@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - MySQL + Dapperによる高負荷時のバグで死んだ話</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2013/0806_423.html">MySQL + Dapperによる高負荷時のバグで死んだ話</a></h1>
+<ul class="date"><li>2013-08-06</li></ul>
+<div class="entry_body"><p>今回はMySQLと<a href="https://code.google.com/p/dapper-dot-net/">Dapper</a>を組み合わせると死ぬ、という超極少数にしか該当しない話ですよ！というわけで、まぁ読み物としてどーぞ。ちなみに割とクリティカルなので、その組み合わせで何かやろうという人は気をつけたほうがいいです。</p>
+<h2>観測</h2>
+<p>何が起こるかの観測からはじめましょう。まず、NuGetからMySQL.DataとDapperをインストールして、以下の簡単なコードを走らせ、ません。コード書いて待機で。</p>
+<pre><code class="language-csharp">using Dapper;
+using MySql.Data.MySqlClient;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        // スレッドプールを先に伸びるように
+        ThreadPool.SetMinThreads(200, 200);
+        var count = 0;
+
+        // とりあえず200並列で実行する
+        Parallel.For(0, 10000, new ParallelOptions { MaxDegreeOfParallelism = 200 }, () =&gt;
+        {
+            var conn = new MySqlConnection(&quot;せつぞくもじれーつ,Max Pool Size=1000&quot;);
+            conn.Open();
+            return conn;
+        }, (x, state, conn) =&gt;
+        {
+            System.Console.WriteLine(Interlocked.Increment(ref count));
+
+            // ↑や↓にグチャグチャありますが、実態はこの一行だけです
+            conn.Query&lt;long&gt;(&quot;select 1&quot;, buffered: false).First();
+
+            return conn;
+        }, conn =&gt;
+        {
+            conn.Dispose();
+        });
+    }
+}
+</code></pre>
+<p>Parallelなのは高負荷じゃないとイマイチ分からないので、そのシミュレートね。これも別にそこまで高負荷ってわけでもないですが、まぁこんなんでいいのです（原因分かってて逆算して書いてるので）。接続文字列は、とりあえず200並列に耐えられるようにMaxPoolSizeだけ大きめに設定しておきます。さて、そしてPowerShellを立ち上げ、とりあえず以下のスクリプトを走らせておきます。</p>
+<pre><code class="language-text"> while ($true) {Get-NetTCPConnection | group state -NoElement; sleep 1}
+</code></pre>
+<p>で、上のC#コードを実行。すると、実行は、遅いです。Parallelなので速いのか遅いのかわからないかもですが、まあぶっちけ凄く遅いです。正常状態ならサクッと終わるのですが、↑のはかなりもたついてます。で、運が良ければ以下の例外にも遭遇するでしょう。時には完走するかもしれませんが。</p>
+<pre><code class="language-text">ハンドルされていない例外: System.AggregateException: 1 つ以上のエラーが発生しました。
+---&gt; MySql.Data.MySqlClient.MySqlException: Unable to connect to any of the specified MySQL hosts.
+---&gt; System.Net.Sockets.SocketException: そのようなホストは不明です。
+</code></pre>
+<p>よくわからないけどSocketExceptionで死にますね！！！さて、PowerShellのほうはどうなっていたか、というと、</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/08/pshell_timewait.jpg' />
+</p>
+<p>ぎゃー、TIME_WAIT祭だー。って、Parallelだからそうなったんじゃないかって？いえいえ、所詮200並列ですし、ある程度はOpen/Close繰り返されるとはいえ、4000個もコネクション作ったりなんてしないです。ていうかそもそもコネクションプールあるんだから、そんなに繋ぐわけないでしょーが。</p>
+<p>つまり、どういうことだってばよ？シンプルな例にしましょうか。</p>
+<pre><code class="language-csharp">using (var conn = new MySqlConnection(&quot;せつぞくもじれーつ&quot;))
+{
+    conn.Open();
+    for (int i = 0; i &lt; 100; i++)
+    {
+        conn.Query&lt;long&gt;(&quot;select 1&quot;, buffered: false).First();
+    }
+}
+</code></pre>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/08/timewait_2.jpg' />
+</p>
+<p>はい。100のループで100のTIME_WAITが発生しています。つまり、1クエリにつき1TIME_WAITです。ほへ……？ということは、低負荷時はそれでも生きてられるかもですが、高負荷時は、最初の例で見たように、山のようなTIME_WAITに見舞われます。そしてsocketは枯渇する。そして死ぬ。</p>
+<h2>何故こうなるのか</h2>
+<p>何故、の前にどの組み合わせでなるか、というと、現時点での最新のDapper(1.13)で、Queryをbuffered:falseで、FirstなどReaderの列挙を完了させないもの(ToListとかなら大丈夫)で確定させると詰みます。じゃあまあ、原因にDeepDive。</p>
+<p>キーになるコードは、Dapperのこのメソッドです。</p>
+<pre><code class="language-csharp">private static IEnumerable&lt;T&gt; QueryInternal&lt;T&gt;(this IDbConnection cnn, string sql, object param, IDbTransaction transaction, int? commandTimeout, CommandType? commandType)
+{
+    var identity = new Identity(sql, commandType, cnn, typeof(T), param == null ? null : param.GetType(), null);
+    var info = GetCacheInfo(identity);
+
+    IDbCommand cmd = null;
+    IDataReader reader = null;
+
+    bool wasClosed = cnn.State == ConnectionState.Closed;
+    try
+    {
+        cmd = SetupCommand(cnn, transaction, sql, info.ParamReader, param, commandTimeout, commandType);
+
+        if (wasClosed) cnn.Open();
+        reader = cmd.ExecuteReader(wasClosed ? CommandBehavior.CloseConnection : CommandBehavior.Default);
+        wasClosed = false; // *if* the connection was closed and we got this far, then we now have a reader
+        // with the CloseConnection flag, so the reader will deal with the connection; we
+        // still need something in the &quot;finally&quot; to ensure that broken SQL still results
+        // in the connection closing itself
+        var tuple = info.Deserializer;
+        int hash = GetColumnHash(reader);
+        if (tuple.Func == null || tuple.Hash != hash)
+        {
+            tuple = info.Deserializer = new DeserializerState(hash, GetDeserializer(typeof(T), reader, 0, -1, false));
+            SetQueryCache(identity, info);
+        }
+
+        var func = tuple.Func;
+
+        while (reader.Read())
+        {
+            yield return (T)func(reader);
+        }
+        // happy path; close the reader cleanly - no
+        // need for &quot;Cancel&quot; etc
+        reader.Dispose();
+        reader = null;
+    }
+    finally
+    {
+        if (reader != null)
+        {
+            if (!reader.IsClosed) try { cmd.Cancel(); }
+                catch { /* don't spoil the existing exception */ }
+            reader.Dispose();
+        }
+        if (wasClosed) cnn.Close();
+        if (cmd != null) cmd.Dispose();
+    }
+}
+</code></pre>
+<p>色々ありますが、while(reader.Read())以下の部分だけを見ればOKです。ToListなら大丈夫でFirstだとダメな理由もここにあります。ToListの場合、Readerが全て読むので、コード上にコメントでhappy pathと書いてある、reader.Disposeが呼ばれます、そしてfinallyでは何もしない。逆にFirstの場合は、最初のyield returnで打ち切られてfinallyへ向かうので、cmd.Cancel()が呼ばれた後に、reader.Disposeが呼ばれます。</p>
+<p>そう、ここです。reader.Disposeの前にcmd.Cancelが呼ばれる、というのが、非常にマズい。少なくともMySQL Connectorにおいては。MySQL ConnectorのCommmand.Cancelの実装を見てみましょう。あ、MySQL Connectorのソースコードはちゃんと公開されています、<a href="http://dev.mysql.com/downloads/connector/net/">Download Connector/Net</a>のSelect PlatformでSource Codeを選べば落とせます。zipで。リポジトリは、多分公開されてない、残念ながら……。</p>
+<p>さて、Command.Cancelは以下のメソッドを呼び出します。</p>
+<pre><code class="language-csharp">public void CancelQuery(int timeout)
+{
+    MySqlConnectionStringBuilder cb = new MySqlConnectionStringBuilder(Settings.ConnectionString);
+    cb.Pooling = false;
+    cb.AutoEnlist = false;
+    cb.ConnectionTimeout = (uint)timeout;
+
+    using (MySqlConnection c = new MySqlConnection(cb.ConnectionString))
+    {
+        c.isKillQueryConnection = true;
+        c.Open();
+        string commandText = &quot;KILL QUERY &quot; + ServerThread;
+        MySqlCommand cmd = new MySqlCommand(commandText, c);
+        cmd.CommandTimeout = timeout;
+        cmd.ExecuteNonQuery();
+    }
+}
+</code></pre>
+<p>どういうことか。「新しいコネクションをコネクションプーリングなしで新規生成して」「KILL QUERY実行して」「コネクションを閉じる」。KILL QUERYはどうでもいいんですが、新しいコネクションをプーリングなしで作って閉じるということがどういう結果をもたらすか。一回のクエリ毎に↑のが実行されるとどうなるか。まず、遅くなる。そりゃ遅いわな、1クエリ毎に1接続＆切断してるんだもの。そして、1クエリ = 1TIME_WAIT。完全にコードは書かれたとおりに動いて書かれるとおりの結果しか出てこない。素晴らしい。泣ける。</p>
+<h2>どうすればいいのか</h2>
+<p>これ、1.12 ~ 1.13の間に加えられた変更が原因です。具体的には<a href="https://code.google.com/p/dapper-dot-net/issues/detail?id=106">Issue 106</a>で、SQL ServerだとTimeoutException出るから、reader閉じる前にcommandのCancel呼んで欲しいんだよねー、というパッチが受け入れられたのでした。その結果、MySQLだと死ぬことに。</p>
+<p>なので、1.12を使えば問題は起こりません。もしくは1.13だったら、手動でソースコードに修正を加えればいいでしょう。もともとDapperはソースコードが1ファイルなので、NuGet経由ではなく、最新のコードをファイルで持ってくれば、編集は楽です。</p>
+<p>ちなみに、この件はDapperのForumでは報告済みです。一ヶ月前に。そして返事はありません。みょーん。まあ、あと究極的にはSQL ServerをとるかMySQLをとるか、になるので、どうなんでしょうね、あんま期待は持たないほうがいい気もします。</p>
+<h2>おまけ、MySQL Connectorのコネクションプールについて</h2>
+<p>MySQL Connectorのコードは結構素朴なので、読みやすいです(MSのSqlServerのに比べると遥かに！)。というわけで、つらつら読んでみるといいんじゃないでしょーか。参考になったりゲッソリしたり色々です。</p>
+<p>というわけでコネクションプールとかがどうなってるかの説明しませう。そしてそれぞれが接続文字列のオプションでどう弄れるのかについて。接続文字列でのオプションの設定は結構重要ですからね、失敗してると死にますから。何度か死にましたから……。接続文字列のリファレンスはこちら<a href="http://dev.mysql.com/doc/refman/5.7/en/connector-net-connection-options.html">Connector/Net Connection String Options Reference</a>。古いもの（日本語訳されてる！）だけを参照すると時々痛い目に会うので適度に注意。</p>
+<p>さて、まず、MySqlConnectionをnewすること自体は全然軽くて（ただの入れ物なので）じゅーよーなメソッドはOpenとCloseです。OpenするとコネクションプールからDriver（これが本当の実態でプールするもの）を取り出します。CloseするとコネクションプールにDriverを戻します。これが基本的なこと。ちなみにプールはQueueです、なのでDriverは先入れ先出しで循環してます。</p>
+<p>プールということは、一度生成したコネクションはいつ消えるの？というと、Closeする時です。Close時にExpireしているかチェックし、してれば消滅、してなければプールへ。基準時間は 「接続が最初に作られた時」です。そのExpireの時間はどこで設定するの？というと接続文字列のConnection Lifetime。ちなみにデフォルトは0で、Close時には消滅しません。
+なお、コネクションの最大プール数も接続文字列で指定できて、そのMax Pool Sizeのデフォは100です。</p>
+<p>実際のところ、Close時以外にもコネクションが消える時があります。3分に一回、アイドル状態の接続がチェックされて(Timerで別スレッドで常に巡回されてる)、その時に、3分以上、プールに溜まったままのコネクションはお掃除されます。基準時間は「接続がプールに戻された時」です。Connection Lifetimeと基準が違うんですね。</p>
+<p>Open/Closeを繰り返すことのロスは、上記のようにプールから取り出したり戻したり程度なので、かなり小さいです（一応、取り出したりする際にプールをlockしますが、全然小さいので無視できるでしょう）。あと、一応Open時にサーバーが生きてるかPingを飛ばします(この動作はビミョーだと思うんですけどねえ)。プールのlockよりも、コスト的にはこっちのほうが大きいかもですね。</p>
+<p>あと他に接続文字列だと、Connection TimeoutとDefaultCommandTimeoutを弄っておくと幸せになれるでしょふ。</p>
+<p>DefaultCommandTimeoutで設定できるコマンドタイムアウトはExecuteNonQueryやExecuteReaderで最初のレスポンスが戻ってくるまでの時間ではかられます。だから、ExecuteReaderでも、例えば数億件のデータがあって凄く時間がかかるものでも、反応はかえって来てるのでそこでのTimeout判定は入りません。レコード数よりも、純粋なSQLの内容(馬鹿でかいデータにlikeで検索とかは引っかかりますよね)のためのものです。</p>
+<p>Connection Timeoutは、実はコネクションをOpenにする時、だけに関連してるわけじゃあなかったりします。streamからReadする際の時間でもConnectionStringsのConnect Timeoutで判定があります。この値を流用されるのイマイチ納得いかない気がしなくもないですが、まあそんなもんですかねえ。なので結果セットを読み込んでる最中でもネットワークの調子が悪くて止まると、タイムアウト判定が来ます。Raedの単位はデータセット全て、ではなく1行分とか、そういう特定バイト数ごとになるので、巨大データを読み取るのに時間がかかるので死ぬ、とかにはなりません。一応参考までにってとこですかね。</p>
+<h2>まとめ</h2>
+<p>このDapperで死ぬ問題、プロダクション環境化で発覚したんですよね！！！分かってみると割と単純なのですが、しかし条件が変則的で突き止めるのに手間取って泣きたかった……。低負荷だと割と動いちゃうというか、そこそこの負荷でも割と耐え切れちゃう(IIS偉い)ので、全然気づかず。なんか分からないけど超高負荷の時に落ちる！とか、ね。ワケワカラナカッタ。まず疑うのは自分のコードのほうだしねえ。</p>
+<p>まぁ、解決してほんと良かったです、はい。解決しなかったら首吊るしかなかったですもの、思い出すだけでハイパーお通夜。冗談抜きに今までの人生で一番精神的に苦しかった……。そんな感じで若干トラブルもありましたが、それを除けばDapperはパワフルでかなり満足しています。少々、上モノを被せているので、その辺のものはそのうち紹介しましょうかしらん。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

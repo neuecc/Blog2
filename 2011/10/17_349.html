@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - ReactiveProperty ver.0.2.0.0</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2011/1017_349.html">ReactiveProperty ver.0.2.0.0</a></h1>
+<ul class="date"><li>2011-10-17</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://reactiveproperty.codeplex.com/">ReactiveProperty - MVVM Extensions for Reactive Extensions</a></li>
+</ul>
+<p>ver.0.2！ご意見ご感想は随時募集中で、コメントなりTwitterで私に@を投げてくれるなり、ただたんにTwitterでReactivePropertyと含めてつぶやいてくれるなり(検索経由で拾えるので)、ブログで記事を書いてくださるついでにクエスチョンしてみたりなどなど、ちょっとした疑問でも要望でも、何でもどうぞ。特に、細かな使用感の向上というのはリクエストがあってこそですので！斜め上からやってきた結果として世界最先端(但し逆向き)を体感出来るのは今だけです！斜め上なのでReactivePropertyのうまい使い方は今のところ誰にも分かりません、私もわかりません(えー)。というわけで、みんなで模索できたらいいな、と思います。</p>
+<p>国内はもとよりReactiveUIの作者からも言及頂いて結構褒めてもらったりなどなど、RxのForumで宣伝したかいがあったね！というわけで、私自身かなり真剣に取り組んでますので、付き合って頂ければ幸いです。 /* 現在ReactiveOAuthをほっぽりだしてるという信頼感のなさがアレなので、そちらも早めに何とかします…… */</p>
+<p>今回は、0.1では中途半端な存在だったReactiveCollectionを徹底的に考察して再デザインしました。他に細かい追加が幾つか。まずは小さな追加から。</p>
+<h2>追加したり変わったりしたもの</h2>
+<p>ObserverPropertyが、最初のSubscribe時に値をPushするようになりました(引数でfalseを指定するとオフにも出来る、そうすると、普通にFromEventしたのと同じ)</p>
+<pre><code class="language-csharp">public class ToaranaiViewModel
+{
+    ToaruModel model;
+    public ReactiveProperty&lt;string&gt; Name { get; private set; }
+
+    public ToaranaiViewModel()
+    {
+        // こんなINotifyPropertyChangedなModelがあるとして
+        model = new ToaruModel { Name = &quot;Anders&quot; };
+
+        // 初期値として現在値(この場合&quot;Anders&quot;)を持つ
+        Name = model.ObserveProperty(x =&gt; x.Name).ToReactiveProperty();
+    }
+}
+
+public class ToaruModel : INotifyPropertyChanged
+{
+    private string name;
+    public string Name
+    {
+        get { return name; }
+        set { name = value; PropertyChanged(this, new PropertyChangedEventArgs(&quot;Name&quot;)); }
+    }
+
+    public event PropertyChangedEventHandler PropertyChanged = (_, __) =&gt; { };
+}
+</code></pre>
+<p>これにより、既存のModelからToObservablePropertyしてViewModelにする際などに、デフォルトで値が同期されるので多くのシチュエーションで、より便利になったと思います。という提案を@okazukiさんにリクエスト貰ったので実装しました:) @okazukiさんは<a href="http://d.hatena.ne.jp/okazuki/20111017/1318827792">ReactivePropertyを使ってみた感想 イケテル！気持ちいい！ハードルは高い？ - かずきのBlog@Hatena</a>という記事も書いてくれました、わーい。</p>
+<p>ObserverProeprtyはINotifyPropertyChangedへの拡張メソッドです。また、今回よりINotifyPropertyChangingにObservePropertyChanging拡張メソッドを追加しました。ObserverProeprtyと同様な感覚で使えます。</p>
+<p>それとReactiveCommand(無印)のExecuteが引数なしでnullをぶん投げるようになりました。なお、これがあるのは無印のほうのみで&lt;T&gt;のほうにはありません。だって、ジェネリックするということはパラメータが欲しい前提ですものね。ジェネリックのほうはExecute(T parmeter)を受け入れるうようにオーバーロードを隠蔽。こういう細かいところの使いやすさの向上ってのは随時取り組みたいところです。</p>
+<p>また、ReactiveCommand(無印・ジェネリック共に)をDisposeすると、SubscribeしてたものにOnCompletedを投げるように変更しました。なお、ReactiveCommandをDisposeすると、CanExecuteもfalseになります。永久的にfalseにする、という意味合いで使えるかと思いますが、使うシチュエーションは分かりません。</p>
+<h2>ReactiveCollectionの再デザイン</h2>
+<p>ReactiveCollectionに大きめの変更を入れました。今まで通知をIScheduler上で行なっていましたが、これを廃止しました。かわりにToReactiveCollectionなどIObservableからの変換時は、Addと通知、両方をIScheduler上にしました。また、IScheduler上で各種操作(Add, Clear, Remove)を行うメソッド AddOnScheduler などを追加しました。この変更のデザイン上のポリシーは以下になります。</p>
+<p>ObservableCollectionとスレッドセーフ・ディスパッチャーセーフというのは非常に難しい。まず、ObservableColectionは変更と通知がワンセットだと考えられる。コレクションが変更され通知を出し、通知され側(主にUI)がコレクションを読みに来る。これは全部ひとまとまりでなければならない。通知され側がコレクションを読みに行く際に、ズレがあってはならない。よって、通知をUIスレッドで行うなら、変更もUIスレッドで行われる必要がある。</p>
+<p>しかし、全ての操作を内部で片っ端からDispatcherにBeginInvokeするアプローチを取ると、それはそれで都合が悪い。例えば別スレッドでAddしたりRemoveしたりClearしても、そのコード上では変更はすぐには反映されない。ClearしてもCountは変わらない。AddしてもCountは変わらない。そんな気味の悪いコレクションクラスは使えません。WPFではDispatcher.Invokeがあるので、変更と通知を強制的にUIスレッド上で行う、ということが可能でしたが、SilverlightにはBeginInvokeしかないので、操作をUIスレッドで行うことを保証するコレクションクラスの作成は不可能。(<a href="http://caliburnmicro.codeplex.com/">Caliburn Micro</a>のBindableCollectionは全部UIスレッド上で行うようにしているみたいですね、まあBindableにのみ焦点を当てるなら現実的なので、それはそれでいいと思います)</p>
+<p>だから、コレクションを触る時は利用側がDispatcher.BeginInvokeして、明示的にDispatcherの中へ入ろう。というのが、整合性が取れて一番良いのだと思います。今まで、ReactiveCollectionは通知だけIScheduler上で行うようになっていました。でも、これはあまり良いデザインではない、操作と通知は同一スレッド上で行うべきなのだから、これでは乖離する可能性がある。単純なAddだけのようなケースでは問題になることは少ないし、利便性としては、その方が簡単にバインドで出来て良いよね、ではあるのだけど、決して良いデザインではない。いずれ発覚する破綻への気づきを遅らせているという点で、むしろ限りなく悪い。</p>
+<p>よって、内部で片っ端からDispatcherにBeginInvokeする代わりに、AddOnSchedulerなど、(ReactiveCollection生成時に指定した/デフォルトはUIDispatcher)スケジューラ上で操作を行うと利用側が明示するアプローチを取ってみました。Rxには使い勝手の良いISchedulerが存在する。だからこそアリなやり方かな、と思います。この辺はまだまだ考えどころだと思いますので、ご意見ありましたらお願いします。</p>
+<pre><code class="language-xml">&lt;Grid&gt;
+    &lt;ListBox ItemsSource=&quot;{Binding TimeItems}&quot; /&gt;
+&lt;/Grid&gt;
+</code></pre>
+<pre><code class="language-csharp">public class ToaruViewModel
+{
+    public ReactiveCollection&lt;string&gt; TimeItems { get; private set; }
+
+    public ToaruViewModel()
+    {
+        // 1秒毎に現在時刻表示が追加されるコレクション
+        TimeItems = Observable.Interval(TimeSpan.FromSeconds(1))
+            .Select(_ =&gt; DateTime.Now.ToString())
+            .ToReactiveCollection();
+            
+        // 5秒間隔で上記コレクションをクリアする
+        Observable.Interval(TimeSpan.FromSeconds(5))
+            .Subscribe(_ =&gt; TimeItems.ClearOnScheduler());
+    }
+}
+</code></pre>
+<p>今回考えるにあたっては<a href="http://shinichiaoyagi.blogspot.com/2011/06/net-observablecollection.html">青柳 臣一 ブログ（技術系）: [.NET] スレッドセーフな ObservableCollection&lt;T&gt; が欲しい</a>をとっても参考にさせて頂きました。</p>
+<p>ReactiveProperty, ReactiveCommandは確固たる意思のもとに作ったんですが、ReactiveCollectionは非常に中途半端でした。が、今回ようやく理念が立てれたのではかと思います。なお、ObservableCollection/ReactiveCollectionにはObserveAddChangedなど、変更通知をIObservableで受け取ることのできる拡張メソッドを足してあるので、そちらも便利に使うことが可能です(素のNotifyCollectionChangedEventArgsはIList(ジェネリックじゃない！)であったりして非常に触りにくいので、その辺をきっちり整理してあります)。</p>
+<p>とか言ってますが、コードにしたらたかが十数行なのですよね。それを決めるのに、ここ一週間ずっと考えてました。つまり私の生産性は一日一行です(ｷﾘｯ</p>
+<h2>まだ追加してないもの</h2>
+<p>Validation周りをValidationSummaryやDescriptionViewerに対応させる。とか、OnErrorRetryが値を返せるようにする。などは次に載せるつもりです。これらを加えてから、と思ったんですがReactiveCollectionの変更が大きいので、先に出したくて見送りました。</p>
+<h2>ReactiveProperty-Experimental</h2>
+<p>今回からExperimental版のRxにも対応しました。NuGetでは<a href="http://nuget.org/List/Packages/ReactiveProperty-Experimental">ReactiveProperty-Experimental</a>です。しかし、
+.NET 4.5やWinRTへの対応は、まだしていません。せっかくRx(Experimental)がWinRT対応したので、それに合わせたいと思ったのですが断念。理由としてはVS11がCode Contractsに対応していないから、です。Code Contractsのバイナリリライトかけないと動かないので、どうにもなりません……。それがなければ今すぐにでも対応させたいのですけれどねえ。こういう時に機敏に動けないのはとても悲しいので、次回からはCode Contractsの採用は見送りたいと思ってしまいます……。</p>
+<p>ところで、それを意識してではありますが、.NET 4.0版のDLL名をReactiveProperty.NET40.dllに変えました。複数プラットフォームに対応する場合、全てのDLLを同じ名前にする(JSON.NETなどはそうですね)か、全てのDLLにプラットフォームの識別子をつける(MVVMLightなどはそうです)か。前者のほうがスマートではあるのですが、分かりやすさを考え、後者を選びました。Stable版とExperimental版の区別もありますし、DLL名から判定出来たほうがいいかな、と。</p>
+<h2>今後</h2>
+<p>okazukiさんの記事にもあるように「MVVMライブラリにも精通しつつReactive Extensionsのことも知っててReactivePropertyの概要を把握してないといけない上に必要に応じてMVVMライブラリとReactivePropertyを繋ぐような機能を作りこまないといけない」きゃー、難しそう！でも事実だ！</p>
+<p>私としてはReactivePropertyを通してReactive Extensionsを学習してもらえればいいかなあ、と思っています。Rxはイベントが合成出来る！というけれど、合成しようにもイベントのソースがないと始まらない。ReactivePropertyを使うと、手軽に合成のためのソースが手に入るので、イベント周りのRxでのこね方の学習に最適なのではかと思います。……多分。</p>
+<p>既存MVVMライブラリとの使い分けなどに関しては、この類の「選択肢が増えます系」の永遠の課題ですねえ。結局、どう使い分けるかの判断をユーザーに丸投げしているわけですもの。ガイドなどを掲示できればベストなのですが、そもそも私がMVVMに全然詳しくないのであった。そもそも私自身がどう使えばいいのか分かってないぐらいなので(えー)、触ってみて、ついでに足りなかったり、これがこうなってたらいい、とかいう思いがあったら、私がそういうのに全然気づいてない確率100%なので、是非言ってやってください。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

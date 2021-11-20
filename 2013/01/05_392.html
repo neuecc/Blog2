@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - C#でローカル変数からDictionaryを生成する</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2013/0105_392.html">C#でローカル変数からDictionaryを生成する</a></h1>
+<ul class="date"><li>2013-01-05</li></ul>
+<div class="entry_body"><p>どうもPHPerです。あ、すぐC#のコード出しますので帰らないで！というわけで、PHPには<a href="http://php.net/manual/ja/function.compact.php">compact</a>というローカル変数からハッシュテーブルを作るという関数があります。割と多用します。その逆のextractという関数もありますが、そちらはカオスなのでスルー。</p>
+<pre><code class="language-php">$name = &quot;hogehoge&quot;;
+$age = 35;
+
+// {&quot;name&quot;:&quot;hogehoge&quot;, &quot;age&quot;:35}
+$dict = compact(&quot;name&quot;, &quot;age&quot;);
+</code></pre>
+<p>へー。いいかもね。これをC#でやるには？もったいぶってもshoganaiので先に答えを出しますが、匿名型を使えばよいです。</p>
+<pre><code class="language-csharp">var name = &quot;hogehoge&quot;;
+var age = 35;
+
+// Dictionary&lt;string, object&gt; : {&quot;name&quot;:&quot;hogehoge&quot;, &quot;age&quot;:35}
+var dict = Compact(new { name, age });
+</code></pre>
+<p>はい。別にPHPと見比べても面倒くさいことは全然ないです。C#はLLですから（嘘）</p>
+<p><a href="http://msdn.microsoft.com/ja-jp/library/bb397696.aspx">匿名型</a>は「メンバー名を指定しなかった場合、コンパイラによって、初期化に使用するプロパティと同じ名前が付けられます。」ので、それを利用すればローカル変数の名前をキャプチャできる、という至極単純な仕組み。</p>
+<h2>Reflection vs FastMember</h2>
+<p>Compactメソッドの中身ですが、リフレクションでプロパティなめてDictionaryに吐き出しているだけです。LINQを使えば瞬殺。</p>
+<pre><code class="language-csharp">static Dictionary&lt;string, object&gt; Compact(object obj)
+{
+    return obj.GetType().GetProperties()
+        .Where(x =&gt; x.CanRead)
+        .ToDictionary(pi =&gt; pi.Name, pi =&gt; pi.GetValue(obj));
+}
+</code></pre>
+<p>CanReadは、一応、匿名型以外を流し込む時のことも考慮しましょうか、的に。</p>
+<p>さて、リフレクションを使うと実行速度がー気になってーカジュアルにー使いたくないー、のが人情というものです。個人的にはそこまで遅くもないので、そう気にしなければカジュアルに使ってもいいと思ってたりしますが、まあ気になるならShoganaiし、気にするのはいいことです。</p>
+<p>そこで取り出すは<a href="http://code.google.com/p/fast-member/">FastMember</a>。超高速シリアライザで有名なprotobuf-netの作者が作った、シンプルなプロパティアクセス高速化ライブラリです。</p>
+<p>これを使って書くと</p>
+<pre><code class="language-csharp">static Dictionary&lt;string, object&gt; Compact(object obj)
+{
+    var type = FastMember.TypeAccessor.Create(obj.GetType());
+    return type.GetMembers().ToDictionary(x =&gt; x.Name, x =&gt; type[obj, x.Name]);
+}
+</code></pre>
+<p>というように、書き方的にはそんなに違いはないですが、生成速度は数倍上昇します。TypeAccessor.Createして、GetMembersでプロパティ情報の列挙(TypeとNameがあるだけ)、PropertyInfoのGetValue的なのはインデクサを使います。FastMemberにはTypeAccessorの他にObjectAccessorがありますが、使い方は似たような感じなので略（インデクサの第一引数に対象オブジェクトを渡す必要がなくなる）。</p>
+<p>FastMemberの仕組みですが、初回実行時にはリフレクションでプロパティ舐めています。別に魔法が存在するわけではないので、プロパティ名を取りたければ、リフレクション以外の選択肢はありません。そして取得したデータを基にしてILの動的生成を行いキャッシュし、以降のアクセス時はキャッシュから取得したアクセサ経由となるため、素のリフレクションよりも高速となっています。</p>
+<p>よって、初回実行時に限れば、実行時間はむしろかなり遅くなります（IL生成は軽い処理ではない）。単純な平均で考えれば、1万アクセスぐらいないとペイしません（要素数による、多ければ多いほどFastMemberのほうが有利です）。という程度には、リフレクションもそんなに遅くはないです。ただまあ、初回に目をつむって以降の実行速度重視のほうがユーザー体験での満足度は高いケースがほとんどとは思われますので、個人的にはFastMember使って済ませるほうがいいな、とは思います。気分的にもスッキリしますしね。</p>
+<p>ちなみに.NETでリフレクションにはTypeDescriptorという手段も標準で用意されていますが、アレはクソがつくほど遅いので、アレだけはやめておきましょう。少なくとも素のリフレクションを避けてあっちを使う理由がない。</p>
+<h2>名前大事</h2>
+<p>Compactという名前はPHP臭が激しいしC#的にはイミフなので、ちゃんとした名前をつけたほうがいいでしょう、ToDictionaryとか、ね。</p>
+<h2>匿名型 as Dictionary</h2>
+<p>Compact、という例を出すから何だか新しい感じがしなくもない誤魔化しでして、実のところ、ようするに、ただの匿名型→Dictionaryです。ASP.NET MVCではそこら中に見かけるアレです。ソレです。コレです。</p>
+<p>その辺のアレコレは<a href="http://nyaruru.hatenablog.com/entry/20080706/p1">ややニッチな Anonymous Types の使い方をまとめてみる (C# 3.0) - NyaRuRuが地球にいたころ</a>にまとまっているので見ていただくとして、以上終了。</p>
+<p>実際問題、Dictionary&lt;string, object&gt;を要求するシチュエーションというのは少なくありません。パラメータ渡すところなんて、そうですよね。一々Dictionaryを使うのは、カッタルイってものです。なので、別にASP.NET MVCに限らず、↑のようなメソッドを作って、objectも受け入れられるようにしてあげるってのは、現代のC#的にはアリだと私は考えています。</p>
+<pre><code class="language-csharp">// Dictionaryの初期化は割と面倒くさい
+var hoge = ToaruMethod(new Dictionary&lt;string, object&gt;
+{
+    {&quot;screen_name&quot;, &quot;hogehoge&quot;},
+    {&quot;count&quot;, 10},
+    {&quot;since_id&quot;, 12345}
+});
+
+// 書きやすい！素敵！抱いて！
+var hoge = ToaruMethod(new
+{
+    screen_name = &quot;hogehoge&quot;,
+    count = 10,
+    since_id = 12345
+});
+</code></pre>
+<p>んね。</p>
+<p>そうなるとメソッドの引数にobjectというものが出てしまって、安全性がショボーンになってしまいますので、やたらめったら使うのもまたアレですけれど。</p>
+<p>匿名型がIAnonymousTypeとか、何らかのマーカーついてたらなあ、なんて思わなくもなかったりもしなかったりしましたが、こういう用途で使う時って、普通のクラスからも変換したかったりするので、匿名型に限定したほうが不便なんですね。幾ばくかの安全性は増しますが。ともあれともあれ、普通のクラスと匿名型に違いなんてない、と考えると、区別できないことは自然だから別にいいかなあ、なんて、ね、思ってます。where T : classと引数に制限つけるぐらいが丁度良いんではないでしょうか。</p>
+<h2>まとめ</h2>
+<p>PHPの良いところってどこなのか非常に悩ましい。その辺のほげもげに関してはいつか特に言いたいことはなくもないけどとくにない（去年の年末に勉強会というか技術交流会というかで、PHPの会社に行ってPHP vs C#なプレゼンはしてきましたが）。</p>
+<p>というわけで、C#はLightweightだという話でした。ん？</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

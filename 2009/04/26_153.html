@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - linq.js ver 1.2.0.0 - バグフィックスとEqualityComparer</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2009/0426_153.html">linq.js ver 1.2.0.0 - バグフィックスとEqualityComparer</a></h1>
+<ul class="date"><li>2009-04-26</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://linqjs.codeplex.com/">linq.js - LINQ for JavaScript Library - Home</a></li>
+<li><a href="http://neue.cc/2009/04/04_145.html" title="neue cc - linq.js - JavaScript用LINQライブラリ">紹介と日本語チュートリアル</a></li>
+</ul>
+<h2>バグフィックス</h2>
+<p>JavaScriptのオブジェクトはハッシュ。というから、ああ、はいはい、つまりDictionaryなんですね、と素で何の疑問も持たず、思っていました。キーには別に数字でもオブジェクトでもなんでも、そう、オブジェクトでも入れられると思っていて、平然とそれを大前提にしたコードをlinq.jsにも混ぜ込んでいました。集合演算系のものに。ありえないです。C#脳すぎる。</p>
+<pre><code class="language-javascript">var hashTest = {};
+var obj = { hoge: &quot;fuga&quot; }
+var obj2 = { tako: &quot;ika&quot; }
+hashTest[obj] = &quot;tettette&quot;;
+hashTest[obj2] = &quot;totetotetote&quot;;
+hashTest[&quot;[object Object]&quot;] = &quot;12345&quot;;
+for (var key in hashTest)
+    alert(hashTest[key]);
+</code></pre>
+<p>これは当然のようにアラートで出てくる値は&quot;12345&quot;だけです。JavaScriptのオブジェクトはキーが文字列限定のDictionary(C#脳ですみません)で、キーに文字列以外のものを突っ込んだ場合、自動的に文字列に変換される。だからオブジェクトは文字列に変換され、オブジェクトが文字列化される際は全て&quot;[object Object]&quot;になるから上書きされる、というお話。そんなわけで、今までのlinq.jsでは……</p>
+<pre><code class="language-javascript">var seq = E.Range(1, 10).Select(&quot;{test:$}&quot;); // {test:1},{test:2}...
+var count = seq.Distinct().Count(); // 重複を除いたものの合計、当然10なのに？
+alert(count); // 結果は1です、ごめんなさい
+</code></pre>
+<p>となっていました。これは酷い。ちなみに、何故かFirefoxでは10になります。IEやChromeは1なんですけどね。linq.jsの内部の動きから考えるに、Firefoxのほうが変な挙動なのは確かなのですが良くわかりません。ただ、ブラウザ間で互換の取れてない動きが出てしまう、というのもまた良くない話です。そんなわけで直しました。めでたしめでたし、のようでいて複雑な気分。というのも内部コードの実行効率が酷いことになってしまったからです。下のコードはkeyが含まれているかどうかを調べる関数の一部なのですが</p>
+<pre><code class="language-javascript">if (Linq.HashSet.IsPrimitive(key))
+{
+    return this.PrimitiveContainer.hasOwnProperty(key);
+}
+else
+{
+    for (var i = 0; i &lt; this.ObjectContainer.length; i++)
+    {
+        if (key === this.ObjectContainer[i]) return true;
+    }
+    return false;
+}
+</code></pre>
+<p>最初にPrimitive、つまり数字や文字列であるかを判断し、プリミティブであればhasOwnPropertyでキーがあるかないかを判断。こっちは今まで通り。そしてそのままではキーとして使えないオブジェクトに対しては、線形探索で全部舐めて探してるんですね―。うはー、大量の配列に使った場合の遅さが怖すぎる。ただ、この辺のやり方は<a href="http://www.timdown.co.uk/jshashtable/" title="JavaScript Hashtable">JavaScript Hashtable</a>なんかも同じような内容なので、しょうがないみたいです、素のJavaScriptでは。ハッシュコードを算出するために重たい計算を挟めば、それはそれで本末転倒ですし。</p>
+<h2>EqualityComparer</h2>
+<p>JavaScriptのObjectは参照型、なので全ての値が同一であろうとも、別のオブジェクトであるのなら別だと判断される。しかし、さすがにそれでは実用性に乏しい。</p>
+<pre><code class="language-javascript">// Before
+var a1 = E.Repeat(&quot;dummy&quot;, 10).Select(&quot;{test:$}&quot;).Distinct().Count();  // 10
+// After
+var a2 = E.Repeat(&quot;dummy&quot;, 10).Select(&quot;{test:$}&quot;).Distinct(&quot;$.test&quot;).Count(); // 1
+</code></pre>
+<p>{test:&quot;dummy&quot;}を10個生成し、それを重複除去するとしたら、望む値は当然、1。そういった動作が出来るようにDistinctなどの集合演算系にキー指定が出来るようになりました。そういえばC#の匿名型はクラスなのに重複除去されるのは何でだろう、と思ったらちゃんと<a href="http://msdn.microsoft.com/ja-jp/library/bb397696.aspx" title="匿名型 (C# プログラミング ガイド)">「すべてのプロパティが等しい場合のみ、等しい」</a>ように作られているようです。さすが、ユーザーがどういう動作を望んでいるのか分かってる。</p>
+<p>Contains, Distinct, Except, Intersect, SequenceEqual, UnionにcompareSelectorを追加、という形になります。比較関数にするかキーセレクターにするかで悩んだのですが、比較関数だと使用時の定義が面倒くさいので、実用性を考えて簡易的なもののほうが良いかな、と思いキーセレクターにしました。9割以上は同じものの比較ですよねー、という決めつけです。複数の値で比較したい時は適当に連結する、しかないです。塩でも振りながら文字列にして結合してください。お手軽でそこそこ確実な手を言えば、ToJSONメソッドを使ってJSONに変換するのも手です。</p>
+<pre><code class="language-javascript">var seq = E.Range(1, 10).Select(&quot;{key:$&lt;5,evenodd:$%2==0}&quot;);
+seq.Distinct(&quot;E.Repeat($,1).ToJSON()&quot;).Count(); // 4
+</code></pre>
+<p>true:false,true:true,false:true,false:falseの4通りのどれかが10個なので、重複除去すると合計数は4つ。ところでそうそう、集合演算で線形探索とかフザけるなタコ、と思った場合はこのようにJSON化することで(値参照になりますが)回避できます。何かバッドノウハウみたいで素敵。ただ、そもそもオブジェクトにたいしてキー指定無しの集合演算自体が使う機会なんてほとんどないとは思いますが。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

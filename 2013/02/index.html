@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - 2013-02</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2013/0227_398.html">AsyncOAuth - C#用の全プラットフォーム対応の非同期OAuthライブラリ</a></h1>
+<ul class="date"><li>2013-02-27</li></ul>
+<div class="entry_body"><p>待ち望まれていた<a href="http://blogs.msdn.com/b/bclteam/archive/2013/02/18/portable-httpclient-for-net-framework-and-windows-phone.aspx">HttpClientがPortable Class Library化</a>しました、まだBetaだけどね！というわけで、早速PCL版のHttpClientをベースにしたOAuthライブラリを仕上げてみました。ポータブルクラスライブラリなので、.NET 4.5は勿論、Windows Phone 7.5, 8, Windows Store Apps, Silverlight, それと.NET 4.0にも対応です。</p>
+<ul>
+<li><a href="https://github.com/neuecc/AsyncOAuth">AsyncOAuth - GitHub</a></li>
+</ul>
+<p>前身のReactiveOAuthがTwitterでしかロクにテストしてなくてHatenaでズタボロだったことを反省し、今回はSampleにTwitterとHatenaを入れておきました＆どっちでもちゃんと正常に動きます。なお、完全に上位互換なので、ReactiveOAuthはObsoleteです。それと、ライブラリのインストールはNuGet経由でのみの提供です。</p>
+<p>PM&gt; Install-Package <a href="https://nuget.org/packages/AsyncOAuth/">AsyncOAuth -Pre</a></p>
+<p>もしくはPreReleaseを表示に含めてGUIから検索してください。</p>
+<h2>AsyncOAuth is not a new library</h2>
+<p>AsyncOAuthの実態はOAuthMessageHandlerというDelegatingHandlerです。</p>
+<pre><code class="language-csharp">var client = new HttpClient(new OAuthMessageHandler(&quot;consumerKey&quot;, &quot;consumerSecret&quot;, new AccessToken(&quot;accessToken&quot;, &quot;accessTokenSecret&quot;)));
+
+// 上のだとnewの入れ子が面倒なので短縮形、戻り値は上のと同じ
+var client = OAuthUtility.CreateOAuthClient(&quot;consumerKey&quot;, &quot;consumerSecret&quot;, new AccessToken(&quot;accessToken&quot;, &quot;accessTokenSecret&quot;));
+</code></pre>
+<p>こうなっていると何がいいか、というと、全ての操作がHttpClient標準通りなのです。</p>
+<pre><code class="language-csharp">// Get
+var json = await client.GetStringAsync(&quot;http://api.twitter.com/1.1/statuses/home_timeline.json?count=&quot; + count + &quot;&amp;page=&quot; + page);
+
+// Post
+var content = new FormUrlEncodedContent(new[] { new KeyValuePair&lt;string, string&gt;(&quot;status&quot;, status) });
+var response = await client.PostAsync(&quot;http://api.twitter.com/1.1/statuses/update.json&quot;, content);
+var json = await response.Content.ReadAsStringAsync();
+
+// Multi Post
+var content = new MultipartFormDataContent();
+content.Add(new StringContent(status), &quot;\&quot;status\&quot;&quot;);
+content.Add(new ByteArrayContent(media), &quot;media[]&quot;, &quot;\&quot;&quot; + fileName + &quot;\&quot;&quot;);
+
+var response = await client.PostAsync(&quot;https://upload.twitter.com/1/statuses/update_with_media.json&quot;, content);
+var json = await response.Content.ReadAsStringAsync();
+</code></pre>
+<p>もうおれおれクライアントのAPIを覚える必要はありません。これからの標準クライアントであるHttpClientの操作だけを覚えればいいのです。</p>
+<p>コンセプトはHttpClientチームから掲示されているサンプルコード<a href="http://blogs.msdn.com/b/henrikn/archive/2012/02/16/extending-httpclient-with-oauth-to-access-twitter.aspx">Extending HttpClient with OAuth to Access Twitter</a>どおりですが、このサンプルコードは本当にただのコンセプトレベルなサンプルで、そのまんまじゃ使えないので、ちゃんと実用的なOAuthライブラリとして叩き直したのがAsyncOAuthになります。DelegatingHandlerというのは、リクエストを投げる直前をフックするものなので、そこでOAuth用の認証を作っているわけです。</p>
+<h2>イニシャライズ</h2>
+<p>使う場合は、必ず最初にHMAC-SHA1の計算関数をセットしなければなりません。何故か、というと、ポータブルクラスライブラリには現状、暗号系のライブラリが含まれていなくて、その部分は含むことができないからです。外部から差し込んでもらうことでしか対処できない、という。ご不便おかけしますが、的な何か。そのうち含まれてくれるといいなあ、って感じですねえ。それまでは、以下のコードをApp.xaml.csとかApplication_Startとか、初回の本当に最初の最初に呼ばれるところに、コピペってください。</p>
+<pre><code class="language-csharp">// WinRT以外(Silverlight, Windows Phone, Consoleなどなど)
+OAuthUtility.ComputeHash = (key, buffer) =&gt; { using (var hmac = new HMACSHA1(key)) { return hmac.ComputeHash(buffer); } };
+
+// Windows Store App(めんどうくせえええええ)
+AsyncOAuth.OAuthUtility.ComputeHash = (key, buffer) =&gt;
+{
+    var crypt = Windows.Security.Cryptography.Core.MacAlgorithmProvider.OpenAlgorithm(&quot;HMAC_SHA1&quot;);
+    var keyBuffer = Windows.Security.Cryptography.CryptographicBuffer.CreateFromByteArray(key);
+    var cryptKey = crypt.CreateKey(keyBuffer);
+
+    var dataBuffer = Windows.Security.Cryptography.CryptographicBuffer.CreateFromByteArray(buffer);
+    var signBuffer = Windows.Security.Cryptography.Core.CryptographicEngine.Sign(cryptKey, dataBuffer);
+
+    byte[] value;
+    Windows.Security.Cryptography.CryptographicBuffer.CopyToByteArray(signBuffer, out value);
+    return value;
+};
+</code></pre>
+<p>また、使いかたの詳しいサンプルは、GitHub上のソースコードからAsyncOAuth.ConsoleAppの中にTwitter.csとHatena.csがあるので、それを見てもらえればと思います。AccessToken取得までの、認証系の説明はここには書きませんが（OAuthAuthorizerという特別に用意してあるものを使う）、その具体的な書き方が乗っています。特にHatenaの認証はTwitterに比べるとかなりメンドーくさいので、メンドーくさい系のOAuthが対象の場合は参考になるかと思います。</p>
+<h2>ストリーミング、Single vs Multiple、或いはRxの再来</h2>
+<p>勿論、TwitterのストリーミングAPIにも対応できます。以下のようなコードを書けばOK。</p>
+<pre><code class="language-csharp">public async Task GetStream(Action&lt;string&gt; fetchAction)
+{
+    var client = OAuthUtility.CreateOAuthClient(consumerKey, consumerSecret, accessToken);
+    client.Timeout = System.Threading.Timeout.InfiniteTimeSpan; // ストリーミングなのでTimeoutで切られないよう設定しておくこと
+
+    using (var stream = await client.GetStreamAsync(&quot;https://userstream.twitter.com/1.1/user.json&quot;))
+    using (var sr = new StreamReader(stream))
+    {
+        while (!sr.EndOfStream)
+        {
+            var s = await sr.ReadLineAsync();
+            fetchAction(s);
+        }
+    }
+}
+</code></pre>
+<p>ほぅ、Actionですか、コールバックですか……。ダサい。使い勝手悪い。最悪。しかし、じゃあ何返せばいいんだよ！ということになる。Taskは一つしか返せない、でもストリーミングは複数。うーん、うーん、と、そこでIObservable&lt;T&gt;の出番です。Reactive Extensionsを参照して、以下のように書き換えましょう。</p>
+<pre><code class="language-csharp">public IObservable&lt;string&gt; GetStream()
+{
+    return Observable.Create&lt;string&gt;(async (observer, ct) =&gt;
+    {
+        try
+        {
+            var client = OAuthUtility.CreateOAuthClient(consumerKey, consumerSecret, accessToken);
+            client.Timeout = System.Threading.Timeout.InfiniteTimeSpan; // ストリーミングなのでTimeoutで切られないよう設定しておくこと
+
+            using (var stream = await client.GetStreamAsync(&quot;https://userstream.twitter.com/1.1/user.json&quot;))
+            using (var sr = new StreamReader(stream))
+            {
+                while (!sr.EndOfStream &amp;&amp; !ct.IsCancellationRequested)
+                {
+                    var s = await sr.ReadLineAsync();
+                    observer.OnNext(s);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            observer.OnError(ex);
+            return;
+        }
+        if (!ct.IsCancellationRequested)
+        {
+            observer.OnCompleted();
+        }
+    });
+}
+</code></pre>
+<pre><code class="language-csharp">var client = new TwitterClient(consumerKey, consumerSecret, new AccessToken(accessTokenKey, accessTokenSecret));
+
+// subscribe async stream
+var cancel = client.GetStream()
+    .Skip(1)
+    .Subscribe(x =&gt; Console.WriteLine(x));
+
+Console.ReadLine();
+cancel.Dispose(); // キャンセルはDisposeで行う
+</code></pre>
+<p>といったように、自然にRxと繋げられます。コールバックのObservable化はObservable.Createで、そんなに難しくはない(ただしOnNext以外にちゃんとOnError, OnCompletedも記述してあげること)です。キャンセル対応に関しては、ちゃんとCancelleationToken付きのオーバーロードで行いましょう。そうしないと、Subscribeの解除はされていても、内部ではループが延々と動いている、といったような状態になってしまいますので。</p>
+<p>ともあれ、asyncやCancellationTokenとRxがスムースに結合されていることは良くわかるかと思います。完璧！</p>
+<p>こういった、単発の非同期はTaskで、複数の非同期はIObservable&lt;T&gt;で行う、というガイドはTPLチームからも示されています。先日の<a href="http://blogs.msdn.com/b/pfxteam/archive/2013/02/20/mvp-summit-presentation-on-async.aspx">pfxteamからのスライド</a>から引用すると（ちなみにこのスライドはTask系の落とし穴などが超丁寧に書かれているので必読！）</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/asnc_sync_mult.jpg">
+</p>
+<p>といった感じです。んねー。</p>
+<h2>まとめ</h2>
+<p>ReactiveOAuthはオワコン。HttpClient始まってる。Reactive Extensions自体は終わってない、むしろ始まってる。というわけで、色々と使いこなしていきましょう。</p>
+<p>追記：リリースから一晩開けて、POST周りを中心にバグが発見されていてお恥ずかしい限りです。あらかた修正したとは思うのですが(NuGetのバージョンは随時上げています)、怪しい挙動見つけたら報告下さると嬉しいです。勿論、GitHubなのでPull Requestでも！</p>
+</div>
+<h1><a href="http://neue.cc/2013/0219_397.html">C#でぬるぽを回避するどうでもいい方法</a></h1>
+<ul class="date"><li>2013-02-19</li></ul>
+<div class="entry_body"><p>どうもペチパーです。嘘です逃げないで。まあ、どうでもいいPHPの例をまずは出しませう。あ、逃げないで、PHPの話はすぐやめるんで。</p>
+<pre><code class="language-php">// ネストしてる配列
+$hoge[&quot;huga&quot;][&quot;hage&quot;][&quot;tako&quot;] = &quot;なのなの&quot;;
+
+// なのなの
+$v = isset($hoge[&quot;huga&quot;][&quot;hage&quot;][&quot;tako&quot;])
+    ? $hoge[&quot;huga&quot;][&quot;hage&quot;][&quot;tako&quot;]
+    : &quot;ない&quot;;
+
+// 途中で欠けてる配列
+$hoge[&quot;huga&quot;] = &quot;なのなの&quot;;
+
+// ない
+$v = isset($hoge[&quot;huga&quot;][&quot;hage&quot;][&quot;tako&quot;])
+    ? $hoge[&quot;huga&quot;][&quot;hage&quot;][&quot;tako&quot;]
+    : &quot;ない&quot;;
+</code></pre>
+<p>全体的にキモいんですが、まあ無視してもらって、何が言いたいか、と言うとisset。これはネストしてる部分も一気に評価してくれるのです。フツーの関数だと常識的に考えて評価は先に内側で行うので配列の境界外で死ぬんですが、issetは関数みたいな見た目だけど実は言語構文なのだ！キモチワルイ。ともあれ、そんなわけでネストしてるものの有無を一気にチェックできるのです。</p>
+<p>で、PHPのこと書いてるとサイト違うので、C#の話をしませう。</p>
+<h2>C#でネストネスト</h2>
+<p>PHPは何でも連想配列なのですが、C#だったらクラスのプロパティでしょうか。以下のようなシチュエーション。</p>
+<pre><code class="language-csharp">// こういうドカドカした構造があるとして
+class Hoge
+{
+    public Huga Prop1 { get; set; }
+}
+
+class Huga
+{
+    public Hage Prop2 { get; set; }
+}
+
+class Hage
+{
+    public string Prop3 { get; set; }
+}
+
+// こっちプログラム本体
+var hoge = new Hoge();
+
+// とちゅーでヌルぽが発生すると死んじゃうんの回避が醜悪！
+var prop3 = (hoge != null &amp;&amp; hoge.Prop1 != null &amp;&amp; hoge.Prop1.Prop2 != null &amp;&amp; hoge.Prop1.Prop2.Prop3 != null)
+    ? hoge.Prop1.Prop2.Prop3
+    : null;
+</code></pre>
+<p>!=nullの連鎖が面倒くさいですぅー。なんとかしてくださいぃー。ぴーHPに負けてるんじゃないですかぁー？とか言われてないですが言われてるってことにするので、しょうがないからエレガントな解決策を探してあげました、誰にも頼まれてませんが！</p>
+<h2>Love ExpressionTree</h2>
+<p>こーいう風に書ければいいんでしょ！下のhoge.GetValueOrDefaultってとこです。</p>
+<pre><code class="language-csharp">// こんなHogeがあるとして
+var hoge = new Hoge();
+
+// すっきり！
+var value = hoge.GetValueOrDefault(x =&gt; x.Prop1.Prop2.Prop3);
+Console.WriteLine(value == null); // true
+
+// 中身が詰まってたら
+hoge = new Hoge { Prop1 = new Huga { Prop2 = new Hage { Prop3 = &quot;ほげ！&quot; } } };
+var value2 = hoge.GetValueOrDefault(x =&gt; x.Prop1.Prop2.Prop3);
+Console.WriteLine(value2); // ほげ！
+</code></pre>
+<p>すっごくスッキリしますね！イイね！</p>
+<p>で、どーやってるかというと、ExpressionTreeでグルグルですよ。</p>
+<pre><code class="language-csharp">public static class MonyaMonyaExtensions
+{
+    public static TR GetValueOrDefault&lt;T, TR&gt;(this T value, Expression&lt;Func&lt;T, TR&gt;&gt; memberSelector)
+        where T : class
+    {
+        var expression = memberSelector.Body;
+
+        var memberNames = new List&lt;string&gt;();
+        while (!(expression is ParameterExpression))
+        {
+            if ((expression is UnaryExpression) &amp;&amp; (expression.NodeType == ExpressionType.Convert))
+            {
+                expression = ((UnaryExpression)expression).Operand;
+                continue;
+            }
+
+            var memberExpression = (MemberExpression)expression;
+            memberNames.Add(memberExpression.Member.Name);
+            expression = memberExpression.Expression;
+        }
+
+        object value2 = value;
+        for (int i = memberNames.Count - 1; i &gt;= 0; i--)
+        {
+            if (value2 == null) return default(TR);
+            var memberName = memberNames[i];
+            dynamic info = value2.GetType().GetMember(memberName)[0];
+            value2 = info.GetValue(value2);
+        }
+
+        return (TR)value2;
+    }
+}
+</code></pre>
+<p>はい。というわけで、一つ言えるのは、これ、あんま速くないんで実用には使わないでくださいね、あくまでネタです、ネタ。</p>
+<h2>もにゃど</h2>
+<p>それもにゃど、という人はLINQでMaybeモナドでも検索しませう。既出なので私は書きません。</p>
+</div>
+<h1><a href="http://neue.cc/2013/0208_396.html">連打対策などりの同時アクセス禁止機構</a></h1>
+<ul class="date"><li>2013-02-08</li></ul>
+<div class="entry_body"><p>ゆるふわ連打対策のお時間です。連打されて無限にあーーーーーーー！という悲鳴を上げたり上げなかったりするとかしないとしても、何らかの対策したいよね！ということで、ASP.NETのお話。Application.Lock使ってSessionに、というのは複数台数あったら死ぬのでナシね(Application.Lockは当然、一台単位でのロックなので複数台数でロックは共有されてない)。そんなわけで、カジュアルな一手を打ちます。先に利用例から。</p>
+<pre><code class="language-csharp">static void StandardUsage(string token)
+{
+    // 複数サーバーで共有されるロックもどきの取得
+    using (var rock = DistributedLock.Acquire(&quot;StandardUsage-Lock-Token-&quot; + token))
+    {
+        rock.ThrowIfLockAlreadyExists(); // 二重に取得された場合は即座に例外！
+
+        // 以下、本体を書けばいい
+    }
+}
+</code></pre>
+<p>こんなふーに書けると、楽ですね。tokenは、まあ好きな単位で。ユーザー一人の単位だったら、認証済みなら何らかのIDを。非認証状態なら、POSTのHiddenにGUIDでも仕込んでおけばいい、と。ただの連打対策ってわけじゃなく、複数ユーザー間で同時処理されるのを抑えたければ、何らかのキーを、例えばソーシャルゲームだとチーム単位で、チームIDでかけたりとかします。</p>
+<p>ロックもどきには↑の例ではMemcachedを使いました。単純に、Memcachedに指定キーでAddしにいく→Keyが既に存在していると上書きしないで追加に失敗→二重実行時は必ず失敗したという結果を受け取れる(bool:falseで)→Disposeで追加出来たときのみキーを必ず削除する（＆保険でexpireもつけておく)</p>
+<p>usingの部分は割と定型なので、毎回コントローラーを丸ごと囲むとかなら、属性作って、属性ペタッと貼るだけでOKみたいな形にするといいと思われます！</p>
+<p>ド単純ですが、普通に機能して、結構幸せになれるかな？Memcachedならカジュアルに叩いても、相当耐えきれますから。あ、勿論、固定の台にリクエストが飛ぶの前提なのでノードがぐいぐい動的に追加削除されまくるよーな状況ではダメですよ、はい。あんまないでしょうが（Memcachedはクライアントサイドの分散で、複数台あってもキーが同一の場合は基本的に同じ台に飛ぶ）。</p>
+<pre><code class="language-csharp">public class DistributedLockAlreadyExistsException : Exception
+{
+    public DistributedLockAlreadyExistsException(string key)
+        : base(&quot;LockKey:&quot; + key)
+    { }
+}
+
+public class DistributedLock : IDisposable
+{
+    static MemcachedClient client = new MemcachedClient();
+    static readonly TimeSpan DefaultExpire = TimeSpan.FromSeconds(5);
+
+    public bool IsAcquiredLock { get; private set; }
+    string key;
+    bool disposed;
+
+    private DistributedLock(string key, TimeSpan expire)
+    {
+        this.key = key;
+        this.IsAcquiredLock = client.Store(StoreMode.Add, key, DateTime.Now.Ticks, expire);
+    }
+
+    public static DistributedLock Acquire(string key)
+    {
+        return Acquire(key, DefaultExpire);
+    }
+
+    public static DistributedLock Acquire(string key, TimeSpan expire)
+    {
+        return new DistributedLock(key, expire);
+    }
+
+    public async Task&lt;bool&gt; WaitAndRetry(int retryCount, TimeSpan waitTime)
+    {
+        var count = 0;
+        while (count++ &lt; retryCount &amp;&amp; !IsAcquiredLock)
+        {
+            await Task.Delay(waitTime);
+            IsAcquiredLock = client.Store(StoreMode.Add, key, DateTime.Now.Ticks, DefaultExpire);
+        }
+        return IsAcquiredLock;
+    }
+
+    public void ThrowIfLockAlreadyExists()
+    {
+        if (!IsAcquiredLock)
+        {
+            throw new DistributedLockAlreadyExistsException(key);
+        }
+    }
+
+    public void Dispose()
+    {
+        if (!disposed &amp;&amp; IsAcquiredLock)
+        {
+            disposed = true;
+            var removeSuccess = client.Remove(key);
+        }
+        GC.SuppressFinalize(this);
+    }
+
+    ~DistributedLock()
+    {
+        Dispose();
+    }
+}
+</code></pre>
+<p>Memcachedのライブラリは<a href="https://github.com/enyim/EnyimMemcached">EnyimMemcached</a>です。</p>
+<h2>Asyncとリトライ</h2>
+<p>取得に失敗したら、間隔おいてリトライぐらいはしたいですよね、いや、連打対策なら不要ですが、そうでないように使う場合は。でも、ベタにThread.Sleepでまったりしたくないよねえ、という、そこでasyncですよ！async！</p>
+<pre><code class="language-csharp">async static Task TaskUsage(string token)
+{
+    using (var rock = DistributedLock.Acquire(&quot;TaskUsage-Lock-Token-&quot; + token))
+    {
+        if (!rock.IsAcquiredLock)
+        {
+            // 200ミリ秒感覚で3回取得に挑戦する
+            await rock.WaitAndRetry(3, TimeSpan.FromMilliseconds(200));
+            rock.ThrowIfLockAlreadyExists(); // それでもダメなら例外投げるん
+        }
+
+        // 以下、本体を書けばいい！
+    }
+}
+</code></pre>
+<p>WaitAndRetryメソッドではawait Task.Delay(waitTime)によって待機させています。少し前だとまんどくせ、と思って書く気のしない処理も、C# 5.0のお陰でカジュアルに書けるようになっていいですね。</p>
+<h2>Memcachedを立てないサーバー一台の場合</h2>
+<p>サーバー一台の場合は、わざわざMemcached立てるのも馬鹿らしいので、インメモリなキャッシュを代替として使えばいいと思われます。HttpRuntime.Cacheでも、System.Runtime.Caching.MemoryCacheでも、なんでもを、client.Storeのとこに差し替えてもらえれば。ただ、MemoryCacheは何かちょっと今回試すためにもぞもぞ弄ってたんですが、Addまわりの挙動がすんごく怪しくて信用ならない気がするので私は使うのパス。大丈夫なのかなあ。</p>
+<h2>まとめ</h2>
+<p>うーん、まんま、かつ、ゆるふわ単純な話なので特にまとめる話はないかしらん。</p>
+<p>ので、We're Hiringということで<a href="http://grani.jp/">謎社のほめぱげが少しだけリニューアル</a>、ただしリクルートページが諸事情でまだ工事中！メールフォーム入れるつもりなので、↑のような感じにC# 5.0をすぐに振り回すような最先端な環境のC#でウェブな開発がやりたい方は、是非応募してください。相当本気で人が欲しいところですねー。現状ですけれど、<a href="http://gamebiz.jp/?p=93013">リリース2週間で早くもランキング3位を獲得</a>などと、あまり細かくは言えないのですけれど、まあ非常に好調ですので、安心して＆是非とも一緒に加速させましょう。</p>
+</div>
+<h1><a href="http://neue.cc/2013/0202_395.html">Razorで空テンプレートとセパレータテンプレート</a></h1>
+<ul class="date"><li>2013-02-02</li></ul>
+<div class="entry_body"><p>Razorに限らずT4でもなんでもいいんですが、テンプレートで素のforeachだと、セパレータだったり空の時の代替テンプレートだったりを、どういう風に表現すればいいのかなあ、と悩ましいのです、どうなっているのでしょう実際世の中的に。</p>
+<p>WebFormsのRepeaterだとSeparatorTemplateタグと、拡張すればEmptyTemplateなども作れますね。Smarty(PHPのテンプレート、最近ペチパーなので)には{foreachelse}で配列が空の時のテンプレートが吐かれます。カスタムの構文を定義すれば、勿論なんだってありです。</p>
+<p>RepeaterにせよSmartyにせよ、よーするところ独自のテンプレート構文だから好き放題できますが、俺々構文って、それ自体の覚える手間もあり、あんまスッキリしないんですよねえ。RazorのIs not a new language、だからEasy to Learn。は大事。また、そういった独自拡張がないからこそ、Compact, Expressive, and Fluidが実現できる(開き@だけで閉じタグレスはやっぱ偉大)し、フルにIntelliSenseなどエディタサポートも効くわけだし。</p>
+<p>やりたいことって、コード上のノイズが限りなく少なく、かつ、HTMLという&quot;テキスト&quot;を最大限コントロールの効く形で吐くこと。なわけで、その辺を損なっちゃあ、見失っちゃあ、いけないね。</p>
+<p>で、しかしようするところ、やりたいのはforeachを拡張したい。foreachする時に空の時の出力とセパレータの時の出力を足したい。あと、どうせならインデックスも欲しい。あと、最初の値か、とか最後の値か、とかも欲しい（最初はともかく「最後」はindexがないものを列挙すると大変）</p>
+<p>そのうえで、Razorの良さである素のC#構文（と、ほぼほぼ同じものとして扱える）というのを生かしたうえで、書きやすくするには(例えばHtmlヘルパーに拡張メソッド定義して、引数でテンプレートやラムダ渡したり、というのは閉じカッコが増えたり空ラムダが出たりして書きづらいしグチャグチャしてしまいクリーンさが消える)、と思って、考えたのが、foreachで回すアイテム自体に情報載せればいいな、と。</p>
+<pre><code class="language-csharp">&lt;table&gt;
+    @foreach (var item in source.ToLoopItem(withEmpty: true, withSeparator: true))
+    {
+        // empty template
+        if (item.IsEmpty)
+        {
+        &lt;tr&gt;
+            &lt;td colspan=&quot;2&quot;&gt;中身が空だよ！&lt;/td&gt;
+        &lt;/tr&gt;
+        }
+
+        // separator
+        if (item.IsSeparator)
+        { 
+        &lt;tr&gt;
+            &lt;td colspan=&quot;2&quot;&gt;------------&lt;/td&gt;
+        &lt;/tr&gt;
+        }
+
+        // body
+        if (item.IsElement)
+        {
+        &lt;tr style=&quot;@(item.IsLast ? &quot;background-color:red&quot; : null)&quot;&gt;
+            &lt;td&gt;@item.Index&lt;/td&gt;
+            &lt;td&gt;@item.Item&lt;/td&gt;
+        &lt;/tr&gt;
+        }
+    }
+&lt;/table&gt;
+</code></pre>
+<p>何も足さない何も引かない。とはいえどっかに何か足さなきゃならない。C#として崩さないで足すんなら、単独の要素の一つ上に包んで情報を付与してやりゃあいいんだね、と。foreachで回す時にToLoopItem拡張メソッドを呼べば、情報を足してくれます。</p>
+<p>IsEmptyは全体が空の時、IsSeparatorは要素の間の時、IsElementが本体の要素の列挙の時、を指します。Elementの時は、更にIsFirst, IsLast, Indexが取れる。item.Itemはちょっと間抜けか。ともあれ、実際にRazorで書いてみた感触としても悪くなく収まってる。</p>
+<p>Emptyだけならばループの外で@if(!source.Any()) /* 空の時のテンプレート */ としてやればいいし、そのほうが綺麗感はある。けれど、それだとsourceがIEnumerableの時キモチワルイ（二度列挙開始が走る）とかもあるし、コレクションに関わるものはforeachのスコープ内に全部収まったほうがスッキリ感も、なくもない。</p>
+<p>IndexとIsLastだけが欲しいなら、空テンプレートとセパレータはオプションだから、withEmpty, withSeparatorを共にfalseにすれば、全部Elementなので、if(item.IsElement)は不要になる。</p>
+<p>それにしてもRazor V2で属性にnull渡すと属性自体を吐かないでくれる機能は素敵ですなあ。クリーンは正義！</p>
+<p>実装はこんな感じ。</p>
+<pre><code class="language-csharp">public struct LoopItem&lt;T&gt;
+{
+    public readonly bool IsEmpty;
+    public readonly bool IsSeparator;
+    public readonly bool IsElement;
+    public readonly bool IsFirst;
+    public readonly bool IsLast;
+    public readonly int Index;
+    public readonly T Item;
+
+    public LoopItem(bool isEmpty = false, bool isSeparator = false, bool isElement = false, bool isFirst = false, bool isLast = false, int index = 0, T item = default(T))
+    {
+        this.IsEmpty = isEmpty;
+        this.IsSeparator = isSeparator;
+        this.IsElement = isElement;
+        this.IsFirst = isFirst;
+        this.IsLast = isLast;
+        this.Index = index;
+        this.Item = item;
+    }
+
+    public override string ToString()
+    {
+        return (IsEmpty) ? &quot;Empty&quot;
+             : (IsSeparator) ? &quot;Separator&quot;
+             : Index + &quot;:&quot; + Item.ToString();
+    }
+}
+
+public static class LoopItemEnumerableExtensions
+{
+    public static IEnumerable&lt;LoopItem&lt;T&gt;&gt; ToLoopItem&lt;T&gt;(this IEnumerable&lt;T&gt; source, bool withEmpty = false, bool withSeparator = false)
+    {
+        if (source == null) source = Enumerable.Empty&lt;T&gt;();
+
+        var index = 0;
+        using (var e = source.GetEnumerator())
+        {
+            var hasNext = e.MoveNext();
+            if (hasNext)
+            {
+                while (true)
+                {
+                    var item = e.Current;
+                    hasNext = e.MoveNext();
+                    if (hasNext)
+                    {
+                        yield return new LoopItem&lt;T&gt;(index: index, isElement: true, isFirst: (index == 0), item: item);
+                    }
+                    else
+                    {
+                        yield return new LoopItem&lt;T&gt;(index: index, isElement: true, isFirst: (index == 0), isLast: true, item: item);
+                        break;
+                    }
+
+                    if (withSeparator) yield return new LoopItem&lt;T&gt;(index: index, isSeparator: true);
+                    index++;
+                }
+            }
+            else
+            {
+                if (withEmpty)
+                {
+                    yield return new LoopItem&lt;T&gt;(isEmpty: true);
+                }
+            }
+        }
+    }
+}
+</code></pre>
+<p>大事なのは、IEnumerable&lt;T&gt;へのループは必ず一回にすること、ね。よくあるAny()で調べてから、ループ本体を廻すと、二度列挙実行が走る（Anyは最初を調べるだけですが、もしIEnumerable&lt;T&gt;が遅延実行の場合、そのコストは読めない）というのは、精神衛生上非常に良くない。</p>
+<p>あとIsLastを取るために、一手先を取得してからyield returnをしなければならないので、少しゴチャついてしまいましたが、まあ、こういうのがViewの表面上に現れる苦難を思えば！</p>
+<p>最近、イミュータブルな入れ物を作りたい時はコンストラクタにずらずら引数並べるでファイナルアンサー。と思うようになりました、一周回って。名前付き引数で書かせれば、数が多くても可読性落ちたりとかないですし、これでいいでしょう。名前付きで書かせることを強制したいけれど、それは無理なので適度に諦めるとして。</p>
+<p>最後にユニットテストを置いておきます。例によってMSTest + <a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>で。</p>
+<pre><code class="language-csharp">[TestClass]
+public class LoopItemTest
+{
+    [TestMethod]
+    public void Empty()
+    {
+        Enumerable.Empty&lt;int&gt;().ToLoopItem(withEmpty: false).Any().IsFalse();
+        Enumerable.Empty&lt;int&gt;().ToLoopItem(withEmpty: true).Is(new LoopItem&lt;int&gt;(isEmpty: true));
+        ((IEnumerable&lt;int&gt;)null).ToLoopItem(withEmpty: false).Any().IsFalse();
+        ((IEnumerable&lt;int&gt;)null).ToLoopItem(withEmpty: true).Is(new LoopItem&lt;int&gt;(isEmpty: true));
+    }
+
+    [TestMethod]
+    public void Separator()
+    {
+        Enumerable.Range(1, 3).ToLoopItem(withSeparator: false).Is(
+            new LoopItem&lt;int&gt;(index: 0, item: 1, isFirst: true, isElement: true),
+            new LoopItem&lt;int&gt;(index: 1, item: 2, isElement: true),
+            new LoopItem&lt;int&gt;(index: 2, item: 3, isLast: true, isElement: true)
+        );
+
+        Enumerable.Range(1, 1).ToLoopItem(withSeparator: true).Is(
+            new LoopItem&lt;int&gt;(index: 0, item: 1, isFirst: true, isLast: true, isElement: true)
+        );
+
+        Enumerable.Range(1, 3).ToLoopItem(withSeparator: true).Is(
+            new LoopItem&lt;int&gt;(index: 0, item: 1, isFirst: true, isElement: true),
+            new LoopItem&lt;int&gt;(index: 0, isSeparator: true),
+            new LoopItem&lt;int&gt;(index: 1, item: 2, isElement: true),
+            new LoopItem&lt;int&gt;(index: 1, isSeparator: true),
+            new LoopItem&lt;int&gt;(index: 2, item: 3, isLast: true, isElement: true)
+        );
+
+        Enumerable.Range(1, 4).ToLoopItem(withSeparator: true).Is(
+            new LoopItem&lt;int&gt;(index: 0, item: 1, isFirst: true, isElement: true),
+            new LoopItem&lt;int&gt;(index: 0, isSeparator: true),
+            new LoopItem&lt;int&gt;(index: 1, item: 2, isElement: true),
+            new LoopItem&lt;int&gt;(index: 1, isSeparator: true),
+            new LoopItem&lt;int&gt;(index: 2, item: 3, isLast: false, isElement: true),
+            new LoopItem&lt;int&gt;(index: 2, isSeparator: true),
+            new LoopItem&lt;int&gt;(index: 3, item: 4, isLast: true, isElement: true)
+        );
+    }
+}
+</code></pre>
+<p>structだと同値比較のために何もしなくていいのが楽ですね、けれどChaining AssertionならIsStructuralEqualがあるので、もしclassでも、やっぱり楽です！</p>
+<h2>まとめ</h2>
+<p>RazorだけじゃなくT4でコレクション回す時なんかにも使えます。なにかと毎度毎度、悩みの種なんですよねー。他に、こういうやり方もいいんでないー？とかあったら教えてください。</p>
+</div>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

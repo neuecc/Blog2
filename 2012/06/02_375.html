@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - 控えめなViewStateによるハイパフォーマンスASP.NET Web Forms開発</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2012/0602_375.html">控えめなViewStateによるハイパフォーマンスASP.NET Web Forms開発</a></h1>
+<ul class="date"><li>2012-06-02</li></ul>
+<div class="entry_body"><p>今どきのウェブ開発はMVCだよねー、な昨今を皆様どうお過ごしでしょうか。そんな中であっても、Web Formsでモバイル向けにハイパフォーマンスサイトを作らなきゃいけない時だってあるんです。さて、そんなWeb Fromsですが、とりあえずの敵はViewStateです。ViewStateをどのように活かし、どのように殺害するか、そこに全てがかかっています。幾つかの典型的なシチュエーションを取り出して、ViewStateを抹消していきましょう。</p>
+<h2>ViewStateMode = &quot;Disabled&quot;</h2>
+<p>下準備として、ViewStateModeをDisabledにします。ViewStateModeは.NET Framework 4から入った新機能で、「ようやく」ViewStateのオン・オフをルート階層から切り替えることが出来るようになりました。それまではEnableViewStateのみで、falseにすると、その階層の下のViewStateが全てオフになってしまうという使いにくいものでした。全部OFFで済ませられるほど世の中は甘くなく、Web Formsでは部分的にONにする必要性があります。ViewStateModeとEnableViewStateの両方が記述されているとEnableViewStateのほうが優先されて害悪となります。というわけで、.NET Framework 4以降ならばViewStateModeのみを使いましょう。</p>
+<pre><code class="language-xml">&lt;%@ Master Language=&quot;C#&quot; AutoEventWireup=&quot;true&quot; CodeBehind=&quot;Site1.master.cs&quot; Inherits=&quot;WebApplication3.Site1&quot; %&gt;
+
+&lt;!DOCTYPE html&gt;
+&lt;html xmlns=&quot;http://www.w3.org/1999/xhtml&quot;&gt;
+&lt;head runat=&quot;server&quot;&gt;
+    &lt;title&gt;ViewState殺害教&lt;/title&gt;
+&lt;/head&gt;
+&lt;body&gt;
+    &lt;asp:ContentPlaceHolder ID=&quot;BodyPlaceHolder&quot; runat=&quot;server&quot; ViewStateMode=&quot;Disabled&quot;&gt;
+    &lt;/asp:ContentPlaceHolder&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+</code></pre>
+<p>まずは、マスターページのContentPlaceHolderに対して、ViewStateModeをDisabledにしましょう。こうすることで全ページが強制的にデフォでViewStateオフが働きます。また、ページ単位でDisabledにしてしまうと、各Pageの this.ViewState[&quot;hogehoge&quot;] も無効になってしまって不便なので(PageのViewStateは便利なinput hiddenみたいなものですし、闇雲にすべてをオフにせず、便利なものは便利に使うのが大事です)、マスターページのContentPlaceHolderに仕込むのが最良だと私は考えています。</p>
+<h2>テキストボックスやドロップダウンリストから値を取り出す</h2>
+<p>そんなわけで、ViewStateを丸ごとオフにした状態からデータを取り出してみませう。</p>
+<pre><code class="language-xml">&lt;%@ Page Title=&quot;&quot; Language=&quot;C#&quot; MasterPageFile=&quot;~/Site1.Master&quot; AutoEventWireup=&quot;true&quot;
+    CodeBehind=&quot;WebForm1.aspx.cs&quot; Inherits=&quot;WebApplication3.WebForm1&quot; %&gt;
+
+&lt;asp:Content ContentPlaceHolderID=&quot;BodyPlaceHolder&quot; runat=&quot;server&quot;&gt;
+    &lt;form runat=&quot;server&quot;&gt;
+        &lt;asp:TextBox runat=&quot;server&quot; ID=&quot;ToaruTextBox&quot; /&gt;
+        &lt;asp:DropDownList runat=&quot;server&quot; ID=&quot;ToaruDropDownList&quot; /&gt;
+        &lt;asp:Button runat=&quot;server&quot; Text=&quot;ただのボタン&quot; OnClick=&quot;Button_Click&quot; /&gt;
+    &lt;/form&gt;
+&lt;/asp:Content&gt;
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/webforms_aiueo.jpg">
+</p>
+<p>こんなどうでもいい画面があるとして、コードビハインド側は</p>
+<pre><code class="language-csharp">public partial class WebForm1 : System.Web.UI.Page
+{
+    protected void Page_Load(object sender, EventArgs e)
+    {
+        if (IsPostBack) return;
+
+        ToaruTextBox.ToolTip = &quot;ほげほげ&quot;;
+        var items = Enumerable.Range(1, 10)
+            .Select(x =&gt; new ListItem
+            {
+                Text = x + &quot;点&quot;,
+                Value = x.ToString(),
+                Selected = x == 5
+            })
+            .ToArray();
+        ToaruDropDownList.Items.AddRange(items);
+    }
+
+    protected void Button_Click(object sender, EventArgs e)
+    {
+        try
+        {
+            Response.Write(&quot;TextBox.Text:&quot; + ToaruTextBox.Text + &quot;&lt;br /&gt;&quot;);
+            Response.Write(&quot;TextBox.ToolTip:&quot; + ToaruTextBox.ToolTip + &quot;&lt;br /&gt;&quot;);
+            Response.Write(&quot;DropDownList:&quot; + ToaruDropDownList.SelectedValue);
+            Response.End();
+        }
+        catch (System.Threading.ThreadAbortException) { }
+    }
+}
+</code></pre>
+<p>こんな感じとします。ところでどーでもいーんですが、DropDownListに値を突っ込むときはLINQでListItemの配列を作って、それをAddRangeで流し込むほうがDataSourceに入れてDataBindするよりも楽です。というのも、DataBindだとSelectedを指定するのが非常に難しいというか不可能に近いようなので。こういう色々と中途半端なとこがWeb Formsは嫌ですね。</p>
+<p>さて、このボタンを押した実行結果は、「TextBox.Text:あいうえお」「TextBox.ToolTip:」「DropDownList:」になります。TextBox.Textは取り出せてるけど、ToolTipは取り出せてない。DropDownListも全滅。つまるところ、ViewStateをオフにしていると、復元できる（イベントで取り出せる）プロパティと、そうでないプロパティがあります。挙動としては、Web Formsが復元出来るものは自動で復元してくれて、復元できないものは復元してくれない、といった感じです。そして、それだと困るわけです。ToolTipはどうでもいいのですが、DropDownListの値とか取れないと困る。ViewStateがオンなら、全部取得できているのに！やっぱりViewStateはオンにしよう！ではなくて、何とかしましょう。</p>
+<p>「復元出来るものは自動で復元してくれる」というけれど、その情報はどこにあるのでしょう。これは、別にWeb Formsだからって特殊なわけでもなんでもなく、Request.Formにあります。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/webforms_formasenum.jpg">
+</p>
+<pre><code class="language-csharp">public static class NameValueCollectionExtensions
+{
+    public static IEnumerable&lt;KeyValuePair&lt;string, string&gt;&gt; AsEnumerable(this NameValueCollection collection)
+    {
+        return collection.Keys.Cast&lt;string&gt;().Select(x =&gt; new KeyValuePair&lt;string, string&gt;(x, collection[x]));
+    }
+}
+</code></pre>
+<p>Button_Clickのところでブレークポイント張って、Request.Formの中身を覗きましょう。AsEnumerableは独自拡張メソッドです。Request.FormはNameValueCollectionというゴミに格納されていて、Keysは見れるけどValuesが見れないというクソ仕様なので、そこはLINQで何とかしましょうというか、これは多用するのでNameValueCollectionへの拡張メソッドとして定義しておくと捗りますというか、ないと死ぬレベル。</p>
+<p>そんなわけで、Formに普通に格納されていることが分かりました。そうそう、ViewStateをオフにしてるはずなのに__VIEWSTATEに値が入ってるぞ！とお怒りかもですが、ほんの少し入ってくるのは仕様なので、そこは我慢しましょう。大した量じゃないので。</p>
+<p>では、どうすれば値を取得できるのか、というと</p>
+<pre><code class="language-csharp">protected void Button_Click(object sender, EventArgs e)
+{
+    try
+    {
+        Response.Write(&quot;TextBox.Text:&quot; + Request.Form[ToaruTextBox.UniqueID] + &quot;&lt;br /&gt;&quot;);
+        Response.Write(&quot;DropDownList:&quot; + Request.Form[ToaruDropDownList.UniqueID]);
+        Response.End();
+    }
+    catch (System.Threading.ThreadAbortException) { }
+}
+</code></pre>
+<p>こうです。コントロールのUniqueIDをFormに渡せば良いわけですね。ToolTipとかいうどうでもいいものは取れないので、そういう、HTMLのinputに存在しないものに関しては、PageのViewStateに保存しておけば良いでしょう。私としては、Web Forms使うならinput hiddenよりもthis.ViewState[&quot;hoge&quot;]を使うべきだと思います。せっかくある道具ならば、嫌々ながらも有効活用したほうが良いでしょう。</p>
+<h2>リピーターとチェックボックス</h2>
+<p>お次は、繰り返しなシチュエーションを考えてみましょう。繰り返しといったらRepeater一択です。それ以外は存在しません。BulletedListすら存在しません。書き出すHTMLを完全にコントロールできるものはRepeater以外存在しません。Web Formsとはなんだったのか。ともかく、Repeaterです。</p>
+<pre><code class="language-xml">&lt;asp:Content ContentPlaceHolderID=&quot;BodyPlaceHolder&quot; runat=&quot;server&quot;&gt;
+    &lt;form runat=&quot;server&quot;&gt;
+        &lt;asp:Repeater runat=&quot;server&quot; ID=&quot;ToaruRepeater&quot;&gt;
+            &lt;ItemTemplate&gt;
+                &lt;input runat=&quot;server&quot; id=&quot;ToaruCheckBox&quot; type=&quot;checkbox&quot; value=&quot;&lt;%# Container.DataItem %&gt;&quot; /&gt;
+                チェック 値:&lt;%# Container.DataItem %&gt;
+                &lt;br /&gt;
+            &lt;/ItemTemplate&gt;
+        &lt;/asp:Repeater&gt;
+        &lt;asp:Button runat=&quot;server&quot; OnClick=&quot;Button_Click&quot; Text=&quot;ぼたん&quot; /&gt;
+    &lt;/form&gt;
+&lt;/asp:Content&gt;
+</code></pre>
+<pre><code class="language-csharp">public partial class WebForm1 : System.Web.UI.Page
+{
+    protected void Page_Load(object sender, EventArgs e)
+    {
+        if (IsPostBack) return;
+
+        ToaruRepeater.DataSource = Enumerable.Range(1, 10);
+        DataBind();
+    }
+
+    protected void Button_Click(object sender, EventArgs e)
+    {
+        try
+        {
+            // CheckされたCheckBoxの値をどう取り出す？
+            Response.End();
+        }
+        catch (System.Threading.ThreadAbortException) { }
+    }
+}
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/webforms_repeater.jpg">
+</p>
+<p>こんな、まあ簡単な画面があるとします。チェックされたCheckBoxの値をどうやって取り出しましょうか？そうそう、ちなみにですがasp:CheckBoxはvalueが指定できないというゴミ仕様なのでやめておきましょう（Web Formsってそんなのばっか、もうやだよ……。ちなみにコード側のInputAttributesで渡すことは一応できます、一応）。</p>
+<p>例によってRequest.Formから取り出すことになるので、まずはデバッガで値を見てやります。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/webforms_check.jpg">
+</p>
+<p>チェックしたチェックボックスの値、ToaruCheckBox,3とToaruCheckBox,8が確認できます。では、どうやって取り出してやろうか。Repeaterの中のコントロールなのでUniqueIDを使うことはできません。ただ、コントロール階層順に$で連結されてる、という法則は見えるわけなので、単純に$でSplitして文字列一致で見てやりましょうか。</p>
+<pre><code class="language-csharp">protected void Button_Click(object sender, EventArgs e)
+{
+    try
+    {
+        var checkedValues = Request.Form.AsEnumerable()
+            .Where(x =&gt; x.Key.Split('$').Last() == &quot;ToaruCheckBox&quot;)
+            .Select(x =&gt; x.Value);
+
+        // Checked:3, Checked:8
+        foreach (var item in checkedValues)
+        {
+            Response.Write(&quot;Checked:&quot; + item + &quot;&lt;br /&gt;&quot;);
+        }
+        Response.End();
+    }
+    catch (System.Threading.ThreadAbortException) { }
+}
+</code></pre>
+<p>はい、これで完璧です！なお、ASP.NETのID生成ルールはそれなりに変更が聞くので、詳しくは<a href="http://www.amazon.co.jp/gp/product/4822294544/ref=as_li_ss_tl?ie=UTF8&tag=ilsgeometrati-22&linkCode=as2&camp=247&creative=7399&creativeASIN=4822294544">プログラミングMicrosoft ASP.NET 4 (マイクロソフト公式解説書)</a><img src="http://www.assoc-amazon.jp/e/ir?t=ilsgeometrati-22&l=as2&o=9&a=4822294544" width="1" height="1" border="0" alt="" style="border:none !important; margin:0px !important;" />でも読めばいいでしょう。</p>
+<h2>ボタンとCommandArgument</h2>
+<p>ボタンはOnClickではなくOnCommandを使うと、CommandArgument(とCommandName)を渡せて便利です。簡単な例としては</p>
+<pre><code class="language-xml">&lt;asp:Content ContentPlaceHolderID=&quot;BodyPlaceHolder&quot; runat=&quot;server&quot;&gt;
+    &lt;form runat=&quot;server&quot;&gt;
+        &lt;asp:Button runat=&quot;server&quot; OnCommand=&quot;Button_Command&quot; CommandArgument=&quot;&lt;%# (int)Fruit.Grape %&gt;&quot; Text=&quot;ぶどう!&quot; /&gt;
+        &lt;asp:Button runat=&quot;server&quot; OnCommand=&quot;Button_Command&quot; CommandArgument=&quot;&lt;%# (int)Fruit.Apple %&gt;&quot; Text=&quot;りんご!&quot; /&gt;
+        &lt;asp:Button runat=&quot;server&quot; OnCommand=&quot;Button_Command&quot; CommandArgument=&quot;&lt;%# (int)Fruit.Orange %&gt;&quot; Text=&quot;みかん!&quot; /&gt;
+    &lt;/form&gt;
+&lt;/asp:Content&gt;
+</code></pre>
+<pre><code class="language-csharp">public partial class WebForm1 : System.Web.UI.Page
+{
+    public enum Fruit
+    {
+        Grape,
+        Apple,
+        Orange
+    }
+    protected void Page_Load(object sender, EventArgs e)
+    {
+        if (IsPostBack) return;
+
+        DataBind();
+    }
+
+    protected void Button_Command(object sender, CommandEventArgs e)
+    {
+        Response.Write(&quot;Clicked:&quot; + (Fruit)int.Parse((string)e.CommandArgument));
+    }
+}
+</code></pre>
+<p>注意しなければならないのは、aspx上でCommandArgumentに渡すと文字列になるので、enumを渡すときはintにキャストしておくことと、イベント側のCommandEventArgsに渡ってくるときは文字列なのでintにParseしなければならないこと、です。クソ面倒くさいですね、もう少し気が利いてもいいと思うんですが、まあWeb Formsなのでしょうがないと思っておきましょう。</p>
+<p>さて、ViewStateがオンならばこれでいいのですが、オフの場合はe.CommandArgumentは常に空文字列になってしまいます。何故か、というと、CommandArgumentはViewStateに乗ってやってくるからです。さて、どうしましょう、というと、解決策は部分的にオンにすることです。</p>
+<pre><code class="language-xml">&lt;asp:Content ContentPlaceHolderID=&quot;BodyPlaceHolder&quot; runat=&quot;server&quot;&gt;
+    &lt;form runat=&quot;server&quot;&gt;
+        &lt;asp:Button runat=&quot;server&quot; ViewStateMode=&quot;Enabled&quot; OnCommand=&quot;Button_Command&quot; CommandArgument=&quot;&lt;%# (int)Fruit.Grape %&gt;&quot; Text=&quot;ぶどう!&quot; /&gt;
+        &lt;asp:Button runat=&quot;server&quot; ViewStateMode=&quot;Enabled&quot; OnCommand=&quot;Button_Command&quot; CommandArgument=&quot;&lt;%# (int)Fruit.Apple %&gt;&quot; Text=&quot;りんご!&quot; /&gt;
+        &lt;asp:Button runat=&quot;server&quot; ViewStateMode=&quot;Enabled&quot; OnCommand=&quot;Button_Command&quot; CommandArgument=&quot;&lt;%# (int)Fruit.Orange %&gt;&quot; Text=&quot;みかん!&quot; /&gt;
+    &lt;/form&gt;
+&lt;/asp:Content&gt;
+</code></pre>
+<p>ButtonのViewStateModeだけを&quot;Enabled&quot;にすることで、最小限のViewStateで最大限の成果を発揮することができます。ViewStateを嫌うならば、そもそもCommandなんて使わない！になるでしょうけれど、そこまでやってしまうと勿体ない。縁あってWeb Formsを使うわけなのですから、「控えめに」「隠し味」として、ViewStateを有効活用していきましょう。</p>
+<h2>リピーターとボタン</h2>
+<p>最後に、リピーターの中にボタンが仕込まれているパターンを見てみましょう。</p>
+<pre><code class="language-xml">&lt;asp:Content ContentPlaceHolderID=&quot;BodyPlaceHolder&quot; runat=&quot;server&quot;&gt;
+    &lt;form runat=&quot;server&quot;&gt;
+        &lt;asp:Repeater runat=&quot;server&quot; ID=&quot;ToaruRepeater&quot; ViewStateMode=&quot;Enabled&quot;&gt;
+            &lt;ItemTemplate&gt;
+                &lt;%# Container.DataItem %&gt;:&lt;asp:Button runat=&quot;server&quot; OnClick=&quot;Button_Click&quot; Text=&quot;ぼたん！&quot; /&gt;&lt;br /&gt;
+            &lt;/ItemTemplate&gt;
+        &lt;/asp:Repeater&gt;
+    &lt;/form&gt;
+&lt;/asp:Content&gt;
+</code></pre>
+<pre><code class="language-csharp">public partial class WebForm1 : System.Web.UI.Page
+{
+    protected void Page_Load(object sender, EventArgs e)
+    {
+        if (IsPostBack) return;
+
+        ToaruRepeater.DataSource = Enumerable.Range(1, 10).Select(x =&gt; new string(Enumerable.Repeat('a', 10000).ToArray()));
+        DataBind();
+    }
+
+    protected void Button_Click(object sender, EventArgs e)
+    {
+        try
+        {
+            Response.Write(&quot;Clicked!&quot;);
+            Response.End();
+        }
+        catch (System.Threading.ThreadAbortException) { }
+    }
+}
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/webforms_aaa.jpg">
+</p>
+<p>a(x100000):ボタン という表示結果が得られます。ボタンをクリックするとClicked!と実行されて欲しいわけですが、ViewStateがオフだとうんともすんとも言いません。何故か、というと、イベントの選択もまたViewStateに乗ってくるからです。解決策はRepeaterのViewStateModeをEnabledにすること、です。</p>
+<p>しかし、単純にRepeaterのViewStateModeをEnabledにしただけだと、それ以下の全てのViewStateがオンになってしまいます。どういうことかというと、ViewStateを見てみると、この場合の結果は「133656文字」もあります！どれだけデカいんだよ！なぜかというとaaaaaa...(x10000) x 10がViewStateに乗っかってしまったからです。ただたんにボタンクリックできればいいだけなのに！じゃあ、どうするか、というと、ViewStateのオンオフを入れ子にしてRepeaterだけをオンにします。</p>
+<pre><code class="language-xml">&lt;asp:Content ContentPlaceHolderID=&quot;BodyPlaceHolder&quot; runat=&quot;server&quot;&gt;
+    &lt;form runat=&quot;server&quot;&gt;
+    &lt;asp:Repeater runat=&quot;server&quot; ID=&quot;ToaruRepeater&quot; ViewStateMode=&quot;Enabled&quot;&gt;
+        &lt;ItemTemplate&gt;
+            &lt;asp:PlaceHolder runat=&quot;server&quot; ViewStateMode=&quot;Disabled&quot;&gt;
+                &lt;%# Container.DataItem %&gt;:&lt;asp:Button runat=&quot;server&quot; OnClick=&quot;Button_Click&quot; Text=&quot;ぼたん！&quot; /&gt;&lt;br /&gt;
+            &lt;/asp:PlaceHolder&gt;
+        &lt;/ItemTemplate&gt;
+    &lt;/asp:Repeater&gt;
+    &lt;/form&gt;
+&lt;/asp:Content&gt;
+</code></pre>
+<p>これで解決。クソ面倒くさくて回りっくどくてイライラしますが、&quot;そういうもの&quot;だと思うしかないです。</p>
+<h2>Web Formsの良さをスポイルしてまでWeb Forms使いたい？</h2>
+<p>使いたくないです。それでもやらなきゃいけない時はあるんですDataSet死ね。</p>
+<h2>(ところで関係なく)async event</h2>
+<p><a href="http://www.microsoft.com/visualstudio/11/ja-jp">Visual Studio 2012 RC</a>出ました！<a href="http://neue.cc/2012/03/18_368.html">neue cc - Visual Studio 11の非同期(”C#, ASP.NET, Web Forms, MVC”)</a>で非同期系について特集しましたが、Web FormsではRegisterAsyncTask(new PageAsyncTask)しなきゃならなくて面倒くさい死ねという感じでしたが、ようやくイベントにasyncをつけるだけでよくなりました！</p>
+<pre><code class="language-csharp">protected async void Button_Click(object sender, EventArgs e)
+{
+    await Task.Delay(TimeSpan.FromSeconds(3));
+    try
+    {
+        Response.Write(&quot;hoge&quot;);
+        Response.End();
+    }
+    catch (System.Threading.ThreadAbortException) { }
+}
+</code></pre>
+<p>正式リリース前に対応してくれて本当に良かった。これでWeb Formsでももう少し戦える……、戦いたくないけど。</p>
+<h2>まとめ</h2>
+<p>世の中には<a href="http://en.wikipedia.org/wiki/Unobtrusive_JavaScript">Unobtrusive JavaScript</a>という言葉がありますが、そのように、私としてもUnobtrusive ViewStateを唱えたい。控えめに。とにかく控えめに。ほとんどないも同然なぐらいに。隠し味として使うのが、一番良いわけです。今までのWeb Formsはデフォルトオンで化学調味料をドバドバと投げ込んでいました。そんなものは食えたものじゃあありません。化学調味料を使うなら、超絶控えめに、ほんの少しでいいんです。そうすれば、革命的に美味しくなるのですから。それが正しい化学調味料の使い方。</p>
+<p>そして、理想を言えば化学調味料はゼロがいいんですけれどね。ゼロにしたければWeb Formsはやめましょう。それ以外の答えはない。Web Formsを使う以上は正しく向き合うことが大事。</p>
+<p>ViewStateをドバドバ使うことがWeb Formsの良さだというのも半分は事実ですが、半分はNOですね。ていうか馬鹿でしょ。そういう発想に未来はないし脳みそイカれてると思いますよ。DataSetを褒め称えていた狂った時代の発想なので、腐った部位はとっとと切り落としましょう。</p>
+<p>さて、そうして控えめにしたWeb Formsですけれど、これはこれでそれなりに良いとは思います。最小限にしたとしても、依然としてパーツ配置してOnClickでほいほい、という楽ちんさは健在ですし、カスタムコントロールによるモジュール化というのは悪くない。絶賛はしませんが、悪くないとは思います、そこまで悪しざまにいうものでもない。でも、まあ、もはや時代じゃあないでしょうね。もう、さようなら。</p>
+<p>と、まあ割とキツめにWeb Forms(やDataSet)にあたるのは日々苦しめられているからなので、罵詈雑言多いのは勘弁してね！別に現状がダメでも未来に良くなるとかならいいんですが、明らかに未来がないので、なんというかもうねえ、という。Web Formsも、これはこれで面白い仕組みだし、まっとうに進む道もあったとは思うんですが、舵取りにしくったと思います。結果的にこの閉塞感漂う現状と、明らかにリソース割かれてない感があるので、未来はないですね、残念ながら。しかし、最後の徒花としてやれるだけはやるのさぁ。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

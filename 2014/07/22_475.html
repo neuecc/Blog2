@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - Amazon Kinesis + Reactive Extensionsによる簡易CEP</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2014/0722_475.html">Amazon Kinesis + Reactive Extensionsによる簡易CEP</a></h1>
+<ul class="date"><li>2014-07-22</li></ul>
+<div class="entry_body"><p>AWSの<a href="http://aws.amazon.com/jp/kinesis/">Amazon Kinesis</a>！大規模なストリーミングデータをリアルタイムで処理する完全マネージド型サービス。うーん、いかにもわくわくしそうなキーワードが並んでいます。そしてついに先日、東京リージョンでも利用可能になったということでAWS Summitの最中もｗｋｔｋして、どうやって利用したもんかと考えてました。だって、リアルタイムにイベントデータが流れてくる→オブザーバブルシーケンス→<a href="https://rx.codeplex.com/">Reactive Extensions(Rx)</a>、という連想になるのは自然なことですよね？</p>
+<h2>Kinesisとは</h2>
+<p>Rx、の前にKinesisとは。<a href="http://aws.typepad.com/aws_japan/2013/11/amazon-kinesis-real-time-processing-of-streamed-data.html">【AWS発表】 Amazon Kinesis – ストリームデータのリアルタイム処理</a>を見れば事足りますが、表現するなら土管、ですかね。イベントデータの。以下ぽんち絵</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/image/amazonkinesis.jpg' />
+</p>
+<p>Streamの中はShardという単位で分かれていて、データを放り込む時はPartitionKeyを元に、どのShardに突っ込まれるか決まる。読み書き性能自体は完全にShardの数で決まっていて、1シャード毎にWriteは1MB/sec - 1000Req/sec, Readは2MB/sec - 5Req/secとなってます。事前に負荷状況を予測していくのと、随時、Split(Shardの分割)とMerge(Shardの統合)してスケーリングしていく、って感じですかねえ。API自体は単純で、あんま数もないので簡単に理解できるかと。</p>
+<p>APIが単純なのはやれることが少ないから。土管。情報を左から右に流すだけのパイプ。その代わり入力は限りなく無限にスケールしていく(Shardを増やしまくれば)。では出力は？というと、Kinesis Applicationとよばれる、といっても実体は、別にAPIをほぼほぼポーリングで叩いてデータ取り出して何か処理するものをそう呼んでるだけ。で、取り出すのはAPI叩いて保存されたデータを読むだけ。</p>
+<p>そう、ポーリング。Kinesis自体は一時保管所であって、本当のリアルタイムでPubSub配信するわけじゃあない（用途としては問題ないレベルで低遅延にはなるけれど）。保存時間は24時間で、その間はStream中のどこから（最初からでも最新からでも任意の位置から）でも取り出すことができる。一時保管所がわりにS3を使ったりすると、ゴミは貯まるしどこまで取ったかとか煩わしくなるけれど、Kinesisの場合はStreamの形状になっているのでとてもやりやすい。ただしKinesisは制限として1レコード辺り50KBまで。更にHTTPで投げる際にBase64になってブヨっと膨らむ。</p>
+<h2>ObservableKinesisClient</h2>
+<p>C#でKinesisを使うには、<a href="http://aws.amazon.com/jp/sdkfornet/">AWS SDK for .NET</a>を使えばAmazonKinesisClient入ってます。ソースコードも公開されてるしNuGetでも入れられるし、APIはとりあえずAsyncに対応してるし、APIデザインもちょっと奇妙なところもあるけれど、一応全て統一されたモデルでデザインされてるので、割と結構良いと思ってます。</p>
+<p>Kinesis、データの登録はPutRecordでバイナリ投げるだけなので単純なのですが、取り出しの方はいささか面倒で、DescribeStreamによるStream内のShard情報の取得、GetShardIteratorによるShardIterator(どの位置から取得開始するか、の情報)の取得、それを元にGetRecord、そして延々とポーリングのためのループ。と、繰り返す必要があります。</p>
+<p>というわけかで、まずは利用例の方を。</p>
+<pre><code class="language-csharp">// とりあえずAWSのキーと、ストリーム名で生成する感じ
+var client = new ObservableKinesisClient(&quot;awsAccessId&quot;, &quot;awsSecretAccessKey&quot;, RegionEndpoint.APNortheast1, streamName: &quot;KinesisTest&quot;);
+
+// データの登録。オブジェクトを投げ込むとJSONシリアライズしたのを叩き込む。
+await client.PutRecordAsync(new { Date = DateTime.Now, Value = &quot;ほげほげほげほげ&quot; });
+
+// ObserveRecordDynamicでJSONのストリームとして購読できる
+client.ObserveRecordDynamic()
+    .Where(x =&gt; x.Value != &quot;ほげ&quot;) // xはdynamicなのでどんなSchemaのJSONも自由に辿れる
+    .Select(x =&gt; x.Date + &quot;:&quot; + x.Value)
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>はい。ObserveRecordDynamicで、リアルタイムに流れてくるデータを簡単に購読できます。IObservableなので、Rxによって自由にクエリを書くことが可能。また、何のデータが流れてくるか分からないストリームのために、JSONはdynamicの形でデシリアライズされています。(IntelliSenseの補助は効きませんが)スキーマレスに、あらゆるデータをRxで処理できます。もちろん、型付けされたものが欲しければObserverRecord&lt;T&gt;を、今は実装してないですが、まあ簡単につくれます:)</p>
+<p>以下ObservableKinesisClient本体。</p>
+<pre><code class="language-csharp">// JSON.NET, AWSSDK, Rx-Mainの参照が必要
+public class ObservableKinesisClient
+{
+    readonly UTF8Encoding encoding = new UTF8Encoding(false);
+    readonly JsonSerializer serializer = new JsonSerializer() { Formatting = Newtonsoft.Json.Formatting.None }; // ThreadSafeだよ
+    readonly string streamName;
+    readonly AmazonKinesisClient kinesis; // ThreadSafeなのかは知らない（ぉぃ
+
+    // コンストラクタはもっとまぢめにやりましょう
+    public ObservableKinesisClient(string awsAccessId, string awsSecretAccessKey, RegionEndpoint endPoint, string streamName)
+    {
+        this.kinesis = new AmazonKinesisClient(awsAccessId, awsSecretAccessKey, endPoint);
+        this.streamName = streamName;
+    }
+
+    // ようするにObjectを1レコードずつJSONで突っ込むもの
+    public async Task&lt;PutRecordResponse&gt; PutRecordAsync(object value)
+    {
+        using (var ms = new MemoryStream())
+        using (var sw = new StreamWriter(ms, encoding))
+        using (var jw = new JsonTextWriter(sw) { Formatting = Formatting.None })
+        {
+            serializer.Serialize(jw, value);
+            jw.Flush();
+            ms.Position = 0;
+
+            var request = new PutRecordRequest
+            {
+                StreamName = streamName,
+                Data = ms,
+                PartitionKey = Guid.NewGuid().ToString() // PartitionKeyは適当にランダム
+            };
+
+            // つまり1レコード1HTTP POSTということになる。
+            // 大量に投げる際は素朴すぎてアレゲ感があるので、実際にやるときはまとめてから放り込んで
+            // 取り出す側も↑の構造を前提にして取り出すよーな感じにしたほうがいーかもデスネー
+            return await kinesis.PutRecordAsync(request).ConfigureAwait(false);
+        }
+    }
+
+    // Dynamicが嫌な場合はSerialize&lt;T&gt;でおｋ。とりあえずこの例ではdynamicでやります。
+    // Client内部で分配しちゃったほうがきっと自然にやさしい(Publish().RefCount())
+    public IObservable&lt;dynamic&gt; ObserveRecordDynamic()
+    {
+        return Observable.Create&lt;dynamic&gt;(async (observer, cancellationToken) =&gt;
+        {
+            var isRunningNextPipeline = false;
+            try
+            {
+                // まずShard一覧を取得する
+                // TODO:これを使いまわしちゃうとShardsの増減には対応してないよ！
+                // 毎回DescribeStream読むのもアレだしたまに問い合わせとかがいいの？
+                var describeStreamResponse = await kinesis.DescribeStreamAsync(new DescribeStreamRequest { StreamName = streamName }).ConfigureAwait(false);
+                var shards = describeStreamResponse.StreamDescription.Shards;
+
+                var nextIterators = new List&lt;string&gt;();
+                foreach (var shard in shards)
+                {
+                    if (cancellationToken.IsCancellationRequested) return; // CancellationTokenの監視だいぢだいぢ
+
+                    // ShardIteratorTypeは実際は取り出した位置を記録しておいてAFTER_SEQUENCE_NUMBERでやるか、LATESTでやるかがいーんじゃないでしょーか？
+                    var shardIterator = await kinesis.GetShardIteratorAsync(new GetShardIteratorRequest
+                    {
+                        StreamName = streamName,
+                        ShardId = shard.ShardId,
+                        ShardIteratorType = ShardIteratorType.TRIM_HORIZON, // TRIM_HORIZON = 最初から, LATEST = 最新, AT_SEQUENCE_NUMBER = そこから, AFTER_SEQUENCE_NUMBER = 次から
+                    }).ConfigureAwait(false);
+
+                    var record = await kinesis.GetRecordsAsync(new GetRecordsRequest { ShardIterator = shardIterator.ShardIterator }).ConfigureAwait(false);
+
+                    // Shardの順番で回してるので、このPushの順番は必ずしも「時系列ではない」ことにチューイ！
+                    foreach (var item in record.Records)
+                    {
+                        PushRecord(item, observer, ref isRunningNextPipeline); // ObserverでPush!Push!Push!
+                    }
+
+                    nextIterators.Add(record.NextShardIterator);
+                }
+
+                // NextShardIteratorがある状態で無限ぐるぐる
+                do
+                {
+                    if (cancellationToken.IsCancellationRequested) return; // ところどころCancellationTokenの監視 Part2
+
+                    for (int i = 0; i &lt; nextIterators.Count; i++)
+                    {
+                        if (cancellationToken.IsCancellationRequested) return; // ところどころCancellationTokenの監視 Part3
+
+                        var shardIterator = nextIterators[i];
+
+                        var record = await kinesis.GetRecordsAsync(new GetRecordsRequest { ShardIterator = shardIterator }).ConfigureAwait(false);
+
+                        // こちらでも、やはりShardの順番で回してるので、状況によって必ずしも時系列にはならないことにチューイ！
+                        foreach (var item in record.Records)
+                        {
+                            PushRecord(item, observer, ref isRunningNextPipeline); // ObserverでPush!Push!Push!
+                        }
+
+                        nextIterators[i] = record.NextShardIterator;
+                    }
+
+                    await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false); // 実質ポーリングなのでなんとなくDelayをちょっと入れてみる
+
+                    nextIterators = nextIterators.Where(x =&gt; x != null).ToList(); // 明らかに非効率なこの実装はテキトーなんで真面目にやるなら真面目に書いてください:)
+                } while (nextIterators.Any());
+            }
+            catch (Exception ex)
+            {
+                if (isRunningNextPipeline)
+                {
+                    throw;
+                }
+                else
+                {
+                    observer.OnError(ex);
+                }
+
+                return;
+            }
+
+            observer.OnCompleted();
+        });
+    }
+
+    void PushRecord(Record record, IObserver&lt;dynamic&gt; observer, ref bool isRunningNextPipeline)
+    {
+        using (var sr = new StreamReader(record.Data, encoding)) // item.DataにMemoryStreamの形で1レコードが受け取れる
+        using (var jr = new JsonTextReader(sr))
+        {
+            var obj = serializer.Deserialize(jr);
+            isRunningNextPipeline = true;
+            observer.OnNext(obj); // 1レコードをPush
+            isRunningNextPipeline = false;
+        }
+    }
+}
+</code></pre>
+<p>PutRecordAsyncはまんま、JSONにシリアライズしたデータを投げ込んでるだけです。ObserverRecordDynamicのほうはちょっと複雑っぽいですが、やってることは順に、DescribeStreamAsyncでShard一覧を取得→それぞれのShardでGetShardIteratorAsyncで始点の取得・GetRecordsAsyncで最初のデータを取得しobserverに配信→取得できたNextShardIteratorを元にデータ取得と配信の無限ループ。です。</p>
+<p>コメントで色々書いてありますが、Shard単位で処理していくのでレコードのSequenceNumberの順にPushされているわけではないことと、ShardがSplitやMergeで変動することへの対応は必要よね、とか考えることは色々ありますね。あと、Readの制限が5Req/secとかなり少ないので、複数処理する必要があるなら、できればリクエストは分配してやりたいところ。RxならPublishで分配、ついでにRefCountでSubscriberが0になったら購読解除というのが自然に書けるので、その辺も入れてやるといいかなー、なんて思います。とはいえ、基本的にはデータ取ってOnNextで垂れ流すという、それだけに収まってはいます（ほんとだよ！）。</p>
+<p>従来はこの手のコードはyield returnで処理するはずですが、それがOnNextに変わっているという事実が面白い！勿論、同期API + yield returnにすることも可能ですが、AWS SDKの同期APIは非同期のものを.Resultで取ってるだけで非同期のほうがネイティブになるので、同期API使うのはお薦めしません。<a href="http://neue.cc/2013/12/04_435.html">非同期時代のLINQ</a>、非同期時代のイテレータ。中々面白くありません？<a href="https://github.com/neuecc/UniRx#how-to-use-for-ienumeratoras-coroutine">UniRx - Reactive Extensions for UnityのFromCoroutine</a>でも、IObserverをyielderとして渡して、非同期のイテレータを作れる（コンバートできる）ようにしています。こういうのも一つのデザイン。</p>
+<h2>like CEP(with LINQPad)</h2>
+<p><a href="http://en.wikipedia.org/wiki/Complex_event_processing">CEP(Complex Event Processing)</a>は最近良く聞くようになりましたねー、Microsoftにも<a href="http://technet.microsoft.com/en-us/library/ee362541.aspx">StreamInsight</a>というかなり立派なプロダクトがあるのですが、あんまり話を聞かないし将来性もビミョーそうなので見なかったことにしましょう。ちなみにStreamInsightは2.1からRxと統合されたりして、この手のイベントストリームとRxとが相性良いこと自体は証明済みです。</p>
+<p>そんなわけでMicrosoft周辺では全然聞きませんが、日本だと<a href="http://www.atmarkit.co.jp/ait/articles/1404/30/news024.html">LINEでのEsper CEPの活用例</a>とか<a href="http://norikra.github.io/">Norikra:Schema-less Stream Processing with SQL</a>で盛んに聞いて、まーたMicrosoft周辺によくある、一歩先を行ったと思ったら周回遅れ現象か！とか思ったり思わなかったり。</p>
+<p>というわけで、<a href="http://www.slideshare.net/tagomoris/fluentpluginnorikra-fluentdcasual">Norikraの紹介スライド</a>のクエリ5つをRxで書いてみましょう。また、動作確認は<a href="http://www.linqpad.net/">LINQPad</a>のDumpでリアルタイムに表示が可能です(asynchronousにクエリが走ってる最中はResultsのところにリアルタイムにグリッドが追加されていく！）</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/image/kinesislinqpad.jpg' />
+</p>
+<pre><code class="language-csharp">// Queries:(1)
+client.ObserveRecordDynamic()
+    .Select(x =&gt; new{ x.Name, x.Age })
+    .Dump();
+
+// Queries:(2)
+client.ObserveRecordDynamic()
+    .Where(x =&gt; x.Current == &quot;Shibuya&quot;)
+    .Select(x =&gt; new{ x.Name, x.Age })
+    .Dump();
+
+// Queries:(3)
+client.ObserveRecordDynamic()
+    .Buffer(TimeSpan.FromMinutes(5))
+    .Select(xs =&gt; xs.GroupBy(x =&gt; x.Age).Select(x =&gt; new { Age = x.Key, Count = x.Count() }))
+    .Dump();
+
+// Queries:(4)
+client.ObserveRecordDynamic()
+    .Buffer(TimeSpan.FromMinutes(5))
+    .Select(xs =&gt; xs.Max(x =&gt; x.Age))
+    .Dump();
+
+// Queries:(5)
+client.ObserveRecordDynamic()
+    .Where(x =&gt; x.Current == &quot;Kyoto&quot; &amp;&amp; x.Attend[0] &amp;&amp; x.Attend[1])
+    .Buffer(TimeSpan.FromMinutes(5))
+    .Select(xs =&gt; xs.GroupBy(x =&gt; x.User.Age).Select(x =&gt; new { Age = x.Key, Count = x.Count() }))
+    .Dump();
+</code></pre>
+<p>5分間だったらBufferもしくはWindowが使えます（量が少なそうならBufferのほうが、後続クエリにLINQ to Objectsが使えて分かりやすい、量が多いならWindowで、同様にRxで集計クエリが書ける）。他に何ができるかは<a href="https://github.com/Netflix/RxJava/wiki">RxJavaのWikiのOperator一覧</a>でもどうぞ。めちゃくちゃ何でもできます。</p>
+<h2>SQL vs Rx</h2>
+<p>SQLである必要は、あるようで、ない。テキストベースのDSLを作るならSQLが共通知識として期待できるので、SQLに寄せる必要性はかなり高い。けれど、Rxならば、LINQとしての共通知識と、C#そのものであるというコンパイルセーフな点と何でもできること、メソッドチェーン(+IntelliSense)による書きやすさ。SQLライクなものを使いたい理由は全くない。</p>
+<p>（とはいえ勿論いちだいのRxがぶんさんごりごりのに勝てるとは思ってないんで、そこはまぁかじゅあるなはなしです）</p>
+<h2>TODO</h2>
+<p>というわけで見てきたわけですが、まあ所詮まだ単純なコードによるコンセプトレベルの話ですね！本格的にこれからやるとしたら</p>
+<ul>
+<li>ObservableKinesisClientをもっとしっかりしたものに</li>
+<li>Kinesis ApplicationをホストするためのServiceとプラグイン機構</li>
+<li>ログ転送側としてSLABのKinesis用Sink</li>
+</ul>
+<p>ですかねえ。まぁ、これらはJavaですでに用意されている<a href="https://github.com/awslabs/amazon-kinesis-client">amazon-kinesis-client</a>や<a href="https://github.com/awslabs/amazon-kinesis-connectors">amazon-kinesis-connectors</a>を.NET環境で代替するために必要だ、といったところですね。素直にJava書けば？っていうのは一理あるけれど、どーなんですかね、C#でやりたいんですよ（笑）</p>
+<p><a href="https://slab.codeplex.com/">Semantic Logging Application Block(SLAB)</a>というのは構造化ロガー（正確にはロガーは含まれないけれど）と収集サービスがセットになったライブラリです。面白いのはOut-Of-Processでの動作が選べて、その場合はWindowsネイティブの<a href="http://msdn.microsoft.com/en-us/library/windows/desktop/aa363668.aspx">Event Tracing for Windows (ETW)</a>経由でログが運ばれるので、非常に高速に動作する、というところ。Sinkというのは出力用プラグインみたいなものです。なので、アプリケーション→<a href="http://msdn.microsoft.com/ja-jp/library/system.diagnostics.tracing.eventsource.aspx">EventSource</a>ロガー→SLAB Service(+ KinesisSink)→Kinesis という構造を作ることで、データをリアルタイムに投下するところまでは行ける。あとはRedShiftに送って解析(amazon-kinesis-connectorsには既にありますね)するなり、他のKinesis Application作るなりよしなに出来るかなぁ、できればいいかなぁ、と。<a href="http://lambda-architecture.net/">ラムダアーキテクチャ</a>、というホドデハ・モチロンナイ。</p>
+<h2>AWS + Windows(C#)</h2>
+<p>先週の木・金に開催された<a href="http://www.awssummittokyo.com/">AWS Summit Tokyo 2014</a>にて、AWS + Windows(C#)で構築する.NET最先端技術によるハイパフォーマンスウェブアプリケーション開発実践と題して、セッションを行いました。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/37121424" width="597" height="486" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px 1px 0; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="https://www.slideshare.net/neuecc/aws-windowscnet" title="AWS + Windows(C#)で構築する.NET最先端技術によるハイパフォーマンスウェブアプリケーション開発実践" target="_blank">AWS + Windows(C#)で構築する.NET最先端技術によるハイパフォーマンスウェブアプリケーション開発実践</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>まとめで書きましたが、C#+AWSは現実解、だと思ってます。そしてAWSだからといって特別なこともなく、そしてC#だからといって特別なこともない。Kinesisもちゃんと使えるわけだし、結構面白いことがまだまだ出来るんじゃないかな、って思ってます。なんでAzure使わないんですか？というのには、よく聞かれるのでお茶を濁して答えないとして（！）、AzureにもKinesisのような<a href="http://azure.microsoft.com/ja-jp/services/event-hubs/">Azure Event Hubs</a>というものが先週プレビューリリースされました。C#からの活用という点では、こちらにも注目していきたいところです。<a href="http://msdn.microsoft.com/en-us/library/dn789972.aspx">Event Hubs Developer Guide</a>なんか見ると普通に色々参考になるし、機能的にはHTTP以外にAMQP使えたり、ちょっと強そうではある。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

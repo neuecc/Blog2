@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - ZeroFormatter 1.3 - 機能強化とstructの超高速性能とFAQと。</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2016/1114_543.html">ZeroFormatter 1.3 - 機能強化とstructの超高速性能とFAQと。</a></h1>
+<ul class="date"><li>2016-11-14</li></ul>
+<div class="entry_body"><p>ほとんど昨日の今日な状態で1.3って、バージョン1.0とは何だったのか、というかそれってベータだったということなのでは？という、あまりにいい加減なバージョン番号付けなのですけれど、そんなわけで1.3です。これが本当の1.0だ……。</p>
+<ul>
+<li><a href="https://github.com/neuecc/ZeroFormatter/">neuecc/ZeroFormatter</a></li>
+</ul>
+<p>基本的な概要は初出での記事 <a href="http://neue.cc/2016/11/08_542.html">ZeroFormatter - C#の最速かつ無限大高速な .NET, .NET Core, Unity用シリアライザー</a>を読んでいただければと思うのですが、では何が変わったかというと、ReadMeを全部書いた！いや地味に面倒なんですよ、分量あるし。英語だし。</p>
+<p>というのもあるんですが、方向性を若干変えました。なんというか、反響が思ったよりも良すぎた。あまりの良さにビビッた(GitHub Starも私的最高伸び速度最大をマークした）、のと、だいぶ気を良くしたので、ユースケースを変えたベンチマークを他にとってみたりして、改めて考えた結果「汎用的に全方位に使える最強シリアライザ」にすることにした。というのが大きな方針転換。</p>
+<h2>汎用シリアライザとして</h2>
+<p>ビルトインでサポートしてる型を大幅に増やしました。具体的には</p>
+<pre><code class="language-txt">All primitives, All enums, TimeSpan, DateTime, DateTimeOffset,
+Tuple&lt;,...&gt;, KeyValuePair&lt;,&gt;, KeyTuple&lt;,...&gt;,
+Array, List&lt;&gt;, HashSet&lt;&gt;, Dictionary&lt;,&gt;, ReadOnlyCollection&lt;&gt;, ReadOnlyDictionary&lt;,&gt;,
+IEnumerable&lt;&gt;, ICollection&lt;&gt;, IList&lt;&gt;, ISet&lt;,&gt;,
+IReadOnlyCollection&lt;&gt;, IReadOnlyList&lt;&gt;, IReadOnlyDictionary&lt;,&gt;, ILookup&lt;,&gt;
+and inherited ICollection&lt;&gt; with paramterless constructor
+</code></pre>
+<p>です。まぁようするに、普通に生活してて（？）出てくるほとんど全部の型がそのまま使えます。特にコレクション系を、普通に使ってても一切躓かないようにしました。1.0では実はIList/IDictionaryしかサポートしていなかったのです！もともとの発端が<a href="http://google.github.io/flatbuffers/">FlatBuffers</a>のような内部にバイト配列を抱えてデシリアライズしないから無限大に速い（ツッコミどころの多いこの表現ですが、これは<a href="https://capnproto.org/">Cap'n Proto</a>から引用してます。Cap'n Protoは日本での知名度はゼロに近いですが、私は最初見た時かなり衝撃を受けました。ちなみに他にもタイムトラベルRPCとか、カッコイイ用語が目白押しなのもCap'n Protoは素敵です）、という点を強く意識していたので、具象型(ListとかArray)だと、それが実現できないんですよね。なので却下にしてたのですけれど、「汎用シリアライザ」として使わせたいんだったらサポートしたほうがいいかな、と。シリアライズ/デシリアライズ速度が他を圧倒して超高速だったというのも決断を後押ししてます。まぁこれだけ速いんだから全然いいだろ、みたいな。</p>
+<h2>structが超速い</h2>
+<p>というか、これに関しては他が遅すぎるといったほうが正しいぐらい。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/20247878/58c321ce-aa1b-11e6-805e-b4b053046f1a.png" alt="image" /></p>
+<p>intだけとかVector3とかそれの配列とか、HTMLぐらいを想定した大きめ文字列とかの結果です。文字列は結局UTF-8でエンコード/デコードするのはみんな変わらないのでそんなもんかってところですが、他が絶望的に違いすぎる。アホみたいに差が開いてるんですが、これは事実なんだなぁ。</p>
+<p>これは、小さいデータに関しての考慮が全然ないから、というのがめっちゃ大きい。int(1)を書くってのは、つまり最速は BitConverter.GetBytes(1) なんですよ、で、もはやそこからどれだけ「遅くするか」の勝負ですらある。他のシリアライザは、やってることがあまりにも多い、だから際限なく、最速から遠くなる。ZeroFormatterは限界まで無駄がない（実際、これ以上縮めようがない）ので、もんのすごく差が開きます。どうせ小さいデータだから一個一個は差がデカいといっても小さいとも言えるんですが、頻度が高いと馬鹿にならない差になります。というかさすがにここまで違うと全然違うでしょう。</p>
+<p>小さいデータのやり取りって、ないようで結構あるんですよ。ウェブだったら、例えばMemcachedやRedisなどKVSへのアクセスでintだけ格納したりとかって普通によくある。ゲームだったら座標データ(Vector3)のやり取りとかね。なのでまぁ、ZeroFormatterはかなり価値あるかなー、と。</p>
+<h2>Union型の追加</h2>
+<p>なにそれ、というと、一個の型の表明で複数の型を返せるようになります。どちらかというとポリモーフィズムのほうが近いですかねー、実際C#でのデシリアライズ結果はポリモーフィズムとしての表現に落としているので。ド直球に言うとFlatBuffersにあるやつです。</p>
+<pre><code class="language-csharp">// こんなんで判別したいとして
+public enum CharacterType
+{
+    Human, Monster
+}
+
+// こんなふーにabstract classとUnionAttributeに子クラスを並べて、UnionKeyで識別するものを指します
+[Union(typeof(Human), typeof(Monster))]
+public abstract class Character
+{
+    [UnionKey]
+    public abstract CharacterType Type { get; }
+}
+
+// あとは延々と並べる。
+[ZeroFormattable]
+public class Human : Character
+{
+    // UnionKeyはintでもstringでもなんでもいいんですが、かならず同じ値が帰ってくるようにする必要がある
+    public override CharacterType Type =&gt; CharacterType.Human;
+
+    [Index(0)]
+    public virtual string Name { get; set; }
+
+    [Index(1)]
+    public virtual DateTime Birth { get; set; }
+
+    [Index(2)]
+    public virtual int Age { get; set; }
+
+    [Index(3)]
+    public virtual int Faith { get; set; }
+}
+
+[ZeroFormattable]
+public class Monster : Character
+{
+    public override CharacterType Type =&gt; CharacterType.Monster;
+
+    [Index(0)]
+    public virtual string Race { get; set; }
+
+    [Index(1)]
+    public virtual int Power { get; set; }
+
+    [Index(2)]
+    public virtual int Magic { get; set; }
+}
+</code></pre>
+<pre><code class="language-csharp">// で、こう使う。
+var demon = new Monster { Race = &quot;Demon&quot;, Power = 9999, Magic = 1000 };
+
+// Union型を指定してシリアライズする(そうしないと子を直接シリアライズしてしまうので)
+var data = ZeroFormatterSerializer.Serialize&lt;Character&gt;(demon);
+
+var union = ZeroFormatterSerializer.Deserialize&lt;Character&gt;(data);
+
+// 結局みんな大好きswitchですが何か。
+switch (union.Type)
+{
+    case CharacterType.Monster:
+        var demon2 = (Monster)union;
+        demon2.Race...
+        demon2.Power..
+        demon2.Magic...
+        break;
+    case CharacterType.Human:
+        var human2 = (Human)union;
+        human2.Name...
+        human2.Birth...
+        human2.Age..
+        human2.Faith...
+        break;
+    default:
+        Assert.Fail(&quot;invalid&quot;);
+        break;
+}
+</code></pre>
+<p>最終的にswitchなのがダサいといえばダサいんですが(C#でやる表現上の限界かな！）、まぁ悪くない落とし所なのではないかな、と。で、これ、便利ですよ。マジで。うーん、結構あるんですよね、状況に応じて複数データ返したいときって。で、愚直にやるとこうなるわけです。</p>
+<pre><code class="language-csharp">public class Hoge
+{
+    public 何か1の時の型 Nanika1 { get; set;}
+    public 何か2の時の型 Nanika2 { get; set;}
+    public 何か3の時の型 Nanika3 { get; set;}
+}
+</code></pre>
+<p>いやー、色々無駄だし型の表現としてもアレだしちょっと、ねー、っていう。</p>
+<p>Unionをシリアライザで記述するという点では、ZeroFormatterのやり方はかなり上手い感じで（自分で言う）、書きやすさと安全性（完全ではないけれど、意識しやすさが高いのでそこそこはある）をいい塩梅に両立させれたんじゃないかなー、と。特に書きやすさはかなりあると思います。というかぶっちけ他のシリアライザでこの手のポリモーフィズムやるのは凄まじく大変なので、革命的に便利になったといっても過言ではない。</p>
+<h2>バイナリ仕様の整理と多言語対応</h2>
+<p>諸々の追加や事情も踏まえて、バイナリ仕様を整理しました。</p>
+<ul>
+<li><a href="https://github.com/neuecc/ZeroFormatter#wireformat-specification">WireFormat Specification</a></li>
+</ul>
+<p>まず、言語中立にしました。いやまぁ、もともと、C#依存度の高いものは外して移植しようと思えばできるように、みたいな感じに作ってはいたのですけれど、より明確に中立を意識して整理しました。元々かなり頭悪く単純に作ってあるので（ZeroFormatterの速さは賢くないバイナリ仕様をC#実装力でねじ伏せる、というところがかなりあって、逆に言えば実装Firstで作られているので、言語実装で最速になるように寄り添って仕様が固まったとも言える）</p>
+<p>というのと、↑のように遅延実行ではないコレクションのサポートを正式に入れるということで、Sequence Formatというのを正式に用意して遅延ではないDictionaryなどのレイアウトはここに属する、という形にしました。Objectも、ObjectとStruct という分けかたで定義して、KeyTupleはStructに属してますよ、みたいに割とそこそこちゃんと汎用的感な分類になってるんじゃあなかろうか。結構あーでもないこーでもないと弄ってたんですが、うーん、なるほど、こういうのは結果はあっさりしてるけど過程はとても大変……。</p>
+<p>と、いうわけで、言語がC#のみってのはさすがに普通に欠点なんですが、整備してみたんで多言語サポートよろしくお願いします、みたいな（？）。やりたい気持ちはあるんですが、如何せんちょっとC#以外は手が回らないのデスデス。社内ではサーバーもC#で完動するようになってるので、あんまり強い外圧が働かなくて。そして実際手が回らないので。仕様作る！実装する！社内のプロジェクトのデータの移植もする！更にこれを使った次の何かも作る！あわあわわわわあわ、本当に手が回ってないﾔｳﾞｧｲ。</p>
+<h2>スキーマはあるよ</h2>
+<p>スキーマはあります。見えないだけで。どういうことかというとこういうことです。</p>
+<pre><code class="language-csharp">namespace /* Namespace */
+{
+    // Fomrat Schemna
+    [ZeroFormattable]
+    public class /* FormatName */
+    {
+        [Index(/* Index Number */)]
+        public virtual /* FormatType */ Name { get; set; }
+    }
+
+    // UnionSchema
+    [Union(typeof(/* Union Subtypes */))]
+    public abstract class UnionSchema
+    {
+        [UnionKey]
+        public abstract /* UnionKey Type */ Key { get; }
+    }
+}
+</code></pre>
+<p>C#自体がスキーマなのです。それの利点はかなりあって、「パーサーを作らなくて済む（C#のコンパイラは既にC#で実装されていて、それのパーサーが使える）」「入力補完/コードフォーマット/シンタックスハイライト/アナライザー拡張などIDE(Visual Studio)の恩恵をフルに使える」ってのが、まずは良い。実際、zfc.exe(ZeroFormatterCompiler)という実行ファイルによって、C#というスキーマをもとにコード生成をしています。現在はAOTのためのC#コード生成ですが、別に出力を変えれば、他の言語のコードでも全然吐けます（ランタイムがないから無理だけど！）</p>
+<p>デメリットは「機能が制限されてないので容易に制限からはみだせるので言語中立にしづらい」「現行のC#の言語機能に制限される（例えば非nullなStringは定義できない）」ってとこですね。特に前者がビミョーなんですが紳士協定の範囲内（C#としてコンパイル可能でもZeroFormatterとして解析不能だっていうエラーを放り投げちゃえばSyntaxErrorなコードと変わらない）に収めることはなんとか可能なんじゃあないかなあ、とか。ってのは夢見てます。</p>
+<p>そして最大の利点がスキーマが生成を介さなくてもシェアできる、ということ。「プロジェクト参照」や「DLL参照」という形で、スキーマと生成コード（実際は実行時動的生成するんですが）をコード生成なしで複数プロジェクト間で共有できます。シームレスに。これは非常に大きくて、まぁ前の記事でも書いたんですがコード生成はやればやるほど複雑化していくんで、ないに越したことはないんですよね。んで、C# as Schemaだと、ゼロにできる。これはワークフローにとってはインパクトが相当大きいことです。</p>
+<p>私は、コード生成や自動化って「したくない」ことの筆頭候補に挙げてます。自動化はミクロでは楽になっても、その積み重ねがマクロでは害悪になるケースが往々にして多い。なので、やるべきことは「自動化をしなくてすむ」ようにすることです。そのために脳みそを動かしたい。結果、脳みそが追いついてなくてそこら中が止まることも往々にしてある。shoganai。</p>
+<h2>まとめ</h2>
+<p><a href="https://redd.it/5cqkd2">redddit/r/csharp/ZeroFormatter</a>でAsk Me Anythingやってます（とは）。Fastestとかぶち撒けたせいでシリアライザ戦争が勃発している（恐ろしい）。なるほど<a href="https://github.com/rogeralsing/Wire">Wire</a>、シランカッタ。コード的には基本的にZeroFormatterのほうが速そーなので、トータルで色々なケース作れば勝つと思うんだけど、弱点を突くと負けるケースは出てくるのかなぁ。とはいえ普通に私の手元で図ったら圧勝した、ふむ。（最終的に相手のベンチマークにZeroFormatter足して計測→<a href="https://gist.github.com/neuecc/05a25a2227f0bf464b458b75e99412e1">結果</a> 圧倒的な圧勝ということで、まぁしょうがない、相手が悪い。確かにWireは二位なので、惜しかったで賞というところ）</p>
+<p>というわけで、真面目に、C#でサッと今使ってるシリアライザをそのまま置き換えられるものにしました。つまり、あらゆるところで使ってください、と言ってます。実際、小さなところから大きなところまで効果あると思います。小さなところは↑でstructを例にしましたが、大きなところでは、例えばバッチ処理の連鎖とかで、延々と巨大なデータを送っているのだけれど、一つ一つはその一部しか使わないんだよねー、みたいな場合。に、ものすごく効くんじゃない？って意見貰いました。その通りで、実際そういうケースでは正しくめっちゃ効きますねー。</p>
+<p>とかとかって感なので、是非是非試してみてくださいな。あとクドい告知ですが11/27開催の<a href="http://kbkz.connpass.com/event/40629/">歌舞伎座.tech#12「メッセージフォーマット/RPC勉強会」</a>でもお話します＆クロスプラットフォーム(Unity, Windows, Mac, Linux)で使える通信用のフレームワークをリリースします（！）のもします（ホントに！）</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

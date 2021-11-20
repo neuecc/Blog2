@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - Windows Phone 7 + Reactive ExtensionsによるXml取得</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2010/0719_268.html">Windows Phone 7 + Reactive ExtensionsによるXml取得</a></h1>
+<ul class="date"><li>2010-07-19</li></ul>
+<div class="entry_body"><p>Windows Phone 7にはReactive Extensionsが標準搭載されていたりするのだよ！なんだってー！と、いうわけで、Real World Rx。じゃないですけれど、Rxを使って非同期処理をゴニョゴニョとしてみましょう。ネットワークからデータ取って何とかする、というと一昔前はRSSリーダーがサンプルの主役でしたが、最近だとTwitterリーダーなのでしょうね。というわけで、Twitterリーダーにします。といっても、ぶっちゃけただたんにデータ取ってリストボックスにバインドするだけです。そしてGUI部分は<a href="http://www.atmarkit.co.jp/fdotnet/scottgublog/20100324phone7app/phone7app.html" title="Silverlightを使用してWindows Phone 7でTwitterアプリケーションを構築 － ＠IT">Silverlightを使用してWindows Phone 7でTwitterアプリケーションを構築 － ＠IT</a>のものを丸ごと使います。手抜き！というわけで、差分としてはRxを使うか否かといったところしかありません。</p>
+<p>なお、別に全然Windows Phone 7ならでは！なことはやらないので、WPFでもSilverlightでも同じように書けます。ちょっとしたRxのサンプルとしてどうぞ。今回は出たばかりの<a href="http://developer.windowsphone.com/" title="Windows Phone for Developers | Windows Phone: Developer Home">Windows Phone Developer Tools Beta</a>を使います。Windows Phone用のBlendがついていたりと盛り沢山。</p>
+<h2>Xmlを読み込む</h2>
+<p>とりあえずLinq to XmlなのでXElement.Load(string uri)ですね。違います。そのオーバーロードはSilverlightでは使えないのであった。えー。なんでー。とはまあ、つまり、同期系APIの搭載はほとんどなくて、全部非同期系で操作するよう強要されているわけです。XElement.Loadは同期でネットワークからXMLを引っ張ってくる→ダウンロード時間中はUI固まる→許すまじ！ということのようで。みんな大好きBackgroundWorkerたん使えばいいぢゃない、みたいなのは通用しないそうだ。</p>
+<p>MSDNにお聞きすれば<a href="http://msdn.microsoft.com/ja-jp/library/cc645034(VS.95).aspx" title="方法 : LINQ to XML で任意の URI の場所から XML ファイルを読み込む">方法 : LINQ to XML で任意の URI の場所から XML ファイルを読み込む</a>とあります。ネットワークからデータを取ってくるときはWebClient/HttpWebRequest使えというお話。</p>
+<p>では、とりあえず、MainPage.xamlにペタペタと書いて、MessageBox.Showで確認していくという原始人な手段を取っていきましょう。XElementの利用にはSystem.Xml.Linqの参照が別途必要です。</p>
+<pre><code class="language-csharp">public MainPage()
+{
+    InitializeComponent();
+    
+    var wc = new WebClient();
+    wc.OpenReadCompleted += (sender, e) =&gt;
+    {
+        var elem = XElement.Load(e.Result); // e.ResultにStreamが入ってる
+        MessageBox.Show(elem.ToString()); // 確認
+    };
+    wc.OpenReadAsync(new Uri(&quot;http://twitter.com/statuses/public_timeline.xml&quot;)); // 非同期読み込み呼び出し開始
+}
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/winphone7_emulator.jpg">
+</p>
+<p>別に難しいこともなくすんなりと表示されました。簡単なことが簡単に書けるって素晴らしい。で、WebClientのプロパティをマジマジと見ていると<a href="http://msdn.microsoft.com/ja-jp/library/system.net.webclient.allowreadstreambuffering(v=VS.95).aspx" title="WebClient.AllowReadStreamBuffering プロパティ (System.Net)">AllowReadStreamBuffering</a>なんてものが。trueの場合はメモリにバッファリングされる。うーん、せっかくなので完全ストリーミングでやりたいなあ。これfalseならバッファリングなしってことですよね？じゃあ、バッファリング無しにしてみますか。</p>
+<pre><code class="language-csharp">var wc = new WebClient();
+wc.AllowReadStreamBuffering = false; // デフォはtrueでバッファリングあり、今回はfalseに変更
+wc.OpenReadCompleted += (sender, e) =&gt;
+{
+    try
+    {
+        var elem = XElement.Load(e.Result); // ここで例外出るよ！
+    }
+    catch (Exception ex)
+    {
+        // Read is not supporeted on the main thread when buffering is disabled.
+        MessageBox.Show(ex.ToString());
+    }
+};
+</code></pre>
+<p>例外で死にました。徹底して同期的にネットワーク絡みの処理が入るのは許しません、というわけですね、なるほど。じゃあ別スレッドでやるよ、ということでとりあえずThreadPoolに突っ込んでみた。</p>
+<pre><code class="language-csharp">wc.OpenReadCompleted += (sender, e) =&gt;
+{
+    ThreadPool.QueueUserWorkItem(_ =&gt;
+    {
+        try
+        {
+            var elem = XElement.Load(e.Result);
+            MessageBox.Show(elem.ToString()); // 今度はここで例外！
+        }
+        catch(Exception ex)
+        {
+            // Invalid cross-thread access.
+            Debug.WriteLine(ex.ToString());
+        }
+    });
+};
+</code></pre>
+<p>読み込みは出来たけど、今度はMessageBox.Showのところで、Invalid Cross Thread Accessで死んだ。そっか、MessageBoxもUIスレッドなのか。うーむ、世の中難しいね！というわけで、とりあえずDispatcher.BeginInvokeしますか。</p>
+<pre><code class="language-csharp">wc.OpenReadCompleted += (sender, e) =&gt;
+{
+    ThreadPool.QueueUserWorkItem(_ =&gt;
+    {
+        var elem = XElement.Load(e.Result);
+        Dispatcher.BeginInvoke(() =&gt; MessageBox.Show(elem.ToString()));
+    });
+};
+</code></pre>
+<p>これで完全なストリームで非同期呼び出しでのXmlロードが出来たわけですね。これは面倒くさいし、Invoke系の入れ子が酷いことになってますよ、うわぁぁ。</p>
+<h2>Rxを使う</h2>
+<p>というわけで、非Rxでやると大変なのがよく分かりました。そこでRxの出番です。標準搭載されているので、参照設定を開きMicrosoft.Phone.ReactiveとSystem.Observableを加えるだけで準備完了。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/winphone7_reactive_ref.jpg">
+</p>
+<pre><code class="language-csharp">var wc = new WebClient { AllowReadStreamBuffering = false };
+
+Observable.FromEvent&lt;OpenReadCompletedEventArgs&gt;(wc, &quot;OpenReadCompleted&quot;)
+    .ObserveOn(Scheduler.ThreadPool) // ThreadPoolで動かすようにする
+    .Select(e =&gt; XElement.Load(e.EventArgs.Result))
+    .ObserveOnDispatcher() // UIスレッドに戻す
+    .Subscribe(x =&gt; MessageBox.Show(x.ToString()));
+
+wc.OpenReadAsync(new Uri(&quot;http://twitter.com/statuses/public_timeline.xml&quot;));
+</code></pre>
+<p>非常にすっきり。Rxについて説明は、必要か否か若干悩むところですが説明しますと、イベントをLinq化します。今回はOpenReadCompletedイベントをLinqにしました。Linq化すると何が嬉しいって、ネストがなくなることです。非常に見やすい。更にRxの豊富なメソッド群を使えば普通ではやりにくいことがいとも簡単に出来ます。今回はObserveOnを使って、どのスレッドで実行するかを設定しました。驚くほど簡単に、分かりやすく。メソッドの流れそのままです。</p>
+<h2>FromAsyncPattern</h2>
+<p>WebClientだけじゃなく、ついでなのでHttpWebRequestでもやってみましょう。(HttpWebRequest)WebRequest.Create()死ね、といつも言ってる私ですが、SilverlightにはWebRequest.CreateHttpでHttpWebRequestが作れるじゃありませんか。何ともホッコリとします。微妙にこの辺、破綻した気がしますがむしろ見なかったことにしよう。</p>
+<pre><code class="language-csharp">var req = WebRequest.CreateHttp(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
+req.AllowReadStreamBuffering = false;
+req.BeginGetResponse(ar =&gt;
+{
+    using (var res = req.EndGetResponse(ar))
+    using (var stream = res.GetResponseStream())
+    {
+        var x = XElement.Load(res.GetResponseStream());
+        Dispatcher.BeginInvoke(() =&gt; MessageBox.Show(x.ToString()));
+    }
+}, null);
+</code></pre>
+<p>非同期しかないのでBeginXxx-EndXxxを使うのですが、まあ、結構面倒くさい。そこで、ここでもまたRxの出番。BeginXxx-EndXxx、つまりAPM(Asynchronus Programming Model:非同期プログラミングモデル)の形式の非同期メソッドをラップするFromAsyncPatternが使えます。</p>
+<pre><code class="language-csharp">var req = HttpWebRequest.CreateHttp(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
+req.AllowReadStreamBuffering = false;
+
+Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)
+    .Invoke() // 非同期実行開始(Invoke()じゃなくて()でもOKです、ただのDelegateなので)
+    .Select(res =&gt; XElement.Load(res.GetResponseStream()))
+    .ObserveOnDispatcher()
+    .Subscribe(x =&gt; MessageBox.Show(x.ToString()));
+</code></pre>
+<p>ラップは簡単で型として戻り値を指定してBeginXxxとEndXxxを渡すだけ。あとはそのまま流れるように書けてしまいます。普通だと面倒くさいはずのHttpWebRequestのほうがWebClientよりも素直に書けてしまう不思議！FromAsyncPatter、恐ろしい子。WebClient+FromEventは先にイベントを設定してURLで発動でしたが、こちらはURLを指定してから実行開始という、より「同期的」と同じように書ける感じがあって好き。WebClient使うのやめて、みんなHttpWebRequest使おうぜ！（ふつーのアプリのほうでは逆のこと言ってるのですががが）</p>
+<p>ところで、非同期処理の実行開始タイミングはInvokeした瞬間であって、Subscribeした時ではありません。どーなってるかというと、ぶっちゃけRxは実行結果をキャッシュしてます。細かい話はまた後日ちゃんと紹介するときにでも。</p>
+<h2>バインドする</h2>
+<p>GUIはScottGu氏のサンプルを丸々頂いてしまいます。リロードボタンを押したらPublicTLを呼ぶだけ、みたいなのに簡略化してしまいました。</p>
+<pre><code class="language-xml">&lt;Grid x:Name=&quot;LayoutRoot&quot; Background=&quot;Transparent&quot;&gt;
+    &lt;Grid.RowDefinitions&gt;
+        &lt;RowDefinition Height=&quot;Auto&quot;/&gt;
+        &lt;RowDefinition Height=&quot;*&quot;/&gt;
+    &lt;/Grid.RowDefinitions&gt;
+
+    &lt;Button Grid.Row=&quot;0&quot; Height=&quot;72&quot; Width=&quot;200&quot; Content=&quot;Reload&quot; Name=&quot;Reload&quot;&gt;&lt;/Button&gt;
+    &lt;ListBox Grid.Row=&quot;1&quot; Name=&quot;TweetList&quot; DataContext=&quot;{Binding}&quot;&gt;
+        &lt;ListBox.ItemTemplate&gt;
+            &lt;DataTemplate&gt;
+                &lt;StackPanel Orientation=&quot;Horizontal&quot;&gt;
+                    &lt;Image Source=&quot;{Binding Image}&quot; Height=&quot;73&quot; Width=&quot;73&quot; VerticalAlignment=&quot;Top&quot; /&gt;
+                    &lt;StackPanel Width=&quot;350&quot;&gt;
+                        &lt;TextBlock Text=&quot;{Binding Name}&quot; Foreground=&quot;Red&quot; /&gt;
+                        &lt;TextBlock Text=&quot;{Binding Text}&quot; TextWrapping=&quot;Wrap&quot; /&gt;
+                    &lt;/StackPanel&gt;
+                &lt;/StackPanel&gt;
+            &lt;/DataTemplate&gt;
+        &lt;/ListBox.ItemTemplate&gt;
+    &lt;/ListBox&gt;
+&lt;/Grid&gt;
+</code></pre>
+<p>あとは、ボタンへのイベント設定と、Twitterのクラスを作る必要があります。</p>
+<pre><code class="language-csharp">public class TwitterStatus
+{
+    public long Id { get; set; }
+    public string Text { get; set; }
+    public string Name { get; set; }
+    public string Image { get; set; }
+
+    public TwitterStatus(XElement element)
+    {
+        Id = (long)element.Element(&quot;id&quot;);
+        Text = (string)element.Element(&quot;text&quot;);
+        Name = (string)element.Element(&quot;user&quot;).Element(&quot;screen_name&quot;);
+        Image = (string)element.Element(&quot;user&quot;).Element(&quot;profile_image_url&quot;);
+    }
+}
+
+public partial class MainPage : PhoneApplicationPage
+{
+    public MainPage()
+    {
+        InitializeComponent();
+        Reload.Click += new RoutedEventHandler(Reload_Click); // XAMLに書いてもいいんですけど。
+    }
+
+    void Reload_Click(object sender, RoutedEventArgs e)
+    {
+        var req = HttpWebRequest.CreateHttp(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
+        req.AllowReadStreamBuffering = false;
+
+        Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)
+            .Invoke()
+            .Select(res =&gt; XElement.Load(res.GetResponseStream()))
+            .Select(x =&gt; x.Descendants(&quot;status&quot;).Select(xe =&gt; new TwitterStatus(xe)))
+            .ObserveOnDispatcher()
+            .Subscribe(ts =&gt; TweetList.ItemsSource = ts);
+    }
+}
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/winphone7_tweet.jpg">
+</p>
+<p>実行するとこんな具合に表示されます。簡単ですねー。ただ、これだとリロードで20件しか表示されないので、リロードしたら継ぎ足されるように変更しましょう。</p>
+<h2>イベントを合成する</h2>
+<p>継ぎ足しの改善、のついでに、一定時間毎に更新も加えよう。基本は一定時間毎に更新だけど、リロードボタンしたら任意のタイミングでリロード。きっとよくあるパターン。Reload.Click+=でハンドラ足すのはやめて、その部分もFromEventでObservable化してしまいましょう。そして一定時間毎のイベント発動はObservable.Timerで。</p>
+<pre><code class="language-csharp">// 30秒毎もしくはリロードボタンクリックでPublicTimeLineを更新
+Observable.Merge(
+        Observable.Timer(TimeSpan.Zero, TimeSpan.FromSeconds(30), Scheduler.NewThread).Select(_ =&gt; (object)_),
+        Observable.FromEvent&lt;RoutedEventArgs&gt;(Reload, &quot;Click&quot;).Select(_ =&gt; (object)_))
+    .SelectMany(_ =&gt;
+    {
+        var req = HttpWebRequest.CreateHttp(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
+        req.AllowReadStreamBuffering = false;
+        return Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)();
+    })
+    .Select(res =&gt; XStreamingReader.Load(res.GetResponseStream()))
+    .SelectMany(x =&gt; x
+        .Descendants(&quot;status&quot;)
+        .Select(xe =&gt; new TwitterStatus(xe))
+        .Reverse()) // 古い順にする
+    .Scan((before, current) =&gt; before.Id &gt; current.Id ? before : current) // 最後に通した記事よりも古ければ通さない(で、同じ記事を返す)
+    .DistinctUntilChanged(t =&gt; t.Id) // 同じ記事が連続して来た場合は何もしないでreturn
+    .ObserveOnDispatcher()
+    .Subscribe(t =&gt; TweetList.Items.Insert(0, t)); // Insertだって...
+</code></pre>
+<p>流れるようにメソッド足しまくるの楽しい！楽しすぎて色々足しすぎて悪ノリしている感が否めません、とほほ。解説しますと、まず一行目のMerge。これは複数本のイベントを一本に統一します。統一するためには型が同じでなければならないのですが、今回はTimer(long)と、Click(RoutedEventArgs)なのでそのままでは合成出来ません。どちらも発火タイミングが必要なだけでlongもRoutedEventArgsも不必要なため、Objectにキャストしてやって合流させました。</p>
+<p>こういう場合、Linq to Objectsなら.Cast&lt;object&gt;()なんですよね。Castないんですか？というと、一応あるにはあるんですが、実質無いようなもので。というわけで、今のところキャストしたければ.Select(<em>=&gt;(object)</em>)を使うしかありません。多分。もっとマシなやり方がある場合は教えてください。</p>
+<p>続いてSelectMany。TimerもしくはClickは発火のタイミングだけで、後ろに流すのはFromAsyncPatternのデータ。こういった、最初のイベントは発火タイミングにだけ使って、実際に流すものは他のイベントに摩り替える（例えばマウスクリックで発動させて、あとはマウスムーブを使うとか）というのは定型文に近い感じでよく使うことになるんじゃないかと思います。SelectMany大事。</p>
+<p>XMLの読み込み部は、せっかくなので、こないだ作ったバッファに貯めこむことなくXmlを読み込める<a href="http://neue.cc/2010/07/16_267.html" title="neue cc - XStreamingReader - Linq to Xml形式でのストリーミングXml読み込み">XStreamingReader</a>を使います。こんな風に、XMLを読み取ってクラスに変換する程度ならXElement.Loadで丸々全体のツリーを作るのも勿体無い。XStreamingReaderなら完全ストリーミングでクラスに変換出来ますよー。という実例。</p>
+<p>その下は更にもう一個SelectMany。こっちはLinq to Objectsのものと同じ意味で、IEnumerableを平たくしています。で、ScanしたDistinctUntilChangedして（解説が面倒になってきた）先頭にInsert（ちょっとダサい）。これで古いものから上に足される = 新しい順番に表示される、という形になりました。XAML側のListBoxを直に触ってInsertとか、明らかにダサい感じなのですが、まあ今回はただのサンプルなので見逃してください。</p>
+<p>RxのMergeに関しては、後日他のイベント合流系メソッド(CombineLatest, Zip, And/Then/Plan/Join)と一緒に紹介したいと思っています。合流系大事。</p>
+<h2>まとめ</h2>
+<p>驚くほどSilverlightで開発簡単。っぽいような印象。C#書ける人ならすぐにとっかかれますねー。素晴らしい開発環境だと思います。そして私は同時に、Silverlight全然分かってないや、という現実を改めて突きつけられて参ってます。XAMLあんま書けない。Blend使えない。MVVM分からない。モバイル開発云々の前に、基本的な技量が全然欠けているということが良く分かったし、それはそれで良い収穫でした。この秋なのか冬なのかの発売までには、ある程度は技術を身につけておきたいところです。</p>
+<p>そしてそれよりなにより開発機欲すぃです。エミュレータの起動も速いし悪くないのですが、やっぱ実機ですよ、実機！配ってくれぇー。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

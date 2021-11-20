@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - 2014-01</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2014/0127_446.html">C#での動的なメソッド選択における定形高速化パターン</a></h1>
+<ul class="date"><li>2014-01-27</li></ul>
+<div class="entry_body"><p>動的なメソッド選択、といってもなんのこっちゃというわけですが、身近な例だと、ようするにURLをルーティングして何のコントローラーの何のメソッドを呼ぶのか決めるって奴です、ASP.NET MVCとかの。ようするに<a href="http://neue.cc/2013/12/23_439.html">LightNode</a>はいかにして速度を叩きだしているのか、のお話。自慢。嘘本当。</p>
+<p>以前に<a href="http://neue.cc/2011/04/20_317.html">Expression Treeのこね方・入門編 - 動的にデリゲートを生成してリフレクションを高速化</a>という記事を書いたのですが(2011/04ですって！もうすっかり大昔！)、その実践編です。Real World メタプログラミング。</p>
+<h2>とあるController/Action</h2>
+<p>とあるControllerのとあるActionを呼び出したいとするじゃろ？あ、ちなみに別に例として手元にあるのがちょーどこれだったというだけで、別に同様なシチュエーション（動的にメソッドを選択する）では、うぇぶに限らず何にでも応用効きます。というわけでウェブ興味ね、という人も帰らないで！！！このサイトはC#のサイトですから！</p>
+<pre><code class="language-csharp">// 何の変哲もない何か
+public class HogeController
+{
+    public string HugaAction(int x, int y)
+    {
+        return (x + y).ToString();
+    }
+}
+</code></pre>
+<pre><code class="language-csharp">// コード上で静的に解決できるならこう書くに決まってるじゃろ？
+var result = new HogeController().HugaAction(1, 10);
+</code></pre>
+<p>ただたんにnewして実行するならこうなります。が、これが動的にControllerやActionを選ばなきゃいけないシチュエーションではどうなりますん？ルーティング処理が済んで、呼び出すクラス名・メソッド名が確定できたというところから行きましょう。</p>
+<pre><code class="language-csharp">// コントローラー名・アクション名が文字列で確定出来た場合
+var controllerName = &quot;ConsoleApplication.HogeController&quot;;
+var actionName = &quot;HugaAction&quot;;
+
+var instance = Activator.CreateInstance(Type.GetType(controllerName));
+var result = (string)Type.GetType(controllerName).GetMethod(actionName).Invoke(instance, new object[] { 1, 10 });
+</code></pre>
+<p>一番単純なやり方はこんなものでしょう。<a href="http://msdn.microsoft.com/ja-jp/library/wccyzw83.aspx">Activator.CreateInstance</a>でインスタンスを生成し、<a href="http://msdn.microsoft.com/ja-jp/library/a89hcwhh.aspx">MethodInfoのInvoke</a>を呼ぶことでメソッドを実行する。基本はこれ。何事も素直が一番良いですよ。おしまい。</p>
+<h2>動的コード生成事始め</h2>
+<p>あけましておめでとうございます。素直が一番、おしまい、で済まない昨今、リフレクションは実行速度がー、という亡霊の声が聞こえてくるのでshoganaiから対処しましょう。基本的にC#でリフレクションの速度を高める手段は一択です、デリゲート作ってキャッシュする。というわけでデリゲート作りましょう。</p>
+<pre><code class="language-csharp">// ここから先のコードでは↓4つの変数は省略します
+var controllerName = &quot;ConsoleApplication.HogeController&quot;;
+var actionName = &quot;HugaAction&quot;;
+var type = Type.GetType(controllerName);
+var method = type.GetMethod(actionName);
+            
+// インスタンスが固定されちゃう
+var instance = Activator.CreateInstance(type);
+var methodDelegate = (Func&lt;int, int, string&gt;)Delegate.CreateDelegate(typeof(Func&lt;int, int, string&gt;), instance, method);
+</code></pre>
+<p>Delegate作ると言ったら<a href="http://msdn.microsoft.com/ja-jp/library/53cz7sc6.aspx">Delegate.CreateDelegate</a>。なのですが、静的メソッドならいいんですが、インスタンスメソッドだと、それも込み込みで作られちゃうので些かイケてない。今回は毎回インスタンスもnewしたいので、これはダメ。</p>
+<p>が、Delegate.CreateDelegateの面白いところは、「オープンなインスタンス メソッド デリゲート (インスタンス メソッドの隠れた第 1 引数を明示的に指定するデリゲート) を作成することもできます」ことです。どういうことか、というと</p>
+<pre><code class="language-csharp">// 第一引数にインスタンスの型が渡せる
+var methodDelegate = (Func&lt;HogeController, int, int, string&gt;)Delegate.CreateDelegate(
+    typeof(Func&lt;HogeController, int, int, string&gt;), method);
+
+// だからこう呼べる(キャストしてたりしてActivator.CreateInstanceの意味がほげもげ)
+var result = methodDelegate((HogeController)Activator.CreateInstance(type), 10, 20);
+</code></pre>
+<p>あら素敵。素敵ではあるのですが、面白いだけで今回では使い道はなさそうです、Activator.CreateInstance消せてないし、HogeControllerにキャストって、ほげほげですよ。</p>
+<p>というわけで、ちょっと込み入った生成をしたい場合はExpressionTreeの出番です。new生成まで内包したものを、以下のように捏ね捏ねしましょう。</p>
+<pre><code class="language-csharp">// インスタンスへのnewを行う部分まで生成する、つまり以下の様なラムダを作る
+// (x, y) =&gt; new HogeController().HugaAction(x, y)
+var x = Expression.Parameter(typeof(int), &quot;x&quot;);
+var y = Expression.Parameter(typeof(int), &quot;y&quot;);
+var lambda = Expression.Lambda&lt;Func&lt;int, int, string&gt;&gt;(
+    Expression.Call( // .HugaAction(x, y)
+        Expression.New(type), // new HogeController()
+        method,
+        x, y),
+    x, y) // (x, y) =&gt; 
+    .Compile();
+</code></pre>
+<p>ExpressionTreeの文法とかは3年前だか4年前だかの<a href="http://neue.cc/2011/04/20_317.html">Expression Treeのこね方・入門編 - 動的にデリゲートを生成してリフレクションを高速化</a>を参照してください、というわけでここでは解説はスルー。ExpressionTreeの登場はVS2008, .NET 3.5, C# 3.0から。もう5年以上前なのですねー。</p>
+<p>さて、Compileは非常に重たい処理なので（カジュアルに呼びまくるようなコード例をたまに見ますが、マヂヤヴァイのでやめましょう）、作ったらキャッシュします。</p>
+<pre><code class="language-csharp">// Compile済みのラムダ式はキャッシュするのが基本！
+// 以下の様なものに詰めときゃあいいでしょう
+// .NET 4以降はキャッシュ系はConcurrentDictionaryのGetOrAddに入れるだけで済んで超楽
+var cache = new ConcurrentDictionary&lt;Tuple&lt;string, string&gt;, Func&lt;int, int, string&gt;&gt;();
+</code></pre>
+<p>ConcurrentDictionaryのKeyは場合によりけり。Typeの場合もあればStringの場合もあるし、今回のようなCotrollerName/ActionNameのペアの場合はTupleを使うと楽ちんです。Tupleは辞書のキーなどに使った場合、全値の一致を見てくれるので、適当に文字列連結して代用、なんかよりも正確で好ましい結果をもたらしてくれます。簡易的に作る場合は、私も、とても多用しています。</p>
+<p>大文字小文字比較とかの比較まではやってくれないので、そこまでやりたければ、ちゃんとGetHashCode/Equalsを実装したクラスを作りましょう(LightNodeではそれらを実装した<a href="https://github.com/neuecc/LightNode/blob/master/Source/LightNode.Server/RequestPath.cs">RequestPath</a>というクラスを作っています)</p>
+<p>そういえばPCLはWindows Phoneを対象に含めるとConcurrentDictionary使えなくてイラ壁なのでWindows Phoneは見なかったことにしてPCLの対象に含めないのが最善だと思います！どうせ端末出てないし！</p>
+<h2>: Delegate</h2>
+<p>ところでFunc&lt;int, int, string&gt;という型をLambdaに指定しているけれど、これもまた決め打ちで、動的じゃあない。んで、そもそもこの手の作る場合、メソッドの型って色々あるのね。</p>
+<pre><code class="language-csharp">// メソッドの型は色々ある！
+public class HogeController
+{
+    public string HugaAction(int x, int y)
+    {
+        return (x + y).ToString();
+    }
+
+    public double TakoAction(string s, float f)
+    {
+        return double.Parse(s) * f;
+    }
+}
+</code></pre>
+<p>こんな風にActionが増えたら、というか普通は増えるというか違うに決まってるだろという話なわけで、問題色々でてきちゃいます。 まずデリゲートの型が違うのでキャッシュ不可能。Func&lt;int, int, string&gt;のConcurrentDictionaryにFunc&lt;string, float, double&gt;は入りません。そして&quot;HugaAction&quot;や&quot;TakoAction&quot;という動的に来る文字列から、コンパイル時にデリゲートの型は決められない。ていうかそもそもパラメータのほうもxだのyだのって不明じゃないですかー？ゼロ引数かもしれないし10引数かもしれないし。</p>
+<p>どーするか。型名指定ができないなら指定しなければいいじゃない。</p>
+<pre><code class="language-csharp">// Expression.Lambdaに型名指定をやめ、CacheはDelegateを取ってみる
+var cache = new ConcurrentDictionary&lt;Tuple&lt;string, string&gt;, Delegate&gt;();
+var dynamicDelegate = cache.GetOrAdd(Tuple.Create(controllerName, actionName), _ =&gt;
+{
+    // パラメータはMethodInfoから動的に作る
+    var parameters = method.GetParameters().Select(x =&gt;
+            Expression.Parameter(x.ParameterType, x.Name))
+        .ToArray();
+
+    return Expression.Lambda(
+            Expression.Call(Expression.New(type), method, parameters),
+        parameters).Compile();
+});
+</code></pre>
+<p>やった、大解決！</p>
+<pre><code class="language-csharp">// 但しDelegateのキャッシュは呼び出しがDynamicInvokeでイミナイ。
+// もちろん別に速くない。
+var result = dynamicDelegate.DynamicInvoke(new object[] { 10, 20 });
+</code></pre>
+<p>はい、意味ありません。全然意味ないです。Funcなんちゃらの共通型としてDelegateで統一しちゃうと、DynamicInvokeしか手がなくて、ほんとほげもげ！</p>
+<h2>Everything is object</h2>
+<p>Cacheに突っ込むためには、あらゆるメソッドシグネチャの共通項を作らなきゃあならない。でもDelegateじゃあダメ。じゃあどうするか、というと、objectですよ！なんでもobjectに詰めればいいんです！</p>
+<pre><code class="language-csharp">// 解決策・最も汎用的なFuncの型を作ること
+// オブジェクトの配列という引数を受け取り、オブジェクトを返す関数である
+// Func&lt;object[], object&gt;
+// これを作ることによりDynamicInvokeを回避可能！(Boxingはあるけどそこは諦める)
+
+// このキャッシュならなんでも入りそうでしょう
+var cache = new ConcurrentDictionary&lt;string, Func&lt;object[], object&gt;&gt;();
+</code></pre>
+<p>良さそうな感じ、というわけで、object[]の配列を受け取りobjectを返すデリゲートを作っていきましょう。</p>
+<pre><code class="language-csharp">// 作る形をイメージしよう、以下の様な形にするのを狙う
+// (object[] args) =&gt; (object)new HogeController().HugaAction((int)object[0], (int)object[1])
+
+// 引数はオブジェクトの配列
+var args = Expression.Parameter(typeof(object[]), &quot;args&quot;);
+
+// メソッドに渡す引数はオブジェクト配列をインデクサでアクセス+キャスト =&gt; (cast)args[index]
+var parameters = method.GetParameters()
+    .Select((x, index) =&gt;
+        Expression.Convert(
+            Expression.ArrayIndex(args, Expression.Constant(index)),
+        x.ParameterType))
+    .ToArray();
+
+// あとは本体作るだけ、但し戻り値にもobjectでキャストを忘れず
+var lambda = Expression.Lambda&lt;Func&lt;object[], object&gt;&gt;(
+    Expression.Convert(
+        Expression.Call(Expression.New(type), method, parameters),
+        typeof(object)),
+    args).Compile();
+
+// これでふつーのInvokeで呼び出せるように！
+var result = lambda.Invoke(new object[] { 1, 10 });
+</code></pre>
+<p>これは完璧！若干Boxingが気になりますが、そこは贅沢は敵ってものです。というか、実際はパラメータ作る前工程の都合でobjectになってたりするので、そこのコストはかかってないと考えて構わない話だったりします。ちなみにvoidなメソッドに関しては、戻り値だけちょっと弄った別デリゲートを作ればOKですことよろし。その辺の小さな分岐程度は管理するが吉。</p>
+<h2>Task &amp; Task&lt;T&gt;</h2>
+<p>Extra Stage。今どきのフレームワークはTaskへの対応があるのが当たり前です。(いい加減ASP.NET MVCもフィルターのTask対応してください、LightNodeのフィルターは当然対応してるよ！)。というわけでTaskへの対応も考えていきましょう。</p>
+<p>TaskだってobjectなのだからobjectでOK！ではないです。Taskなメソッドに求めることって、awaitすることなのです。Taskで受け取って、awaitするまでが、戻り値を取り出す工程に含まれる。</p>
+<pre><code class="language-csharp">var result = new Hoge().HugaAsync();
+await result; // ここで実行完了される、的なイメージ 
+</code></pre>
+<p>といってもTaskは簡単です、ようは戻り値をTaskに変えればいいだけで、↑のと変わらないです。Func&lt;object[], Task&gt;ということです。Taskに変えるといっても、元から戻り値がTaskのもののデリゲートを作るわけですから、ようするところObjectへのConvertを省くだけ。簡単。</p>
+<pre><code class="language-csharp">// もちろん、実際にはキャッシュしてね
+var lambda = Expression.Lambda&lt;Func&lt;object[], Task&gt;&gt;(
+        Expression.Call(Expression.New(type), method, parameters),
+    args).Compile();
+
+var task = lambda.Invoke(new object[] { 1, 10 }); // 戻り値はTask
+await task; // 待機
+</code></pre>
+<p>そう、Taskはいいんです、Taskは。簡単です。でもTask&lt;T&gt;が問題。というかTが。Tってなんだよ、という話になる。例によってTは静的に決まらないのですねえ……。こいつはストレートには解決できま、せん。</p>
+<p>少しだけ周りっくどい道を通ります。まず、メソッド呼び出しのためのデリゲートはTaskと共通にします。Task&lt;T&gt;はTaskでもあるから、これはそのままで大丈夫。で、取り出せるTaskから、更にTを取り出します。どういうこっちゃ？というと、.Resultですよ、Result！</p>
+<pre><code class="language-csharp">Task task = new Hoge().HugaAsync(); // Taskとして受け取る
+await task; // ここで実行完了される
+var result = ((Task&lt;T&gt;)task).Result; // ↑で実行完了しているので、Resultで取り出せる
+</code></pre>
+<p>こういう風なコードが作れればOK。イメージつきました？</p>
+<pre><code class="language-csharp">// (Task task) =&gt; (object)((Task&lt;&gt;).Result)
+// キャッシュする際は、キーはTypeでTを取って、ValueにFunc&lt;Task, object&gt;が省エネ
+var taskParameter = Expression.Parameter(typeof(Task), &quot;task&quot;);
+var extractor = Expression.Lambda&lt;Func&lt;Task, object&gt;&gt;(
+    Expression.Convert(
+        Expression.Property(
+            Expression.Convert(taskParameter, method.ReturnType), // method.ReturnType = Task&lt;T&gt;
+            &quot;Result&quot;),
+        typeof(object)),
+    taskParameter).Compile();
+
+// これで以下のように値が取れる！
+await task;
+var result = extractor(task);
+</code></pre>
+<p>ここまでやれば、非同期にも対応した、モダンな俺々フレームワーク基盤が作れるってものです。</p>
+<h2>C# is not LightWeight in Meta Programming</h2>
+<p>そんなわけでこれらの手法は、特にOwinで俺々フレームワークを作る時などは覚えておくと良いかもです。そして、定形高速化パターンと書いたように、この手法は別に全然珍しくなくて、実のところASP.NET MVCやASP.NET Web APIの中身はこれやってます。ほとんど全くこのとーりです。(べ、べつに中身見る前からコード書いてたしその後に答え合わせしただけなんだから！！！)。まぁ、このぐらいやるのが最低水準ってことですね。</p>
+<p>で、しかし、簡単ではありません。ExpressionTreeの取り扱いとか、ただのパターンなので慣れてしまえばそう難しくもないのですけれど、しかし、簡単とはいいません。この辺がね、C#ってメタプログラミングにおいてLightWeightじゃないよねっ、ていう事実。最初の例のようにActivator.CreateInstanceで済ませたり、dynamicだけで済む範囲ならそうでもないんですが、そこを超えてやろうとするとねーっ、ていう。</p>
+<p>ExpressionTreeの登場のお陰で、今どきだとIL弄りの必要はほぼほぼなく(とはいえゼロじゃあないですけどね)、楽になったとはいえ、もっと、もっとじゃもん、と思わないこともない。そこでRoslynなら文字列でソースコードベタベタ書いてEvalでDelegateが生成できて楽ちんぽん！な未来は間違いなくありそうです。ですがまぁ、あと1~2年であったり、あとPortable Class Libraryに落ちてくるのはいつかな？とかっていった事情を鑑みる、まだまだExpressionTree弄りスキルの重要性は落ちなさそうなので、学ぶならイマノウチ！損はしません！</p>
+<iframe src="http://rcm-fe.amazon-adsystem.com/e/cm?lt1=_blank&bc1=000000&IS2=1&nou=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as4&m=amazon&f=ifr&ref=ss_til&asins=4048867741" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+ 
+メタプログラミング.NETは、満遍なく手法が紹介された良書だと思いますので、読んだことない人は是非是非読むといいかと思います。参考資料へのリンクが充実してたりする(ILのOpCodeとか)のも嬉しい点でした。
+<h2>まとめ</h2>
+<p>ExpresionTreeは優秀なIL Builder(Code as Dataとしての側面は残念ながらあまり活用できそうにもないですが、こちらの側面で活躍しているのでいいじゃないですか、いいの、か？？？)なんでも生成頑張ればいいってものではなく頻度によりけり。頻度少なけりゃDynamicで全然OK。ん……？</p>
+<p>ちゃぶ台返しますと、ウェブのリクエスト処理的な、リクエストの度に1回しか呼ばれない場合だと、別にここがDynamicInvokeで実行されるかどーかなんて、ハイパー誤差範囲なんですねぇ、実は！クライアントアプリとか、O/R Mapperとかシリアライザとか、テンプレートエンジンのプロパティ評価とか、凄く呼び出されまくるとかじゃなければ、割とどうでもいい範囲になってしまいます。0.01msが0.001msになって10倍高速！なのは事実ですが、そもそもウェブは1回叩いて10msかかったりするわけで誤差範囲としか言い様がない次元になってしまう。</p>
+<p>でも、ちゃんと頑張ったほうが格好はつくので、頑張ってみると良いです、みんなもやってるし！こんなのチキンレースですから。<a href="http://neuecc.github.io/LightNode/">LightNode</a>の速さの秘訣はこれだけ、ではないですが、大事な一端には変わりないです。</p>
+</div>
+<h1><a href="http://neue.cc/2014/0114_445.html">C# ASP.NETのRESTフレームワークパフォーマンス比較大全</a></h1>
+<ul class="date"><li>2014-01-14</li></ul>
+<div class="entry_body"><p><a href="http://neuecc.github.io/LightNode/">LightNode</a>(という私の作ってるOwinで動くMicro REST Framework)の0.2出しました。でも皆さんあんま興味ないと思うので（！）、先にベンチマークの話をしましょふ。0.1を出した時にもグラフを出したのですが、よく見るまでもなく詐欺グラフで非常に良くなかったので載せ直し＆NancyとかWCF RESTとか他のフレームワークも追加しました。そして今回測りなおしてみると、そもそも前回のものは致命的に計測のための環境作りにミスッていたので、まるっきりナシでした、すびばせん。</p>
+<h2>パフォーマンステスト</h2>
+<p>各ソースコードは<a href="https://github.com/neuecc/LightNode/tree/master/Performance">LightNode/Performance</a>に置いてあるので再現できます。数字はrequest per secondで、Apache Benchで叩いているだけです。実行環境は「Windows 8.1/CPU Core i7-3770K(3.5GHz)/Memory 32GB」という、私の開発環境のデスクトップPC上で動かしてます。ホスト先はIIS ExpressじゃなくてローカルIIS。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2014/01/ab_performance_frameworks.jpg' alt='' />
+</p>
+<p>オレンジと緑はふつーのIISでホストしてるもの。グレーはちょっと別枠ということで色分けてます。</p>
+<p>結果に納得いきます？イメージとちょっと違う結果に？まず、<a href="http://msdn.microsoft.com/ja-jp/library/bb412169.aspx">WCFのRest</a>が一番遅いです。これはどうでもいいですはい。次点が<a href="http://www.asp.net/mvc">ASP.NET MVC</a>、そこからちょっと僅差で<a href="http://www.asp.net/web-api">ASP.NET Web API</a>。これはJSONシリアライザの問題もあるかなってところ(MVCのデフォルトシリアライザはJavaScriptSerializerで、あれは遅い)かどうかは知りませんけれど、ともかくWeb APIは言われるほど遅い遅いなんてことはない、ってとこでしょーか。安心して使っていきましょう。そこから別に大きく差がついてってことなく<a href="http://nancyfx.org/">Nancy</a>、ちゃんと定評通りにLightweightで速そうです、偉い。<a href="https://servicestack.net/">ServiceStack</a>は、一応謳い文句どおりちゃんとFastestでした。</p>
+<p><a href="https://katanaproject.codeplex.com/">生OwinHandler</a>(Async)と<a href="http://msdn.microsoft.com/ja-jp/library/system.web.httptaskasynchandler.aspx">HttpTaskAsyncHandler</a>はほとんど変わらない。といったところから、Owin(Katana)でラップされることは、そんなにパフォーマンスロスは発生しない、と考えられるでしょう。この事実はかなり安心できて嬉しい。で、LightNodeがそれらよりもグッと高速。そう、LightNodeはちゃんと最速フレームワークなのです。で、しかし生OwinHandler(Sync)と差がちょっと付いちゃってるので、ここはもう少し縮められないかなあ、といったところ（実際のところ、LightNodeのデフォルトは出力をバッファするようになってて、そのオプションをオフにすればもっと迫れますが、実用的にはオンにせざるを得ないので、ここはオン時で）。そして最速は<a href="http://msdn.microsoft.com/ja-jp/library/system.web.ihttphandler.aspx">SyncのHttpHandler</a>。生ハンドラ強い。</p>
+<p>SelfHostとHeliosはちょっと別枠。SelfHostは一節によるとSloooooooooowって話もあったのですけれど、手元でやると普通に速いのですよねえ。そのSloooowってコード見たら、なんかそもそも他のテストと出力物が全然違ったので、その人のミスなのかなぁ？って思ってますがどうなのでしょうね。ともあれ、私の環境でやってみた限りではSelfHostはかなり速いです。</p>
+<p>Helios(<a href="http://www.nuget.org/packages/Microsoft.Owin.Host.IIS/">Microsoft.Owin.Host.IIS</a>)は、System.Webを通さずにIISネイティブをペシペシ叩くことで超最速を引き出すとかいう代物で、まだ0.1.2-preでプロダクション環境に使える代物ではないとはいえ、とにかく速い。すぎょい。これだけ違うとニヨニヨしちゃうねぇ。</p>
+<h2>Sync vs Async</h2>
+<p>ベンチ結果の突っ込みどころは二点ほどあるかな、と。ひとつはHttpHandler(Async)がHttpHandler(Sync)に比べて険しく遅いこと。もう一つは、RawOwinHandler(ASync)とRawOwinHandler(Sync)ってなんだよハゲ、と。RawOwinHandlerはこんなコードになっています。</p>
+<pre><code class="language-csharp">app.Run(context =&gt;
+{
+    // 中略
+
+    if (context.Request.Query.Get(&quot;sync&quot;) == &quot;true&quot;)
+    {
+        context.Response.Body.Write(enc, 0, enc.Length);
+        return EmptyTask; // Task.FromResult&lt;object&gt;(null)
+    }
+    else
+    {
+        return context.Response.Body.WriteAsync(enc, 0, enc.Length);
+    }
+}
+</code></pre>
+<p>違いはWriteしてるかWriteAsyncしてるか。で、これだけで1000rpsも変わってしまうんですねえ、お、おぅ……。HttpHandler(Async)とHttpHandler(Sync)も同じ話です。これねえ、困った話です。しかも、Heliosだと遅くならなかったりするので、原因はSystem.Webのネットワークストリームに対するWriteAsyncに何らかの欠陥があるのかなあ、と。それ以外にとりあえず考えつくのは、そもそもレスポンスサイズが小さいとかlocalhost同士だから、とかなくもないので（所詮マイクロベンチですから）、厳密にどーこうというのは言いづらくてまだ要調査ってところ。でもHeliosだと遅くならなかったりするのでもうHeliosでいいよ（投げやり）</p>
+<p>まぁネットワーク離したりサイズ大きくしたりとかは、そのうちやりませうか。そのうち。多分やらない（面倒くさいの！）</p>
+<h2>ベンチ実行環境の注意</h2>
+<p>Windows Defenderのリアルタイム保護が有効ならば、無効にしましょう。これ、有効か無効かでめちゃくちゃ結果変わります。3000rpsぐらい変わるしHeliosにしても別に大して差が出ないとか、もう根源的に結果が変わります。Defenderがオンの時に測った結果とかクソの役にも立たないゴミデータなので投げ捨てましょう。ネットにある計測しました、とかってのもそれの可能性があるので見なかったことにしましょう。ファイアウォールとかもとりあえず切っといたほうがいいんじゃないでしょーか。</p>
+<p>IISかIIS Expressかは、傾向としてそこまで大きく違うってこともないですけれど、IISのほうが成績は良好なので、一応測るのだったらIISでやったほうが良いかと思います。以前にやってた時は横着してIIS Expressでやってたのですけれど、反省ということで。そこまでやるならWindows Serverでー、とか無限に要求は加速しますが、フレームワーク同士の相対的な比較なので、そこまでやる必要はないかな？</p>
+<h2>LightNode 0.2</h2>
+<p>ここからタイトル詐欺の抱合せ商法。じゃなくて、最初はこっち本題で書いてたんですが思ったよりパフォーマンス比較が厚くなったので上に持ってきただけなんですよ……。ということでLightNode 0.2出しました。LightNode自体は0.1の解説<a href="http://neue.cc/2013/12/23_439.html">LightNode - Owinで構築するMicro RPC/REST Framework</a>を読んで欲しいのですけれど、0.1はOwinへの理解度が足りなかった成果、安定性に難があったり、細部が詰められてなかったりしました。けれど、今回はかなり完成度上がってます。このバージョンからは普通に投下しちゃって問題ないレベルに達しているかな、と。ベンチマークを細かく取って検証しているとおり、パフォーマンスについてもよりシビアに詰めています。</p>
+<p>変更点は割といっぱいあります。</p>
+<pre><code class="language-text">Enumバインディングの高速化
+Enumパースの厳密化
+T4クライアントコード生成内容の変更、アセンブリロック回避
+ContentFormatterのコンストラクタ修正
+IContentFormatterにEncodingインターフェイス
+Extensionを|区切りで受け付けるように
+void/Task時は204を返す
+ReturnStatusCodeExceptionを投げることで任意のステータスコードで返せる
+Optionでstringはデフォルトではnull非許可に
+IgnoreOperationAttribute追加
+フィルター追加
+</code></pre>
+<p>こんなとこで。あと<a href="http://neuecc.github.io/LightNode/">GitHub Pages -LightNode</a>立てたのでトップページがちょっとオサレに。</p>
+<h2>Enum高速化・判定厳密化</h2>
+<p>C#のEnum自体は凄く好きなんですよ、プリミティブとほとんど変わらない、という、それがいい。Javaみたいにゴテゴテついてると逆に使い勝手悪かったりパフォーマンス上の問題で使われない(Android!)とかって羽目になってたりしますし、これはこれで良いかな、って思ってます。拡張メソッドによってちょっとしたメソッドは足すことが可能になりましたしね。ただ、静的メソッドが頂けない。リフレクションの塊なので速くない、なんか色々使い勝手悪い、などなどビミョー感半端ない。</p>
+<p>しょうがないので、LightNodeではEnum専用のインフラ層を構築して回避しました。高速化しただけじゃなくて、値の判定を厳密化しています。Enumの値が1,10,100の時に5を突っ込んだらダメ、って感じです。更にビットフラグに対しても厳密な判定がされるように加えているので([Flags]属性がついてるかどうかを見ます)、1,2,4,8の時に100が来たら死亡、7ならOK、って感じですにぇ。ASP.NET MVCなどでも、Enumでゆるふわな値が渡ってくるのはかなり嫌だったので、良いんじゃないかと思います。他、デフォルトでstringもnull非許可、配列の場合は空配列になるので、デフォではnullや範囲外の値というのは完全排除しています。</p>
+<p>なお、このEnumインフラストラクチャは、後日、もう少し機能を追加して専用ライブラリとして切り出そうと思っています。使い道はかなり多いんじゃないかなー、と思いますのでお楽しみに。</p>
+<h2>例外によるステータスコード変更</h2>
+<p><a href="http://miso-soup3.hateblo.jp/entry/2013/12/06/225220">ASP.NET Web API 2 で追加された機能について</a>見てて、いいですよねー、ということで。実際、戻り値の型をシンプルなオブジェクトで指定した場合って、例外でグローバルに吹っ飛ばすしか手段ないですしね。</p>
+<pre><code class="language-csharp">public class Hoge : LightNodeContract
+{
+    public int HugaHuga()
+    {
+        throw new ReturnStatusCodeException(HttpStatusCode.NotImplemented);
+    }
+}
+</code></pre>
+<p>単純明快でいいと思います。IHttpActionResultなんて作りゃあそりゃ最大の柔軟性ですがResponseType属性とかは、まぁ、やっぱあんまりだな、って思いますよ、ほんと……。</p>
+<p>さて、実際のとこWeb APIはやっぱり一番参考にしていて、機能眺めながら、どうするか考えてます。ルーティングや認証は他のMiddlewareがやればいい、Request Batchingは入れたい、ODataはOData自体がイラネ、フィルターオーバライドはうーん？とか。色々。色々。</p>
+<h2>Middleware vs Filter</h2>
+<p>そして、フィルター入れました。最初から当然入れる気ではあったのですが実装時間的に0.1では間に合わずで。まぁ、あと、0.1の時点ではミドルウェアパイプラインとフィルターパイプラインの違いを言語化出来なかったり、実装方法というかインターフェイスの提供方法についても全然考えが固まっていなかったので、無理ではあった。今はそれらはしっかり固まってます。</p>
+<p>というわけで、こんなインターフェイス。</p>
+<pre><code class="language-csharp">public class SampleFilterAttribute : LightNodeFilterAttribute
+{
+    public override async Task Invoke(OperationContext operationContext, Func&lt;Task&gt; next)
+    {
+        try
+        {
+            // OnBeforeAction
+
+            await next(); // next filter or operation handler
+
+            // OnAfterAction
+        }
+        catch
+        {
+            // OnExeception
+        }
+        finally
+        {
+            // OnFinally
+        }
+    }
+}
+</code></pre>
+<p>ASP．NET MVCとかの提供するOnActionExecuting/Executedとか、アレ、私は「大嫌い」でした。挙動が不明だから。Resultに突っ込むと何が起こるの？Executingで投げた例外はExecutedに届くの？（届かない）、などなど、分かりやすいとは言い難くて、LightNodeではその方式は採用したくなかった。</p>
+<p>かわりにシンプルなパイプラインを採用しています。OWINのInvokeパイプラインとほぼ同等の。</p>
+<pre><code class="language-csharp">// app.Use
+Func&lt;IOwinContext, Func&lt;Task&gt;, Task&gt; handler
+// LightNode Filter
+Func&lt;OperationContext, Func&lt;Task&gt;, Task&gt; invoke
+// インターフェイスでは
+public abstract Task Invoke(OperationContext operationContext, Func&lt;Task&gt; next);
+</code></pre>
+<p>というか一緒です。見た目もやってることも一緒なミドルウェアとフィルターですが、違いは当然幾つかあります。第一に、ミドルウェアだとほとんどグローバルに適用されますが、フィルターはグローバル・クラス・メソッド単位の3つが選べます。そして、最大の違いは実行コンテキストを知っていること。フィルターが実行されるのはパラメータバインディングの後なので、実行されるメソッドが何かを知っています。どのAttributeが適用されているかを知っています。ここが、大きな違い。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2014/01/lightnode_filterpipeline.jpg' alt='' />
+</p>
+<p>フィルタはGlobal/Contract/Operation単位で設定可能ですが、順番は全て設定されたOrderに従います。AuthenticationとかActionとかの順序パイプラインはなし。だって、あの細かい分け方、必要です？認証先にしたけりゃOrderを-int.MaxValueにでもすりゃあいいんです。というわけで、そのへんは取っ払って、Orderだけ、ただしOrderのレンジは-int.MaxValueからint.MaxValueまで、かつデフォルトはint.MaxValue（一番最後に発火される）。です。ASP.NET MVCのデフォが-1で最優先されるってOrderも意味不明で好きじゃないんですよねえ……。</p>
+<p>OperationContextはIsAttributeDefinedなど、属性のチェックや取り出しが容易になるメソッドが幾つか用意されてますにゃ。もし実行をキャンセルしたければ、nextを呼ばなければいい。その上で大きく結果を変えたければ、Owin Environmentを弄れば好きなようにStatusCodeでもResponseでもなんでも設定できます。十分十二分。</p>
+<h2>まとめ</h2>
+<p>パフォーマンスは、まぁ自分で測らないと納得しにゃいところもきっとあると思いますので自分で測るのが一番いーですね、そりゃそうかそりゃそうだ。生ハンドラに比べるとロスは少なくないなぁというのは現実かもしれませんねぇ（LightNodeは除く）。Owinを被せることのロスは少なめってのが確認できたのは安心できて良いですね、さぁ積極的に使っていきましょう。</p>
+<p>LightNodeは超簡単。超速い。十分なカスタマイズ性。というわけで、真面目に実用的です！使うべき！さぁ今すぐ！あと、意図的に既存のフレームワークの常識と崩しているところも含めて、全ての挙動の裏には多くの考えが含まれています。全ての挙動は明確に選択しています。そーいうのも読み取ってもらえると嬉しいですね。</p>
+<p>また、ちょっとした縁があって2014/2/8に北海道の<a href="http://clr-h.jp/">CLR/H</a>にてセッションを一つ持ちます。北海道！あんまり東京から出ない私なのですが、こないだは大阪に行きましたし、ちょっとだけたまにはお外にも出ていこうかな、なんて思っていなくもないです。北陸とかにもそのうち行きたいですね、色々なのと重ならなければ……。</p>
+<p>セッションタイトルは「LightNode Demystified - How to Make Extreme Fast Owin Framework」を予定しています。ネタは色々あるんですが、LINQはこないだ大阪でやったし、Real World Hyper Performance ASP.NET Architecture(Internal謎社)は、もう少し後でいいかなぁ（？）だし、前2つがうぇぶけー(Windows Azure 最新アップデート/最新Web アプリケーションパターンと .NET)なので、合わせて見るのが良いかにゃ、と。</p>
+<p>LightNode Demystified、ですけれど、LightNodeを作ることを通してOWINとはどのようなものなか、どのような未来が開けるのか、というのを伝えられれば良いと思っています。私自身、実際に作ることによる発見がかなり多かったし、作ってみないと分からないことというのはかなり多いと思いますので、そうして開けた視野をシェアできれば嬉しいですね。</p>
+<p>また、1/17には弊社で開催する<a href="http://partake.in/events/a531c0be-e8dd-46fe-a73c-e51d8ad7a69b">めとべや東京#3</a>にてLTでデモをするので、そちらのほうも都合がつく方は是非是非どうぞ。</p>
+</div>
+<h1><a href="http://neue.cc/2014/0106_442.html">OWINのパイプラインとMiddleware作成ガイド</a></h1>
+<ul class="date"><li>2014-01-06</li></ul>
+<div class="entry_body"><p>あけおめました。振り返る～系の記事はこっ恥ずかしいのでいつまでも先頭に出ていると嫌なので、割と流したくてshoganaiので、記事をでっち上げます。実際切実。記事あげてる場合じゃなくても、これはこれでsetsujitsuなので許してあげてほしいのね。</p>
+<p>Node.jsでKoaというフレームワークが盛り上がっているらすぃ。で、<a href="http://blog.kazupon.jp/post/71041135220/koa">新しいWebフレームワーク Koa について</a>を見てて、あー、まんま<a href="https://katanaproject.codeplex.com/">Katana</a> - Microsoft.Owinで置き換えられるなぁと思ったので、書いてみました。</p>
+<pre><code class="language-csharp">public class Startup
+{
+    public void Configuration(IAppBuilder app)
+    {
+        // KoaとOwinを比較して
+        // http://blog.kazupon.jp/post/71041135220/koa
+
+        // 3. Response Middleware
+        app.Use(async (context, next) =&gt;
+        {
+            Console.WriteLine(&quot;&gt;&gt; one&quot;);
+            await next();
+            Console.WriteLine(&quot;&lt;&lt; one&quot;);
+        });
+
+        app.Use(async (context, next) =&gt;
+        {
+            Console.WriteLine(&quot;&gt;&gt; two&quot;);
+            await context.Response.WriteAsync(&quot;two&quot;);
+            await next();
+            Console.WriteLine(&quot;&lt;&lt; two&quot;);
+        });
+
+        app.Use(async (context, next) =&gt;
+        {
+            Console.WriteLine(&quot;&gt;&gt; three&quot;);
+            await next();
+            Console.WriteLine(&quot;&lt;&lt; three&quot;);
+        });
+    }
+}
+</code></pre>
+<p>比較すると、そっくりそのまま。Koaはフレームワークというか小さなツールキット、Connect/Koa = Katana, Express = ASP.NET MVC/Web API、みたいな図式で捉えればいいのでしょうね。</p>
+<p>OWINの成り立ちについては、<a href="http://kyrt.in/2013/12/17/owin_azure_cache_session_middleware.html">OWIN - Open Web Interface for .NET を使う</a>で解説されていますが、Ruby- Rack/Python - WSGI/Perl- PSGIと同じようなものと捉えられます。OWINとKatanaに関しては、PerlのPSGIと<a href="http://plackperl.org/">Plack</a>の関係性を見れば、そのまま当てはめることが可能です。</p>
+<p>よって、OWINの基本的なことは、OWIN関連を漁るよりも、<a href="http://handbook.plackperl.org/">Plack Handbook</a>を読んだほうがピッと理解できそうです。GitHubのリポジトリには日本語の生Markdown原稿もあるので、目を通しておくと、理解がとっても進みます。</p>
+<h2>Pluggable Pipe Dream</h2>
+<p>OWINがASP.NETにもたらしたものは2つ。一つはバックエンドの自由、IISでもSelfHostでもー、という側面。もう一つはプラガブルなMiddleware。そしてこれは、パイプラインになっているのですね、こちらのほうが開発者にとって注目に値する、影響力の大きなものです。</p>
+<p>最初の例で書いた app.Use(async (context, next) =&gt; はMicrosoft.Owinによるもので、ラムダ式でその場でMiddlewareを定義していることに等しい(AnonymousMiddleware!)わけですが、まずはこっちから書いてったほうが、わかりやすいかな、と。(ちなみにRunはnextのないバージョン、つまりMiddlewareの終点)</p>
+<pre><code class="language-csharp">app.Use(async (context, next) =&gt;
+{
+    try
+    {
+        // 実行前の処理が書ける
+
+        await next(); // 次のミドルウェアの実行（これを呼ばないことでパイプラインのキャンセルも可能）
+
+        // 正常実行後の処理が書ける
+    }
+    catch
+    {
+        // 例外時の処理が書ける
+    }
+    finally
+    {
+        // 後処理が書ける
+    }
+});
+</code></pre>
+<p>こういったパイプラインは.NETには偏在しています。HttpClientのDelegatingHandler - <a href="http://www.slideshare.net/neuecc/httpclient">HttpClient詳解、或いは非同期の落とし穴について</a>や、LINQ to Objects - <a href="http://www.slideshare.net/neuecc/an-internal-of-linq-to-objects-29200657">An Internal of LINQ to Objects</a>の中身と変わらない話です、特にDelegatingHandlerは近いイメージ持ってもらうと良いかな、と。図にすればこんな感じ。</p>
+<div class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2014/01/owinpipeline.jpg' alt='' />
+</div>
+<p>next()を呼び出すことで、円の中央、次のパイプラインに進む。きっと、一番最後、中心のMiddlewareはフレームワークとしての役割を担うでしょう(ResponseStreamに書いたりなど処理をかなり進めてしまうので、フレームワークが後続のMiddleware読んでも無意味というか逆に死んだりするので、フレームワーク部分では意図的にnext呼ばない方がいい←だから実際app.RunもNext呼ばないしね)、とはいえ構造上ではFrameworkとMiddlewareに別に区別はないです。処理が終わったら、今度は円の内側から外側に向かって処理が進んでいきます。Nextを呼ばなければ、途中で終了。1-2-3-4-5-4-3-2-1を、3で止めれば、1-2-3-2-1になる、といった感じです。これはASP．NET MVCのfilterでResultに小細工したり、Exceptionを投げたりして中断するようなものです。</p>
+<p>HttpModuleだってHTTPパイプラインぢゃーん、というツッコミもあっていいですけれど、それよりもずっと単純明快な仕組みだというのがとても良いところ。こういった薄さであったり単純さであったり、をひっくるめたLightweightさって、とっても大事です。</p>
+<h2>Mapping</h2>
+<p><a href="http://neue.cc/2013/12/23_439.html">LightNode - Owinで構築するMicro RPC/REST Framework</a>ではURLは決め打ち！と言いましたが、むしろそもそも、URLのルーティングはLightNodeが面倒見るものではなくて、他のMiddlewareが面倒見るものなのです。例えば、APIのバージョン管理でv1とv2とで分けたい、というケースがあったとしましょう。その場合、MapWhen(Katanaに定義されてます)を使うと、条件指定で利用するMiddlewareのスタックを弄ることができます。</p>
+<pre><code class="language-csharp">// Conditional Use
+app.MapWhen(x =&gt; x.Request.Path.Value.StartsWith(&quot;/v1/&quot;), ap =&gt;
+{
+   // Trim Version Path
+   ap.Use((context, next) =&gt;
+   {
+        context.Request.Path = new Microsoft.Owin.PathString(
+            Regex.Replace(context.Request.Path.Value, @&quot;^/v[1-9]/&quot;, &quot;/&quot;));
+        return next();
+   });
+
+    ap.UseLightNode(new LightNodeOptions(AcceptVerbs.Post, new JsonNetContentFormatter()),
+        typeof(v1Contract).Assembly);
+});
+
+app.MapWhen(x =&gt; x.Request.Path.Value.StartsWith(&quot;/v2/&quot;), ap =&gt;
+{
+   // 手抜きなのでコピペ:)
+   ap.Use((context, next) =&gt;
+   {
+        context.Request.Path = new Microsoft.Owin.PathString(
+            Regex.Replace(context.Request.Path.Value, @&quot;^/v[1-9]/&quot;, &quot;/&quot;));
+        return next();
+   });
+
+   ap.UseLightNode(new LightNodeOptions(AcceptVerbs.Post, new JsonNetContentFormatter()),
+    typeof(v2Contract).Assembly);
+});
+
+
+</code></pre>
+<p>LightNodeはサービスの記述された読み込むアセンブリを指定できるので、v1用アセンブリとv2用アセンブリを分けて貰って、Request.Pathを書き換えてもらえれば(/v1/部分の除去)動きます。これは単純な例ですが、複雑なルーティングだって頑張れば出来るでしょう。きっと。</p>
+<p>OWINには<a href="http://superscribe.org/">Superscribe</a>というグラフベースルーティング（何だそりゃ）とかもありますし、そういうのと組み合わせれば、実際LightNodeでうまく使えるかどうかは知りませんが、まぁ、そういうことです。やりたければ外側で好きにやればいいのです。プラガブル！</p>
+<h2>Headerが送信されるタイミング</h2>
+<p>話は突然変わって、Middleware実装上のお話。表題のことなのですけれど、原則的には「最初にWriteされた時」です。原則的には、ね。最初にFlushされた時かもしれないし、そもそもされないかもしれないこともあるかもですが、とはいえ原則的には最初にWriteされた時です。どーいうことか、というと</p>
+<pre><code class="language-csharp">app.Run(async (context) =&gt;
+{
+    try
+    {
+        // Writeしてから
+        await context.Response.WriteAsync(&quot;hogehoge&quot;);
+        context.Response.Body.Flush();
+
+        // StatusCodeやHeaderを書き換えると
+        context.Response.StatusCode = 404;
+    }
+    catch (Exception ex)
+    {
+        // 例外出る
+        Debug.WriteLine(ex.ToString());
+    }
+});
+</code></pre>
+<p>これをMicrosoft.Owin.Host.SystemWebでホストすると、「HTTP ヘッダーの送信後は、サーバーで状態を設定できません。」というお馴染みのような例外を喰らいます。ちなみにHttpListenerによるSelfHostでは無反応という、裏側のホストするものによって挙動は若干違うのだけは注意。とはいえ、どちらも共通して、ヘッダーが送信された後には幾らStatusCodeやHeaderを書き換えても無意味です。上の例だと、404にならないで絶対200になっちゃうとか、そういう。</p>
+<p>当たり前といえば当たり前なのですが、生OWIN、生Katanaだけで色々構築すると、Middlewareの順序によっては、そーなってしまうことも起きてしまいがちかもしれません。</p>
+<p>なお、Katanaのソースコード読む時はHttpListenerのほうを中心に追ったほうが分かりやすいですね。System.Webのほうは、つなぎ込みがややこしかったり、すぐにブラックボックスに行っちゃったりで読みにくいので。若干の挙動の差異はあるとはいえ、概ね流れや処理は同じですから、まずは読みやすいほう見たほうが楽でしょう。</p>
+<h2>バッファリングミドルウェア</h2>
+<p>さて、そんな、Writeが前後して厄介というのを防ぐためのMiddlewareを作ってみましょう。解決策は単純で、上流のパイプラインでバッファリングしてやればいいわけです。</p>
+<pre><code class="language-csharp">app.Use(async (context, next) =&gt;
+{
+    var originalStream = context.Response.Body;
+    using (var bufferStream = new MemoryStream())
+    {
+        context.Response.Body = bufferStream; // 差し替えて
+        await next(); // 実行させて
+        context.Response.Body = originalStream;  // 戻す
+
+        if (context.Response.StatusCode != 204) // NoContents
+        {
+            context.Response.ContentLength = bufferStream.Length;
+            bufferStream.Position = 0;
+            await bufferStream.CopyToAsync(originalStream); // で、コピー
+        }
+    }
+});
+</code></pre>
+<p>単純簡単ですね！そう、Middlewareとか別にあんまり構える必要はなくて、Global.asax.csに書いていたのと同じようなノリでちょろちょろっと書いてやればいいわけです。そして、それが膨らみ始めたり、汎用的に切り離せそうだったら、独立したMiddlewareのクラスを立ててやれば再利用可能。これはIHttpModuleを作るのと同じ話ですけれど、Middlewareは、それよりもずっとカジュアルに作れます。</p>
+<p>さて、上のコード、しかしこれだとMemoryStreamが中で使ってる奴にCloseされちゃったりするとCopyToAsyncでコケてしまいます。いや、誰がCloseするんだ？という話はありますが、でも、例えばStreamWriterを使って、usingして囲んでStreamに書いたりすると、内包するStreamまでCloseされちゃうんですねぇ。</p>
+<p>usingしないように注意する、というのも、パイプラインに続くMiddleware全てで保証なんて出来ないので、ここもまた上流で防いでやるのがいいでしょう。<a href="https://github.com/neuecc/LightNode">LightNode</a>では<a href="https://github.com/neuecc/LightNode/blob/master/Source/LightNode.Server/Utility/UnclosableStream.cs">UnclosableStream.cs</a>というものでラップしています。どういうものかというと</p>
+<pre><code class="language-csharp">internal class UnclosableStream : Stream
+{
+    readonly Stream baseStream;
+
+    public UnclosableStream(Stream baseStream)
+    {
+        if (baseStream == null) throw new ArgumentNullException(&quot;baseStream&quot;);
+
+        this.baseStream = baseStream;
+    }
+
+    // 以下ひたすらStreamを移譲
+
+    // そしてCloseとDisposeは空白
+
+    public override void Close()
+    {
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+    }
+}
+</code></pre>
+<p>という単純なもの。これを、ついでに独立したMiddlewareにしてみますか、すると、</p>
+<pre><code class="language-csharp">public class BufferingMiddleware : Microsoft.Owin.OwinMiddleware
+{
+    public BufferingMiddleware(OwinMiddleware next)
+        : base(next)
+    {
+
+    }
+
+    public override async Task Invoke(Microsoft.Owin.IOwinContext context)
+    {
+        var originalStream = context.Response.Body;
+        using (var bufferStream = new MemoryStream())
+        {
+            context.Response.Body = new UnclosableStream(bufferStream); // Unclosableにラップする
+            await this.Next.Invoke(context); // Microsoft.Owin.OwinMiddleware使うとthis.Nextが次のMiddleware
+            context.Response.Body = originalStream;
+
+            if (context.Response.StatusCode != 204)
+            {
+                context.Response.ContentLength = bufferStream.Length;
+                bufferStream.Position = 0;
+                await bufferStream.CopyToAsync(originalStream);
+            }
+        }
+    }
+}
+</code></pre>
+<p>フレームワークレベルのものを作る時は、このレベルまで気を使ってあげたほうが間違いなくいいかと思います。</p>
+<h2>Owin vs Microsoft.Owin</h2>
+<p>Middleware作るのにMicrosoft.Owin.OwinMiddlewareを実装する必要はありません、InvokeとTaskと、などなどといったシグネチャさえあってればOKです。同様にIOwinContextはKatanaで定義してあるものであり、Owin自体はIDictionary&lt;string, object&gt;が本体です。</p>
+<p>Katana(Microsoft.Owin)は便利メソッドの集合体です。Dictionaryから文字列Keyで引っ張ってResponseStream取り出すより、context.Response.WriteAsyncと書けたほうが当然楽でしょふ。他にも、Cookieだったりヘッダだったり、Middlewareの定義用ベースクラスだったり、などの基本的な、基本的な面倒事を全てやってくれる薄いツールキットがKatanaです。冒頭の、Node.jsのKoaみたいなものであり、PerlのPlackに相当するようなもの、と捉えればいいんじゃないでしょーか。</p>
+<p><a href="https://github.com/neuecc/LightNode">LightNode</a>はMicrosoft.Owinを参照していません。これは、依存性を最小限に抑えたかったからです。その分だけ、面倒事もあるので、楽したかったり社内用Middlewareを少し作るぐらいだったら、Katana使っちゃっていいと思いますですね。リファレンス実装、でありますが、どうせ事実上の標準として収まるでしょうし。フレームワークレベルでがっつし作ってみたいという時に、依存するかしないか、どちらを選ぶかは、まぁお好みで。依存したって全然構わないし、依存しないようにするのもそれはそれでアリだと思いますし。</p>
+<h2>HTMLを書き換えるMiddlewareを作る</h2>
+<p>というわけで、応用編行くよー。<a href="http://www.misuzilla.org/">mayuki先生</a>の作られている<a href="https://github.com/mayuki/Cartelet">Cartelet</a>というHTMLパーサー/フィルターライブラリがあるのですが（某謎社で使われているらしいですよ）、それをOwinに適用してみましょう。Carteletのできることは</p>
+<blockquote>
+</blockquote>
+<p>HTMLのそれなりに高速でそれなりなパース
+出力時にCSSセレクターで要素に対してマッチして属性や出力フィルター処理
+フィルターしない部分は極力非破壊
+ASP.NET MVCのViewEngine対応
+CSSのstyle属性への展開 (Cartelet.StylesheetExpander)</p>
+<p>だそうです。</p>
+<p>例として、class=&quot;center&quot;という属性を、style=&quot;text-align:center&quot;に展開するというショッパイ決め打ちな例を作ってみます。こんなMiddlewareを作ります。</p>
+<pre><code class="language-csharp">// Cartelet Filter Middleware
+app.Use(async (context, next) =&gt;
+{
+    var originalStream = context.Response.Body;
+    using (var bufferStream = new MemoryStream())
+    {
+        context.Response.Body = bufferStream; // 差し替えて
+        await next(); // 実行させて
+        context.Response.Body = originalStream;  // 戻す
+
+        if (context.Response.StatusCode != 204) // NoContents
+        {
+            // Carteletによるフィルタリングもげもげ
+            var content = Encoding.UTF8.GetString(bufferStream.ToArray());
+
+            var htmlFilter = new HtmlFilter();
+            htmlFilter.AddHandler(&quot;.center&quot;, (ctx, nodeInfo) =&gt;
+            {
+                nodeInfo.Attributes.Remove(&quot;class&quot;);
+                nodeInfo.Attributes[&quot;style&quot;] = &quot;text-align:center&quot;;
+                return true;
+            });
+
+            var node = HtmlParser.Parse(content);
+
+            var sw = new StreamWriter(context.Response.Body); // usingしない、stream閉じないために(leaveOpenオプションもあるのでそちらのほうが望ましいけど横着した)
+            var cartelet = new CarteletContext(content, sw);
+
+            htmlFilter.Execute(cartelet, node);
+
+            await sw.FlushAsync(); // usingしない時はFlushも忘れないように。。。
+        }
+    }
+});
+</code></pre>
+<p>Carteletの受け取るのがStringなので、全パイプラインが完了するまではバッファリングします。で、それで手に入れたStringをCarteletに流し込んで、本来のBodyに流し込む。(Content-Lengthの設定を省いてるので直に流し込んでますが、設定が必要なら再再バッファリングががが、まぁ、どうせ更に上流でgzipとかするだろうから、ここでContent-Length入れる必要はあんまにゃいかな！）</p>
+<p>実際に結果を見てみると、</p>
+<pre><code class="language-csharp">// これを実行すると
+app.Run(async context =&gt;
+{
+    context.Response.StatusCode = 200;
+    context.Response.ContentType = &quot;text/html;charset=utf-8&quot;;
+    await context.Response.WriteAsync(@&quot;
+            &lt;html&gt;&lt;body&gt;
+            &lt;div class=&quot;&quot;center&quot;&quot;&gt;
+               ほげほげ！
+            &lt;/div&gt;
+            &lt;/body&gt;&lt;/html&gt;&quot;);
+});
+</code></pre>
+<pre><code class="language-html">&lt;html&gt;&lt;body&gt;
+&lt;div style=&quot;text-align:center&quot;&gt;
+   ほげほげ！
+&lt;/div&gt;
+&lt;/body&gt;&lt;/html&gt;
+</code></pre>
+<p>というHTMLが出力されます。へーへーへー。色々応用効きそうですね！</p>
+<h2>OWINはパイプラインの夢を見るか？</h2>
+<p>色々出来る、しかも色々簡単！素晴らしい素晴らしい！プラガブル！はたして本当に？実際、フレームワーク書いたりミドルウェア書いたりしてると、ふつふつふつと疑問が湧いてきます。そういう時は先行事例を見ればいい、というわけでPythonのWSGIでは以下の様な話が。</p>
+<p><a href="http://ymotongpoo.hatenablog.com/entry/20110802/1312249347">（翻訳） WSGIは死んだ: WSGI Liteバンザイ！</a></p>
+<blockquote>
+<p>すべてがプラガブルで、モノリシックなアプリケーションフレームワークを持つ理由がもはや一つもないような未来を思い描いていました。すべてライブラリ、ミドルウェア、デコレータでまかなえるからです。
+悲しいことに、そんな理想的な未来はやってきませんでした。</p>
+</blockquote>
+<p>OWINでも、一個のでっかいフレームワークを持つ必要なんてない！と言える時が来るか、というと、さすがにそれはないでしょうねえー。また、たとえ分離可能なコンポーネントであっても、フレームワークの提供するシステム(フィルターやプラグイン)から離れられるかというと、必ずしもそうではないのかな、って。</p>
+<p>Middlewareのパイプラインは、ASP．NET MVC/Web APIとかのフィルターのパイプラインとも同じようなものです。だったらフィルターで作るよりMiddlewareで作ったほうが、フレームワークという制限から離れられて良さそう。でも、Middlewareの欠点は、後続のパイプラインのコンテキストを知らないことです。認証を入れるにしても、[AllowAnonymous]属性が適用されているかなんてしらないから、全部適用するかしないか、ぐらいにしか出来ない。filterContext.ActionDescriptorのようなもの、というのは、フレームワークの内側のシステムしか持ち得ないのです。でも、そうしてフィルターとして実装すれば、フレームワークに深く依存することになる。</p>
+<p>そんな悩ましさを抱えつつも、それは、あんま無理せずに、コンテキスト不要なら最大限独立性の高いOwin Middlewareとして。そうでないならアプリケーションのプラグイン（フィルター）として。でいいかな、って思ってます。今のところ。何れにせよIHttpModuleなんかよりは遥かに作りやすいし、その手の話だって今に始まったことじゃあないのよね？HttpModuleだってHTTPパイプラインぢゃーん、って。はい。</p>
+<p>2014/1/18（土）に開催される<a href="http://partake.in/events/a531c0be-e8dd-46fe-a73c-e51d8ad7a69b">めとべや東京#3</a>（開催場所は謎社です）では、LTで5分でサービスAPIをOwin/LightNodeを使って作って実際にAzure Web Sitesにホストするまで、デモしようと思ってますので、OWIN知りたい、どう動かすのか見てみたい、って人もどうぞ。めととは。</p>
+</div>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

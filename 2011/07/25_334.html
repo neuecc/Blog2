@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - DynamicObjectでより沢山の型情報を取る方法</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2011/0725_334.html">DynamicObjectでより沢山の型情報を取る方法</a></h1>
+<ul class="date"><li>2011-07-25</li></ul>
+<div class="entry_body"><p><a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>のAsDynamicに少し不具合があったので、ver.1.5.0.0として更新しました。今まではメソッドの引数にnullを渡すと死んでました。ぬるぽ！まあしかし、引数そのもののからしかTypeが取れなかったので、nullだと、どのみちメソッドを特定するための型情報がないからオーバーロードの解決は不可能なので、仕様ですよ仕様、という言い訳。</p>
+<p>などとふざけたことを思っていたのですけれど、コンパイル時に決定される引数の型を取り出す方法が判明したので、そのへんも含めて完全に解決しました。やったね。その方法は、というと</p>
+<pre><code class="language-csharp">public override bool TryInvokeMember(InvokeMemberBinder binder, object[] args, out object result)
+{
+    var csharpBinder = binder.GetType().GetInterface(&quot;Microsoft.CSharp.RuntimeBinder.ICSharpInvokeOrInvokeMemberBinder&quot;);
+    if (csharpBinder == null) throw new ArgumentException(&quot;is not csharp code&quot;); // CSharpコードではない
+
+    // ジェネリックの型引数の取得(Hoge&lt;T&gt;(1, t)とかでのTのこと)
+    var typeArgs = (csharpBinder.GetProperty(&quot;TypeArguments&quot;).GetValue(binder, null) as IList&lt;Type&gt;).ToArray();
+    // コンパイル時に決定されているパラメータの型の取得
+    var parameterTypes = (binder.GetType().GetField(&quot;Cache&quot;, BindingFlags.NonPublic | BindingFlags.Instance).GetValue(binder) as Dictionary&lt;Type, object&gt;)
+        .First()
+        .Key
+        .GetGenericArguments()
+        .Skip(2)
+        .Take(args.Length)
+        .ToArray();
+    
+    // それらの情報からMethodInfoを特定する
+    var method = MatchMethod(binder.Name, args, typeArgs, parameterTypes);
+    // 呼び出し
+    result = method.Invoke(target, args);
+
+    return true; // 呼べてれば必ずTrueなので。
+}
+</code></pre>
+<p>……。ひどそうな匂いが！まず、素のままでは情報が足りなすぎるので、基本的にリフレクション全開です。その中でも、parameterTypesが今回追加したところです。binderのCacheに、CallSiteのデリゲート(dynamicを使って呼び出すと、コンパイル時にこの辺のものが自動生成される)があるので、そこから型情報を持ってこれることに気づいたのだ(ｷﾘｯ</p>
+<p>もう少し詳しく説明しますと</p>
+<pre><code class="language-csharp">// このヘンテツもないどうでもいいコードは
+dynamic d = null;
+var result = d.Hoge&lt;string, int&gt;(100, (string)null, (ICollection&lt;int&gt;)null);
+
+// コンパイル後はこんな結果に化けちゃいますあら不思議！
+object d = null;
+if (Program.&lt;Main&gt;o__SiteContainer0.&lt;&gt;p__Site1 == null)
+{
+	Program.&lt;Main&gt;o__SiteContainer0.&lt;&gt;p__Site1 = CallSite&lt;Func&lt;CallSite, object, int, string, ICollection&lt;int&gt;, object&gt;&gt;.Create(Binder.InvokeMember(CSharpBinderFlags.None, &quot;Hoge&quot;, new Type[]
+	{
+		typeof(string), 
+		typeof(int)
+	}, typeof(Program), new CSharpArgumentInfo[]
+	{
+		CSharpArgumentInfo.Create(CSharpArgumentInfoFlags.None, null), 
+		CSharpArgumentInfo.Create(CSharpArgumentInfoFlags.UseCompileTimeType | CSharpArgumentInfoFlags.Constant, null), 
+		CSharpArgumentInfo.Create(CSharpArgumentInfoFlags.UseCompileTimeType | CSharpArgumentInfoFlags.Constant, null), 
+		CSharpArgumentInfo.Create(CSharpArgumentInfoFlags.UseCompileTimeType | CSharpArgumentInfoFlags.Constant, null)
+	}));
+}
+object result = Program.&lt;Main&gt;o__SiteContainer0.&lt;&gt;p__Site1.Target(Program.&lt;Main&gt;o__SiteContainer0.&lt;&gt;p__Site1, d, 100, null, null);
+</code></pre>
+<p>細かい部分はどうでもいいので、良く分からないFuncが生成されてるんだな、というとこだけ見てもらえれば。さて、これを頭に入れた上で、DynamicObjectのTryInvokeMemberでbinderの奥底のCacheを探してみると、</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/binder_cache.jpg">
+</p>
+<p>このFunc6というものが、Func&lt;CallSite, object, int, string, ICollection&lt;int&gt;, object&gt;です、発見出来ました！これの型引数が、コード上での呼び出し時の型引数になるわけです。なお、第一引数はCallSite、第二引数はインスタンスなので無視してSkip(2)、そして引数の個数分だけTake(まあ、ようするに最後が戻り値の型なわけですが)。</p>
+<p>というわけで、実際に改善されたAsDynamicを使ってみますと、</p>
+<pre><code class="language-csharp">// こんな何のヘンテツもないオーバーロードのあるクラスがあるとして
+public class PrivateClass
+{
+    private string Hoge(IEnumerable&lt;int&gt; xs)
+    {
+        return &quot;enumerable&quot;;
+    }
+
+    private string Hoge(List&lt;int&gt; xs)
+    {
+        return &quot;list&quot;;
+    }
+}
+
+// 型はdynamicです←意地でもvarで書きたい人
+var mock = new PrivateClass().AsDynamic();
+
+// 型でオーバーロード分けが出来るようになった！
+List&lt;int&gt; list = new List&lt;int&gt;();
+IEnumerable&lt;int&gt; enumerable = new List&lt;int&gt;();
+
+(mock.Hoge(list) as string).Is(&quot;list&quot;);
+(mock.Hoge(enumerable) as string).Is(&quot;enumerable&quot;);
+</code></pre>
+<p>というわけで、より正確なオーバーロードの解決が図れるようになりました。何をアタリマエのことを言ってるんだお前は、と思うかもしれませんが、TryInvokeMemberに渡ってくる情報はobject[] argsなのです。args[0]の型はobjectなわけで、それをGetTypeしたら、出てくるのはList&lt;int&gt;なのです。何をどうやっても、.csファイルではIEnumerable&lt;int&gt;と書かれているという情報を得ることは出来なかったわけです、今までは。ましてやnullだったら型もヘッタクレもなかったわけです。でもこれからは違う。コード上のデータが取れる！</p>
+<p>などとツラツラと書いてみましたが、利用者的にはどうでもいい話ですね、はい。それに、リフレクションはいいとしても、Cacheって何よ？CacheのFirstが決め打ちなのって何よ？などなどは、ぶっちゃけよくわかっていなくて(だって全部internalだしね……)若干怖いのですが、まあ、多分、大丈夫でしょう、多分……。それと、まだ完璧じゃあなくてサポートしてないオーバーロードのケースが幾つかあります。とはいえ、ほとんどのシチュエーションでは問題ないのではかと思います。</p>
+<h2>まとめ</h2>
+<p>この<a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>ですが、私は結構普通に使いまくっていて、ないと死にます。激しく便利。そうそう、紹介しますと、 actual.Is(expected) と、メソッドチェーン形式で流れるようにアサーションが書けます。ラムダ式での指定やコレクションへの可変長引数など、ちょうどかゆいところに手が届く拡張を施してあって、随分とテストを書くのが楽になります。</p>
+<p>AsDynamicは、オマケ機能というか。privateなメソッドやプロパティ、フィールドにもdynamicを通してアクセス出来るように変換します。たまにしか使いませんが（MSTestにはPrivate Accessorがあるので）、あると便利よね、という時もそこそこあり。</p>
+<p>MSTestだけではなく、NUnitやMbUnit、xUnit.NETでも使えますので＆NuGet経由でも入れられますので、一度是非お試しを。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

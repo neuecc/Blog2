@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - C#(.NET)のテストフレームワーク4種の比較雑感</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2011/0303_308.html">C#(.NET)のテストフレームワーク4種の比較雑感</a></h1>
+<ul class="date"><li>2011-03-03</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://chainingassertion.codeplex.com/" title="Chaining Assertion for MSTest">Chaining Assertion ver 1.2.0.0 - CodePlex</a></li>
+</ul>
+<p>for MSTestをやめて、NUnitとMBUnitとxUnit.NETにも対応しました。MSTestに限定していたのは、単純に他のを入れて試すの面倒くせー、というだけの話であり、そういう態度はいけないよね、と思ったので全部入れました。NUnitはDocumentだけは読んでかなり参考にしてたのですが、他のは全くはぢめて。MSTest以外はみんな野心的に開発進んでるんですね。比べると機能面では一番見劣りするMSTest。</p>
+<p>というわけで、対応させるために各種フレームワークを入れる＆多少触ったので、それらの紹介/感想などを書きたいと思います。C#上というか.NET上、ですね。の前に、更新事項が幾つかあるのでそれを。まず、CollectionAssertに等値比較するラムダ式を受けるオーバーロードを追加しました。</p>
+<pre><code class="language-csharp">var lower = new[] { &quot;a&quot;, &quot;b&quot;, &quot;c&quot; };
+var upper = new[] { &quot;A&quot;, &quot;B&quot;, &quot;C&quot; };
+
+// IEqualityComparer&lt;T&gt;かFunc&lt;T,T,bool&gt;を渡して、コレクションの任意の演算子で等値比較
+lower.Is(upper, StringComparer.InvariantCultureIgnoreCase);
+lower.Is(upper, (x, y) =&gt; x.ToUpper() == y.ToUpper());
+
+// Linq to ObjectsのSequenceEqualを使えば今までも出来なくもなかったのですが！
+lower.SequenceEqual(upper, StringComparer.InvariantCultureIgnoreCase).Is(true);
+</code></pre>
+<p>SequenceEqual使えばいいぢゃん(ｷﾘｯ って思ってました。Isのオーバーロードがかなり嵩んでいて、オーバーロードのIntelliSense汚染が始まってる。IntelliSense = ヘルプ。であるべきなのですが、数が多かったり似たようなオーバーロードが多いと、混乱を招いてしまい良くないわけです。だいたいがして、以前にAllを拒んでいたのにSequenceEqualはアリなのかよ、という。一応弁解すると、CollectionAssert自体に比較子を受けるオーバーロードがあるので、IsがCollectionAssertを示すのなら、それを使える口を用意すること自体は悪くないかな、と。あと、SequenceEqualはIEqualityComparerなのが使いづらい。ラムダ式を渡せる口がないので、こちらに用意して回避したかったというのもあります。<a href="http://linqcomparer.codeplex.com/" title="AnonymousComparer - lambda compare selector for Linq">AnonymousComparer - lambda compare selector for Linq</a>を使えばラムダ式渡せますが。</p>
+<p>それにしても、本来のものはIComparerを受けるんですよ、ジェネリックじゃないほうの。今時ノンジェネリックを強要とか、しかもIComparer&lt;T&gt;とIComparerは別物なのでIComparer&lt;T&gt;として定義すると使えないという。ありえない！そもそも何故にIComparerなのか、という話ではある。大小比較じゃないので、等値として0しか判定に使ってませんもの。それならIEqualityComparer&lt;T&gt;だろ、と。GetHashCodeの定義が(不要なのに)面倒だから、そのせいかなー。
+そう考えると分からなくもないので、Func&lt;T, T, bool&gt;を用意しておきました。ラムダ式は最高よね。</p>
+<p>それと、今回、コレクションでのIsの動作を変更しました。今までは欠陥があって、例えばlower.Is(upper)とすると、オーバーロードがかち合ってCollectionAssertではなくAreEqualsのほうで動いてしまってました。これは、大変望ましくない。オーバーロードだけだと解決しようがないので、内部で動的にIEnumerbaleかを判定した上でCollectionAssertを使うようにしてやりました。</p>
+<h2>例外のテスト</h2>
+<p>他のテストフレームワークを色々見たのですが、例外は属性じゃなくてラムダ式でのテストをサポートするのも少なくない。というかMSTestだけですが、それがないのは。属性だと、範囲が広すぎる(メソッドをテストしたいのに、コンストラクタがテスト範囲に含まれ、コンストラクタが例外を吐いてしまったらメソッドのテストにならない)問題があるので、ラムダ式で書けるほうがいい、という流れのようで。その他に1例外テスト1メソッドが強制されて面倒くさいー、引数のチェックぐらい、1メソッドに全部突っ込んでおきたい、というモノグサな私的にもラムダ式のほうが好み。というわけで、移植移植。</p>
+<pre><code class="language-csharp">// Throes&lt;T&gt;で発生すべき例外を指定する
+AssertEx.Throws&lt;ArgumentNullException&gt;(() =&gt; &quot;foo&quot;.StartsWith(null));
+
+// 戻り値も取得可能で、その場合は発生した例外が入ってます
+var ex = AssertEx.Throws&lt;InvalidOperationException&gt;(() =&gt;
+{
+    throw new InvalidOperationException(&quot;foobar operation&quot;);
+});
+ex.Message.Is(s =&gt; s.Contains(&quot;foobar&quot;)); // それにより追加のアサーションが可能
+
+// 例外が起きないことを表明するテスト
+AssertEx.DoesNotThrow(() =&gt;
+{
+    // code
+});
+</code></pre>
+<p>これを入れるのに伴い、拡張メソッド置き場のクラス名をAssertExに変更しました。それに加え、partial classにしたので、独自に何かメソッド置きたい場合に、AssertExに追加することが可能です。.csファイル一つをポン置きでライブラリと言い張るからこそ出来るやり口……。割とどうでもいい。</p>
+<h2>テストフレームワーク雑感</h2>
+<p>Assertちょっと触った程度でしかないので、本当に雑感ですが、一応は各フレームワークを触ったので感想など。</p>
+<ul>
+<li><a href="http://www.nunit.org/" title="NUnit - Home">NUnit</a></li>
+</ul>
+<p>非常に何とかUnitっぽい仕上がり。おお、これこれ、みたいな。ある種のスタンダード。他のテストフレームワークにあるあの機能が欲しいなあ、みたいなものもしっかり取り入れてる感で、全く不足なく。情報も豊富、周辺環境も充実。</p>
+<p>不満は、Assert.That。これJavaのJUnit発祥なのかしらね。Hamcrest？まあしかしともかく、酷い。英文のようで読みやすいとか入力補完ですらすらとか、ないない。これが本当に読みやすい？書きやすい？ありえないでしょ……。Is.All.GreaterThanとか、ただのシンタックス遊び。ラムダ式のないJava(or .NET2.0)ならともかく、現在のC#でそれやる意味はどこにもない。</p>
+<ul>
+<li><a href="http://www.gallio.org/" title="Gallio - Automation Platform for .NET">MbUnit(Gallio)</a></li>
+</ul>
+<p>かなり独自な方向に走っている印象。Gallioというプラットフォーム中立なテストシステムを立てて、その上にNUnitやMSTest、そしてGallioの前身でありテストフレームワークのMbUnitなどが乗っかる。という、壮大なお話。IronRubyでRSpec、など独自にテストシステムを立てられるほどに需要がなさそうな、でもあると絶対嬉しいと思う人いるよね、といったものを一手に吸収出来るかもです(実際RSpecは乗っかってる模様)。そんな壮大な話を出すだけあって、テストランナーとしてのGallioの出来はかなり良いように見えます。</p>
+<p>MbUnit自体は可もなく不可もなく。属性周りとかは独特なのかなあ、単純なアサート関数しか使っていないので、その辺は分かりません。</p>
+<p>ちなみに、今回紹介するテストフレームワークの中で、唯一NuGet非対応。対応に関しては議論されたようですが、どうもGallioのプラグインを中心とする依存関係が、現在のNuGetだと上手く対応させられないそうで。将来のNuGetでも対応するような仕組みへの変更は今のところ考えてない、とNuGet側から返答を貰っているみたいなので、当面はMbUnitのNuGet入りはなさそうです、残念。まあ、若干大掛かりなGallioのインストール込みで考えたほうが嬉しいことも多く、NuGet経由での必要性は薄いから、それはそれでしょうがないかな、といったところ。</p>
+<ul>
+<li><a href="http://xunit.codeplex.com/" title="xUnit.net - Unit Testing for .NET">xUnit.net</a></li>
+</ul>
+<p>非常に独特で、旧来のテストの記述法を徹底的に見直して新しく作り直されています。とっつきは悪いのですが(如何せん、他と比べて全然互換がない)良く考えられていて、素晴らしいと思います。</p>
+<p>例えば、CollectionAssertはなく、Assert.Equalが万能に、Objectの場合はEqualsで、Collectionの場合は列挙しての値比較で行ってくれます。つまり、この辺はChaining AssertionのIsと同じ。旧来のしがらみに囚われず、Assert関数はどういう形であることがベストなのか、ということを突き詰めて考えると、そうなる。と思う。</p>
+<p>ただ、非常に厳密な比較を行うので、型が違う(IEnumerable&lt;T&gt;とT[]とか)とFailになります。Chaining AssertionのIsは、ゆるふわに列挙後の値比較だけで判定します。どちらが良いのかは、正しいテスト、ということを考えればxUnit.NETのほうなのでしょう。私は、その辺は、とにかく「書き味」優先で振りました。型比較の厳密さは例外テストのThrowsメソッドにも現れていて、MSTestやMbUnitは派生型も含め一致すればSuccessとしますが、xUnit.NETは厳密に一致しないとFailになります。Chaining AssertionのThrowsは厳密一致のほうを採用しました。</p>
+<p>正しいテストを書くために、テストフレームワークはかくあるべき、という強い意志でもって開発されている感じ。これは、相当に良いと思います。MSTest以外のものを使うなら、私はこれを選びたい。付属のテストランナーは貧弱ですが、Gallioを使うことで克服出来ます。</p>
+<ul>
+<li>MSTest</li>
+</ul>
+<p>唯一TestCaseがない。これがたまらなく不便なんです！かわりに強力なデータソース読み込みが可能になっているようですけれど、強力な分、セットアップに手間がかかってダルいという。他は、いたって普通。ふつーのAssert関数群とふつーの属性でのテスト設定。このノーマルっぷりは標準搭載らしいかもです。最大の欠点はウィザードで自動生成されるテンプレコードがどうしょうもなくクソなこと。あのノイズだらけのゴミは何とかすべし。</p>
+<p>最大のメリットは完全なVisual Studio統合。サクッとデバッグ実行。何て素晴らしい。標準搭載で準備一切不要なのも嬉しい。昨今のテストの重要度を考えると、Express EditionにもMSTest入ってるべきですねえ。ちょっと弱いAssert関数群とTestCaseがないことは、Chaining Assertionを使えば補完されるので、全体的に割と問題なくなって素敵テストフレームワークに早変わり。TestCaseに関してはモドきなので若干弱いけれど。</p>
+<ul>
+<li><a href="http://research.microsoft.com/en-us/projects/pex/" title="Pex, Automated White box Testing for .NET - Microsoft Research">Pex, Automated White box Testing for .NET</a></li>
+</ul>
+<p>番外編。僕と契約してPexをより強固にしようよ！Code Contracts + Pexは後ろにMicrosoft Researchがいる.NETならではの強烈さだなあ、と。とりあえず<a href="http://kazuktnd.wordpress.com/2011/02/24/vs2010-%E5%BE%8C%E3%81%AE%E4%B8%96%E4%BB%A3%E3%81%AE%E3%83%97%E3%83%AD%E3%82%B0%E3%83%A9%E3%83%9F%E3%83%B3%E3%82%B0-2-pex/">VS2010 後の世代のプログラミング (2) Pex « kazuk は null に触れてしまった</a>の素晴らしい導入記事を読んで試せばいいと思うんだ。そういえば、Pex開発者は<a href="http://research.microsoft.com/en-us/people/jhalleux/">MbUnitのプロジェクト創設者</a>(学生時代にMbUnit作って、その後MSRに行ったそうで、凄いね...)だそうですよ。</p>
+<h2>比較しての相違点</h2>
+<p>他のテストフレームワークや拡張補助ライブラリと根源的に異なるのは、CollectionAssertに対する考え方です。Linq to Objectsに投げればそれが一番でしょ？という。末尾に.Isなのは、それが一番Linq to Objectsを適用して返した場合に書きやすいから。Linqはインフラ。これを活用しないなんて勿体無い。ドキュメントにそれを書くことで、公的に推奨している、ということを押し出している、つもりです。</p>
+<h2>まとめ</h2>
+<p>xUnit.NETはかなり素晴らしいんじゃないかと思います。IDE完全統合という点で、私はMSTestを選んでしまいますが、MSTest以外から使うものを選択するのならば、xUnit.NETにしたいところ。周辺環境がまるで整ってない感はありますが、その辺はGallioを使えば吸収出来るっぽいので、セットで、みたいなところかしらん。</p>
+<p>テストは別に同一言語である必要はない、ので、CLRの特色を活かせば、IronRubyでRSpecというのは魅力的な道に見えます。今回は試せていないのですが、いつか試してみたい。F#を用いてのテストフレームワークも良さそう。F#は、特にテストのような小さい単位ではF# Interactiveに送りながら書けるのが強烈なアドバンテージになるよね。ユニットテストぐらいの小さな単位なら、デバッガよりもむしろこちらのほうが小回り効いて書きやすそう。</p>
+<p>私的には<a href="http://chainingassertion.codeplex.com/" title="Chaining Assertion for MSTest">Chaining Assertion</a>はそれらと比べても、全く引けを取らない書きやすさがあると思っています。C#はクラス定義などを除けば、コード本体自体の書き味はライトウェイトなのですよ、ね、ね！</p>
+<p>それにしてもAssertThat一族の毒はどうにかならないのかねえ……。AssertThatがない、という点だけでxUnit.NET一択ですよほんと。F#などでも、この形式を踏襲しているのを見ると大変モニョる。こういうのがビヘイビアドリブンなんですかね？ただのシンタックス遊びなだけで、そーいうの違くない？って。でもAssertで詳細なデータが出ない？Expression Treeを解析して詳細なデータを出しゃあいいわけで。どっかの言語の仕組みを持ってこないで、C#の持つ特色、強みであるExpression Treeを活かす方向で動けないものなのか。</p>
+<p>別にJavaだからどうとか言うつもりではないです。大切なのはあらゆる言語を見つめて、良いものを取り入れることでしょう？例えば、Groovyの素晴らしいPower AssertをC#でやろうとするプロジェクト <a href="http://code.google.com/p/expressiontocode/" title="expressiontocode - Project Hosting on Google Code">expressiontocode</a> など。C#に取り込もうとするなら、こちらのやり方でしょう。時系列を考えればそれは違う、という話もあるでしょうけど、現在の、これからの姿勢として。本当に良いものは何なのかを、考えよう。それを実現するための力がC#には備わっているのだから。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

@@ -1,0 +1,2390 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2013/1216_436.html">An Internal of LINQ to Objects</a></h1>
+<ul class="date"><li>2013-12-16</li></ul>
+<div class="entry_body"><p>というタイトルで、大阪で開催された<a href="http://vshtc.doorkeeper.jp/events/6781">第3回 LINQ勉強会</a>で発表してきました。</p>
+<iframe src="http://www.slideshare.net/slideshow/embed_code/29200657" width="597" height="486" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC;border-width:1px 1px 0;margin-bottom:5px" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="https://www.slideshare.net/neuecc/an-internal-of-linq-to-objects-29200657" title="An Internal of LINQ to Objects" target="_blank">An Internal of LINQ to Objects</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>大阪は初めてですね！というか、東京以外で発表しに行くのは初めてです。大阪遠い。</p>
+<p>レベル感は、まぁもうLINQも初出から10年も経つわけだし（経ってない）、もはや初心者向けもないだろうということで、LINQ to ObjectsのDeep Diveなネタを突っ込んでおきました。こんなにまとまってる資料は世界にもないですよ！なんで知ってるかというと、<a href="http://linqjs.codeplex.com/">linq.js</a>の実装で延々と何回も書いてるからです、はい。いいことです。そのぐらいにはパーフェクトな実装ということで。ver.3の完成は、も、もう少し、ま、まだ……。ごめんなさい。近いうちには、またベータ出すよ！←いい加減完成させろ</p>
+<p>口頭で捕捉した内容としては、yield returnで書くメソッドは引数チェック用のと分離させよう、というところ。これ、メンドーくさかったらやらなくていいです。実際メンドウクサイですしね。コアライブラリっぽい位置づけのものだったらがっつしやるのも良いとは思いますが、普段からやるのはカッタルイでしょう。と、いっても、LINQ以降はあまり生でyield return使うこともないでしょうけれど。</p>
+<p>イテレータの話とかは、実際doudemoiiんですが、気になる人は、これはそもそもC#の言語仕様書に書いてあります。言語仕様書はVSインストールディレクトリの</p>
+<pre><code class="language-text">C:\Program Files (x86)\Microsoft Visual Studio 12.0\VC#\Specifications\1041\CSharp Language Specification.docx
+</code></pre>
+<p>にあるので（日本語訳されてるよ！）、読んだことない人は眺めてみると楽しいんではかと思います。</p>
+</div>
+<h1><a href="http://neue.cc/2013/1204_435.html">非同期時代のLINQ</a></h1>
+<ul class="date"><li>2013-12-04</li></ul>
+<div class="entry_body"><p>この記事は<a href="http://www.adventar.org/calendars/119">C# Advent Calendar 2013</a>の4日目となります。2012年は<a href="http://neue.cc/2012/12/03_389.html">MemcachedTranscoder - C#のMemcached用シリアライザライブラリ</a>というクソニッチな記事で誰得でした（しかもその後、私自身もMemcached使ってないし）。その前、2011年は<a href="http://neue.cc/2011/12/16_359.html">Modern C# Programming Style Guide</a>、うーん、もう2年前ですかぁ、Modernじゃないですねえ。2011年の時点ではC# 5.0はCTPでしたが、もう2013年、当然のようにC# 5.0 async/awaitを使いまくる時代です。変化は非常に大きくプログラミングスタイルも大きく変わりますが、特にコレクションの、LINQの取り扱いに癖があります。今回は、非同期時代においてLINQをどう使いこなしていくかを見ていきましょう。</p>
+<h2>Selectは非同期時代のForEach</h2>
+<p>これ超大事。これさえ掴んでもらえれば十二分です。さて、まず単純に、Selectで値を取り出す場合。</p>
+<pre><code class="language-csharp">// こんな同期版と非同期版のメソッドがあるとする
+static string GetName(int id)
+{
+    return &quot;HogeHoge:&quot; + id;
+}
+
+static async Task&lt;string&gt; GetNameAsync(int id)
+{
+    await Task.Delay(TimeSpan.FromMilliseconds(100)); // 適当に待機
+    return &quot;HogeHoge:&quot; + id;
+}
+
+// 以後idsと出てきたらこれのこと指してるとします
+var ids = Enumerable.Range(1, 10);
+
+// 同期バージョン
+var names1 = ids.Select(x =&gt; new { Id = x, Name = GetName(x) }).ToArray();
+
+// 非同期バージョン
+var names2 = await Task.WhenAll(ids.Select(async x =&gt; new { Id = x, Name = await GetNameAsync(x) }));
+</code></pre>
+<p>ラムダ内でasyncを書き、結果はIEnumerable&lt;Task&lt;T&gt;&gt;となるので、配列に戻してやるためにTask.WhenAllとセットで使っていくのが基本となります。Task.WhenAllで包むのはあまりにも頻出なので、以下の様な拡張メソッドを定義するといいでしょう。</p>
+<pre><code class="language-csharp">// こういう拡張メソッドを定義しておけば
+public static class TaskEnumerableExtensions
+{
+    public static Task WhenAll(this IEnumerable&lt;Task&gt; tasks)
+    {
+        return Task.WhenAll(tasks);
+    }
+
+    public static Task&lt;T[]&gt; WhenAll&lt;T&gt;(this IEnumerable&lt;Task&lt;T&gt;&gt; tasks)
+    {
+        return Task.WhenAll(tasks);
+    }
+}
+
+// スッキリ書ける
+var names2 = await ids.Select(async x =&gt; new { Id = x, Name = await GetNameAsync(x) }).WhenAll();
+</code></pre>
+<p>では、foreachは？</p>
+<pre><code class="language-csharp">// 同期
+foreach (var id in ids)
+{
+    Console.WriteLine(GetName(id));
+}
+
+// 非同期
+foreach (var id in ids)
+{
+    Console.WriteLine(await GetNameAsync(id));
+}
+</code></pre>
+<p>そりゃそーだ。……。おっと、しかしせっかく非同期なのに毎回待機してループしてたらMottaiなくない？GetNameAsyncは一回100ミリ秒かかっているから、100*10で1秒もかかってしまうんだ！ではどうするか、そこでSelectです。</p>
+<pre><code class="language-csharp">// 同期(idsがList&lt;int&gt;だとする)
+ids.ForEach(id =&gt;
+{
+    Console.WriteLine(GetName(id));
+});
+
+// 非同期
+await ids.Select(async id =&gt;
+{
+    Console.WriteLine(await GetNameAsync(id));
+})
+.WhenAll();
+</code></pre>
+<p>ForEachの位置にSelect。ラムダ式中では戻り値を返していませんが、asyncなので、Taskを返していることになります(Task&lt;T&gt;ではなく)。同期ではvoidとなりLINQで扱えませんが、非同期におけるvoidのTaskは、Selectを通ります。あとはWhenAllで待機してやれば出来上がり。これは全て同時に走るので100msで完了します。10倍の高速化！</p>
+<p>ただし、この場合処理順序は保証されません、同時に走っているので。例えばとある時はこうなりました。</p>
+<pre><code class="language-txt">HogeHoge:1
+HogeHoge:10
+HogeHoge:8
+HogeHoge:7
+HogeHoge:4
+HogeHoge:2
+HogeHoge:6
+HogeHoge:3
+HogeHoge:9
+HogeHoge:5
+</code></pre>
+<p>処理順序を保証したいなら？WhenAll後に処理ループを回せばいいぢゃない。</p>
+<pre><code class="language-csharp">// こうすれば全て並列でデータを取得したあと、取得順のままループを回せる
+var data = await ids.Select(async id =&gt; new { Id = id, Name = await GetNameAsync(id) }).WhenAll();
+foreach (var item in data)
+{
+    Console.WriteLine(item.Name);
+}
+</code></pre>
+<p>一旦、一気に詰めた(100ms)後に、再度回す(0ms)。これはアリです。そんなわけで、非同期時代のデータの処理方法は三択です。逐次await, ForEach代わりのSelect, 一気に配列に詰める。どれがイイということはないです、場合によって選べばいいでしょう。</p>
+<p>ただ言えるのは、超大事なのは、Selectがキーであるということ、ForEachのような役割を担うこと。しっかり覚えてください。</p>
+<h2>非同期とLINQ、そしてプリロードについて</h2>
+<p>さて、SelectだけではただのForEachでLINQじゃない。LINQといったらWhereしてGroupByして、ほげ、もげ……。そんなわけでWhereしてみましょう？</p>
+<pre><code class="language-csharp">// 非同期の ラムダ式 をデリゲート型 'System.Func&lt;int,int,bool&gt;' に変換できません。
+// 非同期の ラムダ式 は void、Task、または Task&lt;T&gt; を返しますが、
+// いずれも 'System.Func&lt;int,int,bool&gt;' に変換することができません。
+ids.Where(async x =&gt;
+{
+    var name = await GetNameAsync(x);
+    return name.StartsWith(&quot;Hoge&quot;);
+});
+</code></pre>
+<p>おお、コンパイルエラー！無慈悲なんでなんで？というのも、asyncを使うと何をどうやってもTask&lt;bool&gt;しか返せなくて、つまりFunc&lt;T,Task&lt;bool&gt;&gt;となってしまい、Whereの求めるFunc&lt;T,bool&gt;に合致させることは、できま、せん。</p>
+<p>Whereだけじゃありません。ラムダ式を求めるものは、みんな詰みます。また、Selectで一度Task&lt;T&gt;が流れると、以降のパイプラインは全てasyncが強いられ、結果として……</p>
+<pre><code class="language-csharp">// asyncでSelect後はTask&lt;T&gt;になるので以降ラムダ式は全てasyncが強いられる
+// これはコンパイル通ってしまいますがkeySelectorにTaskを渡していることになるので
+// 実行時エラーで死にます
+ids.Select(async id =&gt; new { Id = id, Name = await GetNameAsync(id) })
+   .OrderBy(async x =&gt; (await x).Id)
+   .ToArray();
+</code></pre>
+<p>Selectがパイプラインにならず、むしろ出口(ForEach)になっている。自由はない。</p>
+<p>ではどうするか。ここは、一度、配列に詰めましょう。</p>
+<pre><code class="language-csharp">// とある非同期メソッドのあるClassがあるとして
+var models = Enumerable.Range(1, 10).Select(x =&gt; new ToaruClass());
+
+// 以降の処理で使う非同期系のメソッドなり何かを、全てawaitで実体化して匿名型に詰める
+var preload = await models
+    .Select(async model =&gt; new
+    {
+        model,
+        a = await model.GetAsyncA(),
+        b = await model.GetAsyncB(),
+        c = await model.GetAsyncC()
+    })
+    .WhenAll();
+
+// そうして読み取ったもので処理して、（必要なら）最後に戻す
+preload.Where(x =&gt; x.a == 100 &amp;&amp; x.b == 20).Select(x =&gt; x.model);
+</code></pre>
+<p>概念的にはプリロード。というのが近いと思います。最初に非同期なデータを全て取得しまえば、扱えるし、ちゃんと並列でデータ取ってこれる。LINQの美徳である無限リストが取り扱えるような遅延実行の性質は消えてしまいますが、それはshoganai。それに、LINQにも完全な遅延実行と、非ストリーミングな遅延実行の二種類があります。非ストリーミングとは、例えばOrderBy。これは並び替えのために、実行された瞬間に全要素を一度蓄えます。例えばGroupBy。これもグルーピングのために、実行された瞬間に全要素を舐めます。非同期LINQもまた、それらと同種だと思えば、少しは納得いきませんか？現実的な妥協としては、このラインはアリだと私は思っています。分かりやすいしパフォーマンスもいい。</p>
+<h2>AsyncEnumerableの幻想、或いはRxとの邂逅</h2>
+<p>それでも妥協したくないならば、次へ行きましょう。まだ手はあります、良いかどうかは別としてね。注：ここから先は上級トピックなので適当に読み飛ばしていいです</p>
+<p>そう、例えばWhereAsyncのようにして、Func&lt;T,bool&gt;じゃなくFunc&lt;T,Task&lt;bool&gt;&gt;を受け入れてくれるオーバーロードがあれば、いいんじゃない？って思ってみたり。こんな風な？</p>
+<pre><code class="language-csharp">public static class AsyncEnumerable
+{
+    // エラー：asyncとyield returnは併用できないよ
+    public static async IEnumerable&lt;T&gt; WhereAsync&lt;T&gt;(this IEnumerable&lt;T&gt; source, Func&lt;T, Task&lt;bool&gt;&gt; predicate)
+    {
+        using (var e = source.GetEnumerator())
+        {
+            while (e.MoveNext())
+            {
+                if (await predicate(e.Current))
+                {
+                    yield return e.Current;
+                }
+            }
+        }
+    }
+}
+</code></pre>
+<p>ただ、問題の本質はそんなことじゃあない。別にyield returnが使えなければ手書きで作ればいいわけで。そして作ってみれば、本質的な問題がどこにあるのか気づくことができます。</p>
+<pre><code class="language-csharp">class WhereAsyncEnumerable&lt;T&gt; : IEnumerable&lt;T&gt;, IEnumerator&lt;T&gt;
+{
+    IEnumerable&lt;T&gt; source;
+    Func&lt;T, Task&lt;bool&gt;&gt; predicate;
+    T current = default(T);
+    IEnumerator&lt;T&gt; enumerator;
+
+    public WhereAsyncEnumerable(IEnumerable&lt;T&gt; source, Func&lt;T, Task&lt;bool&gt;&gt; predicate)
+    {
+        this.source = source;
+        this.predicate = predicate;
+    }
+
+    public IEnumerator&lt;T&gt; GetEnumerator()
+    {
+        return this;
+    }
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+    {
+        return GetEnumerator();
+    }
+
+    public T Current
+    {
+        get { return current; }
+    }
+
+    object System.Collections.IEnumerator.Current
+    {
+        get { return Current; }
+    }
+
+    public void Reset()
+    {
+        throw new NotSupportedException();
+    }
+
+    public void Dispose()
+    {
+
+    }
+
+    // ↑まではdoudemoii
+    // MoveNextが本題
+
+    public bool MoveNext()
+    {
+        if (enumerator == null) enumerator = source.GetEnumerator();
+
+        while (enumerator.MoveNext())
+        {
+            // MoveNextはasyncじゃないのでawaitできないからコンパイルエラー
+            if (await predicate(enumerator.Current))
+            {
+                current = enumerator.Current;
+                return true;
+            }
+        }
+        return false;
+    }
+}
+</code></pre>
+<p>MoveNextだけ見てもらえればいいのですが、predicateを使うのはMoveNextなわけです。ここがasyncじゃないと、AsyncなLINQは成立しません。さて、もしMoveNextがasyncだと？</p>
+<pre><code class="language-csharp">public async Task&lt;bool&gt; MoveNext()
+{
+    // ここで取得するenumeratorのMoveNextも
+    // 全て同一のインターフェイスであることが前提条件なのでTask&lt;bool&gt;とする
+    if (enumerator == null) enumerator = source.GetEnumerator();
+
+    while (await enumerator.MoveNext())
+    {
+        if (await predicate(enumerator.Current))
+        {
+            current = enumerator.Current;
+            return true;
+        }
+    }
+    return false;
+}
+</code></pre>
+<p>これは機能します。MoveNextをasyncにするということは連鎖的に全てのMoveNextがasync。それが上から下まで統一されれば、このLINQは機能します。ただ、それってつまり、IEnumerator&lt;T&gt;を捨てるということ。MoveNextがasyncなのは、似て非なるものにすぎない。当然LINQっぽい何かもまた、全て、このasyncなMoveNextを前提にしたものが別途用意されなければならない。そして、それが、<a href="http://www.nuget.org/packages/Ix-Async/">Ix-Async</a>。</p>
+<p>Ix-Asyncのインターフェイスは、上で出したasyncなMoveNextを持ちます。</p>
+<pre><code class="language-csharp">public interface IAsyncEnumerable&lt;out T&gt;
+{
+    IAsyncEnumerator&lt;T&gt; GetEnumerator();
+}
+
+public interface IAsyncEnumerator&lt;out T&gt; : IDisposable
+{
+    T Current { get; }
+    Task&lt;bool&gt; MoveNext(CancellationToken cancellationToken);
+}
+</code></pre>
+<p>そして当然、各演算子はIAsyncEnumerableを求めます。</p>
+<pre><code class="language-csharp">public static IAsyncEnumerable&lt;TSource&gt; Where&lt;TSource&gt;(this IAsyncEnumerable&lt;TSource&gt; source, Func&lt;TSource, bool&gt; predicate);
+</code></pre>
+<p>これの何が便利？IEnumerable&lt;T&gt;からIAsyncEnumerable&lt;T&gt;へはToAsyncEnumerableで変換できはするけれど……、求めているのはIEnumerable&lt;Task&lt;T&gt;&gt;の取り扱いであったりpredicateにTaskを投げ込めたりすることであり、何だかどうにもなく、これじゃない感が否めない。</p>
+<p>そもそも、LINQ to Objectsから完全に逸脱した新しいものなら、既にあるじゃない？非同期をLINQで扱うなら、<a href="http://www.atmarkit.co.jp/fdotnet/introrx/introrx_01/introrx_01_01.html">Reactive Extensions</a>が。</p>
+<h2>Reactive Extensionsと非同期LINQ</h2>
+<p>ではRxで扱ってみましょう。の前に、まず、predicateにTaskは投げ込めません。なのでその前処理でロードするのは変わりません。ただ、そのまま続けてLINQ的に処理可能なのが違うところです。</p>
+<pre><code class="language-csharp">await ids.ToObservable()
+    .SelectMany(async x =&gt; new
+    {
+        Id = x,
+        Name = await GetNameAsync(x)
+    })
+    .Where(x =&gt; x.Name.StartsWith(&quot;Hoge&quot;))
+    .ForEachAsync(x =&gt;
+    {
+        Console.WriteLine(x);
+    });
+</code></pre>
+<p>おお、LINQだ？勿論、Where以外にも何でもアリです。RxならLINQ to Objects以上の山のようなメソッドを繋げまわることが可能です。ところで、ここで出てきているのはSelectMany。LINQ to ObjectsでのSelectの役割を、Rxの場合はSelectManyが担っています。asyncにおいてForEachはSelectでRxでSelectはSelectMany……。混乱してきました？</p>
+<p>なお、これの結果は順不同です。もしシーケンスの順序どおりにしたい場合はSelect + Concatを代わりに使います。</p>
+<pre><code class="language-csharp">await ids.ToObservable()
+    .Select(async x =&gt; new
+    {
+        Id = x,
+        Name = await GetNameAsync(x)
+    })
+    .Concat()
+    .Where(x =&gt; x.Name.StartsWith(&quot;Hoge&quot;))
+    .ForEachAsync(x =&gt;
+    {
+        Console.WriteLine(x);
+    });
+</code></pre>
+<p>ソーナンダー？ちなみにSelectManyはSelect + Mergeに等しい。</p>
+<pre><code class="language-csharp">await ids.ToObservable()
+    .Select(async x =&gt; new
+    {
+        Id = x,
+        Name = await GetNameAsync(x)
+    })
+    .Merge()
+    .Where(x =&gt; x.Name.StartsWith(&quot;Hoge&quot;))
+    .ForEachAsync(x =&gt;
+    {
+        Console.WriteLine(x);
+    });
+</code></pre>
+<p>この辺のことがしっくりくればRxマスター。つまり、やっぱRxムズカシイデスネ。とはいえ、見たとおり、Rx(2.0)からは、asyncとかなり統合されて、シームレスに取り扱うことが可能になっています。対立じゃなくて協調。自然に共存できます。ただし、単品でもわけわからないものが合わさって更なるカオス！強烈強力！</p>
+<h2>まとめ</h2>
+<p>後半のAsyncEnumerableだのIx-AsyncだのRxだのは、割とdoudemoii話です、覚えなくていいです。特にIx-Asyncはただの思考実験なだけで実用性ゼロなので本気でdoudemoiiです。Rxは便利なので覚えてくれてもいいのですが……。</p>
+<p>大事なのは、async + Selectです。SelectはForEachなんだー、というのがティンとくれば、勝ったも同然。そして、プリロード的な使い方。そこさえ覚えれば非同期でシーケンス処理も大丈夫。</p>
+<p>asyncって新しいので、今まで出来たことが意外と出来なくてはまったりします。でも、それも、どういう障壁があって、どう対処すればいいのか分かっていればなんてことはない話です。乗り越えた先には、間違いなく素晴らしい未来が待っているので、是非C# 5.0の非同期、使いこなしてください。</p>
+</div>
+<h1><a href="http://neue.cc/2013/1115_434.html">GlimpseによるRedis入出力の可視化とタイムライン表示</a></h1>
+<ul class="date"><li>2013-11-15</li></ul>
+<div class="entry_body"><p>空前の<a href="http://getglimpse.com/">Glimpse</a>ブーム！Glimpse最高！これ入れてないASP.NET開発はレガシー！というわけで、<a href="http://grani.jp/">グラニ a.k.a. 謎社</a>でも激しく使用を開始しています。さて、ではGlimpseとは何ぞやか、という話は今回は、しません（！）。それは誰かがしてくれます(ﾁﾗｯ。今回は本題のRedis周りのGlimpse拡張について。</p>
+<h2>CloudStructures 0.6</h2>
+<p>グラニではRedisライブラリとしてBookSleeve + <a href="https://github.com/neuecc/CloudStructures">CloudStructures</a>を利用しています。RedisやBookSleeveについては、<a href="http://www.buildinsider.net/small/rediscshap/01">C#のRedisライブラリ「BookSleeve」の利用法</a>を読んでね！何故BookSleeveだけじゃないのかというと、BookSleeveだけだと使いづらいからです。例えるなら、BookSleeveはRedisドライバであり、ADO.NETみたいなもの。CloudStructuresはO/R(Object/Redis)マッパーであり、Dapperのようなもの。といった関係性で捉えてもらえればあってます。で、CloudStructuresは私謹製です。</p>
+<p>今回Glimpseと連携させて使いやすくログ吐きするのに若干足りてなかったので、出力用のインターフェイス ICommandTracer を破壊的変更かけてがっつし変えちゃってます。というわけでバージョン0.6に更新。破壊的変更、ま、まだ0.xだし……。0.xとはいえ、CloudStructuresはグラニのプロダクション環境下で激しく使われてます。もんのすごい量のメッセージを捌いている（BookSleeve開発元のStackOverflowよりも遥かに捌いているはず）、秒間で数万とか数十万とかのクエリ数を、なので実績は十二分にあると言えるでしょう。</p>
+<p>今回からリポジトリにCloudStructures.Demo.Mvcというプロジェクトを入れているので、実環境でどういう風に使えばいいのかとか、Glimpseでどう表示されるのかが分かるようになってますので、使う時は参考にどうぞ。</p>
+<h2>Glimpseによる表示</h2>
+<p>今回からCloudStructuresによるRedisアクセスを可視化できるように、Glimpseプラグインが別途インストールできるようになりました。NuGet上で <a href="https://www.nuget.org/packages/Glimpse.CloudStructures.Redis/">Glimpse.CloudStructures.Redis</a>から入れればおｋ。インストール後、Glimpseを有効にし、ICommandTracerにGlimpse.CloudStructures.Redis.RedisProfilerを渡してやると（Web.configからの設定の仕方などはCloudStructures.Demo.Mvcを見て下さい）、以下のようになります。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/11/glimpse_redis_tab.jpg' />
+</p>
+<p>Redisタブが追加され、Redisで、どのコマンドでどのキーで実行したか、何を送って何を受け取れたか、かかった時間。それらが一覧表示されます。また、重複コマンド・キーで発行した場合は警告表記になります（一番下のオレンジの）</p>
+<p>とにかく、通信が全部見える。中身含めて。圧倒的に捗ります。これがないなんて、盲目で歩いているに等しかった。ありえない。もう、戻れない。見えるっては、いいことですねぇ、ほんと。</p>
+<p>更に、Glimpse標準のTimelineタブに統合されていて、これが超絶最高です。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/11/glimpse_timeline.jpg' />
+</p>
+<p>5つ連なってる部分、これは非同期に並列アクセスされています。コードは</p>
+<pre><code class="language-csharp">var ids = new[] { 12, 3124, 51, 636, 6714 };
+var rand = new Random();
+            
+await Task.WhenAll(ids.Select(async x =&gt;
+{
+    await RedisGroups.Demo.String&lt;int&gt;(&quot;TestInc.Id.&quot; + x).Increment(rand.Next(1, 10));
+}).ToArray());
+</code></pre>
+<p>のようになっているわけですが、これ、もし同期アクセスだったら、同時に動くことなく、この分だけタイムラインが右に長くなるわけです。可視化されることで全て非同期！全てパイプライン！効率的に、高速に、というのがとてもわかりやすく見えます。実際、グラニではこういった一気に叩いてWhenAllというパターンを多用して高速なレスポンスを実現しています。ここまでASP.NET MVCの非同期コントローラーを死ぬほど使い倒している企業は、世界でも稀なのではないか、というレベルで非同期祭りやってます。（そして時に地雷踏みつつ前進してます）。</p>
+<h2>Glimpseについてもうちょっとだけ</h2>
+<p>実際のところGlimpse、ただ入れただけだとあんまり嬉しいことはないでしょう。色々なサーバーの情報が見えると言ったって、そんなの一度だけ見れば十分だしー、で終わってしまったり。ただ情報がありゃあいいってものじゃなくて、何の情報が必要か、が大事。でも、Glimpseってカスタマイズが容易なんですね。だから、その会社にとって、そのアプリケーションにとって大事な情報を流しこむことができる。大事な情報を流しこむようにすることで「頻繁に使うものではない」から「頻繁に使うもの」に変える。そうすることで、手放せないものとなります。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/11/glimpse_original_tab.jpg' />
+</p>
+<p>これはグラニで実際に使っているタブですが、Log, PlatformAPI, Redis, SQL Explainは弊社が独自に作成したタブです。以前に<a href="http://neue.cc/2013/07/30_420.html">Http, SQL, Redisのロギングと分析・可視化について</a>という記事を書きましたが、そこで、外部へのアクセスをフックする仕組みは作ってあったので、それぞれでGlimpseにデータ流すように変えただけです。これによりRedis, Http, SQLの全てがタブで全て見えるし、Timelineにも出てくるのでボトルネックが一目瞭然に。過度な通信なども一発で分かる。</p>
+<p>SQL Explainはリクエスト中で発行された全てのSQLに対してexplainを発行し結果を表示しています(うちはMySQLを使っているのでexplainです、SQL Serverならそれ用のコマンド打てば同様以上のことが当然可能です)。これにより、将来ボトルネックになるクエリが早期発見できます。</p>
+<p>explainとか面倒だから全てに律儀に打ったりしないし、*ms以上遅いクエリは警告するとかやったって、開発環境のデータ量だと無意味だったりするでしょう。だから、全てのクエリに対して自動でexplainをかけてやって、怪しそうなもの(using filesortとか)は最初から警告してあげる。これで、クソクエリの早期撲滅が可能となります。</p>
+<p>ちなみにMiniProfilerとの使い分けですが、うちではむしろもうMiniProfilerイラナクね？の方向で進んでます。ちょっとまだGlimpse、足りてないところもあるのですが、割と直ぐに解決しそうだし、むしろMiniProfiler動かしてるとHistoryが汚れるのでGlimpseにとって邪魔なのですよね。</p>
+<h2>まとめ</h2>
+<p>といったように、グラニではより開発しやすい環境を作ることに全力を注いでいます。なんと今だと<a href="http://next.rikunabi.com/company/cmi3321608001/">アプリケーションエンジニア・インフラエンジニア・フロントエンドエンジニアを募集中</a>だそうですよ！←求人広告記事ﾀﾞｯﾀﾉｶｰ、ｲﾔｿﾝﾅｺﾄﾅｲﾃﾞｽｹﾄﾞﾈ。なんか敷居高杉と思われてるかもですが、アプリエンジニアに関しては割とそんなことなく、基準は最低限LINQ to Objects知ってる程度からなので気楽にどうぞ。最近、オフィスを六本木ヒルズに移転しまして、ハードウェア環境も充実しているので、そちらの面でも開発しやすいかな、と。モニタも27インチ(2560x1440)をトリプルですしドリンク無料飲み放題ですし。</p>
+<p>ソフトウェア側も良さそうならどんどんバシバシ変えてます。Glimpseも最初は導入されてませんでしたが、後から入れていますしね。ASP.NET MVCも早速5へ。この辺の姿勢は初期の文化が大事だと思っているので、絶対緩めないのを信条にしています。</p>
+<p>なお、Glimpseの導入や独自タブの作成、ならびにGlimpse.CloudStructures.Redisの作成は、私がやったわけではありません！私がやったのはSQL Explainタブの作成とICommandTracerの改変、Glimpse.CloudStructures.Redisを社外に出せるよう依存部分の除去しただけでして。そんなわけで皆で一岩となって改革してるんですよー、とっても刺激的でいい職場です。私にとっても。←ﾔｯﾊﾟﾘ求人広告記事ﾀﾞｯﾀﾉｶｰ、ｲﾔｿﾝﾅｺﾄﾅｲﾃﾞｽﾖ。</p>
+</div>
+<h1><a href="http://neue.cc/2013/1031_430.html">.NETのコレクション概要とImmutable Collectionsについて</a></h1>
+<ul class="date"><li>2013-10-31</li></ul>
+<div class="entry_body"><p>先週の土曜日に、<a href="http://atnd.org/event/E0019986">「プログラミング .NET Framework 第4版 」座談会</a>でOverview of the .NET Collection Framework and Immutable Collectionsとして、コレクションフレームワークと<a href="http://www.nuget.org/packages/Microsoft.Bcl.Immutable/">Immutable Collections</a>について話してきました。</p>
+<iframe src="http://www.slideshare.net/slideshow/embed_code/27589446" width="597" height="400" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC;border-width:1px 1px 0;margin-bottom:5px" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="https://www.slideshare.net/neuecc/overview-of-the-net-collection-framework-and-immutable-collections" title="Overview of the .Net Collection Framework and Immutable Collections" target="_blank">Overview of the .Net Collection Framework and Immutable Collections</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>案外コレクションについてまとまった話って、ない(or .NET 4.5からReadOnly系が入ってきて、話が更新されているもの)ので、資料として役に立つのではないかと思います。</p>
+<h2>Collection Framework</h2>
+<p>前半部分ですが、これのジューヨーなところはILinqable&lt;T&gt;、じゃなくて(スライド資料では出てないのでナンノコッチャですが)、ReadOnly系の取り扱いですね。MutableとReadOnlyが枝分かれしている理由とか対処方法とか、が伝えたかった点です。いやあ、コレクション作る時は両方実装しよう！とかしょうもないですねえ、shoganaiのですねぇ……。</p>
+<p>IEnumerable&lt;T&gt;とIReadOnlyCollection&lt;T&gt;の差異は実体化されていない「可能性がある」かどうか。で、なのでメソッドの引数などで内部で実体化されてるのを前提にほげもげしたい場合は、IReadOnlyCollection&lt;T&gt;を受け取るほうが望ましいといえば望ましいのですが、汎用的にIEnumerableのままで……という場合は、以下のようなメソッドを用意しとくといいでしょう。</p>
+<pre><code class="language-csharp">/// &lt;summary&gt;
+/// sourceが遅延状態の場合、実体化して返し、既に実体化されている場合は何もせずそれ自身を返します。
+/// &lt;/summary&gt;
+/// &lt;param name=&quot;source&quot;&gt;対象のシーケンス。&lt;/param&gt;
+/// &lt;param name=&quot;nullToEmpty&quot;&gt;trueの場合、sourceがnull時は空シーケンスを返します。falseの場合はArgumentNullExceptionを吐きます。&lt;/param&gt;
+public static IEnumerable&lt;T&gt; Materialize&lt;T&gt;(this IEnumerable&lt;T&gt; source, bool nullToEmpty = true)
+{
+    if (nullToEmpty &amp;&amp; source == null)
+    {
+        return Enumerable.Empty&lt;T&gt;();
+    }
+    else
+    {
+        if (source == null) throw new ArgumentNullException(&quot;sourceがnullです&quot;);
+    }
+
+    if (source is ICollection&lt;T&gt;)
+    {
+        return source;
+    }
+    if (source is IReadOnlyCollection&lt;T&gt;)
+    {
+        return source;
+    }
+
+    return source.ToArray();
+}
+</code></pre>
+<p>こんなのを作って、冒頭で呼べば、二度読みなどもOKに。</p>
+<pre><code class="language-csharp">public static void Hoge&lt;T&gt;(IEnumerable&lt;T&gt; source)
+{
+    source = source.Materialize(); // ここで実体化する
+
+    // あとは好きに書けばいいのではないでせうか
+}
+</code></pre>
+<p>どうでしょ。また、二度読みなら列挙したらキャッシュして、再度読む時はそっから読んでくれればいいのに！というリクエストあるかと思います。それは一般的には<a href="http://ja.wikipedia.org/wiki/%E3%83%A1%E3%83%A2%E5%8C%96">メモ化(Memoization)</a>といいます。というわけで、シーケンスに実装してみましょう。</p>
+<pre><code class="language-csharp">public static IEnumerable&lt;T&gt; Memoize&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    if (source == null) throw new ArgumentNullException(&quot;sourceがnull&quot;);
+    return new MemoizedEnumerable&lt;T&gt;(source);
+}
+
+class MemoizedEnumerable&lt;T&gt; : IEnumerable&lt;T&gt;, IDisposable
+{
+    readonly IEnumerable&lt;T&gt; source;
+    readonly List&lt;T&gt; cache = new List&lt;T&gt;();
+    bool cacheComplete = false;
+    IEnumerator&lt;T&gt; enumerator;
+
+    public MemoizedEnumerable(IEnumerable&lt;T&gt; source)
+    {
+        this.source = source;
+    }
+
+    public IEnumerator&lt;T&gt; GetEnumerator()
+    {
+        if (enumerator == null) enumerator = source.GetEnumerator();
+        return new Enumerator(this);
+    }
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+    {
+        return GetEnumerator();
+    }
+
+    public void Dispose()
+    {
+        if (enumerator != null) enumerator.Dispose();
+    }
+
+    class Enumerator : IEnumerator&lt;T&gt;
+    {
+        readonly MemoizedEnumerable&lt;T&gt; enumerable;
+        int index = 0;
+
+        public Enumerator(MemoizedEnumerable&lt;T&gt; enumerable)
+        {
+            this.enumerable = enumerable;
+        }
+
+        public T Current { get; private set; }
+
+        public void Dispose()
+        {
+
+        }
+
+        object System.Collections.IEnumerator.Current
+        {
+            get { return Current; }
+        }
+
+        public bool MoveNext()
+        {
+            if (index &lt; enumerable.cache.Count)
+            {
+                Current = enumerable.cache[index];
+                index++;
+                return true;
+            }
+
+            if (enumerable.cacheComplete) return false;
+
+            if (enumerable.enumerator.MoveNext())
+            {
+                Current = enumerable.enumerator.Current;
+                enumerable.cache.Add(Current);
+                index++;
+                return true;
+            }
+
+            enumerable.cacheComplete = true;
+            enumerable.enumerator.Dispose();
+            return false;
+        }
+
+        public void Reset()
+        {
+            throw new NotSupportedException(&quot;Resetは産廃&quot;);
+        }
+    }
+}
+</code></pre>
+<p>こうしておけば、</p>
+<pre><code class="language-csharp">// hoge:xが出力されるのは1回だけ
+var seq = Enumerable.Range(1, 5)
+    .Select(x =&gt;
+    {
+        Console.WriteLine(&quot;hoge:&quot; + x);
+        return x;
+    })
+    .Memoize();
+
+// なんど
+foreach (var item in seq.Zip(seq, (x, y) =&gt; new { x, y }).Take(4))
+{
+    Console.WriteLine(item);
+}
+
+// ぐるぐるしても一度だけ
+foreach (var item in seq.Zip(seq, (x, y) =&gt; new { x, y }))
+{
+    Console.WriteLine(item);
+}
+</code></pre>
+<p>といった感じ。Materializeより合理的といえば合理的だし、そうでないといえばそうでない感じです。私はMaterializeのほうが好み。というのもMemoizeは完了していないEnumeratorを保持しなければいけない関係上、Disposeの扱いがビミョーなんですよ、そこが結構引っかかるので。</p>
+<p>あと、IEnumerable&lt;T&gt;ですが、スレッドセーフではない。そう、IEnumerable&lt;T&gt;にはスレッドセーフの保証は実はない。というのを逆手に取ってる（まぁ、それはあんまりなので気になる人はlockかけたりしましょう）。ちなみにReadOnlyCollectionだってラップ元のシーケンスが変更されたらスレッドセーフじゃない。そして、スレッドセーフ性が完璧に保証されているのがImmutable Collections。という話につながったりつながらなかったり。</p>
+<h2>Immutable Collections</h2>
+<p>Immutable Collectionsは実装状況が.NET Framework Blogで随時触れられていて、リリース時の<a href="http://blogs.msdn.com/b/dotnet/archive/2013/09/25/immutable-collections-ready-for-prime-time.aspx">Immutable collections ready for prime time</a>を読めば、なんなのかっては分かるのではかと。その上で私が今回で割と酸っぱく言いたかったのは、ReadOnly「ではない」ってことです。そして結論はアリキタリに使い分けよう、という話でした。</p>
+<p>セッション後の話とかTwitterで、バージョニングされたコレクションって捉えるといいんじゃないの？と意見頂いたのですが、なるほどしっくりきそうです。</p>
+<h2>スピーカー予定</h2>
+<p>今後ですが、大阪です！12/14、<a href="http://vshtc.doorkeeper.jp/events/6781">第3回 LINQ勉強会</a>で発表する予定なので、関西圏の人は是非是非どうぞ。セッションタイトルは「An Internal of LINQ to Objects」を予定しています。これを聞けばLINQ to ObjectsのDeep Diveの部分は全部OK、といった内容にするつもりです。もう初心者向けってこともないので、完全に上級者がターゲットで。</p>
+</div>
+<h1><a href="http://neue.cc/2013/1010_429.html">asyncの落とし穴Part3, async voidを避けるべき100億の理由</a></h1>
+<ul class="date"><li>2013-10-10</li></ul>
+<div class="entry_body"><p>だいぶ前から時間経ってしまいましたが、非同期の落とし穴シリーズPart3。ちなみにまだ沢山ネタはあるんだから！どこいっても非同期は死にますからね！</p>
+<h2>async void vs async Task</h2>
+<p>自分で書く場合は、必ずasync Taskで書くべき、というのは非同期のベストプラクティスで散々言われていることなのですけれど、理由としては、まず、voidだと、終了を待てないから。voidだと、その中の処理が軽かろうと重かろうと、終了を感知できない。例外が発生しても分からない。投げっぱなし。これがTaskになっていれば、awaitで終了待ちできる。例外を受け取ることができる。await Task.WhenAllで複数同時に走らせたのを待つことができる。はい、async Taskで書かない理由のほうがない。</p>
+<p>んじゃあ何でasync voidが存在するかというと、イベントがvoidだから。はい。button_clickとか非同期対応させるにはvoidしかない。それだけです。なので、自分で書く時は必ずasync Taskで。async voidにするのはイベントだけ。これ絶対。</p>
+<h2>ASP.NET + async voidで死ぬ</h2>
+<p>それでもasync voidをうっかり使っちゃうとどうなるでしょう？終了を待てないだけとか、そんなんならいいんですよ、でも、ASP.NETでasync void使うと死にます。文字通りに死にます。アプリケーションが。じゃあ、ASP.NET MVCで試してみましょうか。WebForms？しらね。</p>
+<pre><code class="language-csharp">public async void Sinu()
+{
+    await Task.Delay(TimeSpan.FromSeconds(1));
+}
+
+public ActionResult Index()
+{
+    Sinu();
+
+    return View();
+}
+</code></pre>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/10/async_void_is_dead_1.jpg' />
+</p>
+<p>死にました！警告一切ないのに！って、ああ、そうですね、async=&quot;true&quot;にしないとですね、まぁそれはないのですけれど、はい、Task&lt;ActionResult&gt;を返しましょう。そうすればいいんでしょ？</p>
+<pre><code class="language-csharp">public async void Sinu()
+{
+    await Task.Delay(TimeSpan.FromSeconds(1));
+}
+
+public async Task&lt;ActionResult&gt; Index()
+{
+    Sinu();
+
+    return View();
+}
+</code></pre>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/10/async_void_is_dead_2.jpg' />
+</p>
+<p>はい、死にました！非同期操作が保留中に非同期のモジュールとハンドラーが完了しちゃいましたか、しょーがないですね。しょーがない、のか……？</p>
+<p>で、これの性質の悪いところは、メソッド呼び出しの中に一個でもasync voidがあると詰みます。</p>
+<pre><code class="language-csharp">// こんなクソクラスがあるとして
+public class KusoClass
+{
+    public async void Sinu()
+    {
+        await Task.Delay(TimeSpan.FromSeconds(1)); // 1じゃなく5ね。
+    }
+}
+
+// この一見大丈夫そうなメソッドを
+public async Task Suteki()
+{
+    // ここでは大丈夫
+    await Task.Delay(TimeSpan.FromSeconds(1));
+
+    // これを実行したことにより……
+    new KusoClass().Sinu();
+
+    // ここも実行されるし
+    await Task.Delay(TimeSpan.FromSeconds(1));
+}
+
+// このアクションから呼び出してみると
+public async Task&lt;ActionResult&gt; Index()
+{
+    // これを呼び出してちゃんと待機して
+    await Suteki();
+
+    // ここも実行されるのだけれど
+    await Task.Delay(TimeSpan.FromSeconds(1));
+
+    return View();
+}
+</code></pre>
+<p>死にます。ただし、上で5秒待機を1秒待機に変えれば、動きます。なぜかというと、KusoClass.Sinuを実行のあとに2秒待機があってViewを返してるので、Viewを返すまでの間にKusoClass.Sinuの実行が完了するから。そう、View返すまでに完了してればセーフ。してなければ死亡。まあ、ようするに、死ぬってことですね結局やっぱり。何故かたまに死ぬ、とかいう状況に陥ると、むしろ検出しづらくて厄介極まりないので、死ぬなら潔く死ねって感じ。検出されずそのまま本番環境に投下されてしまったら……！あ、やった人がいるとかいないとかいるらしい気がしますが気のせい。</p>
+<p>呼び出し階層の奥底にasync voidが眠ってたら死ぬとか、どーせいという話です。どーにもならんです。なので、共通ライブラリとか絶対async void使っちゃダメ。あるだけで死んでしまうのですから。</p>
+<h2>FireAndForget</h2>
+<p>さて、投げっぱなしの非同期メソッドを使いたい場合、どうすればいいんでしょう？</p>
+<pre><code class="language-csharp">public async Task ToaruAsyncMethod()
+{
+    await Task.Delay(TimeSpan.FromSeconds(1));
+    Debug.WriteLine(&quot;hoge&quot;);
+}
+
+public async Task&lt;ActionResult&gt; Index()
+{
+    // 待機することなく投げっぱなしにしたいのだけど警告が出る！
+    ToaruAsyncMethod();
+
+    return View();
+}
+</code></pre>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/10/async_uzai.jpg' />
+</p>
+<p>あー、警告ウザす警告ウザす。その場合、しょうがなく変数で受けたりします。</p>
+<pre><code class="language-csharp">public async Task&lt;ActionResult&gt; Index()
+{
+    // 警告抑制のため
+    var _ = ToaruAsyncMethod();
+
+    return View();
+}
+</code></pre>
+<p>はたしてそれでいーのか。いやよくない。それに、やっぱこれだと例外発生した時に捉えられないですしね。TaskScheduler.UnobservedTaskExceptionに登録しておけば大丈夫ですけれど（＆これは登録必須ですが！）。というわけで、以下の様なものを用意しましょう。</p>
+<pre><code class="language-csharp">// こんな拡張メソッドを用意すると
+public static class TaskEx
+{
+    // ロガーはここではNLogを使うとします
+    private static readonly NLog.Logger logger = NLog.LogManager.GetCurrentClassLogger();
+
+    /// &lt;summary&gt;
+    /// 投げっぱなしにする場合は、これを呼ぶことでコンパイラの警告の抑制と、例外発生時のロギングを行います。
+    /// &lt;/summary&gt;
+    public static void FireAndForget(this Task task)
+    {
+        task.ContinueWith(x =&gt; 
+        {
+            logger.ErrorException(&quot;TaskUnhandled&quot;, x.Exception);
+        }, TaskContinuationOptions.OnlyOnFaulted);
+    }
+}
+
+// こんな投げっぱなしにしたい非同期メソッドを呼んでも
+public async Task ToaruAsyncMethod()
+{
+    await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+    Debug.WriteLine(&quot;hoge&quot;);
+    throw new Exception();
+}
+
+public ActionResult Index()
+{
+    ToaruAsyncMethod().FireAndForget(); // こうすれば警告抑制＆例外ロギングができる
+            
+    return View();
+}
+</code></pre>
+<p>いいんじゃないでしょうか？</p>
+<p>ところで、ToaruAsyncMethodに.ConfigureAwait(false)をつけてるのは理由があって、これつけないと死にます。理由は、覚えてますか？<a href="http://neue.cc/2013/07/02_412.html">asyncの落とし穴Part2, SynchronizationContextの向こう側</a>に書きましたが、リクエストが終了してHttpContextが消滅した状態でawaitが完了するとNullReferenceExceptionが発生するためです。</p>
+<p>そして、これで発生するNullReferenceExceptionは、FireAndForget拡張メソッドを「通りません」。こうなると、例外が発生したことはUnobservedTaskExceptionでしか観測できないし、しかも、そうなるとスタックトレースも死んでいるため、どこで発生したのか全く分かりません。Oh...。</p>
+<p>たとえFireAndForgetで警告が抑制できたとしても、非同期の投げっぱなしは細心の注意を払って、呼び出しているメソッド階層の奥底まで大丈夫であるという状態が確認できていて、ようやく使うことができるのです。うげぇぇ。それを考えると、ちゃんと警告してくれるのはありがたいね、って思うのでした。</p>
+<h2>まとめ</h2>
+<p>voidはまぢで死ぬ。投げっぱなしも基本死ぬ。</p>
+<p>では何故、<a href="http://neue.cc/2013/09/30_425.html">我々</a>は非同期を多用するのか。それはハイパフォーマンスの実現には欠かせないからです。それだけじゃなく、asyncでしか実現できないイディオムも山のようにあるので。いや、こんなの全然マシですよ、大袈裟に書きましたがasync void使わないとか当たり前なのでそこ守れば大丈夫なんですよ（棒）。じゃあ何でasync voidなんてあるんだよとか言われると、イベント機構があるからしょうがないじゃん（ﾎﾞｿﾎﾞｿ）、とか悲しい顔にならざるを得ない。</p>
+<p>というわけで、弊社は非同期でゴリゴリ地雷踏みたいエンジニアを大募集してます。ほんと。</p>
+</div>
+<h1><a href="http://neue.cc/2013/0930_425.html">謎社が一周年を迎えました。</a></h1>
+<ul class="date"><li>2013-09-30</li></ul>
+<div class="entry_body"><p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/09/nazo_mon_640.jpg' />
+</p>
+<p>まあ、迎えたのは9/19なので、10日以上経っちゃってるんですが。ほげ。というわけかで、謎社あらため<a href="http://grani.jp/">株式会社グラニ</a>は、設立一年を迎えました。前職を退職したのが10/20なので、私にとっては一年、まだ経ってません。はい。今の役職は取締役CTOなのですが、実は設立時には居なかったんですねえ。ジョインしたのは若干遅れてます。その間シンガポールにいたりほげもげ……。</p>
+<blockquote>
+<p>ともあれ今は、当面は地下に潜伏していますが、必ず浮上しますのでしばしお待ちくだしあ。<br />
+<a href="http://neue.cc/2012/10/20_384.html">gloopsを退職しました。 - 2012/10/20</a></p>
+</blockquote>
+<p>なんで謎社かというと、退職後から表に出るまでは、ちょっとだけ内緒ということで、その間Twitterでずっと謎社って言ってたのが残ってるだけですね。<a href="http://twilog.org/neuecc/search?word=%E8%AC%8E%E7%A4%BE&amp;order=allasc">Twilog @neuecc/謎社 古い順</a>。googleで謎社で検索しても一位がグラニになってたりするので、それはそれで何となく定着してるのでヨシとしませうか。</p>
+<h2>一年の成果</h2>
+<p>謎々潜伏期間中に思い描いてたこと、あります。</p>
+<blockquote>
+<p>C#といったら謎社！みたいな、C#を使う人が憧れるぐらいな立ち位置の会社にできればいいなと思っています<br />
+<a href="http://neue.cc/2012/12/30_391.html">2012年を振り返る。 - 2012/12/30</a></p>
+</blockquote>
+<p>これには、まず、会社が成功してなきゃダメです。その点でいうと、最初のタイトル(1/25に出しました)神獄のヴァルハラゲートは大躍進を遂げ、3度のテレビCM（今も放送してます）、GREE Platform Award2013年上半期総合大賞受賞など、業界では2013年を代表するタイトルとなれたと思います。</p>
+<p>というわけで、会社は成功した（勿論、まだまだこれから更に発展していきますよ！）。技術的にはどうでしょう。実は最初のリリース時はPHPだったのですが、これは7月にC#に完全リプレースしていて、今は100% C#, ASP.NET MVCで動いています。技術に関しては、一部はリリース前にBuild Insider Offlineというイベントで<a href="http://www.slideshare.net/neuecc/net-22662425">.NET最先端技術によるハイパフォーマンスウェブアプリケーション</a>として発表しましたが（.NET系にしては珍しくはてブ300超えて割とヒット）、使用テクノロジ・アーキテクチャに関しては、間違いなく最先端を走っていると思います。エクストリームWebFormsやエクストリームDataSetに比べると、ちゃんと技術を外に語れるのがいいですにぇ。</p>
+<p>また、.NETでのフルAWS環境で超高トラフィックを捌いているのですが、これは結構珍しいところかもです。.NETというだけじゃなく、この業界だと、データベースはFusion-ioのようなハイパーなドライブを詰んだオンプレミス環境であることも多いのですが、Fusion-ioは甘え、クラウドでも十分やれる。むしろこれからはそれがスタンダード。完全クラウドでやれる、という証明をしていく、というわけで<a href="http://www.awsmicrosite.jp/game/case-studies/grani.html">AWS ゲーム業界事例　株式会社グラニ様</a>などでも紹介されています。</p>
+<p><a href="http://newrelic.com/">NewRelic</a>や<a href="http://www.sumologic.com/">Sumo Logic</a>など、日本では（特に.NETでは）マイナーなサービスでも、良いと思ったら柔軟にガンガン導入していっています。特にSumoLogicはWindows+日本語環境だと文字化けとかもありましたが、弊社からのフィードバックで解消していっているなど（つまりうち以外誰も使ってないのかいな……）我々が次代のスタンダードを作っていく、という気概でやっていってます。</p>
+<p>と、たった一年の企業にしては相当やったと思うのですが、しかし、「憧れるぐらいな立ち位置」には、まだまだ全然。土台は出来たと思うので、ここからはしっかり発展させていかなきゃな、と。</p>
+<h2>We're Hiring</h2>
+<p>というわけで、何を言いたいかというとコレです（笑）。超採用中です。<a href="http://grani.jp/recruit.html">グラニ/採用情報</a>が、非常に古臭いページで、しかもmailtoでしか応募できないというハードルの高さでアレなのですが、かなり！真面目に！募集してます。ページはそのうちまともになるので、むしろ応募人数が少ないmailtoのうちのほうが採用確立高いかもですよ！？</p>
+<p>現在どのぐらい人数がいるかというと、会社全体で既に50人ぐらい、エンジニアも20人弱います。小規模な会社、というフェーズは超えてます。会社自体も↑のように割と成功しているので、色々とは安心してください。</p>
+<p>開発環境はかなり充実していて、トリプルディスプレイが出力できない開発PCなんて許さん！とかショボい椅子は嫌だ！とかWindows 8じゃなきゃ嫌だ！とか当然VS2012！Fakesの使えないVisual StudioなんてありえないからPremium以上！とか、こんなにやれてる会社は中々ないでしょう。</p>
+<p>コードは、つい7月にリリースしたものがソースコードの全てで過去の遺産が一切ない状態なので、100%、C# 5.0 + .NET 4.5 + ASP.NET MVC 4という、最先端のフレームワークが存分に利用できます。これは、常にアップデートしていく、という意思が固いので、今後も古いもので書かなきゃいけない……みたいな状況は絶対作りません。これはもう宣言。誓って。</p>
+<p>技術的にも凄まじいasync祭り（Webでここまでやってるのは世界でも稀でしょう）とか、良くも悪くも先端を突っ走るし地雷は自分で踏んで自分で処理して、「我々が道を作る」覚悟で、技術的に業界をリードする会社であろうとしています。そうじゃなきゃ「C#を使う人が憧れるぐらいな立ち位置」にはなれませんから。なので、技術的な発信に関しては、私に限らず、皆がアクティブに行っていきたいと思っています。なお、私含めてMicrosoft MVPは3人在籍しています。</p>
+<p>C#といったら謎社にする。といった気概のある方は、是非とも応募してみて下さい。らんぷの巣窟にC#で殴りこみをかけれるとか謎社にしか出来ない面白いポジションですし、.NET世界に篭もらずに、C#を業界のスタンダードへと導けるのは我々だけ！というぐらいな勢いがありますよ。</p>
+<p>(注意：但し、我々はサービスを提供している会社です。技術あってのサービス、サービスあっての技術。両輪なので、多少の偏りはいいんですが、片方がゼロの場合は良い物は作れないので、お断るかもしれません)</p>
+<p>とかなんとかだと、ハードル高すぎ、な感がするかもですが、そんなにそんなでもないので、気になるなぁと思った人は現時点での何らかの懸念（技術的に、とかスキルセットが合わないかも、とか）は抜きにして、来てもらえると嬉しいですね。ウェブ系以外でも全然OKですし。C#が全てに通用することを現実世界での成功でもって証明する！ことも掲げているので、ウェブ以外であっても、アリアリなのです。</p>
+</div>
+<h1><a href="http://neue.cc/2013/0806_423.html">MySQL + Dapperによる高負荷時のバグで死んだ話</a></h1>
+<ul class="date"><li>2013-08-06</li></ul>
+<div class="entry_body"><p>今回はMySQLと<a href="https://code.google.com/p/dapper-dot-net/">Dapper</a>を組み合わせると死ぬ、という超極少数にしか該当しない話ですよ！というわけで、まぁ読み物としてどーぞ。ちなみに割とクリティカルなので、その組み合わせで何かやろうという人は気をつけたほうがいいです。</p>
+<h2>観測</h2>
+<p>何が起こるかの観測からはじめましょう。まず、NuGetからMySQL.DataとDapperをインストールして、以下の簡単なコードを走らせ、ません。コード書いて待機で。</p>
+<pre><code class="language-csharp">using Dapper;
+using MySql.Data.MySqlClient;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        // スレッドプールを先に伸びるように
+        ThreadPool.SetMinThreads(200, 200);
+        var count = 0;
+
+        // とりあえず200並列で実行する
+        Parallel.For(0, 10000, new ParallelOptions { MaxDegreeOfParallelism = 200 }, () =&gt;
+        {
+            var conn = new MySqlConnection(&quot;せつぞくもじれーつ,Max Pool Size=1000&quot;);
+            conn.Open();
+            return conn;
+        }, (x, state, conn) =&gt;
+        {
+            System.Console.WriteLine(Interlocked.Increment(ref count));
+
+            // ↑や↓にグチャグチャありますが、実態はこの一行だけです
+            conn.Query&lt;long&gt;(&quot;select 1&quot;, buffered: false).First();
+
+            return conn;
+        }, conn =&gt;
+        {
+            conn.Dispose();
+        });
+    }
+}
+</code></pre>
+<p>Parallelなのは高負荷じゃないとイマイチ分からないので、そのシミュレートね。これも別にそこまで高負荷ってわけでもないですが、まぁこんなんでいいのです（原因分かってて逆算して書いてるので）。接続文字列は、とりあえず200並列に耐えられるようにMaxPoolSizeだけ大きめに設定しておきます。さて、そしてPowerShellを立ち上げ、とりあえず以下のスクリプトを走らせておきます。</p>
+<pre><code class="language-text"> while ($true) {Get-NetTCPConnection | group state -NoElement; sleep 1}
+</code></pre>
+<p>で、上のC#コードを実行。すると、実行は、遅いです。Parallelなので速いのか遅いのかわからないかもですが、まあぶっちけ凄く遅いです。正常状態ならサクッと終わるのですが、↑のはかなりもたついてます。で、運が良ければ以下の例外にも遭遇するでしょう。時には完走するかもしれませんが。</p>
+<pre><code class="language-text">ハンドルされていない例外: System.AggregateException: 1 つ以上のエラーが発生しました。
+---&gt; MySql.Data.MySqlClient.MySqlException: Unable to connect to any of the specified MySQL hosts.
+---&gt; System.Net.Sockets.SocketException: そのようなホストは不明です。
+</code></pre>
+<p>よくわからないけどSocketExceptionで死にますね！！！さて、PowerShellのほうはどうなっていたか、というと、</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/08/pshell_timewait.jpg' />
+</p>
+<p>ぎゃー、TIME_WAIT祭だー。って、Parallelだからそうなったんじゃないかって？いえいえ、所詮200並列ですし、ある程度はOpen/Close繰り返されるとはいえ、4000個もコネクション作ったりなんてしないです。ていうかそもそもコネクションプールあるんだから、そんなに繋ぐわけないでしょーが。</p>
+<p>つまり、どういうことだってばよ？シンプルな例にしましょうか。</p>
+<pre><code class="language-csharp">using (var conn = new MySqlConnection(&quot;せつぞくもじれーつ&quot;))
+{
+    conn.Open();
+    for (int i = 0; i &lt; 100; i++)
+    {
+        conn.Query&lt;long&gt;(&quot;select 1&quot;, buffered: false).First();
+    }
+}
+</code></pre>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/08/timewait_2.jpg' />
+</p>
+<p>はい。100のループで100のTIME_WAITが発生しています。つまり、1クエリにつき1TIME_WAITです。ほへ……？ということは、低負荷時はそれでも生きてられるかもですが、高負荷時は、最初の例で見たように、山のようなTIME_WAITに見舞われます。そしてsocketは枯渇する。そして死ぬ。</p>
+<h2>何故こうなるのか</h2>
+<p>何故、の前にどの組み合わせでなるか、というと、現時点での最新のDapper(1.13)で、Queryをbuffered:falseで、FirstなどReaderの列挙を完了させないもの(ToListとかなら大丈夫)で確定させると詰みます。じゃあまあ、原因にDeepDive。</p>
+<p>キーになるコードは、Dapperのこのメソッドです。</p>
+<pre><code class="language-csharp">private static IEnumerable&lt;T&gt; QueryInternal&lt;T&gt;(this IDbConnection cnn, string sql, object param, IDbTransaction transaction, int? commandTimeout, CommandType? commandType)
+{
+    var identity = new Identity(sql, commandType, cnn, typeof(T), param == null ? null : param.GetType(), null);
+    var info = GetCacheInfo(identity);
+
+    IDbCommand cmd = null;
+    IDataReader reader = null;
+
+    bool wasClosed = cnn.State == ConnectionState.Closed;
+    try
+    {
+        cmd = SetupCommand(cnn, transaction, sql, info.ParamReader, param, commandTimeout, commandType);
+
+        if (wasClosed) cnn.Open();
+        reader = cmd.ExecuteReader(wasClosed ? CommandBehavior.CloseConnection : CommandBehavior.Default);
+        wasClosed = false; // *if* the connection was closed and we got this far, then we now have a reader
+        // with the CloseConnection flag, so the reader will deal with the connection; we
+        // still need something in the &quot;finally&quot; to ensure that broken SQL still results
+        // in the connection closing itself
+        var tuple = info.Deserializer;
+        int hash = GetColumnHash(reader);
+        if (tuple.Func == null || tuple.Hash != hash)
+        {
+            tuple = info.Deserializer = new DeserializerState(hash, GetDeserializer(typeof(T), reader, 0, -1, false));
+            SetQueryCache(identity, info);
+        }
+
+        var func = tuple.Func;
+
+        while (reader.Read())
+        {
+            yield return (T)func(reader);
+        }
+        // happy path; close the reader cleanly - no
+        // need for &quot;Cancel&quot; etc
+        reader.Dispose();
+        reader = null;
+    }
+    finally
+    {
+        if (reader != null)
+        {
+            if (!reader.IsClosed) try { cmd.Cancel(); }
+                catch { /* don't spoil the existing exception */ }
+            reader.Dispose();
+        }
+        if (wasClosed) cnn.Close();
+        if (cmd != null) cmd.Dispose();
+    }
+}
+</code></pre>
+<p>色々ありますが、while(reader.Read())以下の部分だけを見ればOKです。ToListなら大丈夫でFirstだとダメな理由もここにあります。ToListの場合、Readerが全て読むので、コード上にコメントでhappy pathと書いてある、reader.Disposeが呼ばれます、そしてfinallyでは何もしない。逆にFirstの場合は、最初のyield returnで打ち切られてfinallyへ向かうので、cmd.Cancel()が呼ばれた後に、reader.Disposeが呼ばれます。</p>
+<p>そう、ここです。reader.Disposeの前にcmd.Cancelが呼ばれる、というのが、非常にマズい。少なくともMySQL Connectorにおいては。MySQL ConnectorのCommmand.Cancelの実装を見てみましょう。あ、MySQL Connectorのソースコードはちゃんと公開されています、<a href="http://dev.mysql.com/downloads/connector/net/">Download Connector/Net</a>のSelect PlatformでSource Codeを選べば落とせます。zipで。リポジトリは、多分公開されてない、残念ながら……。</p>
+<p>さて、Command.Cancelは以下のメソッドを呼び出します。</p>
+<pre><code class="language-csharp">public void CancelQuery(int timeout)
+{
+    MySqlConnectionStringBuilder cb = new MySqlConnectionStringBuilder(Settings.ConnectionString);
+    cb.Pooling = false;
+    cb.AutoEnlist = false;
+    cb.ConnectionTimeout = (uint)timeout;
+
+    using (MySqlConnection c = new MySqlConnection(cb.ConnectionString))
+    {
+        c.isKillQueryConnection = true;
+        c.Open();
+        string commandText = &quot;KILL QUERY &quot; + ServerThread;
+        MySqlCommand cmd = new MySqlCommand(commandText, c);
+        cmd.CommandTimeout = timeout;
+        cmd.ExecuteNonQuery();
+    }
+}
+</code></pre>
+<p>どういうことか。「新しいコネクションをコネクションプーリングなしで新規生成して」「KILL QUERY実行して」「コネクションを閉じる」。KILL QUERYはどうでもいいんですが、新しいコネクションをプーリングなしで作って閉じるということがどういう結果をもたらすか。一回のクエリ毎に↑のが実行されるとどうなるか。まず、遅くなる。そりゃ遅いわな、1クエリ毎に1接続＆切断してるんだもの。そして、1クエリ = 1TIME_WAIT。完全にコードは書かれたとおりに動いて書かれるとおりの結果しか出てこない。素晴らしい。泣ける。</p>
+<h2>どうすればいいのか</h2>
+<p>これ、1.12 ~ 1.13の間に加えられた変更が原因です。具体的には<a href="https://code.google.com/p/dapper-dot-net/issues/detail?id=106">Issue 106</a>で、SQL ServerだとTimeoutException出るから、reader閉じる前にcommandのCancel呼んで欲しいんだよねー、というパッチが受け入れられたのでした。その結果、MySQLだと死ぬことに。</p>
+<p>なので、1.12を使えば問題は起こりません。もしくは1.13だったら、手動でソースコードに修正を加えればいいでしょう。もともとDapperはソースコードが1ファイルなので、NuGet経由ではなく、最新のコードをファイルで持ってくれば、編集は楽です。</p>
+<p>ちなみに、この件はDapperのForumでは報告済みです。一ヶ月前に。そして返事はありません。みょーん。まあ、あと究極的にはSQL ServerをとるかMySQLをとるか、になるので、どうなんでしょうね、あんま期待は持たないほうがいい気もします。</p>
+<h2>おまけ、MySQL Connectorのコネクションプールについて</h2>
+<p>MySQL Connectorのコードは結構素朴なので、読みやすいです(MSのSqlServerのに比べると遥かに！)。というわけで、つらつら読んでみるといいんじゃないでしょーか。参考になったりゲッソリしたり色々です。</p>
+<p>というわけでコネクションプールとかがどうなってるかの説明しませう。そしてそれぞれが接続文字列のオプションでどう弄れるのかについて。接続文字列でのオプションの設定は結構重要ですからね、失敗してると死にますから。何度か死にましたから……。接続文字列のリファレンスはこちら<a href="http://dev.mysql.com/doc/refman/5.7/en/connector-net-connection-options.html">Connector/Net Connection String Options Reference</a>。古いもの（日本語訳されてる！）だけを参照すると時々痛い目に会うので適度に注意。</p>
+<p>さて、まず、MySqlConnectionをnewすること自体は全然軽くて（ただの入れ物なので）じゅーよーなメソッドはOpenとCloseです。OpenするとコネクションプールからDriver（これが本当の実態でプールするもの）を取り出します。CloseするとコネクションプールにDriverを戻します。これが基本的なこと。ちなみにプールはQueueです、なのでDriverは先入れ先出しで循環してます。</p>
+<p>プールということは、一度生成したコネクションはいつ消えるの？というと、Closeする時です。Close時にExpireしているかチェックし、してれば消滅、してなければプールへ。基準時間は 「接続が最初に作られた時」です。そのExpireの時間はどこで設定するの？というと接続文字列のConnection Lifetime。ちなみにデフォルトは0で、Close時には消滅しません。
+なお、コネクションの最大プール数も接続文字列で指定できて、そのMax Pool Sizeのデフォは100です。</p>
+<p>実際のところ、Close時以外にもコネクションが消える時があります。3分に一回、アイドル状態の接続がチェックされて(Timerで別スレッドで常に巡回されてる)、その時に、3分以上、プールに溜まったままのコネクションはお掃除されます。基準時間は「接続がプールに戻された時」です。Connection Lifetimeと基準が違うんですね。</p>
+<p>Open/Closeを繰り返すことのロスは、上記のようにプールから取り出したり戻したり程度なので、かなり小さいです（一応、取り出したりする際にプールをlockしますが、全然小さいので無視できるでしょう）。あと、一応Open時にサーバーが生きてるかPingを飛ばします(この動作はビミョーだと思うんですけどねえ)。プールのlockよりも、コスト的にはこっちのほうが大きいかもですね。</p>
+<p>あと他に接続文字列だと、Connection TimeoutとDefaultCommandTimeoutを弄っておくと幸せになれるでしょふ。</p>
+<p>DefaultCommandTimeoutで設定できるコマンドタイムアウトはExecuteNonQueryやExecuteReaderで最初のレスポンスが戻ってくるまでの時間ではかられます。だから、ExecuteReaderでも、例えば数億件のデータがあって凄く時間がかかるものでも、反応はかえって来てるのでそこでのTimeout判定は入りません。レコード数よりも、純粋なSQLの内容(馬鹿でかいデータにlikeで検索とかは引っかかりますよね)のためのものです。</p>
+<p>Connection Timeoutは、実はコネクションをOpenにする時、だけに関連してるわけじゃあなかったりします。streamからReadする際の時間でもConnectionStringsのConnect Timeoutで判定があります。この値を流用されるのイマイチ納得いかない気がしなくもないですが、まあそんなもんですかねえ。なので結果セットを読み込んでる最中でもネットワークの調子が悪くて止まると、タイムアウト判定が来ます。Raedの単位はデータセット全て、ではなく1行分とか、そういう特定バイト数ごとになるので、巨大データを読み取るのに時間がかかるので死ぬ、とかにはなりません。一応参考までにってとこですかね。</p>
+<h2>まとめ</h2>
+<p>このDapperで死ぬ問題、プロダクション環境化で発覚したんですよね！！！分かってみると割と単純なのですが、しかし条件が変則的で突き止めるのに手間取って泣きたかった……。低負荷だと割と動いちゃうというか、そこそこの負荷でも割と耐え切れちゃう(IIS偉い)ので、全然気づかず。なんか分からないけど超高負荷の時に落ちる！とか、ね。ワケワカラナカッタ。まず疑うのは自分のコードのほうだしねえ。</p>
+<p>まぁ、解決してほんと良かったです、はい。解決しなかったら首吊るしかなかったですもの、思い出すだけでハイパーお通夜。冗談抜きに今までの人生で一番精神的に苦しかった……。そんな感じで若干トラブルもありましたが、それを除けばDapperはパワフルでかなり満足しています。少々、上モノを被せているので、その辺のものはそのうち紹介しましょうかしらん。</p>
+</div>
+<h1><a href="http://neue.cc/2013/0730_420.html">Http, SQL, Redisのロギングと分析・可視化について</a></h1>
+<ul class="date"><li>2013-07-30</li></ul>
+<div class="entry_body"><p>改善は計測から。何がどれだけの回数通信されているか、どれだけ時間がかかっているのか、というのは言うまでもなく重要な情報です。障害対策でも大事ですしね。が、じゃあどうやって取るの、というとパッとでてくるでしょうか？そして、それ、実際に取っていますか？存外、困った話なのですねー。TraceをONにすると内部情報が沢山出てきますが、それはそれで情報過多すぎるし、欲しいのはそれじゃないんだよ、みたいな。</p>
+<p><a href="http://grani.jp/">Grani</a>←「謎社」で検索一位取ったので、ちょっと英語表記の検索ランキングをあげようとしている――では自前で中間を乗っ取ってやる形で統一していて、使用している通信周り、Http, RDBMS, Redisは全てログ取りして分析可能な状態にしています。</p>
+<h2>HTTP</h2>
+<p>HttpClient(HttpClientについては<a href="http://www.slideshare.net/neuecc/httpclient">HttpClient詳解</a>を読んでね)には、DelegatingHandlerが用意されているので、その前後でStopwatchを動かしてやるだけで済みます。</p>
+<pre><code class="language-csharp">public class TraceHandler : DelegatingHandler
+{
+    static readonly Logger httpLogger = NLog.LogManager.GetLogger(&quot;Http&quot;);
+
+    public TraceHandler()
+        : base(new HttpClientHandler())
+    {
+
+    }
+
+    public TraceHandler(HttpMessageHandler innerHandler)
+        : base(innerHandler)
+    {
+
+    }
+
+    protected override async Task&lt;HttpResponseMessage&gt; SendAsync(HttpRequestMessage request, System.Threading.CancellationToken cancellationToken)
+    {
+        var sw = Stopwatch.StartNew();
+
+        // SendAsyncの前後を挟むだけ
+        var result = await base.SendAsync(request, cancellationToken);
+
+        sw.Stop();
+        httpLogger.Trace(Newtonsoft.Json.JsonConvert.SerializeObject(new
+        {
+            date = DateTime.Now,
+            command = request.Method,
+            key = request.RequestUri,
+            ms = sw.ElapsedMilliseconds
+        }, Newtonsoft.Json.Formatting.None));
+
+        return result;
+    }
+}
+</code></pre>
+<pre><code class="language-csharp">// 使う時はこんな感じにコンストラクタへ突っ込む
+var client = new HttpClient(new TraceHandler());
+
+// {&quot;date&quot;:&quot;2013-07-30T21:29:03.2314858+09:00&quot;,&quot;command&quot;:{&quot;Method&quot;:&quot;GET&quot;},&quot;key&quot;:&quot;http://www.google.co.jp/&quot;,&quot;ms&quot;:129}
+client.GetAsync(&quot;http://google.co.jp/&quot;).Wait();
+</code></pre>
+<p>なお、StreamをReadする時間は含まれていないので、あくまで向こうが反応を返した速度だけの記録になりますが、それでも十分でしょう。
+Loggerは別にConsole.WriteLineでもTraceでも何でもいいのですが、弊社では基本的に<a href="https://github.com/nlog/NLog/">NLog</a>を使っています。フォーマットは、Http, Sql, Redisと統一するためにdate, command, key, msにしていますが、この辺もお好みで。</p>
+<p>なお、DelegatingHandlerは連鎖して多段に組み合わせることが可能です。実際<a href="http://neue.cc/2013/02/27_398.html">AsyncOAuth</a>と合わせて使うと</p>
+<pre><code class="language-csharp">var client = new HttpClient(
+    new TraceHandler(
+        new OAuthMessageHandler(&quot;key&quot;, &quot;secret&quot;)));
+</code></pre>
+<p>といった感じになります。AsyncOAuthはHttpClientの拡張性がそのまま活かせるのが強い。</p>
+<h2>SQL</h2>
+<p>全てのデータベース通信は最終的にはADO.NETのDbCommandを通ります、というわけで、そこをフックしてしまえばいいのです。というのが<a href="http://miniprofiler.com/">MiniProfiler</a>で、以下のように使います。</p>
+<pre><code class="language-csharp">var conn = new ProfiledDbConnection(new SqlConnection(&quot;connectionString&quot;), MiniProfiler.Current);
+</code></pre>
+<p>MiniProfilerはASP.NET MVCでの開発に超絶必須な拡張なわけで、当然、弊社でも使っています。さて、これはこれでいいのですけれど、MiniProfiler.Currentは割とヘヴィなので、そのまま本番に投入するわけもいかずで、単純にトレースするだけのがあるといいんだよねー。なので、ここは、MiniProfiler.Current = IDbProfilerを作りましょう。</p>
+<p>なお、DbCommandをフックするProfiledDbConnectionに関してはそのまま使わせてもらいます。ただたんに移譲してるだけなんですが、DbCommandやDbTransactionや、とか、関連するもの全てを作って回らなければならなくて、自作するのカッタルイですから。ありものがあるならありものを使おう。ちなみに、MiniProfilerにはSimpleProfiledConnectionという、もっとシンプルな、本当に本当に移譲しただけのものもあるのですけれど、これはIDbConnectionがベースになってるので実質使えません。ProfiledDbConnectionのベースはDbConnection。IDbConnectionとDbConnectionの差異はかなり大きいので(*AsyncもDb...のほうだし)、実用的にはDbConnectionが基底と考えてしまっていいかな。</p>
+<pre><code class="language-csharp">public class TraceDbProfiler : IDbProfiler
+{
+    static readonly Logger sqlLogger = NLog.LogManager.GetLogger(&quot;Sql&quot;);
+
+    public bool IsActive
+    {
+        get { return true; }
+    }
+
+    public void OnError(System.Data.IDbCommand profiledDbCommand, ExecuteType executeType, System.Exception exception)
+    {
+        // 何も記録しない
+    }
+
+    // 大事なのは↓の3つ
+
+    Stopwatch stopwatch;
+    string commandText;
+
+    // コマンドが開始された時に呼ばれる(ExecuteReaderとかExecuteNonQueryとか)
+    public void ExecuteStart(System.Data.IDbCommand profiledDbCommand, ExecuteType executeType)
+    {
+        stopwatch = Stopwatch.StartNew();
+    }
+
+    // コマンドが完了された時に呼ばれる
+    public void ExecuteFinish(System.Data.IDbCommand profiledDbCommand, ExecuteType executeType, System.Data.Common.DbDataReader reader)
+    {
+        commandText = profiledDbCommand.CommandText;
+        if (executeType != ExecuteType.Reader)
+        {
+            stopwatch.Stop();
+            sqlLogger.Trace(Newtonsoft.Json.JsonConvert.SerializeObject(new
+            {
+                date = DateTime.Now,
+                command = executeType,
+                key = commandText,
+                ms = stopwatch.ElapsedMilliseconds
+            }, Newtonsoft.Json.Formatting.None));
+        }
+    }
+
+    // Readerが完了した時に呼ばれる
+    public void ReaderFinish(System.Data.IDataReader reader)
+    {
+        stopwatch.Stop();
+        sqlLogger.Trace(Newtonsoft.Json.JsonConvert.SerializeObject(new
+        {
+            date = DateTime.Now,
+            command = ExecuteType.Reader,
+            key = commandText,
+            ms = stopwatch.ElapsedMilliseconds
+        }, Newtonsoft.Json.Formatting.None));
+    }
+}
+</code></pre>
+<p>これで、</p>
+<pre><code class="language-csharp">{&quot;date&quot;:&quot;2013-07-15T18:24:17.4465207+09:00&quot;,&quot;command&quot;:&quot;Reader&quot;,&quot;key&quot;:&quot;select * from hogemoge where id = @id&quot;,&quot;ms&quot;:6}
+</code></pre>
+<p>のようなデータが取れます。パラメータの値も展開したい！とかいう場合は自由にcommandのとこから引っ張れば良いでしょう。更に、MiniProfiler.Currentと共存したいような場合は、合成するIDbProfilerを用意すればなんとかなる。Time的には若干ずれますが、そこまで問題でもないかしらん。</p>
+<pre><code class="language-csharp">public class CompositeDbProfiler : IDbProfiler
+{
+    readonly IDbProfiler[] profilers;
+
+    public CompositeDbProfiler(params IDbProfiler[] dbProfilers)
+    {
+        this.profilers = dbProfilers;
+    }
+
+    public void ExecuteFinish(IDbCommand profiledDbCommand, ExecuteType executeType, DbDataReader reader)
+    {
+        foreach (var item in profilers)
+        {
+            if (item != null &amp;&amp; item.IsActive)
+            {
+                item.ExecuteFinish(profiledDbCommand, executeType, reader);
+            }
+        }
+    }
+
+    public void ExecuteStart(IDbCommand profiledDbCommand, ExecuteType executeType)
+    {
+        foreach (var item in profilers)
+        {
+            if (item != null &amp;&amp; item.IsActive)
+            {
+                item.ExecuteStart(profiledDbCommand, executeType);
+            }
+        }
+    }
+
+    public bool IsActive
+    {
+        get
+        {
+            return true;
+        }
+    }
+
+    public void OnError(IDbCommand profiledDbCommand, ExecuteType executeType, Exception exception)
+    {
+        foreach (var item in profilers)
+        {
+            if (item != null &amp;&amp; item.IsActive)
+            {
+                item.OnError(profiledDbCommand, executeType, exception);
+            }
+        }
+    }
+
+    public void ReaderFinish(IDataReader reader)
+    {
+        foreach (var item in profilers)
+        {
+            if (item != null &amp;&amp; item.IsActive)
+            {
+                item.ReaderFinish(reader);
+            }
+        }
+    }
+}
+</code></pre>
+<p>といったものを用意しておけば、</p>
+<pre><code class="language-csharp">var profiler = new CompositeDbProfiler(
+    StackExchange.Profiling.MiniProfiler.Current,
+    new TraceDbProfiler());
+
+var conn = new ProfiledDbConnection(new SqlConnection(&quot;connectionString&quot;), profiler); 
+</code></pre>
+<p>と、書けます。</p>
+<h2>SumoLogicによる分析</h2>
+<p>データ取るのはいいんだけど、それどーすんのー？って話なわけですが、以前に<a href="http://neue.cc/2013/07/20_416.html">ASP.NETでの定期的なモニタリング手法</a>に少し出しましたけれど、弊社では<a href="http://www.sumologic.com/">Sumo Logic</a>を利用しています。例えば、SQLで採取したログに以下のようクエリが発行できます。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/2013/07/sql_sumo.jpg" />
+</p>
+<p>これは10ミリ秒よりかかったDELETE文を集計、ですね。Sumoは結構柔軟なクエリで、ログのパースもできるんですが、最初からJSONで吐き出しておけばjsonコマンドだけでパースできるので非常に楽ちん。で、パース後は10msより上なら ms &gt; 10 といった形でクエリ書けます。</p>
+<p>問題があった時の分析に使ってもいいし、別途グラフ化も可能(棒でも円でも色々)されるので、幾つか作成してダッシュボードに置いてもいいし、閾値を設定してアラートメールを飛ばしてもいい。slow_logも良いし当然併用しますが、それとは別に持っておくと、柔軟に処理できて素敵かと思われます。</p>
+<h2>Redis</h2>
+<p>弊社ではキャッシュ層もMemcachedではなく、全てRedisを用いています。Redisに関しては、<a href="http://www.buildinsider.net/small/rediscshap/01">C#のRedisライブラリ「BookSleeve」の利用法</a>を読んでもらいたいのですが、ともあれ、<a href="https://code.google.com/p/booksleeve/">BookSleeve</a>と、その上に被せているお手製ライブラリの<a href="https://github.com/neuecc/CloudStructures">CloudStructures</a>を使用しています。</p>
+<p>実質的に開発者が触るのはCloudStructuresだけです。というわけで、CloudStructuresに用意してあるモニター用のものを使いましょう。というかそのために用意しました。まず、ICommandTracerを実装します。</p>
+<pre><code class="language-csharp">public class RedisProfiler : ICommandTracer
+{
+    static readonly Logger redisLogger = NLog.LogManager.GetLogger(&quot;Redis&quot;);
+
+    Stopwatch stopwatch;
+    string command;
+    string key;
+
+    public void CommandStart(string command, string key)
+    {
+        this.command = command;
+        this.key = key;
+        stopwatch = Stopwatch.StartNew();
+    }
+
+    public void CommandFinish()
+    {
+        stopwatch.Stop();
+
+        redisLogger.Trace(Newtonsoft.Json.JsonConvert.SerializeObject(new
+        {
+            date = DateTime.Now,
+            command = command,
+            key = key,
+            ms = stopwatch.ElapsedMilliseconds
+        }, Newtonsoft.Json.Formatting.None));
+
+        // NewRelic使うなら以下のも。後で解説します。
+        var ms = (long)System.Math.Round(stopwatch.Elapsed.TotalMilliseconds);
+        NewRelic.Api.Agent.NewRelic.RecordResponseTimeMetric(&quot;Custom/Redis&quot;, ms);
+    }
+}
+</code></pre>
+<p>何らかのRedisへの通信が走る際にCommandStartとCommandFinishが呼ばれるようになってます。そして、RedisSettingsに渡してあげれば</p>
+<pre><code class="language-csharp">// tracerFactoryにFuncを渡すか、.configに書くかのどちらかで指定できます
+var settings = new RedisSettings(&quot;127.0.0.1&quot;, tracerFactory: () =&gt; new RedisProfiler());
+            
+// {&quot;date&quot;:&quot;2013-07-30T22:41:34.2669518+09:00&quot;,&quot;command&quot;:&quot;RedisString.TryGet&quot;,&quot;key&quot;:&quot;hogekey&quot;,&quot;ms&quot;:18}
+var value = await new RedisString&lt;string&gt;(settings, &quot;hogekey&quot;).GetValueOrDefault();
+</code></pre>
+<p>みたいになります。</p>
+<p>CloudStructuresは、既に実アプリケーションに投下していて、凄まじい数のメッセージを捌いているので、割と安心して使っていいと思いますですよ。ServiceStack.Redisはショッパイけど、BookSleeveはプリミティブすぎて辛ぽよ、な方々にフィットするはずです。実際、C# 5.0と合わせた際のBookSleeveの破壊力は凄まじいので、是非試してみて欲しいですね。</p>
+<h2>New Relicによるグラフ化</h2>
+<p>Sumo Logicはいいんですけど、しかし、もう少し身近なところにも観測データを置いておきたい。そして見やすく。弊社ではモニタリングに<a href="http://newrelic.com/">New Relic</a>を採用していますが、そこに、そもそもSQLやHttpのカジュアルな監視は置いてあるんですね。なので、Redis情報も統合してあげればいい、というのが↑のNewRelicのAPIを叩いているものです。ただたんにNuGetからNewRelicのライブラリを持ってきて呼ぶだけの簡単さ。それだけで、以下の様なグラフが！</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/2013/07/redis_callcount.jpg" />
+</p>
+<p>これはCall Countですが、他にAverageのResponse Timeなどもグラフ化してカスタムダッシュボードに置いています。</p>
+<p>線が6本ありますが、これは用途によってRedisの台を分けているからです。例えばRedis.Cache, Redis.Session、のように。NewRelicのAPIを叩く際に、Custom/Redis/Cache、Custon/Redis/Sessionのようなキーのつけ方をすることで、個別に記録されます(それぞれのSettingsに個別のICommandTracerを渡しています)。ダッシュボードの表示時にCustom/Redis/*にするだけでひとまとめに表示できるから便利。</p>
+<p>今のところ、Redisは全台平等に分散ではなく、グループ分け＋負荷の高いものは複数台で構成しています。キャッシュ用途の台はファイルへのセーブなしで、完全インメモリ(Memcachedに近い)にしているなど、個別チューニングも入っています。</p>
+<p>一番カジュアルに確認できるNew Relic、詳細な情報や解析クエリはSumo Logic。見る口が複数あるのは全然いいことです。</p>
+<h2>レスポンスタイム</h2>
+<p>HttpContextのTimestampに最初の時間が入っているので、Application_EndRequestで捕まえて差分を取ればかかった時間がサクッと。</p>
+<pre><code class="language-csharp">protected void Application_EndRequest()
+{
+    var context = HttpContext.Current;
+    if (context != null)
+    {
+        var responseTime = (DateTime.Now - context.Timestamp);
+  
+        // 解析するにあたってクエリストリングは邪魔なのでkeyには含めずの形で
+        logger.Trace(Newtonsoft.Json.JsonConvert.SerializeObject(new
+        {
+            date = DateTime.Now,
+            command = this.Request.Url.GetComponents(UriComponents.Path, UriFormat.Unescaped),
+            key = this.Request.Url.GetComponents(UriComponents.Query, UriFormat.Unescaped),
+            ms = (long)responseTime.TotalMilliseconds
+        }, Newtonsoft.Json.Formatting.None));
+    }
+}
+</code></pre>
+<p>取れますね。</p>
+<h2>まとめ</h2>
+<p>改善は計測から！足元を疎かにして改善もクソもないのです。そして、存外、当たり前のようで、当たり前にはできないのね。また、データは取るだけじゃなく、大事なのは開発メンバーの誰もが見れる場所にあるということ。いつでも。常に。そうじゃないと数字って相対的に比較するものだし、肌感覚が養えないから。</p>
+<p>弊社では、簡易なリアルタイムな表示はMiniProfilerとビュー統合のログ表示。実アプリケーションでは片っ端から収集し、NewRelicとSumoLogicに流しこんで簡単に集計・可視化できる体制を整えています。実際、C#移行を果たしてからの弊社のアプリケーションは業界最速、といってよいほどの速度を叩きだしています。基礎設計からガチガチにパフォーマンスを意識しているから、というのはもちろんあるのですが(そしてC# 5.0の非同期がそれを可能にした！)、現在自分が作っているものがどのぐらいのパフォーマンスなのか、を常に意識できる状態に置けたことも一因ではないかな、と考えています。(ただし、<a href="http://www.slideshare.net/neuecc/net-22662425">.NET最先端技術によるハイパフォーマンスウェブアプリケーション</a>で述べましたが、そのためには開発環境も本番と等しいぐらいのネットワーク環境にしてないとダメですよ！)</p>
+<p>私は今年は、言語や設計などの小さな優劣の話よりも、実際に現実に成功させることに重きを置いてます。C#で素晴らしい成果が出せる、その証明を果たしていくフェーズにある。成果は出せるに決まってるでしょ、と、仮に理屈では分かっていても、しかしモデルケースがなければ誰もついてこない。だから、そのための先陣を切っていきたい。勿論、同時に、成果物はどんどん公開していきます。C#が皆さんのこれからの選択肢の一番に上がってくれるといいし、また、C#といったらグラニ、となれるよう頑張ります。</p>
+</div>
+<h1><a href="http://neue.cc/2013/0720_416.html">ASP.NETでの定期的なモニタリング手法</a></h1>
+<ul class="date"><li>2013-07-20</li></ul>
+<div class="entry_body"><p>cron的な定期実行といったら、タスクスケジューラ使え。完。なわけですが、それとは別にして、アプリケーションサーバー内部からしか分からない情報を定期的に吐き出したいようなシチュエーションにどうしましょうか？例えばスレッドプールの情報！かなり古いのですが<a href="http://msdn.microsoft.com/ja-jp/library/ff650682.aspx">How To 情報: カスタム カウンタを使った ASP.NET スレッド プールの監視方法</a>なんて、まずレジストリに登録して、そこから定期的に無限ループ＋Thread.Sleep（ダセぇ）で出力という、なんともトホホな感じ。いや、これトホホでしょう。というわけで、もっとモダンにいきましょう。</p>
+<h2>IHttpModuleとInit, Dispose</h2>
+<p><a href="http://msdn.microsoft.com/ja-jp/library/ms227673.aspx">カスタム HTTP モジュールを作成および登録する</a>ということで、IHttpModuleを作成することで、ASP.NETパイプライン上での各イベント時に実行されるものを追加していくことができます。Global.asax.csに直書きでもいいですが、こっちのほうが分離されてる感はありますにぇ。さて、通常はapplication.BeginRequest+=とか、イベント登録するんですが、Application_Startイベントに相当するものは……ありません。はい。ただしかわりにInitメソッドがあります。普段はイベント登録しますが、ここでメソッド実行すれば、それApplication_Startに等しいよねー、と思っていた時もありました。</p>
+<pre><code class="language-csharp">public class CountModule : IHttpModule
+{
+    public static int Count = 0;
+
+    public void Init(HttpApplication context)
+    {
+        Interlocked.Increment(ref Count);
+    }
+}
+</code></pre>
+<p>これ、ブレークポイントを張って様子みたり、Countの値を表示して見たりするとわかりますが、何度も呼ばれます。何度も何度も。どーいうことかというと、Application_StartとInitは等しくないです。ASP.NET Runtimeは複数のアプリケーションプールを作り、それごとにInitは呼ばれてるんですね。じゃあ、どうするか、というと……</p>
+<pre><code class="language-csharp">public class CallOnceModule : IHttpModule
+{
+    static int initializedModuleCount;
+
+    public void Init(HttpApplication context)
+    {
+        var count = Interlocked.Increment(ref initializedModuleCount);
+        if (count != 1) return;
+
+        // ここに本体書く
+    }
+
+    public void Dispose()
+    {
+        var count = Interlocked.Decrement(ref initializedModuleCount);
+        if (count == 0)
+        {
+            // ここに本体書く
+        }
+    }
+}
+</code></pre>
+<p>Initが呼ばれた回数を取れば、正しく1回になります。ちなみに属性を張るだけで、Application_Startっぽく呼び出されるメソッドを作れる<a href="https://nuget.org/packages/WebActivator">WebActivator</a>も、似たような感じの仕組みです。</p>
+<h2>Timer</h2>
+<p>IHttpModuleの話はこのぐらいにして、本体の話にいきましょう。定期的に、例えば1分間隔に、とかは、Timer使えばいいんですよ、Timer。あ、Timerは幾つかありますが、<a href="http://msdn.microsoft.com/ja-jp/library/system.threading.timer.aspx">System.Threading.Timer</a>のほうね。</p>
+<pre><code class="language-csharp">/// &lt;summary&gt;
+/// 1分間隔でThreadInfoをログ取りするモジュール
+/// &lt;/summary&gt;
+public class ThreadInfoLoggingModule : IHttpModule
+{
+    static NLog.Logger logger = NLog.LogManager.GetLogger(&quot;ThreadInfo&quot;);
+    static NLog.Logger classLogger = NLog.LogManager.GetCurrentClassLogger();
+    static int initializedModuleCount;
+    static Timer timer;
+
+    public void Init(HttpApplication context)
+    {
+        var count = Interlocked.Increment(ref initializedModuleCount);
+        if (count != 1) return;
+
+        timer = new Timer(_ =&gt;
+        {
+            try
+            {
+                var date = DateTime.Now;
+
+                int availableWorkerThreads, availableCompletionPortThreads;
+                ThreadPool.GetAvailableThreads(out availableWorkerThreads, out availableCompletionPortThreads);
+
+                int maxWorkerThreads, maxCompletionPortThreads;
+                ThreadPool.GetMaxThreads(out maxWorkerThreads, out maxCompletionPortThreads);
+
+                using (var sw = new System.IO.StringWriter())
+                using (var jw = new Newtonsoft.Json.JsonTextWriter(sw))
+                {
+                    jw.Formatting = Newtonsoft.Json.Formatting.None;
+
+                    jw.WriteStartObject(); // {
+
+                    jw.WritePropertyName(&quot;date&quot;);
+                    jw.WriteValue(date);
+                    jw.WritePropertyName(&quot;availableWorkerThreads&quot;);
+                    jw.WriteValue(availableWorkerThreads);
+                    jw.WritePropertyName(&quot;availableCompletionPortThreads&quot;);
+                    jw.WriteValue(availableCompletionPortThreads);
+                    jw.WritePropertyName(&quot;maxWorkerThreads&quot;);
+                    jw.WriteValue(maxWorkerThreads);
+                    jw.WritePropertyName(&quot;maxCompletionPortThreads&quot;);
+                    jw.WriteValue(maxCompletionPortThreads);
+
+                    jw.WriteEndObject(); // }
+
+                    jw.Flush();
+
+                    var message = sw.ToString();
+                    logger.Trace(message);
+                }
+            }
+            catch (Exception ex)
+            {
+                classLogger.ErrorException(&quot;ThreadInfoLogging encounts error&quot;, ex);
+            }
+        }, null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
+    }
+
+
+    public void Dispose()
+    {
+        var count = Interlocked.Decrement(ref initializedModuleCount);
+        if (count == 0)
+        {
+            var target = Interlocked.Exchange(ref timer, null);
+            if (target != null)
+            {
+                target.Dispose();
+            }
+        }
+    }
+}
+</code></pre>
+<p>なにをやっているか。よーするに、Timerで1分置きにロガーでJSONを吐き出してます。ロガーは謎社では<a href="https://github.com/nlog/NLog/">NLog</a>を使ってます。というかこのModuleでは<a href="http://grani.jp/">謎社</a>のプロダクション環境で動いてるものです。なお、JsonTextWriter使ってるところは、別に普通にSerializeで構いませんですよ、なんとなく手書きしちゃっただけなので。</p>
+<p>というわけで、これでThreadPoolの情報が取れました。やったね！あとはJSONなので好きな様にゴリゴリすればいいんですが、賢く解析したいなら、とりあえず謎社では<a href="http://www.sumologic.com/">Sumo Logic</a>を使っています。Next Generation Log Management &amp; Analyticsということで、集計ツールと解析ウェブアプリをワンセットで提供してくれてます。</p>
+<p style="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/07/sumo_threadinfo1.jpg' />
+</p>
+<p>独自のクエリ言語でガッと解析してグラフ化できてる、ってのは伝わるでしょうか？ふいんきね。便利そう、とか思ってもらえれば。クエリと可視化、更に閾値による通知など、色々できちゃいます。こいつぁイイね？←ちなみに、私はまだ全然クエリ書けないので、これは<a href="http://guitarrapc.wordpress.com/">謎社の誇るPowerShellマスター</a>が用意してくれました。</p>
+<p>（ここではparseが手書きチックですが、実際にJSONをSumoでパースする際はJsonコマンドが用意されているので、それを使えばもっと綺麗にparseできます）</p>
+<h2>BookSleeveのMonitor</h2>
+<p>ついでに、謎社ではRedisを多用しているんですが、Redisライブラリである<a href="https://code.google.com/p/booksleeve/">BookSleeve</a>は、GetCountersというメソッドで、それぞれのRedisConnectionの情報を吐き出すことができます。これを1分置きに、ThreadInfoと同様に吐き出すようにしてます。</p>
+<pre><code class="language-csharp">/// &lt;summary&gt;
+/// 1分間隔でRedis(BookSleeve)のCounterをログ取りするモジュール
+/// &lt;/summary&gt;
+public class RedisCounterLoggingModule : IHttpModule
+{
+    static NLog.Logger logger = NLog.LogManager.GetLogger(&quot;RedisCounter&quot;);
+    static NLog.Logger classLogger = NLog.LogManager.GetCurrentClassLogger();
+    static int initializedModuleCount;
+    static Timer timer;
+
+    public void Init(HttpApplication context)
+    {
+        var count = Interlocked.Increment(ref initializedModuleCount);
+        if (count != 1) return;
+
+        timer = new Timer(_ =&gt;
+        {
+            try
+            {
+                var date = DateTime.Now;
+
+                // ここは謎社Internalな部分なのでテキトーにスルーしてくださいな 
+                var query = Grani.Core.GlobalConfig.RedisGroupDictionary
+                    .SelectMany(x =&gt; x.Value.Settings, (x, settings) =&gt; new { x.Value.GroupName, settings });
+                foreach (var item in query)
+                {
+                    var connection = item.settings.GetConnection();
+                    var counters = connection.GetCounters();
+
+                    using (var sw = new System.IO.StringWriter())
+                    using (var jw = new Newtonsoft.Json.JsonTextWriter(sw))
+                    {
+                        jw.Formatting = Newtonsoft.Json.Formatting.None;
+
+                        jw.WriteStartObject(); // {
+
+                        jw.WritePropertyName(&quot;date&quot;);
+                        jw.WriteValue(date);
+
+                        jw.WritePropertyName(&quot;GroupName&quot;);
+                        jw.WriteValue(item.GroupName);
+                        jw.WritePropertyName(&quot;Host&quot;);
+                        jw.WriteValue(item.settings.Host + &quot;:&quot; + item.settings.Port);
+                        jw.WritePropertyName(&quot;Db&quot;);
+                        jw.WriteValue(item.settings.Db);
+
+                        jw.WritePropertyName(&quot;MessagesSent&quot;);
+                        jw.WriteValue(counters.MessagesSent);
+                        jw.WritePropertyName(&quot;MessagesReceived&quot;);
+                        jw.WriteValue(counters.MessagesReceived);
+                        jw.WritePropertyName(&quot;MessagesCancelled&quot;);
+                        jw.WriteValue(counters.MessagesCancelled);
+                        jw.WritePropertyName(&quot;Timeouts&quot;);
+                        jw.WriteValue(counters.Timeouts);
+                        jw.WritePropertyName(&quot;QueueJumpers&quot;);
+                        jw.WriteValue(counters.QueueJumpers);
+                        jw.WritePropertyName(&quot;Ping&quot;);
+                        jw.WriteValue(counters.Ping);
+                        jw.WritePropertyName(&quot;SentQueue&quot;);
+                        jw.WriteValue(counters.SentQueue);
+                        jw.WritePropertyName(&quot;UnsentQueue&quot;);
+                        jw.WriteValue(counters.UnsentQueue);
+                        jw.WritePropertyName(&quot;ErrorMessages&quot;);
+                        jw.WriteValue(counters.ErrorMessages);
+                        jw.WritePropertyName(&quot;SyncCallbacks&quot;);
+                        jw.WriteValue(counters.SyncCallbacks);
+                        jw.WritePropertyName(&quot;AsyncCallbacks&quot;);
+                        jw.WriteValue(counters.AsyncCallbacks);
+                        jw.WritePropertyName(&quot;SyncCallbacksInProgress&quot;);
+                        jw.WriteValue(counters.SyncCallbacksInProgress);
+                        jw.WritePropertyName(&quot;AsyncCallbacksInProgress&quot;);
+                        jw.WriteValue(counters.AsyncCallbacksInProgress);
+                        jw.WritePropertyName(&quot;LastSentMillisecondsAgo&quot;);
+                        jw.WriteValue(counters.LastSentMillisecondsAgo);
+                        jw.WritePropertyName(&quot;LastKeepAliveMillisecondsAgo&quot;);
+                        jw.WriteValue(counters.LastKeepAliveMillisecondsAgo);
+                        jw.WritePropertyName(&quot;KeepAliveSeconds&quot;);
+                        jw.WriteValue(counters.KeepAliveSeconds);
+                        jw.WritePropertyName(&quot;State&quot;);
+                        jw.WriteValue(counters.State.ToString());
+
+                        jw.WriteEndObject(); // }
+
+                        jw.Flush();
+
+                        var message = sw.ToString();
+                        logger.Trace(message);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                classLogger.ErrorException(&quot;RedisCounterLogging encounts error&quot;, ex);
+            }
+        }, null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
+    }
+
+    public void Dispose()
+    {
+        var count = Interlocked.Decrement(ref initializedModuleCount);
+        if (count == 0)
+        {
+            var target = Interlocked.Exchange(ref timer, null);
+            if (target != null)
+            {
+                target.Dispose();
+            }
+        }
+    }
+}
+</code></pre>
+<p>RedisGroupとかコネクション管理はBookSleeveの上に被せてる<a href="https://github.com/neuecc/CloudStructures">CloudStructures</a>によるものです（プロダクション環境でヘヴィに使ってますよ！）。CloudStructuresの使い方とかもまたそのうち。</p>
+<h2>まとめ</h2>
+<p>とまぁ、そんなふうにして色々データ取ってます。改善の基本はデータ取りから。色々なところからデータ取ってチェック取れるような体制を整えています。次回は、SQLやHttp、Redisの実行時間をどう取得するかについてお話しましょふ。たぶんね。きっと。</p>
+<p>ところで、プロダクション環境下で――と書いているように、謎社のアプリケーションは完全にC#に移行しました。結果ですが、最先端環境で練り上げたC#によるウェブアプリケーションは、超絶速い。しかも、完全にAWSクラウドに乗っけての話ですからね、オンプレミスでのスペシャルなマシンやFusion-ioなDBでやってるわけじゃなく、成果出せてる。</p>
+<p>Sumo LogicやNew Relicなど外部サービスの活用やRedisの使い倒しかた、非同期処理の塊、などなど、次世代のC#ウェブアプリケーションのスタンダードというものを示せたのではないかな、と思っています。詳しい話はそのうちまたどこかで発表したいとは思うので待っててください。</p>
+</div>
+<h1><a href="http://neue.cc/2013/0710_414.html">C#で扱うRedisのLuaスクリプティング</a></h1>
+<ul class="date"><li>2013-07-10</li></ul>
+<div class="entry_body"><p>Redis 2.6からLuaスクリプティングが使えるようになりました。コマンドは<a href="http://redis.io/commands/eval">EVAL</a>です。というわけでC#のRedisライブラリ、<a href="https://code.google.com/p/booksleeve/">BookSleeve</a>で、試してみましょう。RedisやBookSleeveに関しては、以前に私がBuildInsiderで書いた<a href="http://www.buildinsider.net/small/rediscshap/01">C#のRedisライブラリ「BookSleeve」の利用法</a>を参照ください。</p>
+<p>BookSleeveは当然NuGet経由で入れるとして、Windows版のRedisバイナリもNuGetで配布されています。手軽に試してみるなら、<a href="https://nuget.org/packages/Redis-64/">Install-Package Redis-64</a>が良いのではないでしょーか。現在の最新は2.6.12.1ということで、Evalにも対応しています。インストールするとpackages\Redis-64.2.6.12.1\toolsにredis-server.exeが転がっているので、それを起動すれば、とりあえず127.0.0.1:6379で動きます。</p>
+<h2>多重アクセスの検出</h2>
+<p>HelloWorld!ということで、多重アクセス検知のスクリプトでも書いてみます。ルールとしては、X秒以内にY回アクセスしてきた人間はZ秒アク禁にする。という感じですね。DOSアタック対策的な。LUAスクリプティングを使わないと、キーを2つ用意したりしなけりゃいけなかったり複数コマンド打ったりしたりとか、若干面倒だったり効率悪いのですが、スクリプティング使えば一発で済ませられます。</p>
+<pre><code class="language-csharp">    public static class RedisExtensions
+    {
+        public static async Task&lt;bool&gt; DetectAttack(this RedisConnection redis, int db, string key, int limitCount = 10, int durationSecond = 1, int bannedSecond = 300)
+        {
+            var result = await redis.Scripting.Eval(db, @&quot;
+local key = KEYS[1]
+local limit = tonumber(ARGV[1])
+local count = redis.call('incr', key)
+if(count &gt;= limit) then
+    local banSec = tonumber(ARGV[3])
+    redis.call('EXPIRE', key, banSec)
+    return true
+else
+    local expireSec = tonumber(ARGV[2])
+    redis.call('EXPIRE', key, expireSec)
+    return false
+end&quot;, new[] { key }, new object[] { limitCount, durationSecond, bannedSecond }).ConfigureAwait(false);
+
+            // Lua-&gt;Redisはtrueの時に1を、falseの時にnullを返す
+            return (result == null) ? false
+                : ((long)result == 1) ? true
+                : false;
+        }
+    }
+</code></pre>
+<p>こんな感じですね。基本的にはEvalメソッドでスクリプトを渡すだけです、あとKEYS配列とARGV配列を必要ならば。戻り値の扱いなどに若干のクセがありますので、その辺はRedisのEVALのドキュメントを読んでおくといいでしょう。</p>
+<p>スクリプトは、まずincrを呼んでカウントを取る。そのカウントが指定数を超えてたらExpireの時間をBanの時間（デフォは300秒=5分）引き伸ばす。超えてなければ、Expireの時間を指定間隔(デフォは1秒)だけ伸ばす。もし1秒以内に連続でアクセスがあれば、Incrのカウントが増えていく。1秒以上経過すればExpireされているので、countは0スタートになる。といった感じです。</p>
+<p>利用する場合はこんな具合。</p>
+<pre><code class="language-csharp">var redis = new RedisConnection(&quot;127.0.0.1&quot;);
+await redis.Open();
+
+var v = await redis.DetectAttack(0, &quot;hogehoge&quot;);
+Console.WriteLine(v); // false
+
+for (int i = 0; i &lt; 15; i++)
+{
+    var v2 = await redis.DetectAttack(0, &quot;hogehoge&quot;);
+    Console.WriteLine(v2); // false,false,...,true,true
+}
+</code></pre>
+<p>いい具合ですにぇ？</p>
+<h2>EVALSHA</h2>
+<p>BookSleeveのEvalは、正確には<a href="http://redis.io/commands/evalsha">EVALSHA</a>です（更に正しくはデフォルトの、引数のuseCacheがtrueの場合）。</p>
+<p>EVALSHAは、事前にスクリプトのSHA1を算出し、初回に登録しておくことで、コマンドの転送をSHA1の転送だけで済ませます。スクリプトを毎回投げていたらコマンド転送に時間がかかるので、それの節約です。この辺をBookSleeveは何も意識しなくても、やってくれるのが非常に楽ちん。素晴らしい。</p>
+<h2>Increment/DecrementLimit</h2>
+<p>せっかくなので、もう一つ例を。RedisのIncrementやDecrementはアトミックな操作で非常に使いやすいのですが、上限や下限を設けたい場合があります。例えば、HPは0以下になって欲しくないし、最大HPを超えて回復されても困る、みたいな。それも当然、Luaスクリプティングを使えば簡単に実現可能です。</p>
+<pre><code class="language-csharp">        public static async Task&lt;long&gt; IncrementWithLimit(this RedisConnection redis, int db, string key, long value, long maxLimit)
+        {
+            var result = await redis.Scripting.Eval(db, @&quot;
+local inc = tonumber(ARGV[1])
+local max = tonumber(ARGV[2])
+local x = redis.call('incrby', KEYS[1], inc)
+if(x &gt; max) then
+    redis.call('set', KEYS[1], max)
+    x = max
+end
+return x&quot;, new[] { key }, new object[] { value, maxLimit }).ConfigureAwait(false);
+            return (long)result;
+        }
+</code></pre>
+<p>incrbyの結果が指定の値を超えていたら、setで固定する、といった感じです、単純単純。使うときはこんな具合。</p>
+<pre><code class="language-csharp">var redis = new RedisConnection(&quot;127.0.0.1&quot;);
+await redis.Open();
+
+var v1 = await redis.IncrementWithLimit(0, &quot;hoge&quot;, 40, maxLimit: 100);
+var v2 = await redis.IncrementWithLimit(0, &quot;hoge&quot;, 40, maxLimit: 100);
+var v3 = await redis.IncrementWithLimit(0, &quot;hoge&quot;, 40, maxLimit: 100);
+
+// 40-&gt;80-&gt;100
+Console.WriteLine(v1 + &quot;-&gt;&quot; + v2 + &quot;-&gt;&quot; + v3);
+</code></pre>
+<p>楽ちん、これは捗る。</p>
+<h2>まとめ</h2>
+<p>というわけで、RedisいいよRedis。いやほんと色々な面で使ってて嬉しいことが多いです。RDBMSだけで頑張ると非常に辛ぽよ、Redisがあるだけで何かと楽になれますので、一家に一台は置いておきたい。</p>
+<p>Luaスクリプティングは複数コマンド間で戻り値が扱えるため、利用範囲がグッと広がります。そしてスクリプティング中の動作もまたアトミックである、というのが嬉しい点です（C#コード上で複数コマンドを扱うと、そこの保証がないというのが大きな違い）。と同時に注意しなければならないのは、アトミックなので、スクリプト実行中は完全にブロックされてます。ので、あまりヘヴィなことをLuaスクリプティングでやるのは避けたほうがいいのではないかなー、と思われます。</p>
+</div>
+<h1><a href="http://neue.cc/2013/0702_412.html">asyncの落とし穴Part2, SynchronizationContextの向こう側</a></h1>
+<ul class="date"><li>2013-07-02</li></ul>
+<div class="entry_body"><p>非同期QUIZの時間がやってきました！前回はデッドロックについてでしたが、今回はヌルポについて扱いましょう。まずは以下のコードの何が問題なのかを当ててください。ASP.NET MVCです。あ、.NET 4.5ね。</p>
+<pre><code class="language-csharp">public class HomeController : Controller
+{
+    async Task DoAsync()
+    {
+        await Task.Delay(TimeSpan.FromSeconds(3));
+    }
+
+    public ActionResult Index()
+    {
+        DoAsync();
+        return View();
+    }
+}
+</code></pre>
+<p>どこがダメで、どうすれば改善されるのかはすぐ分かると思います。「なにが起こるのか」「なぜ起こるのか」について、考えてみてください。おわり。</p>
+<p>さて、で、Ctrl+F5で実行すると、このコードは何の問題もなくふとぅーに動きます。一見何の問題もない。実際何の問題もない。オシマイ。</p>
+<p>というのもアレなので、何が起こっているのか観測します。まず、Global.asax.csに以下のコードを。</p>
+<pre><code class="language-csharp">protected void Application_Start()
+{
+    // ルーターの登録とか標準のものがこの辺に
+
+    Trace.Listeners.Add(new TextWriterTraceListener(@&quot;D:\log.txt&quot;));
+    Trace.AutoFlush = true;
+
+    System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (sender, e) =&gt;
+    {
+        Trace.WriteLine(e.Exception);
+    };
+}
+</code></pre>
+<p>で、本体はこんな風に。</p>
+<pre><code class="language-csharp">public class HomeController : Controller
+{
+    async Task DoAsync()
+    {
+        Trace.WriteLine(&quot;start&quot;); // 何か開始処理があるのだとする
+
+        await Task.Delay(TimeSpan.FromSeconds(3)); // 何か非同期処理してるとする
+
+        Trace.WriteLine(&quot;end&quot;); // 何か後処理があるのだとする
+    }
+
+    public ActionResult Index()
+    {
+        GC.Collect(); // GC自然発生待ちダルいので発動しちゃう
+
+        var _ = DoAsync(); // 非同期処理を&quot;待たない&quot;
+        return View();
+    }
+}
+</code></pre>
+<p>D:\log.txtは、まぁどこに吐いてもいいんですが、ちゃんと書き込み権限があるところに。んでは、実行しましょう。log.txtは、初回はまず、「start」と書かれます。つまり、endまで到達してないことが確認できます。二回目のアクセスではGC.Collectが走り、それによりUnobservedTaskExceptionが実行されます。で、log.txtには以下のものが書き込まれます。</p>
+<pre><code class="language-text">System.AggregateException: タスクの例外が、タスクの待機によっても、タスクの Exception プロパティへのアクセスによっても監視されませんでした。その結果、監視されていない例外がファイナライザー スレッドによって再スローされました。 ---&gt; System.NullReferenceException: オブジェクト参照がオブジェクト インスタンスに設定されていません。
+   場所 System.Web.ThreadContext.AssociateWithCurrentThread(Boolean setImpersonationContext)
+   場所 System.Web.HttpApplication.OnThreadEnterPrivate(Boolean setImpersonationContext)
+   場所 System.Web.HttpApplication.System.Web.Util.ISyncContext.Enter()
+   場所 System.Web.Util.SynchronizationHelper.SafeWrapCallback(Action action)
+   場所 System.Web.Util.SynchronizationHelper.&lt;&gt;c__DisplayClass9.&lt;QueueAsynchronous&gt;b__7(Task _)
+   場所 System.Threading.Tasks.ContinuationTaskFromTask.InnerInvoke()
+   場所 System.Threading.Tasks.Task.Execute()
+   --- 内部例外スタック トレースの終わり ---
+---&gt; (内部例外 #0) System.NullReferenceException: オブジェクト参照がオブジェクト インスタンスに設定されていません。
+   場所 System.Web.ThreadContext.AssociateWithCurrentThread(Boolean setImpersonationContext)
+   場所 System.Web.HttpApplication.OnThreadEnterPrivate(Boolean setImpersonationContext)
+   場所 System.Web.HttpApplication.System.Web.Util.ISyncContext.Enter()
+   場所 System.Web.Util.SynchronizationHelper.SafeWrapCallback(Action action)
+   場所 System.Web.Util.SynchronizationHelper.&lt;&gt;c__DisplayClass9.&lt;QueueAsynchronous&gt;b__7(Task _)
+   場所 System.Threading.Tasks.ContinuationTaskFromTask.InnerInvoke()
+   場所 System.Threading.Tasks.Task.Execute()&lt;---
+</code></pre>
+<p>おぅ！例外が発生していた！ぬるり！ぬるり！</p>
+<p>GC.Collectを実行している理由は、Taskに溜まった未処理例外は、GCが走ったタイミングでUnobservedTaskExceptionに渡されるので、それを待つ時間を短縮しているだけです。GC.Collectを明示的に実行しなくても、長く動かしてればそのうち発生します。</p>
+<p>というわけで、何が起こるのか、というと、await Task.Delayのところでヌルリが発生します。↑の例外情報からは、どこで発生していたのかの情報が一切出てこないので(さすがにこれなんとかして欲しいですけどねぇ……)、いざ発生するとなると場所を突き止めるのに割と苦労します、というか虱潰ししかないので結構大変です。そもそもUnobservedTaskExceptionをモニタしてなければ、発生していたことにすら気づけません。</p>
+<p>なぜ起こるのか、というと、awaitによってPOSTする先のContextが消滅しているからです。非同期処理を待たなかったことによって、Viewの表示まで全て完了してContextが消滅する。その後で、DoAsync内のawaitが完了し、続行しようとPOSTを開始する、と、しかしContextは消滅していてなにもなーい。ので、ぬるり。</p>
+<p>では、解決方法は、というと、例によってasyncで統一するか</p>
+<pre><code class="language-csharp">public class HomeController : Controller
+{
+    async Task DoAsync()
+    {
+        Trace.WriteLine(&quot;start&quot;); // 何か開始処理があるのだとする
+
+        await Task.Delay(TimeSpan.FromSeconds(3)); // 何か非同期処理してるとする
+
+        Trace.WriteLine(&quot;end&quot;); // 何か後処理があるのだとする
+    }
+
+    public async Task&lt;ActionResult&gt; Index()
+    {
+        GC.Collect();
+
+        await DoAsync(); // awaitする
+        return View();
+    }
+}
+</code></pre>
+<p>もしくはConfigureAwait(false)でContextを維持しないこと。</p>
+<pre><code class="language-csharp">public class HomeController : Controller
+{
+    async Task DoAsync()
+    {
+        Trace.WriteLine(&quot;start&quot;); // 何か開始処理があるのだとする
+
+        await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(false); // ConfigureAwait(false)する
+
+        Trace.WriteLine(&quot;end&quot;); // 何か後処理があるのだとする
+    }
+
+    public ActionResult Index()
+    {
+        GC.Collect();
+
+        var _ = DoAsync(); // 非同期処理を&quot;待たない&quot;
+        return View();
+    }
+}
+</code></pre>
+<p>です。</p>
+<p>そもそも、何故非同期処理を&quot;待たない&quot;のか。例えば、アクセスログを取るために記録するだけだとか、別に完了を待つ必要がないものだったりするなら、待たないことでレスポンスは速くなる。待つ必要ないのなら、待たなくてもいいぢゃない。それはそうです。</p>
+<p>なので、待たないなら待たないでいいのですが、中身について用心しないと、ヌルりで死んでしまいます。これは、同期的に待つ時もそうですね。待つなら待つでいいですけれど、中身について用心しないと、デッドロックで死んでしまいます。待っても死亡、待たなくても死亡、ホント非同期は地獄だぜ！</p>
+<p>まあ、変数で受けたりしない限りは警告は出してくれますので（ウザいと思っていたアナタ！実に有益な警告ではないですか！）、不注意による死亡はある程度は避けられはします。</p>
+<h2>.NET 4.0 vs .NET 4.5</h2>
+<p>.NET 4.5だと、↑のような挙動ですが、.NET 4.0だとちょっと事情が違ったりします。async/awaitは利用したままで、ターゲットフレームワークのバージョンだけ4.0にしましょう。</p>
+<pre><code class="language-xml">&lt;system.web&gt;
+    &lt;httpRuntime targetFramework=&quot;4.0&quot; /&gt;
+    &lt;compilation debug=&quot;true&quot; targetFramework=&quot;4.0&quot; /&gt;
+&lt;/system.web&gt;
+</code></pre>
+<p>で、Ctrl+F5で実行して、何度かブラウザをリロードしましょう。死んでます。IIS Expressが。完全に無反応になります。何故？Windowsのイベントビューアーを見ましょう。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/07/eventview_appeeror.jpg' />
+</p>
+<p>ハンドルされない例外のため、プロセスが中止されました。というわけで、未処理例外が突き抜けてアプリケーションエラーとして記録されていくためです。プロダクション環境でもIISの<a href="http://www.atmarkit.co.jp/fwin2k/dnsvrguide/iis02/iis2.html">ラピッドフェール保護</a>が発動して、デフォルトでは5分以内に5エラーでアプリケーションは停止します。これは実にクリティカル。</p>
+<p>なんで.NET 4.0と4.5で挙動が違うのか、というと、Taskの未処理例外の扱いが4.0と4.5で変わったためです。この辺はPfxTeamの<a href="http://blogs.msdn.com/b/pfxteam/archive/2011/09/28/10217876.aspx">Task Exception Handling in .NET 4.5</a>を参照にどーぞ。4.5のほうが安全っちゃー安全ですね。いずれにせよ、UnobservedTaskExceptionの例外ロギングは欠かさずやっておきましょう。</p>
+<h2>まとめ</h2>
+<p>非同期もいいんですけど、実際にマジでフルに使い出すと結構なんだかんだでハマりどころは多いですねぇ。幸い、デバッガビリティに関しては<a href="http://blogs.msdn.com/b/dotnet/archive/2013/06/26/announcing-the-net-framework-4-5-1-preview.aspx">Windows 8.1 + Visual Studio 2013である程度改善</a>するようで、待ち遠しいです。とはいえデッドロックだったりコンテキスト場外でヌルりだとかは、注意するしかない。</p>
+<p>ASP.NET MVCのフィルターはやく非同期に対応してくださいー。ASP.NET MVC 5でも予定に入ってないようでどうなってんだゴルァ。Resultで待つしかなくて非常にヒヤヒヤします。EF6も非同期対応とか、そもそもMVC 5では.NET 4.5からのみだとか、どんどん非同期使われてくにつれ、死亡率も間違いなく上がってきますにゃ。</p>
+</div>
+<h1><a href="http://neue.cc/2013/0630_411.html">Micro-ORMとテーブルのクラス定義自動生成について</a></h1>
+<ul class="date"><li>2013-06-30</li></ul>
+<div class="entry_body"><p>謎社のデータアクセスは<a href="http://neue.cc/2012/12/11_390.html">Micro-ORM</a>でやっています。生SQL書いて、シンプルなPOCOにマッピングするだけの。ですが、そこで困るのはPOCOの作成。データベースの写しなだけのクラスですが、手で作るには、ひじょーに面倒。Entity Frameworkならドラッグアンドドロップで！DataSetですらホイホイと作れるのに、100%手作業とか嫌だよー、200テーブルを延々とクラス作るだけの刺身たんぽぽなんてしてたら死んじゃうよー。</p>
+<p>というわけで、Micro-ORM使うなら避けては通れない定義。EFのクラス定義だけ流用しちゃうとか色々と逃げ道も考えられなくもないですが、もしくは数によっては手動で頑張ってしまうのも手ですが、ここは自動生成しましょうの会。</p>
+<h2>GetSchema</h2>
+<p>普通にSQLのクエリを書いてデータベースの情報を取ってくることも可能ですが、各データベースでそれぞれバラバラだったりするので、ここはADO.NETで用意されている<a href="http://msdn.microsoft.com/ja-jp/library/kcax58fh.aspx">GetSchema</a>を使いましょう。情報取得の部分が抽象化されていて、型無しDataTableとして受け取ることが可能です。</p>
+<pre><code class="language-csharp">using (var conn = new MySqlConnection(&quot;接続文字列。MySQLでもなんでもいいよ。&quot;))
+{
+    conn.Open();
+
+    var schema = conn.GetSchema();
+}
+</code></pre>
+<p>さて、schemaとやらをデバッガで見てみるとですね……</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/dt_table_rows.jpg" />
+</p>
+<p>うおおお、これがDataTableか！な、なんだ、このデバッガビリティの低さは……。これはヤヴァい。マジキチ。RowsのKeyを辿るのも苦労するうえに、Valueが一覧で見れない。頑張ってもKeyだけ。なんだこりゃ。データの取得もLINQ to DataSet(笑)によって、普通に実に扱いづらい。話にならない。 クソが。というわけで、今時ならば型無しDataTableはdynamicで扱ったほうが楽です。ExpandoObjectに変換しましょう。</p>
+<pre><code class="language-csharp">public static class DataTableExtensions
+{
+    /// &lt;summary&gt;DataTableの各RowをExpandoObjectに変換します。&lt;/summary&gt;
+    public static IEnumerable&lt;dynamic&gt; AsDynamic(this DataTable table)
+    {
+        return table.AsEnumerable().Select(x =&gt;
+        {
+            IDictionary&lt;string, object&gt; dict = new ExpandoObject();
+            foreach (DataColumn column in x.Table.Columns)
+            {
+                var value = x[column];
+                if (value is System.DBNull) value = null;
+                dict.Add(column.ColumnName, value);
+            }
+            return (dynamic)dict;
+        });
+    }
+}
+</code></pre>
+<p>こんなものを用意すると、 var schema = conn.GetSchema().AsDynamic() とするだけで</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/dt_dynamic_view.jpg">
+</p>
+<p>うおおおおおおお、超捗る！ちゃんと動的ビューでKeyとValueが見える！ExpandoObjectありがとう。DataTableは死ね。また、DBNullをフツーのnullに変換したりなどもしているので、データを触るのもかなり捗るといったところもあります。item.Field&lt;string&gt;(&quot;CollectionName&quot;)と書くよりも、item.CollectionNameって書きたいですから。</p>
+<p>では、気を取り直してこれで解析していきましょう。まずは、件のCollectionNameを見てみますか。</p>
+<pre><code class="language-csharp">// MetaDataCollections
+// DataSourceInformation
+// DataTypes
+// Restrictions
+// ReservedWords
+// Databases
+// Tables
+// Columns
+// Users
+// Foreign Keys
+// IndexColumns
+// Indexes
+// Foreign Key Columns
+// UDF
+// Views
+// ViewColumns
+// Procedure Parameters
+// Procedures
+// Triggers
+foreach (var item in conn.GetSchema().AsDynamic())
+{
+    Console.WriteLine(item.CollectionName);
+}
+</code></pre>
+<p>MySQLでは以上のデータが取れるようです。この辺は使ってるデータベースによってかなり変わるので、適宜調べながら合わせてみてくださいな。というわけで、それっぽそうなTablesを見てみます。var tables = conn.GetSchema(&quot;Tables&quot;).AsDynamic(); とすれば</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/dt_table_schema.jpg" />
+</p>
+<p>テーブル一覧が取れるようです。で、しかし、今回必要なのはTablesではありません。TablesはほんとーにTableのデータだけなので。今回必要なのは、Columnsです。</p>
+<pre><code class="language-csharp">var columns = conn.GetSchema(&quot;Columns&quot;).AsDynamic()
+    .GroupBy(x =&gt; x.TABLE_NAME) // 全てのカラムが平らに列挙されてくるのでテーブル名でグルーピング
+    .Select(g =&gt; new
+    {
+        ClassName = g.Key, // クラス名はテーブル名(= グルーピングのキー)
+        Properties = g
+            .OrderBy(x =&gt; x.ORDINAL_POSITION) // どんな順序で来るか不明なので、カラム定義順にきちんと並び替え
+            .Select(x =&gt; new
+            {
+                Name = x.COLUMN_NAME,
+                Type = x.DATA_TYPE
+            })
+            .ToArray()
+    });
+</code></pre>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/dt_columns_def.jpg" />
+</p>
+<p>良い感じに作れてきました。さて、クラスを自動生成するのに必要なのは「クラス名」「プロパティ名」「プロパティの型」です。DATA_TYPEだとDBの生の型名、bigintとかvarcharとかC#のデータ型じゃないよー。なので、このまんまじゃダメです。</p>
+<p>というわけで、マッピングを用意してあげます。といっても手動でやる必要はなくて、これはGetSchema(&quot;DataTypes&quot;)で取れます。</p>
+<pre><code class="language-csharp">// 型名を決めるのに必要なのは
+// TypeName(MySQLの型名), DataType(.NETの型名), IsUnsigned
+var typeDictionary = conn.GetSchema(&quot;DataTypes&quot;).AsDynamic()
+    .ToDictionary(x =&gt;
+        Tuple.Create((string)x.TypeName.ToLower(), (bool?)x.IsUnsigned ?? false),
+        x =&gt; (Type)Type.GetType(x.DataType));
+
+// MySQLのtinyintはboolとして使われることが多いので、そちらにマッピングしちゃう（不要ならしなくていいです）
+typeDictionary[Tuple.Create(&quot;tinyint&quot;, true)] = typeof(bool);
+typeDictionary[Tuple.Create(&quot;tinyint&quot;, false)] = typeof(bool);
+
+// nullableの場合を考慮する必要があるのでTypeDictionaryは生では使わない
+Func&lt;string, bool, bool, string&gt; getTypeName = (dataType, isUnsigned, isNullable) =&gt;
+{
+    var type = typeDictionary[Tuple.Create(dataType.ToLower(), isUnsigned)];
+    return (isNullable &amp;&amp; type.IsValueType)
+        ? type.Name + &quot;?&quot; // 値型かつnull許可の時
+        : type.Name;
+};
+</code></pre>
+<p>TypeName(MySQLの型名), DataType(.NETの型名), IsUnsigned。それにNullableへの対応を組み合わせれば、マッピングできると考えられます。GetSchemaからの情報だけだとNullable対応が苦しくなるので、外にメソッド立てています。</p>
+<p>さて、この型定義辞書を使って変換すると、以下のようになります。</p>
+<pre><code class="language-csharp">var columns = conn.GetSchema(&quot;Columns&quot;).AsDynamic()
+    .GroupBy(x =&gt; x.TABLE_NAME) // 全てのカラムが平らに列挙されてくるのでテーブル名でグルーピング
+    .Select(g =&gt; new
+    {
+        ClassName = g.Key, // クラス名はテーブル名(= グルーピングのキー)
+        Properties = g
+            .OrderBy(x =&gt; x.ORDINAL_POSITION) // どんな順序で来るか不明なので、カラム定義順にきちんと並び替え
+            .Select(x =&gt; new
+            {
+                Name = x.COLUMN_NAME,
+                // unsignedの判定はCOLUMN_TYPEから、nullableの判定はYES/NOで行われる
+                Type = getTypeName(x.DATA_TYPE, x.COLUMN_TYPE.Contains(&quot;unsigned&quot;), x.IS_NULLABLE == &quot;YES&quot;)
+            })
+            .ToArray()
+    });
+</code></pre>
+<p>これで完璧！さて、定義の抽出はできたので、次はテンプレート作りにいきましょうか。</p>
+<h2>T4</h2>
+<p>（テキストとしての）C#コード生成は、C#コード上で文字列を切った貼ったする、わけは勿論ありません。この手の作業するときはテンプレートエンジンを使うのが良いでしょう。最近だとRazorを使った<a href="http://razorengine.codeplex.com/">RazorEngine</a>などもあるのですが、RazorはあくまでHTML/XMLを出力するのに向いている構文で、C#コードを出力するような用途で使うのは、あまり向いていません。ここは素直にVisual Studio標準の<a href="http://msdn.microsoft.com/ja-jp/library/bb126445.aspx">T4 Template</a>を使うのが良いでしょう。あえてStringTemplate.NETとか、他のを選ぶ理由は、ないかなぁ。T4でいいですよ。</p>
+<p>T4にはVisual Studioと連携して保存時にテンプレートが当てはまったテキストを出力するタイプと、ふつーのクラスとして、実行時に任意の変数をあてて、テキストを生成するもののニタイプが選べます。このブログでも何度か紹介してきたのは、全て前者でしたが、今回は後者のパターンを使います。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/dt_runtime_template.jpg" />
+</p>
+<p>昔の名前は「前処理されたテキストテンプレート」でした。VS2012から名前変わって「ランタイムテキストテンプレート」になったようです。見つからなかったら検索ウィンドウにT4と入れると良いですよ。では、まず、TableGeneratorTemplate.ttとしてテンプレートを定義します。</p>
+<pre><code class="language-csharp">&lt;#@ template language=&quot;C#&quot; #&gt;
+&lt;#@ assembly name=&quot;System.Core&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Linq&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Text&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Collections.Generic&quot; #&gt;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+public class &lt;#= ClassName #&gt;
+{
+&lt;# foreach(var x in Properties) {#&gt;
+    public &lt;#= x.Type #&gt; &lt;#= x.Name #&gt; { get; set; }
+&lt;# } #&gt;
+
+    public override string ToString()
+    {
+        return &quot;&quot;
+&lt;# foreach(var x in Properties) {#&gt;
+            + &quot;&lt;#= x.Name #&gt; : &quot; + &lt;#= x.Name #&gt; + &quot;|&quot;
+&lt;# } #&gt;
+            ;
+    }
+}
+</code></pre>
+<p>テンプレートの記法としては、#=で囲むだけなので、まぁそう難しいものでもないです、読みづらさはかなりありますが。さて、このままだとClassNameとかPropertiesとかいうのは未定義でコンパイルもできないので、パーシャルクラスを作ります。クラス名はテンプレートと同名で。</p>
+<pre><code class="language-csharp">public partial class TableGeneratorTemplate
+{
+    public string ClassName { get; set; }
+    public IEnumerable&lt;dynamic&gt; Properties { get; set; }
+
+    public TableGeneratorTemplate(string className, IEnumerable&lt;dynamic&gt; properties)
+    {
+        this.ClassName = className;
+        this.Properties = properties;
+    }
+}
+</code></pre>
+<p>これで、パラメータを渡せるようになりました。コンパイルエラーも出ません。というわけで実際に出力しましょう。テンプレートをnewして、TransformTextを呼ぶだけです。</p>
+<pre><code class="language-csharp">// あ、ちなみにここまでのはConsoleApplicationでの話でした、はい。
+// テーブル名.csにテンプレートを当てて全部出力
+foreach (var item in columns)
+{
+    var tt = new TableGeneratorTemplate(item.ClassName, item.Properties);
+    var text = tt.TransformText();
+    File.WriteAllText(item.ClassName + &quot;.cs&quot;, text, Encoding.UTF8);
+}
+</code></pre>
+<p>これで、以下の様なファイルがテーブル数だけ出力されます。</p>
+<pre><code class="language-csharp">using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+public class aiueo_test_table
+{
+    public Int64 id { get; set; }
+    public String name { get; set; }
+    public Int32 age { get; set; }
+    public DateTime? created { get; set; }
+    public DateTime? modified { get; set; }
+
+    public override string ToString()
+    {
+        return &quot;&quot;
+            + &quot;id : &quot; + id + &quot;|&quot;
+            + &quot;name : &quot; + name + &quot;|&quot;
+            + &quot;age : &quot; + age + &quot;|&quot;
+            + &quot;created : &quot; + created + &quot;|&quot;
+            + &quot;modified : &quot; + modified + &quot;|&quot;
+            ;
+    }
+}
+</code></pre>
+<p>やったね！刺身たんぽぽさようなら！ちなみにただのプロパティの塊というだけじゃなく、ToStringも生成しておいてやると、実アプリでのデバッグの時に割と便利ですねー。</p>
+<h2>応用</h2>
+<p>GetSchemaで得られる情報は他にも沢山ありますので、Diffを取るプログラムを書けたり、あと、Index, IndexColumnsでインデックスの情報が取れます。インデックスで貼られているものはselectクエリーをほぼほぼ発行するはず、とみなせるので、selectクエリを発行するメソッドを自動生成しちゃったりとかは、実際に謎社ではしています。</p>
+<p>つまり作業手順としては、どちらかというデータベースファーストになります。結局、コードとデータベースは違うので、データベース優先の定義・作業のほうが、どこまでいっても自然かな、と。(EF)コードファーストは私は幻想だと思っています。別に、SQL Server Management StudioなりHeidiSQLなどのツールでぽちぽち定義作るのは、そう面倒なわけでもない。そこからC#側のクラス定義も自動で生成できるのなら、むしろ、無理のあるコードでのデータベース表現をして回るよりも、結局、楽じゃない？DB定義をC#側から発行されて、どーのこーとか、なんてのに気を使わなくてもいいので、ずっと楽ちんだと思うんだ。原始的で全然スマートじゃないようで、実利はこっちにある。</p>
+<h2>まとめ</h2>
+<p>コードの詳細はMySQLなので、SQL Serverとかじゃ100%そのままは動かないかもですが、その辺は適宜調整してください、きっと似たようなのはあるはずなので。</p>
+<p>あと、GetSchemaのDataTableで何が取れるのか、どんなフィールドがあるのかって、特にMySQLだとドキュメントゼロなのですが、そこでAsDynamicは本当に死ぬほど役に立ちました。Visual Studio上でのデバッガビリティを高めるの超大事。その辺がクソなのがDataTableの嫌なところですねえ。今時DataSetを使いまくってるレガシー会社とかあると悲しいですねえ。</p>
+<p>ともあれ、dynamicはかなりデバッガビリティ高いので、活用してあげると良いです。dynamic、最近だと忘れ去られているC#の機能らしいので（笑）まあ、メインには使いませんけれど、あるとやっぱ便利なので、あって良かったなって、思いますよん。</p>
+</div>
+<h1><a href="http://neue.cc/2013/0624_410.html">AsyncOAuth ver.0.7.0 - HttpClient正式版対応とバグ修正</a></h1>
+<ul class="date"><li>2013-06-24</li></ul>
+<div class="entry_body"><p>HttpClientが<a href="http://blogs.msdn.com/b/dotnet/archive/2013/05/29/get-httpclient-rtm-200-ok.aspx">RTMを迎えた</a>、と思ったら、<a href="http://blogs.msdn.com/b/dotnet/archive/2013/06/19/update-to-httpclient-and-automatic-decompression.aspx">次バージョンのベータ</a>が出た、と、展開早くて追いつけないよ～な感じですが、とりあえず正式版のほうを要求する形で、AsyncOAuthも今回からBetaじゃなくなりました。</p>
+<ul>
+<li><a href="https://github.com/neuecc/AsyncOAuth">AsyncOAuth - GitHub</a></li>
+<li>PM&gt; Install-Package <a href="https://nuget.org/packages/AsyncOAuth/">AsyncOAuth</a></li>
+</ul>
+<p>AsyncOAuthについては<a href="http://neue.cc/2013/02/27_398.html">AsyncOAuth - C#用の全プラットフォーム対応の非同期OAuthライブラリ</a>を、HttpClientについては<a href="http://neue.cc/2013/05/27_405.html">HttpClient詳解、或いはAsyncOAuthのアップデートについて</a>を参照ください。</p>
+<p>今回のアップデートなのですが、PCL版HttpClientのRTM対応という他に、バグ修正が二点ほどあります。バグ的には、結構痛いところですね……。</p>
+<h2>OrderByと文字列について</h2>
+<p>バグ修正その一として、OAuthの認証シグネチャを作るのにパラメータを並び替える必用があるのですが、その並び順が特定条件の時に狂っていました。狂っている結果、正しく認証できないので、実行が必ず失敗します。特定条件というのは、パラメータ名が大文字始まりと小文字始まりが混在するときです。例えばhogeとHugaとか。本当はHuga-hogeにならなければならないのに、hoge-Hugaの順序になってしまっていたのでした。</p>
+<p>なぜそうなったか、というと、OrderByをデフォルトで使っていたからです。</p>
+<pre><code class="language-csharp">// charの配列をOrderByで並び替えると、ASCIIコード順 = 65:'A', 97:'a'
+foreach (var item in new[] { 'a', 'A' }.OrderBy(x =&gt; x))
+{
+    Console.WriteLine((int)item + &quot;:&quot; + (char)item);
+}
+
+// stringの配列をOrderByで並び替えると、良い感じ順 = &quot;a&quot;, &quot;A&quot;
+foreach (var item in new[] { &quot;a&quot;, &quot;A&quot; }.OrderBy(x =&gt; x))
+{
+    Console.WriteLine(item);
+}
+</code></pre>
+<p>良い感じ順！というのはなにかというと、<a href="http://msdn.microsoft.com/ja-jp/library/system.stringcomparer.currentculture.aspx">StringComparison/Comparer.CurrentCulture</a>の順番です。ほぅ……。ありがたいような迷惑のような。で、今回はASCIIコードにきっちり従って欲しいので、</p>
+<pre><code class="language-csharp">// 実際のコード。
+// ところでrealmのところは!x.Key.Equals(&quot;realm&quot;, StringComparison.OrdinalIgnoreCase) って書くべき、次のバージョンで直します
+var stringParameter = parameters
+    .Where(x =&gt; x.Key.ToLower() != &quot;realm&quot;)
+    .Concat(queryParams)
+    .OrderBy(p =&gt; p.Key, StringComparer.Ordinal)
+    .ThenBy(p =&gt; p.Value, StringComparer.Ordinal)
+    .Select(p =&gt; p.Key.UrlEncode() + &quot;=&quot; + p.Value.UrlEncode())
+    .ToString(&quot;&amp;&quot;);
+</code></pre>
+<p>といったように、StringComparer.OrdinalをOrderBy/ThenByに渡してあげることで解決しました。メデタシメデタシ。文字列の比較とか、言われてみれば基本中の基本っっっ！なのですけれど、完全に失念してました。テストでも、パラメータ小文字ばっかだったりして問題が中々表面化しないんですね、言い訳ですけれど……。しかし、幾つかのライブラリ見てみると、ほとんどがこれの対応できてなかったので私だけじゃないもん！みたいな、うう、情けないのでやめておきましょう。OAuthBase.csもissueには上がってましたがマージされてないんで、同様の問題抱えてるのですねえ。さすがにDotNetOpenAuthはきっちりできていました。</p>
+<h2>UriクラスとQueryとエスケープについて</h2>
+<p>バグ修正その2。GETにパラメータをくっつける、つまりクエリストリングとして並べた時に、日本語などURLエンコードが必要な物が混ざっている時に必ず認証に失敗しました。エンコード周りということで、お察しの通り二重エンコードが原因です。</p>
+<p>これに関しては、私のUriクラスへの認識が甘々だったのがマズかったです。ぶっちけ、ただのstringを包んだだけの面倒臭い代物とか思ってたりとかしたりとか……。いや、さすがにそこまでではないんですが、まぁしかし甘々でした。こっちは↑のに比べても本当に初歩ミスすぎて穴掘って埋まりたいですぅー。相当恥ずかしい。</p>
+<pre><code class="language-csharp">// クエリストリングつけたものを投げるとして
+var uri = new Uri(&quot;http://google.co.jp/serach?q=つくば&quot;);
+
+// QueryはURLエンコードされてる =&gt; ?q=%E3%81%A4%E3%81%8F%E3%81%B0
+Console.WriteLine(uri.Query);
+
+// URLエンコードされてるのを渡したとして
+uri = new Uri(&quot;http://google.co.jp/serach?q=%E3%81%A4%E3%81%8F%E3%81%B0&quot;);
+
+// ToString結果はURLデコードされたものがでてくる =&gt; http://google.co.jp/serach?q=つくば
+Console.WriteLine(uri.ToString());
+</code></pre>
+<p>というわけで、Queryは常にURLエンコードされるし、ToStringは常にURLデコードされてる。この辺の認識がフワフワッとしてると、エンコードやデコード結果が非常にアレになっちゃうんですね……。</p>
+<pre><code class="language-csharp">// 元データが欲しい時はOriginalString
+Console.WriteLine(uri.OriginalString);
+
+// エンコードされないで取るにはGetComponentsで指定してあげる
+// ちなみにQueryは (UriComponents.Query | UriComponents.KeepDelimiter, UriFormat.Escaped) と等しい
+var unescaped = uri.GetComponents(UriComponents.Query, UriFormat.Unescaped);
+Console.WriteLine(unescaped); // q=つくば
+</code></pre>
+<p>GetComponents大事大事。</p>
+<h2>Next</h2>
+<p>今回からBetaを取ったということで、1.0に上げようかなあ、とか思ったんですが、↑のように手痛いバグが残っていたことが発覚したりなので、まだもう少し様子見といった感。さすがにもう大丈夫なはず！といくら思っても見つかっていくわけで、枯れてるって本当に大事ですねえ。AsyncOAuthも枯れたライブラリになるよう、頑張ります。今回のバグとかもユーザーが伝えてくれるお陰なので足を向けて寝られません。</p>
+<p>私自身が使ってるのか？というと、答えは、使っています！こないだに<a href="http://neue.cc/2013/06/10_406.html">.NET最先端技術によるハイパフォーマンスウェブアプリケーション</a>というセッションを行ない、そこで言及したように、現在、某ソーシャルゲームをC#で再構築中です。で、GREEにせよMobageにせよ、ソーシャルゲームってOpenSocialの仕組みに乗っかっているのですが、その認証がOAuthなのです。というわけで、めっちゃくちゃヘヴィーに使っています。(認証の形態がちょっと違うので幾つかメソッドが足されているのと、Shift-JIS対応とかのためのカスタムバージョンだったりはしますが…… その辺はAsyncOAuth本体にも載せるか検討中)。実戦投下まであとちょっとってところですが、それできっちり動ききれば、十分に枯れた、といえるのではないかと思っています。その時までは0.xで。でも現状でもかなり大丈夫だとは思いますので、是非是非使ってください。</p>
+</div>
+<h1><a href="http://neue.cc/2013/0623_409.html">The History of LINQ</a></h1>
+<ul class="date"><li>2013-06-23</li></ul>
+<div class="entry_body"><p>という内容で、<a href="http://atnd.org/event/E0015958">つくばC#勉強会</a>で話してきました。</p>
+<iframe src="http://www.slideshare.net/slideshow/embed_code/23314703" width="597" height="400" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC;border-width:1px 1px 0;margin-bottom:5px" allowfullscreen webkitallowfullscreen mozallowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="http://www.slideshare.net/neuecc/the-history-of-linq" title="The History of LINQ" target="_blank">The History of LINQ</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>初心者向け勉強会（？）ということで、歴史ですかにぇー。詳細よりは、全体的にあっさり、みたいな。多分ね！<a href="http://research.microsoft.com/en-us/um/cambridge/projects/comega/">Cω</a>とかもう10年前ですが、これだけ時間のたった今だからこそ、あらためてちょっと見てみると面白いね、みたいな。</p>
+<p><a href="http://togetter.com/li/523153">第一回つくばC#勉強会 #tkbcsmt 当日の様子</a>ということで実にカオス、よかったね！面白かったです～。</p>
+</div>
+<h1><a href="http://neue.cc/2013/0620_408.html">TypeScript 0.9のジェネリクス対応でlinq.jsの型定義作って苦労した話</a></h1>
+<ul class="date"><li>2013-06-20</li></ul>
+<div class="entry_body"><p>久しぶりの<a href="http://www.typescriptlang.org/">TypeScript</a>。<a href="http://blogs.msdn.com/b/typescript/archive/2013/06/18/announcing-typescript-0-9.aspx">Announcing TypeScript 0.9</a>というわけで、ついに待望のジェネリクスが搭載されました。やったね！というわけで、ジェネリクス対応の<a href="https://linqjs.codeplex.com/">linq.js</a>の型定義を早速作りました、と。ver 3.0.4-Beta5です。まだまだBeta、すみませんすみません、色々忙しくて……。NuGetからもしくはサイトからのダウンロードで公開してます。</p>
+<p>とりあえず例として使ってみた感じ。</p>
+<pre><code class="language-javascript">// booleanしか受け入れないwhereにnumberを突っ込んだらちゃんと怒ってくれるよ！
+// Call signatures of types '(x: any) =&gt; number' and '(element: number, index: number) =&gt; boolean' are incompatible.
+var seq = Enumerable.from([1, 10, 100, 100]).where(x =&gt; x * 2);
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/ts_generics_intellisense.jpg">
+</p>
+<p>やったー。これだよこれ！LINQはジェネリクスがあって本当の本当の真価を発揮するんです！！！</p>
+<h2>面白げな型定義</h2>
+<p>C#とちょっと違うところとしては、ジェネリクスの型変数のところにもオブジェクトを突っ込めるんですね。だから</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/ts_generics_typearg.jpg">
+</p>
+<pre><code class="language-javascript">// from(obj)の型定義はこんな感じ。
+from(obj: any): IEnumerable&lt;{ key: string; value: any }&gt;;
+
+// ちなみにfromのオーバーロードはいっぱいある
+// linq.js自体はJScriptのIEnumerableとWinMDのIIterable&lt;T&gt;にも対応してるのですがTSで表現できないので、そこは未定義……。。。
+from(): IEnumerable&lt;any&gt;; // empty
+from&lt;T&gt;(obj: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
+from(obj: number): IEnumerable&lt;number&gt;;
+from(obj: boolean): IEnumerable&lt;boolean&gt;;
+from(obj: string): IEnumerable&lt;string&gt;;
+from&lt;T&gt;(obj: T[]): IEnumerable&lt;T&gt;;
+from&lt;T&gt;(obj: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
+</code></pre>
+<p>このkey,valueはどこから出てきたんだよって感じでわかりづらかったので、こうして見えてくれると嬉しい度高い。</p>
+<h2>型消去</h2>
+<p>場合によってはIEnumerable&lt;any&gt;となるため、Tの型をつけてあげたかったり、もしくは強引に変換したかったり（例えば↑のIIterable&lt;T&gt;は{key,value}に解釈されてしまうので、明示的に変換してあげる必要がある）する場合のために、castメソッドを用意しました。</p>
+<pre><code class="language-javascript">// any[]型で渡ってきたりする場合に
+var seq: any[] = [1, 2, 3, 4, 5];
+
+var result = Enumerable.from(seq)
+    .cast&lt;number&gt;() // numberに変換
+    .select(x =&gt; x * x) // x:number
+    .toArray(); // result:number[]
+</code></pre>
+<p>さて、ところで、TypeScriptのジェネリクスは型消去(Type Erasure)式です。コンパイル結果のJSは以下のような感じで</p>
+<pre><code class="language-javascript">var result = Enumerable.from(seq)
+    .cast()
+    .select(function (x) { return x * x; })
+    .toArray();
+</code></pre>
+<p>一切の型は消えています。なので、TypeScriptでTの型を取って実行時に扱ったりはできません。型が欲しければ型を渡せ方式。</p>
+<p>linq.jsにはofTypeという、型でフィルタリングするメソッドがあるのですが</p>
+<pre><code class="language-javascript">// 混在した配列から、型でフィルタして取り出す
+var mixed: any[] = [1, &quot;hoge&quot;, 100, true, &quot;nano&quot;];
+
+// このままじゃ型が分からないのでresultはany[]
+var result1 = Enumerable.from(mixed)
+    .ofType(Number) // 数値型のみでフィルタ、つまり[1, 100]
+    .toArray();
+
+// ofTypeの後にcastするか、もしくはofTypeで型指定するか
+var result2 = Enumerable.from(mixed)
+    .ofType&lt;number&gt;(Number)
+    .toArray();
+</code></pre>
+<p>というように、&lt;number&gt;(Number)と連続するのが非常に不恰好……。まあ、この辺はそういうものなのでしょうがないと諦めましょう。</p>
+<h2>地雷ふんだり</h2>
+<p>さて、そんな素敵なTypeScript 0.9なのですが、残念なお知らせ。現在の、というか、この0.9ですが、完成度はものすごーーーーーーーーく、低いです。はい、超低いです。Visual Studioと組み合わせて使う場合、半端無く動作も補完も遅いです。正直、ベータどころかアルファぐらいのクオリティで、何故に堂々と出してきたのか理解に苦しむ。遅いだけならまだしも、ジェネリクスの解釈が非常に怪しく、地雷を踏むと補完やエラー通知が消え去ります。いや、消え去るだけならまだよくて、Visual Studioと裏で動くTypeScript Compilerが大暴走をはじめてCPUが100%に張り付いたりします。もうヤヴァい。タスクマネージャー開きっぱにして警戒しながらじゃないと書けないです。linq.jsの型定義書くの超絶苦労した……。</p>
+<pre><code class="language-javascript">interface IEnumerable&lt;T&gt; {
+    // 戻り値の型をIEnumerable&lt;IGrouping&lt;TKey, T&gt;&gt;にしたいのですが、
+    // interface側で定義しているTをネストした型変数に使うとVSが大暴走して死ぬ
+    // ので、今回のバージョンではanyにしてます
+    groupBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IEnumerable&lt;IGrouping&lt;TKey, any&gt;&gt;;
+}
+</code></pre>
+<p>具体的に踏んだのは↑ですねえ。最初原因が分かってなくてかなり時間食われちゃいました。んもー。最小セットで試してる限りでは、コンパイルエラーにはなるんですが(A generic type may not reference itself with a wrapped form of its own type parameters.)暴走はしない、んですがlinq.d.tsで弄ってると死ぬ。おうふ。もう定義の仕方が悪いのかコンパイラがアレなのか判断つかないのでしんどい。</p>
+<p>そんなわけで、0.8の完成度からだいぶ退化して、実用性はゼロになってしまいました。私の環境だけ、じゃあないよねえ…‥？とりあえず0.9.1を待ちましょう。どうやらコンパイラをまるっと書き換えたそうですしねー、初物だからshoganaiと思うことにして。しかし泣きたい。</p>
+<h2>linq.d.ts</h2>
+<p>とりあえず、こんな感じになってます。</p>
+<pre><code class="language-csharp">// Type Definition for linq.js, ver 3.0.4-Beta5
+
+declare module linqjs {
+    interface IEnumerator&lt;T&gt; {
+        current(): T;
+        moveNext(): boolean;
+        dispose(): void;
+    }
+
+    interface Enumerable {
+        Utils: {
+            createLambda(expression: any): (...params: any[]) =&gt; any;
+            createEnumerable&lt;T&gt;(getEnumerator: () =&gt; IEnumerator&lt;T&gt;): IEnumerable&lt;T&gt;;
+            createEnumerator&lt;T&gt;(initialize: () =&gt; void , tryGetNext: () =&gt; boolean, dispose: () =&gt; void ): IEnumerator&lt;T&gt;;
+            extendTo(type: any): void;
+        };
+        choice&lt;T&gt;(...params: T[]): IEnumerable&lt;T&gt;;
+        cycle&lt;T&gt;(...params: T[]): IEnumerable&lt;T&gt;;
+        empty&lt;T&gt;(): IEnumerable&lt;T&gt;;
+        // from&lt;T&gt;, obj as JScript's IEnumerable or WinMD IIterable&lt;T&gt; is IEnumerable&lt;T&gt; but it can't define.
+        from(): IEnumerable&lt;any&gt;; // empty
+        from&lt;T&gt;(obj: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
+        from(obj: number): IEnumerable&lt;number&gt;;
+        from(obj: boolean): IEnumerable&lt;boolean&gt;;
+        from(obj: string): IEnumerable&lt;string&gt;;
+        from&lt;T&gt;(obj: T[]): IEnumerable&lt;T&gt;;
+        from&lt;T&gt;(obj: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
+        from(obj: any): IEnumerable&lt;{ key: string; value: any }&gt;;
+        make&lt;T&gt;(element: T): IEnumerable&lt;T&gt;;
+        matches&lt;T&gt;(input: string, pattern: RegExp): IEnumerable&lt;T&gt;;
+        matches&lt;T&gt;(input: string, pattern: string, flags?: string): IEnumerable&lt;T&gt;;
+        range(start: number, count: number, step?: number): IEnumerable&lt;number&gt;;
+        rangeDown(start: number, count: number, step?: number): IEnumerable&lt;number&gt;;
+        rangeTo(start: number, to: number, step?: number): IEnumerable&lt;number&gt;;
+        repeat&lt;T&gt;(element: T, count?: number): IEnumerable&lt;T&gt;;
+        repeatWithFinalize&lt;T&gt;(initializer: () =&gt; T, finalizer: (element) =&gt; void ): IEnumerable&lt;T&gt;;
+        generate&lt;T&gt;(func: () =&gt; T, count?: number): IEnumerable&lt;T&gt;;
+        toInfinity(start?: number, step?: number): IEnumerable&lt;number&gt;;
+        toNegativeInfinity(start?: number, step?: number): IEnumerable&lt;number&gt;;
+        unfold&lt;T&gt;(seed: T, func: (value: T) =&gt; T): IEnumerable&lt;T&gt;;
+        defer&lt;T&gt;(enumerableFactory: () =&gt; IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
+    }
+
+    interface IEnumerable&lt;T&gt; {
+        constructor(getEnumerator: () =&gt; IEnumerator&lt;T&gt;);
+        getEnumerator(): IEnumerator&lt;T&gt;;
+
+        // Extension Methods
+        traverseBreadthFirst(func: (element: T) =&gt; IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
+        traverseBreadthFirst&lt;TResult&gt;(func: (element: T) =&gt; IEnumerable&lt;T&gt;, resultSelector: (element: T, nestLevel: number) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        traverseDepthFirst&lt;TResult&gt;(func: (element: T) =&gt; Enumerable): IEnumerable&lt;T&gt;;
+        traverseDepthFirst&lt;TResult&gt;(func: (element: T) =&gt; Enumerable, resultSelector?: (element: T, nestLevel: number) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        flatten(): IEnumerable&lt;any&gt;;
+        pairwise&lt;TResult&gt;(selector: (prev: T, current: T) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        scan(func: (prev: T, current: T) =&gt; T): IEnumerable&lt;T&gt;;
+        scan&lt;TAccumulate&gt;(seed: TAccumulate, func: (prev: TAccumulate, current: T) =&gt; TAccumulate): IEnumerable&lt;TAccumulate&gt;;
+        select&lt;TResult&gt;(selector: (element: T, index: number) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        selectMany&lt;TOther&gt;(collectionSelector: (element: T, index: number) =&gt; IEnumerable&lt;TOther&gt;): IEnumerable&lt;TOther&gt;;
+        selectMany&lt;TCollection, TResult&gt;(collectionSelector: (element: T, index: number) =&gt; IEnumerable&lt;TCollection&gt;, resultSelector: (outer: T, inner: TCollection) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        selectMany&lt;TOther&gt;(collectionSelector: (element: T, index: number) =&gt; TOther[]): IEnumerable&lt;TOther&gt;;
+        selectMany&lt;TCollection, TResult&gt;(collectionSelector: (element: T, index: number) =&gt; TCollection[], resultSelector: (outer: T, inner: TCollection) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        selectMany&lt;TOther&gt;(collectionSelector: (element: T, index: number) =&gt; { length: number;[x: number]: TOther; }): IEnumerable&lt;TOther&gt;;
+        selectMany&lt;TCollection, TResult&gt;(collectionSelector: (element: T, index: number) =&gt; { length: number;[x: number]: TCollection; }, resultSelector: (outer: T, inner: TCollection) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        where(predicate: (element: T, index: number) =&gt; boolean): IEnumerable&lt;T&gt;;
+        choose(selector: (element: T, index: number) =&gt; T): IEnumerable&lt;T&gt;;
+        ofType&lt;TResult&gt;(type: any): IEnumerable&lt;TResult&gt;;
+        zip&lt;TResult&gt;(second: IEnumerable&lt;T&gt;, resultSelector: (first: T, second: T, index: number) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        zip&lt;TResult&gt;(second: { length: number;[x: number]: T; }, resultSelector: (first: T, second: T, index: number) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        zip&lt;TResult&gt;(second: T[], resultSelector: (first: T, second: T, index: number) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        zip&lt;TResult&gt;(...params: any[]): IEnumerable&lt;TResult&gt;; // last one is selector
+        merge&lt;TResult&gt;(...params: IEnumerable&lt;T&gt;[]): IEnumerable&lt;T&gt;;
+        merge&lt;TResult&gt;(...params: { length: number;[x: number]: T; }[]): IEnumerable&lt;T&gt;;
+        merge&lt;TResult&gt;(...params: T[][]): IEnumerable&lt;T&gt;;
+        join&lt;TInner, TKey, TResult&gt;(inner: IEnumerable&lt;TInner&gt;, outerKeySelector: (outer: T) =&gt; TKey, innerKeySelector: (inner: TInner) =&gt; TKey, resultSelector: (outer: T, inner: TKey) =&gt; TResult, compareSelector?: (obj: T) =&gt; TKey): IEnumerable&lt;TResult&gt;;
+        join&lt;TInner, TKey, TResult&gt;(inner: { length: number;[x: number]: TInner; }, outerKeySelector: (outer: T) =&gt; TKey, innerKeySelector: (inner: TInner) =&gt; TKey, resultSelector: (outer: T, inner: TKey) =&gt; TResult, compareSelector?: (obj: T) =&gt; TKey): IEnumerable&lt;TResult&gt;;
+        join&lt;TInner, TKey, TResult&gt;(inner: TInner[], outerKeySelector: (outer: T) =&gt; TKey, innerKeySelector: (inner: TInner) =&gt; TKey, resultSelector: (outer: T, inner: TKey) =&gt; TResult, compareSelector?: (obj: T) =&gt; TKey): IEnumerable&lt;TResult&gt;;
+        groupJoin&lt;TInner, TKey, TResult&gt;(inner: IEnumerable&lt;TInner&gt;, outerKeySelector: (outer: T) =&gt; TKey, innerKeySelector: (inner: TInner) =&gt; TKey, resultSelector: (outer: T, inner: TKey) =&gt; TResult, compareSelector?: (obj: T) =&gt; TKey): IEnumerable&lt;TResult&gt;;
+        groupJoin&lt;TInner, TKey, TResult&gt;(inner: { length: number;[x: number]: TInner; }, outerKeySelector: (outer: T) =&gt; TKey, innerKeySelector: (inner: TInner) =&gt; TKey, resultSelector: (outer: T, inner: TKey) =&gt; TResult, compareSelector?: (obj: T) =&gt; TKey): IEnumerable&lt;TResult&gt;;
+        groupJoin&lt;TInner, TKey, TResult&gt;(inner: TInner[], outerKeySelector: (outer: T) =&gt; TKey, innerKeySelector: (inner: TInner) =&gt; TKey, resultSelector: (outer: T, inner: TKey) =&gt; TResult, compareSelector?: (obj: T) =&gt; TKey): IEnumerable&lt;TResult&gt;;
+        all(predicate: (element: T) =&gt; boolean): boolean;
+        any(predicate?: (element: T) =&gt; boolean): boolean;
+        isEmpty(): boolean;
+        concat(...sequences: IEnumerable&lt;T&gt;[]): IEnumerable&lt;T&gt;;
+        concat(...sequences: { length: number;[x: number]: T; }[]): IEnumerable&lt;T&gt;;
+        concat(...sequences: T[]): IEnumerable&lt;T&gt;;
+        insert(index: number, second: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
+        insert(index: number, second: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
+        alternate(alternateValue: T): IEnumerable&lt;T&gt;;
+        alternate(alternateSequence: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
+        alternate(alternateSequence: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
+        alternate(alternateSequence: T[]): IEnumerable&lt;T&gt;;
+        contains(value: T): boolean;
+        contains&lt;TCompare&gt;(value: T, compareSelector?: (element: T) =&gt; TCompare): boolean;
+        defaultIfEmpty(defaultValue?: T): IEnumerable&lt;T&gt;;
+        distinct(): IEnumerable&lt;T&gt;;
+        distinct&lt;TCompare&gt;(compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        distinctUntilChanged(): IEnumerable&lt;T&gt;;
+        distinctUntilChanged&lt;TCompare&gt;(compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        except(second: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
+        except&lt;TCompare&gt;(second: { length: number;[x: number]: T; }, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        except(second: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
+        except&lt;TCompare&gt;(second: IEnumerable&lt;T&gt;, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        except(second: T[]): IEnumerable&lt;T&gt;;
+        except&lt;TCompare&gt;(second: T[], compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        intersect(second: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
+        intersect&lt;TCompare&gt;(second: { length: number;[x: number]: T; }, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        intersect(second: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
+        intersect&lt;TCompare&gt;(second: IEnumerable&lt;T&gt;, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        intersect(second: T[]): IEnumerable&lt;T&gt;;
+        intersect&lt;TCompare&gt;(second: T[], compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        union(second: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
+        union&lt;TCompare&gt;(second: { length: number;[x: number]: T; }, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        union(second: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
+        union&lt;TCompare&gt;(second: IEnumerable&lt;T&gt;, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        union(second: T[]): IEnumerable&lt;T&gt;;
+        union&lt;TCompare&gt;(second: T[], compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
+        sequenceEqual(second: { length: number;[x: number]: T; }): boolean;
+        sequenceEqual&lt;TCompare&gt;(second: { length: number;[x: number]: T; }, compareSelector: (element: T) =&gt; TCompare): boolean;
+        sequenceEqual(second: IEnumerable&lt;T&gt;): boolean;
+        sequenceEqual&lt;TCompare&gt;(second: IEnumerable&lt;T&gt;, compareSelector: (element: T) =&gt; TCompare): boolean;
+        sequenceEqual(second: T[]): boolean;
+        sequenceEqual&lt;TCompare&gt;(second: T[], compareSelector: (element: T) =&gt; TCompare): boolean;
+        orderBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IOrderedEnumerable&lt;T&gt;;
+        orderByDescending&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IOrderedEnumerable&lt;T&gt;;
+        reverse(): IEnumerable&lt;T&gt;;
+        shuffle(): IEnumerable&lt;T&gt;;
+        weightedSample(weightSelector: (element: T) =&gt; number): IEnumerable&lt;T&gt;;
+        // truly, return type is IEnumerable&lt;IGrouping&lt;TKey, T&gt;&gt; but Visual Studio + TypeScript Compiler can't compile.
+        groupBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IEnumerable&lt;IGrouping&lt;TKey, T&gt;&gt;;
+        groupBy&lt;TKey, TElement&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement): IEnumerable&lt;IGrouping&lt;TKey, TElement&gt;&gt;;
+        groupBy&lt;TKey, TElement, TResult&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement, resultSelector: (key: TKey, element: IEnumerable&lt;TElement&gt;) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        groupBy&lt;TKey, TElement, TResult, TCompare&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement, resultSelector: (key: TKey, element: IEnumerable&lt;TElement&gt;) =&gt; TResult, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;TResult&gt;;
+        // :IEnumerable&lt;IGrouping&lt;TKey, T&gt;&gt;
+        partitionBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IEnumerable&lt;IGrouping&lt;TKey, any&gt;&gt;;
+        // :IEnumerable&lt;IGrouping&lt;TKey, TElement&gt;&gt;
+        partitionBy&lt;TKey, TElement&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement): IEnumerable&lt;IGrouping&lt;TKey, TElement&gt;&gt;;
+        partitionBy&lt;TKey, TElement, TResult&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement, resultSelector: (key: TKey, element: IEnumerable&lt;TElement&gt;) =&gt; TResult): IEnumerable&lt;TResult&gt;;
+        partitionBy&lt;TKey, TElement, TResult, TCompare&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement, resultSelector: (key: TKey, element: IEnumerable&lt;TElement&gt;) =&gt; TResult, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;TResult&gt;;
+        buffer(count: number): IEnumerable&lt;T&gt;;
+        aggregate(func: (prev: T, current: T) =&gt; T): T;
+        aggregate&lt;TAccumulate&gt;(seed: TAccumulate, func: (prev: TAccumulate, current: T) =&gt; TAccumulate): TAccumulate;
+        aggregate&lt;TAccumulate, TResult&gt;(seed: TAccumulate, func: (prev: TAccumulate, current: T) =&gt; TAccumulate, resultSelector: (last: TAccumulate) =&gt; TResult): TResult;
+        average(selector?: (element: T) =&gt; number): number;
+        count(predicate?: (element: T, index: number) =&gt; boolean): number;
+        max(selector?: (element: T) =&gt; number): number;
+        min(selector?: (element: T) =&gt; number): number;
+        maxBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): T;
+        minBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): T;
+        sum(selector?: (element: T) =&gt; number): number;
+        elementAt(index: number): T;
+        elementAtOrDefault(index: number, defaultValue?: T): T;
+        first(predicate?: (element: T, index: number) =&gt; boolean): T;
+        firstOrDefault(predicate?: (element: T, index: number) =&gt; boolean, defaultValue?: T): T;
+        last(predicate?: (element: T, index: number) =&gt; boolean): T;
+        lastOrDefault(predicate?: (element: T, index: number) =&gt; boolean, defaultValue?: T): T;
+        single(predicate?: (element: T, index: number) =&gt; boolean): T;
+        singleOrDefault(predicate?: (element: T, index: number) =&gt; boolean, defaultValue?: T): T;
+        skip(count: number): IEnumerable&lt;T&gt;;
+        skipWhile(predicate: (element: T, index: number) =&gt; boolean): IEnumerable&lt;T&gt;;
+        take(count: number): IEnumerable&lt;T&gt;;
+        takeWhile(predicate: (element: T, index: number) =&gt; boolean): IEnumerable&lt;T&gt;;
+        takeExceptLast(count?: number): IEnumerable&lt;T&gt;;
+        takeFromLast(count: number): IEnumerable&lt;T&gt;;
+        indexOf(item: T): number;
+        indexOf(predicate: (element: T, index: number) =&gt; boolean): number;
+        lastIndexOf(item: T): number;
+        lastIndexOf(predicate: (element: T, index: number) =&gt; boolean): number;
+        asEnumerable(): IEnumerable&lt;T&gt;;
+        cast&lt;TResult&gt;(): IEnumerable&lt;TResult&gt;;
+        toArray(): T[];
+        // truly, return type is ILookup&lt;TKey, T&gt; but Visual Studio + TypeScript Compiler can't compile. 
+        toLookup&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): ILookup&lt;TKey, any&gt;;
+        toLookup&lt;TKey, TElement&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement): ILookup&lt;TKey, TElement&gt;;
+        toLookup&lt;TKey, TElement, TCompare&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement, compareSelector: (key: TKey) =&gt; TCompare): ILookup&lt;TKey, TElement&gt;;
+        toObject(keySelector: (element: T) =&gt; any, elementSelector?: (element: T) =&gt; any): Object;
+        // :IDictionary&lt;TKey, T&gt;
+        toDictionary&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IDictionary&lt;TKey, any&gt;;
+        toDictionary&lt;TKey, TValue&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TValue): IDictionary&lt;TKey, TValue&gt;;
+        toDictionary&lt;TKey, TValue, TCompare&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TValue, compareSelector: (key: TKey) =&gt; TCompare): IDictionary&lt;TKey, TValue&gt;;
+        toJSONString(replacer: (key: string, value: any) =&gt; any): string;
+        toJSONString(replacer: any[]): string;
+        toJSONString(replacer: (key: string, value: any) =&gt; any, space: any): string;
+        toJSONString(replacer: any[], space: any): string;
+        toJoinedString(separator?: string): string;
+        toJoinedString&lt;TResult&gt;(separator: string, selector: (element: T, index: number) =&gt; TResult): string;
+        doAction(action: (element: T, index: number) =&gt; void ): IEnumerable&lt;T&gt;;
+        doAction(action: (element: T, index: number) =&gt; boolean): IEnumerable&lt;T&gt;;
+        forEach(action: (element: T, index: number) =&gt; void ): void;
+        forEach(action: (element: T, index: number) =&gt; boolean): void;
+        write(separator?: string): void;
+        write&lt;TResult&gt;(separator: string, selector: (element: T) =&gt; TResult): void;
+        writeLine(): void;
+        writeLine&lt;TResult&gt;(selector: (element: T) =&gt; TResult): void;
+        force(): void;
+        letBind&lt;TResult&gt;(func: (source: IEnumerable&lt;T&gt;) =&gt; { length: number;[x: number]: TResult; }): IEnumerable&lt;TResult&gt;;
+        letBind&lt;TResult&gt;(func: (source: IEnumerable&lt;T&gt;) =&gt; TResult[]): IEnumerable&lt;TResult&gt;;
+        letBind&lt;TResult&gt;(func: (source: IEnumerable&lt;T&gt;) =&gt; IEnumerable&lt;TResult&gt;): IEnumerable&lt;TResult&gt;;
+        share(): IDisposableEnumerable&lt;T&gt;;
+        memoize(): IDisposableEnumerable&lt;T&gt;;
+        catchError(handler: (exception: any) =&gt; void ): IEnumerable&lt;T&gt;;
+        finallyAction(finallyAction: () =&gt; void ): IEnumerable&lt;T&gt;;
+        log(): IEnumerable&lt;T&gt;;
+        log&lt;TValue&gt;(selector: (element: T) =&gt; TValue ): IEnumerable&lt;T&gt;;
+        trace(message?: string): IEnumerable&lt;T&gt;;
+        trace&lt;TValue&gt;(message: string, selector: (element: T) =&gt; TValue ): IEnumerable&lt;T&gt;;
+    }
+
+    interface IOrderedEnumerable&lt;T&gt; extends IEnumerable&lt;T&gt; {
+        createOrderedEnumerable&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey, descending: boolean): IOrderedEnumerable&lt;T&gt;;
+        thenBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IOrderedEnumerable&lt;T&gt;;
+        thenByDescending&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IOrderedEnumerable&lt;T&gt;;
+    }
+
+    interface IDisposableEnumerable&lt;T&gt; extends IEnumerable&lt;T&gt; {
+        dispose(): void;
+    }
+
+    interface IDictionary&lt;TKey, TValue&gt; {
+        add(key: TKey, value: TValue): void;
+        get(key: TKey): TValue;
+        set(key: TKey, value: TValue): boolean;
+        contains(key: TKey): boolean;
+        clear(): void;
+        remove(key: TKey): void;
+        count(): number;
+        toEnumerable(): IEnumerable&lt;{ key: TKey; value: TValue }&gt;;
+    }
+
+    interface ILookup&lt;TKey, TElement&gt; {
+        count(): number;
+        get(key: TKey): IEnumerable&lt;TElement&gt;;
+        contains(key: TKey): boolean;
+        toEnumerable(): IEnumerable&lt;IGrouping&lt;TKey, TElement&gt;&gt;;
+    }
+
+    interface IGrouping&lt;TKey, TElement&gt; extends IEnumerable&lt;TElement&gt; {
+        key(): TKey;
+    }
+}
+
+// export definition
+declare var Enumerable: linqjs.Enumerable;
+</code></pre>
+<p>アップデートを全然追ってないので、初期に作った定義の仕方のまんまなので、大丈夫かな、まあ、大丈夫じゃないかな、きっと。</p>
+<p>とりあえずとにかく面倒くさかった。しかし定義する人が苦労すれば、利用者はハッピーになれるから！！！なのではやくVS対応がまともになってください。ぶんぶんぶん回したいのだけれどねえ←その前にlinq.js ver.3がいつまでもBetaなのをなんとかしろ</p>
+</div>
+<a href="./publish/8">Prev |</a>
+<a href="./publish/10">| Next</a>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

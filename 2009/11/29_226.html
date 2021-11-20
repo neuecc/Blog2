@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - Reactive Extensions for .NET (Rx) メソッド探訪第六回:exception handling</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2009/1129_226.html">Reactive Extensions for .NET (Rx) メソッド探訪第六回:exception handling</a></h1>
+<ul class="date"><li>2009-11-29</li></ul>
+<div class="entry_body"><p>.NET Reactive FrameworkからReactive Extensions for .NET (Rx)に名称が変わったようなので、タイトルも変更。長いね。というわけで久しぶりなのですが、今回はざっとexception handling operators、つまり「Catch, Finally, Retry, OnErrorResumeNext」を見てみることにします。それとRun(ForEachなので説明不要ですが)。Rxって何？という人は<a href="http://neue.cc/2009/11/24_222.html" title="neue cc - Hello, Reactive Extensions">Hello, Reactive Extensions</a>をまず参照下さい。</p>
+<p>Rxの花形はイベント合流系のメソッドにあると思うので、ひたすら脇役ばかりを紹介してちっとも本流に入ろうとしないのはどうかと思うのですけど、EnumerableExのCatchを見て、あー、こりゃ便利だ、ヤバい、便利だ、用途すぐ浮かんでしまった、というわけでしてCatchを紹介します。まずは、その浮かんだ例であるTwitterのタイムライン取得をどうぞ。例はIEnumerableに対してのものですが、IObservableに対してのものも同じです。</p>
+<pre><code class="language-csharp">class Twitter
+{
+    public string Text { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+static IEnumerable&lt;Twitter&gt; EnumerateUserTimeline(string userName)
+{
+    // {0}はユーザー名、{1}はページ番号 公開ユーザーのものを取得なら認証不要
+    var format = &quot;http://twitter.com/statuses/user_timeline/{0}.xml?page={1}&quot;;
+    foreach (var page in Enumerable.Range(1, 1000))
+    {
+        var query = XDocument.Load(string.Format(format, userName, page))
+            .Descendants(&quot;status&quot;)
+            .Select(e =&gt; new Twitter
+            {
+                Text = e.Element(&quot;text&quot;).Value,
+                CreatedAt = DateTime.ParseExact(e.Element(&quot;created_at&quot;).Value,
+                    &quot;ddd MMM dd HH:mm:ss zzzz yyyy&quot;,
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal)
+            });
+        foreach (var item in query) yield return item;
+    }
+}
+
+static void Main(string[] args)
+{
+    // 2009/11/23から今日までの投稿を古い順に並べるというもの
+    var test = EnumerateUserTimeline(&quot;neuecc&quot;)
+        .TakeWhile(t =&gt; t.CreatedAt &gt;= new DateTime(2009, 11, 23))
+        .OrderBy(t =&gt; t.CreatedAt)
+        .ToArray();
+    
+    // これで基本的には問題ないわけですが、TwitterにはAPI制限があるので
+    // ちゃんと全部取得出来るわけではなく、API制限発動 =&gt; 死亡になる可能性がある
+    // 死んでもいいんだけど、せっかく取った死ぬ前のデータはがめておきたいよねえ
+    // というわけで、そこで出番なのがRxのCatch！
+
+    var test2 = EnumerateUserTimeline(&quot;neuecc&quot;)
+        .TakeWhile(t =&gt; t.CreatedAt &gt;= new DateTime(2009, 11, 23))
+        .Catch((Exception e) =&gt; Enumerable.Empty&lt;Twitter&gt;())
+        .OrderBy(t =&gt; t.CreatedAt)
+        .ToArray();
+
+    // 例外が発生したら握りつぶして、代わりにEnumerable.Emptyを返します
+    // なので、例外発生前のデータは全て取得出来ています、素晴らしい！
+}
+</code></pre>
+<p>といった感じです。つまりCatchは、そのまんまCatchです。Linqで全部書くのも良いんだけど、例外処理が出来なくてなあ、という不満がこれで解消されます。残りのFinally, Retry, OnErrorResumeNextですが、全部Catchの派生みたいなものです。とりあえず簡単な例を。</p>
+<pre><code class="language-csharp">static IEnumerable&lt;int&gt; Iterate1To5()
+{
+    yield return 1;
+    yield return 2;
+    throw new DivideByZeroException(); // 嘘例外でも投げておく
+    yield return 4;
+    yield return 5;
+}
+
+static void Main(string[] args)
+{
+    // 1,2
+    Iterate1To5().Catch((Exception e) =&gt; Enumerable.Empty&lt;int&gt;()).Run(Console.WriteLine);
+    // 1,2,100,200
+    Iterate1To5().Catch((Exception e) =&gt; new[] { 100, 200 }).Run(Console.WriteLine);
+    // 1,2 -&gt; 例外発生(ArgumentNullExceptionはDivideByZeroExceptionじゃないのでCatchしない)
+    Iterate1To5().Catch((ArgumentNullException e) =&gt; new[] { 100, 200 }).Run(Console.WriteLine);
+    // 1,2,100,200。つまりCatchの簡略版
+    Iterate1To5().OnErrorResumeNext(new[] { 100, 200 }).Run(Console.WriteLine);
+    // 1,2,Finally。これでtry-catch-finallyが出来あがる
+    Iterate1To5()
+        .Catch((Exception e) =&gt; Enumerable.Empty&lt;int&gt;())
+        .Finally(() =&gt; Console.WriteLine(&quot;Finally&quot;))
+        .Run(Console.WriteLine);
+    // 1,2 -&gt; 1,2 -&gt; 例外発生。例外を検知したら最初から列挙し直しての再試行
+    // EnumerableExのRetryはバグっぽくてObservableとは違う動きをする
+    // 明らかにオカシイのでそのうち修正されるでしょう
+    Iterate1To5().ToObservable().Retry(2).Subscribe(Console.WriteLine);
+}
+</code></pre>
+<p>最後に、中身をちゃんと知るには自分で実装するに限る、ということでIEnumerableでの拡張メソッドで再現してみました。Catchは本当に便利なので、わざわざRx使うのも、と思う場合は以下のコードを是非コピペして使ってくださいな。</p>
+<pre><code class="language-csharp">// ループをぶん回すだけ、というもの(linq.jsではForce()が同様の働き)
+public static void Run&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source)
+{
+    source.Run(_ =&gt; { });
+}
+
+// ようするにForEach
+public static void Run&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source, Action&lt;TSource&gt; action)
+{
+    foreach (var item in source) action(item);
+}
+
+// try-catch句の中でyield returnが使えないので回りっくどいことに
+public static IEnumerable&lt;TSource&gt; Catch&lt;TSource, TException&gt;(this IEnumerable&lt;TSource&gt; source,
+    Func&lt;TException, IEnumerable&lt;TSource&gt;&gt; handler) where TException : Exception
+{
+    using (var enumerator = source.GetEnumerator())
+    {
+        while (true)
+        {
+            TException exception = null;
+            var hasNext = false;
+            try
+            {
+                hasNext = enumerator.MoveNext();
+            }
+            catch (Exception e)
+            {
+                exception = e as TException;
+                if (exception == null) throw;
+            }
+
+            if (exception != null)
+            {
+                foreach (var item in handler(exception)) yield return item;
+            }
+            if (hasNext) yield return enumerator.Current;
+            else yield break;
+        }
+    }
+}
+
+// Rxにはこういう、handlerがActionのオーバーロードが欲しいです
+// わざわざ空のシーケンス投げるのは面倒くさいし、匿名型に対応できないじゃないか！
+public static IEnumerable&lt;TSource&gt; Catch&lt;TSource, TException&gt;(this IEnumerable&lt;TSource&gt; source,
+    Action&lt;TException&gt; handler) where TException : Exception
+{
+    return source.Catch((TException e) =&gt; { handler(e); return Enumerable.Empty&lt;TSource&gt;(); });
+}
+
+// OnErrorResumeNextはCatchの簡略版みたいなもんですね、別に必要ないような
+public static IEnumerable&lt;TSource&gt; OnErrorResumeNext&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source, IEnumerable&lt;TSource&gt; next)
+{
+    return source.Catch((Exception e) =&gt; next);
+
+}
+
+// ToList().ForEach()とRun()ではactionの出るタイミングが変わることに注意
+public static IEnumerable&lt;TSource&gt; Finally&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source, Action action)
+{
+    try { foreach (var item in source) yield return item; }
+    finally { action(); }
+}
+
+// 本当は無限でやるべきなんでしょうが、int.MaxValueで。
+public static IEnumerable&lt;TSource&gt; Retry&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source)
+{
+    return source.Retry(int.MaxValue);
+}
+
+// EnumerableExのRetryがバグ臭いのでObservable.Retryの挙動を採用しました
+public static IEnumerable&lt;TSource&gt; Retry&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source, int retryCount)
+{
+    var count = 0;
+    Exception exception = null;
+    while (count &lt; retryCount)
+    {
+        exception = null;
+        foreach (var item in source.Catch((Exception e) =&gt; exception = e))
+        {
+            yield return item;
+        }
+        if (exception == null) yield break;
+        count++;
+    }
+    throw exception;
+}
+</code></pre>
+<p>どれもCatchの派生のようなものです、CatchイイよCatch。これは使いまくりたくなる。それにしてもtry-catchの中でyield returnが使えないのを、はじめて知りました。こんなことやろうとしたことがなかったので。あと、EnumerableEx.Retryはひっじょーにバグ臭いです。ちなみにEnumerableEx.Mergeもバグ臭い。全体的にEnumerableExはバグ臭さ全開です。明らかに(Observableから)適当に移植した感漂ってます。ヤバい。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

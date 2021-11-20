@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - Reactive Extensionsとエラーハンドリング</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2010/1204_287.html">Reactive Extensionsとエラーハンドリング</a></h1>
+<ul class="date"><li>2010-12-04</li></ul>
+<div class="entry_body"><p>例外処理は非常に大事だけれど、非常に難しい。非同期となると、なおのこと難しくなる！一体どう処理したらいいものか。勿論、放置するわけにもいかない避けては通れない話。そのため、<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Reactive Extensions</a>には豊富な例外処理手段が用意されています。決してOnErrorだけではありません。想像を遥かに越える、恐るべき柔軟さがそこにはあります。そして、これもまた、何故Rxを使うべきなのか、の強い理由の一つになるでしょう。</p>
+<h2>OnError</h2>
+<p>まずは基本の例から。なお、DownloadStringAsyncは<a href="http://neue.cc/2010/11/26_286.html" title="neue cc - Reactive Extensions用のWebRequest拡張メソッド">Reactive Extensions用のWebRequest拡張メソッド</a>からです。BeginGetResponseしてStreamをReadToEndしたもの、と思ってください。この辺も書いてると長くなるし本質的には関係ないので。「非同期で文字列(HTML)をダウンロード」程度の意味で。</p>
+<pre><code class="language-csharp">// 存在しないアドレスにアクセスしようとする(当然例外が起こる！)
+// 出力結果は「リモート名が解決出来ませんでした」など。Timeoutを待つ必要はあります。
+WebRequest.Create(&quot;http://goooooogllle.co.jp/&quot;)
+    .DownloadStringAsync()
+    .Subscribe(
+        s =&gt; Console.WriteLine(s), // OnNext
+        e =&gt; Console.WriteLine(e.Message), // OnError
+        () =&gt; Console.WriteLine(&quot;completed!&quot;)); // OnCompleted
+
+// OnNextのみの場合はcatchされずに例外が外にthrowされる
+WebRequest.Create(&quot;http://goooooogllle.co.jp/&quot;)
+    .DownloadStringAsync()
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>存在しないアドレスにアクセスしたため、WebExceptionが発生します。Rxにおける基本の例外処理は、Subscribe時にOnErrorにエラー時処理を書くこと。ここにシーケンス内で発生した例外が集められ、一括で処理出来ます。</p>
+<p>ところで、Subscribeのオーバーロードは多数用意されている、ように見えて実のところ一つしかありません。IObserver&lt;T&gt;を受け取るものただ一つ。では、普段やっているAction&lt;T&gt;を一つだけ渡しているのは何なの？というと、OnNextだけ定義されたIObserver&lt;T&gt;を作るショートカットにすぎません。挙動としては、OnErrorを省略した場合は例外をcatchせずそのままthrowされていきます。OnErrorを定義した場合は、ここでExceptionを丸ごとcatch。</p>
+<p>OnErrorで丸ごとキャッチというのは、try-catch(Exception e)のようかもしれません。例外は何でもキャッチはダメ、なるべく上の階層で処理すべき、というセオリーから考えると違和感も？ただ、同期的に書いた場合は下位層でcatchせず、最上位でcatchしよう、という話が成立しますが、非同期には最上位などというものはなく、OnErrorで掴まなければ集約例外ハンドラ行きとなるので、最上位の呼び出しメソッドなどというものはなく、そんな当てはまるものでもないかもです。というか、つまりはOnErrorが最上位のcatchの役割を担っているわけですね。</p>
+<h2>Catch</h2>
+<p>出てくる例外によって処理内容を変えたかったり、例外の種類によってはCatchしないで欲しかったりするシチュエーションはいっぱいあります。その場合OnErrorでとりあえずExceptionを取ってe is HogeException... などと分岐、というのは格好悪い。というわけで、Catchメソッド。</p>
+<pre><code class="language-csharp">// TwitterのUserTimeLineは認証(OAuth)が必要なので例外が発生する！
+// 出力結果は、以下のレスポンス
+// {&quot;error&quot;:&quot;This method requires authentication.&quot;,&quot;request&quot;:&quot;\/statuses\/user_timeline.json&quot;}
+WebRequest.Create(&quot;http://twitter.com/statuses/user_timeline.json&quot;)
+    .DownloadStringAsync()
+    .Catch((WebException e) =&gt; e.Response.DownloadStringAsync())
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>Catchに渡すメソッドは型が指定出来て、型が一致しない例外はCatchしません。そして、ここで少し面白いのが渡すメソッドの戻り値はIObservable&lt;T&gt;でなければならないということ。例外が発生した場合は、後続に代わりのシーケンスを渡すことが出来ます。</p>
+<p>例えばWebRequestではエラー原因を知るため、WebExceptionからResponseを取ってデータを取得したいわけです。そこで、そのままWebException中のResponseStreamから非同期で読み取ってそのまま流す。という例が上のコードです。WebAPIを試してる間はこうやってエラーメッセージが簡単に読み取れると非常に楽。OAuthとかややこしくて中々認証通せなくて泣きますからね……。</p>
+<h2>Empty/Never</h2>
+<p>Catchしたら例外処理する（ログに書くなどなど）だけで、別に後続に渡したいものなどない。という場合はEmptyを渡してやりましょう。</p>
+<pre><code class="language-csharp">// 5が出たら例外出してみる
+// 出力結果は1,2,3,4,completed
+Observable.Range(1, 10)
+    .Do(i =&gt; { if (i == 5) throw new Exception(); })
+    .Catch((Exception e) =&gt; Observable.Empty&lt;int&gt;())
+    .Subscribe(i =&gt; Console.WriteLine(i), e =&gt; { }, () =&gt; Console.WriteLine(&quot;completed&quot;));
+</code></pre>
+<p>他に同種のものとして、Neverがあります。</p>
+<pre><code class="language-csharp">// Neverは何も返さない物
+// Emptyとの違いは、OnCompletedすら発生しない
+// 余談ですが、FromEventの第一引数は最新情報によると h =&gt; h.Invoke が一番短く書けてお薦めです！
+var collection = new ObservableCollection&lt;int&gt;();
+
+Observable.FromEvent&lt;NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs&gt;(
+        h =&gt; h.Invoke, h =&gt; collection.CollectionChanged += h, h =&gt; collection.CollectionChanged -= h)
+    .Select(e =&gt; (int)e.EventArgs.NewItems[0])
+    .Do(i =&gt; { if (i == -1)  throw new Exception(); })
+    .Catch((Exception e) =&gt; Observable.Never&lt;int&gt;())
+    .Subscribe(Console.WriteLine, e =&gt; { }, () =&gt; Console.WriteLine(&quot;終了&quot;));
+
+// 出力結果は 300
+collection.Add(300);  // 300が出力される
+collection.Add(-1);   // 例外発生
+collection.Add(1000); // デタッチ済みなので何も発生しない
+</code></pre>
+<p>NeverはOnCompletedを発生させないという性質が、Emptyとの使い分けとして面白いかもしれません。</p>
+<h2>OnCompletedとFinallyの違いについて</h2>
+<p>Catchがあるなら、当然Finallyもあります！そこでふと思うFinallyとOnCompletedってどう違うの？というと、OnErrorとの絡みで違います。</p>
+<pre><code class="language-csharp">// 出力結果は 例外発生, ふぁいなりー
+Observable.Throw&lt;int&gt;(new Exception()) // Throwは例外のみを出すというもの
+    .Finally(() =&gt; Console.WriteLine(&quot;ふぁいなりー&quot;))
+    .Subscribe(
+        i =&gt; Console.WriteLine(i),
+        e =&gt; Console.WriteLine(&quot;例外発生&quot;),
+        () =&gt; Console.WriteLine(&quot;こんぷりーてっど&quot;));
+</code></pre>
+<p>Reactive Extensionsにおいて守られている、また、もし自分で拡張メソッドを書く場合などに守らなければならない原則があります。それは「OnErrorとOnCompletedはどちらか一つのみが発生する」「OnError/OnCompleted後はOnNextは発生しない」という点。というわけで、FinallyとOnCompletedの違いですが、例外発生時にも実行されるのがFinally、そうでないのがOnCompletedといったところです。</p>
+<p>また、Finallyは途中で挟むのでメソッドチェーンの並びによっては実行されるタイミングを調整出来るのもポイントです。例えば</p>
+<pre><code class="language-csharp">// 1, 2, 3, ふぁいなりー1, 100, 101, 102, ふぁいなりー2
+Observable.Range(1, 3)
+    .Do(Console.WriteLine)
+    .Finally(() =&gt; Console.WriteLine(&quot;ふぁいなりー1&quot;))
+    .TakeLast(1)
+    .SelectMany(i =&gt; Observable.Range(100, 3))
+    .Finally(() =&gt; Console.WriteLine(&quot;ふぁいなりー2&quot;))
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>TakeLast（1）は最後の1つのみを取得する、そのためにそれ以前のものは「完了」していなければならない。完了したということはFinallyが発動する。というわけで、SelectrMany後の、SubscribeされているOnNextに届く前に一つ目のFinallyが実行されます。二つ目のFinallyに関しては、全てのシーケンスが列挙された最後となります。</p>
+<p>この性質は、Streamなど適切にClose/Disposeしなければならないものの実行タイミングの調整に使えます。</p>
+<h2>OnErrorResumeNext</h2>
+<p>Catchと同じような性質を持つメソッドとして、OnErrorResumeNextがあります。両者の違いは、例外非発生時に現れます。</p>
+<pre><code class="language-csharp">// 実行結果は「1, 2, 3」Catchは例外非発生時は後続を渡さない
+Observable.Range(1, 3)
+    .Catch(Observable.Range(100, 3))
+    .Subscribe(Console.WriteLine);
+
+// 実行結果は「1, 2, 3, 100, 101, 102」OnErrorResumeNextは例外非発生時も後続に繋ぐ
+Observable.Range(1, 3)
+    .OnErrorResumeNext(Observable.Range(100, 3))
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>代わりに渡す後続が、例外非発生時にも渡されるのがOnErrorResumeNext、渡さないのがCatch。つまりOnErrorResumeNextは必ず後続が繋がれるので、Catch().Concat()、で表現できます。</p>
+<h2>Retry/Timeout</h2>
+<p>Webにアクセスする時って失敗したらリトライしたいですよねー、特にTwitterなんて普通にサーバー不調でエラー返してきやがりますからね！という時はRetry。</p>
+<pre><code class="language-csharp">// Access Start x3回のあとに401例外発生
+Observable.Defer(() =&gt;
+    {
+        Console.WriteLine(&quot;Access Start:&quot;);
+        return WebRequest.Create(&quot;http://twitter.com/statuses/user_timeline.json&quot;).DownloadStringAsync();
+    })
+    .Retry(3)
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>再アクセスしているのが分かるようコードが少しゴチャついてしまいましたが……。この例では認証が必要なものにアクセスしているため、100% WebExceptionが発生してます。んが、Retry(3)ということで、3回リトライしています。リトライ処理は必須ではあるものの、面倒くさいものの筆頭でしたが、恐ろしく簡単に書けてしまいました。同様に、タイムアウトもあります。</p>
+<pre><code class="language-csharp">// Timeoutは指定時間以内に値が通過しなければTimeoutExceptionが発生します
+// カウントのタイミングはSubscribeされたらスタート
+// この例では恐らく例外発生します(100ミリ秒で結果を返せる、ことは恐らくないでしょふ)
+var wc = new WebClient();
+Observable.FromEvent&lt;DownloadStringCompletedEventHandler, DownloadStringCompletedEventArgs&gt;(
+        h =&gt; h.Invoke, h =&gt; wc.DownloadStringCompleted += h, h =&gt; wc.DownloadStringCompleted -= h)
+    .Timeout(TimeSpan.FromMilliseconds(100)) // 100ミリ秒
+    .Take(1) // これつけないとTimeoutのチェックが働き続けます←WebClientもWebRequest感覚になるようにしたほうがRx的にはお薦め
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.Result));
+
+wc.DownloadStringAsync(new Uri(&quot;http://bing.com/&quot;));
+</code></pre>
+<p>Web関連だとWebRequestであればTimeoutがありますが、ないもの(WebClient)もありますし、また、こちらのほうがお手軽なので、それなりに重宝すると思います。勿論、Web関連以外のメソッドでも使えますので、例えば一つのボタンが押されて、指定時間内にもう一つのボタンが押されなければTimeoutExceptionを出す、などなども考えられますね。更にそれをTimeoutExceptionをCatchで、指定時間内で二つのボタンが押されなかった場合の処理を追加、などなど、従来面倒くさかったことが恐ろしくスッキリ記述出来ます。</p>
+<h2>まとめ</h2>
+<p><a href="http://reactiveoauth.codeplex.com/" title="ReactiveOAuth">ReactiveOAuth</a>が機能的にスッカラカンなのは手抜きじゃなくて、(Retryとか)Rxに丸投げ出来るからです。ひたすら機能は分解、モジュールは小さく。というのは大変関数型的だと思うのですが、まさにそれです。(ただ、ちょっと、というかかなり手直ししないとマズいところがあるので近いうちに更新します……)</p>
+<p>といったわけで、Rxはかなり柔軟にエラーを処理することが出来るため、もう同期とか非同期とか関係なく、Rx挟まないでネットワーク処理書くのは面倒くさくて嫌です、という勢いだったり。大変素晴らしい。というかもう全ての処理をRx上に載せてしまってもいいんじゃね？ぐらいの勢いだったりしますがそれはやりすぎである。</p>
+<p>なお、この記事は<a href="http://atnd.org/events/10630" title="C# Advent Calendar jp: 2010 : ATND">C# Advent Calendar jp: 2010</a>の12/4分として書きました。リレーが途切れると、寂しいです。最後まで完走させたいですね。JavaScriptなど割とすぐに埋まったのに、こんなところで言語の（日本のネット上での）人気不人気が視覚化されるとしたら、寂しい話です。</p>
+<p>あと、私は<a href="http://atnd.org/events/10497" title="JavaScript Advent Calendar 2010 : ATND">JavaScript Advent Calendar 2010</a>のほうでも12/20に書くので、20日もよろしくどうも。<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js</a>とRxJSについて書きます。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

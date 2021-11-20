@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - MemcachedTranscoder - C#のMemcached用シリアライザライブラリ</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2012/1203_389.html">MemcachedTranscoder - C#のMemcached用シリアライザライブラリ</a></h1>
+<ul class="date"><li>2012-12-03</li></ul>
+<div class="entry_body"><p>今年もAdvent Calendarの季節がやってきました。というわけで、この記事は<a href="http://atnd.org/events/33905">C# Advent Calendar 2012</a>用の話となります。去年は<a href="http://neue.cc/2011/12/16_359.html">Modern C# Programming Style Guide</a>という記事を書きまして、結構好評でした。また、去年は他Silverlight Advent Calendar 2011で<a href="http://neue.cc/2011/12/10_357.html">.NETの標準シリアライザ(XML/JSON)の使い分けまとめ</a>というシリアライザの話をしました。今年も路線は引き続きで、モダンなシリアライザの話をしましょう。</p>
+<h2>MemcachedTranscoder</h2>
+<p>そんなわけで、表題のものを作りました。dllのインストールはNuGet経由でお願いします。</p>
+<ul>
+<li><a href="https://github.com/neuecc/MemcachedTranscoder">MemcachedTranscoder - GitHub</a></li>
+</ul>
+<p>Memcachedは言わずと知れた分散キャッシュ。C#で最もメジャーなMemcachedのライブラリは<a href="https://github.com/enyim/EnyimMemcached">Enyim.Memcached</a>です。これを使って、オブジェクトをGet、Setするわけだー。さて、オブジェクトをSetするというのは、最終的にbyte[]に落とす必要があります。ただたんにポーンとオブジェクト投げたらSetできたー、にはなりませんですのよ。では、どうやってbyte[]に変換しているの？というと、シリアライザが内部で動いてます。</p>
+<p>シリアライザについては以前に<a href="http://neue.cc/2010/05/29_261.html">.NET(C#)におけるシリアライザのパフォーマンス比較</a>という記事も書いたりしていて、結構うるさいんで割と気にするほうです。さて、そんなEnyim.Memcachedのシリアライザは、デフォルトではBinaryFormatterです。はい、これは、あまり速くないしファイルサイズも結構かさんでゲンニョリ系シリアライザ。</p>
+<p>ただしEnyim.MemcachedはそれらをTranscoderと呼んでいて、自由に差し替えが可能になっています。つまりBinaryFormatterがゲンニョリならば自分で差し替えればいいじゃない！ちなみに純正オプションとしてNetDataContractSerializerも用意されているのですが、これは……話にならないぐらいサイズがデカくなるので、ないわー。</p>
+<p>そんなわけで.NET最速シリアライザの<a href="http://code.google.com/p/protobuf-net/">Protobuf-net</a>と、やっぱ時代はJSONよねということで、.NETで最もスタンダードなJSONライブラリである<a href="http://json.codeplex.com/">JSON.NET</a>と、新進気鋭の<a href="https://github.com/msgpack/msgpack-cli">MsgPack-Cli</a>の3種のTranscoderを作りました。</p>
+<h2>使い方</h2>
+<p>app.configかweb.configのMemcachedのTranscoderの設定行に、それぞれ使いたいTranscoderのものを指定して、dllを実行ファイルと同ディレクトリにでも置いてください。</p>
+<pre><code class="language-xml">&lt;?xml version=&quot;1.0&quot; encoding=&quot;utf-8&quot; ?&gt;
+&lt;configuration&gt;
+    &lt;configSections&gt;
+        &lt;sectionGroup name=&quot;enyim.com&quot;&gt;
+            &lt;section name=&quot;memcached&quot; type=&quot;Enyim.Caching.Configuration.MemcachedClientSection, Enyim.Caching&quot; /&gt;
+        &lt;/sectionGroup&gt;
+    &lt;/configSections&gt;
+    &lt;enyim.com&gt;
+        &lt;memcached protocol=&quot;Binary&quot;&gt;
+            &lt;servers&gt;
+                &lt;add address=&quot;127.0.0.1&quot; port=&quot;11211&quot;/&gt;
+            &lt;/servers&gt;
+            &lt;transcoder type=&quot;MemcachedTranscoder.ProtoTranscoder, ProtoTranscoder&quot; /&gt;
+        &lt;/memcached&gt;
+    &lt;/enyim.com&gt;
+&lt;/configuration&gt;
+</code></pre>
+<p>Transcoderのバリエーションは以下の感じ。</p>
+<pre><code class="language-xml">&lt;transcoder type=&quot;MemcachedTranscoder.ProtoTranscoder, ProtoTranscoder&quot; /&gt;
+&lt;transcoder type=&quot;MemcachedTranscoder.JsonTranscoder, JsonTranscoder&quot; /&gt;
+&lt;transcoder type=&quot;MemcachedTranscoder.MessagePackTranscoder, MessagePackTranscoder&quot; /&gt;
+&lt;transcoder type=&quot;MemcachedTranscoder.MessagePackMapTranscoder, MessagePackMapTranscoder&quot; /&gt;
+</code></pre>
+<p>ProtoTranscoderはProtocol Buffers、JsonTranscoderはJSON、MessagePackTranscoderはMsgPackをArrayモードで、MessagePackMapTranscoderはMsgPackをMapモードでオブジェクトを変換します。</p>
+<h2>型とデシリアライズ</h2>
+<p>使い方を説明して終わり、というのもつまらないので、もっと深く見ていきましょう。Enyim.MemcachedはGetもSetもobjectでしかできません。ジェネリックなのもあるように見せかけて、最終的にはobjectに落ちます。ITranscoderのところには型が伝達されないのです。以下のがITranscoderインターフェイスね。</p>
+<pre><code class="language-csharp">public interface ITranscoder
+{
+    object Deserialize(CacheItem item);
+    CacheItem Serialize(object value);
+}
+</code></pre>
+<p>何が困るって？シリアライザは型が必要なんですよ！デシリアライズの時に！DataContractSerialize作るのにtypeofで型を渡しているでしょう？Protobuf.Serialize&lt;T&gt;でしょう？MessagePackSerializer.Create&lt;T&gt;でしょう？(JsonConvert.DeserializeObjectは、一見デシリアライズ可能にみえて、それJObjectが帰ってくるから意味ないです)</p>
+<p>例えばMyClassクラスというint MyProperty{get;set;}だけがある、なんてことのないクラスがあるとして、ふつーにJSONにシリアライズした結果は</p>
+<pre><code class="language-javascript">{&quot;MyProperty&quot;:100}
+</code></pre>
+<p>こんな感じになります。が、これだとこれがMyClassという情報は一切ありません。HogeClassかもしれないしHugaClassかもしれない。つまりデシリアライズ不能です。よって、外から型を与える必要があります。Deserialize&lt;MyClass&gt;、といったように。これがもし</p>
+<pre><code class="language-javascript">{
+    &quot;Type&quot; : &quot;MyClass&quot;,
+    &quot;Properties&quot; : [
+        {&quot;MyProperty&quot;:100}
+    ]
+}
+</code></pre>
+<p>このように、値が型情報も持っていれば、型がMyClassだと分かるので、型を渡すのは不要になります。BinaryFormatterやNetDataContractSeiralizerが型不要でSerialize/Deserializeできているのは何故か、というと、シリアライズした後の形に型が付与されているからなのです。そして、なぜEnyim.Memcachedが標準でBinaryFormatterとNetDataContractSerializerを用意しているのか、あるいは何故他のものが用意できないのか、というと、型情報が必要だからです。</p>
+<p>じゃあ型入れとけばいいじゃーん、といったところですが、こうすると型情報の分だけファイルサイズが嵩んでしまいます。また、.NET固有の型を埋め込むというのは、他の言語と通信するのにあたっては、かなりビミョウです。</p>
+<p>だから、理想的には型は外から与えられるといいな、って思うのです。とはいえ、実際問題、Transcoderは型の渡せないインターフェイスなので、どうにかしなきゃあいけません。</p>
+<h2>型を埋める</h2>
+<p>そんなわけで、解法は、手動で型を埋める、になります。(他には全てのAPIを型付きにラップしてそれ経由でしかアクセスさせないで、Serializeを呼ぶときはbyte[]に崩してから呼ぶとかいう方法もあるですかしらん)。どういうこっちゃ、というと、伝わりやすいであろうJSON版のTranscoderで見てみましょうか。</p>
+<pre><code class="language-csharp">protected override ArraySegment&lt;byte&gt; SerializeObject(object value)
+{
+    var type = value.GetType();
+    var typeName = writeCache.GetOrAdd(type, TypeHelper.BuildTypeName); // Get type or Register type
+
+    using (var ms = new MemoryStream())
+    using (var tw = new StreamWriter(ms))
+    using (var jw = new Newtonsoft.Json.JsonTextWriter(tw))
+    {
+        jw.WriteStartArray(); // [
+        jw.WriteValue(typeName); // &quot;type&quot;,
+        jsonSerializer.Serialize(jw, value); // obj
+
+        jw.WriteEndArray(); // ]
+
+        jw.Flush();
+
+        return new ArraySegment&lt;byte&gt;(ms.ToArray(), 0, (int)ms.Length);
+    }
+}
+</code></pre>
+<p>[&quot;型名&quot;, {objectのシリアライズ結果}]といった風に埋めてます。長さ2の配列で決め打ち！0番目は型名の文字列！1番目が実態！これなら、まあ他の言語で触るのも問題ないし(多少は不恰好ですけどね)、ファイルサイズ増大もほぼほぼ型名だけで抑えられています。MessagePack用のTranscoderも同じような実装です。このアイディアはMsgPack-Cli作者の
+<a href="http://yfakariya.blogspot.jp/">@yfakariya</a>さんから頂きました。</p>
+<p>JSON, MsgPackはそうなのですけれど、Protocol Buffers版は……違います。</p>
+<h2>ProtoTranscoder</h2>
+<p>Enyim.Memcached用のProtocol BuffersなTranscoderは、もともとprotobuf-net作者のMarc Gravell氏が作成し公開しています。<a href="http://marcgravell.blogspot.jp/2010/01/distributed-caching-with-protobuf-net.html">Distributed caching with protobuf-net</a>。</p>
+<p>しかし、幾つかの理由により、このコードを使用することはお薦めしません、というかやめたほうがいいです。</p>
+<ul>
+<li>1.対応しているProtobufやEnyim.Memcachedが古いので若干手直しが必要</li>
+<li>2.配列や辞書など、効果の高いコレクション系に対してシリアライズしてくれない(BinaryFormatterが使われる)</li>
+<li>3.そもそもバグっていて、ジェネリックなクラスを突っ込むと壊れる</li>
+</ul>
+<p>1はそのまま。2は、そういうif文が入っているからです。別にコレクションだけ避けるようになっている、というわけじゃなくて、ある種の保険でそういう条件分岐があるのですが、結果としてコレクションが避けられることになってしまっていて、効果が薄くなってしまうな、と。そして3ですが、これは致命的です。どこがバグってるかというと、以下のところ。</p>
+<pre><code class="language-csharp">string typeName = type.AssemblyQualifiedName;
+int i = typeName.IndexOf(','); // first split
+if (i &gt;= 0) { i = typeName.IndexOf(',', i + 1); } // second split
+if (i &gt;= 0) { typeName = typeName.Substring(0, i); } // extract type/assembly only
+</code></pre>
+<p>型情報を埋め込む、つまりは型から型情報の文字列を取ってこなければなりません。それ自体は<a href="http://msdn.microsoft.com/ja-jp/library/system.type.assemblyqualifiedname.aspx">AssemblyQualifiedName</a>を呼ぶだけの、造作もないことなのですけれど</p>
+<pre><code class="language-csharp">// System.Int32, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089
+Console.WriteLine(typeof(int).AssemblyQualifiedName);
+</code></pre>
+<p>Versionとか、Cultureとか、PublicKeyTokenとか、いらないね。型名とアセンブリ名、それだけ分かればそれでいい、それがいい。なので、それら無駄な情報を除去しようとしているのが↑↑のコードです。</p>
+<p>実際うまくいきます。ジェネリックを含まなければ。</p>
+<pre><code class="language-csharp">var type = typeof(List&lt;int&gt;);
+
+string typeName = type.AssemblyQualifiedName;
+int i = typeName.IndexOf(','); // first split
+if (i &gt;= 0) { i = typeName.IndexOf(',', i + 1); } // second split
+if (i &gt;= 0) { typeName = typeName.Substring(0, i); } // extract type/assembly only
+
+// ↓のtypeNameは壊れてる
+// System.Collections.Generic.List`1[[System.Int32, mscorlib
+Console.WriteLine(typeName);
+</code></pre>
+<p>見事に欠落してしまいます。AssemblyQualifiedNameが、ジェネリックを含むクラスだと形が若干変わるので、この決め打ちSubstringでは対応しきれてません。</p>
+<p>でもバグってるから使えない、というだけじゃ勿体ない！.NET最速シリアライザが使えないとか！というわけかで、私の作成したProtoTranscoder半分は氏のコードをベースにしています。また、型情報を埋め込むといったことの元ネタもこのコードからです。</p>
+<p>んで、このバグッてた型情報を削るところですが、AssemblyQualifiedNameが実際どういう形を取るのか、もしくはどういう形が読み込めるものなのか、というのは<a href="http://msdn.microsoft.com/ja-jp/library/w3f99sx1.aspx">MSDNのType.GetTypeメソッド解説</a>に例付きで詳しく書いてあります。非常に複雑で正面からきっちりパースしようとすると苦戦します。なので、正規表現でサクッと削ることにしました。</p>
+<pre><code class="language-csharp">internal static class TypeHelper
+{
+    static readonly Regex SubtractFullNameRegex = new Regex(@&quot;, Version=\d+.\d+.\d+.\d+, Culture=\w+, PublicKeyToken=\w+&quot;, RegexOptions.Compiled);
+
+    internal static string BuildTypeName(Type type)
+    {
+        return SubtractFullNameRegex.Replace(type.AssemblyQualifiedName, &quot;&quot;);
+    }
+}
+</code></pre>
+<p>一応テストは書いてありまして、<a href="https://github.com/neuecc/MemcachedTranscoder/blob/master/MemcachedTranscoder.Tests/TypeHelperTest.cs">TypeHelperTest.cs</a>、色々並べたてた限り問題ないようなので、問題ないと思われます。</p>
+<p>あと、型情報の埋め込みですが、JsonTranscoderは配列にして型情報を入れていましたが、ProtoTranscoderはbyte[]の先頭に直接埋め込んでいます。先頭4バイトが型情報の長さを表し(int)、その後に続く長さの分だけ型情報の文字列(UTF8)があり、その後ろが実体。配列がどうこうとかないので、サイズ的にも処理的にも有利です。ただ、Memcachedに格納された値自体は不正なProtocol Buffersの値となるわけで、相互運用性には難ありといったところ（他のデシリアライズするもの側でもストリーム先頭の型情報部分をスキップするようにすれば、回避できるといえばできます）。最初から相互運用性ゼロのBinaryFormatter(他の言語ではこれでシリアライズされた後の形を解釈できない)よりは遥かにマシ、ではありますね。</p>
+<h2>Memcached is dead. Long live Redis!</h2>
+<p>バグってるとか、いーのかよー、という感じですが、そもそも、使われてないんですよね。Stackoverflowのキャッシュ層は<a href="http://redis.io/">Redis</a>ですので。完全にノーメンテ。(Stackoverflowのアーキテクチャは<a href="http://highscalability.com/blog/2011/3/3/stack-overflow-architecture-update-now-at-95-million-page-vi.html">Stack Overflow Architecture Update - Now At 95 Million Page Views A Month</a>で。これも2011/3のものなので、今は更に進化してるんだろうねえ。StackoverflowはかなりRedis好きみたいで、Memcached is dead. Long live Redis!ってStackoverflowのエンジニア(Marc氏ではない)が言ってた。</p>
+<p>私もRedis好きですね。超好き。アレは超良いものだ……。ちなみにRedisのライブラリは<a href="http://code.google.com/p/booksleeve/">BookSleeve</a>と<a href="https://github.com/ServiceStack/ServiceStack.Redis">ServiceStack.Redis</a>がありまして、この辺に関して詳しくは、そのうち書きましょう。いや、ほんとRedis良いしC#との相性もいいし、たまらんです。</p>
+<p>そんなわけで放置されていたんですが、昨日の今日で、新しいのがリリースされました。<a href="http://nuget.org/packages/protobuf-net.Enyim">protobuf-net.Enyim</a>。そして、バグはそのままでした……。というわけで、そのことは<a href="https://twitter.com/marcgravell/status/275036496065613824">Twitterで伝えた</a>ので、そのうち直るでしょう(Twitterは連絡手段として非常に気楽でいいですなあ)。でも、プリミティブ型の配列などにProtobufが使われない、とかTypeCacheからのTypeの取得部分がforeachぐるぐるるーぷ、などはそのままなので、私の作ったもののほうが良いです。多分ね。</p>
+<h2>パフォーマンス</h2>
+<p>性能ですが、まず、シリアライザはシリアライズする対象によって速度は変わります。だから、一概にどれが速いとか遅いとか言いにくいところはあります。そのうえで、以下のクラスと、それの配列（長さ10）を用意しました。</p>
+<pre><code class="language-csharp">[ProtoContract]
+[Serializable]
+public class TestClass
+{
+    [ProtoMember(1)]
+    [MessagePackMember(0)]
+    public string MyProperty1 { get; set; }
+    [ProtoMember(2)]
+    [MessagePackMember(1)]
+    public int MyProperty2 { get; set; }
+    [ProtoMember(3)]
+    [MessagePackMember(2)]
+    public DateTime MyProperty3 { get; set; }
+    [ProtoMember(4)]
+    [MessagePackMember(3)]
+    public bool MyProperty4 { get; set; }
+}
+
+// シンプルなPOCOとしての対象
+var obj = new TestClass
+{
+    MyProperty1 = &quot;hoge&quot;,
+    MyProperty2 = 1,
+    MyProperty3 = new DateTime(1999, 12, 11),
+    MyProperty4 = true
+};
+
+// オブジェクト配列としての対象
+var array = Enumerable.Range(1, 10)
+    .Select(i =&gt; new TestClass
+    {
+        MyProperty1 = &quot;hoge&quot; + i,
+        MyProperty2 = i,
+        MyProperty3 = new DateTime(1999, 12, 11).AddDays(i),
+        MyProperty4 = i % 2 == 0
+    })
+    .ToArray();
+</code></pre>
+<p>これを100000回シリアライズ/デシリアライズした速度と、一個のファイルサイズの検証結果が以下になります。あと、これはTranscoderを介した速度検証であって、決してシリアライザ単体での速度測定ではないことには留意してください。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/mem_poco.jpg">
+</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/mem_array.jpg">
+</p>
+<pre><code class="language-text">Simple POCO************************
+S DefaultTranscoder:735
+D DefaultTranscoder:750
+Size:305
+S DataContractTranscoder:775
+D DataContractTranscoder:1642
+Size:746
+S ProtoTranscoder:99
+D ProtoTranscoder:142
+Size:88
+S JsonTranscoder:772
+D JsonTranscoder:892
+Size:167
+S MessagePackTranscoder:256
+D MessagePackTranscoder:535
+Size:89
+S MessagePackMapTranscoder:327
+D MessagePackMapTranscoder:783
+Size:137
+
+Array******************************
+S DefaultTranscoder:4234
+D DefaultTranscoder:4186
+Size:712
+S DataContractTranscoder:3874
+D DataContractTranscoder:9532
+Size:4525
+S ProtoTranscoder:2189
+D ProtoTranscoder:3040
+Size:255
+S JsonTranscoder:5618
+D JsonTranscoder:6275
+Size:1043
+S MessagePackTranscoder:752
+D MessagePackTranscoder:2696
+Size:256
+S MessagePackMapTranscoder:1453
+D MessagePackMapTranscoder:5088
+Size:736
+</code></pre>
+<p>単体ではProtobufが最速。これは予想通り。配列にすると、MsgPack-Cliが爆速。ほええー。理由は分かりません！また、BinaryFormatterが決して悪くないのね。速度もそうだし、サイズも、特に配列にしたときにそんなにサイズが膨れないのは偉い、結果的にJSONより小さくなってるしね。これは、JSONは律儀に全部の配列の値に対してプロパティ名を入れますが、BinaryFormatterは先頭に型情報を一つ定義し、あとはその定義への参照という形で廻しているから、でしょうね。BinaryFormatterのデータ構造の仕様は<a href="http://msdn.microsoft.com/en-us/library/cc236844.aspx">.NET Remoting: Binary Format Data Structure</a>にありますが、別に読まなくてもいいと思いますん。</p>
+<p>私はバイナリアンじゃないのでバイナリと睨めっこはあんましたくないですね、<a href="http://www.est.co.jp/">前々職</a>で<a href="http://www.microsoft.com/typography/SpecificationsOverview.mspx">TrueType Fontの仕様</a>と睨めっこしてバイナリほじほじした時は、それはそれで楽しくはあったけれど、好んでやりたくない感はあったり。ゆるふわゆとり世代ですものー。</p>
+<h2>Azure Caching</h2>
+<p><a href="http://blogs.msdn.com/b/tsmatsuz/archive/2012/07/09/what-s-new-in-windows-azure-caching-preview-role-based-caching-june-2012.aspx">Windows Azure CachingもMemcachedプロトコルをサポート</a>ということなので、今回の話はまんま使えますね！まあ、既存のものの移し替え、とかでなければ、Enyim... よりもAzure Cachingのライブラリ使ったほうがいいとは思いますが。「Enyim cache client API で入れたデータを Windows Azure caching API (Client Api) で取得すると、例外が発生します。(その逆も同様です。)」というのは、書いてある通りにシリアライザが違うからですねー。<a href="http://msdn.microsoft.com/en-us/library/windowsazure/jj663548.aspx">デフォルトはNetDataContractSerializer</a>ということで、まあ、アレですね、悲しいですね、Azure Caching使うなら<a href="http://msdn.microsoft.com/en-us/library/windowsazure/hh552969.aspx">Custom Serializer</a>作ったほうがいいんじゃないですかね(これがEnyim...のTranscoderにあたる)。まあ、Memcached ProtocolにしてEnyim... を使ってもいいでしょうけれど、Enyim...もビミョいといえばビミョいので、その辺は何とも。</p>
+<p>まあ、私はAzureは知らないので、きっとAzureの誰かが言ってくれるでせう。あ、 Azure Cachingのシリアライズコストが発生しない云々は ローカルキャッシュのみの話で、外側に行くなら原理的にシリアライズ/デシリアライズが発生するのは当たり前です、というのは一応。</p>
+<h2>まとめ</h2>
+<p>NetDataContractSerializerは論外として、BinaryFormatterは決して悪くはないので、エクストリームなパフォーマンスを求めないなら、そのまんまでいい気がしました。求めるんなら、やっぱProtobufに安定感ありますねえ。しかしMsgPackも良いんですね。可搬性ならJSONにしちゃうのも良いかなー。結局、アレだ、好きなもの選ぶのがいいと思いますですよ、と。</p>
+<p>ところで、これはもともと、前職の<a href="http://gloops.com/">gloops</a>で使うつもりで用意していたのですが、辞めちゃったとかあったので、投入するところまでは行きませんでした。というわけで今のところ利用実績はないです！まあ、多分大丈夫だと思うんですがその辺は投下してみてもらわないと何とも言えません。要は勇気が自己責任。ともあれ、コードの公開を許可してくれたgloopsに感謝します。</p>
+<p>そんなこんなで、謎社でもC#でエクストリームな性能を求めたい方を求めております。パブリックに詳しく言えるのは予定は未定なので、そういったことをやりたいという方は、こっそり私のほうに聞いてくれると嬉しいですね。あ、これは割とマジな話ですよ。それとAzureの営業かけるなら今のうちなのでそれも私のほうまで（謎）</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

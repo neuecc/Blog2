@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - 2015-09</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2015/0929_517.html">実例からみるC#でのメタプログラミング用法集</a></h1>
+<ul class="date"><li>2015-09-29</li></ul>
+<div class="entry_body"><p>Metaprogramming Universe in C# - 実例に見るILからRoslynまでの活用、という題で<a href="https://roommetro.doorkeeper.jp/events/30482">Metro.cs #1</a>にて話してきました。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/key/pF55iU0qXIeRFv" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/metaprogramming-universe-in-c-ilroslyn" title="Metaprogramming Universe in C# - 実例に見るILからRoslynまでの活用例" target="_blank">Metaprogramming Universe in C# - 実例に見るILからRoslynまでの活用例</a> </strong> from <strong><a href="//www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>現在、PhotonWireというフレームワークを作っているのですが、それで使ったメタプロ技法を紹介しました。ExpressionTree, T4, ILGenerator, Roslyn(Analyzer), Mono.Cecilとそれなりに満遍なく使っているので、それらをどーいう時に使えばいいのかというヒントになれば幸いです。まとめに書きましたが、手法自体は少なくするに越したこたぁないです、メタプロってついやりすぎちゃう傾向にあるんで、目的Firstを忘れないようにしないと本末転倒になりがちです。あと、それぞれは別にそんなに難しくない、というか難しくやらないようにするのが良いですね、そもそも長い式木とか長いILとか書きたくないですし……。</p>
+<p>Proxyのvirtual強制は制約強くてゲロなので喪われた技法って感じですが、Roslyn Analyzerでコンパイラエラーに制限できることによって復活したかもしれない気がするかもしれない！あと、Taskは大事ですね、非同期のシグネチャとしてTaskで表明できるようになったのはひじょーーーーーーに大きな事です。これは実際めちゃくちゃ大きなことなのに過小評価してたり勘違いしてたりすると、いくない。もちろん、async/awaitで手軽にハンドリングできるようになったことも大事。RPC Revisitedですよ。そんなわけでごった煮しつつも、私的な独断と偏見に基づくバランス感覚で取捨してます。この辺の感覚はかなり大事だと思うんだな。</p>
+<p>なお、書籍では<a href="http://www.amazon.co.jp/dp/4048867741">メタプログラミング.NET</a>が良書なのでオススメです。</p>
+<h2>PhotonWire</h2>
+<p>題材のPhotonWireは、<a href="http://grani.jp/">グラニ</a>で現在開発中のリアルタイムネットワーク通信用フレームワークです(ところでUnity、特にUniRxをゴリゴリ活用した先端的(エキセントリックともいう)なスクリプティング環境や、クライアントからサーバーまで全てC#で統一したあいそもーふぃっくな開発に興味のある人はいつでもウェルカムで採用募集中です)。といってもレイヤー的には比較的高レベルで、下回りでは<a href="https://www.photonengine.com/">Photon Server</a>というミドルウェアを採用していて、その上のRPCフレームワークを提供という感じです。キャッチコピーは「Typed Asynchronous RPC Layer for Photon Server + Unity」ということで、特にUnityとの繋ぎ込みを重視していて、クライアント-サーバー、サーバー-クライアント、サーバー-サーバーの方向のRPCを提供します。クライアント-クライアントは非サポート（あれは百害あって一利なし）。</p>
+<p>クライアント-サーバーはご存知<a href="https://github.com/SignalR/SignalR">SignalR</a>、サーバー-サーバーは<a href="https://github.com/dotnet/orleans">Orleans</a>という分散アクターフレームワークのAPIを参考にしています、が、サーバーの分散に関しては、別に全然賢くないです。というか機能全く無いです。もともとのPhotonがそこに対するサポートがゼロで、PhotonWireでもたいしたサポートを入れてません。私的にはこの素朴な割り切りは結構好きですね。変に透過的に見せるよりも、それぞれのサーバー/それぞれのレイヤーを独立して、ある程度プリミティブな操作を可能にしたほうがはまりどころも少ないし。別に賢くはないんだけど、手堅い。ゲームという用途で考えると、あまりカシコイものよりも、愚直なシステムのほうがマッチしそうな感触があります。必要になったら、まぁ適当に考える。</p>
+<p>Photon(+Unity)にはもともとPhoton Unity Network(PUN)という高レベルなクライアントが用意されているのですが、正直あんまり良いものでもない（特にPhoton Serverで自前ロジックを入れてくような場合は）ので、無視です、無視。で、PUNを通さない低レベルのSDKもあって、こちらは相当低レベルで本当に接続とデータ転送しか提供していないので（ただし低レベルSDKとしてはこのぐらいのほうが好ましい、へたに変なのがゴチャゴチャついてるよりも）、サーバーSDK（こちらもかなり低レベル）ともども統一した形で、ちょっと高レベルなもの、ぐらいの位置づけで作り上げてみました。</p>
+<p>クラスとメソッドに属性でIDつけさせて、それで振り分けしているのでJSON-RPC的なメソッド名なども送っちゃうのでサイズが大きくなる、ということはなく、通常の転送に較べてもオーバーヘッドは2byteです。別に全然ない。ユーザー定義の型を送る場合（通常のPhotonはこれをサポートしてない）は<a href="https://github.com/msgpack/msgpack-cli">MsgPack-CLI</a>でシリアライズ/デシリアライズするため、その際の容量増大も極小です。また、シリアライザ/デシリアライザはその型に合致したものを事前生成するため、Unityにおいても高速に動作させられます、といったシステムも含まれています。</p>
+<p>デバッグ用の専用クライアント（WPF製）なども込み込みで(これのデザイン面の話は<a href="http://neue.cc/2015/09/10_515.html">Material Design In XAML Toolkitでお手軽にWPFアプリを美しく</a>に書いてます)、痒い所に手が届きつつも、機能自体は小さく「型付きの非同期RPCの提供」から逸脱しない程度におさめているので、まーまー使いやすいんじゃないかなー、と思いますね。もちろん、クライアント側は<a href="https://github.com/neuecc/UniRx">UniRx</a>前提です。</p>
+<p>UniRx同様、GitHub/AssetStoreでの公開予定はあるというか、早く公開したいんですが、Photonの次バージョンのベータ版を使って開発してるので、そっちが正式リリースされないと公開できないので早く出ないかなぁ(ﾁﾗｯ とオモッテマス。</p>
+</div>
+<h1><a href="http://neue.cc/2015/0910_515.html">Material Design In XAML Toolkitでお手軽にWPFアプリを美しく</a></h1>
+<ul class="date"><li>2015-09-10</li></ul>
+<div class="entry_body"><p>なんとブログ書くのは3ヶ月ぶり近い！えー、うーん、そんな経っちゃってるのか、こりゃいかん。と、いうわけかでWPFアプリを入り用で作ったんですが、見た目がショボくてゲッソリしてました。WPFでアプリ書いても別に綺麗な見た目にならんのですよね、むしろショボいというか。自分でデザイン作りこんだりなんて出来ないし、でもWPFのテーマ集なんかを適用してもクソダサいテーマしかなかったりして一層ダサくなるだけで全く意味ないとかそんなこんなんで、まぁ割とげっそりだったのですが、<a href="https://github.com/ButchersBoy/MaterialDesignInXamlToolkit">Material Design In XAML Toolkit</a>は相当良い！良かった、のでちょうど手元に作り中のWPFアプリがあって適用してみたんで紹介してきます。</p>
+<p class="noindent"><img src='http://neue.cc/wp-content/uploads/image/materialxaml1.jpg' alt='' /></p>
+<p>最終的に↑のような感じになりました。サクサクッとテーマ適用してくだけでこの程度に整えられるならば、上等すぎるかな、と。私的にはマテリアルデザイン、相当気に入りました。WindowsのModern UI風のフラットテーマは普通に適用しただけだと超絶ダサくなるという、センスが要求されすぎてキツかったんですが、マテリアルデザインはそれなりに質感が乗っかってるのでまぁまぁ見れる感じになる。また、画像からは分かりませんが結構細かくアニメーションが設定されていて感触が良い（マテリアルデザインの重要な要素だそうで）のも嬉しい。</p>
+<h2>Before</h2>
+<p>Beforeはこんな感じです。</p>
+<p class="noindent"><img src='http://neue.cc/wp-content/uploads/image/materialxaml2.jpg' alt='' /></p>
+<p>TextBoxとボタンの羅列、実にギョーミーな雰囲気。機能的には私の要件はこれで満たしてるんですが（ちなみにコレが何かは後日紹介するしGitHubで公開もするつもりですが今は本題ではないのでスルーします）、いかんせん見た目が悲しいかな、と。そこで現れたMaterial Design In XAML Toolkit！NuGetからのインストールとコピペ一発で素敵な見た目に……。
+なるほど世の中はさすがに甘くなかったですね:)</p>
+<p>適用は簡単で、NuGetからMaterialDesignThemesをダウンロード、そしてApp.xaml.csに<a href="https://raw.githubusercontent.com/ButchersBoy/MaterialDesignInXamlToolkit/master/MainDemo.Wpf/App.xaml">このApp.xaml</a>のApplication.Resourcesをコピペ。そしてMainWindowに以下の4項目を貼っつけてあげればできあがり。</p>
+<pre><code class="language-xml">&lt;MainWindow
+    xmlns:wpf=&quot;clr-namespace:MaterialDesignThemes.Wpf;assembly=MaterialDesignThemes.Wpf&quot;
+    TextElement.Foreground=&quot;{DynamicResource MaterialDesignBody}&quot;
+    Background=&quot;{DynamicResource MaterialDesignPaper}&quot;
+    FontFamily=&quot;pack://application:,,,/MaterialDesignThemes.Wpf;component/Resources/Roboto/#Roboto&quot;&gt;
+</code></pre>
+<p>簡単簡単。これで美しくなるなら素晴らしいですね？そしてその結果がこれ。</p>
+<p class="noindent"><img src='http://neue.cc/wp-content/uploads/image/materialxaml3.jpg' alt='' /></p>
+<p>うん、ダメ、理想とは程遠いダサさに溢れてます。Bootstrapを適用しただけじゃ普通にダサいままってのと同じ。ボーダーが吹っ飛んだので境目がわからず使いにくくなったし、やっぱダサ……、なんか一部のボタンは文字埋まっちゃってるし。で、引き返そうと思ったんですが、なんとなく良さそうな気配は感じたのでもう少し粘って作業することにしました。</p>
+<h2>デモアプリを見ながら細工</h2>
+<p>まずMaterialDesignInXamlToolkitのプロジェクトを落としましょう。CloneしてもいいしDownload Zipでもいいので。で、MainDemo.Wpfをビルドして実行しましょう、特に躓くことなくビルドできるはずですので。このデモアプリが非常によく出来ていて、出来ること全ての解説になってますし、当然それをやりたければそのxamlを開いてコピペすればなんとかなります！</p>
+<p>というわけでデモアプリを眺めつつ自分のクソダサアプリのどこから手を入れようか。まず画面の構成要素のうち、上の部分のテキストボックスとボタンが並んでるところはコンフィグに近いので色分けしようかな、と。ヘッダ部分の色分け例はマテリアルデザインでよく見るパターンですしね。よく見るパターンということは、専用のパーツがしっかり用意されています。ColorZoneで囲むことで色がガラッと変わります。</p>
+<pre><code class="language-xml">&lt;wpf:ColorZone Mode=&quot;Inverted&quot; Padding=&quot;0&quot;&gt;
+    ...
+&lt;/wpf:ColorZone&gt;
+</code></pre>
+<p class="noindent"><img src='http://neue.cc/wp-content/uploads/image/materialxaml4.jpg' alt='' /></p>
+<p>ModeのInvertedは逆転した色、というわけで、これだけでまぁまぁ引き締まった雰囲気が出てきました、これはやって正解。また、ボタンの文字が埋まっているのはMargin入れて小さくしてたせいだったので、Heightを設定する形で小さくすることにしました。この状態でちょっとだけ問題があって、コンボボックスの選択時のフォントが通常カラーのままなので色が薄く見えなくなってしまうことに……。</p>
+<p class="noindent"><img src='http://neue.cc/wp-content/uploads/image/materialxaml5.jpg' alt='' /></p>
+<p>これはテーマから外れたItemContainerStyleを設定して回避。</p>
+<pre><code class="language-xml">&lt;ComboBox ItemsSource=&quot;{Binding UseConnectionType}&quot;&gt;
+    &lt;ComboBox.ItemContainerStyle&gt;
+        &lt;Style TargetType=&quot;ComboBoxItem&quot;&gt;
+            &lt;Setter Property=&quot;Foreground&quot; Value=&quot;Gray&quot; /&gt;
+        &lt;/Style&gt;
+    &lt;/ComboBox.ItemContainerStyle&gt;
+&lt;/ComboBox&gt;
+</code></pre>
+<p>よくわからんけどこんなんでいいでしょふ、よくわからんけど。真面目にXAML書くの5年ぶりぐらいなんで正直もう全然覚えてないんですよね。</p>
+<p>そういえば、オマケコントロール（？）としてTextBoxにウォーターマークがつけれるのが入ってます。使い方はwpf:TextFieldAssist.Hintを入れるだけ。</p>
+<pre><code class="language-xml">&lt;TextBox wpf:TextFieldAssist.Hint=&quot;うぉーたーまーく&quot; /&gt;
+</code></pre>
+<p>かなり綺麗に出て素敵なので最高だと思いました、まる。</p>
+<h2>MahAppsの導入</h2>
+<p>タイトルウィンドウが乖離しててダサいというか気になってきた。ので、ここを手軽に改変できる<a href="http://mahapps.com/">MahApps</a>を入れましょう。MahAppsだけだと、Metro風ということでこれ単体では別に素敵な見た目に出来ないんですが（ほんとメトロ風はムズカスぃ！）、Material Design In XAML Toolkitと合わせるとお互いの領域をカバーできる。ちゃんとMaterial Design In XAML Toolkit側で統合のための設定が用意されているので組み合わせるのは簡単です。MahAppsの基本的な導入は<a href="http://mahapps.com/guides/quick-start.html">Quick Start</a>に従う通り、まずWindowをMetroWindowに差し替えて</p>
+<pre><code class="language-xml">// Xaml 
+&lt;Controls:MetroWindow
+    xmlns:Controls=&quot;clr-namespace:MahApps.Metro.Controls;assembly=MahApps.Metro&quot;&gt;
+
+// CodeBehind
+public partial class MainWindow : MahApps.Metro.Controls.MetroWindow
+</code></pre>
+<p>App.xamlにリソースを投下、なのですが、MaterialDesignInXamlToolkitと統合するためのサンプルがMaterialDesignInXamlToolkit側に用意されているので、リソースは<a href="https://raw.githubusercontent.com/ButchersBoy/MaterialDesignInXamlToolkit/master/MahMaterialDragablzMashUp/App.xaml">MahMaterialDragablzMashUp/App.xaml</a>からコピペってきましょう。DragablzというChromeみたいなドラッグアンドドロップで切り離せるタブのためのライブラリを使わない場合（今回は使いませんでした）は、Dragablzに対する行は削除しておｋ（というか削除しないと動きません）。これで</p>
+<p class="noindent"><img src='http://neue.cc/wp-content/uploads/image/materialxaml6.jpg' alt='' /></p>
+<p>となりました。うーん、よくなってきた！タイトルバーのところにテキストでいい感じなレイアウトで手軽にコマンドを突っ込めるのも嬉しかった。というわけでBeforeではステータスバーのところにやけくそにダサい感じで置いてたDuplicate Windowボタン（ウィンドウを複製する）をタイトルバーに移動。ついでにAlign Window（複数ウィンドウを整列させる）コマンドも追加。ちなみにこのアプリは複数ウィンドウを並べて使うのが前提なので、並べた時に重なって鬱陶しいためウィンドウ枠を光らせるのはあえて切ってるんですが、単体アプリなら光らせたほうが見栄え良いかもですね。入れるの自体は簡単で</p>
+<pre><code class="language-xml">&lt;!-- 光らせるところ、GlowBrushを削れば光らない --&gt;
+&lt;Controls:MetroWindow
+    GlowBrush=&quot;{DynamicResource AccentColorBrush}&quot;&gt;    
+
+    &lt;!-- コマンド入れるところ --&gt;
+    &lt;Controls:MetroWindow.RightWindowCommands&gt;
+        &lt;Controls:WindowCommands&gt;
+            &lt;Button Content=&quot;Align Window&quot; Click=&quot;AlignWindow_Click&quot; /&gt;
+            &lt;Button Content=&quot;Duplicate Window&quot; Click=&quot;DuplicateWindow_Click&quot; /&gt;
+        &lt;/Controls:WindowCommands&gt;
+    &lt;/Controls:MetroWindow.RightWindowCommands&gt;
+</code></pre>
+<p>をMainWindows.xamlに突っ込むだけです。お手軽素敵。</p>
+<h2>最終調整</h2>
+<p>Purpleじゃない色調にしたかったのでテーマをデモアプリのパレットから眺めてBlueGrayに決定。テーマはApp.xamlを弄ればヨイデス。MaterialDesignColor.xxx.xamlの部分ですね、他の色とかはデモアプリのPaletteで確認できます。その他Light/Darkの切り替えやSecondaryColourの設定なんかも、xxx.xamlのそれっぽい部分をなんとなく書き換えれば書き換わります。</p>
+<pre><code class="language-xml">&lt;!-- include your primary palette --&gt;
+&lt;ResourceDictionary.MergedDictionaries&gt;
+    &lt;ResourceDictionary Source=&quot;pack://application:,,,/MaterialDesignColors;component/Themes/MaterialDesignColor.BlueGrey.xaml&quot; /&gt;
+&lt;/ResourceDictionary.MergedDictionaries&gt;
+</code></pre>
+<p>これで全体の色が変わったので、最後に、中央部分がMarginが消えてて区切りめがわからず使いづらいのは変わらずだったので、ここは枠をいれて明確な分離を。最初はボーダー入れて調整とかしてみたんですがイマイチしっくりこなかったんで、まぁ枠かな、と。マテリアルデザイン風のシャドウのある枠はヘッダーで色分けした時と同じく ColorZone で囲むだけです、ModeはStandardを選択。モードがどんなのがあるかもデモアプリを見れば一発で分かります。</p>
+<pre><code class="language-xml">&lt;wpf:ColorZone Mode=&quot;Standard&quot; Padding=&quot;5&quot; CornerRadius=&quot;3&quot; Effect=&quot;{DynamicResource MaterialDesignShadowDepth1}&quot; Margin=&quot;2&quot;&gt;
+    &lt;local:OperationItem /&gt;
+&lt;/wpf:ColorZone&gt;
+</code></pre>
+<p>影の出方はMaterialDesignShadowDepthの1~5で調整可能で、今回は1にしてます。その他の調整として、ログを表示しているテキストボックスのボーダーを上にも出すようにしたり、中身によって拡縮するようになっちゃたのでVerticalContentAlignmentを設定したりとちょっとした調整を少し入れて、最初に出した画像のものになりました。もっかい同じのを載せますけれど。</p>
+<p class="noindent"><img src='http://neue.cc/wp-content/uploads/image/materialxaml1.jpg' alt='' /></p>
+<p>アプリの見た目が良くなるってのは純粋にテンション上がるんでいいものですねぇ、機能的には何も変わっちゃいないですが、気分は随分と良いです。まぁギョームコウリツとは関係ないとこなんであんまり手を入れまくってもアレですが、ちょっとテーマ適用して調整するだけで必要最低限整ってくれるのは実に良いです。</p>
+<h2>＋アイコン</h2>
+<p>あとパラメータのコピペが欲しくなりました、複数ウィンドウ間で貼って回ったりするので。というわけでボタンにアイコンを用意したくて、それもマテリアルデザインなら簡単！</p>
+<img src='http://neue.cc/wp-content/uploads/2015/09/materialxamlicon.jpg' alt='' />
+<pre><code class="language-xml">&lt;Button Background=&quot;{StaticResource PrimaryHueLightBrush}&quot;
+        HorizontalAlignment=&quot;Left&quot;
+        Width=&quot;24&quot; Height=&quot;24&quot; Padding=&quot;0&quot; Margin=&quot;5&quot;
+        Command=&quot;{Binding PasteCommand}&quot;
+        ToolTip=&quot;Paste&quot;&gt;
+    &lt;Viewbox Width=&quot;16&quot; Height=&quot;16&quot;&gt;
+        &lt;Canvas Width=&quot;24&quot; Height=&quot;24&quot;&gt;
+            &lt;Path Data=&quot;M19,20H5V4H7V7H17V4H19M12,2A1,1 0 0,1 13,3A1,1 0 0,1 12,4A1,1 0 0,1 11,3A1,1 0 0,1 12,2M19,2H14.82C14.4,0.84 13.3,0 12,0C10.7,0 9.6,0.84 9.18,2H5A2,2 0 0,0 3,4V20A2,2 0 0,0 5,22H19A2,2 0 0,0 21,20V4A2,2 0 0,0 19,2Z&quot;
+                     Fill=&quot;{DynamicResource MaterialDesignBody}&quot; /&gt;
+        &lt;/Canvas&gt;
+    &lt;/Viewbox&gt;
+&lt;/Button&gt;
+</code></pre>
+<p>これは<a href="https://materialdesignicons.com/">Material Design Icons</a>にあるアイコンから取ってきてます。そこにはXAMLのPath Dataも載ってるので、タグをそのまま貼り付けるだけでアイコンとして使えます。これは楽ちんでめっちゃ良い！アイコンは揃えるのどうしても面倒ですからねー、このお手軽さは嬉しすぎます。色とかを用意されてるMaterialDesignのスタイルを入れ込んでやればそれだけで中々見栄えのするアイコンの出来上がり。</p>
+<h2>ReactiveCommand</h2>
+<p>えむぶいぶいえむ的なのは<a href="https://github.com/runceel/ReactiveProperty">ReactiveProperty</a>で実装してます。で、ReactivePropertyもいーんですが、私的には昔から結構ReactiveCommand押しなんですよ、ReactiveCommandいいんだけどなー。例えば実際こんなコードになってます。</p>
+<pre><code class="language-csharp">// peer = ReactiveProperty&lt;Connection&gt;
+// ObserveStatusChangedで状態の変化の監視 + コネクションは切り替わることがあるので前のを破棄するSwitch
+// Disconnectが押せるのはStatusがConnectの時だけ
+Disconnect = peer.Select(x =&gt; x.ObserveStatusChanged())
+    .Switch()
+    .Select(x =&gt; x == StatusCode.Connect)
+    .ToReactiveCommand();
+
+// Disconnectの逆、だけどConnectが押せるのはそれに加えて接続先アドレス入力欄が空でない場合
+Connect = peer.Select(x =&gt; x.ObserveStatusChanged())
+    .Switch()
+    .CombineLatest(Address, (x, y) =&gt; x != StatusCode.Connect &amp;&amp; !string.IsNullOrEmpty(y))
+    .ToReactiveCommand();
+</code></pre>
+<p>とか。若干込み入って面倒くさいのがスッキリ + ボタンのCanExecuteとぴったり来る。あとはプロセスを監視してて、存在してれば止めるボタンが押せるというのは、一秒毎のチェックにしていて、Observable.Intervalで繋ぎあわせてます。</p>
+<pre><code class="language-csharp">// PhotonSocketServerが存在すれば押せるコマンド、1秒毎のポーリングで監視
+KillPhotonProcess = Observable.Interval(TimeSpan.FromSeconds(1))
+    .Select(x =&gt; Process.GetProcessesByName(&quot;PhotonSocketServer&quot;).Any()); 
+    .ToReactiveCommand();
+</code></pre>
+<p>こういうの悩まずサクサク書けるのは幸せ度高い。</p>
+<h2>で、これ何なの？</h2>
+<p>なんなんでしょーねぇ。ということの一端は<a href="https://roommetro.doorkeeper.jp/events/30482">Metro.cs #1</a>という勉強会で「IL から Roslyn まで - Metaprogramming Universe in C#」というタイトルでお話しますよ！2015-09-16（水）19:30 - 22:00に渋谷でやりますので、気になる人は是非是非参加くだしあ。内容はRoslyn 20%, C#全般 60%, WPF 10%, Unity 10%ぐらいなイメージですかしらん。このWPFのどこにメタプログラミング要素があるかというと、中身は<a href="https://github.com/jbevain/cecil">Mono.Cecil</a>使ってアセンブリ解析してるからです。へー。とかそういうことを話します。</p>
+</div>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

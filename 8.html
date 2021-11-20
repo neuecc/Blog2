@@ -1,0 +1,2457 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2014/0916_478.html">ジェネリッククラス内の静的フィールドの挙動について</a></h1>
+<ul class="date"><li>2014-09-16</li></ul>
+<div class="entry_body"><p>今メインで作ってるほげもげの進捗があんま良くないので、たまには少し小ネタでも。ジェネリッククラス内（静的クラスでも普通のクラスでもどっちでもいいです）の静的フィールドは、それぞれ独立して、各型に唯一のフィールドとして存在できます。違う型では共有されず、同じ型ないでは共有される、という挙動です。あまり良い例でもないですが、例えばこんな感じ。</p>
+<pre><code class="language-csharp">public static class InstanceGenerator&lt;T&gt;
+{
+    static readonly Func&lt;T&gt; generator;
+
+    static InstanceGenerator()
+    {
+        var newExpr = Expression.Lambda&lt;Func&lt;T&gt;&gt;(
+            Expression.New(typeof(T).GetConstructor(Type.EmptyTypes)));
+        generator = newExpr.Compile();
+    }
+
+    public static T CreateNew()
+    {
+        return generator.Invoke();
+    }
+}
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        var p1 = InstanceGenerator&lt;Program&gt;.CreateNew();
+        var p2 = InstanceGenerator&lt;Program&gt;.CreateNew();
+        var s = InstanceGenerator&lt;StringBuilder&gt;.CreateNew();
+    }
+}
+</code></pre>
+<p>さすがにこれだとnew Program()って書けよって話なので、クソの役にもたたなすぎる例なんです
+が、いちおう、Compileという重たい処理をキャッシュできますね、みたいな感じ。(このクラスはクソの役にも立たないけど)（こういうジェネリッククラスの挙動は）便利便利。で、それはいいんですけど、もしフィールドがジェネリックじゃない場合はどーなるでしょう？こんな風に、非許可の型チェックを入れてみたりします。</p>
+<pre><code class="language-csharp">// 静的クラスでもふつーのクラスでもどっちでもいーですよ
+public class InstanceGenerator&lt;T&gt;
+{
+    static readonly Func&lt;T&gt; generator;
+    static readonly HashSet&lt;Type&gt; disallowType = new HashSet&lt;Type&gt;
+    {
+        typeof(StringBuilder),
+        typeof(ArrayList)
+    };
+
+    static InstanceGenerator()
+    {
+        var newExpr = Expression.Lambda&lt;Func&lt;T&gt;&gt;(Expression.New(typeof(T).GetConstructor(Type.EmptyTypes)));
+        generator = newExpr.Compile();
+    }
+
+    public InstanceGenerator()
+    {
+        if (disallowType.Contains(typeof(T))) throw new Exception(&quot;その型は許可されてません！&quot;);
+    }
+
+    public T CreateNew()
+    {
+        return generator.Invoke();
+    }
+}
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        // ok
+        var pg = new InstanceGenerator&lt;Program&gt;().CreateNew();
+
+        // exception
+        var sb = new InstanceGenerator&lt;StringBuilder&gt;().CreateNew();
+
+    }
+}
+</code></pre>
+<p>HashSet&lt;Type&gt;は特に&lt;T&gt;とは関係のないフィールド。かつ「意図としては」readonlyで全ジェネリッククラスで共有して欲しい。で、実際どーなってるかというと……確認しませう。</p>
+<pre><code class="language-csharp">public class InstanceGenerator&lt;T&gt;
+{
+    static readonly Func&lt;T&gt; generator;
+
+    // 呼ばれたのをチェックするために遅延実行のシーケンスをかませる
+    static readonly HashSet&lt;Type&gt; disallowType = new HashSet&lt;Type&gt;
+        (Enumerable.Range(1, 3).Select(x =&gt; { Console.WriteLine(x); return typeof(int); }))
+    {
+        typeof(StringBuilder),
+        typeof(ArrayList)
+    };
+
+    // 以下同じなので略
+}
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        // 1,2,3,1,2,3と出力されて、（当然）二回HashSetが初期化されてるのが分かる
+        var pg = new InstanceGenerator&lt;Program&gt;().CreateNew();
+        var sb = new InstanceGenerator&lt;StringBuilder&gt;().CreateNew();
+
+    }
+}
+</code></pre>
+<p>といった感じに、非ジェネリックフィールドも当たり前のように共有されることなく、各ジェネリッククラスで独立して存在します。当たり前っちゃあ当たり前です（readonlyじゃないstatic fieldだって存在できるし、readonlyだってimmutableとは限らないので、そんな利用者都合の区別をコンパイラがつけられはしない！）</p>
+<p>けれど多くの静的フィールドを使うシチュエーションにとっては、あんま都合よくないかな、と。大したことナイといえばないですが、正規表現のCompileしたのとか別個で持ってたくないし、その他色々色々。気になるっちゃあ気になります。さて、どうすればいいか、っていうと</p>
+<pre><code class="language-csharp">internal class InstanceGenerator
+{
+    protected static readonly HashSet&lt;Type&gt; disallowType = new HashSet&lt;Type&gt;
+    {
+        typeof(StringBuilder),
+        typeof(ArrayList)
+    };
+}
+
+// 静的クラスじゃなければ継承するとか
+public class InstanceGenerator&lt;T&gt; : InstanceGenerator
+{
+    // 以下略
+}
+
+// 静的クラスの時は適当に誤魔化すしかない
+internal static class _InstanceGenerator
+{
+    public static readonly HashSet&lt;Type&gt; disallowType = new HashSet&lt;Type&gt;
+    {
+        typeof(StringBuilder),
+        typeof(ArrayList)
+    };
+}
+
+public static class InstanceGenerator&lt;T&gt;
+{
+    // 中略
+
+    // なんかひどぅぃ
+    public static T CreateNew()
+    {
+        if (_InstanceGenerator.disallowType.Contains(typeof(T))) throw new Exception(&quot;その型は許可されてません！&quot;);
+        return generator.Invoke();
+    }
+}
+
+</code></pre>
+<p>独立した外の型として定義せざるをえないので、適当に誤魔化すしかないですね！あとはふつーにゆーてぃりてぃクラスとして独立させるとか設計で回避、的なアレ。</p>
+<h2>ちなみに</h2>
+<p>例がクソややこしく感じた人には一番シンプルなものを。</p>
+<pre><code class="language-csharp">public static class MyClass&lt;T&gt;
+{
+    public static object X = new object();
+}
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        var b = Object.ReferenceEquals(MyClass&lt;int&gt;.X, MyClass&lt;string&gt;.X);
+        Console.WriteLine(b); // false
+
+        MyClass&lt;int&gt;.X = 1000; // 違うもクソも外からセットできるし
+        Console.WriteLine(MyClass&lt;int&gt;.X); // 1000
+        Console.WriteLine(MyClass&lt;string&gt;.X); // System.Object
+    }
+}
+</code></pre>
+<p>ようはこれだけじゃないですかーやだー無駄にこねくりまわした例は余計わかりづらいー。</p>
+<h2>仕様</h2>
+<p>言語仕様的には「4.4.2 オープン型とクローズ型」の最後の部分の話です。</p>
+<blockquote>
+<p>すべての型は、&quot;オープン型&quot; か &quot;クローズ型&quot; のいずれかに分類されます。オープン型は、型パラメーターと一緒に使用する型です。より具体的には、次のとおりです。</p>
+</blockquote>
+<blockquote>
+<ul>
+<li>型パラメーターはオープン型を定義します。</li>
+</ul>
+</blockquote>
+<ul>
+<li>配列型は、要素の型がオープン型の場合のみ、オープン型です。</li>
+<li>構築された型は、1 つ以上の型引数がオープン型の場合のみ、オープン型です。構築された入れ子になった型は、1 つ以上の型引数または外側の型の型引数がオープン型の場合のみ、オープン型です。</li>
+</ul>
+<blockquote>
+<p>クローズ型とは、オープン型でない型です。</p>
+</blockquote>
+<blockquote>
+<p>実行時、ジェネリック型宣言内のすべてのコードは、ジェネリック宣言に型引数を適用することによって作成されたクローズ構築型のコンテキストで実行されます。ジェネリック型内の各型パラメーターは、特定の実行時の型にバインドされます。すべてのステートメントおよび式の実行時の処理ではクローズ型が発生し、オープン型は、コンパイル時の処理でのみ発生します。</p>
+</blockquote>
+<blockquote>
+<p>クローズ構築型には独自の静的変数セットがあり、このセットは他のクローズ構築型と共有されません。オープン型は実行時には存在しないため、オープン型に関連付けられた静的変数はありません。2 つのクローズ構築型は、同じ非バインド ジェネリック型から構築された場合は同じ型になり、対応する型引数も同じ型になります。</p>
+</blockquote>
+<p>あとは「10.5.1 静的フィールドとインスタンスフィールド」でも触れられています。</p>
+<blockquote>
+<p>静的フィールドは特定のインスタンスの一部ではなく、クローズ型 (4.4.2 を参照) のすべてのインスタンス間で共有されます。クローズ クラス型のインスタンスがいくつ作成される場合でも、関連付けられたアプリケーション ドメインに対する静的フィールドのコピーは 1 つだけです。</p>
+</blockquote>
+<p>この辺りのは言い方がややこしいんで言語仕様とにらめっこしてるだけだとあんま頭に入ってこない系ですにぇ。</p>
+</div>
+<h1><a href="http://neue.cc/2014/0908_477.html">Immutable CollectionsとSubject(Rx)の高速化について</a></h1>
+<ul class="date"><li>2014-09-08</li></ul>
+<div class="entry_body"><p>最近は<a href="https://github.com/neuecc/UniRx">UniRx</a>というUnity向けのReactive Extensionsの実装を書いているので、そこにImmutableなCollectionのちょーどよく分かりやすい使い道の実例があるので紹介しようかと思います。Rx自体はImmutable Collections使ってるわけではありませんが、同様の（簡易的）実装を内部で持っています。UniRxも同様に簡易実装を中で持つ形です。</p>
+<p>Immutable Collectionsを知らにゃい？詳しくは<a href="http://blogs.msdn.com/b/dotnet/archive/2013/09/25/immutable-collections-ready-for-prime-time.aspx">NET Framework Blog - Immutable collections ready for prime time</a>を。または、以前に私がセッションで発表した資料もありますので、それも見てください。<a href="http://neue.cc/2013/10/31_430.html">neue cc - .NETのコレクション概要とImmutable Collectionsについて</a>。1.0リリースからもベータ版のリリースは続いていて、今回はそのベータのほうを使います（ダウンロードはNuGetでプリリリースのものを有効にするだけです）。何故かと言うと、今回使うImmutableArrayはベータのほうにしか入っていないからです。</p>
+<h2>素朴なSubject</h2>
+<p>最も素朴なSubjectを作ってみましょう。SubjectはEventのRx的な表現で+=とInvokeが出来るもの、とでも思ってもらえれば。</p>
+<pre><code class="language-csharp">public class MySubject&lt;T&gt; : IObservable&lt;T&gt;, IObserver&lt;T&gt;
+{
+    List&lt;IObserver&lt;T&gt;&gt; observers = new List&lt;IObserver&lt;T&gt;&gt;();
+
+    // Subscribeするとリストに貯めて
+    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
+    {
+        observers.Add(observer);
+        return null; // 本来は戻り値をDisposeするとRemoveだけど省略
+    }
+
+    // OnNextで配信
+    public void OnNext(T value)
+    {
+        foreach (var item in observers)
+        {
+            item.OnNext(value);
+        }
+    }
+
+    // OnErrorとOnCompletedは中略
+}
+</code></pre>
+<p>こんなもんですね、簡単簡単。実際使う場合は</p>
+<pre><code class="language-csharp">// とりあえずこういうの用意しとかないとメンドーなので。
+// Rxを参照してるならSubescribe(x =&gt; { })でいいよ！
+public class ActionObserver&lt;T&gt; : IObserver&lt;T&gt;
+{
+    readonly Action&lt;T&gt; onNext;
+
+    public ActionObserver(Action&lt;T&gt; onNext)
+    {
+        this.onNext = onNext;
+    }
+
+    public void OnNext(T value)
+    {
+        onNext(value);
+    }
+
+    // OnErrorとOnCompletedは中略
+}
+
+// で、こんなかんぢ
+var subject = new MySubject&lt;int&gt;();
+
+subject.Subscribe(new ActionObserver&lt;int&gt;(x =&gt; Console.WriteLine(x)));
+subject.Subscribe(new ActionObserver&lt;int&gt;(x =&gt; Console.WriteLine(x * 2)));
+
+subject.OnNext(500); // 500, 1000
+</code></pre>
+<p>概ね見たまんまな単純な話ですねー、さて、この実装は素朴すぎるので簡単に死にます。マルチスレッドで、とかそういうことじゃなく、例えば……</p>
+<pre><code class="language-csharp">// 呼ばれるとイベント登録しに走るような場合
+subject.Subscribe(new ActionObserver&lt;int&gt;(x =&gt; subject.Subscribe(new ActionObserver&lt;int&gt;(_ =&gt; Console.WriteLine(x)))));
+
+//ハンドルされていない例外: System.InvalidOperationException: コレクションが変更されました。列挙操作は実行されない可能性があります。
+subject.OnNext(10000);
+</code></pre>
+<p>foreachの最中にList本体にAddやRemoveといった操作は許可されていないのですねー。そんなのしねーよ、と突っぱねることはRxの使い方の場合は実際できないので、対処が必要です。一番簡単なのはまるっとコピーすること。</p>
+<pre><code class="language-csharp">// MySubject&lt;T&gt;.OnNext
+public void OnNext(T value)
+{
+    foreach (var item in observers.ToArray()) // 列挙はコピー
+    {
+        item.OnNext(value);
+    }
+}
+</code></pre>
+<p>こういう対処はLINQ to XMLのドキュメント<a href="http://msdn.microsoft.com/ja-jp/library/bb387088.aspx">宣言型コードと命令型コードの混在のバグ (LINQ to XML)</a>でも薦められている、特別でもない一般的なテクニックということで、場合によっては普通に使っても構わない話だと思います。スレッドセーフにするのもlock仕込むだけ。</p>
+<pre><code class="language-csharp">public IDisposable Subscribe(IObserver&lt;T&gt; observer)
+{
+    lock (observers)
+    {
+        observers.Add(observer);
+    }
+    return null;
+}
+
+public void OnNext(T value)
+{
+    IObserver&lt;T&gt;[] array;
+    lock (observers)
+    {
+        array = observers.ToArray();
+    }
+    foreach (var item in array)
+    {
+        item.OnNext(value);
+    }
+}
+</code></pre>
+<h2>高速化する</h2>
+<p>素朴な実装の問題は、まぁパフォーマンス。コピーだから一概に悪いとは言わなくて、場合によっては全然普通に使って構わないというのは頭に入れて欲しいのですけれど、さすがにOnNextのような、イベントが叩かれるような、頻度の高いもので毎回コピーが走るのは些か厳しい。じゃあどうしよう？そうだConcurrent Collectionだ！ふむ……。でもConcurrentQueueとかだと（今回省いてますが）Removeするのがむつかしい。ConcurrentDictionaryで代替だ！でも列挙の具合が不透明（並列コレクションの列挙の挙動は結構色々なのでそれなりに注意が必要です）、パフォーマンス的にもただのforeachよりは劣るよねえ、せっかくやるならエクストリームな性能を追い求めたい気もする。</p>
+<p>と、そこで出てくるのが（？）Immutable Collections、の、ImmutableArray。</p>
+<p>注意しなきゃいけないのは別にImmutable Collections使ったからって必ずしも早いとかってわけじゃないです。むしろ多くの場合でImmutable Collectionsは不適でしょう。コレクションには特性があって、それにうまく合致しなければむしろ遅いです。今回のシチュエーションではImmutableArrayが割と最適にハマります（同じAPIを持ったリスト的なものにImmutableListがありますが、今回だとArrayのほうが良い）。とりあえず見てみましょう、か。</p>
+<pre><code class="language-csharp">class MySubject&lt;T&gt; : IObservable&lt;T&gt;, IObserver&lt;T&gt;
+{
+    ImmutableArray&lt;IObserver&lt;T&gt;&gt; observers = ImmutableArray.Create&lt;IObserver&lt;T&gt;&gt;();
+
+    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
+    {
+        // スレッドセーフな入れ替え
+        while (true)
+        {
+            var oldCollection = observers;
+            var newCollection = oldCollection.Add(observer);
+            var comparedCollection = ImmutableInterlocked.InterlockedCompareExchange(ref observers, newCollection, oldCollection);
+
+            if (comparedCollection == oldCollection) return null; // 変更対象がAddしている間に変わってなければ成功
+        };
+    }
+
+    public void OnNext(T value)
+    {
+        // 普通にぐるぐる回しても安全
+        foreach (var item in observers)
+        {
+            item.OnNext(value);
+        }
+    }
+
+    // OnErrorとOnCompletedは中略
+}
+</code></pre>
+<p>Listの宣言をImmutableArrayに変えて、あとは、フィールドの代入が全然変わってる！そう、ImmutableArrayの差し替えはちょっと面倒くさいのです。所謂CAS(Compare And Swap)という奴で、「大抵の場合は衝突しないけど原理的にたまに衝突する」という場合のために、グルグル回って比較して置き換えるという手段を取ります。ImmutableCollectionsにはそういった処理のためのヘルパーメソッドがImmutableInterlockedクラスに幾つか用意されています。ここではImmutableArrayで使えるImmutableInterlocked.InterlockedCompareExchangeを使いました。</p>
+<h2>特性</h2>
+<p>ImmutableArrayの中身は、配列です。Addは中で内部の配列をまるっとコピーして、新しい配列を作っています。foreachはその内部の配列に対して列挙かけるだけなので、普通の配列を回すのと性能はまるっきり変わらない。なので、Addのコストは非常に高いけれど、他は通常の配列と変わらないぐらい高速というのが特性です。</p>
+<p>なんでSubjectの実装にImmutableArrayが適切かというと、「追加や削除よりも圧倒的に多く列挙が呼ばれる」からですね。そもそも普通にOnNext書けば毎回コピーが走るので、だったら追加の時のコピー一発で済ませられるなら遥かに高効率と思われるのではないでしょーか。</p>
+<p>これにより、イベント的な使用でのSubjectのパフォーマンスは、ノーロック・ノーコピーで、配列とほぼ同等の性能が出ます。完璧！</p>
+<h2>まとめ</h2>
+<p>Immutable Collectionsは、まぁ、実際のとこガチッと使えるシーンがはまるケースはぶっちけあんまないと思います！コレクションとしての重要度は 普通のジェネリックコレクション＞コンカレントコレクション＞超えられない壁＞イミュータブルコレクション でしょうし、使うコレクションを探す場合も、そこから順番で考えたほうが良いでしょふ。<a href="http://neue.cc/2013/10/31_430.html">neue cc - .NETのコレクション概要とImmutable Collectionsについて</a>でも書いたのですけれど、別にイミューラブルコレクション＝速い、というのは大間違いです。むしろかなりピーキーで、性能特性をしっかり考えないと全く使いこなせません。</p>
+<p>それでも今回のように使えるかもしれない！？ような局面というもの自体は存在するので、覚えておいて損はないと思います。次の.NET Frameworkに標準で入るのかどうかは今のところ分かりませんが、多分入るんじゃないかなー、Roslynで使いたいようだしー、って感じなので先取りしちゃりましょう！</p>
+</div>
+<h1><a href="http://neue.cc/2014/0823_476.html">A Beginners Guide to Reactive Extensions with UniRx</a></h1>
+<ul class="date"><li>2014-08-23</li></ul>
+<div class="entry_body"><p>どうも始めましての人は始めまして、<a href="https://twitter.com/neuecc">@neuecc</a>といいます。この記事は<a href="http://unityassetjp.doorkeeper.jp/events/12843">Unity アセット真夏のアドベントカレンダー 2014 Summer！</a>というイベントの23日目です。クリスマスのアレ！真夏に……！しかしクリスマスのアレは比較的脱落も少なくのないのですが、これは見事ーに続いてます。しかも日付が変わった瞬間に公開されることの多いこと多いこと。〆切というのは23:59:59だと思っている私には辛い話です……。さて、前日はnaichiさんの<a href="http://naichilab.blogspot.jp/2014/08/unity.html">【うに部屋】Unityのゲーム投稿サイトにアセット検索機能を付けてみた</a>でした。便利でいいですねー、UniRxも使ったアセットとして沢山並ぶ日が来ると、いいなぁ。</p>
+<h2>Reactive Programming</h2>
+<p>とは。と、ここで7/30に行われた<a href="http://unityassetjp.doorkeeper.jp/events/12698">【第1回】UnityアセットまみれのLT大会</a>で使ったスライドが！</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/37494141" width="597" height="486" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="https://www.slideshare.net/neuecc/reactive-programming-by-unirxfor-asynchronous-event-processing" title="Reactive Programming by UniRx for Asynchronous &amp; Event Processing" target="_blank">Reactive Programming by UniRx for Asynchronous &amp; Event Processing</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>LTということで制限時間5分だったんですが当然終わるわけなくて凄まじく早口でまくしたてて強引に終わらせたせいで、全くワカラン！という感想を頂きましたありがとうございますごめんなさい。簡単にかいつまみますと、</p>
+<p>Reactive Programmingはガートナーのハイプサイクル（記事では2013ですがこないだ出た<a href="https://www.gartner.com/doc/2810920">2014年版のApplication Development</a>でもOn the Riseに入っています）や<a href="http://www.thoughtworks.com/radar">Thought Works Technology Rader</a>といった有名な技術指標にもラインナップされるほど、注目を浴びている技術です。Scala周辺からも<a href="http://www.reactivemanifesto.org/">The Reactive Manifesto</a>といった文章が出ていますし、JavaでReactive Programmingを実現する<a href="https://github.com/ReactiveX/RxJava">RxJava</a>はGitHubのStarが2995、Objective-C用の<a href="https://github.com/ReactiveCocoa/ReactiveCocoa">ReactiveCocoa</a>は5341、JavaScriptでも<a href="https://github.com/Reactive-Extensions/RxJS">RxJS</a>が1792、<a href="https://github.com/baconjs/bacon.js/">bacon.js</a>が2864と、知名度・注目度、使われている度は非常に大きくなっています。</p>
+<p>Reactive Programming自体は別に近年始まったわけでもなく、昔からたまに盛り上がっては消え、って感じなので、<a href="http://jigokuno.com/eid_316.html">「へぇ～この技術2年前くらいに流行ってたよね 2年前くらい前に見たわ」</a>って思う人もいるかもですが、大事なのは、ちゃんと実用に乗った、ということです。実験的なライブラリの段階はとうに超えて、RxJavaやReactiveCocoaの知名度が示す通り、完全に実用レベルに乗りました。</p>
+<p>UniRxは<a href="http://msdn.microsoft.com/en-us/data/gg577609">Reactive Extensions(Rx)</a>というMicrosoftの開発した.NET用のライブラリ（現在はOSS化）を私がUnity用に移植したものです。現在のReactive(Rx)Hogeの源流は、この.NETのRxにあります。ほとんどのライブラリから言及され、原理原則や用語はRx.NETに従っていることが多い。というわけでRx.NETは革命的に素晴らしいわけなのです、が、しかし、Unityでは動きません。それはRx.NETが本来のC#の機能を全面的に使いすぎてUnityのC#では動かせないから……。少なくともiOSのAOT問題を全く突破できない……。</p>
+<p>が、どうしてもUnityで使いたいので移植（といってもソースコードレベルではほとんど自前で書いてるのでインターフェイスと挙動を合わせているという感じで割と書き下ろしです、一部は純粋に移植してますが）＋UnityはUnityで.NETとは異なるところもあるので、Unityで使って自然になるような改良を施したのがUniRxになります。</p>
+<ul>
+<li>GitHub - <a href="https://github.com/neuecc/UniRx">neuecc/UniRx</a></li>
+<li>AssetStore - <a href="http://u3d.as/content/neuecc/uni-rx-reactive-extensions-for-unity/7tT">UniRx - Reactive Extensions for Unity</a> (無料)</li>
+</ul>
+<p>ムリョーですよ、ムリョー。FREE！。私はLINQやRxの大ファンなんで、とにかく使ってもらいたい欲求のほうが強くて。そして勿論、自分で使えない状態にも耐えられなくて！気になったらGitHubでStarつけてください（Star乞食）、勿論AssetStoreのほうでもいいですよ:)</p>
+<p>UniRxは非同期やイベント処理をReactive Programmingの概念を元に大きく簡単にします。Unityにも非同期ライブラリ、イベントライブラリは沢山あります。それらと比べたUniRxの強みは「Rxであるということ」です。Reactive Programmingは現状かなりブームになっているとおりに、その手法の正しさ、威力に関しては実証済みです。また、手法やメソッド名などが同一であるということは、既に普及しているRx系のライブラリのドキュメントがまんま使えます。そしてUniRxで学んだやり方は他のプラットフォームに移っても同じように使えるでしょう。ネイティブAndroid(RxJava)でもネイティブiOS(ReactiveCocoa)でも.NET(Rx.NET)でもJavaScript(RxJS)でも、そういった先々への応用性もまた、選ぶべき理由になると思います。</p>
+<h2>Introduction</h2>
+<p>前置きが長い！さて、この記事を出すちょっと前に<a href="http://ninjinkun.hatenablog.com/entry/introrxja">【翻訳】あなたが求めていたリアクティブプログラミング入門</a>という素晴らしい記事が翻訳されました！はてブでも500以上集まってましたし、実際めっちゃ良い記事です。この記事はRxJSを用いて具体的な説明を行っていますが、勿論UniRxでも同様のことができます（というわけで、結論んとしては↑の記事読んでもらえればいいんでさー、とか投げてみたい）。ちょっとやってみましょう。最初の例はダブルクリックの検出です。</p>
+<pre><code class="language-csharp">using System;
+using UniRx;
+using UnityEngine;
+
+public class Intro : MonoBehaviour
+{
+    void Start()
+    {
+        // 左クリックのストリーム
+        var clickStream = Observable.EveryUpdate()
+            .Where(_ =&gt; Input.GetMouseButtonDown(0));
+
+        // Buffer:250ミリ秒以内に連続してクリックされたものをまとめる
+        clickStream.Buffer(clickStream.Throttle(TimeSpan.FromMilliseconds(250)))
+            .Select(xs =&gt; xs.Count) // 250ミリ秒以内検出したクリック数
+            .Where(x =&gt; x &gt;= 2) // 2個以上のみにフィルタ
+            .Subscribe(_ =&gt; Debug.Log(&quot;ダブルクリックされた！&quot;)); // foreachみたいな
+    }
+}
+</code></pre>
+<p>このスクリプト(Intro.cs)をMainCameraでもなんでも適当な何かに貼り付けてもらえれば、画面のどこでもダブルクリックされればログに流れます。</p>
+<p>この例は6行しかない単純なものですが、多くの要素が詰め込まれています！そして、実際、詰め込まれすぎていてかなり難しい！わからん！というわけで真面目に分解していきます。</p>
+<h2>Rx is LINQ</h2>
+<p>Rxについてまとめると「時間軸に乗るストリームに対するLINQ」です。時魔法です。先の記事でも「FRPは非同期データストリームを用いるプログラミングである」といってました。(ﾄﾞﾔｧするわけですが、私は遥か昔、<a href="http://www.slideshare.net/neuecc/reactive-extensions-8049041">2011年の時点で同じこと言ってました</a>からね！)。このことさえピンと来れば割としっくり来るんですが、同時にこれがしっくり来るというところまでが敷居となる。ところが、RxはこのことをLINQとして表現することによりグッと敷居を下げました。なんだ、LINQと一緒じゃん！って。え、LINQがワカラナイ？それは、普通にC#の必須技術なので是非学んでください！(色々種類ありますがLINQ to Objectsだけでいいです。以前に@ITで<a href="http://www.atmarkit.co.jp/fdotnet/chushin/greatblogentry_06/greatblogentry_06_01.html">LINQの仕組み＆遅延評価の正しい基礎知識</a>を書いたり<a href="http://www.slideshare.net/neuecc/an-internal-of-linq-to-objects-29200657">An Internal of LINQ to Objects</a>というスライドで発表したりしてるんで読んでください)</p>
+<p>簡単に同じように見れることを説明すると、LINQ to Objectsでは</p>
+<pre><code class="language-csharp">new[] { 1, 2, 3, 4, 5 }
+    .Where(x =&gt; x % 2 == 0)
+    .Select(x =&gt; x * x); 
+</code></pre>
+<p>のように、配列をフィルタリングして別の形に射影できます。</p>
+<p><img src="http://neue.cc/wp-content/uploads/image/unirx_lto.jpg" alt="" /></p>
+<p>配列、int[]の横軸は当然ながら長さです。Rxは時間を横軸に取ることができます。どういうことか、というと、例えば何かをタップするというイベントは図にしたらこういう表現ができます。</p>
+<p><img src="http://neue.cc/wp-content/uploads/image/unirx_tapevent.jpg" alt="" /></p>
+<p>ということは、同様にWhereしたりSelectしたりできる。</p>
+<p><img src="http://neue.cc/wp-content/uploads/image/unirx_rxtime.jpg" alt="" /></p>
+<p>少しピンと来ました？さて、配列はnew[]{}やGetComponentsなどで手に入れることができますが、Rxで扱うためのイベントストリーム(IObservable&lt;T&gt;、ちなみにLINQ to Objectsは配列をIEnumerable&lt;T&gt;として扱う)はどこに転がっているのか。UniRxにおいて一番お手軽なのはObservable.EveryUpdateです。ゲームループは、ループというぐらいに1フレーム毎にUpdateが毎回呼ばれるサイクルなわけですが(参考：<a href="http://docs.unity3d.com/Manual/ExecutionOrder.html">Script Lifecycle Flowchart</a>)、つまり60fpsなら1/60秒毎に発生する時間軸にのったイベントとみなせられます。一度、時間軸上に乗るイベントとみなせられれば、それは全て無条件にRxで取り扱えます。</p>
+<p>実際のところ、イベントに限らずあらゆるものがRxに見せかけることができます。非同期だってx秒後に一度だけ発生するイベントと考えれば？配列は0秒で沢山の値が発行されるイベントと考えれば？Unityのコルーチン(IEnumerator)だって乗せられる。</p>
+<p><img src="http://neue.cc/wp-content/uploads/image/rx_everythingevent.jpg" alt="" /></p>
+<p>全てのものをRx化(IObservable化)すれば、あとは好きなようにLINQのメソッドで合成してしまえる。あらゆる素材(イベント・非同期・配列・コルーチン)を鍋(IObservable)に突っ込んで、料理(Where, Select, etc...)して食べる(Subscribe)。というのがRxの基本の基です。料理方法は色々あるので、そこが次のキモですね。</p>
+<h2>Composable</h2>
+<p>というわけでclickStreamがマウスの左クリックのストリームになったということは分かったでしょうか！？</p>
+<pre><code class="language-csharp">var clickStream = Observable.EveryUpdate()
+    .Where(_ =&gt; Input.GetMouseButtonDown(0));
+</code></pre>
+<p>左クリックがあったフレームだけにフィルタリングしているということですねー。では次は？</p>
+<pre><code class="language-csharp">clickStream.Buffer(clickStream.Throttle(TimeSpan.FromMilliseconds(250)))
+</code></pre>
+<p>Rxの利点として、イベントが変数として扱えることです。どういうことか、戻り値にすることもできるし、フィールドやプロパティとして公開することもできるし、自分自身と結合することもできる。というわけで、clickStreamが二個出てるのは、自分との合成なんですね（わっかりづらい！）</p>
+<p>そこまではいいとしてThrottleが分かりづらい！Throttleは一定時間毎(この場合は250ミリ秒)に値が観測できなかったら値を流す、という挙動です。</p>
+<p><img src="http://neue.cc/wp-content/uploads/image/unirx_throttle.jpg" alt="" /></p>
+<p>スロットル、流れてくる値を絞り込んでいるんですね。Rxは時間軸上に乗っているので、こうした時間関係を扱うメソッドが豊富です。Sample（一定時間毎のもののみを流す）、Delay（一定時間後に流す）、Timeout（一定時間たっても値がなければエラーにする）、Buffer（一定時間の間値を溜めてから流す）などなど。一見分かりづらいですが、そもそも普通にも書きづらい、そういったものがメソッド一発で書けるというのもRxの魅力です。</p>
+<p>じゃあどういうことかというと、もうまだるっこしいので全部のせますが</p>
+<p><img src="http://neue.cc/wp-content/uploads/image/rx_introall.jpg" alt="" /></p>
+<p>ThrottleしたものをBufferしているのは、値が流れてくるまで値を溜める（そして配列にして後続に流す）、ということです。あとはSelectで配列の個数、つまり250ミリ秒の間にクリックされた回数に変形して、Whereでフィルタリング（ダブルクリック、つまり2個以上ならばOK）。なるほどねー？</p>
+<p>ちなみにコレは(250ミリ秒以内に)クリックされ続けてるとずっと実行されません。最後にクリックされてから250ミリ秒後に、その間に2回以上クリックされてると実行される。が正しい表現でしょうか。この動作が望ましい場合もあれば望ましくない場合もある、ダブルクリックと一口でいっても定義は案外複雑なので、その辺はチューンしてみてください。その辺もclickStream.Timestamp()や.TimeInterval()でその時刻や前との差分なんかが簡単に取れます。</p>
+<h2>Subscribeって？</h2>
+<p>Subscribeはforeachです。配列をforeachで消費するように、RxではSubscribeで消費する。イベントストリームなのだからeventのSubscribe（購読）。foreachしなければ配列は動かないように、RxもSubscribeしなければ始まりません！（というのは正確には語弊があり、ObservableにはHotとColdという性質があり、HotはSubscribeしなくても動いている、とかかんとか、とかがありますが今は無視します）。RxにおけるSubscribeは、値・エラー・完了を一手に受け取ります。</p>
+<pre><code class="language-csharp">Observable.EveryUpdate() // 0, 1, 2, 3, 4, 5, 6, 7, 8,....
+    .Take(5)
+    // .Do(x =&gt; { if(x == 3) throw new Exception(); } )
+    .Subscribe(
+        x =&gt; Debug.Log(x + &quot;Frame&quot;), // OnNext
+        ex =&gt; Debug.Log(&quot;Exception!&quot; + ex), // OnError
+        () =&gt; Debug.Log(&quot;Complete!&quot;)); // OnCompleted
+</code></pre>
+<p>通常、イベントに終わりはありませんが、Rxのイベントストリームは終わりを持たせることができます。Takeは値をx個取得したら強制的に終点ということにするもの。長さ5のイベントストリーム。というわけで↑のコードはOnNextが5回呼ばれた後にOnCompletedが呼ばれます。もしDo(値が通った時にメソッドを実行する)のコメントアウトを外すと、OnNextが3回呼ばれた後にOnErrorが呼ばれます。この場合はOnCompletedは呼ばれません。なお、OnNext/OnError/OnCompletedはどれも書いても書かなくてもいいです（その場合はOnErrorはグローバルに例外をそのままthrow、OnNextとOnCompletedは何もしない、ということになる）</p>
+<p>Rxのイベントストリームは以下の原則に必ず従います。これは他のRx系列のReactive Programmingライブラリも同じものを採用しています。</p>
+<pre><code class="language-text">OnNext* (OnError | Oncompleted)?
+</code></pre>
+<p>OnNextが0回以上呼ばれた後に、OnErrorもしくはOnCompletedが1回または0回よばれます。</p>
+<p>購読ということは解除(Unsubscribe)はあるのか、というと、あります！Subscribeの戻り値は必ずIDisposeableで、それをDisposeすることが解除になります。</p>
+<pre><code class="language-csharp">var subscription = Observable.Interval(TimeSpan.FromSeconds(1))
+    .Subscribe(_ =&gt; Debug.Log(&quot;hogehoge!&quot;));
+
+Observable.EveryUpdate()
+    .Where(_ =&gt; Input.GetMouseButtonDown(0))
+    .Take(1)
+    .Subscribe(_ =&gt; subscription.Dispose());
+</code></pre>
+<p>Intervalはx秒毎に値を発行するというもの、↑の例では1秒おきにhogehoge!と表示されます。もし左クリックがあったら、その戻り値をDisposeしているので、これで値の発行は止まります。Take(1)なので、左クリックを監視するストリームもTake(1)が終わったら自動的にEveryUpdateの監視を解除しています。</p>
+<pre><code class="language-csharp">var subscription = Observable.Interval(TimeSpan.FromSeconds(1))
+    .Subscribe(_ =&gt; Debug.Log(&quot;hogehoge!&quot;));
+
+Observable.EveryUpdate()
+    .Where(_ =&gt; Input.GetMouseButtonDown(0))
+    .Take(1)
+    .Subscribe(_ =&gt; subscription.Dispose());
+</code></pre>
+<p>この形式の何がいいか、というと、入れ物に入れてまとめて購読解除できます。</p>
+<pre><code class="language-csharp">CompositeDisposable eventResources = new CompositeDisposable();
+
+void Start()
+{
+    Observable.Interval(TimeSpan.FromSeconds(1))
+        .Subscribe(_ =&gt; Debug.Log(&quot;hogehoge!&quot;))
+        .AddTo(eventResources);
+
+    Observable.EveryUpdate()
+        .Where(_ =&gt; Input.GetMouseButtonDown(0))
+        .Subscribe(_ =&gt; Debug.Log(&quot;click!&quot;))
+        .AddTo(eventResources);
+}
+
+void OnDestroy()
+{
+    eventResources.Dispose();
+}
+</code></pre>
+<p>CompositeDisposableはIList[IDisposable]みたいなもので、IDisposableをまとめて突っ込めます。AddToはメソッドチェーンのまま突っ込めるようにするUniRxの定義している拡張メソッド。こうしてためておいて、Destroyでまとめて解除、ができます。こうした変数で扱えるという性質により、イベントの管理がかなり容易になっています。勿論、文字列で止めて、などもない完全なタイプセーフですしね。</p>
+<p>余談：片方のストリームが発動したら止める、という処理は割と定形なので明示的にsubscriptionをDisposeするようなコードを書かなくても、TakeUntilが使える。</p>
+<pre><code class="language-csharp">Observable.Interval(TimeSpan.FromSeconds(1))
+    .TakeUntil(Observable.EveryUpdate().Where(_ =&gt; Input.GetMouseButtonDown(0)))
+    .Subscribe(_ =&gt; Debug.Log(&quot;hogehoge!&quot;));
+</code></pre>
+<p>色々あるってことです！メソッド一覧を眺めて使い道を考えよう！</p>
+<h2>非同期について</h2>
+<p>Unityにある素敵な素敵なコルーチンはあまり素敵ではない。WWWでyieldできて非同期扱えてサイコー、ではない。なんで？C#のyieldが非同期を扱うためのものじゃないから。try-catchできないからyield return StartCoroutineしたら例外はあの世に飛んでいく。それを避けるためにWWWのようにwww.textとwww.errorを持つようにあらゆる非同期はどうでもいいコンテナを持たなければならなくて？そしてそもそもIEnumeratorは戻り値を持てない。だから戻り値を持たせたかったらコールバックの形に返るしかない。酷い、酷い、醜悪な話だ。</p>
+<pre><code class="language-csharp">// こんなこるーちんを用意して
+IEnumerator GetGoogle(Action&lt;string&gt; onCompleted, Action&lt;Exception&gt; onError)
+{
+    var www = new WWW(&quot;http://google.com/&quot;);
+    yield return www;
+
+    if (!www.error) onError(new Exception(www.error));
+    else onCompleted(www.text);
+}
+
+// なんかダラダラしてる
+IEnumerator OnMouseDown()
+{
+    string result;
+    Exception error;
+    yield return StartCoroutine(GetGoogle(x =&gt; result = x, x =&gt; error = x));
+    if(error != null) { /* なんかする */ }
+
+    string result2;
+    Exception error2;
+    yield return StartCoroutine(GetGoogle(x =&gt; result2 = x, x =&gt; error2 = x));
+    if(error2 != null) { /* なんかする */ }
+}
+</code></pre>
+<p>基本的に破綻している。別に分離しないで単純に単純なWWWを延々と連鎖している限りは、少しはまともに綺麗になるかもしれないけれど、それは処理を分離できないという問題を産む。一つの巨大な無駄にデカいCoroutineと重複コードを避けられない。何れにせよコルーチンは非同期を扱うためのベストソリューションでは全くない(ところでNode.jsはyieldで立派に上手く非同期を扱っているじゃないか！と思う方もいるかもしれませんが、アレはyieldが戻り値を返しているから可能であって、どちらかといえばC# 5.0のasync/awaitに近い。C#のyield returnとは少し別物)</p>
+<p>Rxならどう書くか？全てをObservableの連鎖フローに変換する。</p>
+<pre><code class="language-csharp">// xが完了したらそれでy、完了したらzのダウンロードの連鎖のフローをLINQクエリ式で
+var query = from x in ObservableWWW.Get(&quot;http://google.co.jp/&quot;)
+            from y in ObservableWWW.Get(x)
+            from z in ObservableWWW.Get(y)
+            select new { x, y, z };
+
+// Subscribe = &quot;最後に全部まとまったあとの&quot;コールバック(ネストしないから処理が楽)
+query.Subscribe(x =&gt; Debug.Log(x), ex =&gt; Debug.LogException(ex));
+</code></pre>
+<p>メソッドチェーン（もしくはクエリ式）で、コールバックのネスト数を最小に抑えてフロー化、一体となって処理する。</p>
+<p>また、並列ダウンロードなども簡単に行えるのは大きな利点かもしれない。</p>
+<pre><code class="language-csharp">var parallel = Observable.WhenAll(
+    ObservableWWW.Get(&quot;http://google.com/&quot;),
+    ObservableWWW.Get(&quot;http://bing.com/&quot;),
+    ObservableWWW.Get(&quot;http://unity3d.com/&quot;));
+
+var cancel = parallel.Subscribe(xs =&gt;
+{
+    Debug.Log(xs[0]); // google
+    Debug.Log(xs[1]); // bing
+    Debug.Log(xs[2]); // unity
+});
+
+// これでキャンセルできる
+cancel.Dispose();
+</code></pre>
+<p>こんな風に並べて簡単に並列処理できます。また、全てのRxのSubscribeは戻り値をDisposeすることでキャンセルできる。文字列でStopCoroutineする時代はさようなら。</p>
+<h2>コルーチンについて</h2>
+<p>と、コルーチンを腐しましたが、しかし実際コルーチンは素晴らしいツールだと思っています。フレームワークネイティブの機構であり、それはやはり強いのです。無理にRxで全部書くことはまったくもって完全に&quot;可能&quot;なのですが、それよりは素直にコルーチンで書いて、Rxはそれをまとめることに徹してみればいい。コルーチンもイベントと同じく一つの素材。と考えればイイ。</p>
+<pre><code class="language-csharp">public IObservable&lt;string&gt; AsyncA(string msg)
+{
+    return Observable.FromCoroutine(observer =&gt; AsyncA(msg, observer));
+}
+
+// 戻り値のあるコルーチン(IObserverがコールバックを扱うコンテナとして考える、値通知とエラー通知、両方を内包する)
+private IEnumerator AsyncACore(string msg, IObserver&lt;string&gt; observer)
+{
+    Debug.Log(&quot;a start&quot;);
+    yield return new WaitForSeconds(1);
+    observer.OnNext(msg); // 値を通知
+    observer.OnCompleted();
+    Debug.Log(&quot;a end&quot;);
+}
+
+public IObservable&lt;string&gt; AsyncB()
+{
+    return Observable.FromCoroutine(AsyncBCore);
+}
+
+// 戻り値のないコルーチン
+private IEnumerator AsyncBCore()
+{
+    Debug.Log(&quot;b start&quot;);
+    yield return new WaitForEndOfFrame();
+    Debug.Log(&quot;b end&quot;);
+}
+
+// こんな使い方
+var cancel = AsyncA()
+    .SelectMany(_ =&gt; AsyncB())
+    .Subscribe();
+
+// 例によってコルーチンを止めたければ戻り値をDisposeする
+cancel.Dispose();
+</code></pre>
+<p>Observable.FromCoroutineによって変換できて、あとは好きなように合成できる。FromCoroutineは戻り値があってもなくてもOK。作る時にお薦めなのはIEnumeratorはprivateにして、変換後のIObservableのほうだけをpublicにすること。</p>
+<h2>uGUI</h2>
+<p>iOS用のReactiveCocoaが非常に受け入れられているように、リアクティブプログラミングはGUIとの相性が非常に良いです。そこでUniRx ver.4.5では既にUnityの新GUIシステムに対応！.AsObservable()と書くだけで変換できます。例えば</p>
+<pre><code class="language-csharp">GetComponentInChildren&lt;Button&gt;().AsObservable()
+    .Subscribe(x =&gt; Debug.Log(&quot;クリックされた！&quot;));
+</code></pre>
+<p>のように書けます。詳しい話はいつか！</p>
+<h2>そのうち書く何か（予告！）</h2>
+<p>「Pull vs Push」RxはPush型。Pull型のアーキテクチャはFindGameObjectsで探してきて何かする、もしくはなんとかManagerでオブジェクトを維持して、何れにせよそれらで蓄えて配列上のものに対して処理をグルッと書く。RxはPush型、何かして欲しい何かを各GameObject自身が通知する。ようするにイベント。イベントと違うのはRxならばイベントの集合体を圧倒的にコントロールしやすいこと（沢山のイベントストリームを処理するためのメソッドがある！）。本来、必要な時に必要な情報だけを送ってくるPush型のほうが、必要かどうかを取得してから考える必要のあるPull型よりもパフォーマンスも良くなる可能性が高いし。しかし生のイベントはコントロールが難しすぎて中々使えなかった。それをRxが解き放つ。とかうんたらかんたら。</p>
+<h2>学習リソース</h2>
+<p>UniRxの特徴として、Reactive Extensions系の学習リソースを流用できることが上げられますが、実際<a href="https://github.com/ReactiveX/RxJava/wiki%5D">RxJavaのWiki</a>は非常にお薦めです。沢山あるメソッドの説明が図入りで説明されていて非常に分かりやすい、例えば<a href="https://github.com/ReactiveX/RxJava/wiki/Filtering-Observables">Filtering Observables</a>とか。</p>
+<p>また、<a href="http://introtorx.com/">Introduction to Rx</a>は非常に充実したチュートリアルを提供し、<a href="http://rxmarbles.com/">RxMarbles: Interactive diagrams of Rx Observables</a> ではインタラクティブにメソッドの挙動を確認できます。</p>
+<p>こうしたリソースにひたすらタダ乗り出来るのが強い！</p>
+<h2>更新履歴。</h2>
+<p>さて、いまさらですが、UniRxの最初の発表日は2014/04/19に開催された<a href="http://sumaben.jp/?KantoSpecial02Xamarin">すまべん特別編「Xamarin 2.0であそぼう！」@関東</a>での発表でした。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/33704749" width="597" height="486" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="https://www.slideshare.net/neuecc/unityrx-reactive-extensions-for-unity" title="UniRx - Reactive Extensions for Unity" target="_blank">UniRx - Reactive Extensions for Unity</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>この時にGitHubにリポジトリを公開して、アセットストアに審査出し。そこから審査に3回ほどこけて、一月後に2014年05月28日に公開されました、わーぱちぱち。ってしかしブログに解説書く書く詐欺で解説を書かないでいました、ほげえ。だからこの記事が最初の解説記事なんですねー、えー……。なんとなく書かないでいたのは、次のバージョンではもっと良くなってるから！を延々と繰り返してたから説。特に大きく変わったのがver.4.3（ちなみにUniRxのバージョンが4始まりなのは、審査にこける度に間違ってメジャーバージョンを上げちゃってたからです、気付いた時には戻せず……）</p>
+<pre><code class="language-txt">ver 4.3 - 2014/7/2
+
+Fix iOS AOT Safe totally
+MainThreadSchedule's schedule(dueTime) acquired time accuracy
+MainThreadDispatcher avoid deadlock at recursive call
+Add Observable.Buffer(count, skip)
+Change OfType, Cast definition
+Change IScheduler definition
+Add AotSafe Utilities(AsSafeEnumerable, WrapValueToClass)
+Change Unit, TimeInterval and Timestamped to class(for iOS AOT)
+Add Examples/Sample7_OrchestratIEnumerator.cs
+</code></pre>
+<p><a href="http://neue.cc/2014/07/01_474.html">Unity + iOSのAOTでの例外の発生パターンと対処法</a>という記事を書いて、そこそこ反響あったのですが、その成果を突っ込んでます。というわけで、このバージョンでiOSのAOT問題を大きく解決しました。そしてver4.4。</p>
+<pre><code class="language-txt">ver 4.4 - 2014/7/30
+
+Add : Observable.FromEvent
+Add : Observable.Merge Overload(params IObservable[TSource][] / IEnumerable[IObserable[TSource]])
+Add : Observable.Buffer Overload(timeSpan, timeShift)
+Add : IDisposable.AddTo
+Add : ObservableLogger(UniRx.Diagnostics)
+Add : Observable.StartAsCoroutine
+Add : MainThreadDispatcher.RegisterUnhandledExceptionCallback
+Add : Examples/Sample08, Sample09, Sample10, Sample11
+Performance Improvment : Subject[T], OnNext avoids copy and lock
+Performance Improvment : MainThreadDispatcher, avoids copy on every update
+Change : Observable.ToCoroutine -&gt; ToAwaitableEnumerator
+Fix : ObservableMonoBehaviour's OnTriggerStay2D doesn't pass Collider2D
+</code></pre>
+<p>機能的にはObservableLoggerを入れたのとIDisposable.AddToでリソース管理のガイドを示したのが大きいんですが、一番大きいのはパフォーマンス改善かなあ、と。ガチで使うと大量に出てくるSubject[T]や、絶対経由することになるMainThreadScheduler/Disptacherの性能を限界まで向上させたので、あまりネックになることはないのではかな、と。で、公開まだなver4.5。</p>
+<pre><code class="language-txt">ver 4.5 - 2014/8/19(アセットストアへは審査中)
+
+Add : ObservableWWW Overload(byte[] postData)
+Add : Observable.Buffer Overload(windowBoundaries)
+Add : LazyTask - yieldable value container like Task
+Add : Observable.StartWith
+Add : Observable.Distinct
+Add : Observable.DelaySubscription
+Add : UnityEvent.AsObservable - only for Unity 4.6 uGUI
+Add : UniRx.UI.ObserveEveryValueChanged(Extension Method)
+Add : RefCountDisposable
+Add : Scheduler.MainThreadIgnoreTimeScale - difference with MainThreadScheduler, not follow Unity Timescale
+Add : Scheduler.DefaultSchedulers - can configure default scheduler for any operation
+Fix : DistinctUntilChanged iOS AOT issue.
+Fix : Remove IObservable/IObserver/ISubject's covariance/contravariance(Unity is not support)
+Fix : UnityDebugSink throws exception when called from other thread
+Fix : Remove compiler error for Windows Phone 8/Windows Store App
+Breaking Change : MainThreadSchduler follow Unity Timescale
+Breaking Change : All Timebased operator's default scheduler changed to MainThreadScheduler
+Breaking Change : Remove TypedMonoBehaviour.OnGUI for performance improvment
+Performance Improvment : AsyncSubject[T]
+Performance Improvment : CurrentThreadScheduler
+Performance Improvment : MainThreadScheduler
+</code></pre>
+<p>本当はこの記事と同時にアセットストアでも公開！と行きたかったんですが審査がまだー……。uGUI対応のイベントハンドリングを足したり、UIで使うの見越したUniRx.UI.ObserveEveryValueChangedの追加とか、uGUIへの対応を見越した基礎部分を足してっていってる感じですね。こうしたUIでの利用法はuGUIのノウハウと共に貯めていきたい/公開していきたいと思っています。</p>
+<p>あと凄く大きいのが時間ベースのメソッドで使われるデフォルトのスケジューラをScheduler.MainThreadに変えたことで、ふつーに使う分には全てがUnityのTimescaleの影響下にあるシングルスレッドで動く状態になるので、違和感というかハマりどころ(ObserverOnMainThreadしなかったから死んだ！オマジナイにObserveOnMainThreadって書きまくったせいで性能が！）を消せたのかなー、と思います。ここは本家Rxとは当然デフォルトが違うことになりますが、Unityネイティブに寄せるべきだろう、という判断です。</p>
+<p>あと地味にWindows Phone 8やWindows Store Appにも対応しました。いや、最初のバージョンでは対応してたんですが機能足してるうちに、どうやらコンパイル通らなくなってしまっていて……。Platform切り替えないと気づけないのが辛いですねえ、<a href="http://unity3d.com/unity/cloud-build">Unity Cloud Build</a>のWindows Phone対応はよ！いちおう「We’ll be adding more platforms as the service matures.」ってあるので、適当に待ちましょう。そもそもBetaの現状は重すぎてそういう次元ですらないですしね。</p>
+<p>次回更新では、現状ExecuteInEditModeでは動かないので、それに対応したものを出す予定です。</p>
+<h2>最後に</h2>
+<p>と、いうわけでどうでしょう？使ってみたくなってもらえれば幸いです。怒涛の更新のとおりにやる気はかなりあります、というか私は<a href="http://grani.jp/">グラニ</a>という会社のCTOをしているんですが（CM放送などをした「神獄のヴァルハラゲート」が代表作です）、開発中の次のプロダクトに投下していて、実プロダクトで使う気満々というかドッグフーディングというか、ともあれ現状「枯れてない」というのは否定出来ないのですが、基本的なバグは既に概ね殺せているのではかなぁ、と、そこは信頼してくれると嬉しいですね。今回はUniRxの初めての記事だったので基礎の基礎的な話になりましたが（そうか？）、今後は応用的な記事などもどんどん出していきます。</p>
+<p>Reactive Extensions自体は、私は2011年には@ITに<a href="http://www.atmarkit.co.jp/fdotnet/introrx/introrx_01/introrx_01_01.html">連載：Reactive Extensions（Rx）入門</a>という記事を書いていたり、そもそも2009年に最初のベータ版が出た時から追っかけて記事を書き続けていたりと<a href="http://neue.cc/category/programming/rx">neue.cc/category/programming/rx</a>、5年間延々とRxを触っているので、さすがにかなり詳しいのではないかと自負するところです（ちなみに最初の記事は<a href="http://neue.cc/2009/09/04_197.html">.NET Reactive Framework メソッド探訪第一回:FromEvent</a>でした。そう、当初はReactive Frameworkって名前だったんですね、更にもっと源流は<a href="http://en.wikipedia.org/wiki/Microsoft_Live_Labs_Volta">Microsoft Live Labs Volta</a>になります)。</p>
+<p>繰り返しますが日本ではReactive Programmingのブームは定期的に起こっては消え（最初のほうでバズったのは2010年の<a href="http://maoe.hatenadiary.jp/entry/20100109/1263059731">やさしいFunctional reactive programming（概要編）</a>でしょうか）、って感じですが、Microsoftは理論やプロトタイプに留まらず延々と改良を続け、完全に実用ベースに載せ、本物のブームを作り上げたことには本当に感嘆します。勿論、ブーム自体はMicrosoftよりは、そこから波及していったRxJavaやReactiveCocoaの貢献が非常に大きいです。私もUniRxで、Reactive Programingの強力さをUnityでも示し、大きなブームが巻き起こせればなあ、なんて野望は抱いていますね！</p>
+<p>UniRxへの質問があれば、<a href="https://github.com/neuecc/UniRx/issues">GitHubのIssues</a>や<a href="http://forum.unity3d.com/threads/unirx-reactive-extensions-for-unity.248535/">UnityのForumに立ててあるスレッド</a>でもぜひぜひですが、そこでは英語でお願いしたいのでちょっと敷居がー、ということであれば、普通にTwitterの<a href="https://twitter.com/neuecc">@neuecc</a>宛てに気楽に言ってください。またはTwitterで「UniRx」で常時検索してますんで独り言みたいな感じでポストしてもらえればチェックします。</p>
+<p>あと会社単位でも、会社間交流ということで共催の社内勉強会などできれば嬉しいかなー、と思ってますので、是非グラニと勉強会やりたいという方いらっしゃいましたらお声がけください。今までもKLabさん - <a href="http://young.blog.jp.klab.com/archives/37630043.html">2014年3月度ALMレポート(株式会社グラニ様との合同開催)</a>やドリコムさん等と行ってきています。グラニのUnity以外の技術、というか現状はそちらがメインなのですが、というのはgihyo.jpの<a href="http://gihyo.jp/dev/serial/01/grani/0001">グラニがC#にこだわる理由</a>という記事を見て頂ければなのですが、サーバーサイドをPHPやPython、RubyじゃなくてC#(Windows Server + ASP.NET)でやる、というのが強みです。勿論、今後クライアントサイドもC#(Unity)でやっていきます。</p>
+<p>さて、明日は<a href="http://yaseino.hatenablog.com/">野生の男</a>さんの「無料アセットで簡単IBL！」です。楽しみ楽しみー、ではでは！</p>
+</div>
+<h1><a href="http://neue.cc/2014/0722_475.html">Amazon Kinesis + Reactive Extensionsによる簡易CEP</a></h1>
+<ul class="date"><li>2014-07-22</li></ul>
+<div class="entry_body"><p>AWSの<a href="http://aws.amazon.com/jp/kinesis/">Amazon Kinesis</a>！大規模なストリーミングデータをリアルタイムで処理する完全マネージド型サービス。うーん、いかにもわくわくしそうなキーワードが並んでいます。そしてついに先日、東京リージョンでも利用可能になったということでAWS Summitの最中もｗｋｔｋして、どうやって利用したもんかと考えてました。だって、リアルタイムにイベントデータが流れてくる→オブザーバブルシーケンス→<a href="https://rx.codeplex.com/">Reactive Extensions(Rx)</a>、という連想になるのは自然なことですよね？</p>
+<h2>Kinesisとは</h2>
+<p>Rx、の前にKinesisとは。<a href="http://aws.typepad.com/aws_japan/2013/11/amazon-kinesis-real-time-processing-of-streamed-data.html">【AWS発表】 Amazon Kinesis – ストリームデータのリアルタイム処理</a>を見れば事足りますが、表現するなら土管、ですかね。イベントデータの。以下ぽんち絵</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/image/amazonkinesis.jpg' />
+</p>
+<p>Streamの中はShardという単位で分かれていて、データを放り込む時はPartitionKeyを元に、どのShardに突っ込まれるか決まる。読み書き性能自体は完全にShardの数で決まっていて、1シャード毎にWriteは1MB/sec - 1000Req/sec, Readは2MB/sec - 5Req/secとなってます。事前に負荷状況を予測していくのと、随時、Split(Shardの分割)とMerge(Shardの統合)してスケーリングしていく、って感じですかねえ。API自体は単純で、あんま数もないので簡単に理解できるかと。</p>
+<p>APIが単純なのはやれることが少ないから。土管。情報を左から右に流すだけのパイプ。その代わり入力は限りなく無限にスケールしていく(Shardを増やしまくれば)。では出力は？というと、Kinesis Applicationとよばれる、といっても実体は、別にAPIをほぼほぼポーリングで叩いてデータ取り出して何か処理するものをそう呼んでるだけ。で、取り出すのはAPI叩いて保存されたデータを読むだけ。</p>
+<p>そう、ポーリング。Kinesis自体は一時保管所であって、本当のリアルタイムでPubSub配信するわけじゃあない（用途としては問題ないレベルで低遅延にはなるけれど）。保存時間は24時間で、その間はStream中のどこから（最初からでも最新からでも任意の位置から）でも取り出すことができる。一時保管所がわりにS3を使ったりすると、ゴミは貯まるしどこまで取ったかとか煩わしくなるけれど、Kinesisの場合はStreamの形状になっているのでとてもやりやすい。ただしKinesisは制限として1レコード辺り50KBまで。更にHTTPで投げる際にBase64になってブヨっと膨らむ。</p>
+<h2>ObservableKinesisClient</h2>
+<p>C#でKinesisを使うには、<a href="http://aws.amazon.com/jp/sdkfornet/">AWS SDK for .NET</a>を使えばAmazonKinesisClient入ってます。ソースコードも公開されてるしNuGetでも入れられるし、APIはとりあえずAsyncに対応してるし、APIデザインもちょっと奇妙なところもあるけれど、一応全て統一されたモデルでデザインされてるので、割と結構良いと思ってます。</p>
+<p>Kinesis、データの登録はPutRecordでバイナリ投げるだけなので単純なのですが、取り出しの方はいささか面倒で、DescribeStreamによるStream内のShard情報の取得、GetShardIteratorによるShardIterator(どの位置から取得開始するか、の情報)の取得、それを元にGetRecord、そして延々とポーリングのためのループ。と、繰り返す必要があります。</p>
+<p>というわけかで、まずは利用例の方を。</p>
+<pre><code class="language-csharp">// とりあえずAWSのキーと、ストリーム名で生成する感じ
+var client = new ObservableKinesisClient(&quot;awsAccessId&quot;, &quot;awsSecretAccessKey&quot;, RegionEndpoint.APNortheast1, streamName: &quot;KinesisTest&quot;);
+
+// データの登録。オブジェクトを投げ込むとJSONシリアライズしたのを叩き込む。
+await client.PutRecordAsync(new { Date = DateTime.Now, Value = &quot;ほげほげほげほげ&quot; });
+
+// ObserveRecordDynamicでJSONのストリームとして購読できる
+client.ObserveRecordDynamic()
+    .Where(x =&gt; x.Value != &quot;ほげ&quot;) // xはdynamicなのでどんなSchemaのJSONも自由に辿れる
+    .Select(x =&gt; x.Date + &quot;:&quot; + x.Value)
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>はい。ObserveRecordDynamicで、リアルタイムに流れてくるデータを簡単に購読できます。IObservableなので、Rxによって自由にクエリを書くことが可能。また、何のデータが流れてくるか分からないストリームのために、JSONはdynamicの形でデシリアライズされています。(IntelliSenseの補助は効きませんが)スキーマレスに、あらゆるデータをRxで処理できます。もちろん、型付けされたものが欲しければObserverRecord&lt;T&gt;を、今は実装してないですが、まあ簡単につくれます:)</p>
+<p>以下ObservableKinesisClient本体。</p>
+<pre><code class="language-csharp">// JSON.NET, AWSSDK, Rx-Mainの参照が必要
+public class ObservableKinesisClient
+{
+    readonly UTF8Encoding encoding = new UTF8Encoding(false);
+    readonly JsonSerializer serializer = new JsonSerializer() { Formatting = Newtonsoft.Json.Formatting.None }; // ThreadSafeだよ
+    readonly string streamName;
+    readonly AmazonKinesisClient kinesis; // ThreadSafeなのかは知らない（ぉぃ
+
+    // コンストラクタはもっとまぢめにやりましょう
+    public ObservableKinesisClient(string awsAccessId, string awsSecretAccessKey, RegionEndpoint endPoint, string streamName)
+    {
+        this.kinesis = new AmazonKinesisClient(awsAccessId, awsSecretAccessKey, endPoint);
+        this.streamName = streamName;
+    }
+
+    // ようするにObjectを1レコードずつJSONで突っ込むもの
+    public async Task&lt;PutRecordResponse&gt; PutRecordAsync(object value)
+    {
+        using (var ms = new MemoryStream())
+        using (var sw = new StreamWriter(ms, encoding))
+        using (var jw = new JsonTextWriter(sw) { Formatting = Formatting.None })
+        {
+            serializer.Serialize(jw, value);
+            jw.Flush();
+            ms.Position = 0;
+
+            var request = new PutRecordRequest
+            {
+                StreamName = streamName,
+                Data = ms,
+                PartitionKey = Guid.NewGuid().ToString() // PartitionKeyは適当にランダム
+            };
+
+            // つまり1レコード1HTTP POSTということになる。
+            // 大量に投げる際は素朴すぎてアレゲ感があるので、実際にやるときはまとめてから放り込んで
+            // 取り出す側も↑の構造を前提にして取り出すよーな感じにしたほうがいーかもデスネー
+            return await kinesis.PutRecordAsync(request).ConfigureAwait(false);
+        }
+    }
+
+    // Dynamicが嫌な場合はSerialize&lt;T&gt;でおｋ。とりあえずこの例ではdynamicでやります。
+    // Client内部で分配しちゃったほうがきっと自然にやさしい(Publish().RefCount())
+    public IObservable&lt;dynamic&gt; ObserveRecordDynamic()
+    {
+        return Observable.Create&lt;dynamic&gt;(async (observer, cancellationToken) =&gt;
+        {
+            var isRunningNextPipeline = false;
+            try
+            {
+                // まずShard一覧を取得する
+                // TODO:これを使いまわしちゃうとShardsの増減には対応してないよ！
+                // 毎回DescribeStream読むのもアレだしたまに問い合わせとかがいいの？
+                var describeStreamResponse = await kinesis.DescribeStreamAsync(new DescribeStreamRequest { StreamName = streamName }).ConfigureAwait(false);
+                var shards = describeStreamResponse.StreamDescription.Shards;
+
+                var nextIterators = new List&lt;string&gt;();
+                foreach (var shard in shards)
+                {
+                    if (cancellationToken.IsCancellationRequested) return; // CancellationTokenの監視だいぢだいぢ
+
+                    // ShardIteratorTypeは実際は取り出した位置を記録しておいてAFTER_SEQUENCE_NUMBERでやるか、LATESTでやるかがいーんじゃないでしょーか？
+                    var shardIterator = await kinesis.GetShardIteratorAsync(new GetShardIteratorRequest
+                    {
+                        StreamName = streamName,
+                        ShardId = shard.ShardId,
+                        ShardIteratorType = ShardIteratorType.TRIM_HORIZON, // TRIM_HORIZON = 最初から, LATEST = 最新, AT_SEQUENCE_NUMBER = そこから, AFTER_SEQUENCE_NUMBER = 次から
+                    }).ConfigureAwait(false);
+
+                    var record = await kinesis.GetRecordsAsync(new GetRecordsRequest { ShardIterator = shardIterator.ShardIterator }).ConfigureAwait(false);
+
+                    // Shardの順番で回してるので、このPushの順番は必ずしも「時系列ではない」ことにチューイ！
+                    foreach (var item in record.Records)
+                    {
+                        PushRecord(item, observer, ref isRunningNextPipeline); // ObserverでPush!Push!Push!
+                    }
+
+                    nextIterators.Add(record.NextShardIterator);
+                }
+
+                // NextShardIteratorがある状態で無限ぐるぐる
+                do
+                {
+                    if (cancellationToken.IsCancellationRequested) return; // ところどころCancellationTokenの監視 Part2
+
+                    for (int i = 0; i &lt; nextIterators.Count; i++)
+                    {
+                        if (cancellationToken.IsCancellationRequested) return; // ところどころCancellationTokenの監視 Part3
+
+                        var shardIterator = nextIterators[i];
+
+                        var record = await kinesis.GetRecordsAsync(new GetRecordsRequest { ShardIterator = shardIterator }).ConfigureAwait(false);
+
+                        // こちらでも、やはりShardの順番で回してるので、状況によって必ずしも時系列にはならないことにチューイ！
+                        foreach (var item in record.Records)
+                        {
+                            PushRecord(item, observer, ref isRunningNextPipeline); // ObserverでPush!Push!Push!
+                        }
+
+                        nextIterators[i] = record.NextShardIterator;
+                    }
+
+                    await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false); // 実質ポーリングなのでなんとなくDelayをちょっと入れてみる
+
+                    nextIterators = nextIterators.Where(x =&gt; x != null).ToList(); // 明らかに非効率なこの実装はテキトーなんで真面目にやるなら真面目に書いてください:)
+                } while (nextIterators.Any());
+            }
+            catch (Exception ex)
+            {
+                if (isRunningNextPipeline)
+                {
+                    throw;
+                }
+                else
+                {
+                    observer.OnError(ex);
+                }
+
+                return;
+            }
+
+            observer.OnCompleted();
+        });
+    }
+
+    void PushRecord(Record record, IObserver&lt;dynamic&gt; observer, ref bool isRunningNextPipeline)
+    {
+        using (var sr = new StreamReader(record.Data, encoding)) // item.DataにMemoryStreamの形で1レコードが受け取れる
+        using (var jr = new JsonTextReader(sr))
+        {
+            var obj = serializer.Deserialize(jr);
+            isRunningNextPipeline = true;
+            observer.OnNext(obj); // 1レコードをPush
+            isRunningNextPipeline = false;
+        }
+    }
+}
+</code></pre>
+<p>PutRecordAsyncはまんま、JSONにシリアライズしたデータを投げ込んでるだけです。ObserverRecordDynamicのほうはちょっと複雑っぽいですが、やってることは順に、DescribeStreamAsyncでShard一覧を取得→それぞれのShardでGetShardIteratorAsyncで始点の取得・GetRecordsAsyncで最初のデータを取得しobserverに配信→取得できたNextShardIteratorを元にデータ取得と配信の無限ループ。です。</p>
+<p>コメントで色々書いてありますが、Shard単位で処理していくのでレコードのSequenceNumberの順にPushされているわけではないことと、ShardがSplitやMergeで変動することへの対応は必要よね、とか考えることは色々ありますね。あと、Readの制限が5Req/secとかなり少ないので、複数処理する必要があるなら、できればリクエストは分配してやりたいところ。RxならPublishで分配、ついでにRefCountでSubscriberが0になったら購読解除というのが自然に書けるので、その辺も入れてやるといいかなー、なんて思います。とはいえ、基本的にはデータ取ってOnNextで垂れ流すという、それだけに収まってはいます（ほんとだよ！）。</p>
+<p>従来はこの手のコードはyield returnで処理するはずですが、それがOnNextに変わっているという事実が面白い！勿論、同期API + yield returnにすることも可能ですが、AWS SDKの同期APIは非同期のものを.Resultで取ってるだけで非同期のほうがネイティブになるので、同期API使うのはお薦めしません。<a href="http://neue.cc/2013/12/04_435.html">非同期時代のLINQ</a>、非同期時代のイテレータ。中々面白くありません？<a href="https://github.com/neuecc/UniRx#how-to-use-for-ienumeratoras-coroutine">UniRx - Reactive Extensions for UnityのFromCoroutine</a>でも、IObserverをyielderとして渡して、非同期のイテレータを作れる（コンバートできる）ようにしています。こういうのも一つのデザイン。</p>
+<h2>like CEP(with LINQPad)</h2>
+<p><a href="http://en.wikipedia.org/wiki/Complex_event_processing">CEP(Complex Event Processing)</a>は最近良く聞くようになりましたねー、Microsoftにも<a href="http://technet.microsoft.com/en-us/library/ee362541.aspx">StreamInsight</a>というかなり立派なプロダクトがあるのですが、あんまり話を聞かないし将来性もビミョーそうなので見なかったことにしましょう。ちなみにStreamInsightは2.1からRxと統合されたりして、この手のイベントストリームとRxとが相性良いこと自体は証明済みです。</p>
+<p>そんなわけでMicrosoft周辺では全然聞きませんが、日本だと<a href="http://www.atmarkit.co.jp/ait/articles/1404/30/news024.html">LINEでのEsper CEPの活用例</a>とか<a href="http://norikra.github.io/">Norikra:Schema-less Stream Processing with SQL</a>で盛んに聞いて、まーたMicrosoft周辺によくある、一歩先を行ったと思ったら周回遅れ現象か！とか思ったり思わなかったり。</p>
+<p>というわけで、<a href="http://www.slideshare.net/tagomoris/fluentpluginnorikra-fluentdcasual">Norikraの紹介スライド</a>のクエリ5つをRxで書いてみましょう。また、動作確認は<a href="http://www.linqpad.net/">LINQPad</a>のDumpでリアルタイムに表示が可能です(asynchronousにクエリが走ってる最中はResultsのところにリアルタイムにグリッドが追加されていく！）</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/image/kinesislinqpad.jpg' />
+</p>
+<pre><code class="language-csharp">// Queries:(1)
+client.ObserveRecordDynamic()
+    .Select(x =&gt; new{ x.Name, x.Age })
+    .Dump();
+
+// Queries:(2)
+client.ObserveRecordDynamic()
+    .Where(x =&gt; x.Current == &quot;Shibuya&quot;)
+    .Select(x =&gt; new{ x.Name, x.Age })
+    .Dump();
+
+// Queries:(3)
+client.ObserveRecordDynamic()
+    .Buffer(TimeSpan.FromMinutes(5))
+    .Select(xs =&gt; xs.GroupBy(x =&gt; x.Age).Select(x =&gt; new { Age = x.Key, Count = x.Count() }))
+    .Dump();
+
+// Queries:(4)
+client.ObserveRecordDynamic()
+    .Buffer(TimeSpan.FromMinutes(5))
+    .Select(xs =&gt; xs.Max(x =&gt; x.Age))
+    .Dump();
+
+// Queries:(5)
+client.ObserveRecordDynamic()
+    .Where(x =&gt; x.Current == &quot;Kyoto&quot; &amp;&amp; x.Attend[0] &amp;&amp; x.Attend[1])
+    .Buffer(TimeSpan.FromMinutes(5))
+    .Select(xs =&gt; xs.GroupBy(x =&gt; x.User.Age).Select(x =&gt; new { Age = x.Key, Count = x.Count() }))
+    .Dump();
+</code></pre>
+<p>5分間だったらBufferもしくはWindowが使えます（量が少なそうならBufferのほうが、後続クエリにLINQ to Objectsが使えて分かりやすい、量が多いならWindowで、同様にRxで集計クエリが書ける）。他に何ができるかは<a href="https://github.com/Netflix/RxJava/wiki">RxJavaのWikiのOperator一覧</a>でもどうぞ。めちゃくちゃ何でもできます。</p>
+<h2>SQL vs Rx</h2>
+<p>SQLである必要は、あるようで、ない。テキストベースのDSLを作るならSQLが共通知識として期待できるので、SQLに寄せる必要性はかなり高い。けれど、Rxならば、LINQとしての共通知識と、C#そのものであるというコンパイルセーフな点と何でもできること、メソッドチェーン(+IntelliSense)による書きやすさ。SQLライクなものを使いたい理由は全くない。</p>
+<p>（とはいえ勿論いちだいのRxがぶんさんごりごりのに勝てるとは思ってないんで、そこはまぁかじゅあるなはなしです）</p>
+<h2>TODO</h2>
+<p>というわけで見てきたわけですが、まあ所詮まだ単純なコードによるコンセプトレベルの話ですね！本格的にこれからやるとしたら</p>
+<ul>
+<li>ObservableKinesisClientをもっとしっかりしたものに</li>
+<li>Kinesis ApplicationをホストするためのServiceとプラグイン機構</li>
+<li>ログ転送側としてSLABのKinesis用Sink</li>
+</ul>
+<p>ですかねえ。まぁ、これらはJavaですでに用意されている<a href="https://github.com/awslabs/amazon-kinesis-client">amazon-kinesis-client</a>や<a href="https://github.com/awslabs/amazon-kinesis-connectors">amazon-kinesis-connectors</a>を.NET環境で代替するために必要だ、といったところですね。素直にJava書けば？っていうのは一理あるけれど、どーなんですかね、C#でやりたいんですよ（笑）</p>
+<p><a href="https://slab.codeplex.com/">Semantic Logging Application Block(SLAB)</a>というのは構造化ロガー（正確にはロガーは含まれないけれど）と収集サービスがセットになったライブラリです。面白いのはOut-Of-Processでの動作が選べて、その場合はWindowsネイティブの<a href="http://msdn.microsoft.com/en-us/library/windows/desktop/aa363668.aspx">Event Tracing for Windows (ETW)</a>経由でログが運ばれるので、非常に高速に動作する、というところ。Sinkというのは出力用プラグインみたいなものです。なので、アプリケーション→<a href="http://msdn.microsoft.com/ja-jp/library/system.diagnostics.tracing.eventsource.aspx">EventSource</a>ロガー→SLAB Service(+ KinesisSink)→Kinesis という構造を作ることで、データをリアルタイムに投下するところまでは行ける。あとはRedShiftに送って解析(amazon-kinesis-connectorsには既にありますね)するなり、他のKinesis Application作るなりよしなに出来るかなぁ、できればいいかなぁ、と。<a href="http://lambda-architecture.net/">ラムダアーキテクチャ</a>、というホドデハ・モチロンナイ。</p>
+<h2>AWS + Windows(C#)</h2>
+<p>先週の木・金に開催された<a href="http://www.awssummittokyo.com/">AWS Summit Tokyo 2014</a>にて、AWS + Windows(C#)で構築する.NET最先端技術によるハイパフォーマンスウェブアプリケーション開発実践と題して、セッションを行いました。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/37121424" width="597" height="486" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px 1px 0; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="https://www.slideshare.net/neuecc/aws-windowscnet" title="AWS + Windows(C#)で構築する.NET最先端技術によるハイパフォーマンスウェブアプリケーション開発実践" target="_blank">AWS + Windows(C#)で構築する.NET最先端技術によるハイパフォーマンスウェブアプリケーション開発実践</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>まとめで書きましたが、C#+AWSは現実解、だと思ってます。そしてAWSだからといって特別なこともなく、そしてC#だからといって特別なこともない。Kinesisもちゃんと使えるわけだし、結構面白いことがまだまだ出来るんじゃないかな、って思ってます。なんでAzure使わないんですか？というのには、よく聞かれるのでお茶を濁して答えないとして（！）、AzureにもKinesisのような<a href="http://azure.microsoft.com/ja-jp/services/event-hubs/">Azure Event Hubs</a>というものが先週プレビューリリースされました。C#からの活用という点では、こちらにも注目していきたいところです。<a href="http://msdn.microsoft.com/en-us/library/dn789972.aspx">Event Hubs Developer Guide</a>なんか見ると普通に色々参考になるし、機能的にはHTTP以外にAMQP使えたり、ちょっと強そうではある。</p>
+</div>
+<h1><a href="http://neue.cc/2014/0701_474.html">Unity + iOSのAOTでの例外の発生パターンと対処法</a></h1>
+<ul class="date"><li>2014-07-01</li></ul>
+<div class="entry_body"><p><a href="http://japan.unity3d.com/">Unity</a>、はUnity3Dのほうの話ですが、それで開発していてiOS実機にデプロイして確認すると、以下の様なエラーに悩まされると思います！</p>
+<pre><code class="language-text">System.ExecutionEngineException: Attempting to JIT compile method
+</code></pre>
+<p>ひぎぃ！怖い！これはiOSはネイティブコードしか許可していないので、Monoの<a href="http://ja.wikipedia.org/wiki/%E4%BA%8B%E5%89%8D%E3%82%B3%E3%83%B3%E3%83%91%E3%82%A4%E3%83%A9">AOT(Ahead-Of-Time)コンパイラ</a>経由でネイティブコード変換されるんですが、それの関係で色々な制限があるからなのですね。さて、制限があるのはshoganaiんですが、引っかかるのは痛いです、めっちゃ痛いです、辛いです。</p>
+<p>というわけで、どういうコードを書けば発生するのか、というのを並べてみました。どうすれば発生するのか分かれば、自然に避けられますからね。そのうえで、幾つかのものはちょっとしたハックで防げるので、それも述べます。あとは、一々実機で確認なんてやってられないので、効率のよい確認方法などなども紹介します。</p>
+<p>Unity 4.5で少し改善されたとか言ってましたが別にあんま改善されてる気配なくて以下のコードは4.5.1で確認取って全部片っ端から死にますんで安心してください、悲しい。</p>
+<h2>Interlocked.CompareExchange</h2>
+<p>正確にはInterlocked.CompareExchange&lt;T&gt;が死にます。以下のコードは即死。</p>
+<pre><code class="language-csharp">// ExecutionEngineException: Attempting to JIT compile method '(wrapper native-to-managed)' while running with --aot-only
+var a = &quot;hoge&quot;;
+Interlocked.CompareExchange&lt;string&gt;(ref a, &quot;hugahuga&quot;, &quot;hoge&quot;);
+</code></pre>
+<p>ExecutionEngineExceptionの中でもnative-to-managedと出ているものは対処方法が明確で、そもそも<a href="http://docs-jp.unity3d.com/Documentation/Manual/TroubleShooting.html">Unityのトラブルシューティング</a>のiOSのところにも書いてあります。デリゲートに[MonoPInvokeCallback]が必要だ、と。つまりそういうことで、mscorlib.dll内のメソッドなので手が出せないので、100%死ぬ運命にあります、南無。対処方法は使わないこと。(実際にはそれだけじゃなさそうですが、中のことで分からないのでとりあえずそういうことにしておこふ)</p>
+<p>ただし、実はCompareExchangeにはintやdoubleなどを受け取るオーバーロードがあって、そちらは大丈夫です。問題なのは&lt;T&gt;のオーバーロードだけなのです。しかもCompareExchangeにはobjectを受け取るオーバーロードもあるので、そちらを使うことによりT的なものも一応回避することが可能。どうしても使いたい場合は安心してどうぞ。</p>
+<pre><code class="language-csharp">// これは大丈夫！
+object a = &quot;hoge&quot;;
+var v = Interlocked.CompareExchange(ref a, &quot;hugahuga&quot;, &quot;hoge&quot;);
+</code></pre>
+<p>ちなみにInterlocked.CompareExchange&lt;T&gt;は意外なところでも使われていて、というか、VS2010以降のコンパイラでeventをコンパイルすると、eventの実装がInterlocked.CompareExchange&lt;T&gt;を用いたものになっています。なのでプラグインとしてdllを作ってUnityに読み込ませると、これに引っかかって死にます。回避方法はなし。event使うのやめましょう、Actionで我慢しましょう。なお、Unity内だけで使う分には古いコードが吐かれるので問題ないです。(あと<a href="http://ufcpp.net/study/csharp/">ufcppさん</a>からコメント貰いましたが、<a href="http://msdn.microsoft.com/ja-jp/library/cc713648.aspx">add/delete</a>といったカスタムイベントアクセサを定義すれば回避できるもよふ)</p>
+<h2>動的コード生成</h2>
+<p>Reflection.Emitとか、この辺は当たり前だ！ですね。</p>
+<pre><code class="language-csharp">Expression&lt;Func&lt;string&gt;&gt; expr = () =&gt; &quot;hoge&quot;;
+
+// System.ExecutionEngineException: Attempting to JIT compile method '(wrapper dynamic-method) System.Runtime.CompilerServices.ExecutionScope:lambda_method (System.Runtime.CompilerServices.ExecutionScope)' while running with --aot-only.
+expr.Compile();
+</code></pre>
+<p>Expressionも構築まではOKだけどCompileはNG。悩ましいのは一般的にC#で高速化を測る場合（特にシリアライザ）って動的コード生成＋キャッシュをよく使います。<a href="http://neue.cc/2014/01/27_446.html">neue cc - C#での動的なメソッド選択における定形高速化パターン</a>とか<a href="http://neue.cc/2011/04/20_317.html">neue cc - Expression Treeのこね方・入門編 - 動的にデリゲートを生成してリフレクションを高速化</a>をミテネ。が、動的コード生成が使えないと低速なリフレクションのみかぁ、うーん、萎える。といったかんぢ。こういうのが積み重なってC#が遅いとか言われると心外だなぁ、UnityのC#は正直、うーん、ねぇ……。</p>
+<h2>PropertyのReflection</h2>
+<p>そんなわけでリフレクション。これがひじょーに悩ましくて、どこまでが死んでどこまで大丈夫なのかがひじょーーーーーに分かりづらい！さて、実は意外と行けますが、そして意外と死にます。</p>
+<pre><code class="language-csharp">// こんなクラスがあるとして
+public class MyClass
+{
+    public int MyInt { get; set; }
+    public string MyStr { get; set; }
+}
+
+// ----
+
+var mc = new MyClass() { MyStr = &quot;hoge&quot;, MyInt = 100 };
+var propInfo = typeof(MyClass).GetProperty(&quot;MyStr&quot;);
+
+// SetValueは大丈夫
+propInfo.SetValue(mc, &quot;hugahuga&quot;, null);
+
+// GetValueは死ぬ
+// System.ExecutionEngineException: Attempting to JIT compile method '(wrapper delegate-invoke) System.Reflection.MonoProperty/Getter`2&lt;&gt;:invoke_string__this___MyClass ()' while running with --aot-only.
+var v = propInfo.GetValue(mc, null);
+</code></pre>
+<p>(GetValueは死ぬ、って書きましたがUnity 4.5.1 + iOS7.1で試したら死ななかった、↑が死んだのはmono2.6.7でした)。なんだこの非対称ってところですが、実際そうだからshoganai。そしてGetValueは実は簡単に回避できます。GetGetMethodでメソッドを取得して、それをInvokeすればいい。</p>
+<pre><code class="language-csharp">var mc = new MyClass() { MyStr = &quot;hoge&quot;, MyInt = 100 };
+var propInfo = typeof(MyClass).GetProperty(&quot;MyStr&quot;);
+
+// こうすればGetもできる
+var v = propInfo.GetGetMethod().Invoke(mc, null);
+Debug.Log(v);
+</code></pre>
+<p>というわけで、これでシリアライザも作ることができます。例えばこんな感じの簡易シリアライザ。</p>
+<pre><code class="language-csharp">public static void Run()
+{
+    var format = Serialize(new MyClass { MyInt = 100, MyStr = &quot;hoge&quot; });
+
+    var v = Deserialize&lt;MyClass&gt;(format);
+    Debug.Log(v.MyStr + &quot;:&quot; + v.MyInt);
+}
+
+public static string Serialize&lt;T&gt;(T obj)
+{
+    // JSON、ではない
+    var sb = new StringBuilder();
+    foreach (var item in typeof(T).GetProperties())
+    {
+        sb.Append(item.Name + &quot;:&quot; + item.GetGetMethod().Invoke(obj, null));
+        sb.Append(&quot;,&quot;);
+    }
+    return sb.ToString();
+}
+
+public static T Deserialize&lt;T&gt;(string format)
+{
+    var obj = Activator.CreateInstance&lt;T&gt;();
+    var type = typeof(T);
+
+    foreach (var item in format.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(x =&gt; x.Split(':')))
+    {
+        var key = item[0];
+        var value = item[1];
+
+        var propInfo = type.GetProperty(key);
+        if (propInfo == null) continue;
+
+        // 型の変換は超絶手抜き:)
+        if (propInfo.PropertyType == typeof(int))
+        {
+            propInfo.SetValue(obj, int.Parse(value), null);
+        }
+        else
+        {
+            propInfo.SetValue(obj, value, null);
+        }
+    }
+
+    return obj;
+}
+</code></pre>
+<p>これはインチキなテキスト形式にシリアライズしてますが、例えばJSONにシリアライズ・デシリアライズとかできるようにすれば、ひじょーに有益でしょう。ベタリフレクションとかC#er的には萎えるんですが、まぁその辺はshoganaiということで諦めるぐらいはできる。諦めます。</p>
+<h2>InterfaceとGenericsとStruct</h2>
+<p>この3つが組み合わさることによって端的に言えば、死ぬ。</p>
+<pre><code class="language-csharp">// こんなインターフェイスとメソッドがあるとして
+public interface IMyInterface
+{
+    void MyMethod&lt;T&gt;(T x);
+}
+
+public class MyImpl : IMyInterface
+{
+    public void MyMethod&lt;T&gt;(T x)
+    {
+    }
+}
+
+IMyInterface intf = new MyImpl();
+intf.MyMethod(&quot;hogehoge&quot;); // 死なない
+
+// System.ExecutionEngineException: Attempting to JIT compile method 'MyImpl:MyMethod&lt;int&gt; (int)' while running with --aot-only.
+intf.MyMethod(100); // 死ぬ
+</code></pre>
+<p>ジェネリクスのメソッドをインターフェイスで受けて、構造体を渡すと死にます。死にます。クラスなら死なないんですけどねー。さて、しかしこの現象は回避する術があります。</p>
+<pre><code class="language-csharp">// どこでもいいし呼び出さなくてもいいから、使う構造体の型を呼ぶコードをどっかに書いておく
+static void _CompilerHint()
+{
+    new MyImpl().MyMethod(default(int));
+}
+
+void Awake()
+{
+    IMyInterface intf = new MyImpl();
+    intf.MyMethod(100); // ↑により死なない
+}
+</code></pre>
+<p>実体で実際に使う型を用いて呼び出してるコードを書いておくと死なずに済みます。実際に呼び出す必要はなくて、とにかく書いてあればいいです。イメージとしてはコンパイラにヒントを与えるような感じ。なのでまぁ、1. インターフェイスで受けないようにする 2.受けなきゃならないシチュエーションがあるなら（まぁそりゃあるよね）どっかに定義沢山書きだしておく。ことにより神回避。オマジナイのようでいて実際効果あるからshoganai。</p>
+<p>あと、ジェネリクスはメソッドじゃなくてインターフェイスのほうがTなら死にません。IMyInterface&lt;T&gt;みたいなほう。</p>
+<h2>LambdaとGenericsとStruct</h2>
+<p>Genericsのラムダ作って構造体渡すと死にます、例によって渡すのがクラスなら死にません。</p>
+<pre><code class="language-csharp">// こんなメソッドがあるとして
+static void Death&lt;T&gt;()
+{
+    var act = new Action&lt;T&gt;(_ =&gt; { Debug.Log(&quot;hoge&quot;); }); // ここではまだ死なない
+
+    // System.ExecutionEngineException: Attempting to JIT compile method '&lt;Death&gt;b__0&lt;int&gt; (int)' while running with --aot-only.
+    act(default(T)); // 呼び出すと死ぬ
+}
+
+// こんなコード呼び出しすると死ぬ
+Death&lt;int&gt;();
+</code></pre>
+<p>こんな入り組んだコード書かないって？いや、案外このパターンに当てはまっちゃったりしたりするんですよ。特にライブラリ書いたりする人だとラムダ式の使いどころによっては、こういうパターンになりがちで頭抱えます。解決策はラムダ式使うのやめよう！じゃあなくて、簡単な解決策があります。</p>
+<pre><code class="language-csharp">static void Death&lt;T&gt;()
+{
+    var _dummy = 0;
+    var act = new Action&lt;T&gt;(_ =&gt; 
+    {
+        Debug.Log(&quot;hoge&quot;);
+
+        _dummy.GetHashCode(); // なんでもいいから外側の変数をキャプチャする
+    });
+
+    act(default(T)); // 死なない
+}
+</code></pre>
+<p>ラムダ式は外側の変数をキャプチャするかしないかによって、生成されるコードが変わってきます。そこがミソで、勿論キャプチャしないほうが本来は効率がいいんですが、AOTで死んでしまっては元も子もない。キャプチャすることによってAOTで死なないコードが生成されます、というわけで、入り組んだシチュエーションでラムダ式使いたい場合は意図的に外側の変数をキャプチャすることで回避できます。これは思いついた時は思わず叫んじゃいましたね！マジで！（そんだけこの問題に悩まされてたんですよ……）</p>
+<h2>参照型で死ぬ</h2>
+<p>型引数がクラスなら死ぬことはない、と思っていた時もありました。残念ながら、死ぬ時があるんですねぇー。いや、正確にはclass＋structで死ぬ、なんですが、struct+structだと死なないのが癪。これは後述しますがLINQのSumがクラスで死ぬ理由が分からなくて再現コード作ってたらこうなったって感じです。よくわからないけど、こうなった。</p>
+<pre><code class="language-csharp">public static void Run()
+{
+    // 参照型でメソッドを呼ぶ
+    // System.ExecutionEngineException: Attempting to JIT compile method 'Method2&lt;int, object&gt; ()' while running with --aot-only.
+    Method1&lt;object&gt;();
+}
+
+// 1型引数でメソッドを呼ぶ際に片方が値型
+public static void Method1&lt;T1&gt;()
+{
+    Method2&lt;int, T1&gt;();
+}
+
+// 2型引数で戻り値がある(戻り値の型はなんでもいいけどvoidはダメ)
+static string Method2&lt;T1, T2&gt;()
+{
+    return &quot;&quot;;
+}
+</code></pre>
+<p>ちなみにMethod1&lt;int&gt;みたいに、struct渡すんなら動くんですよね、逆にこれは。クラスだと死ぬ。どうしてこうなるのか、ちょっとこれはよくわからないですね、ともかくクラスでも油断すると死ぬということはよくわかりました、あべし。</p>
+<h2>LINQで死ぬ</h2>
+<p><a href="http://tanku.hatenablog.jp/entry/20130604/1370318678">UnityのiOSビルドで使うとエラーになるLINQ拡張メソッドのメモ</a>といった記事もありますが、実際死にます。これは濡れ衣みたいなものなんですけどねぇ、別にLINQが悪いわけじゃないし、それでLINQ使わない！LINQ禁止！とか絶対言って欲しくないです。LINQのないC#なんてC#じゃないです。C#の魅力の8割はLINQなのですから。と、それは置いておいて、実際幾つかのLINQのメソッドは死にます。</p>
+<p>例えばAverage(selector)。</p>
+<pre><code class="language-csharp">// System.ExecutionEngineException: Attempting to JIT compile method 'System.Linq.Enumerable:&lt;Average`1&gt;m__20&lt;int&gt; (long,int)' while running with --aot-only.
+Enumerable.Range(1, 3).Average(x =&gt; x);
+</code></pre>
+<p>なんで死ぬのかというと、ソース見れば簡単に分かります。<a href="https://github.com/Unity-Technologies/mono/blob/unity-staging/mcs/class/System.Core/System.Linq/Enumerable.cs#L264">Unity-Technologies/monoからEnumerable.cs</a>の該当行を見ると</p>
+<pre><code class="language-csharp">return source.Select (selector).Average&lt;int, long, double&gt; ((a, b) =&gt; a + b, (a, b) =&gt; (double) a / (double) b);
+</code></pre>
+<p>お分かりかな？そう、「LambdaとGenericsとStruct」のところで見たように、Genericsのメソッドの中で値型のラムダが放出されてます。そう、結構あるんですよ、Genericsのメソッドの中にラムダを埋めてしまうのって。さて、で、これは死にます。具体的に死んだ箇所は、エラー履歴の一番上のat...のとこ見れば</p>
+<pre><code class="language-csharp">// at System.Linq.Enumerable.Average[Int32,Int64,Double] (IEnumerable`1 source, System.Func`3 func, System.Func`3 result) [0x00000] in &lt;filename unknown&gt;:0 
+</code></pre>
+<p>privateメソッドのAverage(↑でいうAverage[int, long, double]のとこ)で死んでるのが分かります。基本的に呼び出すタイミングで死ぬのでfunc(total, element)ってとこが死亡地点だと推測付きます。</p>
+<p>これの対処方法は？ないよ！System.Core.dllの中のコードだから手が出せません。もはや使わないしか選択できません！もしくは、自前実装してAverageSafeとかって拡張メソッドを用意するとか、ですかねえ。それも悪くはないと思います、shoganaiし。</p>
+<p>で、実はこの問題は当然mono本体は気付いていて、mono 2.8では改善されています。<a href="https://github.com/mono/mono/commit/071f495d6a4ce4951e2b2c9069586bd5bcde5fbb">該当コミット</a>を見れば、ラムダ使って共通化されてるコードがコピペに置き換えられてます:) これがAOTセーフだ！みたいな。はい、ライブラリには苦労してもらいましょう、使う側が快適ならそれで、それがいいのです。</p>
+<p>残念ながら現在のUnity(4.5.1)のmonoは2.6で、しかも2.8へのUpgradeは蹴られてます。3.0（そう、monoの最新はもう遠いところにある、Unity置いてかれすぎ）へのアップデートは、もしやる気があるとしても大仕事になるだろうから、当面は来そうにないですねえ。でもmono 2.8で改善されたのって4年前なんですよね、4年前から変わらずLINQ（の一部）が使えないUnity……、残念です。とりあえずダメ元でEnumerable.csだけでもバージョンあげてくれ！ってFeedbackを出したので、よければVoteしてください。<a href="http://feedback.unity3d.com/suggestions/upgrade-enumerable-dot-cs-for-avoid-aot-problem-of-linq-average-etc-dot-dot-dot">Upgrade Enumerable.cs for avoid AOT Problem of LINQ(Average etc...)</a></p>
+<p>XamarinのほうはAOTに関しても先を行っているようで、詳しくはXamarinの中の人である榎本さんの<a href="http://www.buildinsider.net/mobile/insidexamarin/06">インサイドXamarin（6）</a>の真ん中辺りに書いてあります。最新のXamarinと昔のXamarinと、そしてUnityとではAOTの制限がそれぞれ微妙に違っててなんとも。しかしXamarin、じゅる、いいなぁ……。</p>
+<p>UnityのLINQでは他にも明らかに使えないメソッドがあって、例えばThenBy。</p>
+<pre><code class="language-csharp">// System.ExecutionEngineException: Attempting to JIT compile method 'System.Linq.OrderedEnumerable`1&lt;int&gt;:CreateOrderedEnumerable&lt;int&gt; (System.Func`2&lt;int, int&gt;,System.Collections.Generic.IComparer`1&lt;int&gt;,bool)' while running with --aot-only.
+Enumerable.Range(1, 3)
+    .OrderBy(x =&gt; x)
+    .ThenBy(x =&gt; x)
+    .ToArray();
+</code></pre>
+<p>死にます。これも最新のmonoでは解決しています、<a href="https://github.com/mono/mono/blob/master/mcs/class/System.Core/System.Linq/Enumerable.cs#L2839">該当ソース</a></p>
+<pre><code class="language-csharp">#if FULL_AOT_RUNTIME
+			var oe = source as OrderedEnumerable &lt;TSource&gt;;
+			if (oe != null)
+				return oe.CreateOrderedEnumerable (keySelector, comparer, false);
+#endif
+</code></pre>
+<p>これは「InterfaceとGenericsとStruct」のとこに書いた制限を回避してます。IOrderedEnumerableというインターフェイスのままCreateOrderedEnumerableを呼ぶと死ぬので、OrderedEnumerableにキャストして具象型に戻すことによってうまく動くようにしています。ThenByは便利なので使いたいものですねえ（まぁ富豪な処理なのでゲーム向けかと言われるとビミョーですが）</p>
+<p>最後に、Sumは参照型でも死にます。逆に値型だと生き残れます。</p>
+<pre><code class="language-csharp">// System.ExecutionEngineException: Attempting to JIT compile method 'System.Linq.Enumerable:Sum&lt;object, int&gt; (System.Collections.Generic.IEnumerable`1&lt;object&gt;,System.Func`3&lt;int, object, int&gt;)' while running with --aot-only.
+Enumerable.Empty&lt;object&gt;().Sum(x =&gt; (int)x);
+</code></pre>
+<p>これは「参照型で死ぬ」パターン、ソースコードの該当箇所を見ると……</p>
+<pre><code class="language-csharp">public static int Sum&lt;TSource&gt; (this IEnumerable&lt;TSource&gt; source, Func&lt;TSource, int&gt; selector)
+{
+	Check.SourceAndSelector (source, selector);
+
+	return Sum&lt;TSource, int&gt; (source, (a, b) =&gt; checked (a + selector (b)));
+}
+
+static TR Sum&lt;TA, TR&gt; (this IEnumerable&lt;TA&gt; source, Func&lt;TR, TA, TR&gt; selector)
+{
+	TR total = default (TR);
+	long counter = 0;
+	foreach (var element in source) {
+		total = selector (total, element);
+		++counter;
+	}
+
+	return total;
+}
+</code></pre>
+<p>これねえ、なんで参照型で死ぬのか本当にさっぱり分からなかったけど、とりあえずSum&lt;TSource, int&gt;で二回層掘ってるのが死因っぽいです、片方はint固定で、二階層目は戻り値TRっていう。Max, Minが参照型のみ死ぬもの同じようなコードだった。これで死ぬとかもはや理不尽さしか感じなくて怖い怖い。ちなみにmonoの最新版のコードではメソッドは一回層で重複上等のハイパーコピペになってます（勿論それによりExceptionは発生しなくなる）、それでいいです、はい、ほんと。</p>
+<p>そんなわけでLINQは一部の地雷メソッドに注意しながら使う！まぁ、それはそれでいいんですが（地雷が怖いから使わないってのはNG）、やっぱ地雷が埋まってるのは怖い。というわけで、Unityのmonoのランタイムが新しくなってくれるのが一番なのですが現実はそれを待ってはいられないので、mono本体のEnumerable周辺コードを頂いて、名前空間だけ、例えばSystem.LinqExとかにして、基本そちらをusingするようにするっていう風にして回避するのがいいんじゃないかしら、というか私はそうしてます。この辺は名前空間の切り分けだけでなんとかなる拡張メソッドの良さですね。</p>
+<h2>Enumで死ぬ</h2>
+<p>簡単にはEnumの配列をToArrayすると観測できる！</p>
+<pre><code class="language-csharp">// こんなEnumがあるとして
+public enum MyEnum
+{
+    Apple
+}
+
+// ToArrayで問答無用で死ぬ
+// System.ExecutionEngineException: Attempting to JIT compile method '(wrapper managed-to-managed) MyEnum[]:System.Collections.Generic.ICollection`1.CopyTo (UniRx.MyEnum[],int)' while running with --aot-only.
+new[] { MyEnum.Apple }.ToArray();
+</code></pre>
+<p>(wrapper managed-to-managed)ってのが目新しくていいですね！これの対処方法は、元が配列とかListだと印象的にヤヴァいので空のイテレータに変えてやります、それもご丁寧にジェネリクスじゃないIEnumeratorを経由することで、なんとなく回避できます。</p>
+<pre><code class="language-csharp">public static class AotSafeExtensions
+{
+    // こんなメソッドを用意しておくと
+    public static IEnumerable&lt;T&gt; AsSafeEnumerable&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+    {
+        var e = ((IEnumerable)source).GetEnumerator();
+        using (e as IDisposable)
+        {
+            while (e.MoveNext())
+            {
+                yield return (T)e.Current;
+            }
+        }
+    }
+}
+
+// 死なない！
+new[] { MyEnum.Apple }.AsSafeEnumerable().ToArray();
+</code></pre>
+<p>ヤヴァそうな香りがしたらAsSafeEnumerableを呼ぶ、という対処療法で勝つる。かなぁ……？</p>
+<h2>実機を使わないでAOTのテストする方法</h2>
+<p>ここまでで例外の発生パターンと対処法は終わり。じゃあ実際、こういった問題をどう検出するか、ひたすら実機テスト？というのも辛い。で、AOT自体はmono本体にもあって、そして現在のUnityはmono 2.6相当です。というわけでmono 2.6でAOTを動かせばいいんじゃろ？<a href="http://www.mono-project.com/AOT">mono --full-aot hoge.exe</a>と書くだけで、iOS実機とほぼほぼ同等のAOT例外が検出できます(この記事の範囲だとInterlocked.CompareExchange以外は同じ)。MonoBehaviourとかは無理ですがロジック系だったらNUnitでユニットテスト書いて、回すことで自動テスト可能になります。</p>
+<p>実際、私はこの記事を書くにあたって、Windows + Visual Studio 2013でC#を書いて.exe(ConsoleApplication)作って、それを会社の同僚の作ってくれたexeを渡すとfull-aotで実行して結果表示してくれるウェブサービスに突っ込んで延々と動作確認してました。超捗る。むしろ同僚が神だった。実機とかやってられない。そもそもUnity書くのもVisual Studioじゃなきゃ嫌だ(<a href="http://neue.cc/2014/04/10_450.html">UnityVS - Unity開発におけるVisual Studio利用のすすめ</a>)。</p>
+<h2>UniRx</h2>
+<p>なんで延々と調べたかというと、今、私は<a href="https://github.com/neuecc/UniRx">UniRx - Reactive Extensions for Unity</a>というライブラリを作っていて、というか実際アセットストアにも既に公開されているんですが（無料です！）、例によってiOSで動かなくて！で、重い腰を上げて調べたのでした。パターンさえ分かってしまえば、まあ十分対応できる範囲ですねー、というわけでバシバシと動かなくなる箇所を殺してる最中です。</p>
+<p>UniRx自体はブログ記事をそのうち書く書く詐欺で(一応、<a href="http://www.slideshare.net/neuecc/unityrx-reactive-extensions-for-unity">ちょっとだけ発表した時の資料はある</a>)、ええと、AOTの対処が終わったら書く！というのと、<a href="http://unityassetjp.doorkeeper.jp/events/12698">【第1回】UnityアセットまみれのLT大会</a>でLTするつもりなので、そちらでもよろしくお願いします。というか是非いらしてください、お話しませう。</p>
+</div>
+<h1><a href="http://neue.cc/2014/0513_473.html">OWINの仕組みとOWIN上のフレームワーク(ミドルウェア)の作り方</a></h1>
+<ul class="date"><li>2014-05-13</li></ul>
+<div class="entry_body"><p>2014/2/8に北海道の<a href="http://clr-h.jp/">CLR/H</a>でOwinについて話してきたんですが、なんと！今の今までスライド公開してなかった！これはひどい！３ヶ月放置してた！熟成肉！ウルフギャング！ということでやっとこさ公開。若干加筆してあります。</p>
+<iframe src="http://www.slideshare.net/slideshow/embed_code/34602211" width="597" height="486" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px 1px 0; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="https://www.slideshare.net/neuecc/how-to-make-own-framework-built-on-owin" title="How to Make Own Framework built on OWIN" target="_blank">How to Make Own Framework built on OWIN</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>前半はOWINとは何か、というのとキーワードや仕組みについての解説。後半は<a href="https://github.com/neuecc/LightNode">LightNode</a>という私の作っているWebAPIフレームワークの実装を通して、フレームワークに必要な要素と実装例、そして性能の出し方を見て行きましょうという感じです。</p>
+<p>発表した時は、失敗した感があって公開できないでいたんですが、読み直すと結構いいこと書いてありますね、とか自画自賛。あんましこういう内容のセッションってないですし、いい感じなんじゃないでしょうか、改めて読むと。こういう内容も割とレアいですしね、レア度大事。後半部分がじっくり読む系な内容になっていて、あんまし発表向けじゃなかったのは良くなかったかな……（資料を当日のその場で作ってて、どう話すか、どう見せるかについて考えてこなかったのが悪いというところもあるというかかなり悪いのでその辺は大反省）</p>
+<h2>Demo Walkthrough</h2>
+<p>あ、そうそう、LightNodeもver.3になってます。今回からUnity用のジェネレータが追加されているのと、それと何度かデモやってて手間取った箇所があったので、スムーズに行えるようにデフォルトパラメータ類を調整しました。この辺、実際にやってくの大事ですねえと実感。そんなわけで1から見て行きましょふ。ちなみに画像は全部英語ですが、日本語のスクリーンショット取るのが面倒だっただけなので、実際は別にちゃんと日本語です。</p>
+<p>まずVSをを立ち上げて新規プロジェクト作成します。そしてASP．NET Web Applicationを選択。</p>
+<p><img src="http://neue.cc/wp-content/uploads/2014/05/lnwt_newproject.jpg" alt="" /></p>
+<p>そのまま、空のプロジェクトを選択します。</p>
+<p><img src="http://neue.cc/wp-content/uploads/2014/05/lnwt_createempty.jpg" alt="" /></p>
+<p>さて、これで空のASP.NETプロジェクトが出来ました。続いてOwinでホストするためNuGetを開いて「Microsoft.Owin.Host.SystemWeb」をインストール。</p>
+<p><img src="http://neue.cc/wp-content/uploads/2014/05/lnwt_addowin.jpg" alt="" /></p>
+<p>そのままServer用のLightNode、「LightNode.Server」をインストール。</p>
+<p><img src="http://neue.cc/wp-content/uploads/2014/05/lnwt_addlightnodeserver.jpg" alt="" /></p>
+<p>これでDLL参照はオシマイ。まだファイルがゼロなので、追加していきましょう。まずはOwinとLightNodeの利用を関連付けるため、OWIN Startup Classを追加します。このテンプレートはVSに用意されてるので、Add→New Item→OWIN Startup Class。</p>
+<p><img src="http://neue.cc/wp-content/uploads/2014/05/lnwt_addstartup.jpg" alt="" /></p>
+<p>そしてそのファイルに、app.UseLightNode();の一行だけ足します。</p>
+<pre><code class="language-csharp">public class Startup
+{
+    public void Configuration(IAppBuilder app)
+    {
+        app.UseLightNode();
+    }
+}
+</code></pre>
+<p>これで準備は完了です！最後に実際のAPIを作りましょう。Add→ClassでCalc.csというのを作ります。そしてそのファイルに以下のコードを書いてください。</p>
+<pre><code class="language-csharp">public class Person
+{
+    public int Age { get; set; }
+    public string Name { get; set; }
+}
+
+public class User : LightNode.Server.LightNodeContract
+{
+    public Person Show(string name, int age)
+    {
+        return new Person { Name = name, Age = age };
+    }
+}
+</code></pre>
+<p>これで最初のAPIの作成は完了です。Ctrl+F5で実行し、 /User/Show?name=john&amp;age=20 にアクセスしてみてください。例えば http://localhost:8708/User/Show?name=john&amp;age=20 。JSONが表示されたことを確認できるでしょう。このように /クラス名/メソッド名?パラメータ が露出するAPIとして、 戻り値の型がJSONとなります。Web APIを実装する手段として、限りなく最小の手順です。</p>
+<p>最後に、OWINとは関係ありませんが、実際にインターネットへの発行、<a href="http://azure.microsoft.com/en-us/services/web-sites/">Azure WebSites</a>でホストしてみましょう。WEBサイトを作成し、発行プロファイルをダウンロードします。</p>
+<p>次にソリューションファイルを右クリックし、発行。ダイアログでダウンロードした.publishファイルを選択すると、発行先、ユーザー名、パスワードが入力されています。</p>
+<p><img src="http://neue.cc/wp-content/uploads/2014/05/lnwt_webdeploy1.jpg" alt="" /></p>
+<p>必要ならば発行の設定で、Remove additional files at destinationもチェック入れておきましょう。</p>
+<p><img src="http://neue.cc/wp-content/uploads/2014/05/lnwt_webdeploy2.jpg" alt="" /></p>
+<p>そしてPublishボタンを押せば、Webへの公開は完了です。例えば http://lightnodedemo.azurewebsites.net/User/Show?name=Mary&amp;age=30 といったところに！5分あれば全部デモしきれます！（と言いつつ毎回どっかではまって10分かかってる説）</p>
+<h2>Demo Client</h2>
+<p>というわけでWeb API作成まではそんな感じなのですが、LightNodeのもう一つの特徴にクライアントサイドの自動生成があるので、引き続きそれを見て行きます。</p>
+<p>まず、新規にクラスライブラリとしてShareDataを作り、WebApplicationに作っていたPersonクラスを移します。また、ConsoleApplicationも同じソリューションに作り、WebApplicationとConsoleApplicationがShareDataを参照するようにします。</p>
+<p><img src="http://neue.cc/wp-content/uploads/2014/05/lnwt_share.jpg" alt="" /></p>
+<p>次にConsoleApplicationのNuGetを開いて、LightNode.Client.PCL.T4とLightNode.Formatter.JsonNetをインストールします。</p>
+<p><img src="http://neue.cc/wp-content/uploads/2014/05/lnwt_pclt4.jpg" alt="" />
+<img src="http://neue.cc/wp-content/uploads/2014/05/lnwt_jsonnet.jpg" alt="" /></p>
+<p>この状態になったら、まずWebApplicationをビルド(Personクラスを移した影響でコンパイルエラー出たら適宜名前空間をusingしたりしてね）。そしてConsoleAppのほうにインストールされたLightNodeClient.ttを開いて、先頭行を、WebApplicationのdllのパスに修正します。</p>
+<pre><code class="language-text">&lt;#@ assembly name=&quot;$(SolutionDir)\WebApplication4\bin\WebApplication4.dll&quot; #&gt;
+</code></pre>
+<p>するとドバッとコードが生成されてるはずです！はずです！</p>
+<p><img src="http://neue.cc/wp-content/uploads/2014/05/lnwt_generated.jpg" alt="" /></p>
+<p>このクライアントコードは、HttpClientベースで全て非同期なモダンな形態になっています。ということでSystem.Net.Httpの参照が必要なので、それも参照しておきます(ConsoleApp以外の場合はNuGetからHttpClientを参照する)。</p>
+<p>あとはProgram.csに以下のように書いてもらえれば通信できます。</p>
+<pre><code class="language-csharp">async static Task Run()
+{
+    var client = new LightNode.Client.LightNodeClient(&quot;http://localhost:8708&quot;);
+
+    // client.Class.MethodAsync(argument)
+    ShareData.Person person = await client.User.ShowAsync(&quot;John&quot;, 30);
+
+    Console.WriteLine(person.Name + &quot;:&quot; + person.Age);
+}
+
+static void Main(string[] args)
+{
+    Run().Wait();
+}
+</code></pre>
+<p>Server側にあるクラス名.メソッド名Async(引数)というのが、（自動生成なので当たり前ですが）型付けされて、戻り値も自動でデシリアライズされるといった、自然な操作で扱えます。サーバーAPIの数が増えれば増えるほど大変だし、修正した時も再生性するだけなので、色々楽ちんですよね、と。</p>
+<h2>ASP.NET vNext</h2>
+<p>ちょうどTechEdが開催されていて（海の向こうの話です！）、<a href="http://www.hanselman.com/blog/IntroducingASPNETVNext.aspx">Introducing ASP.NET vNext</a>とか、わくわくするような話も出てきましたん。さて、LightNodeはWebAPIなのですが、100% WebAPIじゃなくてHTML返したいといったシチュエーションもあると思います。簡単なものならRazor EngineやT4 Templateでstringを返せばいいでしょふけれど、数が多かったりする時は、UseMvc()でASP.NET MVCと共存すりゃあいいかなー、って思っています。全然問題ない。そういった共存もまたOWINのモデルかな、って思ってます。</p>
+<h2>最後に</h2>
+<p>そうそう、OWIN使っているからカッコイイ、なんてことはないし、軽量なものならNancy使えばモダンでイケてる、なんてことも全くありません。私だったらビューが必要なものの実装は絶対にASP.NET MVC使うし、APIならLightNodeで書きます。当たり障りのないことをいえば、トータルのバランスで優れたものを選択できる嗅覚が大事ってところですね。とはいえまぁ、その選択の基準を作るためにも、OWINについてしっかり知っておく必要はあるでしょう。間違いなく。</p>
+<p>OWIN、ASP.NET vNextと、取るべき選択肢が多くなってきました、からこそ、しっかりした判断が求められるので、逆に言えばシビアです。シビアですが、だからこそ面白い、面白くなってきた！って私は思ってます。ね、こういうのを楽しみましょう。イイ時代です。</p>
+</div>
+<h1><a href="http://neue.cc/2014/0410_450.html">Visual Studio Tools for Unity(UnityVS) - Unity開発におけるVisual Studioのすすめ</a></h1>
+<ul class="date"><li>2014-04-10</li></ul>
+<div class="entry_body"><p>追記：Microsoftが買収して<a href="http://blogs.msdn.com/b/visualstudio/archive/2014/07/29/visual-studio-tools-for-unity-1-9.aspx">Visual Studio Tools for Unity</a>として無料でリリースされました、やったね！</p>
+<p><a href="http://japan.unity3d.com/">Unity</a>で開発するにあたってエディタは何を使っていますか？といったら、勿論<a href="https://www.microsoft.com/ja-jp/dev/default.aspx">Microsoft Visual Studio</a>！というわけで、VSとUnityを統合してコーディング＆デバッグを可能にしてくれる<a href="http://unityvs.com/jp/">UnityVS</a>の紹介をしたいと思います。とにかく素晴らしいので、超オススメ。ちなみに最新のVS2013にも勿論対応していますよ。</p>
+<p>ちょうど<a href="http://japan.unity3d.com/unite/unite2014/">Unite Japan 2014</a>で、UnityVS作者のJb Evain氏が「Unityゲーム開発へのVisual Studio導入」というセッションを行い、勿論喜んで聞きに行った！感動した！ので、その講演をベースに紹介したいと思います。講演聞く前からUnityVSは使っていたのですが、改めて超良いなー、と、むしろもっと利用者を増やさなければ！という義務感がですね、はい。</p>
+<h2>Unityのスクリプト開発環境</h2>
+<p>UnityScriptの、じゃなくて.csとか.jsを何で書くか、のお話。</p>
+<ol>
+<li>MonoDevelop</li>
+</ol>
+<p>標準同梱、色々なプラットフォームで動くし、ちゃんとIDEなので決して悪くない。が、Unityについてくるバージョンは古い場合が多く、そのためバグが残っていたり。また、日本語の入力が大変問題が多く叫ばれていたりする。</p>
+<ol start="2">
+<li>外部のテキストエディタ</li>
+</ol>
+<p>SublimeやVim、Emacsなど。特にSublimeはよく使われているよう。非常に軽快で悪くない、とはいえ、IDEの持つ多くの機能を当然持っていないわけで、機能としては劣るといえる。Sublimeは<a href="http://u3d.as/content/sassembla/sublime-socket-asset/4SP">SublimeSocketAsset</a>を入れると補完(弱)とかエラー表示とかは少しまかなえるようですけれど、Vimとかもそうですね、頑張れはするのだけれど、最終的にIDEに及ぶかというと、まあ、頑張れる。頑張れはする。</p>
+<ol start="3">
+<li>Unityエディタ上のスクリプトエディタ</li>
+</ol>
+<p><a href="http://unityide.com/">UnIDE</a>とか。カジュアルな編集にはベンリだけれど専用に使っていけるか、というと……。</p>
+<ol start="4">
+<li>Visual Studio</li>
+</ol>
+<p>Windows専用。有料、安くない。とはいえ機能は最強。</p>
+<p>そんなわけでVisual Studioを選べるのなら選ぶべき！なのだけれど、単純にUnityのエディタとしてVSを使うと幾つかの問題がある。</p>
+<blockquote>
+<p>VSはMicrosoft .NET用でありUnity向けではない<br />
+VSのプロジェクト構造はUnityとミスマッチがある<br />
+2つのツール(Unity-VS)間でやりとりが取れない<br />
+デバッガーが動かせない（動かしにくい）</p>
+</blockquote>
+<p>と、いった問題をUnityVSは解決し、両者を完全に統合してくれる。</p>
+<h2>UnityVSの機能</h2>
+<ul>
+<li>Unity Project Explorer</li>
+</ul>
+<p><img src="http://neue.cc/wp-content/uploads/2014/04/unityprojectexplorer.jpg" alt="" /></p>
+<p>勿論、VSのソリューションエクスプローラーも使えますが、このUnity Project ExplorerはUnityのProjectウィンドウと同じ見た目を提供してくれるので、こっちのほうが選びやすい場合はこっちが使えます。</p>
+<ul>
+<li>C#/Boo/UnityScriptのシンタックスハイライト/入力補完。</li>
+</ul>
+<p><img src="http://neue.cc/wp-content/uploads/2014/04/unityscripthighlight.jpg" alt="" /></p>
+<p>C#だけじゃなくてBoo, UnityScriptにも対応。普段はC#使ってても、AssetStore経由でBooやUnityScriptを取得することもあるだろうし(Booはあるのかなあ？)、全対応は良いこと素晴らしい。日本語のコメントを使うことも出来るし、入力補完等はVisual Studioそのものなので完璧。</p>
+<ul>
+<li>メソッド生成ウィンドウ</li>
+</ul>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/2014/04/unityvscreatescript.jpg" />
+</p>
+<p>MonoBehaviourのOnMouseEnterなどの雛形が直ちに作れるので、ついつい忘れがち/ミスりがちな名前をリファレンスからコピペったりしなくても作れる。画像のような大きなウィンドウの他に、その場でテキストベース補完でササッと作れるQuick MonoBehaviours Windowもあり。</p>
+<ul>
+<li>リファレンスの統合</li>
+</ul>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/2014/04/uvh.jpg" />
+</p>
+<p>クラス名やメソッド名を選択してヘルプ→Unity API Reference、もしくはショートカットキーでVS上でその場でリファレンスが引けます(VS内ウィンドウで開かれる)。ベンリベンリ。</p>
+<ul>
+<li>デバッグ</li>
+</ul>
+<p><img src="http://neue.cc/wp-content/uploads/2014/04/unityvsdebug.jpg" alt="" /></p>
+<p>F5押すだけでデバッガをUnityにアタッチできる、当然動いてる最中はVSのデバッグ機能がフルに利用可。ローカルウィンドウもウォッチウィンドウも、ステップ実行も全て。（ただしCoroutineの中では挙動がかなり怪しくなるのでそこだけは注意）。</p>
+<ul>
+<li>外部DLLサポート</li>
+</ul>
+<p>外部DLLを参照した場合でも、デバッガでしっかりとステップ実行できてとても嬉しい。あと、Visual Studioで開発できることの嬉しさに、サーバーサイド(C#/ASP.NET)とUnityのプロジェクトを同じソリューションに突っ込めるところがあったりします。移動が簡単だし、通信用データや幾つかのロジックが共有できたりする。サーバーサイドはPHPで開発なんておかしいよ！全部C#で書くんだよもん。例えば以下のような構成を取ってみる。</p>
+<p><img src="http://neue.cc/wp-content/uploads/2014/04/shareproject.jpg" alt="" /></p>
+<p>私がCTOを務める<a href="http://www.grani.jp/">グラニ</a>は、現在のところウェブベースのソーシャルゲーム（<a href="http://www.grani.jp/product/valhalla-gate/">神獄のヴァルハラゲート</a>、今CMやってますん）を提供していて、それはC# 5.0 + Windows Server 2012(IIS 8.0) + ASP.NET MVC 5で動いていたりします。サーバーサイドをC#で開発するのは得意領域なので、そのままにクライアントサイドとC#で融和出来れば、開発効率相当良い……！といったことがUnityVSならシームレスに実現できて素晴らしい。</p>
+<p>実際、そうしたサーバーAPIをC#で書いて、そのメタデータを元にUnityの通信クライアントを自動生成、送受信データはサーバー側とクライアント側で共有するの前提にしたWebAPIフレームワーク<a href="https://github.com/neuecc/LightNode">LightNode</a>というのを作ってます。（ところで絶賛エンジニアも募集してます←求人←宣伝）。</p>
+<p>共有用のクラスライブラリは、UnityVS入れるとUnity用プロファイルで作れるのも嬉しい。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/2014/04/hogehogeshare.jpg">
+</p>
+<p>ちなみに、見た目上はVisual Studioのソリューションに収まっているとはいえ、Unityのシステム的に、VSのプロジェクト参照は無効なのは注意（参照してもUnity側でリロードすると消えちゃうの）。ルール通り、Assets下にDLLを配置する必要があります。それに関してはUnityVSのドキュメント<a href="http://unityvs.com/documentation/dll-debugging/">DLL Debugging</a>で触れられてますが、ビルド後にAssetsにDLLを配置するように仕込むと良いもよう。例えば以下のようなものをShare.csprojに足してやればOK。</p>
+<pre><code class="language-xml">&lt;!-- 実際にはDebugビルドとRelaseビルド分けるのもいれよふね --&gt;
+&lt;Target Name=&quot;AfterBuild&quot;&gt;
+    &lt;ItemGroup&gt;
+        &lt;CopySource Include=&quot;bin\Debug\*.*&quot; /&gt;
+    &lt;/ItemGroup&gt;
+    &lt;Copy SourceFiles=&quot; @(CopySource)&quot; DestinationFolder=&quot;$(SolutionDir)\Assets\External\&quot; SkipUnchangedFiles=&quot;true&quot; OverwriteReadOnlyFiles=&quot;true&quot; /&gt;
+&lt;/Target&gt;
+</code></pre>
+<p>利用感としては、まぁまぁ悪くないです。メソッドの参照に飛ぶとDLLのメタデータを参照しに行ってしまうのが残念ではありますが。あとは.slnの場所がUnityプロジェクト下になってしまって構成がいびつなのがちょっとだけ辛い、かな？その辺の生成はカスタマイズできる - <a href="http://unityvs.com/documentation/api/project-file-generation/">Project File Generation</a>っぽいんだけど、上手くいかなくて今のところ断念中。</p>
+<h2>ということで</h2>
+<p>Unityの開発って結構Macで行ってる人が多いのですね。実にイマドキ……。それでも、スクリプティング環境はVisual Studioがベストだと思うんだなあ。VMにWindows入れてでもなんでも使ったほうが圧倒的に捗る、はず。少なくともエディタで苦労するよりは百億倍。ちなみに<a href="http://unityvs.com/documentation/remote-debugging/">Remote Debugging</a>もあるようですよ。</p>
+<p>それでもVisual Studioは高い……？うーん、そもそもUnity Proのほうがずっと高いんですが(VS Proは単品をふつーに買って6万ぐらい、色々な購入モデルがあるので実質もっと安くはなるかな)、それはおいといて、私が<a href="http://www.buildinsider.net/">Build Insider</a>に寄稿した記事で<a href="http://www.buildinsider.net/small/bizspark/01">スタートアップ企業にマイクロソフト製品の開発ライセンスが無償提供されるBizSparkプログラム活用のススメ</a>(タイトルクソ長い！)で紹介しているBizSparkというプログラムでは、設立5年未満の企業ならVisual Studioを無償で利用することが可能です。実際BizSparkはとても良い、助かる、助かってた。学生さんなら<a href="http://www.microsoft.com/ja-jp/education/dreamspark.aspx">DreamSpark</a>という同様の学生支援プログラムがあります。</p>
+<p>C#自体、非常に良い言語なのですが、Visual Studioと合間れば相乗効果で数倍数十倍に更に良くなるので、(たとえUnityのC#が古いバージョンだったりiOSのせいでAOTで苦しんだりしつつも)、良きC#生活を満喫して欲しい/したいところですねー。</p>
+</div>
+<h1><a href="http://neue.cc/2014/0402_449.html">Microsoft MVP for Visual C#を再々々受賞しました</a></h1>
+<ul class="date"><li>2014-04-02</li></ul>
+<div class="entry_body"><p>今年も受賞できました。4年目です。去年の受賞した頃は<a href="http://grani.jp/">謎社</a>が始動し、タイトルもリリースされ、新しい人が入社しだす頃でした。その頃はまだPHPで実装されていたのですが、C#に移行するプロジェクトをちょうど始めた頃です。</p>
+<blockquote>
+<p>C#による圧倒的な成果、C#だからこその強さ、というのを現実に示していく</p>
+</blockquote>
+<p>というのを所信表明として掲げたわけですが、この一年で、成果は出すことができました。C#への移行は成功し、その強さ、体制は誇ることができると思っています。とはいえまだ、やっとスタート地点に立てたばかり。世間への認知は全然されていないでしょう。もっともっと強く、私にしかできないことを。</p>
+<p>さて、個人として、MVPのありようというのはScott Hanslemanのアナウンス<a href="http://www.hanselman.com/blog/ChangesInTheMicrosoftMVPProgramMVPsForOpenSourceContributions.aspx">Changes in the Microsoft MVP Program - MVPs for Open Source Contributions</a>のアナウンスの通りかな、と。ただのMicrosoftの広告塔だけじゃない貢献をしなければならない。そしてコードを現実に落としこむ馬力が求められるのではないか、と。</p>
+<p>私はそうしてきたつもりですし、これからも、もっと、他の言語圏と較べても、より先進的に、そしてより実践的に。いつまでも.NETの、Microsoftのローカルな世界で閉じている場合ではない。C#こそが魅力的な選択であるということを、あらゆる角度から示し続けたいと思います。引き続き、今年もよろしくお願いします。</p>
+</div>
+<h1><a href="http://neue.cc/2014/0314_448.html">ForEachAsync - 非同期の列挙の方法 Part2</a></h1>
+<ul class="date"><li>2014-03-14</li></ul>
+<div class="entry_body"><p>Part2って、Part1はあったのかというと、うーん、<a href="http://neue.cc/2013/12/04_435.html">非同期時代のLINQ</a>、かな……？さて、今回はForEachがテーマです。といってもそれってSelect+WhenAllでしょ！「Selectは非同期時代のForEach」って言ってたじゃない、というと、はい、言ってました。まだ他に言うことあるの？というと、例えば以下のシチュエーション。</p>
+<pre><code class="language-csharp">var httpClient = new HttpClient();
+var tasks = Enumerable.Range(1, 100000)
+    .Select(async x =&gt;
+    {
+        var str = await httpClient.GetStringAsync(&quot;http://hogehoge?q=&quot; + x);
+        Console.WriteLine(str);
+    });
+await Task.WhenAll(tasks);
+</code></pre>
+<p>別に動きはしますが、制御不能に10万件、同時リクエスト走ります。これはまぁいくないですよね。もはや途中で死んだりしますので動くとも言えない……。というわけで、元シーケンスが巨大な時は、Select+WhenAllはForEachになりえないのです。</p>
+<p>さて、この事態に手抜きで対抗すると？</p>
+<pre><code class="language-csharp">var httpClient = new HttpClient();
+Parallel.ForEach(Enumerable.Range(1, 100000), x =&gt;
+{
+    var str = httpClient.GetStringAsync(&quot;http://hogehoge?q=&quot; + x).Result;
+    Console.WriteLine(str);
+});
+</code></pre>
+<p>みんな大好きParallel.ForEachです。CPUバウンドとかI/Oバウンドとか面倒くさいんですよ、動きゃあいいんですよ(ﾎｼﾞﾎｼﾞ。という楽さ。実際これは普通に機能します。ので、バッチとかはこんなんでもいーんじゃないでしょうか、マジで。でも、これ、序盤はじわじわと並列数が上がってくので、初速がイマイチに感じるかもしれません。最初はコア数分しか並列にならず、待ちが多いことを検出してからじわじわ上がっていくので。あと終盤の挙動をアレゲに感じたりするかもしれません。待ち時間が長いと、際限なく並列数が上がってっちゃうんですよ。でも別に極端に上がっても速くなるわけじゃなくて、逆にむしろ余計遅くなる。</p>
+<p>※これは別に作り話じゃなくて、私はプロダクション環境で実際に数十万リクエストを叩くコードを走らせていて、常に同時並列数やスレッド消費量のモニタ取って、調整いれてます。</p>
+<p>どう調整入れるか、というと……</p>
+<pre><code class="language-csharp">// 最小スレッドプール数を最初に適当に伸ばしてやると初速に効く
+// 設定は一回でいいので、アプリケーションスタートアップのところにでも置いときましょう
+ThreadPool.SetMinThreads(200, 200);
+
+// 無尽蔵に伸び続けるのもいくないのでMaxDegreeOfParallelismを設定
+var httpClient = new HttpClient();
+Parallel.ForEach(Enumerable.Range(1, 100000), new ParallelOptions { MaxDegreeOfParallelism = 200 }, x =&gt;
+{
+    var str = httpClient.GetStringAsync(&quot;http://hogehoge?q=&quot; + x).Result;
+    Console.WriteLine(str);
+});
+</code></pre>
+<p>SetMinThreadsとMaxDegreeOfParallelism、この2つはふとぅーに影響大きくて大事。なので適当に、とか書きましたがあんまり適当にやるのはよくない。</p>
+<h2>ForEachAsync</h2>
+<p>とはいえ、非同期は非同期として扱いたい！そりゃそーだ。で、つまり、ようするに、同時実行数を抑えながら非同期を走らせられればいい。それにうってつけのクラスが<a href="http://msdn.microsoft.com/ja-jp/library/system.threading.semaphoreslim.aspx">SemaphoreSlim</a>。「リソースまたはリソースのプールに同時にアクセスできるスレッドの数を制限する Semaphore の軽量版です。SemaphoreSlim は、Windows カーネルのセマフォを使用しない、軽量セマフォ クラスを提供します。」。です。.NET 4.0からの登場。使うメソッドはWaitAsync(これは.NET 4.5から)とReleaseがほとんどかな。.NET 4.0の場合はWaitAsyncのかわりにWaitで。</p>
+<p>内部にCountを持っていて、それをWaitAsyncで減らし、Releaseで増やします。Countが0に達すると、WaitAsyncは待機するようになります。これを用いてForEachAsyncを作ってみると？</p>
+<pre><code class="language-csharp">public static class EnumerableExtensions
+{
+    public static async Task ForEachAsync&lt;T&gt;(this IEnumerable&lt;T&gt; source, Func&lt;T, Task&gt; action, int concurrency, CancellationToken cancellationToken = default(CancellationToken), bool configureAwait = false)
+    {
+        if (source == null) throw new ArgumentNullException(&quot;source&quot;);
+        if (action == null) throw new ArgumentNullException(&quot;action&quot;);
+        if (concurrency &lt;= 0) throw new ArgumentOutOfRangeException(&quot;concurrencyは1以上の必要があります&quot;);
+
+        using (var semaphore = new SemaphoreSlim(initialCount: concurrency, maxCount: concurrency))
+        {
+            var exceptionCount = 0;
+            var tasks = new List&lt;Task&gt;();
+
+            foreach (var item in source)
+            {
+                if (exceptionCount &gt; 0) break;
+                cancellationToken.ThrowIfCancellationRequested();
+
+                await semaphore.WaitAsync(cancellationToken).ConfigureAwait(configureAwait);
+                var task = action(item).ContinueWith(t =&gt;
+                {
+                    semaphore.Release();
+
+                    if (t.IsFaulted)
+                    {
+                        Interlocked.Increment(ref exceptionCount);
+                        throw t.Exception;
+                    }
+                });
+                tasks.Add(task);
+            }
+
+            await Task.WhenAll(tasks.ToArray()).ConfigureAwait(configureAwait);
+        }
+    }
+}
+</code></pre>
+<p>ほむ、わからん。ExceptionとかCancellationTokenとかでゴチャついてますが、よーわ、実行開始しようとするとWaitAsyncでカウントを減らして、実行完了したらReleaseでカウントを増やす。初期値の指定がそのまま並列実行数になる、って感じ。利用例を見ると</p>
+<pre><code class="language-csharp">var httpClient = new HttpClient();
+await Enumerable.Range(1, 100000)
+    .ForEachAsync(async x =&gt;
+    {
+        var str = await httpClient.GetStringAsync(&quot;http://hogehoge?q=&quot; + x);
+        Console.WriteLine(str);
+    }, concurrency: 200);
+</code></pre>
+<p>実に簡単にひどぅーきなForEachができました。これは、Taskの実行開始はシーケンシャルです。これも何気に有難かったりしますねえ。実行完了のほうは順不同です。まあ、そりゃそうだ、って話ですね。</p>
+<h2>まとめ</h2>
+<p>SemaphoreSlimかわいい。</p>
+</div>
+<h1><a href="http://neue.cc/2014/0311_447.html">RespClient - PowerShell向けのRedisクライアント/コマンドレット</a></h1>
+<ul class="date"><li>2014-03-11</li></ul>
+<div class="entry_body"><p>というものを作りました。</p>
+<ul>
+<li><a href="https://github.com/neuecc/RespClient">GitHub - RespClient</a></li>
+<li>PM&gt; Install-Package <a href="https://www.nuget.org/packages/RespClient/">RespClient</a></li>
+</ul>
+<p>例によってインストールはNuGetで。PowerShellのコマンドレットを含んでいるのでSystem.Management.Automationがないと動きません（多分、よく知らない）。</p>
+<h2>RESPって？</h2>
+<p><a href="http://redis.io/topics/protocol">REdis Serialization Protocol</a>です。RespClientは、何かのRedisClientのラッパーではなくて、自前でプロトコルを解釈してSocket経由で叩いてます。といっても、RESPは非常にシンプルなプロトコロでして、そんなに難しくはありません。作ろうと思った発端は、プロトコルの定義を見てて、先頭の識別子がEnumで</p>
+<pre><code class="language-CSharp">public enum RespType : byte
+{
+    SimpleStrings = (byte)'+',
+    Erorrs = (byte)'-',
+    Integers = (byte)':',
+    BulkStrings = (byte)'$',
+    Arrays = (byte)'*'
+}
+</code></pre>
+<p>こんな風に定義できて面白いなー、という、それがきっかけなのでした。ただ、せめて実用的なものを作りたいと思ったので、特にPowerShellに強くフォーカスするようにしています。</p>
+<p>既存のクライアント、私が作ってる<a href="https://github.com/neuecc/CloudStructures">CloudStructures</a>なり、その元の<a href="https://code.google.com/p/booksleeve/">BookSleeve</a>なり、<a href="https://github.com/ServiceStack/ServiceStack.Redis">ServiceStack.Redis</a>というのは、やはりC#から使うのが前提で、結構ヘヴィーだと思うのです、PowerShell的なコマンドラインインターフェイスで使うには。なので、Redis-Cli的な感覚で使える、Windowsネイティブのクライアントは、隙間産業的に、ちょうどなかったので良いかな、と。なので私にしては珍しくというか初めてコマンドレット作りましたし！</p>
+<h2>PowerShellコマンドレット</h2>
+<p>こんなふーに使います。</p>
+<pre><code class="language-PowerShell"># モジュールはdllで提供されています。
+Import-Module RespClient.dll
+
+# RedisServerへのコネクションは、一度コネクションを張るとセッション中、ずっと維持されます。
+# 他のパラメータは　-Host, -Port, -Timeout　があります。
+Connect-RedisServer 127.0.0.1
+
+# コマンドを送るのはSend-RedisCommandで。戻り値はUTF8Stringでデコードされます。
+Send-RedisCommand &quot;set test abcde&quot;
+
+# パイプラインモードもサポートしています。
+Begin-RedisPipeline
+Send-RedisCommand &quot;set test fghijk&quot;
+Send-RedisCommand &quot;incr testb&quot;
+Send-RedisCommand &quot;incr testc&quot;
+Send-RedisCommand &quot;get test&quot;
+Execute-RedisPipeline
+
+# 明示的にコネクションを切るときはDisconnectしてください。
+Disconnect-RedisServer
+</code></pre>
+<h2>RespClient(.NET)</h2>
+<p>生の.NETクライアントのほうが、よりコマンドレット経由よりも高機能です。場合によってはPowerShellで使う場合も、コマンドレットではなくて、こちらを使ったほうがいいこともあるかもしれません。具体的な差は、バイナリセーフな値を投げることができるのと、戻り値のバイナリのデコード形式を自由に選べます。</p>
+<pre><code class="language-CSharp">using (var client = new Redis.Protocol.RespClient())
+{
+    // string command
+    client.SendCommand(&quot;set a 1&quot;, Encoding.UTF8.GetString);
+
+    // binary safe command
+    client.SendCommand(&quot;set&quot;, new[] { Encoding.UTF8.GetBytes(&quot;test&quot;), Encoding.UTF8.GetBytes(&quot;abcde&quot;) }, Encoding.UTF8.GetString);
+
+    // use pipeline
+    var results = client.UsePipeline()
+        .QueueCommand(&quot;incr a&quot;)
+        .QueueCommand(&quot;incrby b 10&quot;)
+        .QueueCommand(&quot;get a&quot;, Encoding.UTF8.GetString)
+        .Execute();
+} // disconnect on dispose
+</code></pre>
+<h2>まとめ</h2>
+<p>弊社で<a href="http://tech.guitarrapc.com/">ぎたぱそさん</a>がたまに使ってます。（私は……そもそもあんま生で触る機会がなく、かな！？）</p>
+</div>
+<h1><a href="http://neue.cc/2014/0127_446.html">C#での動的なメソッド選択における定形高速化パターン</a></h1>
+<ul class="date"><li>2014-01-27</li></ul>
+<div class="entry_body"><p>動的なメソッド選択、といってもなんのこっちゃというわけですが、身近な例だと、ようするにURLをルーティングして何のコントローラーの何のメソッドを呼ぶのか決めるって奴です、ASP.NET MVCとかの。ようするに<a href="http://neue.cc/2013/12/23_439.html">LightNode</a>はいかにして速度を叩きだしているのか、のお話。自慢。嘘本当。</p>
+<p>以前に<a href="http://neue.cc/2011/04/20_317.html">Expression Treeのこね方・入門編 - 動的にデリゲートを生成してリフレクションを高速化</a>という記事を書いたのですが(2011/04ですって！もうすっかり大昔！)、その実践編です。Real World メタプログラミング。</p>
+<h2>とあるController/Action</h2>
+<p>とあるControllerのとあるActionを呼び出したいとするじゃろ？あ、ちなみに別に例として手元にあるのがちょーどこれだったというだけで、別に同様なシチュエーション（動的にメソッドを選択する）では、うぇぶに限らず何にでも応用効きます。というわけでウェブ興味ね、という人も帰らないで！！！このサイトはC#のサイトですから！</p>
+<pre><code class="language-csharp">// 何の変哲もない何か
+public class HogeController
+{
+    public string HugaAction(int x, int y)
+    {
+        return (x + y).ToString();
+    }
+}
+</code></pre>
+<pre><code class="language-csharp">// コード上で静的に解決できるならこう書くに決まってるじゃろ？
+var result = new HogeController().HugaAction(1, 10);
+</code></pre>
+<p>ただたんにnewして実行するならこうなります。が、これが動的にControllerやActionを選ばなきゃいけないシチュエーションではどうなりますん？ルーティング処理が済んで、呼び出すクラス名・メソッド名が確定できたというところから行きましょう。</p>
+<pre><code class="language-csharp">// コントローラー名・アクション名が文字列で確定出来た場合
+var controllerName = &quot;ConsoleApplication.HogeController&quot;;
+var actionName = &quot;HugaAction&quot;;
+
+var instance = Activator.CreateInstance(Type.GetType(controllerName));
+var result = (string)Type.GetType(controllerName).GetMethod(actionName).Invoke(instance, new object[] { 1, 10 });
+</code></pre>
+<p>一番単純なやり方はこんなものでしょう。<a href="http://msdn.microsoft.com/ja-jp/library/wccyzw83.aspx">Activator.CreateInstance</a>でインスタンスを生成し、<a href="http://msdn.microsoft.com/ja-jp/library/a89hcwhh.aspx">MethodInfoのInvoke</a>を呼ぶことでメソッドを実行する。基本はこれ。何事も素直が一番良いですよ。おしまい。</p>
+<h2>動的コード生成事始め</h2>
+<p>あけましておめでとうございます。素直が一番、おしまい、で済まない昨今、リフレクションは実行速度がー、という亡霊の声が聞こえてくるのでshoganaiから対処しましょう。基本的にC#でリフレクションの速度を高める手段は一択です、デリゲート作ってキャッシュする。というわけでデリゲート作りましょう。</p>
+<pre><code class="language-csharp">// ここから先のコードでは↓4つの変数は省略します
+var controllerName = &quot;ConsoleApplication.HogeController&quot;;
+var actionName = &quot;HugaAction&quot;;
+var type = Type.GetType(controllerName);
+var method = type.GetMethod(actionName);
+            
+// インスタンスが固定されちゃう
+var instance = Activator.CreateInstance(type);
+var methodDelegate = (Func&lt;int, int, string&gt;)Delegate.CreateDelegate(typeof(Func&lt;int, int, string&gt;), instance, method);
+</code></pre>
+<p>Delegate作ると言ったら<a href="http://msdn.microsoft.com/ja-jp/library/53cz7sc6.aspx">Delegate.CreateDelegate</a>。なのですが、静的メソッドならいいんですが、インスタンスメソッドだと、それも込み込みで作られちゃうので些かイケてない。今回は毎回インスタンスもnewしたいので、これはダメ。</p>
+<p>が、Delegate.CreateDelegateの面白いところは、「オープンなインスタンス メソッド デリゲート (インスタンス メソッドの隠れた第 1 引数を明示的に指定するデリゲート) を作成することもできます」ことです。どういうことか、というと</p>
+<pre><code class="language-csharp">// 第一引数にインスタンスの型が渡せる
+var methodDelegate = (Func&lt;HogeController, int, int, string&gt;)Delegate.CreateDelegate(
+    typeof(Func&lt;HogeController, int, int, string&gt;), method);
+
+// だからこう呼べる(キャストしてたりしてActivator.CreateInstanceの意味がほげもげ)
+var result = methodDelegate((HogeController)Activator.CreateInstance(type), 10, 20);
+</code></pre>
+<p>あら素敵。素敵ではあるのですが、面白いだけで今回では使い道はなさそうです、Activator.CreateInstance消せてないし、HogeControllerにキャストって、ほげほげですよ。</p>
+<p>というわけで、ちょっと込み入った生成をしたい場合はExpressionTreeの出番です。new生成まで内包したものを、以下のように捏ね捏ねしましょう。</p>
+<pre><code class="language-csharp">// インスタンスへのnewを行う部分まで生成する、つまり以下の様なラムダを作る
+// (x, y) =&gt; new HogeController().HugaAction(x, y)
+var x = Expression.Parameter(typeof(int), &quot;x&quot;);
+var y = Expression.Parameter(typeof(int), &quot;y&quot;);
+var lambda = Expression.Lambda&lt;Func&lt;int, int, string&gt;&gt;(
+    Expression.Call( // .HugaAction(x, y)
+        Expression.New(type), // new HogeController()
+        method,
+        x, y),
+    x, y) // (x, y) =&gt; 
+    .Compile();
+</code></pre>
+<p>ExpressionTreeの文法とかは3年前だか4年前だかの<a href="http://neue.cc/2011/04/20_317.html">Expression Treeのこね方・入門編 - 動的にデリゲートを生成してリフレクションを高速化</a>を参照してください、というわけでここでは解説はスルー。ExpressionTreeの登場はVS2008, .NET 3.5, C# 3.0から。もう5年以上前なのですねー。</p>
+<p>さて、Compileは非常に重たい処理なので（カジュアルに呼びまくるようなコード例をたまに見ますが、マヂヤヴァイのでやめましょう）、作ったらキャッシュします。</p>
+<pre><code class="language-csharp">// Compile済みのラムダ式はキャッシュするのが基本！
+// 以下の様なものに詰めときゃあいいでしょう
+// .NET 4以降はキャッシュ系はConcurrentDictionaryのGetOrAddに入れるだけで済んで超楽
+var cache = new ConcurrentDictionary&lt;Tuple&lt;string, string&gt;, Func&lt;int, int, string&gt;&gt;();
+</code></pre>
+<p>ConcurrentDictionaryのKeyは場合によりけり。Typeの場合もあればStringの場合もあるし、今回のようなCotrollerName/ActionNameのペアの場合はTupleを使うと楽ちんです。Tupleは辞書のキーなどに使った場合、全値の一致を見てくれるので、適当に文字列連結して代用、なんかよりも正確で好ましい結果をもたらしてくれます。簡易的に作る場合は、私も、とても多用しています。</p>
+<p>大文字小文字比較とかの比較まではやってくれないので、そこまでやりたければ、ちゃんとGetHashCode/Equalsを実装したクラスを作りましょう(LightNodeではそれらを実装した<a href="https://github.com/neuecc/LightNode/blob/master/Source/LightNode.Server/RequestPath.cs">RequestPath</a>というクラスを作っています)</p>
+<p>そういえばPCLはWindows Phoneを対象に含めるとConcurrentDictionary使えなくてイラ壁なのでWindows Phoneは見なかったことにしてPCLの対象に含めないのが最善だと思います！どうせ端末出てないし！</p>
+<h2>: Delegate</h2>
+<p>ところでFunc&lt;int, int, string&gt;という型をLambdaに指定しているけれど、これもまた決め打ちで、動的じゃあない。んで、そもそもこの手の作る場合、メソッドの型って色々あるのね。</p>
+<pre><code class="language-csharp">// メソッドの型は色々ある！
+public class HogeController
+{
+    public string HugaAction(int x, int y)
+    {
+        return (x + y).ToString();
+    }
+
+    public double TakoAction(string s, float f)
+    {
+        return double.Parse(s) * f;
+    }
+}
+</code></pre>
+<p>こんな風にActionが増えたら、というか普通は増えるというか違うに決まってるだろという話なわけで、問題色々でてきちゃいます。 まずデリゲートの型が違うのでキャッシュ不可能。Func&lt;int, int, string&gt;のConcurrentDictionaryにFunc&lt;string, float, double&gt;は入りません。そして&quot;HugaAction&quot;や&quot;TakoAction&quot;という動的に来る文字列から、コンパイル時にデリゲートの型は決められない。ていうかそもそもパラメータのほうもxだのyだのって不明じゃないですかー？ゼロ引数かもしれないし10引数かもしれないし。</p>
+<p>どーするか。型名指定ができないなら指定しなければいいじゃない。</p>
+<pre><code class="language-csharp">// Expression.Lambdaに型名指定をやめ、CacheはDelegateを取ってみる
+var cache = new ConcurrentDictionary&lt;Tuple&lt;string, string&gt;, Delegate&gt;();
+var dynamicDelegate = cache.GetOrAdd(Tuple.Create(controllerName, actionName), _ =&gt;
+{
+    // パラメータはMethodInfoから動的に作る
+    var parameters = method.GetParameters().Select(x =&gt;
+            Expression.Parameter(x.ParameterType, x.Name))
+        .ToArray();
+
+    return Expression.Lambda(
+            Expression.Call(Expression.New(type), method, parameters),
+        parameters).Compile();
+});
+</code></pre>
+<p>やった、大解決！</p>
+<pre><code class="language-csharp">// 但しDelegateのキャッシュは呼び出しがDynamicInvokeでイミナイ。
+// もちろん別に速くない。
+var result = dynamicDelegate.DynamicInvoke(new object[] { 10, 20 });
+</code></pre>
+<p>はい、意味ありません。全然意味ないです。Funcなんちゃらの共通型としてDelegateで統一しちゃうと、DynamicInvokeしか手がなくて、ほんとほげもげ！</p>
+<h2>Everything is object</h2>
+<p>Cacheに突っ込むためには、あらゆるメソッドシグネチャの共通項を作らなきゃあならない。でもDelegateじゃあダメ。じゃあどうするか、というと、objectですよ！なんでもobjectに詰めればいいんです！</p>
+<pre><code class="language-csharp">// 解決策・最も汎用的なFuncの型を作ること
+// オブジェクトの配列という引数を受け取り、オブジェクトを返す関数である
+// Func&lt;object[], object&gt;
+// これを作ることによりDynamicInvokeを回避可能！(Boxingはあるけどそこは諦める)
+
+// このキャッシュならなんでも入りそうでしょう
+var cache = new ConcurrentDictionary&lt;string, Func&lt;object[], object&gt;&gt;();
+</code></pre>
+<p>良さそうな感じ、というわけで、object[]の配列を受け取りobjectを返すデリゲートを作っていきましょう。</p>
+<pre><code class="language-csharp">// 作る形をイメージしよう、以下の様な形にするのを狙う
+// (object[] args) =&gt; (object)new HogeController().HugaAction((int)object[0], (int)object[1])
+
+// 引数はオブジェクトの配列
+var args = Expression.Parameter(typeof(object[]), &quot;args&quot;);
+
+// メソッドに渡す引数はオブジェクト配列をインデクサでアクセス+キャスト =&gt; (cast)args[index]
+var parameters = method.GetParameters()
+    .Select((x, index) =&gt;
+        Expression.Convert(
+            Expression.ArrayIndex(args, Expression.Constant(index)),
+        x.ParameterType))
+    .ToArray();
+
+// あとは本体作るだけ、但し戻り値にもobjectでキャストを忘れず
+var lambda = Expression.Lambda&lt;Func&lt;object[], object&gt;&gt;(
+    Expression.Convert(
+        Expression.Call(Expression.New(type), method, parameters),
+        typeof(object)),
+    args).Compile();
+
+// これでふつーのInvokeで呼び出せるように！
+var result = lambda.Invoke(new object[] { 1, 10 });
+</code></pre>
+<p>これは完璧！若干Boxingが気になりますが、そこは贅沢は敵ってものです。というか、実際はパラメータ作る前工程の都合でobjectになってたりするので、そこのコストはかかってないと考えて構わない話だったりします。ちなみにvoidなメソッドに関しては、戻り値だけちょっと弄った別デリゲートを作ればOKですことよろし。その辺の小さな分岐程度は管理するが吉。</p>
+<h2>Task &amp; Task&lt;T&gt;</h2>
+<p>Extra Stage。今どきのフレームワークはTaskへの対応があるのが当たり前です。(いい加減ASP.NET MVCもフィルターのTask対応してください、LightNodeのフィルターは当然対応してるよ！)。というわけでTaskへの対応も考えていきましょう。</p>
+<p>TaskだってobjectなのだからobjectでOK！ではないです。Taskなメソッドに求めることって、awaitすることなのです。Taskで受け取って、awaitするまでが、戻り値を取り出す工程に含まれる。</p>
+<pre><code class="language-csharp">var result = new Hoge().HugaAsync();
+await result; // ここで実行完了される、的なイメージ 
+</code></pre>
+<p>といってもTaskは簡単です、ようは戻り値をTaskに変えればいいだけで、↑のと変わらないです。Func&lt;object[], Task&gt;ということです。Taskに変えるといっても、元から戻り値がTaskのもののデリゲートを作るわけですから、ようするところObjectへのConvertを省くだけ。簡単。</p>
+<pre><code class="language-csharp">// もちろん、実際にはキャッシュしてね
+var lambda = Expression.Lambda&lt;Func&lt;object[], Task&gt;&gt;(
+        Expression.Call(Expression.New(type), method, parameters),
+    args).Compile();
+
+var task = lambda.Invoke(new object[] { 1, 10 }); // 戻り値はTask
+await task; // 待機
+</code></pre>
+<p>そう、Taskはいいんです、Taskは。簡単です。でもTask&lt;T&gt;が問題。というかTが。Tってなんだよ、という話になる。例によってTは静的に決まらないのですねえ……。こいつはストレートには解決できま、せん。</p>
+<p>少しだけ周りっくどい道を通ります。まず、メソッド呼び出しのためのデリゲートはTaskと共通にします。Task&lt;T&gt;はTaskでもあるから、これはそのままで大丈夫。で、取り出せるTaskから、更にTを取り出します。どういうこっちゃ？というと、.Resultですよ、Result！</p>
+<pre><code class="language-csharp">Task task = new Hoge().HugaAsync(); // Taskとして受け取る
+await task; // ここで実行完了される
+var result = ((Task&lt;T&gt;)task).Result; // ↑で実行完了しているので、Resultで取り出せる
+</code></pre>
+<p>こういう風なコードが作れればOK。イメージつきました？</p>
+<pre><code class="language-csharp">// (Task task) =&gt; (object)((Task&lt;&gt;).Result)
+// キャッシュする際は、キーはTypeでTを取って、ValueにFunc&lt;Task, object&gt;が省エネ
+var taskParameter = Expression.Parameter(typeof(Task), &quot;task&quot;);
+var extractor = Expression.Lambda&lt;Func&lt;Task, object&gt;&gt;(
+    Expression.Convert(
+        Expression.Property(
+            Expression.Convert(taskParameter, method.ReturnType), // method.ReturnType = Task&lt;T&gt;
+            &quot;Result&quot;),
+        typeof(object)),
+    taskParameter).Compile();
+
+// これで以下のように値が取れる！
+await task;
+var result = extractor(task);
+</code></pre>
+<p>ここまでやれば、非同期にも対応した、モダンな俺々フレームワーク基盤が作れるってものです。</p>
+<h2>C# is not LightWeight in Meta Programming</h2>
+<p>そんなわけでこれらの手法は、特にOwinで俺々フレームワークを作る時などは覚えておくと良いかもです。そして、定形高速化パターンと書いたように、この手法は別に全然珍しくなくて、実のところASP.NET MVCやASP.NET Web APIの中身はこれやってます。ほとんど全くこのとーりです。(べ、べつに中身見る前からコード書いてたしその後に答え合わせしただけなんだから！！！)。まぁ、このぐらいやるのが最低水準ってことですね。</p>
+<p>で、しかし、簡単ではありません。ExpressionTreeの取り扱いとか、ただのパターンなので慣れてしまえばそう難しくもないのですけれど、しかし、簡単とはいいません。この辺がね、C#ってメタプログラミングにおいてLightWeightじゃないよねっ、ていう事実。最初の例のようにActivator.CreateInstanceで済ませたり、dynamicだけで済む範囲ならそうでもないんですが、そこを超えてやろうとするとねーっ、ていう。</p>
+<p>ExpressionTreeの登場のお陰で、今どきだとIL弄りの必要はほぼほぼなく(とはいえゼロじゃあないですけどね)、楽になったとはいえ、もっと、もっとじゃもん、と思わないこともない。そこでRoslynなら文字列でソースコードベタベタ書いてEvalでDelegateが生成できて楽ちんぽん！な未来は間違いなくありそうです。ですがまぁ、あと1~2年であったり、あとPortable Class Libraryに落ちてくるのはいつかな？とかっていった事情を鑑みる、まだまだExpressionTree弄りスキルの重要性は落ちなさそうなので、学ぶならイマノウチ！損はしません！</p>
+<iframe src="http://rcm-fe.amazon-adsystem.com/e/cm?lt1=_blank&bc1=000000&IS2=1&nou=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as4&m=amazon&f=ifr&ref=ss_til&asins=4048867741" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+ 
+メタプログラミング.NETは、満遍なく手法が紹介された良書だと思いますので、読んだことない人は是非是非読むといいかと思います。参考資料へのリンクが充実してたりする(ILのOpCodeとか)のも嬉しい点でした。
+<h2>まとめ</h2>
+<p>ExpresionTreeは優秀なIL Builder(Code as Dataとしての側面は残念ながらあまり活用できそうにもないですが、こちらの側面で活躍しているのでいいじゃないですか、いいの、か？？？)なんでも生成頑張ればいいってものではなく頻度によりけり。頻度少なけりゃDynamicで全然OK。ん……？</p>
+<p>ちゃぶ台返しますと、ウェブのリクエスト処理的な、リクエストの度に1回しか呼ばれない場合だと、別にここがDynamicInvokeで実行されるかどーかなんて、ハイパー誤差範囲なんですねぇ、実は！クライアントアプリとか、O/R Mapperとかシリアライザとか、テンプレートエンジンのプロパティ評価とか、凄く呼び出されまくるとかじゃなければ、割とどうでもいい範囲になってしまいます。0.01msが0.001msになって10倍高速！なのは事実ですが、そもそもウェブは1回叩いて10msかかったりするわけで誤差範囲としか言い様がない次元になってしまう。</p>
+<p>でも、ちゃんと頑張ったほうが格好はつくので、頑張ってみると良いです、みんなもやってるし！こんなのチキンレースですから。<a href="http://neuecc.github.io/LightNode/">LightNode</a>の速さの秘訣はこれだけ、ではないですが、大事な一端には変わりないです。</p>
+</div>
+<h1><a href="http://neue.cc/2014/0114_445.html">C# ASP.NETのRESTフレームワークパフォーマンス比較大全</a></h1>
+<ul class="date"><li>2014-01-14</li></ul>
+<div class="entry_body"><p><a href="http://neuecc.github.io/LightNode/">LightNode</a>(という私の作ってるOwinで動くMicro REST Framework)の0.2出しました。でも皆さんあんま興味ないと思うので（！）、先にベンチマークの話をしましょふ。0.1を出した時にもグラフを出したのですが、よく見るまでもなく詐欺グラフで非常に良くなかったので載せ直し＆NancyとかWCF RESTとか他のフレームワークも追加しました。そして今回測りなおしてみると、そもそも前回のものは致命的に計測のための環境作りにミスッていたので、まるっきりナシでした、すびばせん。</p>
+<h2>パフォーマンステスト</h2>
+<p>各ソースコードは<a href="https://github.com/neuecc/LightNode/tree/master/Performance">LightNode/Performance</a>に置いてあるので再現できます。数字はrequest per secondで、Apache Benchで叩いているだけです。実行環境は「Windows 8.1/CPU Core i7-3770K(3.5GHz)/Memory 32GB」という、私の開発環境のデスクトップPC上で動かしてます。ホスト先はIIS ExpressじゃなくてローカルIIS。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2014/01/ab_performance_frameworks.jpg' alt='' />
+</p>
+<p>オレンジと緑はふつーのIISでホストしてるもの。グレーはちょっと別枠ということで色分けてます。</p>
+<p>結果に納得いきます？イメージとちょっと違う結果に？まず、<a href="http://msdn.microsoft.com/ja-jp/library/bb412169.aspx">WCFのRest</a>が一番遅いです。これはどうでもいいですはい。次点が<a href="http://www.asp.net/mvc">ASP.NET MVC</a>、そこからちょっと僅差で<a href="http://www.asp.net/web-api">ASP.NET Web API</a>。これはJSONシリアライザの問題もあるかなってところ(MVCのデフォルトシリアライザはJavaScriptSerializerで、あれは遅い)かどうかは知りませんけれど、ともかくWeb APIは言われるほど遅い遅いなんてことはない、ってとこでしょーか。安心して使っていきましょう。そこから別に大きく差がついてってことなく<a href="http://nancyfx.org/">Nancy</a>、ちゃんと定評通りにLightweightで速そうです、偉い。<a href="https://servicestack.net/">ServiceStack</a>は、一応謳い文句どおりちゃんとFastestでした。</p>
+<p><a href="https://katanaproject.codeplex.com/">生OwinHandler</a>(Async)と<a href="http://msdn.microsoft.com/ja-jp/library/system.web.httptaskasynchandler.aspx">HttpTaskAsyncHandler</a>はほとんど変わらない。といったところから、Owin(Katana)でラップされることは、そんなにパフォーマンスロスは発生しない、と考えられるでしょう。この事実はかなり安心できて嬉しい。で、LightNodeがそれらよりもグッと高速。そう、LightNodeはちゃんと最速フレームワークなのです。で、しかし生OwinHandler(Sync)と差がちょっと付いちゃってるので、ここはもう少し縮められないかなあ、といったところ（実際のところ、LightNodeのデフォルトは出力をバッファするようになってて、そのオプションをオフにすればもっと迫れますが、実用的にはオンにせざるを得ないので、ここはオン時で）。そして最速は<a href="http://msdn.microsoft.com/ja-jp/library/system.web.ihttphandler.aspx">SyncのHttpHandler</a>。生ハンドラ強い。</p>
+<p>SelfHostとHeliosはちょっと別枠。SelfHostは一節によるとSloooooooooowって話もあったのですけれど、手元でやると普通に速いのですよねえ。そのSloooowってコード見たら、なんかそもそも他のテストと出力物が全然違ったので、その人のミスなのかなぁ？って思ってますがどうなのでしょうね。ともあれ、私の環境でやってみた限りではSelfHostはかなり速いです。</p>
+<p>Helios(<a href="http://www.nuget.org/packages/Microsoft.Owin.Host.IIS/">Microsoft.Owin.Host.IIS</a>)は、System.Webを通さずにIISネイティブをペシペシ叩くことで超最速を引き出すとかいう代物で、まだ0.1.2-preでプロダクション環境に使える代物ではないとはいえ、とにかく速い。すぎょい。これだけ違うとニヨニヨしちゃうねぇ。</p>
+<h2>Sync vs Async</h2>
+<p>ベンチ結果の突っ込みどころは二点ほどあるかな、と。ひとつはHttpHandler(Async)がHttpHandler(Sync)に比べて険しく遅いこと。もう一つは、RawOwinHandler(ASync)とRawOwinHandler(Sync)ってなんだよハゲ、と。RawOwinHandlerはこんなコードになっています。</p>
+<pre><code class="language-csharp">app.Run(context =&gt;
+{
+    // 中略
+
+    if (context.Request.Query.Get(&quot;sync&quot;) == &quot;true&quot;)
+    {
+        context.Response.Body.Write(enc, 0, enc.Length);
+        return EmptyTask; // Task.FromResult&lt;object&gt;(null)
+    }
+    else
+    {
+        return context.Response.Body.WriteAsync(enc, 0, enc.Length);
+    }
+}
+</code></pre>
+<p>違いはWriteしてるかWriteAsyncしてるか。で、これだけで1000rpsも変わってしまうんですねえ、お、おぅ……。HttpHandler(Async)とHttpHandler(Sync)も同じ話です。これねえ、困った話です。しかも、Heliosだと遅くならなかったりするので、原因はSystem.Webのネットワークストリームに対するWriteAsyncに何らかの欠陥があるのかなあ、と。それ以外にとりあえず考えつくのは、そもそもレスポンスサイズが小さいとかlocalhost同士だから、とかなくもないので（所詮マイクロベンチですから）、厳密にどーこうというのは言いづらくてまだ要調査ってところ。でもHeliosだと遅くならなかったりするのでもうHeliosでいいよ（投げやり）</p>
+<p>まぁネットワーク離したりサイズ大きくしたりとかは、そのうちやりませうか。そのうち。多分やらない（面倒くさいの！）</p>
+<h2>ベンチ実行環境の注意</h2>
+<p>Windows Defenderのリアルタイム保護が有効ならば、無効にしましょう。これ、有効か無効かでめちゃくちゃ結果変わります。3000rpsぐらい変わるしHeliosにしても別に大して差が出ないとか、もう根源的に結果が変わります。Defenderがオンの時に測った結果とかクソの役にも立たないゴミデータなので投げ捨てましょう。ネットにある計測しました、とかってのもそれの可能性があるので見なかったことにしましょう。ファイアウォールとかもとりあえず切っといたほうがいいんじゃないでしょーか。</p>
+<p>IISかIIS Expressかは、傾向としてそこまで大きく違うってこともないですけれど、IISのほうが成績は良好なので、一応測るのだったらIISでやったほうが良いかと思います。以前にやってた時は横着してIIS Expressでやってたのですけれど、反省ということで。そこまでやるならWindows Serverでー、とか無限に要求は加速しますが、フレームワーク同士の相対的な比較なので、そこまでやる必要はないかな？</p>
+<h2>LightNode 0.2</h2>
+<p>ここからタイトル詐欺の抱合せ商法。じゃなくて、最初はこっち本題で書いてたんですが思ったよりパフォーマンス比較が厚くなったので上に持ってきただけなんですよ……。ということでLightNode 0.2出しました。LightNode自体は0.1の解説<a href="http://neue.cc/2013/12/23_439.html">LightNode - Owinで構築するMicro RPC/REST Framework</a>を読んで欲しいのですけれど、0.1はOwinへの理解度が足りなかった成果、安定性に難があったり、細部が詰められてなかったりしました。けれど、今回はかなり完成度上がってます。このバージョンからは普通に投下しちゃって問題ないレベルに達しているかな、と。ベンチマークを細かく取って検証しているとおり、パフォーマンスについてもよりシビアに詰めています。</p>
+<p>変更点は割といっぱいあります。</p>
+<pre><code class="language-text">Enumバインディングの高速化
+Enumパースの厳密化
+T4クライアントコード生成内容の変更、アセンブリロック回避
+ContentFormatterのコンストラクタ修正
+IContentFormatterにEncodingインターフェイス
+Extensionを|区切りで受け付けるように
+void/Task時は204を返す
+ReturnStatusCodeExceptionを投げることで任意のステータスコードで返せる
+Optionでstringはデフォルトではnull非許可に
+IgnoreOperationAttribute追加
+フィルター追加
+</code></pre>
+<p>こんなとこで。あと<a href="http://neuecc.github.io/LightNode/">GitHub Pages -LightNode</a>立てたのでトップページがちょっとオサレに。</p>
+<h2>Enum高速化・判定厳密化</h2>
+<p>C#のEnum自体は凄く好きなんですよ、プリミティブとほとんど変わらない、という、それがいい。Javaみたいにゴテゴテついてると逆に使い勝手悪かったりパフォーマンス上の問題で使われない(Android!)とかって羽目になってたりしますし、これはこれで良いかな、って思ってます。拡張メソッドによってちょっとしたメソッドは足すことが可能になりましたしね。ただ、静的メソッドが頂けない。リフレクションの塊なので速くない、なんか色々使い勝手悪い、などなどビミョー感半端ない。</p>
+<p>しょうがないので、LightNodeではEnum専用のインフラ層を構築して回避しました。高速化しただけじゃなくて、値の判定を厳密化しています。Enumの値が1,10,100の時に5を突っ込んだらダメ、って感じです。更にビットフラグに対しても厳密な判定がされるように加えているので([Flags]属性がついてるかどうかを見ます)、1,2,4,8の時に100が来たら死亡、7ならOK、って感じですにぇ。ASP.NET MVCなどでも、Enumでゆるふわな値が渡ってくるのはかなり嫌だったので、良いんじゃないかと思います。他、デフォルトでstringもnull非許可、配列の場合は空配列になるので、デフォではnullや範囲外の値というのは完全排除しています。</p>
+<p>なお、このEnumインフラストラクチャは、後日、もう少し機能を追加して専用ライブラリとして切り出そうと思っています。使い道はかなり多いんじゃないかなー、と思いますのでお楽しみに。</p>
+<h2>例外によるステータスコード変更</h2>
+<p><a href="http://miso-soup3.hateblo.jp/entry/2013/12/06/225220">ASP.NET Web API 2 で追加された機能について</a>見てて、いいですよねー、ということで。実際、戻り値の型をシンプルなオブジェクトで指定した場合って、例外でグローバルに吹っ飛ばすしか手段ないですしね。</p>
+<pre><code class="language-csharp">public class Hoge : LightNodeContract
+{
+    public int HugaHuga()
+    {
+        throw new ReturnStatusCodeException(HttpStatusCode.NotImplemented);
+    }
+}
+</code></pre>
+<p>単純明快でいいと思います。IHttpActionResultなんて作りゃあそりゃ最大の柔軟性ですがResponseType属性とかは、まぁ、やっぱあんまりだな、って思いますよ、ほんと……。</p>
+<p>さて、実際のとこWeb APIはやっぱり一番参考にしていて、機能眺めながら、どうするか考えてます。ルーティングや認証は他のMiddlewareがやればいい、Request Batchingは入れたい、ODataはOData自体がイラネ、フィルターオーバライドはうーん？とか。色々。色々。</p>
+<h2>Middleware vs Filter</h2>
+<p>そして、フィルター入れました。最初から当然入れる気ではあったのですが実装時間的に0.1では間に合わずで。まぁ、あと、0.1の時点ではミドルウェアパイプラインとフィルターパイプラインの違いを言語化出来なかったり、実装方法というかインターフェイスの提供方法についても全然考えが固まっていなかったので、無理ではあった。今はそれらはしっかり固まってます。</p>
+<p>というわけで、こんなインターフェイス。</p>
+<pre><code class="language-csharp">public class SampleFilterAttribute : LightNodeFilterAttribute
+{
+    public override async Task Invoke(OperationContext operationContext, Func&lt;Task&gt; next)
+    {
+        try
+        {
+            // OnBeforeAction
+
+            await next(); // next filter or operation handler
+
+            // OnAfterAction
+        }
+        catch
+        {
+            // OnExeception
+        }
+        finally
+        {
+            // OnFinally
+        }
+    }
+}
+</code></pre>
+<p>ASP．NET MVCとかの提供するOnActionExecuting/Executedとか、アレ、私は「大嫌い」でした。挙動が不明だから。Resultに突っ込むと何が起こるの？Executingで投げた例外はExecutedに届くの？（届かない）、などなど、分かりやすいとは言い難くて、LightNodeではその方式は採用したくなかった。</p>
+<p>かわりにシンプルなパイプラインを採用しています。OWINのInvokeパイプラインとほぼ同等の。</p>
+<pre><code class="language-csharp">// app.Use
+Func&lt;IOwinContext, Func&lt;Task&gt;, Task&gt; handler
+// LightNode Filter
+Func&lt;OperationContext, Func&lt;Task&gt;, Task&gt; invoke
+// インターフェイスでは
+public abstract Task Invoke(OperationContext operationContext, Func&lt;Task&gt; next);
+</code></pre>
+<p>というか一緒です。見た目もやってることも一緒なミドルウェアとフィルターですが、違いは当然幾つかあります。第一に、ミドルウェアだとほとんどグローバルに適用されますが、フィルターはグローバル・クラス・メソッド単位の3つが選べます。そして、最大の違いは実行コンテキストを知っていること。フィルターが実行されるのはパラメータバインディングの後なので、実行されるメソッドが何かを知っています。どのAttributeが適用されているかを知っています。ここが、大きな違い。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2014/01/lightnode_filterpipeline.jpg' alt='' />
+</p>
+<p>フィルタはGlobal/Contract/Operation単位で設定可能ですが、順番は全て設定されたOrderに従います。AuthenticationとかActionとかの順序パイプラインはなし。だって、あの細かい分け方、必要です？認証先にしたけりゃOrderを-int.MaxValueにでもすりゃあいいんです。というわけで、そのへんは取っ払って、Orderだけ、ただしOrderのレンジは-int.MaxValueからint.MaxValueまで、かつデフォルトはint.MaxValue（一番最後に発火される）。です。ASP.NET MVCのデフォが-1で最優先されるってOrderも意味不明で好きじゃないんですよねえ……。</p>
+<p>OperationContextはIsAttributeDefinedなど、属性のチェックや取り出しが容易になるメソッドが幾つか用意されてますにゃ。もし実行をキャンセルしたければ、nextを呼ばなければいい。その上で大きく結果を変えたければ、Owin Environmentを弄れば好きなようにStatusCodeでもResponseでもなんでも設定できます。十分十二分。</p>
+<h2>まとめ</h2>
+<p>パフォーマンスは、まぁ自分で測らないと納得しにゃいところもきっとあると思いますので自分で測るのが一番いーですね、そりゃそうかそりゃそうだ。生ハンドラに比べるとロスは少なくないなぁというのは現実かもしれませんねぇ（LightNodeは除く）。Owinを被せることのロスは少なめってのが確認できたのは安心できて良いですね、さぁ積極的に使っていきましょう。</p>
+<p>LightNodeは超簡単。超速い。十分なカスタマイズ性。というわけで、真面目に実用的です！使うべき！さぁ今すぐ！あと、意図的に既存のフレームワークの常識と崩しているところも含めて、全ての挙動の裏には多くの考えが含まれています。全ての挙動は明確に選択しています。そーいうのも読み取ってもらえると嬉しいですね。</p>
+<p>また、ちょっとした縁があって2014/2/8に北海道の<a href="http://clr-h.jp/">CLR/H</a>にてセッションを一つ持ちます。北海道！あんまり東京から出ない私なのですが、こないだは大阪に行きましたし、ちょっとだけたまにはお外にも出ていこうかな、なんて思っていなくもないです。北陸とかにもそのうち行きたいですね、色々なのと重ならなければ……。</p>
+<p>セッションタイトルは「LightNode Demystified - How to Make Extreme Fast Owin Framework」を予定しています。ネタは色々あるんですが、LINQはこないだ大阪でやったし、Real World Hyper Performance ASP.NET Architecture(Internal謎社)は、もう少し後でいいかなぁ（？）だし、前2つがうぇぶけー(Windows Azure 最新アップデート/最新Web アプリケーションパターンと .NET)なので、合わせて見るのが良いかにゃ、と。</p>
+<p>LightNode Demystified、ですけれど、LightNodeを作ることを通してOWINとはどのようなものなか、どのような未来が開けるのか、というのを伝えられれば良いと思っています。私自身、実際に作ることによる発見がかなり多かったし、作ってみないと分からないことというのはかなり多いと思いますので、そうして開けた視野をシェアできれば嬉しいですね。</p>
+<p>また、1/17には弊社で開催する<a href="http://partake.in/events/a531c0be-e8dd-46fe-a73c-e51d8ad7a69b">めとべや東京#3</a>にてLTでデモをするので、そちらのほうも都合がつく方は是非是非どうぞ。</p>
+</div>
+<h1><a href="http://neue.cc/2014/0106_442.html">OWINのパイプラインとMiddleware作成ガイド</a></h1>
+<ul class="date"><li>2014-01-06</li></ul>
+<div class="entry_body"><p>あけおめました。振り返る～系の記事はこっ恥ずかしいのでいつまでも先頭に出ていると嫌なので、割と流したくてshoganaiので、記事をでっち上げます。実際切実。記事あげてる場合じゃなくても、これはこれでsetsujitsuなので許してあげてほしいのね。</p>
+<p>Node.jsでKoaというフレームワークが盛り上がっているらすぃ。で、<a href="http://blog.kazupon.jp/post/71041135220/koa">新しいWebフレームワーク Koa について</a>を見てて、あー、まんま<a href="https://katanaproject.codeplex.com/">Katana</a> - Microsoft.Owinで置き換えられるなぁと思ったので、書いてみました。</p>
+<pre><code class="language-csharp">public class Startup
+{
+    public void Configuration(IAppBuilder app)
+    {
+        // KoaとOwinを比較して
+        // http://blog.kazupon.jp/post/71041135220/koa
+
+        // 3. Response Middleware
+        app.Use(async (context, next) =&gt;
+        {
+            Console.WriteLine(&quot;&gt;&gt; one&quot;);
+            await next();
+            Console.WriteLine(&quot;&lt;&lt; one&quot;);
+        });
+
+        app.Use(async (context, next) =&gt;
+        {
+            Console.WriteLine(&quot;&gt;&gt; two&quot;);
+            await context.Response.WriteAsync(&quot;two&quot;);
+            await next();
+            Console.WriteLine(&quot;&lt;&lt; two&quot;);
+        });
+
+        app.Use(async (context, next) =&gt;
+        {
+            Console.WriteLine(&quot;&gt;&gt; three&quot;);
+            await next();
+            Console.WriteLine(&quot;&lt;&lt; three&quot;);
+        });
+    }
+}
+</code></pre>
+<p>比較すると、そっくりそのまま。Koaはフレームワークというか小さなツールキット、Connect/Koa = Katana, Express = ASP.NET MVC/Web API、みたいな図式で捉えればいいのでしょうね。</p>
+<p>OWINの成り立ちについては、<a href="http://kyrt.in/2013/12/17/owin_azure_cache_session_middleware.html">OWIN - Open Web Interface for .NET を使う</a>で解説されていますが、Ruby- Rack/Python - WSGI/Perl- PSGIと同じようなものと捉えられます。OWINとKatanaに関しては、PerlのPSGIと<a href="http://plackperl.org/">Plack</a>の関係性を見れば、そのまま当てはめることが可能です。</p>
+<p>よって、OWINの基本的なことは、OWIN関連を漁るよりも、<a href="http://handbook.plackperl.org/">Plack Handbook</a>を読んだほうがピッと理解できそうです。GitHubのリポジトリには日本語の生Markdown原稿もあるので、目を通しておくと、理解がとっても進みます。</p>
+<h2>Pluggable Pipe Dream</h2>
+<p>OWINがASP.NETにもたらしたものは2つ。一つはバックエンドの自由、IISでもSelfHostでもー、という側面。もう一つはプラガブルなMiddleware。そしてこれは、パイプラインになっているのですね、こちらのほうが開発者にとって注目に値する、影響力の大きなものです。</p>
+<p>最初の例で書いた app.Use(async (context, next) =&gt; はMicrosoft.Owinによるもので、ラムダ式でその場でMiddlewareを定義していることに等しい(AnonymousMiddleware!)わけですが、まずはこっちから書いてったほうが、わかりやすいかな、と。(ちなみにRunはnextのないバージョン、つまりMiddlewareの終点)</p>
+<pre><code class="language-csharp">app.Use(async (context, next) =&gt;
+{
+    try
+    {
+        // 実行前の処理が書ける
+
+        await next(); // 次のミドルウェアの実行（これを呼ばないことでパイプラインのキャンセルも可能）
+
+        // 正常実行後の処理が書ける
+    }
+    catch
+    {
+        // 例外時の処理が書ける
+    }
+    finally
+    {
+        // 後処理が書ける
+    }
+});
+</code></pre>
+<p>こういったパイプラインは.NETには偏在しています。HttpClientのDelegatingHandler - <a href="http://www.slideshare.net/neuecc/httpclient">HttpClient詳解、或いは非同期の落とし穴について</a>や、LINQ to Objects - <a href="http://www.slideshare.net/neuecc/an-internal-of-linq-to-objects-29200657">An Internal of LINQ to Objects</a>の中身と変わらない話です、特にDelegatingHandlerは近いイメージ持ってもらうと良いかな、と。図にすればこんな感じ。</p>
+<div class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2014/01/owinpipeline.jpg' alt='' />
+</div>
+<p>next()を呼び出すことで、円の中央、次のパイプラインに進む。きっと、一番最後、中心のMiddlewareはフレームワークとしての役割を担うでしょう(ResponseStreamに書いたりなど処理をかなり進めてしまうので、フレームワークが後続のMiddleware読んでも無意味というか逆に死んだりするので、フレームワーク部分では意図的にnext呼ばない方がいい←だから実際app.RunもNext呼ばないしね)、とはいえ構造上ではFrameworkとMiddlewareに別に区別はないです。処理が終わったら、今度は円の内側から外側に向かって処理が進んでいきます。Nextを呼ばなければ、途中で終了。1-2-3-4-5-4-3-2-1を、3で止めれば、1-2-3-2-1になる、といった感じです。これはASP．NET MVCのfilterでResultに小細工したり、Exceptionを投げたりして中断するようなものです。</p>
+<p>HttpModuleだってHTTPパイプラインぢゃーん、というツッコミもあっていいですけれど、それよりもずっと単純明快な仕組みだというのがとても良いところ。こういった薄さであったり単純さであったり、をひっくるめたLightweightさって、とっても大事です。</p>
+<h2>Mapping</h2>
+<p><a href="http://neue.cc/2013/12/23_439.html">LightNode - Owinで構築するMicro RPC/REST Framework</a>ではURLは決め打ち！と言いましたが、むしろそもそも、URLのルーティングはLightNodeが面倒見るものではなくて、他のMiddlewareが面倒見るものなのです。例えば、APIのバージョン管理でv1とv2とで分けたい、というケースがあったとしましょう。その場合、MapWhen(Katanaに定義されてます)を使うと、条件指定で利用するMiddlewareのスタックを弄ることができます。</p>
+<pre><code class="language-csharp">// Conditional Use
+app.MapWhen(x =&gt; x.Request.Path.Value.StartsWith(&quot;/v1/&quot;), ap =&gt;
+{
+   // Trim Version Path
+   ap.Use((context, next) =&gt;
+   {
+        context.Request.Path = new Microsoft.Owin.PathString(
+            Regex.Replace(context.Request.Path.Value, @&quot;^/v[1-9]/&quot;, &quot;/&quot;));
+        return next();
+   });
+
+    ap.UseLightNode(new LightNodeOptions(AcceptVerbs.Post, new JsonNetContentFormatter()),
+        typeof(v1Contract).Assembly);
+});
+
+app.MapWhen(x =&gt; x.Request.Path.Value.StartsWith(&quot;/v2/&quot;), ap =&gt;
+{
+   // 手抜きなのでコピペ:)
+   ap.Use((context, next) =&gt;
+   {
+        context.Request.Path = new Microsoft.Owin.PathString(
+            Regex.Replace(context.Request.Path.Value, @&quot;^/v[1-9]/&quot;, &quot;/&quot;));
+        return next();
+   });
+
+   ap.UseLightNode(new LightNodeOptions(AcceptVerbs.Post, new JsonNetContentFormatter()),
+    typeof(v2Contract).Assembly);
+});
+
+
+</code></pre>
+<p>LightNodeはサービスの記述された読み込むアセンブリを指定できるので、v1用アセンブリとv2用アセンブリを分けて貰って、Request.Pathを書き換えてもらえれば(/v1/部分の除去)動きます。これは単純な例ですが、複雑なルーティングだって頑張れば出来るでしょう。きっと。</p>
+<p>OWINには<a href="http://superscribe.org/">Superscribe</a>というグラフベースルーティング（何だそりゃ）とかもありますし、そういうのと組み合わせれば、実際LightNodeでうまく使えるかどうかは知りませんが、まぁ、そういうことです。やりたければ外側で好きにやればいいのです。プラガブル！</p>
+<h2>Headerが送信されるタイミング</h2>
+<p>話は突然変わって、Middleware実装上のお話。表題のことなのですけれど、原則的には「最初にWriteされた時」です。原則的には、ね。最初にFlushされた時かもしれないし、そもそもされないかもしれないこともあるかもですが、とはいえ原則的には最初にWriteされた時です。どーいうことか、というと</p>
+<pre><code class="language-csharp">app.Run(async (context) =&gt;
+{
+    try
+    {
+        // Writeしてから
+        await context.Response.WriteAsync(&quot;hogehoge&quot;);
+        context.Response.Body.Flush();
+
+        // StatusCodeやHeaderを書き換えると
+        context.Response.StatusCode = 404;
+    }
+    catch (Exception ex)
+    {
+        // 例外出る
+        Debug.WriteLine(ex.ToString());
+    }
+});
+</code></pre>
+<p>これをMicrosoft.Owin.Host.SystemWebでホストすると、「HTTP ヘッダーの送信後は、サーバーで状態を設定できません。」というお馴染みのような例外を喰らいます。ちなみにHttpListenerによるSelfHostでは無反応という、裏側のホストするものによって挙動は若干違うのだけは注意。とはいえ、どちらも共通して、ヘッダーが送信された後には幾らStatusCodeやHeaderを書き換えても無意味です。上の例だと、404にならないで絶対200になっちゃうとか、そういう。</p>
+<p>当たり前といえば当たり前なのですが、生OWIN、生Katanaだけで色々構築すると、Middlewareの順序によっては、そーなってしまうことも起きてしまいがちかもしれません。</p>
+<p>なお、Katanaのソースコード読む時はHttpListenerのほうを中心に追ったほうが分かりやすいですね。System.Webのほうは、つなぎ込みがややこしかったり、すぐにブラックボックスに行っちゃったりで読みにくいので。若干の挙動の差異はあるとはいえ、概ね流れや処理は同じですから、まずは読みやすいほう見たほうが楽でしょう。</p>
+<h2>バッファリングミドルウェア</h2>
+<p>さて、そんな、Writeが前後して厄介というのを防ぐためのMiddlewareを作ってみましょう。解決策は単純で、上流のパイプラインでバッファリングしてやればいいわけです。</p>
+<pre><code class="language-csharp">app.Use(async (context, next) =&gt;
+{
+    var originalStream = context.Response.Body;
+    using (var bufferStream = new MemoryStream())
+    {
+        context.Response.Body = bufferStream; // 差し替えて
+        await next(); // 実行させて
+        context.Response.Body = originalStream;  // 戻す
+
+        if (context.Response.StatusCode != 204) // NoContents
+        {
+            context.Response.ContentLength = bufferStream.Length;
+            bufferStream.Position = 0;
+            await bufferStream.CopyToAsync(originalStream); // で、コピー
+        }
+    }
+});
+</code></pre>
+<p>単純簡単ですね！そう、Middlewareとか別にあんまり構える必要はなくて、Global.asax.csに書いていたのと同じようなノリでちょろちょろっと書いてやればいいわけです。そして、それが膨らみ始めたり、汎用的に切り離せそうだったら、独立したMiddlewareのクラスを立ててやれば再利用可能。これはIHttpModuleを作るのと同じ話ですけれど、Middlewareは、それよりもずっとカジュアルに作れます。</p>
+<p>さて、上のコード、しかしこれだとMemoryStreamが中で使ってる奴にCloseされちゃったりするとCopyToAsyncでコケてしまいます。いや、誰がCloseするんだ？という話はありますが、でも、例えばStreamWriterを使って、usingして囲んでStreamに書いたりすると、内包するStreamまでCloseされちゃうんですねぇ。</p>
+<p>usingしないように注意する、というのも、パイプラインに続くMiddleware全てで保証なんて出来ないので、ここもまた上流で防いでやるのがいいでしょう。<a href="https://github.com/neuecc/LightNode">LightNode</a>では<a href="https://github.com/neuecc/LightNode/blob/master/Source/LightNode.Server/Utility/UnclosableStream.cs">UnclosableStream.cs</a>というものでラップしています。どういうものかというと</p>
+<pre><code class="language-csharp">internal class UnclosableStream : Stream
+{
+    readonly Stream baseStream;
+
+    public UnclosableStream(Stream baseStream)
+    {
+        if (baseStream == null) throw new ArgumentNullException(&quot;baseStream&quot;);
+
+        this.baseStream = baseStream;
+    }
+
+    // 以下ひたすらStreamを移譲
+
+    // そしてCloseとDisposeは空白
+
+    public override void Close()
+    {
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+    }
+}
+</code></pre>
+<p>という単純なもの。これを、ついでに独立したMiddlewareにしてみますか、すると、</p>
+<pre><code class="language-csharp">public class BufferingMiddleware : Microsoft.Owin.OwinMiddleware
+{
+    public BufferingMiddleware(OwinMiddleware next)
+        : base(next)
+    {
+
+    }
+
+    public override async Task Invoke(Microsoft.Owin.IOwinContext context)
+    {
+        var originalStream = context.Response.Body;
+        using (var bufferStream = new MemoryStream())
+        {
+            context.Response.Body = new UnclosableStream(bufferStream); // Unclosableにラップする
+            await this.Next.Invoke(context); // Microsoft.Owin.OwinMiddleware使うとthis.Nextが次のMiddleware
+            context.Response.Body = originalStream;
+
+            if (context.Response.StatusCode != 204)
+            {
+                context.Response.ContentLength = bufferStream.Length;
+                bufferStream.Position = 0;
+                await bufferStream.CopyToAsync(originalStream);
+            }
+        }
+    }
+}
+</code></pre>
+<p>フレームワークレベルのものを作る時は、このレベルまで気を使ってあげたほうが間違いなくいいかと思います。</p>
+<h2>Owin vs Microsoft.Owin</h2>
+<p>Middleware作るのにMicrosoft.Owin.OwinMiddlewareを実装する必要はありません、InvokeとTaskと、などなどといったシグネチャさえあってればOKです。同様にIOwinContextはKatanaで定義してあるものであり、Owin自体はIDictionary&lt;string, object&gt;が本体です。</p>
+<p>Katana(Microsoft.Owin)は便利メソッドの集合体です。Dictionaryから文字列Keyで引っ張ってResponseStream取り出すより、context.Response.WriteAsyncと書けたほうが当然楽でしょふ。他にも、Cookieだったりヘッダだったり、Middlewareの定義用ベースクラスだったり、などの基本的な、基本的な面倒事を全てやってくれる薄いツールキットがKatanaです。冒頭の、Node.jsのKoaみたいなものであり、PerlのPlackに相当するようなもの、と捉えればいいんじゃないでしょーか。</p>
+<p><a href="https://github.com/neuecc/LightNode">LightNode</a>はMicrosoft.Owinを参照していません。これは、依存性を最小限に抑えたかったからです。その分だけ、面倒事もあるので、楽したかったり社内用Middlewareを少し作るぐらいだったら、Katana使っちゃっていいと思いますですね。リファレンス実装、でありますが、どうせ事実上の標準として収まるでしょうし。フレームワークレベルでがっつし作ってみたいという時に、依存するかしないか、どちらを選ぶかは、まぁお好みで。依存したって全然構わないし、依存しないようにするのもそれはそれでアリだと思いますし。</p>
+<h2>HTMLを書き換えるMiddlewareを作る</h2>
+<p>というわけで、応用編行くよー。<a href="http://www.misuzilla.org/">mayuki先生</a>の作られている<a href="https://github.com/mayuki/Cartelet">Cartelet</a>というHTMLパーサー/フィルターライブラリがあるのですが（某謎社で使われているらしいですよ）、それをOwinに適用してみましょう。Carteletのできることは</p>
+<blockquote>
+</blockquote>
+<p>HTMLのそれなりに高速でそれなりなパース
+出力時にCSSセレクターで要素に対してマッチして属性や出力フィルター処理
+フィルターしない部分は極力非破壊
+ASP.NET MVCのViewEngine対応
+CSSのstyle属性への展開 (Cartelet.StylesheetExpander)</p>
+<p>だそうです。</p>
+<p>例として、class=&quot;center&quot;という属性を、style=&quot;text-align:center&quot;に展開するというショッパイ決め打ちな例を作ってみます。こんなMiddlewareを作ります。</p>
+<pre><code class="language-csharp">// Cartelet Filter Middleware
+app.Use(async (context, next) =&gt;
+{
+    var originalStream = context.Response.Body;
+    using (var bufferStream = new MemoryStream())
+    {
+        context.Response.Body = bufferStream; // 差し替えて
+        await next(); // 実行させて
+        context.Response.Body = originalStream;  // 戻す
+
+        if (context.Response.StatusCode != 204) // NoContents
+        {
+            // Carteletによるフィルタリングもげもげ
+            var content = Encoding.UTF8.GetString(bufferStream.ToArray());
+
+            var htmlFilter = new HtmlFilter();
+            htmlFilter.AddHandler(&quot;.center&quot;, (ctx, nodeInfo) =&gt;
+            {
+                nodeInfo.Attributes.Remove(&quot;class&quot;);
+                nodeInfo.Attributes[&quot;style&quot;] = &quot;text-align:center&quot;;
+                return true;
+            });
+
+            var node = HtmlParser.Parse(content);
+
+            var sw = new StreamWriter(context.Response.Body); // usingしない、stream閉じないために(leaveOpenオプションもあるのでそちらのほうが望ましいけど横着した)
+            var cartelet = new CarteletContext(content, sw);
+
+            htmlFilter.Execute(cartelet, node);
+
+            await sw.FlushAsync(); // usingしない時はFlushも忘れないように。。。
+        }
+    }
+});
+</code></pre>
+<p>Carteletの受け取るのがStringなので、全パイプラインが完了するまではバッファリングします。で、それで手に入れたStringをCarteletに流し込んで、本来のBodyに流し込む。(Content-Lengthの設定を省いてるので直に流し込んでますが、設定が必要なら再再バッファリングががが、まぁ、どうせ更に上流でgzipとかするだろうから、ここでContent-Length入れる必要はあんまにゃいかな！）</p>
+<p>実際に結果を見てみると、</p>
+<pre><code class="language-csharp">// これを実行すると
+app.Run(async context =&gt;
+{
+    context.Response.StatusCode = 200;
+    context.Response.ContentType = &quot;text/html;charset=utf-8&quot;;
+    await context.Response.WriteAsync(@&quot;
+            &lt;html&gt;&lt;body&gt;
+            &lt;div class=&quot;&quot;center&quot;&quot;&gt;
+               ほげほげ！
+            &lt;/div&gt;
+            &lt;/body&gt;&lt;/html&gt;&quot;);
+});
+</code></pre>
+<pre><code class="language-html">&lt;html&gt;&lt;body&gt;
+&lt;div style=&quot;text-align:center&quot;&gt;
+   ほげほげ！
+&lt;/div&gt;
+&lt;/body&gt;&lt;/html&gt;
+</code></pre>
+<p>というHTMLが出力されます。へーへーへー。色々応用効きそうですね！</p>
+<h2>OWINはパイプラインの夢を見るか？</h2>
+<p>色々出来る、しかも色々簡単！素晴らしい素晴らしい！プラガブル！はたして本当に？実際、フレームワーク書いたりミドルウェア書いたりしてると、ふつふつふつと疑問が湧いてきます。そういう時は先行事例を見ればいい、というわけでPythonのWSGIでは以下の様な話が。</p>
+<p><a href="http://ymotongpoo.hatenablog.com/entry/20110802/1312249347">（翻訳） WSGIは死んだ: WSGI Liteバンザイ！</a></p>
+<blockquote>
+<p>すべてがプラガブルで、モノリシックなアプリケーションフレームワークを持つ理由がもはや一つもないような未来を思い描いていました。すべてライブラリ、ミドルウェア、デコレータでまかなえるからです。
+悲しいことに、そんな理想的な未来はやってきませんでした。</p>
+</blockquote>
+<p>OWINでも、一個のでっかいフレームワークを持つ必要なんてない！と言える時が来るか、というと、さすがにそれはないでしょうねえー。また、たとえ分離可能なコンポーネントであっても、フレームワークの提供するシステム(フィルターやプラグイン)から離れられるかというと、必ずしもそうではないのかな、って。</p>
+<p>Middlewareのパイプラインは、ASP．NET MVC/Web APIとかのフィルターのパイプラインとも同じようなものです。だったらフィルターで作るよりMiddlewareで作ったほうが、フレームワークという制限から離れられて良さそう。でも、Middlewareの欠点は、後続のパイプラインのコンテキストを知らないことです。認証を入れるにしても、[AllowAnonymous]属性が適用されているかなんてしらないから、全部適用するかしないか、ぐらいにしか出来ない。filterContext.ActionDescriptorのようなもの、というのは、フレームワークの内側のシステムしか持ち得ないのです。でも、そうしてフィルターとして実装すれば、フレームワークに深く依存することになる。</p>
+<p>そんな悩ましさを抱えつつも、それは、あんま無理せずに、コンテキスト不要なら最大限独立性の高いOwin Middlewareとして。そうでないならアプリケーションのプラグイン（フィルター）として。でいいかな、って思ってます。今のところ。何れにせよIHttpModuleなんかよりは遥かに作りやすいし、その手の話だって今に始まったことじゃあないのよね？HttpModuleだってHTTPパイプラインぢゃーん、って。はい。</p>
+<p>2014/1/18（土）に開催される<a href="http://partake.in/events/a531c0be-e8dd-46fe-a73c-e51d8ad7a69b">めとべや東京#3</a>（開催場所は謎社です）では、LTで5分でサービスAPIをOwin/LightNodeを使って作って実際にAzure Web Sitesにホストするまで、デモしようと思ってますので、OWIN知りたい、どう動かすのか見てみたい、って人もどうぞ。めととは。</p>
+</div>
+<h1><a href="http://neue.cc/2013/1230_440.html">2013年を振り返る</a></h1>
+<ul class="date"><li>2013-12-30</li></ul>
+<div class="entry_body"><p>振り返るシリーズ第三弾。毎年、30日に振り返っているので、今年も30日で。ちなみに12/30は私の誕生日でして、ついに30歳を迎えてしまった……。20代さようなら、いや、別にいいんですが、C#er若くない人サイドに入ったな！という感じなわけでして、新陳代謝がほげもげとか。</p>
+<p><a href="http://neue.cc/2011/12/30_361.html">2011年</a>はMVP受賞、<a href="http://neue.cc/2012/12/30_391.html">2012年</a>はgloopsへの入社と退社(在籍期間たったの10ヶ月だった！)、というわけですが、では今年のメイントピックは、やはり当然<a href="http://grani.jp/">グラニ a.k.a.謎社</a>の始動です。2012年末の段階では</p>
+<blockquote>
+<p>今はニート。ではなく、謎社にいます。謎社ってなんだよというか伏せる意味は特にないんですが、まぁまだ伏せておきます。実際のとこ出来たばかりの会社でして、だいたいほぼほぼ創立メンバーとして働いてます。そして現在のところPHPが95%でC#が5%といったところですが（私もPHP書いてますよ！毎日吐き気が！）、直近の目標はC#比率を高めることです（笑）</p>
+</blockquote>
+<blockquote>
+<p>来年は変化というよりは進化、↑で書いたとおりにゲームを、じゃあなくて会社を前身させるのに全力で突き進む、というわっかりやすい目標があるんで、そのとーりに邁進しましょう。C#といったら謎社！みたいな、C#を使う人が憧れるぐらいな立ち位置の会社にできればいいなと思っています。</p>
+</blockquote>
+<p>という話を立てていたわけですが、どうでしょう？かなりの部分で達成出来たのではないかと思います。会社は信じられないぐらいの成功を果たしていますし(※別に私の力ではなくてメンバー全員の力の賜物です)、当初PHPで書かれていたプログラムは、100%、C#へのリプレイスを果たしました。ボロ一軒家(リリース前は会社=一軒家にすし詰めで開発してた)でPHP書いてる時から、こういったヴィジョンを描いていたし、1年のうちに実現しきったのは、相当やった方だと年の末ぐらいは自画自賛させてくださいな。</p>
+<p>といっても、まだ「C#を使う人が憧れるぐらいな立ち位置の会社」になれているかといったら、知名度であったり、そしてまだまだ実績も足りていないので、全然、目指す水準には満たしていないです。まだ、やっと0→1に、スタート地点に立ったばかり。ここからは1→100にしていかなければならない。また、外向きだけではなく、内側もまた全然整備しきれてないので、働く人がここで働くことに満足できる状態を作れなきゃとか、やることは山積み。</p>
+<h2>C#</h2>
+<p>今年のブログ内容は一気に非同期に傾いています。というのも会社で本格的にasyncを導入して使いまくり始めたこともあって、実践的に地雷を踏みまくってノウハウが溜まったからです。こういう実践的な話は、リファレンス情報だけではどうしても足りないわけで、両方が必要なのです。よく、C#はMSDNに情報がいっぱいあって、こんなに充実している言語、他にないよ！何が不満なの！？というけれど、半分合ってて、実態としては全然あってない。あくまで実践的な情報が重要度では第一、リファレンスは補完するもの。だから不満に感じるのは当然です。Microsoftとしては、そういう不足は<a href="http://code.msdn.microsoft.com/">コードレシピ</a>で補いたいようだけれど、それじゃ補えないというか、結局こういうのってリファレンス側に近い情報であって、欠落を埋められるわけがない。</p>
+<p>じゃあ誰が埋めるのか、埋められるのかって、それは私達自身だけでしょう。自らの知見から来る情報がネットに溢れるといいな、と思っていますし、そのためにもまず自分たちがやっていきます。特に.NET界隈は実地的な話がなくて。海外とのレベル格差も酷い。圧倒的に日本はレベルが低い、ように見えてしまう。実際は優れた人は表に出てこないとか、絶対量が違うからとか、幾らでも言い分もあるし、確かにそうなのでしょう。でも、やっぱり、見えなければ意味がないし、その結果が、これ。C#という言語の他言語に比べた地位の低さ。例えばですよ、AWSは沢山の実地的な話が溢れてる。かたやAzureは、ただのリファレンス情報が垂れ流されているだけ。こういうの地味にきっついし差として現れるんだよね。C#も同じようなものですよ、現状。残念ながら。</p>
+<p>というわけで超積極的に、情報は出していきたいのですにぇ。</p>
+<p>さて、個人的には相変わらず小さなライブラリは作りまくってました。NuGetの登録数も36になりました。そういえば<a href="http://neue.cc/2013/02/27_398.html">AsyncOAuth</a>も今年からですね、おかげ様でOAuthライブラリといったらこれだよね！ぐらいに受け入れてもらえたようで、色々なところで使われているようです。謎社自身でもがしがし使ってます。</p>
+<p>今年もう一つ、注力していたのは<a href="http://neue.cc/2013/04/05_403.html">CloudStructures</a>というRedisクライアントですね。C# + Redis、しかもC# 5.0推奨というハードルの高さすぎてあまり使われてる感はないですが、これは謎社でハイパー使ってます。</p>
+<p>AsyncOAuthやCloudStructuresは、謎社でのPHP→C#移行で絶対必要になるパーツという目算だったので先行して仕上げていました。その路線に乗っかって、来年育てていくのは<a href="http://neue.cc/2013/12/23_439.html">LightNode</a>ですね。こういう技術、必要になってから調べ始めているのでは遅く、でもあまり長いスパンで見ていてもしょうがない。研究開発機関ではないのだから。というわけで、今のところ、半歩先ぐらいを見据えて動いています。</p>
+<p>ハイパー放置状態のlinq.jsを毎年何とかするする詐欺は、来年こそ、は……。</p>
+<h2>会社</h2>
+<p>今では当たり前のようにC#の企業ですが、当初はPHPでした。6/8時点で講演した<a href="http://www.slideshare.net/neuecc/net-22662425">.NET最先端技術によるハイパフォーマンスウェブアプリケーション</a>は、はてブ300以上、現時点でViewsが33500と、.NET系にしてはクリティカルヒットを飛ばしましたが、スライドの冒頭で紹介したとおり、この時点ではPHPだったのです。実際にリプレースが完了したのは7/16日。深夜メンテナンス時間を挟んで朝に一気に切り替え。若干のトラブルはあったものの無事完了。</p>
+<p>今年最大のハイライトであり、というか私自身も今のところ生きてて一番のハイライトですね。出来てまもない会社だから、体力も人員もない、でも凄い上り調子だからアプリを止めるとかありえないどころか育てなければならない。そんな中でリソース分散してPHPとC#を並走させて、統合、そして切り替え。まず、やるって決定が常識的に考えてありえないほど無茶苦茶だし、実際にやりきったのも凄いなぁと自画自賛Part2。やれるはずっていう机上の空論と、実際にやりきるってのは、違いはないけど必要な体力と精神力が全然違いますね、もうほんとヤバかった、特に精神的に……。</p>
+<p>これに関しては、メンバーに恵まれました。出来たばかりの先行き不明な会社の、しょぼいホームページに、たった二行で求人情報が書かれててmailtoで送れ、というような状況で、素晴らしい人が次々と来てくれたのは信じられない話で。ほんと感謝の念に尽きません。</p>
+<p>逆に今のほうが求人に苦戦しているのがアレ。あ、そんなわけでWe're Awaitingということで積極的に採用はしているのでいつでも歓迎ですよ - <a href="http://grani.jp/recruit.html">求人ページ</a> ← 未だにサイトしょぼい</p>
+<p>職種はCTOなのですけれど、CTO論をぶったりは、しません特に。色々なところにボーダーがあって、そこを超えそうになったら発言するようにしているのと、つまり超えない時は何もやってないように見えて実際何もやってない！こたぁない。って感じですかね（テキトー）。まぁ、かくあるべきみたいなものはあります、私の中で、ちゃんと。どんぐらい全うしてるかというと、うーん、70点？</p>
+<p>技術的な方向性はシンプルに最先端のC#、なわけですけれど、それが良いことなのかどーか。勿論、良いことです。でも必ずしも良いことと言えるわけじゃあない。じゃあ良いことに変えればいいだけです。こんなの単純な話で、よーは会社として保守的にならないことがバリューを産み出せるようになりゃあいいだけです。逆に、何も産み出せないならNGでしょうね。そうならないように何が出来るかを行動していくべきでしょう。</p>
+<h2>ゲーム</h2>
+<p><a href="http://superhexagon.com/">Super Hexagon</a>最高！これに尽きる。マジ最高。これはヤヴァい。Windows Phoneの最大の欠点はSuper Hexagonがプレイできないことと断言していい。絶対無理ー、と思ったHYPER HEXAGONESTをクリアした瞬間とか、ゲームの達成感の全てが詰まってた。超興奮。数年ぶりにゲームの面白さを思い出させてくれたマスターピース。</p>
+<p>というわけで、今年は圧倒的に超えられない壁にSuper Hexagonが存在しているのですが、次点としてはGAMELOFTのモバイル用レースゲーム、Asphalt 8かな。グラフィックのケレン味が実にモバイル向けで、スマートフォン向けゲームとしては現時点で最高のグラフィック品質。ゲームのほうも大味、じゃなくてダイナミックで楽しい。通信対戦もあるしね。</p>
+<p>そして<a href="http://apps.microsoft.com/windows/ja-jp/app/asphalt-8-airborne/9076a406-495e-4aac-8153-6d3695f88650">Windows Store App版</a>もある！しかもWindows Phone 8版もある！しかもWindows Store App - Windows Phone 8間での通信対戦が可能！(iPhone-AndroidとかiPhone-WP8とかは対戦不可)。そんなわけで社内Windowsクラスタで話題騒然、Surface持っているならマストバイ、とか微妙な盛り上がりを見せました。ていうか社内で普通にWindows Phone 8の実機が集まるところがまずアレ。</p>
+<h2>本とか映画とか漫画とかアニメとか</h2>
+<p>見てない！ゲームと同じく、この辺りも年々見なくなっていってますが今年は特に一番見てない気がする、忙しさのせいかな(言い訳)。引っ越しして、実家に預けていた本とか漫画を全部回収したのだけど、あー、学生の頃は、いっぱい読んでるわけでもないけれどまぁまぁ読んでたなぁ、とか寂しくなったりはしたりして。</p>
+<h2>来年</h2>
+<p>ここ数年は、毎年ジェットコースター状態で目まぐるしく変化していて。けれど、大きな目標からはブレないで、年々近づけている気がします。一番最初に若くない人サイドに入ったとか、新陳代謝とか言いましたが、来年はそういうことが起こる状態を作っていきたいですね。C#が、若い人がこぞって使うような言語になってればいい、と。そのためにできること。人がすぐに思い浮かべられる、メジャーなアプリケーションの創出と、C#による圧倒的な成果、C#だからこその強さ、というのを現実に示していくこと。雇用の創出、の連鎖。</p>
+<p>というわけで、来年も引き続きご期待くださいだし、よろしくお願いします。</p>
+</div>
+<h1><a href="http://neue.cc/2013/1223_439.html">LightNode - Owinで構築するMicro RPC/REST Framework</a></h1>
+<ul class="date"><li>2013-12-23</li></ul>
+<div class="entry_body"><p>LightNodeというMicro RPC/REST FrameworkをOwinで作りました。というわけで、LightNodeについて……の前に、そもそもOwinって何？という感じだと思いますので、作成物を通してOwinが開くC#によるウェブ開発の未来について、もしくはOne ASP.NETというヴィジョンが見せる世界についてお伝えしようかな、と。これは<a href="http://www.adventar.org/calendars/132">One ASP.NET Advent Calendar 2013</a>への記事ですしね！ちなみに副題は「OWINでハイパー俺々フレームワーク作成」。きゃうん。</p>
+<h2>LightNode</h2>
+<p>バージョンはまだ0.1です。急ぎで作ったので、そう完成度高くないです。とはいえ十分動きますし、これは来年育てていきたいと思っているフレームワークです。やる気は、かなりあります。半年後ぐらいには実用になってるかなあ、と。ソースコードとか課題管理はGitHubで。</p>
+<ul>
+<li><a href="https://github.com/neuecc/LightNode/">GitHub - neuecc/LightNode</a></li>
+</ul>
+<p>例によってインストールはNuGetから。</p>
+<ul>
+<li>Install-Package <a href="https://nuget.org/packages/LightNode.Server/">LightNode.Server</a></li>
+</ul>
+<p>細かいパッケージが実はいっぱいあったりして……。</p>
+<ul>
+<li>Install-Package <a href="https://nuget.org/packages/LightNode.Client.PCL.T4/">LightNode.Client.PCL.T4</a></li>
+<li>Install-Package <a href="https://nuget.org/packages/LightNode.Formatter.JsonNet/">LightNode.Formatter.JsonNet</a></li>
+<li>Install-Package <a href="https://nuget.org/packages/LightNode.Formatter.ProtoBuf/">LightNode.Formatter.ProtoBuf</a></li>
+<li>Install-Package <a href="https://nuget.org/packages/LightNode.Formatter.MsgPack/">LightNode.Formatter.MsgPack</a></li>
+</ul>
+<p>LightNodeが提供するのはサーバーサイドフレームワーク(競合はASP.NET Web APIです)と、クライアントサイドのAPIアクセスコード自動生成(WCFがやっているような！)、両方です。クライアントサイドの生成は、Unity3Dへのコード生成が最初のターゲットだったはずなんですが時間的な都合上、今はPCLだけ、です。まあ近いうちにはUnityのは出します、あとTypeScript用のも。</p>
+<p>目標はクライアントサイドからサーバーサイドまで全てC#で統一されることによる生産性の超拡張を具現化すること。クライアントがUnityでサーバーがOwinで全部C#、みたいな、ね。両方C#で作り上げられることによるメリットを最大限引き出すことを目指しています。また、JSONオンリーではなくMessagePackやProtocol Buffersでのやり取りも可能なように、パフォーマンスを最大限追求します。また、そのうえで他言語との通信も捨てない、というわけでHTTPでRESTなでほげもげは捨てず、他言語からもサーバーへは自由にアクセス可能です。</p>
+<p>逆にRESTfulでビューティフォーなURL設計とかは優先度ゼロなので完全に捨てています。</p>
+<h2>Lightweight as a Server</h2>
+<p>LightNodeは超絶Lightweightなフレームワークです。何がLightweightかというと、パフォーマンスと実装の簡単さ、両方を指して言ってます。特に実装の手間はほとんどないぐらい非常に軽量です、ASP.NET Web APIとか超重量級ですからね（それはさすがにいいすぎ）。</p>
+<p>サーバーはOwin上に構築されていますので、まずOwinMiddlewareのセットアップが必要です。コンフィグだけは少し書いて下さい。SelfHostでもIISでもいいので、どちらかのOwinホストパッケージをNuGetで引っ張ってきて、スタートアップクラスでUseLightNodeする。</p>
+<pre><code class="language-csharp">// OwinのStartup
+public class Startup
+{
+    public void Configuration(Owin.IAppBuilder app)
+    {
+        // 受けつけるVerbを決めたりデフォのTypeFormatter(複数も当然できる)設定したり
+        app.UseLightNode(new LightNodeOptions(
+            AcceptVerbs.Get | AcceptVerbs.Post, 
+            new JavaScriptContentTypeFormatter()));
+    }
+}
+</code></pre>
+<p>準備はこれだけ。で、実際にAPIはどうやって作るかというと、LightNodeContractを継承したクラスのパブリックメソッドが、自動的にAPIとして公開されます。</p>
+<pre><code class="language-csharp">// LightNodeContractを実装すると全てのpublicメソッドがAPIになる
+// URLは {ClassName}/{MethodName} で固定
+// この場合だと例えば http://localhost/My/Echo?x=test
+public class My : LightNodeContract
+{
+    // 戻り値は↑で設定したContentTypeFormatterでシリアライズされて渡る    
+    public string Echo(string x)
+    {
+        return x;
+    }
+
+    // 今時なのでasyncもサポートしてるよ！戻り値はvoid, T, Task, Task&lt;T&gt;が使えます、ようは全部。
+    // パラメータのほうは配列、Nullable、オプション引数あたりはOK
+    public Task&lt;int&gt; Sum(int x, int? y, int z = 1000)
+    {
+        return Task.Run(() =&gt; x + y.Value + z);
+    }
+}
+</code></pre>
+<p>これで、「http://localhost/My/Echo?str=hoge」で叩けるってことになります。URLは {ClassName}/{MethodName} の形式で完全に統一されて、カスタマイズの余地はありません。</p>
+<p>サーバー側は基本的にこれだけです。単純！地味！</p>
+<p>必要最小限のラインってどこかなぁ、というのを考えた時、ここになるかな、と。ルーティングやパラメータのバインディング、レスポンスへの戻り値の書き込みなどはフレームワークがやってくれなきゃ死ぬけれど、それ以上はない。これだけでも割と十分便利に使える、の限界ラインを狙って、極力、機能を削ぎ落とす形で取捨選択しています。ちょっと不便、なぐらいで存外良かったりするのですよ、ちょっと便利、のために色々なものが引っ張られるより100倍良いでしょう？</p>
+<p>あと私は「設定より規約」って嫌いなんですよね。別にXML Hellがいいとは言わないですが、あのやり方はLL向けかなあ、という気が相当してまして、C#でそれをやっても嬉しいところってあんまないんじゃないかって思います。属性とか型をどういう活かすか、のほうがいいとオモイマス。</p>
+<h2>Lightweight as a Client</h2>
+<p>純粋（？）なRESTって、C#でも、他のどの言語でも、決して扱いやすいわけじゃない。だからラップしたHogeClientを作りますよね。そして、そうした特化したRestClientの作成って、結構難しい。使いやすいClientって中々作れるものじゃあないです。手間がかかるうえに使いにくいものが出来上がるなら、絶望的です。だからサーバーAPIとクライアント、自分たちで両方を作る時、もんのすごく苦労してしまう。どこもLightweightじゃない。こんなことならSOAPでVisual Studioで自動生成してくれてるののほうが100億倍Lightweightだったよー、とかね、それはそれで事実です。</p>
+<p>そこでLightNodeは真のLightweightを提供します。自動生成するからコストゼロで完璧なClient SDKが手渡されます。</p>
+<pre><code class="language-csharp">// 中身はHttpClientなので当然全部async
+// メソッドは全て
+// client.{ClassName}.{MethodName}Async({parameter}) で生成されます
+
+var client = new LightNodeClient(&quot;http://localhost&quot;);
+
+await client.Me.EchoAsync(&quot;test&quot;);
+var sum = await client.Me.SumAsync(1, 10, 100);
+</code></pre>
+<p>C#クライアントにとって、自然な操作感でサーバーサイドへとアクセスし、戻り値を受け取ることが出来ます（複雑なオブジェクトは内部のシリアライザを通して自動変換されます）。クライアント側にとってはRPCのように、サーバーを意識せず透過的にやり取り可能なこと、を目指しました。</p>
+<p>この自動生成コードは、HttpClientを使ったRestClientとしては、割とイイ感じに出力するので、そういったのの参考にもどうぞ多分。REST APIはこういった形にラップされてるのが使いやすいと思ってるんですね、私は。インターフェイスの明示的実装の活用例。手作業だと面倒でサボッてしまいがちなCancellationTokenも受け取り可能になってたり、その辺は機械生成ならではの徹底さです。</p>
+<p>ちなみに現状は実装時間的都合でまだPOSTにしか対応してない（次のアップデートでGETにも対応させます……）。</p>
+<h2>Micro RPC/REST Framework</h2>
+<p>Micro RPC FrameworkないしMicro REST Frameworkというのは造語です。ググッてもさして検索結果には出てきません。とはいえ、言わんとすることは分かるのではないでしょうかしらん。ヘヴィ級ORMのEntity Frameworkに対する、機能最小限でコンパクトなDapper。みたいなものです。徹底的に削ぎ落としたREST Framework。対極にあるのはUltra Super HeavyなFramework、って何？というと、ASP.NET Web APIかな。そう、ASP.NET Web APIって、別にLightweightじゃないよね？と、ずっと思っていて。ずっとしっくりこなくて。</p>
+<p>というか既存のRESTなフレームワークってどれもLightweightに思えない。何が自分の求めているものなのかなあってずっと考えていたのだけれど（その間、会う人会う人にWeb APIってしっくりこないんです！と吹っかけて回ってた、どうもご迷惑おかけしました）、RPCだ！って至りまして。一周回ってRPC、これはアリだ、と。</p>
+<h2>REST vs SOAP, REST vs RPC, REST vs WCF</h2>
+<p>そもそも対立軸がオカシイ。そして、その結果、orになるんだよね、どちらを選びますか？って。それ以外がないの。なんでそう極端な対立になってしまうの？でも、しかし、それはある意味正しい。だって何かを作るには、この世にあるものから選ぶしかないのだから。ヘヴィなSOAPが嫌ならRESTしかなく、ヘヴィなRPCが嫌ならRESTしかなく、ヘヴィなWCFが嫌ならREST(ASP.NET Web API)しかない。</p>
+<p>でも、本来は選択肢もっとあって良かったはずなんだよね。どうして中間がなかったんだろうね。そんなにRESTfulは素晴らしく輝かしい未来だったのかな。あまりにも、SOAPが、WCFが辛すぎて反動で極端に振れるしかなかったのかな。</p>
+<h2>RESTful</h2>
+<p>どうでもいい。だからLightNodeはGETとPOSTしかありません。</p>
+<h2>XML/JSON/XXX-RPC</h2>
+<p>doudemoii。入/出力がフォーマットに固定されるのが世の中的に厳しい。XMLは今どきアリエナイといわれてもshoganai感じになってきてしまっているし、その他のバイナリ形式もJavaScriptで扱いにくくなったりして絶望感ある。JSON最強はありますけど、それはそれで、一部クライアントとはMsgPackとかProtobufとかで高速省スペースな通信したいって欲求には応えられない。仕様もあってないようなものだし、それらに従っていいこと、あまりない。</p>
+<h2>Language Interoperability</h2>
+<p>LightNodeはかなりC#に依存というか、むしろ尻尾から先頭までC#で一気通貫して通せることをメリットの一つとしています。とはいえ（広義の）RESTなので、HTTPでGETかPOSTでアドレス叩けば結果帰ってきます。他の言語からも叩けるって物凄く大事なので、いくら一気通貫、C#で大統一理論を正義にしていても、大事にしてあげたいです。JavaScript無視するとか自殺行為ですしね(TypeScriptコードの生成は将来的に作りたいものの一つです)。</p>
+<p>仕様は、URLは{ClassName}/{MethodName}、パラメータはGETはクエリストリング、POSTはx-www-form-urlencodedで送ります。そのためということもあって、基本的にパラメータの型には制限があって、基本型(intとかstringとかDateTimeとか)のnullableとarray、それとオプション引数までにしか対応していません。複雑な型はダメ。</p>
+<p>ダメな理由としては、あと、それ許可するとメソッドや引数がAPIドキュメントの代わりにならないんですよね。何を渡すことが許されるているのか、のシンプルさが消える。せっかくC#側で作ることの良さ、型があること、を消してしまうほうがmottainai、トレードオフとしてナシという判断です。そしてそのほうが言語間Interoperabilityにも有利ですし。</p>
+<p>レスポンスのほうは自由です。何でもありです。基本的にbodyに書かれるだけなので、シリアライズ可能なものならなんでもOK。シリアライザも自由に選べます。こういった形式が自由なのは、パフォーマンスのためです。C#でガリガリに速くしたいなら、やっぱProtobufやMsgPackだろう、と(バイナリだから単純に高速省スペースとかいうのはただの幻想なのでWCFをそういう目では見ないようにしましょう)。でもJSONで吐けないのはそれはそれでありえないわけで、自由に選べる、かつ共存できるように(拡張子やContent-Typeで識別します)しています。</p>
+<p>RPC風であり、REST風な中間点がこれかなあ、と。これなら俺々仕様っぽさは特になくRESTといって納得できるレベルに収まってるかと。そのうえで、クライアント側的にはRPC風に使えるのでシームレス感が相当ある。APIの構造がC#に引っ張られて、他言語からキモチワルイ感を醸しだしてしまう可能性はあるのですが（但しメソッド名のcamel,Pascalは自由でどちらでも通るようになってます）、こればっかりはshoganaiかなあ。</p>
+<p>そもそもREST的な公開されてるほげもげって各言語、どの言語でも決して使いやすくはないような。だからSDKでラップしたものを使うでしょう？言語中立で万歳、みたいな理想世界がない以上は、プライマリの言語での使いやすさ＋セカンダリ以降でも可能な限り使いやすさを維持できる構造、にするのがベターかなあ、って。思ってます。</p>
+<h2>Why Code Generation? Why not Dynamic Proxy?</h2>
+<p>今のクライアントコードは、T4によるソースコード生成になっています。正直ダサい。クライアント側はソースコード生成よりも、共通のインターフェイスに対して動的コード生成でProxy作ってやるほうが手軽に扱えていいのよね。どういうイメージかと言いますと、例えば</p>
+<pre><code class="language-csharp">// こういうインターフェイスがサーバー側とクライアント側が共に参照するDLLに定義してあって
+public interface IHoge
+{
+    int Sum(int x, int y);
+}
+
+// サーバー側は↑のインターフェイスを実装する
+public class HogeContract : IHoge
+{
+    public int Sum(int x, int y)
+    {
+        return x + y;
+    }
+}
+
+// クライアント側は↓のような形で使える
+// Createの戻り値がIHogeになってて、その実装は動的生成されたもの、という感じ
+var sum = LightNodeClient.Create&lt;IHoge&gt;(&quot;http://localhost&quot;).Sum(10, 20); 
+</code></pre>
+<p>実にスッキリしていいですね！クライアントサイドのIHogeの実装は、動的コード生成により実行時に挿入されるので一切、手を加える必要はありません。ちなみに実装方法は<a href="http://msdn.microsoft.com/ja-jp/library/system.reflection.emit.assemblybuilder.aspx">AssemblyBuilder</a>を使ってひたすらILゴリゴリです。ExpressionTreeのCompileToMethodは静的メソッドしか作れないので、↑のイメージのようなインスタンスメソッドへの生成は気合入れて書くしかないのですねえ、やれやれ……。</p>
+<p>でも、今回はソースコード生成にしました。それはIL書くのが面倒だから、ではなくて（実際面倒だからってのはちょっとありますが！）、理由はそれなりに幾つかあります。</p>
+<p>まず、インターフェイスの戻り値＝クライアントにとっての戻り値、じゃあなくなってます。具体的にはTaskです。非同期以降の世界ではクライアント側の型はTask以外はありえないんです。ここで、じゃあインターフェイス側もTaskを強要すればいい、ってのは、それは不便なのでナシですしねえ。クライアント側のメソッド名はXxxAsyncにしたいとかってのもありますし、やっぱ、現代においてはインターフェイスをきっちり一致させるというのは難しい。</p>
+<p>あと、Unity。まあ、何度か名前↑で出しているようにUnityはかなりターゲットなわけですが、UnityのC#ってバージョン古いのですよね、Taskなんてないんですよ……。そんなわけで各プラットフォーム毎に全然違う生成したほうがいいってことになってしまいますよねえ、と。C#以外にTypeScriptなんかもターゲットにしたいですしね。</p>
+<p>そして最後に、AssemblyBuilderはフル.NET Frameworkにしかない。WinRTやPhone、当然PCLにはない。ないないないないなので、手間隙かけてIL書いてもあんま嬉しくなれない。</p>
+<p>そんなわけで、ソースコード生成を手法に選んでいます。</p>
+<p>とはいえ、提供手段がT4であることが良いかどうかはビミョイところですね。こういうの自体は、別に割とあるパターンではあるのですけど、例えばPetaPocoやORM LiteなどMicro ORM系はEFなどのヘヴィーなデザイナの代わりとしてT4を用いているし、 T4 MVCとかもあるし、……、うーん、そのぐらいか。あんまないね。</p>
+<p>あと今の実装はdllをロードしてそれを解析するんですが、ロードしたあとそのまんまアセンブリ掴みっぱなしで解放されないから、解放するにはVS再起動しないといけないとかいうクソ仕様とかも残ってるので、何とかしなきゃ度は相当高いです。誰か解決策教えてください。</p>
+<h2>Performance</h2>
+<p>機能面では最小な上に（劣る、とは言いません）、わざわざ新しく作る以上、パフォーマンスで負けていたら馬鹿みたいな話です。というわけで結果。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/12/lightnodeperformance.jpg' alt='' />
+</p>
+<p>OWIN上のWeb API、OWIN上のLightNode、OWIN上の生app.Run、あとふつーにIISでホストする生HttpHandlerの4つでテキトーに測ってみました。Nancyは加えようと思ったんですがちょっと動かなくて調べる時間がなかったので(この記事はAdvent Calendar的にギリギリで書き上げているのです！)いったんナシ。</p>
+<p>んで、速いです。というかほっとんど生HttpHandlerと変わらない速度出せてます。そりゃ機能少ないんだから当たり前……、ではないです。機能が少ない＝速い、に直接結びつくほど世の中、甘くはありません！この手のものを作るにあたって速度を稼ぐポイントは幾つかあって、しっかりポイント抑えたコード生成(&amp;キャッシュ)をしつつ、余計な要素を足さないことで最速になります。そりゃそーだ。ともあれ、これ以上は速くならないという限界ラインを突いてます。これより先はどう頑張っても誤差範囲は超えないでしょう、というか生Handler近辺の時点で、もう大して変えられんです。</p>
+<p>その辺の実装のコツのお話はまた次回にでも。（ただEnum周りのマッピング処理が現在ゴミなのでEnum入れると遅いです、これは次回までに改善します）</p>
+<h2>Owin</h2>
+<p>ASP.NET Web APIがOwin対応とか、そういうのどーでもいーんだよね。だってIISにホストするでしょ？SelfHostとか別になくてもいいレベルでしょ？プロダクション環境では使わないでしょ？というわけで、あるものを使うという点では、別に今はOwin対応とかドウデモイイレベルの話です。皆が今Owinにさして興味持てなかったり使い道に想像沸かないとしても、そりゃそうだ、です。だってIISでいいんですもの。</p>
+<p>Owinの利点はMiddlewareを組み合わせられること。けれど現状は、多様なMiddlewareは、特にはない。できたてほやほやみたいなものだから。むしろASP.NET Web APIやASP.NET MVCレベルでのコンポーネントのほうがあるし、将来的にもきっとそうでしょう。つまり、Middlewareも利点だー！と声高に言ってもshoganaiところがある。</p>
+<p>でも、それでも、そこに未来はある。Owinは誰もが簡単にMiddlewareを作れる。小さなちょっとしたユーティリティから、大きいフレームワークまで。ついに始まった自由の世界。多様なMiddlewareは、今は、特にはない。でも、作ればいい、必ず彩り豊かになる。そうなればASP.NET Web APIのOwin対応なども、意味がでてくる。</p>
+<p>そしてパフォーマンスですら手に入る。ああ、パフォーマンスは大事だ、そう、本当は大事でなかったとしても、とにかくキャッチーだからね。今までのASP.NETコアランタイム、System.Webがヘヴィだとしたら、それを完全にバイパスして直繋ぎしたら。発表されたHelios IIS Owin Web Server Hostは<a href="http://weblog.west-wind.com/posts/2013/Nov/23/Checking-out-the-Helios-IIS-Owin-Web-Server-Host">驚異的なパフォーマンスを見せている</a>。なるほど、すごく魅力的に見える。なにより、Microsoftは本気なんだなって気がする。Helios自体はまだαだけど、今はSystem.Webにホストしてもらって、Heliosが完成したらそっちでホストすればいい。そこが選べるのもOwinのいいところだ。ああ！素晴らしいじゃないか、Owin！</p>
+<h2>Create Your Own Framework</h2>
+<p>俺々フレームワークは悪。常識です。常識。かといって、何もかも作らないわけにはいきません。何を作り、作らないか、その見極めが戦略として非常に大事。自分の戦略でもそうだし会社だったらなお大事。</p>
+<p>さて、今回は作ったわけですけれど、その理由は単純にないから。ないものは作る。当たり前だよにぇ。といっても何もかもを満たすものなんて存在しないので、妥協できるかどうかのラインを見定めるってことではあるのだけれど。妥協ラインですが、C#の場合って、Microsoftで完結するものなら凄く整ってるんですよね、妥協OKというかむしろ完璧すぎるぐらいに。でも、今回の需要はMicrosoftの外側、Unityとか他のクライアント系のとか、それらと一気通貫に繋がって欲しいって需要なのです。Microsoftの中で完結してそれ以外とは疎結合、じゃなくて、繋がれる範囲は可能な限り全開に密結合して欲しいってのがリクエスト。そういうのって、未来永劫Microsoftから出てくることはない。絶対に。だから、作るって結論になる。</p>
+<p>あともう一つはどのぐらいのクオリティで作れるか。作ったはいいけどクソクオリティだったら不幸になるだけだからね！そして、C#の場合はVisual Studioとの統合具合もかなり大事。だから、MVCフレームワークなどだと、単純に作業量が超絶多くて全体のクオリティを保つのは非常に大変なうえに、ASP.NET MVCはVS統合が進んでてサクサクViewとControllerを相互に移動出来たりコンパイルエラーがくっついてたり、そういうところまで面倒見るのは不可能に近い。だから、部分的に良い物を作れたとしても全体的には超えるのって凄く難しいから、俺々フレームワークは、あまり良い選択肢にはなれなさそう（でも<a href="http://nancyfx.org/">Nancy</a>とか頑張って欲しい！）。</p>
+<p>Service系のフレームワークだとViewとかとの面倒みなくていいしVS統合もそんなに気を配らなくていい（WCFぐらいパーフェクトな統合があればそりゃ素敵だけど、WCFは統合されてはいても他に問題だらけなので除外）、最小限の機能のラインが見えていて、かなり満たしやすい。性能だって少し頑張れば既存のものを抜くのも簡単。そんなわけで作るのはアリだ、のラインに個人的には達しました。</p>
+<h2>Owin EcoSystem</h2>
+<p>Service系ならば、そもそもHTTPに乗らなくてもいいじゃない？特にパフォーマンス優先なら！という選択もありますね。それを選ばないのは、エコシステム。サーバー側には沢山のノウハウやシステムがあり、何もしなくても最高のInteroperabilityがある。通信関連ではHTTPったら最強ね。っていうのは揺るがない。よほどパフォーマンス優先な根幹的な何かを作るのでなければ。</p>
+<p>そして、Owinもまた理由になります。今までの俺々フレームワークの最大の欠点は、全て自前で作るしかなかったことです。でもOwinがあれば違う。認証？他のMiddlewareで。パフォーマンスモニタ系？例えば<a href="http://getglimpse.com/">Glimpse</a>は最高のモニタライブラリだけど、俺々フレームワークで、こういうのが一切使えなくなるって、痛手というか、それだけでありえないレベルになりますよね。でも、Owinならば、GlimpseがOwinに対応すればそれだけで乗っかることが出来る（そして実際、現在対応作業中のようです）。<a href="http://newrelic.com/">New Relic</a>のような監視ツールなどもそう、俺々フレームワークであっても、そういうのにフルに乗っかっていけるってのが、今までと違うところだし、だから、作ってもOKの許容ラインに達しやすくなったと思いますですよ。</p>
+<p>私も、LightNodeのようなフレームワークレベルのものだけじゃなく、他のフレームワークで使える小さなMiddlewareをこっそり作って公開してたりします。一つは<a href="https://github.com/neuecc/OwinRequestScopeContext/">OwinRequestScopeContext</a>で、HttpContext.CurrentのようなものをOwin上で使えるようにするもの。もう一つは<a href="https://github.com/neuecc/Owin.RedisSession">RedisSession</a>で、その名の通り、裏側がRedisのセッションストアです。RedisのHash構造に格納していて、リクエスト開始時に全部のデータを読み込み、リクエスト実行中のアクセスは全てインメモリで完結さえ、リクエスト終了時に変更があったもの差分だけを書き出す(RedisのHash構造だからこそ可能)ようにしています。実はこれの原型は既に謎社で実稼働していて、沢山のアクセスを捌いている実績アリだったりして。</p>
+<p>今後RubyのRackにある便利Middlewareが移植されたりとかもするんじゃないでしょうか、むしろ良さそーな発想のものは自分達で移植してみるのもいいかもしれません。Owinが出たことで、自分達で作ることが、独善じゃなく発展の道になった。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/12/oneaspnetandyou.jpg' alt='' />
+</p>
+<p>One ASP.NET。You。使うだけじゃなく作る。それがこれからのASP.NETの未来だと思います。</p>
+<h2>Related Works</h2>
+<p><a href="http://ja.wikipedia.org/wiki/Windows_Communication_Foundation">WCF</a>。なんのかんのいってWCF。は偉いねえ、壮大だねえ、とか。LightNodeはWCFのABCからBindingを抜いたようなイメージでいいですよ。で、やっぱWCFとかの、その手の抽象化は辛い！何か被せて共通化して出来た気がするのは誰も満足させられないパターン。</p>
+<p><a href="https://github.com/ppcuni/rpcoder">rpcoder</a>。Aimingさんの、独自IDL(Interface Definition Language)からUnity用のC#コードとかを吐き出すもの。LightNodeとの違いは、IDLかどうか、かしらん。LightNodeはIDLじゃなくてサーバーサイドの実装そのものが定義になるので、そういった外部定義不要なので、手間削減と、実装との乖離が絶対にないってとこかしらん。</p>
+<p>似たようなというか定義という点では<a href="http://raml.org/">RAML</a>とかね、まぁRAMLは最悪かなぁって思うのですけれど。RESTfulの呪縛に囚われて極北まで行くとそうなるのかねえ。どうぞ素敵なモデリングをしてください。ほんとdoudemoii。</p>
+<p><a href="https://developers.google.com/appengine/docs/java/endpoints/">Google Cloud Endpoints</a>。サーバーの実装があって、そこからiOSやAndroid用のコードを生成するってもの。いいですねー、これですよこれ。Cloud Endpointsの正式リリースはついこないだですが、（特に）モバイル向けのバックエンドはこういうのがベストだと本当に思いますし、RPCの時代というかそういったようなものの時代への揺り戻しというか、再び多様性の時代が来たかな、と、健全で素敵です。</p>
+<p><a href="https://servicestack.net/">ServiceStack</a>。これは、WCF Alternativeの中では一番メジャーな選択肢、ではあるのだけど、正直、なんか、この人のAPIセンスは……。辛い。正直ナシです。ちなみにv4から有料化しました。</p>
+<p><a href="http://twitter.github.io/finagle/">Finagle</a>。Twitter製の、Scalaでできた非同期でプラガブルなRPCフレームワーク。非同期なので全部Future(C#のTaskみたいなもの)。Relatedといったけど特に直接的な影響はないけど、オサレでモダンなフレームワークがRPC、というところだけちょっと強調とか。</p>
+<p><a href="https://github.com/duovia/duovia-http">DuoVia.Http</a>。Owinで動くLightweightのService Libraryということで、LightNodeに一番近い先行実装ですね！クライアント側はプロキシによる動的生成なので非同期なし。サーバー側がrefやoutに対応させたりとか多機能を狙いすぎて、実行速度が引っ張られてたりとか、ちょっと違うかな、と。</p>
+<p><a href="http://www.asp.net/web-api">ASP.NET Web API</a>。まぁ、散々腐しましたけれど、実際ふつーに選ぶのならASP.NET Web APIが最初の選択肢だと思います。悪くないですよむしろイイですよ。そもそもLightNodeの実装にあたっては<a href="http://www.slideshare.net/miso_desu/50-aspnet-web-api">50分で掴み取る ASP.NET Web API パターン＆テクニック</a>とか<a href="http://www.slideshare.net/miso_desu/one-aspnet-owinkatana">One ASP.NET, OWIN &amp; Katana</a>とかガン見してたので<a href="http://miso-soup3.hateblo.jp/">味噌先生</a>には頭が上がらないのでWeb APIいいんじゃないでしょうか（適当）。真面目な話、ASP.NET Web APIが一番参考にしてるのは間違いないですので、話の流れ（？）で色々腐しましたが、良いと思いますよ、本当。</p>
+<h2>Conclusion</h2>
+<p>One ASP.NETと言いつつも別にフィーチャーされないYou!の部分を推してみました。人昔前は、こういった俺々フレームワークが乱立しないのが.NETの良さ、と言われていた、こともありました。ありました。過去の話です。世界の進化は速く、Microsoftだけが一手に全ての需要を引き受けられるわけがない。それぞれの需要に合わせて、時に組み合わせて、時に自分で作り上げることができる。そういった世界の幕開けがOwinです。まだまだMiddlewareは足りていないので、「組み立てる」にはならないでしょう、けれどそれを解決するためにも、自分達で作り、公開していきましょう？それがOpenな世界だし、これからのC#コミュニティのあるべき姿だと思っています。</p>
+<p>（いつもやるやる詐欺で毎回言ってる気がしますが）LightNodeはコンセプトだけじゃなく、真面目に育てていきたいと思っています。そもそも、会社として、この辺の通信が来年は重要課題になってくるなあ、というのがあって考えてたものなので、諸々色々で半年後ぐらいには十分な完成度で掲示できるかなあ、って思いますですよ。勿論、皆さん今から使ってくれたら嬉しいですにぇ。</p>
+<p>また、コンセプト語るには実装がなきゃ、と相当思っていまして。<a href="http://steps.dodgson.org/b/2013/04/24/recent-happenings-on-elders/">かつて人々は「パターン」「契約による設計」などアイデアに名前をつけて論じたけれど、 このごろの新しいアイデアはフレームワークやプログラミング言語、データベースエンジンなどを通じて表現されるようになった。 今は書籍ではなく実装が思想を表現する手段になっている</a>と、Eric Evans(DDD本の人)は語った。そんなわけで、というわけではないですけれど、私は私の思想はコードで表現していきたいと思っているし、そもそもそうしてきた。linq.js(LINQが言語を超えることを)もChaining Assertion(流れるようなインターフェイスや英語的なるものの馬鹿らしさを)もReactiveProperty(全てが繋がるイメージを)もそうです。ライブラリは思想の塊なのです、言葉に出されていなければそこに思想はない？そんなことはなく、ずっと流暢に語ってくれるはず。</p>
+<p>そしてC#の強さの証明は、会社の結果で表現していきます。実証されなければ何の意味もないし、何の説得力もない。誰に？というと、日本に、世界に。というわけで、引き続き来年の諸々にもご期待ください！</p>
+</div>
+<a href="./publish/7">Prev |</a>
+<a href="./publish/9">| Next</a>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

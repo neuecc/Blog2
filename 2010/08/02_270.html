@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - テストを簡単にするほんの少しの拡張メソッド</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2010/0802_270.html">テストを簡単にするほんの少しの拡張メソッド</a></h1>
+<ul class="date"><li>2010-08-02</li></ul>
+<div class="entry_body"><p>テストドリブンしてますか？私は勿論してません。え……。別に赤が緑になっても嬉しくないし。コード先でテスト後のほうが書きやすくていいなあ。でもそうなると、テスト書かなくなってしまって、溜まるともっと書かなくなってしまっての悪循環。</p>
+<p>そんな普段あまりテスト書かないクソッタレな人間なわけですが(レガシーコード殺害ガイドが泣いている)、普段テスト書かないだけに書こうとすると単純なものですらイライライライラしてしまって大変よくない。しかし、それはそもそもテストツールが悪いんじゃね？という気だってする。言い訳じゃなく、ふつーにバッチイですよ、テストコード。こんなの書くのはそりゃ苦痛ってものです。</p>
+<h2>Before</h2>
+<p>例えば、こういうどうでもいいクラスがあったとします。</p>
+<pre><code class="language-csharp">public class MyClass
+{
+    public string GetString(string unya)
+    {
+        return (unya == &quot;unya&quot;) ? null : &quot;hoge&quot;;
+    }
+    public IEnumerable&lt;int&gt; GetEnumerable()
+    {
+        yield return 1;
+        yield return 2;
+        yield return 3;
+    }
+}
+</code></pre>
+<p>ウィザードで生成されたのをベースに書くとこうなる(MSTestを使っています)</p>
+<pre><code class="language-csharp">[TestMethod()] 
+public void GetStringTest() 
+{ 
+    MyClass target = new MyClass(); 
+    string unya = &quot;unya&quot;; 
+    string expected = null; 
+    string actual; 
+    actual = target.GetString(unya); 
+    Assert.AreEqual(expected, actual); 
+
+    expected = &quot;hoge&quot;; 
+    actual = target.GetString(&quot;aaaaa&quot;); 
+    Assert.AreEqual(expected, actual); 
+} 
+
+[TestMethod()] 
+public void GetEnumerableTest() 
+{ 
+    MyClass target = new MyClass(); 
+    IEnumerable&lt;int&gt; expected = new[] { 1, 2, 3 }; 
+    IEnumerable&lt;int&gt; actual; 
+    actual = target.GetEnumerable(); 
+    CollectionAssert.AreEqual(expected.ToArray(), actual.ToArray()); 
+}
+</code></pre>
+<p>何だこりゃ。超面倒くさい。むしろテストがレガシーすぎて死にたい。CollectionAssertはIEnumerableに対応してないし。泣きたい。こんなの書いてられない。吐き気がする。</p>
+<h2>After</h2>
+<p>JavaScriptのQUnitは、大抵EqualとDeepEqualで済む簡単さで、それがテストへの面倒くささを大いに下げてる。見習いたい。シンプルイズベスト。ごてごてしたAssert関数なんて悪しき伝統にすぎないのではなかろうか？と思ったので、もうアサート関数なんてIsだけでいいぢゃん、ついでにactualの後ろに拡張メソッドでそのままexpected書けると楽ぢゃん、と開き直ることにしました。</p>
+<pre><code class="language-csharp">[TestMethod()]
+public void GetStringTest()
+{
+    // 1. 全オブジェクトに対して拡張メソッドIsが定義されててAssert.AreEqualされる
+    // 2. ラムダ式も使えるので、andやorや複雑な比較などはラムダ式でまかなえる
+    // 3. nullはIs()で（本当はIs(null)でやりたかったのだけど、都合上断念)
+    new MyClass().GetString(&quot;aaaaa&quot;).Is(&quot;hoge&quot;);
+    new MyClass().GetString(&quot;aaaaa&quot;).Is(s =&gt; s.StartsWith(&quot;h&quot;) &amp;&amp; s.EndsWith(&quot;e&quot;));
+    new MyClass().GetString(&quot;unya&quot;).Is();
+}
+
+[TestMethod()]
+public void GetEnumerableTest()
+{
+    // 対象がIEnumerableの場合はCollectionAssert.Equalsで比較されます
+    // 可変長配列を受け入れることが出来るので直書き可
+    new MyClass().GetEnumerable().Is(1, 2, 3);
+}
+</code></pre>
+<p>すんごく、すっきり。メソッドはIsだけ、ですがそれなりのオーバーロードが仕込まれているので、ほとんどのことが一つだけで表現出来ます。IsNullはIs()でいいし（表現的には分かりにくくて嫌なのですが、Is(null)だとオーバーロードの解決ができなくてIs((型)null)と書かなくて面倒くさいので、泣く泣く引数無しをIsNullとしました）し、IsTrueはIs(true)でいい。複雑な条件で比較したいときはラムダ式を渡せばいい。Is.EqualTo().Within().And() とか、全然分かりやすくないよね。流れるようなインターフェイスは悪くないけれど、別に自然言語的である必要なんて全然なくて、ラムダ一発で済ませられるならそちらのほうがずっと良い。<a href="http://sharptestex.codeplex.com/">.Should().Not.Be.Null()</a>なんてまで来ると、もう馬鹿かと思った。</p>
+<p>大事なのはシンプルに気持良く書けることであって、形式主義に陥っちゃいけないのさあ。</p>
+<p>コレクション比較もIsだけですませます。IEnumerableを渡すことも出来るし、可変長引数による値の直書きも出来る。なお、Isのみなのでコレクション同士の参照比較はありません。コレクションだったら有無をいわさず要素比較にします。だって、別に参照比較したいシーンなんてほとんどないでしょ？そういう例外的な状況は素直にAssert.AreEqual使えばいい。また、CollectionAssertには色々なメソッドがありますが、それ全部Linqで前処理すればいいよね？例えばCollectionAsert.IsEmptyはAny().Is(false)で済ませられるので不要。他のも大体はLinqで何とかできるので大概不要です。</p>
+<p>ところで、このぐらいだとウィザードが冗長というだけで</p>
+<pre><code class="language-csharp">Assert.AreEqual(new MyClass().GetString(&quot;aaaaa&quot;), &quot;hoge&quot;);
+</code></pre>
+<p>って書けるじゃないかって突っ込みは、そのとおり。でも、少し長くなると、引数に押し込めるの大変になってきますよね。そうなると</p>
+<pre><code class="language-csharp">var expected = &quot;hoge&quot;;
+var actual = new MyClass().GetString(&quot;aaaaa&quot;)
+Assert.AreEqual(expected, actual);
+</code></pre>
+<p>といった具合に、変数名が必要になって大変かったるい。ので、余計な一時変数なしで流し込める方が圧倒的に楽です。そもそもに、Assert.AreEqualだと、毎回どっちがactualでどっちがexpectedだか悩むのがイライラしてしまって良くない。まあ、逆でもいいんですが。よくないんですが。</p>
+<h2>パラメータ違いのテストケース</h2>
+<p>ついでに面倒くさいのは、パラメータが違うだけにすぎない、同じようなAssertの量産。テストなんてとっとと書いてナンボなので大体コピペで取り回しちゃうわけですが、どう考えてもクソ対応です本当にありがとうございました。そういうことやると、テストの書き直しが出来なくなって身重になってしまって良くない。コードはサクッと書き直せるべきだし、テストもサクッと書き直せるべきだ。といったわけで、NUnitには属性を足すだけでパラメータ違いのテストを実行出来るそうですがMSTestにはなさそう。うーん、でも、Linqがあれば何でも出来るよ？Linq万能神理論。ということで、Linqをベースにしてパラメータ違いを渡せるクラスを書いてみました。</p>
+<pre><code class="language-csharp">// コレクション初期化子を使ってパラメータを生成します
+new Test.Case&lt;int, int, int&gt;
+{
+    {1, 2, 3},
+    {100, 200, 500},
+    {10000, 20, 30}
+}
+.Select(t =&gt; t.Item1 + t.Item2 + t.Item3)
+.Is(6, 800, 10050);
+</code></pre>
+<p>複数の値はTupleに突っ込めばいい。あとはSelectでactualを作って、最後にIsの可変長引数使って期待値と比較させれば出来上がり。Tupleは、C#には匿名型があるため、あまり活用のシーンがないのですが、こういうところでは便利。このTest.Caseは7引数のTupleまで対応しています(それ以上？そもそも標準のTupleの限界がそれまでなので)。使い方はnewしてコレクション初期化子でパラメータを並べるだけ。</p>
+<p>つまるところTest.CaseクラスはただのTupleCollectionです。Tupleの配列を作るには、普通だと new[]{Tuple.Create, Tuple.Create...} と書かなければならず、死ぬほど面倒。そこで出てくるのがコレクション初期化子。これなら複数引数を受け入れるのが楽に記述できる。というわけで、コレクション初期化子を使いたいがためだけに、クラスを立てました。唯一の難点はnewしなければならない、つまりジェネリクスの型引数を書かなければならない、ということでしょうか。</p>
+<p>そうそう、コレクション初期化子のおさらいをすると、IEnumerable&lt;T&gt;かつAddメソッド(名前で決め打ちされてる)があると呼び出せます。複数引数時も、波括弧で要素をくくることで対応できます(Dictionaryなどで使えるね)。</p>
+<h2>ソースコード</h2>
+<p>長々と長々してましたがソースを。Test.CaseのTupleの量産が面倒なのでT4 Templateにしました。Test.ttとかって名前にしてテストプロジェクトに突っ込んでください。中は完全に固定だから、取り回すなら生成後のTest.csを使っていくと良いかもですね。ご利用はご自由にどうぞ。パブリックドメインで。</p>
+<pre><code class="language-csharp">&lt;#@ assembly Name=&quot;System.Core.dll&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Linq&quot; #&gt;
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace Microsoft.VisualStudio.TestTools.UnitTesting
+{
+    public static class Test
+    {
+        // extensions
+
+        /// &lt;summary&gt;IsNull&lt;/summary&gt;
+        public static void Is&lt;T&gt;(this T value)
+        {
+            Assert.IsNull(value);
+        }
+
+        public static void Is&lt;T&gt;(this T actual, T expected, string message = &quot;&quot;)
+        {
+            Assert.AreEqual(expected, actual, message);
+        }
+
+        public static void Is&lt;T&gt;(this T actual, Func&lt;T, bool&gt; expected, string message = &quot;&quot;)
+        {
+            Assert.IsTrue(expected(actual), message);
+        }
+
+        public static void Is&lt;T&gt;(this IEnumerable&lt;T&gt; actual, IEnumerable&lt;T&gt; expected, string message = &quot;&quot;)
+        {
+            CollectionAssert.AreEqual(expected.ToArray(), actual.ToArray(), message);
+        }
+
+        public static void Is&lt;T&gt;(this IEnumerable&lt;T&gt; actual, params T[] expected)
+        {
+            Is(actual, expected.AsEnumerable());
+        }
+
+        public static void Is&lt;T&gt;(this IEnumerable&lt;T&gt; actual, IEnumerable&lt;Func&lt;T, bool&gt;&gt; expected)
+        {
+            var count = 0;
+            foreach (var cond in actual.Zip(expected, (v, pred) =&gt; pred(v)))
+            {
+                Assert.IsTrue(cond, &quot;Index = &quot; + count++);
+            }
+        }
+
+        public static void Is&lt;T&gt;(this IEnumerable&lt;T&gt; actual, params Func&lt;T, bool&gt;[] expected)
+        {
+            Is(actual, expected.AsEnumerable());
+        }
+
+        // generator
+
+&lt;#
+for(var i = 1; i &lt; 8; i++)
+{
+#&gt;
+
+        public class Case&lt;#= MakeT(i) #&gt; : IEnumerable&lt;Tuple&lt;#= MakeT(i) #&gt;&gt;
+        {
+            List&lt;Tuple&lt;#= MakeT(i) #&gt;&gt; tuples = new List&lt;Tuple&lt;#= MakeT(i) #&gt;&gt;();
+ 
+            public void Add(&lt;#= MakeArgs(i) #&gt;)
+            {
+                tuples.Add(Tuple.Create(&lt;#= MakeParams(i) #&gt;));
+            }
+ 
+            public IEnumerator&lt;Tuple&lt;#= MakeT(i) #&gt;&gt; GetEnumerator() { return tuples.GetEnumerator(); }
+            IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+        }
+&lt;#
+}
+#&gt;
+    }
+}
+&lt;#+
+     string MakeT(int count)
+     {
+          return &quot;&lt;&quot; + String.Join(&quot;, &quot;, Enumerable.Range(1, count).Select(i =&gt; &quot;T&quot; + i)) + &quot;&gt;&quot;;
+     }
+
+     string MakeArgs(int count)
+     {
+          return String.Join(&quot;, &quot;, Enumerable.Range(1, count).Select(i =&gt; &quot;T&quot; + i + &quot; item&quot; + i));
+     }
+
+     string MakeParams(int count)
+     {
+          return String.Join(&quot;, &quot;, Enumerable.Range(1, count).Select(i =&gt; &quot;item&quot; + i));
+     }
+#&gt;
+</code></pre>
+<p>オプション引数のお陰で、こういうちょっとしたのが書くの楽になりましたね(C#4.0 からの新機能)。あとは、可変長引数が配列だけじゃなくてIEnumerableも受け付けてくれれば、AsEnumerableで渡すだけの余計なオーバーロードを作らないで済むんだよね。C# 5.0に期待しますか。</p>
+<h2>まとめ</h2>
+<p>テストのないコードはレガシーコード。と、名著が言ってる(1/4ぐらいしかまだ読んでませんが！)のでテストは書いたほうがいいっす。</p>
+<iframe src="http://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=4798116831" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<p>でも、コード書きってのは気持良くなければならない。気持ち良ければ自然に書くんです。書かない、抵抗感があるってのは、環境が悪いんです。「テスト書きは苦痛だけど良いことだから、赤が緑に変わると嬉しいから書こうぜ！」とかありえない。そんな自己啓発っぽいのは無理。というわけで、拡張メソッドで環境を変えて、気持よく生きましょうー。</p>
+<p>JsUnit（非常にイマイチ）もそうだったんだけど、Java由来(xUnitはSmalltalkのー、とかって話は分かってます）のライブラリとかは、Java的な思考に引き摺られすぎ。もっと言語に合わせたしなやかなAPIってものがあると思うんですよね。MSTestはVS2010で、色々刷新してLinqや拡張メソッドを生かしたものを用意すべきだったと思います。C#2.0的なコードは読むのも書くのも、もう苦痛。レガシーコードとは何か？C#2.0的なコードです。いやほんと。生理的な問題で。</p>
+<h2>追記</h2>
+<p>ここで例として出したものを、より洗練させてライブラリとしてまとめました。<a href="http://chainingassertion.codeplex.com/" title="Chaining Assertion for MSTest">Chaining Assertion for MSTest</a> よければこちらもどうぞ。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

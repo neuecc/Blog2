@@ -1,0 +1,2932 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - 2011</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2011/1007_346.html">ReactiveProperty : WPF/SL/WP7のためのRxとMVVMを繋ぐ拡張ライブラリ</a></h1>
+<ul class="date"><li>2011-10-07</li></ul>
+<div class="entry_body"><p class="noindent">
+	<img style="width:640px" src="http://neue.cc/wp-content/uploads/image/RxMVVMLoop.jpg">
+</p>
+<p>MVVM拡張、という言い方が適切かは不明ですが、ともあれ、RxでXAMLによるUIシステムとの親和性を高めるライブラリを作成し、リリースしました。</p>
+<ul>
+<li><a href="http://reactiveproperty.codeplex.com/">ReactiveProperty - MVVM Extensions for Reactive Extensions</a></li>
+</ul>
+<p>中身は大きく分けて二つで、一つはReactivePropertyというXAMLと双方向にバインド可能なIObservable&lt;T&gt;、ReactiveCommandというIObservable&lt;bool&gt;からCanExecuteの条件を宣言的に生成するコマンドなど、MVVM的なUI絡みのクラス群。もう一つはWebClientやWebRequestなど、非同期処理のための拡張メソッド群になります。</p>
+<p>名前はUI中心に見えますが、UI絡みはいらないよ、という人は非同期周りだけを使ってくれても問題ありません。それと、機能紹介の前に一つ。決して既存のMVVMフレームワークを置き換えたり、同等の機能を提供するものではありません。ViewModelBaseやMessengerなどに相当するものはないので、その辺は適宜、既存のMVVMフレームワークを使えばいいと思います。というか、併用することを推奨します。だから「拡張ライブラリ」と名乗っています。</p>
+<h2>UIへのバインディング</h2>
+<p>ReactivePropertyとは何か。というと、双方向にバインド可能なIObservable&lt;T&gt;です。まず、ViewModel(Model)-&gt;Viewという片方向のバインドを見てみましょう。時計のようなものを作ります。</p>
+<pre><code class="language-xml">&lt;Grid&gt;
+    &lt;TextBlock Text=&quot;{Binding DisplayText.Value}&quot;  HorizontalAlignment=&quot;Center&quot; VerticalAlignment=&quot;Center&quot; /&gt;
+&lt;/Grid&gt;
+</code></pre>
+<pre><code class="language-csharp">public class SimpleClockViewModel
+{
+    // 双方向にバインド可能なIObservable&lt;T&gt;
+    public ReactiveProperty&lt;string&gt; DisplayText { get; private set; }
+
+    public SimpleClockViewModel()
+    {
+        // 1秒毎に値を発行、Selectで現在時刻に変換してToReactivePropertyでバインド可能にする
+        DisplayText = Observable.Interval(TimeSpan.FromSeconds(1))
+            .Select(_ =&gt; DateTime.Now.ToString())
+            .ToReactiveProperty();
+    }
+}
+</code></pre>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="100px">
+  <param name="source" value="http://neue.cc/wp-content/uploads/silverlight/ReactivePropertyFirstIntroduction.xap"/>
+  <param name="background" value="white" />
+  <param name="minRuntimeVersion" value="3.0.40624.0" />
+  <param name="autoUpgrade" value="true" />
+  <param name="initparams" value="Start=0" />
+  <a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=3.0.40624.0" style="text-decoration:none">
+      <img src="http://go.microsoft.com/fwlink/?LinkId=108181" alt="Microsoft Silverlight を入手" style="border-style:none"/>
+  </a>
+</object>
+</p>
+<p>XAML側ではDisplayText.Valueというように、.Valueまで指定してバインドします。実に簡単にIObservableがバインドできると分かるのではないでしょうか？</p>
+<p>IObservableとは、時間軸に沿って値が変わるものです。Intervalはx秒置きに等間隔で変わるので、まさに「時間」といったものですが、それ以外のものも全て時間軸に乗っていると考えることが可能です。例えばイベント、クリックやマウスムーブ、ジェスチャーやセンサーイベントで考えると、タッチした、x秒後にまたタッチした、x秒後にまたタッチした…… 発行される時間が不定期なだけで、時間軸に沿って次の値が出力されるという図式は同じです。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/rxeventime.jpg">
+</p>
+<p>非同期処理もそうで、x秒後に一回だけ値が来る。Rangeや配列のToObservableは0.0001秒刻みに値が来る。Rxで、IObservableで表現することが出来る値というのは、時間軸に乗って変わる/発行する値ということになります。そして、見渡してみると、IObservableになる、時間によって変わるという表現がマッチするものは意外と多い。特にリッチクライアントでは。UI自身の値の変化(バインディング/イベントによる通知)もそうだし、ModelのINotifyPropertyChangedもそう。INotifyPropertyChangedとは、或るプロパティの値が変化したという通知を行うオブジェクト。そのプロパティだけに着目してみれば、時間軸上で連続的に変化する値とみなせる、つまりIObservableで表現できます。</p>
+<h2>UIからのバインディング</h2>
+<p>では、UIからのバインディングもしてみましょう。これは、空のReactivePropertyを作成してバインディングします。これにより、UIからの入力をIObservableとして他へと中継することができます。</p>
+<pre><code class="language-xml">&lt;StackPanel&gt;
+    &lt;!-- このTriggerは入力と同時に発火させるために(SL4では)必要なもの --&gt;
+    &lt;TextBox Text=&quot;{Binding CurrentText.Value, Mode=TwoWay}&quot;&gt;
+        &lt;i:Interaction.Behaviors&gt;
+            &lt;prism:UpdateTextBindingOnPropertyChanged /&gt;
+        &lt;/i:Interaction.Behaviors&gt;
+    &lt;/TextBox&gt;
+    &lt;TextBlock Text=&quot;{Binding DisplayText.Value}&quot; /&gt;
+&lt;/StackPanel&gt;
+</code></pre>
+<pre><code class="language-csharp">public class FromUIViewModel
+{
+    public ReactiveProperty&lt;string&gt; CurrentText { get; private set; }
+    public ReactiveProperty&lt;string&gt; DisplayText { get; private set; }
+
+    public FromUIViewModel()
+    {
+        // UIからのテキスト入力の受け口
+        CurrentText = new ReactiveProperty&lt;string&gt;();
+
+        // そして、それを元にして加工してUIへ返してみたり
+        DisplayText = CurrentText
+            .Select(x =&gt; x.ToUpper()) // 全て大文字にして
+            .Delay(TimeSpan.FromSeconds(3)) // 3秒後に値を流す
+            .ToReactiveProperty();
+    }
+}
+</code></pre>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="100px">
+  <param name="source" value="http://neue.cc/wp-content/uploads/silverlight/ReactivePropertyFirstIntroduction.xap"/>
+  <param name="background" value="white" />
+  <param name="minRuntimeVersion" value="3.0.40624.0" />
+  <param name="autoUpgrade" value="true" />
+  <param name="initparams" value="Start=1" />
+  <a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=3.0.40624.0" style="text-decoration:none">
+      <img src="http://go.microsoft.com/fwlink/?LinkId=108181" alt="Microsoft Silverlight を入手" style="border-style:none"/>
+  </a>
+</object>
+</p>
+<p>Interaction.Behaviorは本題とは関係なくて、値の更新通知のタイミングを、値の変更と同時にするためのものです（デフォルトだとフォーカスが移ったときかな）。WPFでは、こういった小細工がなくてもいいのですが、SL4,WP7では必要なので已むを得ず。詳しくは <a href="http://code.msdn.microsoft.com/Silverlight-4TextBoxTextBin-3edebee5">Silverlight 4のTextBoxのTextプロパティの変更のタイミングでBindingのSourceを更新したい - MSDN Samples Gallery</a> に。というわけで、このUpdateTextBindingOnPropertyChangedはPrismからコピペってきたものです。</p>
+<p>さて、入力の受け付けをベースにするものは、newで空の物を作ります。出力中心のものはToReactivePropertyなわけですね。あとは、文字が非連続的に、(同じスレッド上の)非同期でやってくるので、LINQで加工します。Selectで大文字にして、そして、Rxなので時間系のものも使えるので、Delayを使ってみたりしながら、UIに戻しました。なお、Delayの時点で値の実行スレッドはUIスレッドからスレッドプールに移りますが、ReactivePropertyを使う限りは、ReactiveProperty内部でスレッド間の値の通知を解決するため、Dispatcher.BeginInvokeも、ObserveOnDispatcherも不必要です。実行スレッドを意識するなんて原始的ですよね、ReactivePropertyなら、全く意識する必要がなくなります。非同期は自然のまま非同期で扱える。だって、そもそも全てが非同期なのだもの。</p>
+<h2>ReactiveCommand</h2>
+<p>ReactivePropertyのもう一つの大事な機構が、ReactiveCommandです。これは、IObservable&lt;bool&gt;という、実行可否の変化のストリームからICommandを生成します。一般的なMVVMフレームワークで使われるRelayCommand, DelegateCommandとは発想が異なるのですが、私はこのReactiveCommandのアプローチこそがベストだと考えます。まずは例を。</p>
+<pre><code class="language-xml">&lt;StackPanel&gt;
+    &lt;StackPanel Orientation=&quot;Horizontal&quot;&gt;
+        &lt;CheckBox IsChecked=&quot;{Binding IsChecked1.Value, Mode=TwoWay}&quot;&gt;CheckBox1&lt;/CheckBox&gt;
+        &lt;CheckBox IsChecked=&quot;{Binding IsChecked2.Value, Mode=TwoWay}&quot;&gt;CheckBox2&lt;/CheckBox&gt;
+        &lt;CheckBox IsChecked=&quot;{Binding IsChecked3.Value, Mode=TwoWay}&quot;&gt;CheckBox3&lt;/CheckBox&gt;
+        &lt;CheckBox IsChecked=&quot;{Binding IsChecked4.Value, Mode=TwoWay}&quot;&gt;CheckBox4&lt;/CheckBox&gt;
+    &lt;/StackPanel&gt;
+    &lt;TextBox Text=&quot;{Binding CurrentText.Value, Mode=TwoWay}&quot; /&gt;
+    &lt;Button Command=&quot;{Binding ExecCommand}&quot;&gt;Execute?&lt;/Button&gt;
+&lt;/StackPanel&gt;
+</code></pre>
+<pre><code class="language-csharp">using Codeplex.Reactive.Extensions; // 拡張メソッドを使う場合はこれを忘れず。
+
+public class CommmandDemoViewModel
+{
+    public ReactiveProperty&lt;bool&gt; IsChecked1 { get; private set; }
+    public ReactiveProperty&lt;bool&gt; IsChecked2 { get; private set; }
+    public ReactiveProperty&lt;bool&gt; IsChecked3 { get; private set; }
+    public ReactiveProperty&lt;bool&gt; IsChecked4 { get; private set; }
+    public ReactiveProperty&lt;string&gt; CurrentText { get; private set; }
+    public ReactiveCommand ExecCommand { get; private set; }
+
+    public CommmandDemoViewModel()
+    {
+            var mode = ReactivePropertyMode.RaiseLatestValueOnSubscribe | ReactivePropertyMode.DistinctUntilChanged;
+
+            IsChecked1 = new ReactiveProperty&lt;bool&gt;(mode: mode);
+            IsChecked2 = new ReactiveProperty&lt;bool&gt;(mode: mode);
+            IsChecked3 = new ReactiveProperty&lt;bool&gt;(mode: mode);
+            IsChecked4 = new ReactiveProperty&lt;bool&gt;(mode: mode);
+            CurrentText = new ReactiveProperty&lt;string&gt;(
+                initialValue: &quot;テキストが空の時はボタン押せないよ&quot;,
+                mode: mode);
+
+            ExecCommand = IsChecked1.CombineLatest(IsChecked2, IsChecked3, IsChecked4, CurrentText,
+                    (a, b, c, d, txt) =&gt; a &amp;&amp; b &amp;&amp; c &amp;&amp; d &amp;&amp; txt != &quot;&quot;)
+                .ToReactiveCommand();
+
+            ExecCommand.Subscribe(_ =&gt; MessageBox.Show(&quot;Execute!&quot;));
+    }
+}
+</code></pre>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="150px">
+  <param name="source" value="http://neue.cc/wp-content/uploads/silverlight/ReactivePropertyFirstIntroduction.xap"/>
+  <param name="background" value="white" />
+  <param name="minRuntimeVersion" value="3.0.40624.0" />
+  <param name="autoUpgrade" value="true" />
+  <param name="initparams" value="Start=2" />
+  <a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=3.0.40624.0" style="text-decoration:none">
+      <img src="http://go.microsoft.com/fwlink/?LinkId=108181" alt="Microsoft Silverlight を入手" style="border-style:none"/>
+  </a>
+</object>
+</p>
+<p>全てのチェックがONで、かつ、テキストボックスに文字が含まれていないとボタンを押せません（テキストボックスの値の判定はフォーカスが外れてからになります）。CombineLatestというのは、二つの値のうち、どちらか一つが更新されると、片方は新しい値、片方はキャッシュから値を返して、イベントを合成するものです。もし片方にキャッシュがない場合はイベントは起こしません。「二つの値」というように、標準では二つの合成しか出来ないのですが、ReactivePropertyではこれを拡張して7つの値まで同時に合成できるようにしました（それ以上合成したい場合は、匿名型にまとめて、再度CombineLatestを繋げればよいでしょう）。この拡張はCodeplex.Reactive.Extensionsをusingすることで使えるようになります。Extensions名前空間には、他にも有益な拡張メソッドが大量に定義されていますので、是非覗いてみてください。</p>
+<p>さて、つまりCombineLatestの結果というのは、ボタンが押せるか否かの、条件のストリームです。どういうことかというと、連続的なCanExecuteです。なので、そのままICommandに変換してしまいましょう、というのがToReactiveCommandになります。CanExecuteに変更があることを、条件のほうからPushして伝えるので、従来使われてきたコマンドを集中管理するCommandManager.RequerySuggestedや、(イベントなので)本来外から叩けないCanExecuteChangedを外から叩けるようにする、などの手立ては不要です。</p>
+<p>常にtrueのコマンドならば、new ReactiveCommand()で生成できます。</p>
+<p>ところで、mode: ReactivePropertyMode.RaiseLatestValueOnSubscribe というのは、Subscribeされる時に(ToReactivePropertyやToReactiveCommandは内部でSubscribeしています)、同時に最新の値を返します(最新の値がない場合は初期値を返します。初期値は指定することもできますし、もし指定していない場合はdefault(T)になります)。どういうことかというと、判定のタイミングの問題があります。CombineLatestは全てに一度は値の通知が来ている(キャッシュが存在する)状態じゃないと、イベントを起こしてくれません。なので、CanExecuteを初回時から判定させるために、これの指定が必要です。なお、ReactivePropertyModeのデフォルトはDistinctUntilChangedのみで、RaiseLatestValueOnSubscribeは明示的に指定しなければなりません。一件便利そうに見えるRaiseLatestValueOnSubscribeですが、問題も抱えていまして、後でも詳しく説明しますがバリデーションの時。バリデーションの場合は初回実行はして欲しくない（画面を表示したら、いきなり真っ赤っかだと嫌でしょう？）ケースがほとんどのはずです。RaiseLatestValueOnSubscribeを指定すると、初回実行してしまうので、そういう場合にとても都合が悪いのです。これは、良し悪しなので、適宜判断して、最適な方をお選びください。</p>
+<h2>宣言的であるということ</h2>
+<p>ReactiveCommandは、条件を宣言的に記述しました。そして、外部から叩くことは禁じられているので、その宣言以外のことが絡む可能性はありません。また、状態を外部変数から取得する(RelayCommandなどはそうなりますね)わけではないので、CanExecuteの変化のスコープはToReactiveCommandをする一連のシーケンスを読むだけですみます。変数を返す場合は、変数を使う範囲、つまりオブジェクト全体から変更可能性が混ざるという、大きなスコープの観察を余儀なくされます。読む場合だけでなく、書く場合でも、集中的に変化の条件を記述することができるので、ずっと楽でしょう。</p>
+<p>ReactivePropertyもまた、同じです。値の変化の条件を宣言的に記述しました（こちらはReactiveCommandと違い、(Two-wayでバインド可能にするという都合上外部から叩くことが可能なのでスコープは閉じていませんが）。大事なのは、スコープを小さくすること。大きなスコープは往々に管理しきれないものです。リッチクライアントはステートを持つ。その通りだ。プロパティが、オブジェクトが、絡みあう。それは実に複雑なのは間違いない。でも複雑だから難しくて当然、複雑だからテストできない、複雑さを複雑なまま放っておいたら、それはただの新世代のスパゲティにすぎない。</p>
+<p>ステートを捨てようじゃあなくて、宣言的にやろう。それがReactivePropertyの解決策、提案です。</p>
+<h2>INotifyPropertyChangedと一緒に。</h2>
+<p>全てReactivePropertyで相互作用を記述する、というのは理想的ですが過激派です。それに、既存のModelや自動生成のModelなど、様々なところにINotifyPropertyChangedはあります。理想だけじゃ生きていけません。それに、私もプレーンなModelはPOCO(+INotifyPropertyChanged)のほうが嬉しい。でも、IObservableになっていないと、関係の合成が不可能で困るので、INotifyPropertyChanged -&gt; ReactivePropery変換を可能にしました。ここでは説明しませんが、その逆のReactiveProperty -&gt; INotifyPropertyChanged変換も可能です。</p>
+<pre><code class="language-csharp">using Codeplex.Reactive.Extensions; // ObservePropertyもこれをusingで。
+
+public class ObserveViewModel
+{
+    public ReactiveProperty&lt;string&gt; ModelText { get; private set; }
+
+    public ObserveViewModel()
+    {
+        ModelText = new ToaruModel()
+            .ObserveProperty(x =&gt; x.Text) // タイプセーフにIObservable&lt;T&gt;に変換
+            .ToReactiveProperty();
+    }
+}
+
+// WCFからだったりEntity Frameworkだったり既存のModelだったり他のViewModelだったり
+// ともかく、INotifyPropertyChangedは至る所に存在します
+public class ToaruModel : INotifyPropertyChanged
+{
+    private string text;
+    public string Text
+    {
+        get { return text; }
+        set { text = value; PropertyChanged(this, new PropertyChangedEventArgs(&quot;Text&quot;)); }
+    }
+
+    public event PropertyChangedEventHandler PropertyChanged = (_, __) =&gt; { };
+}
+</code></pre>
+<p>INotifyPropertyChangedの仕組みって、とあるプロパティが変更された、と名前でPushして、変更通知を受けた方はその名前を元にPullで取り出す。描画フレームワークが面倒を見ているなら、それでいいのですが、通常使うには、とてもまどろっこしい。だから、そうしたオブジェクトという大きな土台から名前ベースのPush &amp; Pull通知を、プロパティ単位の小さなPush通知に変換してやりました。指定はExpressionで行うのでタイプセーフですしね。</p>
+<p>ReactivePropertyのほうがINotifyPropertyChangedよりも細かいハンドリングが効くのは当たり前の話で、単位が小さいから。逆に、だから、INotifyPropertyChangedという大きい単位で関係を作り込んでいくのは、非常に複雑でスパゲティの元だと言わざるを得ない。勿論、Reactive Extensionsという、プロパティ単位でのPushを自在に扱う仕組みが背後にあってこそのやり方ではあるのですが。</p>
+<h2>MとVMの境界</h2>
+<p>が、曖昧にみえるのはその通りかもしれません。けれど、処理がVMに偏りすぎるように見えるのなら、それは素直にMに移せばいい。細かいMを束ねるMを導入すればいい。名前は、サービスでもファサードでもプロキシーでもアプリケーションでもコントローラーでも、なんでもいい(わけではないけれど)。移せばいいなんて簡単にいいますが、それは簡単にできるからです。VM-M-VMが一気通貫してループを描いているなら、ローカル変数への依存もなくメソッドチェーンを切った貼ったするだけなので、どこに置くのも移すのは楽です。</p>
+<p>そもそも、最初から明確に分けようとしたってどうせうまくいかないもの。インターフェイスだって、具象型から抽象を見出したほうが簡単だし、ずっとうまくいくでしょう？ネーミングだってリファクタリングで徐々に洗練させる。そもそもVMがヘヴィになりがちなのは、目で見える境界がないから、なせいでしょう。VはXAMLで線引きされるけれど、それ以外はコードで地続き。理想論だけで線を引こうとしたって空疎だし、そもそも、無理な話。境界を見出すには具体的に積み重なった後じゃないと無理でしょう(勿論、境界の敷き方を常日頃考える、研究することは有意義だと思います。そもそも考えていないと、いざ境界を見出そうとしても見えませんから)</p>
+<h2>そもそもMVVMなのか</h2>
+<p>UIに対するReactive Programmingなのは間違いないと思ってます。Reactive ProgrammingはUI向きだ。よく聞くその話は、実際その通りだと思うのですが、しかし同時にUI(というか、WPF/SL/WP7などXAML)とRxってどうもイマイチフィットしないなぁ、と悩んでいました。その理由は、最終的に描画を司るフレームワーク(XAML)とミスマッチなせいにあるのだと、気づきました。フレームワークの要求(INotifyPropertyChangedなオブジェクトであったりICommandであったり)と異なるものを、そのまま使おうとしたところで、良い結果は得られない。ゴリ押ししてもXAMLの旨みが生かせないし、Reactive Programmingを大前提に置いた描画フレームワークを構築すれば、もっと違う形になるでしょうが、そんなものは非現実的な話です。膨大な投資のされた、現在のXAML中心のシステムより良いもの……。やはり、絵空事にしか見えません。それに、XAMLは何だかんだ言って、良いものです。</p>
+<p>それを認識したならば、必要なのは、境界を繋ぐシステムだと導ける。そのことを念頭においてReactivePropertyとReactiveCommandをデザインしました。MVVMライクなのは描画フレームワークに合わせた結果です、だから、MVVMでもあり、そうでもないようでもある。ただ、それによってパラダイムがミックスされてどちらの長所も活かせるし、世界最高峰のシステムであるXAMLアプリケーションに乗っかれるので今すぐ実用的という面もあるわけなので、これでいいと思うんです。いや、これがいいんです。マルチパラダイムは悪いことではない。あとは、ミックス故に生まれる新しい悩みをどう解消していくか、です。</p>
+<p>マルチパラダイムといえば、ReactivePropertyは描画フレームワークからの言語への要求が変化（吸収）しているので、F#でも美味しくXAMLアプリケーションを書くことが可能になるでしょう。多分。</p>
+<h2>非同期拡張メソッド群</h2>
+<p>Rxは非同期の苦痛を癒す。とはいっても、実のところ素の状態だと罠が多くて、意外と使いづらかったりします。WebClientは、実行順序の問題があり、そのままではRxで扱いにくい。WebRequestはWebRequestでプリミティブすぎて機能が乏しいし、そのままではリソース処理に問題を抱えたりします。どちらも、ただFromEvent, FromAsyncするだけでは足りなくて、もう一手間かけたRx化が必要です。そのため、WebClient, WebRequestに対して拡張メソッドを用意し、簡単に実行出来るようにしました。</p>
+<p>ReactivePropertyと合わせてのインクリメンタルサーチの例を。これは、ReactivePropertyのダウンロードファイルに含む非同期サンプルですので、是非ダウンロードして、サンプルを実際に実行してみてください。</p>
+<pre><code class="language-csharp">using Codeplex.Reactive.Asynchronous; // 非同期系の拡張メソッド群を格納
+using Codeplex.Reactive.Extensions; // OnErrorRetryはこちら
+
+public class AsynchronousViewModel
+{
+    public ReactiveProperty&lt;string&gt; SearchTerm { get; private set; }
+    public ReactiveProperty&lt;string&gt; SearchingStatus { get; private set; }
+    public ReactiveProperty&lt;string&gt; ProgressStatus { get; private set; }
+    public ReactiveProperty&lt;string[]&gt; SearchResults { get; private set; }
+
+    public AsynchronousViewModel()
+    {
+        // IncrementしたりDecrementしたりすることでイベント(Empty ,Inc, Dec, Max)が発生する
+        // それはネットワークの状態を管理するのに都合が良い(IObservable&lt;SignalChangedStatus&gt;)
+        var connect = new SignalNotifier();
+        // 指定したスケジューラ(デフォルトはUIDispatcherScheduler)上で任意にイベントを起こせる
+        // 主にProgressと併用して進捗報告に利用する
+        var progress = new ScheduledNotifier&lt;DownloadProgressChangedEventArgs&gt;();
+
+        SearchTerm = new ReactiveProperty&lt;string&gt;();
+
+        // 検索は当然非同期で行い、それをダイレクトにバインドしてしまう
+        SearchResults = SearchTerm
+            .Select(term =&gt;
+            {
+                connect.Increment(); // 非同期なのでリクエストは一つじゃなく並列になるので、これで管理
+                return WikipediaModel.SearchTermAsync(term, progress)
+                    .Finally(() =&gt; connect.Decrement()); // リクエストが終了したら、確実にカウントを下げる
+            })
+            .Switch() 
+            .OnErrorRetry((WebException ex) =&gt; ProgressStatus.Value = &quot;error occured&quot;)
+            .Select(w =&gt; w.Select(x =&gt; x.ToString()).ToArray())
+            .ToReactiveProperty();
+
+        // SignalChangedStatus : Increment(network open), Decrement(network close), Empty(all complete)
+        SearchingStatus = connect
+            .Select(x =&gt; (x != SignalChangedStatus.Empty) ? &quot;loading...&quot; : &quot;complete&quot;)
+            .ToReactiveProperty();
+
+        ProgressStatus = progress
+            .Select(x =&gt; string.Format(&quot;{0}/{1} {2}%&quot;, x.BytesReceived, x.TotalBytesToReceive, x.ProgressPercentage))
+            .ToReactiveProperty();
+    }
+}
+
+// 非同期リクエストとデータ。単純ですが、Modelということで。
+public class WikipediaModel
+{
+    const string ApiFormat = &quot;http://en.wikipedia.org/w/api.php?action=opensearch&amp;search={0}&amp;format=xml&quot;;
+
+    public string Text { get; set; }
+    public string Description { get; set; }
+
+    public WikipediaModel(XElement item)
+    {
+        var ns = item.Name.Namespace;
+        Text = (string)item.Element(ns + &quot;Text&quot;);
+        Description = (string)item.Element(ns + &quot;Description&quot;);
+    }
+
+    // WebClientの他に、WebRequestやWebResponseへの非同期拡張メソッドも多数用意されています
+    // また、ほとんど全ての非同期拡張メソッドにはプログレス通知を受け付けるオーバーロードがあります
+    public static IObservable&lt;WikipediaModel[]&gt; SearchTermAsync(string term, IProgress&lt;DownloadProgressChangedEventArgs&gt; progress)
+    {
+        var clinet = new WebClient();
+        return clinet.DownloadStringObservableAsync(new Uri(string.Format(ApiFormat, term)), progress)
+            .Select(Parse);
+    }
+
+    static WikipediaModel[] Parse(string rawXmlText)
+    {
+        var xml = XElement.Parse(rawXmlText);
+        var ns = xml.Name.Namespace;
+        return xml.Descendants(ns + &quot;Item&quot;)
+            .Select(x =&gt; new WikipediaModel(x))
+            .ToArray();
+    }
+
+    public override string ToString()
+    {
+        return Text + &quot;:&quot; + Description;
+    }
+}
+</code></pre>
+<p>色々な機能を一度に説明しようとしているので、些か複雑かもしれません。まず、非同期リクエストは並列になります。例えばボタンを、通信中はDisabledにするのに、単純にbooleanで管理してもうまくいきません。どれか一つのアクセスが始まったらDisabledにしてどれか一つのアクセスが終わったらEnabledにする。それではダメです。どれか一つのアクセスが終わったところで、他のリクエストが通信中かもしれないケースに対応できませんから。</p>
+<p>そこで、ReactivePropertyではSignalNotifierというものを用意しました。これは、IncrementかDecrementの操作によって、「ゼロになった」「インクリメントされた」「デクリメントされた」「Max（初期値で指定した場合）になった」というイベントを発行します。イベントといっても、自身がIObservable&lt;SignalStatus&gt;になっているので、直接Rxで扱えます。これのネットワークリクエストへの適用はシンプルで、通信開始されたらインクリメント。通信終了したらデクリメントする。そして、ゼロになったか否かを見れば、それが通信中か否かの判定になります。</p>
+<p>非同期拡張メソッドはキャンセルに対しても強く考慮されています。WebClient(のSubscribeの戻り値)にDisposeするとCancelAsyncを、WebRequest(のSubscribeの戻り値)にDisposeするとAbortを呼ぶようになっています。このような挙動は、単純にFromEvent, FromAsyncしただけでは実現できないので、大きくて間を省けることでしょう。ネットワークリクエストを自身でキャンセルすることは少ないかもしれませんが、上の例であげたSwitchは内部でDisposeを呼びまくる仕組みになっていますので、しっかり対応している、というのは実行上、大きなアドバンテージとなります。</p>
+<p>Switchは複数の非同期リクエストが確認された場合に、前のリクエストをキャンセル＋キャンセルが遅れた場合でも遮断して結果を後続に返さないことで、最新のリクエストの結果のみを返します。そのため、非同期リクエストが抱える結果が前後してしまう可能性、例えばインクリメンタルサーチではLINQと検索したのに、LINQの結果よりも後にLIの結果が返ってきたために、表示されるのがLIの結果になってしまう。などという自体が防げます。</p>
+<p>また、OnErroRetryに注目してください。これはReactivePropertyが独自に定義している拡張メソッドで、例外発生時の処理をすると同時に、Retry（ここでいうとSearchTermの再購読なので、つまりチェーンの状態が維持される、ということになる）します。ToReactivePropertyを使い、ダイレクトに結び付けている場合は、例外が発生するとチェーンが終了して困るのですが、例外処理にこのOnErrorRetryを使うことで、そのような悩みは不要になります。なお、このOnErrorRetryは勿論ReactiveProperty専用というわけでもなく汎用的に使えます。例えば、もしネットワークからのダウンロードに失敗したら、一定間隔を置いて再度ダウンロードをする、但しリトライの挑戦は指定回数まで。というよくありそうな処理が、引数で回数とTimeSpanが指定できるので、簡単に記述できます。</p>
+<p>進捗レポートも非同期処理では欠かせませんが、これは非同期拡張メソッドとScheduledNotifierを組み合わせることで、簡単に実現出来ます。これら非同期周りのサポートはReactivePropertyの重要な柱だと考えているので、UI周りの機能は必要ない、という人も、是非試してみて欲しいです。</p>
+<h2>同期 vs 非同期</h2>
+<p>SLやWP7はともかく、WPFでこのように強烈に非同期サポートする意味はあるのでしょうか。というと、あります(ただたんにコード共有しているから、というだけではなく)。まず、WinRTがそうなように、時間のかかる処理は時間のかかる処理なわけなので、強制的に非同期になっていたほうが、ViewModelなり束ねるModelなりで、そこら中に、明示的にスレッド管理(ただたんにTaskに投げるのも含む)をしないで済みます。本質的に非同期(CPU依存ではない形で時間がかかる)なものは非同期として扱ったほうが易しいのです。</p>
+<p>もう一つは、Switchのような、キャンセルを多用した処理が書きやすいこと。それに、自然な形でプログレス処理もサポートできます。更には、ReactivePropertyを全面に使うのなら、全てがReactiveに通知しあう世界、つまり全てが非同期で回っているので、非同期のほうが圧倒的に相性が良いです。同期プログラミングさようなら。大丈夫です、何も問題ありません。</p>
+<h2>C#5.0 Async vs Rx</h2>
+<p>従来通りに書く。シンプルに同期のように。のならば、async/awaitのほうがずっと良い。そういう使い方をする場合は、Rxを非同期に使う必要性というのは、今後はなくなるでしょう。ではRxでの非同期に価値はなくなってしまうのか？というと、それに関しては明確にNOと答えます。</p>
+<p>Rxの場合はLINQということで、宣言的なスタイル、演算子という形に汎用的な処理を閉じ込められる高いモジュール性。というのがあります。上で見たきたように、Switchのようなこと、OnErrorRetryのようなこと、これらを演算子という形で定義して、メソッド一発で適用出来るのはRxならではの利点です。もし自分でそれらの処理を書くとしたら…… あまり考えたくはないし、もしメソッドの形でまとめあげるとしても、Rxのように綺麗に適用させるのは不可能でしょう。どこか歪んだシグネチャを抱えることになります。</p>
+<p>ReactivePropertyと親和性が高いのでViewModelへの伝達に使いやすいというのもポイントですね(TaskとIObservableは相互に変換可能なので、ToTaskしたりToObservableしたりするだけなので、別段問題でもないですけど)</p>
+<p>使い分けというのは実際のところ幻想みたいなことなので、人によりどちらか主体のスタイルには落ち着くでしょう。私は、とりあえずRx主体で行きたいかなあと思ってますが、ライブラリ的な部分ではasync/awaitを使って書くでしょう(演算子の組み合わせでやろうとすると書くのも難しいし、パフォーマンスも出ないので)。現在のシーケンスに対する、yield returnで汎用的な演算子を作って、通常使うシーンではLINQ to Objectsで、定義した演算子を含めて使っていく。というのと同じスタイルが良さそうだと想像します。async/awaitの書きやすさ・パフォーマンスと、Rxのモジュール性の両立はその辺かなあ、って。</p>
+<p>あと、連続的な非同期処理を一纏めにするというのが(今のところ)async/awaitだと出来ない(Task&lt;T&gt;の戻り値は一つだけだから)ので、その辺をやりたい場合にもRx(IObservable&lt;T&gt;は元より複数の戻り値を内包する)頼みになります。ここは将来的にどういう形になるのか、まだ不明瞭なところなので断言はしませんが。</p>
+<h2>Validation</h2>
+<p>ReactivePropertyでは、三種類のバリデーションに対応しています。DataAnnotationsによる属性ベース、IDataErrorInfoによるPull型のエラー確認、INotifyDataErrorInfoによるPush型/非同期のエラー確認。ただし、WPFではINotifyDataErrorInfoは使えなく(.NET4.5からは入るようですが)、WP7ではDataAnnotationsが使えません。これはクラスライブラリの問題なので私の方では如何ともしがたくで。</p>
+<pre><code class="language-csharp">// XAMLは省略。詳しくはSample/Validationを見てください
+
+public class ValidationViewModel
+{
+    [Required]
+    [Range(0, 100)]
+    public ReactiveProperty&lt;string&gt; ValidationAttr { get; private set; }
+    public ReactiveProperty&lt;string&gt; ValidationData { get; private set; }
+    [StringLength(5)]
+    public ReactiveProperty&lt;string&gt; ValidationBoth { get; private set; }
+    public ReactiveProperty&lt;string&gt; ValidationNotify { get; private set; }
+    public ReactiveProperty&lt;string&gt; ErrorInfo { get; private set; }
+    public ReactiveCommand NextCommand { get; private set; }
+
+    public ValidationViewModel()
+    {
+        // 属性ベースのバリデーションは、自身のプロパティをExpressionで指定することで適用できます
+        // 通常属性ベースの場合、例外経由ですが、ReactivePropertyではIDataErrroInfo経由になります
+        // そのため、XAML側ではValidatesOnDataErrors=Trueにしてください
+        ValidationAttr = new ReactiveProperty&lt;string&gt;()
+            .SetValidateAttribute(() =&gt; ValidationAttr);
+
+        // IDataErrorInfoではエラー時のメッセージを渡します、nullの場合は成功の判定になります
+        ValidationData = new ReactiveProperty&lt;string&gt;()
+            .SetValidateError(s =&gt; s.All(Char.IsUpper) ? null : &quot;not all uppercase&quot;);
+
+        // 三種類の指定は、重ねることが可能です（但し同じ種類のものを複数指定するのは不可能）
+        ValidationBoth = new ReactiveProperty&lt;string&gt;()
+            .SetValidateAttribute(() =&gt; ValidationBoth)
+            .SetValidateError(s =&gt; s.All(Char.IsLower) ? null : &quot;not all lowercase&quot;);
+
+        // INotifyDataErrorInfoの場合は、IObservable&lt;IEnumerable&gt;を返してください
+        // 第一引数はself、つまりIObservable&lt;T&gt;になっていて、最終的にSelectでIEnumerableに変換します
+        // IObservableということで、非同期での検証が可能になっているのがポイントです
+        // これもIDataErrorInfoと同じく、nullの場合は成功という判定になります
+        ValidationNotify = new ReactiveProperty&lt;string&gt;(&quot;foo!&quot;, ReactivePropertyMode.RaiseLatestValueOnSubscribe)
+            .SetValidateNotifyError(self =&gt; self
+                .Delay(TimeSpan.FromSeconds(3)) // DB問い合わせなど非同期なバリデーション（が可能）
+                .Select(s =&gt; string.IsNullOrEmpty(s) ? null : new[] { &quot;not empty string&quot; }));
+
+        // バリデーションの結果は、三種類全てまとめられてObserveErrorChangedから購読できます
+        var errors = Observable.Merge(
+            ValidationAttr.ObserveErrorChanged,
+            ValidationData.ObserveErrorChanged,
+            ValidationBoth.ObserveErrorChanged,
+            ValidationNotify.ObserveErrorChanged);
+
+        // もし、それらを分類したいときは、OfTypeを使うといいでしょう
+        ErrorInfo = Observable.Merge(
+                errors.Where(o =&gt; o == null).Select(_ =&gt; &quot;&quot;), // 成功はnull
+                errors.OfType&lt;Exception&gt;().Select(e =&gt; e.Message), // 属性からはException
+                errors.OfType&lt;string&gt;(), // IDataErrorInfoからはstring
+                errors.OfType&lt;string[]&gt;().Select(xs =&gt; xs[0]))  // INotifyDataErrorInfoからは、IEnumerableの何か
+            .ToReactiveProperty();
+
+        // 検証が全部通ったら実行可能にするコマンド、などもこうやって書けますね！
+        NextCommand = errors.Select(x =&gt; x == null).ToReactiveCommand(initialValue: false);
+        NextCommand.Subscribe(_ =&gt; MessageBox.Show(&quot;Can go to next!&quot;));
+    }
+}
+</code></pre>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="300px">
+  <param name="source" value="http://neue.cc/wp-content/uploads/silverlight/ReactivePropertyFirstIntroduction.xap"/>
+  <param name="background" value="white" />
+  <param name="minRuntimeVersion" value="3.0.40624.0" />
+  <param name="autoUpgrade" value="true" />
+  <param name="initparams" value="Start=3" />
+  <a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=3.0.40624.0" style="text-decoration:none">
+      <img src="http://go.microsoft.com/fwlink/?LinkId=108181" alt="Microsoft Silverlight を入手" style="border-style:none"/>
+  </a>
+</object>
+</p>
+<p>一点だけ通常と異なるのは、属性ベースのものを例外ではなくてIDataErrorInfoとして扱います（この辺はRxのパイプラインを通す都合上、例外を出すという形での実現が不可能だったので）</p>
+<h2>Event to Observable</h2>
+<p>イベントをXAML側で指定して、ReactivePropetyにバインドすることが可能です。</p>
+<pre><code class="language-xml">&lt;Grid&gt;
+    &lt;i:Interaction.Triggers&gt;
+        &lt;i:EventTrigger EventName=&quot;MouseMove&quot;&gt;
+            &lt;r:EventToReactive ReactiveProperty=&quot;{Binding MouseMove}&quot; /&gt;
+        &lt;/i:EventTrigger&gt;
+    &lt;/i:Interaction.Triggers&gt;
+    &lt;TextBlock Text=&quot;{Binding CurrentPoint.Value}&quot; /&gt;
+&lt;/Grid&gt;
+</code></pre>
+<pre><code class="language-csharp">public class EventToReactiveViewModel
+{
+    public ReactiveProperty&lt;MouseEventArgs&gt; MouseMove { get; private set; }
+    public ReactiveProperty&lt;string&gt; CurrentPoint { get; private set; }
+
+    public EventToReactiveViewModel()
+    {
+        // UIからのイベントストリームを受信
+        MouseMove = new ReactiveProperty&lt;MouseEventArgs&gt;();
+        
+        // とりあえず座標を表示する、というもの
+        CurrentPoint = MouseMove
+            .Select(m =&gt; m.GetPosition(null))
+            .Select(p =&gt; string.Format(&quot;X:{0} Y:{1}&quot;, p.X, p.Y))
+            .ToReactiveProperty(&quot;MouseDown and drag move&quot;);
+    }
+}
+</code></pre>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="100px">
+  <param name="source" value="http://neue.cc/wp-content/uploads/silverlight/ReactivePropertyFirstIntroduction.xap"/>
+  <param name="background" value="white" />
+  <param name="minRuntimeVersion" value="3.0.40624.0" />
+  <param name="autoUpgrade" value="true" />
+  <param name="initparams" value="Start=4" />
+  <a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=3.0.40624.0" style="text-decoration:none">
+      <img src="http://go.microsoft.com/fwlink/?LinkId=108181" alt="Microsoft Silverlight を入手" style="border-style:none"/>
+  </a>
+</object>
+</p>
+<p>お手軽なので、結構便利だと思います。あの長大なFromEventPatternを書くよりかは(笑)</p>
+<h2>シリアライズ</h2>
+<p>特にWP7では頻繁な休止と復帰で、シリアライズ/デシリアライズによる状態の回復が重要です。そこで、値の回復を可能にするシリアライズ用のヘルパーを用意しました。</p>
+<pre><code class="language-csharp">// こんなビューモデルがあるとして
+public class SerializationViewModel
+{
+    // なにもつけてないと普通にシリアライズ対象
+    public ReactiveProperty&lt;bool&gt; IsChecked { get; private set; }
+    [IgnoreDataMember] // Ignoreつけたら無視
+    public ReactiveProperty&lt;int&gt; SelectedIndex { get; private set; }
+    [DataMember(Order = 3)] // Orderつけたら、デシリアライズの順序を規程
+    public ReactiveProperty&lt;int&gt; SliderPosition { get; private set; }
+}
+
+// 例えばWindows Phone 7のトゥームストーンなシチュエーションを考えてみると
+private SerializationViewModel viewmodel = new SerializationViewModel();
+private string viewmodelData = null;
+
+protected override void OnNavigatingFrom(System.Windows.Navigation.NavigationEventArgs e)
+{
+    viewmodelData = SerializeHelper.PackReactivePropertyValue(viewmodel);
+}
+
+protected override void OnNavigatedTo(System.Windows.Navigation.NavigationEventArgs e)
+{
+    SerializeHelper.UnpackReactivePropertyValue(viewmodel, viewmodelData);
+}
+</code></pre>
+<p>デシリアライズの順序はDataMember属性のOrderに従います。詳しくは<a href="http://msdn.microsoft.com/ja-jp/library/ms729813.aspx">データ メンバーの順序</a>を参照のこと。Pushしあう関係の都合上、デシリアライズの順序によって正確な復元ができないこともあるでしょうから、その場合は、Orderをつけると、ある程度制御できます。また、IgnoreDataMember属性をつけておくと、シリアライズ対象から除外することが可能です。</p>
+<h2>スニペットとサンプル</h2>
+<p>NuGetから入れてもらってもいいのですが、ダウンロードしてもらえるとコードスニペットとサンプルがついてきますので、最初はダウンロードのほうがいいかもです。コードスニペットはrpropでReactiveProperty&lt;T&gt; PropertyName{ get; private set; }という頻繁に書くことになる宣言が展開されます。他にはrcomm(ReactiveCommand)など。</p>
+<p class="noindent">
+    <img src="http://neue.cc/wp-content/uploads/image/ReactivePropertySample.jpg">
+</p>
+<p>サンプルはWPF/SL4/WP7全てで用意しました。サンプルを割としっかり用意した最大の理由は、ただ渡されても、もしかしなくてもどう書けばいいのかさっぱり分からないのでは、と思ったのがあります。決して複雑ではなく、むしろシンプルだし記述量は大幅に減るわけです、が、従来のやり方からするとあまりにも突飛なのは否めないので、いきなりスイスイ書くというのは無理ですよねぇ、と。</p>
+<p>その他紹介していない、サンプルに載ってない機能は、まだいっぱい。こんなに記事がなくなっちゃってもまだ全然足りない。でも、いきなりてんこ盛りだと引いてしまうので、基本的にはReactivePropertyとReactiveCommandが主体で、慣れたら徐々に周囲を見てもらえばな、ぐらいに思っています。</p>
+<h2>まとめ</h2>
+<p>仕上がりはかなり良いと、興奮しています。この長い記事！興奮を伝えたいという気持ちでいっぱいだからです。今後も、利用シーンの模索と合わせて、どんどん進化させていくつもりです。初回リリースですし、というのもありますが、コアコンセプトの実現と、使い勝手としてのAPIの錬成に力を注いだので、それ以外の部分の研究が疎かになっているというのは否めませんので、そこのところの強化も行なっていきます。また、JavaScriptへの移植もノリ気なので、まず<a href="http://knockoutjs.com/">Knockout.js</a>を試して、その上に構築させたいなあ、とか考えています。</p>
+<p>ところで、10/8土曜日、明日の<a href="http://silverlightsquare.com/index.php/tokyo04.html">Silverlightを囲む会in東京#4</a>の一番最後に、少し、デモ中心でお話をするつもりなので（最後のオマケなのでほんの少しだけですけどね)良ければ見に来てください。ギリギリではありますが、まだ申し込みも出来ると思います。また、もしよければ会場/懇親会でつかまえて聞いてくれたりすると泣いて喜びます。会場に来れなくてもIIJさんのSmooth Streamingで超高画質な配信が行われると思われますので、そちらでも是非是非。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0923_345.html">SL/WP7のSilverlight Unit Test Frameworkについて少し深く</a></h1>
+<ul class="date"><li>2011-09-23</li></ul>
+<div class="entry_body"><p>の、前に少し。<a href="http://dynamicjson.codeplex.com/" title="DynamicJson">DynamicJson</a>と<a href="http://linqcomparer.codeplex.com/" title="AnonymousComparer - lambda compare selector for Linq">AnonymousComparer</a>をNuGetに登録しました。どちらも.csファイル一個のお手軽クラスですが、NuGetからインストール可能になったことで、より気楽に使えるのではかと思います。機能説明は省略。</p>
+<p>そして、昨日の今日ですが<a href="http://chainingassertion.codeplex.com/" title="Chaining Assertion">Chaining Assertion</a>を<a href="http://archive.msdn.microsoft.com/silverlightut" title="Silverlight Unit Test Framework - Home">Silverlight Unit Test Framework</a>に対応させました。リリースのバージョンは1.6.0.1ということで。NuGetでは<a href="http://nuget.org/List/Packages/ChainingAssertion-SL">ChainingAssertion-SL</a>と<a href="http://nuget.org/List/Packages/ChainingAssertion-WP7">ChainingAssertion-WP7</a>になります。</p>
+<h2>Silverlight Unit Test Framework</h2>
+<p>Silverlightで使う場合は(WP7じゃなくてね、という意味です)、一応<a href="http://silverlight.codeplex.com/" title="Silverlight Toolkit">Silverlight Toolkit</a>に同梱という話ではあるのですが、テンプレートなどの用意が面倒くさいので、NuGet経由で入れるのが最も楽のようです。<a href="http://nuget.org/List/Packages/Silverlight.UnitTest" title="NuGet gallery">Install-Package Silverlight.UnitTest</a>で。</p>
+<p>まず、Silverlightアプリケーションを新規作成。Webサイトでのホストはなしでいいです。それとブラウザで実行させる必要もないので、プロジェクトのプロパティからOut of Browserに変更してしまいましょう。次に、NuGetからInstall-Package Silverlight.UnitTest。これでライブラリの参照と、ApplicationExtensions.cs(イニシャライズ用拡張メソッド)、UnitTest.cs（テスト用テンプレ）が追加されているはずです。次にApp.xaml.csのStartupを以下のように書き換えます。</p>
+<pre><code class="language-csharp">private void Application_Startup(object sender, StartupEventArgs e)
+{
+    // this.StartTestRunnerDelayed();
+    this.StartTestRunnerImmediate();
+}
+</code></pre>
+<p>StartTestRunnerDelayedはテストランナー起動時に実行オプション（指定属性のもののみ実行するなど）を選択可能にするもの、Immediateはすぐに全テストを実行する、というものです。どちらかを選択すればOK。それで、とりあえず実行(Ctrl+F5)してみれば、テストランナーが立ち上がって、デフォテンプレに含まれるUnitTest.csのものが実行されているんじゃないかしらん。あとは、それを適宜書き換えていけばよし。なお、テンプレのテストクラスはSilverlightTestを継承していますが、これは必ずしも継承する必要はありません。後述しますが、Asynchronousのテストを行いたいときは必須ですが、そうでないならば、普通にMSTestでの場合と同じように、[TestClass]と[TestMethod]属性がついているものがテスト対象になっています。</p>
+<p>なお、MainPage.xaml/.xaml.csは不要なので削除してしまってOK。StartTestRunnerによって、参照DLLのほうに含まれるxamlが呼ばれているためです。</p>
+<h2>WP7の場合。</h2>
+<p>一応NuGetにも用意されてるっぽい(silverlight.unittest.wp7)んですが、動きませんでした。ので、今のところ手動で色々用意する必要があります。詳しくは<a href="http://d.hatena.ne.jp/okazuki/20110911/1315736690" title="Windows Phone 7用の単体テストツール？ その２「使ってみた」 - かずきのBlog@Hatena">Windows Phone 7用の単体テストツール？ その２「使ってみた」 - かずきのBlog@Hatena</a>に全部書いてあるのでそちらを参照のことということで。参照するためのDLLを拾ってくる→App.xaml.cs、ではなくてMainPage.xaml.csを書き換える、という、Silverlight版とやることは一緒なのですけどね。こういう状況なのはMangoのSDKがベータだったからとかなんとかのせいだとは思うので、近いうちに解決するのではかと、楽観視したいところです。</p>
+<h2>Chaining Assertionを使ってみる</h2>
+<p><a href="http://neue.cc/2011/09/20_344.html" title="neue cc - Chaining Assertion ver 1.6.0.0">Chaining Assertion ver 1.6.0.0</a>の解説で紹介した失敗結果が丁寧に表示されるよー、をチェックしてみませう。</p>
+<pre><code class="language-csharp">// こんなクラスがあるとして
+public class Person
+{
+    public int Age { get; set; }
+    public string FamilyName { get; set; }
+    public string GivenName { get; set; }
+}
+ 
+[TestClass]
+public class ToaruTest
+{
+    [TestMethod]
+    public void PersonTest()
+    {
+        // こんなPersonがあるとすると
+        var person = new Person { Age = 50, FamilyName = &quot;Yamamoto&quot;, GivenName = &quot;Tasuke&quot; };
+        // こんな風にメソッドチェーンで書ける(10歳以下でYamadaTarouであることをチェックしてます)    
+        // 実際の値は50歳でYamamotoTasukeなので、このアサーションは失敗するでしょう
+        person.Is(p =&gt; p.Age &lt;= 10 &amp;&amp; p.FamilyName == &quot;Yamada&quot; &amp;&amp; p.GivenName == &quot;Tarou&quot;);
+    }
+}
+</code></pre>
+<p class="noindent">
+    <img src="http://neue.cc/wp-content/uploads/image/persontestwp7.jpg">
+</p>
+<p>はい、ちゃんと表示されます。Chaining Assertionを使うと、メソッドチェーンスタイルで、実際の値.Is(期待値の条件)というように、 簡潔な記述でテストを書くことが出来るのがうりです。また、失敗時には、この場合personの値を詳細に出力してくれるので、何故失敗したのかが大変分かりやすい。もし、普通に書くと以下のようになりますが、</p>
+<pre><code class="language-csharp">// もし普通に書く場合
+var person = new Person { Age = 50, FamilyName = &quot;Yamamoto&quot;, GivenName = &quot;Tasuke&quot; };
+Assert.IsTrue(person.Age &lt;= 10);
+Assert.AreEqual(&quot;Yamada&quot;, person.FamilyName);
+Assert.AreEqual(&quot;Tarou&quot;, person.GivenName);
+</code></pre>
+<p>まず、Assert.IsTrueでは失敗時にperson.Ageの値を出してくれないので、確認が面倒です。また、この場合、Personが正しいかをチェックしたいわけなので、FamilyNameやGivenNameも同時に判定して欲しいところですが、Ageを判定した時点で失敗のため、そこでテストは終了してしまうため、FamilyNameやGivienNameの実際の値を知ることは出来ません。</p>
+<p>などなどの利点があるので、<a href="http://chainingassertion.codeplex.com/" title="Chaining Assertion">Chaining Assertion</a>はお薦めです！この記事はSilverlight Unit Test Frameworkの紹介の体をとっていますが、実態はChaining Assertionの宣伝記事ですからね(ｷﾘｯ</p>
+<h2>非同期テストをしてみる</h2>
+<p>Silverlightといったら非同期は避けて通れない。というわけで、Silverlight Unit Test Frameworkには非同期をテストできる機構が備わっています。[Asynchronous]というように、Asynchronous属性をつければそれだけでOK。と、思っていた時もありました。実際に試してみると全然違って、独特なシステムのうえにのっかっていて、かなり面倒くさかった……。</p>
+<p>準備。まず、非同期テストをしたいクラスはSilverlightTestクラスを継承します。そしてAsynchronous属性をつけます。すると、そのテストメソッドはTestCompleteが呼ばれるか例外を検知するまでは、終了しなくなります。というわけで、こんな感じ。</p>
+<pre><code class="language-csharp">[TestClass]
+public class ToaruTest : SilverlightTest
+{
+    [TestMethod]
+    [Asynchronous]
+    public void AsyncTest()
+    {
+        var req = WebRequest.Create(&quot;http://www.google.co.jp/&quot;);
+        req.BeginGetResponse(ar =&gt;
+        {
+            try
+            {
+                req.EndGetResponse(ar)
+                    .ResponseUri.ToString()
+                    .Is(&quot;http://www.google.co.jp/&quot;);
+            }
+            catch (Exception ex)
+            {
+                EnqueueCallback(() =&gt; { throw ex; }); // 例外はテスト用スレッドに投げる必要がある
+                return;
+            }
+
+            // ↓は定型句なので、EnqueueTestComplete(); という単純化されたのが用意されている
+            EnqueueCallback(() =&gt; TestComplete()); // 何事もなければ終了でマーク
+        }, null);
+    }
+}
+</code></pre>
+<p>このUnitTestの非同期は、独自のスレッドモデル（のようなもの）で動いていて、Dispatcherのようなキューにたいしてアクションを放り投げてあげる必要があります。別スレッドからUIスレッドは触れないように、「成功(TestComplete)」か「失敗(例外発生)」を伝えるには、EnqueueCallbackを経由しなければなりません。この辺はDispatcher.BeginInvokeするようなもの、と考えるといいかもしれません。</p>
+<p>上のは少し原理に忠実にやりすぎた。まるごとEnqueueCallbackしてしまえばスレッドを意識する必要性は少しだけ減ります。</p>
+<pre><code class="language-csharp">[TestMethod, Asynchronous]
+public void AsyncTest()
+{
+    var req = WebRequest.Create(&quot;http://www.google.co.jp/404&quot;); //404なので例外出してくれる
+    req.BeginGetResponse(ar =&gt;
+    {
+        EnqueueCallback(() =&gt; req.EndGetResponse(ar)
+            .ResponseUri.ToString()
+            .Is(&quot;http://www.google.co.jp/&quot;));
+
+        EnqueueTestComplete();
+    }, null);
+}
+</code></pre>
+<p>といっても、これは非常に単純なケースなだけであって、複雑なケースを書くとどんどん泣きたくなっていくでしょう……。一応、Enqueueには他にEnqueueConditionalという、条件式がtrueになるまで待機し続けるというものが用意されているので、若干制御はできなくもないんですが、あんまりできるとは言い難い仕組みがあります。詳しくは述べませんというか、別に使いやすいシステムじゃないのでどうでもいいです。</p>
+<h2>Rxを使ってみる</h2>
+<p>結果・もしくは例外を別のスレッドシステムに投げる。どこかで聞いたことあるような。ここでティンと来るのは<a href="http://msdn.microsoft.com/en-us/data/gg577609">Reactive Extensions</a>のObserveOnDispatcherです。Dispatcher.BeginInvokeのかわりにEnqueueCallback。丸っきりそっくり。なので、ObserveOnTestQueueのようなメソッドが作れれば、非常に使い勝手がいいんじゃないか。と思い浮かぶわけです。</p>
+<p>と、浮かんだ人は実に素敵な発想力を持っていますね。浮かんだのは私じゃなくて海外の人です。はい。<a href="http://blog.richardszalay.com/2011/08/08/writing-asynchronous-unit-tests-with-rx-and-the-silverlight-unit-testing-framework/" title="Writing asynchronous unit tests with Rx and the Silverlight Unit Testing Framework | Richard Szalay">Writing asynchronous unit tests with Rx and the Silverlight Unit Testing Framework | Richard Szalay</a>に、実装が書かれています。</p>
+<p>そのRxによるScheduler実装を使うと(WP7版なのでSystem.ObservableとMicrosoft.Phone.Reactiveも参照してください)</p>
+<pre><code class="language-csharp">[TestMethod, Asynchronous]
+public void AsyncTest()
+{
+    var req = WebRequest.Create(&quot;http://www.google.co.jp/&quot;);
+    Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse,req.EndGetResponse)()
+        .ObserveOnTest(this)
+        .Subscribe(r =&gt; 
+            r.ResponseUri.ToString().Is(&quot;http://www.google.co.jp/&quot;),
+            () =&gt; TestComplete());
+}
+</code></pre>
+<p>EnqueueCallbackの管理がなくなり、非常に簡単に記述できました。Rxのスケジューラのシステムの柔軟さの賜物ですね。これはRxの素晴らしい応用例だと本当に感動しました。Richard Szalayさんに乾杯。それと、私がこの記事を知ったのは<a href="http://www.infoq.com/jp/news/2011/09/Rx-Silverlight-Tests" title="InfoQ: Rx と Silverlight で非同期テストを記述する">InfoQ: Rx と Silverlight で非同期テストを記述する</a>からなので、紹介したInfoQと、そして翻訳した勇 大地さんにも大変感謝します。</p>
+<h2>Silverlightの場合</h2>
+<p>Richard SzalayさんのコードはWP7のMicrosoft.Phone.Reactiveのためのものなので、Silverlight用Rxの場合はそのままでは動きません。はい。残念ながら、WP7版RxとDataCenter版Rxとでは、互換性がかなり崩壊しているので、そのまま動くことなんてないんです。悲しいですねえ……。これに関しては<a href="http://techblog.hilife-jp.info/2011/09/rx-silverlight-web.html" title="銀の光と藍い空: 「Rx と Silverlight で非同期テストを記述する」をWeb版にも使えるようにしたい!">銀の光と藍い空: 「Rx と Silverlight で非同期テストを記述する」をWeb版にも使えるようにしたい!</a>に書かれていますが、Silverlight用に移植してあげればよいようです。</p>
+<p>既に、上記記事で田中さんが移植されているのですが、二番煎じに書いてみました（と、※欄で書いたものを流用です、毎回、流用させてもらっていてすみません……）</p>
+<pre><code class="language-csharp">public static class TestHarnessSchedulerObservableExtensions
+{
+    public static IObservable&lt;T&gt; ObserveOnTestHarness&lt;T&gt;(this IObservable&lt;T&gt; source, WorkItemTest workItemTest)
+    {
+        return source.ObserveOn(new TestHarnessScheduler(workItemTest));
+    }
+
+    public static IDisposable RunAsyncTest&lt;T&gt;(this IObservable&lt;T&gt; source, WorkItemTest workItemTest, Action&lt;T&gt; assertion)
+    {
+        return source.ObserveOnTestHarness(workItemTest).Subscribe(assertion, () =&gt; workItemTest.TestComplete());
+    }
+}
+
+public class TestHarnessScheduler : IScheduler, IDisposable
+{
+    readonly WorkItemTest workItemTest;
+    readonly CompositeDisposable subscriptions;
+
+    public TestHarnessScheduler(WorkItemTest workItemTest)
+    {
+        var completionSubscription =
+            Observable.FromEventPattern&lt;TestMethodCompletedEventArgs&gt;(
+                h =&gt; workItemTest.UnitTestHarness.TestMethodCompleted += h,
+                h =&gt; workItemTest.UnitTestHarness.TestMethodCompleted -= h)
+            .Take(1)
+            .Subscribe(_ =&gt; Dispose());
+
+        this.subscriptions = new CompositeDisposable(completionSubscription);
+        this.workItemTest = workItemTest;
+    }
+
+    public void Dispose()
+    {
+        subscriptions.Dispose();
+    }
+
+    public DateTimeOffset Now
+    {
+        get { return DateTimeOffset.Now; }
+    }
+
+    public IDisposable Schedule&lt;TState&gt;(TState state, DateTimeOffset dueTime, Func&lt;IScheduler, TState, IDisposable&gt; action)
+    {
+        return Schedule(state, dueTime - Now, action);
+    }
+
+    public IDisposable Schedule&lt;TState&gt;(TState state, TimeSpan dueTime, Func&lt;IScheduler, TState, IDisposable&gt; action)
+    {
+        if (subscriptions.IsDisposed) return Disposable.Empty;
+
+        workItemTest.EnqueueDelay(dueTime);
+        return Schedule(state, action);
+    }
+
+    public IDisposable Schedule&lt;TState&gt;(TState state, Func&lt;IScheduler, TState, IDisposable&gt; action)
+    {
+        if (subscriptions.IsDisposed) return Disposable.Empty;
+
+        var cancelToken = new BooleanDisposable();
+
+        workItemTest.EnqueueCallback(() =&gt;
+        {
+            if (!cancelToken.IsDisposed) action(this, state);
+        });
+
+        subscriptions.Add(cancelToken);
+        return Disposable.Create(() =&gt; subscriptions.Remove(cancelToken));
+    }
+}
+</code></pre>
+<p>Richard Szalayさんのコードが非常に素晴らしく、あらゆるケースへのキャンセルに対して完全に考慮されているという感じなので、そのまま持ってきました。実際のところ、テスト用なので「例外発生/TestCompleteが呼ばれる」で実行自体が終了してしまうわけなので、こうもギチギチに考えなくてもいいのではかなー、とか緩いことを思ってしまいますが、まあ、よく出来ているならよく出来ているままに使わさせてもらいます。</p>
+<p>メソッド名は、ObserveOnTestHarnessに変更しました。ObserveOnTestだけだと何かイマイチかなー、と思いまして。それと、時間のスケジューリングは、NotSupportedではなくて、EnqueueDelayというのものがあるので、それを使うことにしてみました。それと、ObserveOn -&gt; Subscribe -&gt; onCompletedにTestCompleteが定形文句なので、それらをひとまとめにしたRunAsyncTestを追加。こんな風に書けます。</p>
+<pre><code class="language-csharp">var req = WebRequest.Create(&quot;http://www.google.co.jp/444&quot;);
+Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)()
+    .RunAsyncTest(this, res =&gt; 
+        res.ResponseUri.ToString().Is(&quot;http://www.google.co.jp/&quot;));
+</code></pre>
+<p>定形文句が減る、つまりうっかりミスで書き忘れて死亡というのがなくなる、というのはいいことです。</p>
+<h2>通常のMSTestの場合</h2>
+<p>ところで、もしSilverlight/WP7固有の機能は使っていなくて、WPFでも利用出来るようなコードならば、コードをリンク共有の形でWPF側に持っていってしまって、そこでテスト実行してしまうと非常に楽です。まず第一に、MSTestやNUnitなどの通常のテストフレームワークが使えるため、Visual Studio統合やCIが簡単に行えます。第二に、非同期のテストが(Rxを使った場合)更に簡単になります。</p>
+<pre><code class="language-csharp">[TestMethod]
+public void AsyncTest()
+{
+    var req = WebRequest.Create(&quot;http://www.google.co.jp/&quot;);
+    var result = Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)()
+        .First(); // First()で同期的に待機して値が取れる。複数の場合はToEnumerable().ToArray()で。
+
+    result.ResponseUri.ToString().Is(&quot;http://www.google.co.jp/&quot;);
+}
+</code></pre>
+<p>FirstやToEnumerable.ToArrayにより、同期的に待機することが出来るので、簡単にテストすることができます。通常のコードは同期的待機はすべきではないのですが、こうしたユニットテストの場合は便利に使えます。</p>
+<p>じゃあSilverlightのユニットテストでも待機できるのはないか？というと、それはできません。理由は<a href="http://neue.cc/2010/10/14_280.html">Windows Phone 7で同期APIを実現するたった つの冴えないやり方</a>で書いたのですが、WebRequestなどのネットワーク問い合わせは、一度Dispatcherに積まれて、現在のメソッドを抜けた後に実行開始されるので、テスト実行スレッドで同期的に待って値を取り出すことは不可能なのです。</p>
+<p>こういった細部の違いもあるので、コード共有してMSTestでチェックするのは楽でいいのですが、やはりSilverlight/WP7の実際の環境で動かされるユニットテストのほうも必要不可欠かなー、と。どこまでやるか、にもよりますが。</p>
+<h2>まとめ</h2>
+<p><a href="http://chainingassertion.codeplex.com/" title="Chaining Assertion">Chaining Assertion</a>は便利なので是非試してみてね！</p>
+<p>なお、Rxを使うとTestScheduler(時間を好きなように進められる)やITestableObserver(通知の時間と値を記録できる)といった、イベント/非同期のテストを強力に支援する仕組みが備わっているので、それらと併用することで、より簡単に、もしくは今までは不可能だったことを記述できるようになります。それはまた後日そのうち。</p>
+<p>SL/WP7のテストは、本当はIDE統合されてるといいんですけどねー。まあ、エミュレータ動かさなければならないので、しょうがないかな、というところもありますけれど。その辺も次期VisualStudioでは改善されるのかされないのか、怪しいところです。現在DeveloperPreviewで出ているVS11は、特に何も手をつけられてる感じがしないので、そのままな可能性はなきにしもあらず。どうなるかしらん。async/awaitが入ることだし、色々変わってくるとは思うんですけれど。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0920_344.html">Chaining Assertion ver 1.6.0.0</a></h1>
+<ul class="date"><li>2011-09-20</li></ul>
+<div class="entry_body"><p><a href="http://chainingassertion.codeplex.com/" title="Chaining Assertion">Chaining Assertion</a>というメソッドチェーンスタイルでユニットテストを書くことの出来るテスト用補助ライブラリをver.1.6に更新しました。内容はAssertEx.ThrowsContractExceptionの追加と、ラムダ式を使った判定の失敗時メッセージが親切になりました。</p>
+<h2>ThrowsContractException</h2>
+<p>まず、契約失敗でスローされる例外を厳密に検出することができるということについて。以前に<a href="http://www.slideshare.net/neuecc/code-contracts-8069150" title="基礎からのCode Contracts">基礎からのCode Contracts</a>というスライドに書きましたが、Contract.Requires(など)で発生する、契約の条件に合っていない時にスローされる例外は、ContractExceptionというリライト時にアセンブリに埋め込まれる型のため、型を判別してのcatchは不可能です。</p>
+<p>そのため、従来は大雑把にExceptionがスローされるか否か、でしか判定できませんでした。そこでThrowsContractExceptionを使うと、厳密に、契約失敗の例外のみを判定することができます。</p>
+<pre><code class="language-csharp">// こんなContractなクラスがあるとして
+public class QB
+{
+    public void Homu(string s)
+    {
+        Contract.Requires(s != null);
+    }
+}
+
+// こういう風に契約違反の例外を捉えることができる
+[TestMethod]
+public void QBTest()
+{
+    AssertEx.ThrowsContractException(() =&gt;
+        new QB().Homu(null));
+}
+</code></pre>
+<p>Code Contractsを使ったコードを書いている場合は、便利に使えるのではないでしょうかー。</p>
+<h2>ラムダ式によるアサーション</h2>
+<p>で、Chaining Assertionって、こんな感じに書けます。</p>
+<pre><code class="language-csharp">// こんなクラスがあるとして
+public class Person
+{
+    public int Age { get; set; }
+    public string FamilyName { get; set; }
+    public string GivenName { get; set; }
+}
+
+// こうして判定することが出来ます
+[TestMethod]
+public void PersonTest()
+{
+    // GetPersonメソッドでPersonインスタンスを取得するとして、
+    // こんな風にメソッドチェーンで書ける(10歳以下でYamadaTarouであることをチェックしてます)
+    new HogeService().GetPerson().Is(p =&gt;
+        p.Age &lt;= 10 &amp;&amp; p.FamilyName == &quot;Yamada&quot; &amp;&amp; p.GivenName == &quot;Tarou&quot;);
+}
+</code></pre>
+<p>今回追加したのは、失敗した時のメッセージをより分かりやすくしました。</p>
+<pre><code class="language-csharp">[TestMethod]
+public void PersonTest()
+{
+    // こんなPersonがあるとすると
+    var person = new Person { Age = 50, FamilyName = &quot;Yamamoto&quot;, GivenName = &quot;Tasuke&quot; };
+    // このアサーションは失敗します
+    person.Is(p =&gt; p.Age &lt;= 10 &amp;&amp; p.FamilyName == &quot;Yamada&quot; &amp;&amp; p.GivenName == &quot;Tarou&quot;);
+}
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/chainigassertion_error_lambda.jpg">
+</p>
+<p>分かりやすいですよね！値は全部のダンプじゃなくて、ラムダ式の中で使われているプロパティ/フィールドのみを出すことにしているので、メッセージ欄が極度に爆発することもないです。今はまだ一階層の値しか出力してないのですが、いずれはもう少し複雑に解析して表示できるようにしたいところ。理想は<a href="http://d.hatena.ne.jp/kyon_mm/20110315/1300193710" title="Groovyのassertがすごく見やすい件について - うさぎ組">GroovyのPowerAssert</a>のようなグラフィカルな表示ですね。Expressionにより、データはあるので、解析をがんばれば作ること自体は可能だ、というのがC#のポテンシャルです。活かすか殺すかは、努力次第。まだ、活かしきれてはいません。</p>
+<h2>まとめ</h2>
+<p>MSでSilverlight周りのチームにいるJafar Husain氏（Silverlight Toolkitに入ってるという話で最初にRxを世界に紹介した人ですね！）は、<a href="http://themechanicalbride.blogspot.com/2009/06/better-unit-tests-with-testassert-for.html" title="unfold: Better Unit Tests with Test.Assert() for NUnit/VSTT/SUTF">unfold: Better Unit Tests with Test.Assert() for NUnit/VSTT/SUTF</a>という記事で.NETはずっとパワフルなのに、いつまでJUnitスタイルの古いAPIを引きずってるんだ？と問題提起し、Expressionを解析して適切なAssertに差し替えるという、Queryable的な実装を示しました。Chaining Assertionでは、もっと野蛮に、拡張メソッドとラムダ式により、C#らしいスタイルで軽快に記述することを可能にしました。</p>
+<p>最近少し刺され気味なので若干弁解しておきますが、別にスタイルは自由ですよ。でも他人に使わせるものは、より良いものであるべきだし、そうして他人が使ったりリファレンスとして参照されるものが、あんまりな出来だったら、そりゃ一言あって然りでしょう。本当に多くの人が参照するものだったら、なおのことです。いやまあ、度を超えた発言は刺されてもしょうがないですが。</p>
+<p>NuGetからも入れられるのと、MSTestの他にNUnit, MbUnit, xUnit.NETにも対応しているので、試してもらえると嬉しいです。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0917_343.html">Rxにおける並行非同期実行とリソース処理の問題</a></h1>
+<ul class="date"><li>2011-09-17</li></ul>
+<div class="entry_body"><p>非同期(Asynchronous)だの並列(Parallel)だの並行(Concurerrent)だの、よくわからない単語が並びます。ParallelがやりたければPLINQ使うべし、と思うわけですがそれはさておき、Rxを使うと、意図しても意図しなくても、並行な状態にはなります。そして、その意図していないという状態は危うい線を踏んでいるので、きちんと認識しておく必要があります。また、危ういと同時に、Rxはその並行をうまくコントロールするメソッドが揃っているので、覚えておくと世界が一気に広がります。</p>
+<p>例えば、こういう非同期メソッドがあるとして。</p>
+<pre><code class="language-csharp">IObservable&lt;T&gt; AsyncModoki&lt;T&gt;(T value, int second)
+{
+    // second秒後にvalueを返す非同期処理をシミュレート
+    return Observable.Return(value)
+        .Delay(TimeSpan.FromSeconds(second));
+}
+
+static void Main(string[] args)
+{
+    // 1,2,3,4という入力をすぐに送り込む
+    new[] { 1, 2, 3, 4 }
+        .ToObservable()
+        .SelectMany(x =&gt; AsyncModoki(x, 3))
+        .Subscribe(x =&gt; Console.Write(x + &quot;-&gt;&quot;));
+
+    Console.ReadLine();
+}
+</code></pre>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="50px">
+  <param name="source" value="http://neue.cc/wp-content/uploads/silverlight/rxasynchronous.xap"/>
+  <param name="background" value="white" />
+  <param name="minRuntimeVersion" value="3.0.40624.0" />
+  <param name="autoUpgrade" value="true" />
+  <param name="initparams" value="Start=0" />
+  <a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=3.0.40624.0" style="text-decoration:none">
+      <img src="http://go.microsoft.com/fwlink/?LinkId=108181" alt="Microsoft Silverlight を入手" style="border-style:none"/>
+  </a>
+</object>
+</p>
+<p>1~4は、全て同時にリクエストが開始されます。だから、3秒後に同時に結果が表示されます。</p>
+<p>同時に実行が開始されているということは、非同期の結果が完了する時間にズレがある場合、結果が前後することがあります。実際、上のものも何度か実行すると毎回結果が変わると思います(Delayは（デフォルトだと）値をThreadPoolに投げて遅延させます。ThreadPoolに入った時点で、順序の保証が消滅する)。というわけで、基本的にSelectManyを使った場合1:1で渡していくわけではなければ、順序は壊れると考えてください。さて、それだと困る場合もあるのではと思いますので、結果の順序を制御する方法が幾つかあります。</p>
+<h2>Switch</h2>
+<p>Switchは実に有意義なメソッドで、分かると、SelectMany以上に多用することが多くなるのではと思います。</p>
+<pre><code class="language-csharp">clickEventObservable // クリック毎に
+    .Select(x =&gt; AsyncModoki(x, 1)) // 何らかの非同期処理をするとする
+    .Switch() // IObservable&lt;IObservable&lt;T&gt;&gt;の状態なので、Switch
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="50px">
+  <param name="source" value="http://neue.cc/wp-content/uploads/silverlight/rxasynchronous.xap"/>
+  <param name="background" value="white" />
+  <param name="minRuntimeVersion" value="3.0.40624.0" />
+  <param name="autoUpgrade" value="true" />
+  <param name="initparams" value="Start=1" />
+  <a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=3.0.40624.0" style="text-decoration:none">
+      <img src="http://go.microsoft.com/fwlink/?LinkId=108181" alt="Microsoft Silverlight を入手" style="border-style:none"/>
+  </a>
+</object>
+</p>
+<p>クリックすると1秒遅延（非同期処理でもしていると考えてください）して、値が表示されます。しかし、1秒以内に次の値がクリックされた場合はキャンセルされ、表示しません。</p>
+<p>つまり、最新の値だけを返すことを保証します。それ以前のものはキャンセル(Disposeが呼ばれる)されます。どういう時に使うかというと、例えばインクリメンタルサーチ。L, LI, LIN, LINQと入力が変わる度に非同期リクエストを発生させますが、欲しい結果は最後の一件のみで、次のキー入力があった場合は以前のものはキャンセルして欲しい。キャンセルはともかく、非同期実行だと結果が前後してしまうことだってあります。LINQと入力したのにLIの結果一覧が表示されてしまったら困る。そんな場合に、まさに、うってつけです。そして存外、こういったシチュエーションは多いのではないかと思われます。例えば私の以前作った<a href="http://utakotoha.codeplex.com/">Utakotoha</a>というWP7用歌詞表示アプリケーションも、曲のスキップに応じて最新のものだけを表示するために、Switchを利用しました。（コードが激しく酷いのと機能貧弱っぷりなので、そろそろ書き直したい）</p>
+<h2>Merge/Concat</h2>
+<p>Switch以外にも色々あります。</p>
+<pre><code class="language-csharp">new[] { 1, 2, 3, 4 }
+    .ToObservable()
+    .SelectMany(x =&gt; AsyncModoki(x, 1)) // 全て並行実行(最初の例です)
+    .Subscribe(x =&gt; Console.Write(x + &quot;-&gt;&quot;));
+
+new[] { 1, 2, 3, 4 }
+    .ToObservable()
+    .Select(x =&gt; AsyncModoki(x, 1)) // IO&lt;IO&lt;T&gt;&gt;
+    .Merge() // こちらも全て並行実行、SelectMany(xs =&gt; xs)と同じ
+    .Subscribe(x =&gt; Console.Write(x + &quot;-&gt;&quot;));
+
+new[] { 1, 2, 3, 4 }
+    .ToObservable()
+    .Select(x =&gt; AsyncModoki(x, 1))
+    .Merge(2) // 2件ずつ並行実行する(並行実行数の指定が可能)
+    .Subscribe(x =&gt; Console.Write(x + &quot;-&gt;&quot;));
+
+
+new[] { 1, 2, 3, 4 }
+    .ToObservable()
+    .Select(x =&gt; AsyncModoki(x, 1))
+    .Concat() // 1件ずつ実行する(Merge(1)と同じ)
+    .Subscribe(x =&gt; Console.Write(x + &quot;-&gt;&quot;));
+</code></pre>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="200px">
+  <param name="source" value="http://neue.cc/wp-content/uploads/silverlight/rxasynchronous.xap"/>
+  <param name="background" value="white" />
+  <param name="minRuntimeVersion" value="3.0.40624.0" />
+  <param name="autoUpgrade" value="true" />
+  <param name="initparams" value="Start=2" />
+  <a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=3.0.40624.0" style="text-decoration:none">
+      <img src="http://go.microsoft.com/fwlink/?LinkId=108181" alt="Microsoft Silverlight を入手" style="border-style:none"/>
+  </a>
+</object>
+</p>
+<p>ネストはSelectManyで一気に崩してしまうケースが一般的でしょうけれど、IObservable&lt;IObservable&lt;T&gt;&gt;といったネストした状態にすると、選択肢がSwitchもそうですが、更に、MergeとConcatを選択することができます。ちなみに、このintで並行実行数が指定可能なMergeはWP7同梱版のRxには存在しません。残念。(もう一つ余談ですが、SelectManyはRx内部ではSelect(selector).Merge()という実装になっていたりします)</p>
+<h2>実行タイミングの問題</h2>
+<p>上のSilverlight、Merge2とMerge2Exの二つを用意しましたが、Merge2Exのほうは4つ同時に表示されるのが確認出来るはずです。コードはほぼ同一なのですが、AsyncModokiを似たようで別なものに差し替えました。</p>
+<pre><code class="language-csharp">// Merge(2):Ex
+new[] { 1, 2, 3, 4 }
+    .ToObservable()
+    .Select(x =&gt; AsyncModoki2(x, 1)) // これが差分
+    .Merge(2)
+    .Subscribe(x =&gt; Console.Write(x + &quot;-&gt;&quot;));
+
+// スレッドプール上で非同期実行(結果は指定秒数後に返る)のシミュレート
+// second秒後にネットワーク問い合わせが返る、的なものをイメージしてみてください
+static IObservable&lt;T&gt; AsyncModoki2&lt;T&gt;(T value, int second)
+{
+    var subject = new AsyncSubject&lt;T&gt;();
+
+    ThreadPool.QueueUserWorkItem(_ =&gt;
+    {
+        Thread.Sleep(TimeSpan.FromSeconds(second)); // 指定秒数待機
+        subject.OnNext(value);
+        subject.OnCompleted(); // 完了（2つでワンセット）
+    });
+
+    return subject; // これ自体はすぐに返す(FromAsyncPatternの中身はこんな感じ)
+}
+</code></pre>
+<p>このAsyncModoki2は、このメソッドを通ると即座にThreadPoolに送り込んで「実行」しています。Subscribeされるかどうかとは関係なく、Subscribeの「前に」。対してAsyncModokiはSubscribeされないと実行が開始されません。同じようで違う、この二つの状態をRxでは「Hot」と「Cold」と呼んで区別しています。HotはSubscribeとは関係なく動いているもの、イベントなんかはそうですね。ColdはSubscribeされて初めて動き出すもの、Observable.ReturnであったりRangeであったりと、Rxからの生成子の場合は、こちらのパターンが多いです。</p>
+<p>実はFromAsyncPatternはHotなので、Subscribeとは関係なく即座に(といっても戻り値はFuncなのでInvokeしたら、ですが)非同期実行が開始されたりします。これは、あまり都合が良くなく（例えば上の例で見たように、MergeはSubscribeのタイミングによって実行数をコントロールしている）、Coldに変換したほうが扱いやすいです。そのためのメソッドがDefer。</p>
+<pre><code class="language-csharp">static IObservable&lt;WebResponse&gt; AsyncModoki3&lt;T&gt;(WebRequest req)
+{
+    return Observable.Defer(()=&gt;
+        Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse,req.EndGetResponse)());
+}
+</code></pre>
+<p>こちらのほうが、大抵の利用シーンにはマッチするかと思われます。</p>
+<h2>キャンセル時のリソース処理の問題</h2>
+<p>Switchは実に有意義なのですが、それの行っていることは、次の値を検知すると前の値をキャンセルする、ということです。普段はあまりキャンセルはしないと思うのですが、Switch内部では大量のキャンセルが発生しています。さて、どのような問題が発生するか、というと、例えば……。</p>
+<pre><code class="language-csharp">using System;
+using System.Net;
+using System.Reactive.Linq;
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        // ネットワークの最大接続数。通常、デフォルトは2になっているはず。
+        ServicePointManager.DefaultConnectionLimit = 2;
+
+        // テキストボックスのTextChangedイベントをイメージした、インクリメンタルサーチで来る文字列群
+        new[] { &quot;w&quot;, &quot;wi&quot;, &quot;wik&quot;, &quot;wiki&quot;, &quot;wikip&quot;, &quot;wikipe&quot;, &quot;wikiped&quot;, &quot;wikipedi&quot;, &quot;wikipedia&quot; }
+            .ToObservable()
+            .Select((word, id) =&gt;
+            {
+                // wikipediaのAPIにリクエスト飛ばす
+                var url = &quot;http://en.wikipedia.org/w/api.php?action=opensearch&amp;search=&quot; + word + &quot;&amp;format=xml&quot;;
+                var req = (HttpWebRequest)WebRequest.Create(url);
+                req.UserAgent = &quot;test&quot;;
+
+                return Observable.FromAsyncPattern&lt;WebResponse&gt;((ac, state) =&gt;
+                    {
+                        Console.WriteLine(&quot;ASYNC START:&quot; + id);
+                        return req.BeginGetResponse(ac, state);
+                    }, ar =&gt;
+                    {
+                        Console.WriteLine(&quot;ASYNC END:&quot; + id);
+                        return req.EndGetResponse(ar);
+                    })()
+                    .Select(res =&gt;
+                    {
+                        using (res) // ここのセクションが呼ばれることはない
+                        {
+                            Console.WriteLine(&quot;CALLED NEXT:&quot; + id);
+                            return &quot;response string:&quot; + id;
+                        }
+                    });
+            })
+            .Switch()
+            .ForEach(Console.WriteLine); // 終了を待機する形でのSubscribe
+    }
+}
+
+// ConsoleApplication用のコードですが、是非実行してみてください。結果は以下のようになります。
+
+ASYNC START:0
+ASYNC START:1
+ASYNC START:2
+ASYNC START:3
+ASYNC START:4
+ASYNC START:5
+ASYNC START:6
+ASYNC START:7
+ASYNC START:8
+ASYNC END:0
+ASYNC END:1
+// そしてフリーズ...
+</code></pre>
+<p>これは、フリーズします。何故かというと、まず8件の非同期処理が一斉に開始されます(ASYNC STARTの表示)。一斉に開始はされますが、ネットワークの最大接続数は2なので、それ以外のものは内部的には待機されています。そして、Switchによる切り替えは最新のものだけを通すようにするため、7件はキャンセルされます。その後、最初の二件分のネットワークリクエストが終了し(ASYNC ENDの表示)、キャンセルされているためメソッドチェーンの続きであるSelectは呼ばれません。そして、フリーズ。</p>
+<p>何故フリーズしてしまうかというと、EndGetResponseで取得した最初の二件のWebResponseが解放されていないためです。キャンセルが呼ばれなければ、Selectを通り、そこでusingにより利用+解放されるのですが、そのセクションを通らなければ何の意味がありません。使われることなく虚空に放り出されたWebResponseが、永遠にネットワーク接続を握ったままになってしまっています。</p>
+<p>当然、大問題。</p>
+<p>Switchを諦めてSelectMany(全件キャンセルせずに並行実行、どうせネットワーク自体の最大接続数で制限かかっているし)というのも手ではあります。大体の場合は結果は問題ないでしょう。けれど、Switchの利点は何でしたっけ、と。結果が前後しないことです。LINQを検索しようとしていたのに、検索結果が前後したせいでLINQ→LINの順番に結果が得られた結果、表示されるのがLINの結果では困ってしまいます。Switchなら、後に実行したものが必ず最後に来ると保証されるので、そのようなことにはなりません。反面、SelectManyは並行実行のため、前後する可能性が出てきます。Switchはこの例で挙げたような、インクリメンタルサーチのようなものと相性がとても良いんですね。</p>
+<h2>ではどうするか？</h2>
+<p>WebResponseのDispose(Close)を呼べれば解決するので、FromAsyncPatternのEnd部分に少し細工を加えてやる、ということが考えられます。</p>
+<pre><code class="language-csharp">// こんなFromAsyncPatternを用意して
+public static IObservable&lt;TResult&gt; SafeFromAsyncPattern&lt;TResult&gt;(Func&lt;AsyncCallback, object, IAsyncResult&gt; begin, Func&lt;IAsyncResult, TResult&gt; end)
+    where TResult : IDisposable
+{
+    // WP7版ではCreateWithDisposableで(この辺の細かな差異が割とウザい)
+    return Observable.Create&lt;TResult&gt;(observer =&gt;
+    {
+        var disposable = new BooleanDisposable();
+
+        Observable.FromAsyncPattern&lt;TResult&gt;(begin, ar =&gt;
+        {
+            var result = end(ar);
+            if (disposable.IsDisposed) result.Dispose(); // キャンセルされてたらDispose
+            return result;
+        })().Subscribe(observer);
+
+        return disposable; // Disposeが呼ばれるとIsDisposedがtrueになる
+    });
+}
+
+// こんな風に使うとか
+public static IObservable&lt;WebResponse&gt; GetResponseAsObservable(this WebRequest req)
+{
+    return ObservableEx.SafeFromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse);
+}
+</code></pre>
+<p>これにより、キャンセルされたかどうかをEnd部分で判定することが出来ます。よってEnd時にキャンセルされていたらリソースをDisposeしてしまう(ここでreturnしたオブジェクトは、チェーンは切れているので別に使われることなく虚空を彷徨うだけ)。これにより、FromAsyncPatternがリソースを返し、かつ、いつキャンセルされても問題なくなります。</p>
+<p>他にも色々なアプローチが考えられます。CompositeDisposable/MutableDisposable/SingleAssignDisposableなどを使い、Disposeが呼ばれたら同時に管理下のリソースをDisposeしてしまう、といった手法。これは、リソースのDisposeされる瞬間が逆にコントロールしにくくなって、例えばWebResponseですと、その後のStreamを呼んでる最中にWebResponseがDisposeされてしまうなどの自体も起こりうるので、少し厄介に思えました。。リソースを後続に渡すまでは責任を持つ。それ以降はノータッチなので好きにやらせる、利用も解放も後続側が責任を。その方が自然だし、素直な動きになるので、いいかな。</p>
+<p>他には、キャンセルを伝搬しないようなメソッドを作り、Disposeが呼ばれてもリソースを受け取れるようにし、後続でリソースをDisposeする、などの手段も考えられます。そうすればSafeFromAsyncPatternなどといった、独自のFromAsyncPatternを作る必要はなく、全てに適用できて汎用性は高いのですが、チェーンでの保証が途切れてしまうのが若干微妙かな、と……。この辺は悩ましいところです。</p>
+<p>そもそもWebRequestなら、DisposeでAbortしてしまったほうが、キャンセルらしくていいかもしれない。</p>
+<pre><code class="language-csharp">public static IObservable&lt;WebResponse&gt; GetResponseAsObservable(this WebRequest request)
+{
+    return Observable.Create&lt;WebResponse&gt;(observer =&gt;
+    {
+        Observable.FromAsyncPattern&lt;WebResponse&gt;(request.BeginGetResponse,
+            ar =&gt;
+            {
+                try
+                {
+                    return request.EndGetResponse(ar); // Abort後の場合は例外発生
+                }
+                catch (WebException ex)
+                {
+                    if (ex.Status == WebExceptionStatus.RequestCanceled) return null;
+                    throw; // キャンセル時以外は再スロー
+                }
+            })()
+            .Subscribe(observer);
+        return () =&gt; request.Abort(); // Dispose時にこのActionが呼ばれる
+    });
+}
+</code></pre>
+<p>Disposeが呼ばれるとwebRequest.Abortが呼ばれます。その後にEndGetResponseを呼ぶとRequestCanceledなWebExceptionが発生するので、キャンセルされていたならnullを(どちらにせよ、Dispose済みなので、ここでreturnしたものは次のメソッドチェーンで使われることはない)、そうでない例外ならば再スローを、という方針です。悪くなさそうですが、どうでしょうか。私的にはこれを採用するのがベストかなー、と考え中です。</p>
+<h2>まとめ</h2>
+<p>SwitchやMergeなどで、従来扱いにくかった並行処理時の非同期のコントロールが簡単になりました。単純に一本の非同期をSelectManyで摩り替えるだけもアリですけれど、せっかくの多機能なのだから、並行にリクエストなどを飛ばして、より速いアプリケーション作りを目指してもいいかもしれません。同期リクエストをTask.Factory.StartNewで包んで振り回すよりかは、ずっと楽です。また、現在行われているMSのイベントBUILDで発表されたWinRTなどは、完全に非同期主体です。C#5.0でasync/awaitが入り、非同期がより扱いやすくなることで、それに併せてModelの有り様も、同期から非同期へと変わっていき、それにあわせてVMなどの書き方も変わってくるのではかと思われます。</p>
+<p>ただ、リソースの問題にだけは気をつけて！上で挙げた問題は、本質的にはFromAsyncPatternに限らず、リソース処理が引き離されている場合の全てで該当します。リソースを扱うのは難しい。とはいえ、全面的に問題になるのは、このFromAsyncPatternぐらいな気はします。Observable.Usingなども用意されているので、不用意にリソースをチェーン間で渡したりしなければ原則的には起こらない。けれど、そのFromAsyncPatternこそがリソースを扱うシチュエーションで最も使われるものなんですよね、とほほほ。</p>
+<p>キャンセル(Dispose)を不用意に呼ばなければ問題は起こらないといえば起こらないんですが(そのため、不適切に書いてしまっていても、多くのケースで問題が表面化することはないでしょう)、Switchのようなアプローチが取れなくなるのがどうにも。現状だと、とりあえず気をつけましょう、としか言いようがないので、気をつけましょう。もし何かうまい具合に動かないなあ、と思ったら、この辺を疑ってみると良いかもしれません。</p>
+<p>その辺難しいなあ、という場合は、近いうちに私の出すRx拡張ライブラリを使いましょう。特に考えなくても済むよう、色々配慮してあります。いつ出るの？というと、はい、最近ゴリゴリと書いてますんで(ブログがちょっと放置気味だった程度には)、必ず近いうちに出します。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0910_342.html">Re:FromEvent vs FromEventPattern</a></h1>
+<ul class="date"><li>2011-09-10</li></ul>
+<div class="entry_body"><p>現在のRxで最大の分かりにくいポイントになっているFromEventとFromEventPattern。以前に<a href="http://neue.cc/2011/07/06_332.html" title="neue cc - Rxでのイベント変換まとめ - FromEvent vs FromEventPattern">Rxでのイベント変換まとめ - FromEvent vs FromEventPattern</a>として軽くまとめましたが、改めて、詳細に考えてみたいと思います。なお、ここでいうFromEventPatternはWP7版のRxではFromEventを指しています（ここも分かりにくいポイントです）。そして、ここでいうFromEventはWP7版のRxには未搭載です、あらあらかしこ。</p>
+<p>ネタ元ですが、<a href="http://techblog.hilife-jp.info/2011/09/silverlight-5-3-doubleclicktrigger-rx.html?spref=tw" title="銀の光と藍い空: Silverlight 5 の新機能その3 番外編 DoubleClickTrigger をRxっぽくしてみた">銀の光と藍い空: Silverlight 5 の新機能その3 番外編 DoubleClickTrigger をRxっぽくしてみた</a>を拝見して、FromEventに関して実行時に例外が出るとのことなので、その部分の説明を書こうかと。最初コメント欄に書いたのですが、少しコメントにトチってしまったので、自分のブログに書かせていただきます、どうもすみません……。</p>
+<p>FromEventとFromEventPatternの最大の違いは、FromEventがAction&lt;EventArgs&gt;を対象にしていて、FromEventPatternはAction&lt;object, EventArgs&gt;を対象にしているということです。Action&lt;object, EventArgs&gt;は、つまりEventHandler。ではAction&lt;EventArgs&gt;って何なんだよ、というと、通常は存在しません。というのもeventはデリゲートなら何でもアリということに仕様上はなっていますが、慣例としてobject sender, EventArgs eを引数に持つデリゲートを選択しているはずですから。</p>
+<p>さて、デリゲート間には同じ引数の型・同じ戻り値の型を持っていても、型自体に互換性がないので（例えばEventHandlerとEventHandler&lt;T&gt;）、FromEventもFromEventPatternも、引数を3つ持つオーバーロードの第一引数は
+conversionという、デリゲートの型を変換するラムダ式を受け入れるようになっています。よって</p>
+<pre><code class="language-csharp">Observable.FromEventPattern&lt;MouseButtonEventHandler, MouseButtonEventArgs&gt;(
+    h =&gt; h.Invoke,
+    h =&gt; AssociatedObject.MouseLeftButtonDown += h,
+    h =&gt; AssociatedObject.MouseLeftButtonDown -= h);
+</code></pre>
+<p>これが、リフレクションなしで変換出来る形式になります。conversionが不要なオーバーロードもあるのですが(+=と-=を書くだけ)、それはリフレクションを使ってデリゲートの変換をしていて今一つ効率が悪いので、わざわざ+=, -=を書いているのだから、もう一手間かけて、 h =&gt; h.Invoke を書いておいたほうがお得です。（もし対象がEventHandler&lt;T&gt;の場合は事情が違ってconversionが不要なので+=と-=だけで済みます、この辺の事情の違いが面倒臭く混乱を招きがちなんですよね…… Rxチームには「便利そうだから」機能を追加する、とかやる前に、もう少し深く考えてくださいと苦情を言いたい）</p>
+<p>h =&gt; h.Invoke だけで何故変換出来ているのかを詳しく説明します。これは正しく書くのならば</p>
+<pre><code class="language-csharp">(EventHandler&lt;MouseButtonEventArgs&gt; h) =&gt; new MouseButtonEventHandler(h)
+</code></pre>
+<p>が正解です。(左側の型に関しては省略可能ですが、説明用には型を書いていたほうが分かりやすいので明記しておきます、また、この最初からEventHandler&lt;T&gt;であることが、対象がEventHandler&lt;T&gt;である場合はconversionが不要な理由になっています）。ただし、関数を直接渡すとコンパイラがデリゲートの型を変換してくれるため、h =&gt; h.Invokeを渡した場合は</p>
+<pre><code class="language-csharp">h =&gt; new MouseButtonEventHandler(h.Invoke)
+</code></pre>
+<p>という風に内部的には自動で整形してくれます。そのため、new MouseButtonEventHandlerを書く手間が省けるということになっています。h と h.Invoke はやってることは完全一緒なのですけど、この辺はコンパイラの仕組みの都合に合わせるという感じで。むしろ仕組みの隙間をついたやり方といいましょうか。</p>
+<p>では、FromEventなのですが、まず正しく変換出来る形を見ると</p>
+<pre><code class="language-csharp">Observable.FromEvent&lt;MouseButtonEventHandler, MouseButtonEventArgs&gt;(
+    h =&gt; (sender, e) =&gt; h(e),
+    h =&gt; AssociatedObject.MouseLeftButtonDown += h,
+    h =&gt; AssociatedObject.MouseLeftButtonDown -= h);
+</code></pre>
+<p>です。もし第一引数を省いた場合はAction&lt;EventArgs&gt;を探してリフレクションをかけるようになっていて、そして、通常はそんなイベントを使うことはないので、十中八九例外が出るのではかと思われます（だからこういう混乱を招くだけのオーバーロードを入れるなとRxチームには苦情を言いたい）。</p>
+<p>型まで明記すれば</p>
+<pre><code class="language-csharp">Action&lt;MouseButtonEventArgs&gt; h =&gt; (object sender, MouseEventArgs e) =&gt; h(e)
+</code></pre>
+<p>となっているわけで、senderを捨ててMouseEventArgsだけを引数に渡す独自のconversionを渡しています。これですが、FromEventPatternであっても</p>
+<pre><code class="language-csharp">h =&gt; (sender, e) =&gt; h(sender, e)
+</code></pre>
+<p>とも書けるので(つまるところ h.Invoke って何かといえば (sender, e) =&gt; h(sender,e) なのです)、それのsender抜きバージョンを渡しているということになります。</p>
+<p>わかりづらい？例えば</p>
+<pre><code class="language-csharp">.Subscribe(Console.WriteLine)
+.Subscribe(x =&gt; Console.WriteLine(x))
+</code></pre>
+<p>この二つはやってること一緒なんですよ、ということですね。ラムダ式が入れ子になるとワケガワカラナイ度が加速されるので、私は関数型言語erにはなれないな、と思ったり思わなかったり。</p>
+<h2>まとめ</h2>
+<p>ただたんに使うにあたっては、こんなことは知ってる必要はなくh =&gt; h.Invoke と h =&gt; (sender, e) =&gt; h(e) を定型句だと思って暗記してもらうだけで十分です。はい。本来は、こういう部分はちゃんと隠蔽されてたほうがいいんですけれど、まあ、C#の限界としてはそうはいかないというとこですね(F#だとイベントがもう少し扱いやすいんですが)。</p>
+<p>また、FromEventにせよFromEventPatternにせよFromAsyncPatternにせよ、実際に使うコードに直接書いてくにはノイズが多すぎるので、<a href="http://neue.cc/2011/07/06_332.html" title="neue cc - Rxでのイベント変換まとめ - FromEvent vs FromEventPattern">Rxでのイベント変換まとめ - FromEvent vs FromEventPattern</a>で書いたように、拡張メソッドに隔離するのを私はお薦めしています。そうこうして裏側で地道に努力することでF#とC#の壁を縮める！とかなんとかかんとか。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0826_341.html">ReactiveProperty : Rx + MVVMへの試み</a></h1>
+<ul class="date"><li>2011-08-26</li></ul>
+<div class="entry_body"><p><a href="http://msdn.microsoft.com/en-us/data/gg577609" title="Reactive Extensions">Reactive Extensions</a>といったら非同期、じゃなくて、その前にイベントですよ！イベント！というわけで、随分手薄になっていたイベント周りの話を増強したいこの頃です。イベントと一口に言っても色々あります。UI(クリックやマウスムーブ)、センサー、変更通知(INotifyPropertyChanged)などなど。中でも一番よく使うのは、UI周りのイベントでしょう。</p>
+<p>しかし、UIの持つTextChangedイベントだのから直接FromEventPatternで変換してしまったら、Viewと密接に結びついてしまってよろしくない。ここはMVVM的にやりましょう。でも、どうやって？</p>
+<p>View(UI)が持つネイティブなイベントを、ViewModelの持つ更新通知付きのプロパティに変換します。これはバインディングにより可能です。そこはWPF/SLの仕組みに任せましょう。ということで、RxでUIに対してプログラミングするというのは、ViewModelの通知に対してプログラミングするという形になります。</p>
+<p>テキストボックスの変更に反応して、1秒ディレイをかけた後に表示する、という簡単な例を(何の面白みもありません、すみません)</p>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="50px">
+  <param name="source" value="http://neue.cc/wp-content/uploads/silverlight/ReactiveProperty.SL4.xap"/>
+  <param name="background" value="white" />
+  <param name="minRuntimeVersion" value="3.0.40624.0" />
+  <param name="autoUpgrade" value="true" />
+  <a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=3.0.40624.0" style="text-decoration:none">
+      <img src="http://go.microsoft.com/fwlink/?LinkId=108181" alt="Microsoft Silverlight を入手" style="border-style:none"/>
+  </a>
+</object>
+</p>
+<pre><code class="language-csharp">public class ToaruViewModel : INotifyPropertyChanged
+{
+    private string input;
+    public string Input
+    {
+        get { return input; }
+        set { input = value; RaiseEvent(&quot;Input&quot;); }
+    }
+
+    private string output;
+    public string Output
+    {
+        get { return output; }
+        set { output = value; RaiseEvent(&quot;Output&quot;); }
+    }
+
+    public ToaruViewModel()
+    {
+        Observable.FromEvent&lt;PropertyChangedEventHandler, PropertyChangedEventArgs&gt;(
+                h =&gt; (sender, e) =&gt; h(e),
+                h =&gt; this.PropertyChanged += h, h =&gt; this.PropertyChanged -= h)
+            .Where(e =&gt; e.PropertyName == &quot;Input&quot;) // Inputが更新されたら
+            .Select(_ =&gt; Input) // Inputの値を
+            .Delay(TimeSpan.FromSeconds(1)) // 1秒遅らせて
+            .ObserveOnDispatcher() // Dispatcherで(Silverlightではこれ必要・WPFでは不要)
+            .Subscribe(s =&gt; Output = &quot;入力が1秒後に表示される:&quot; + s); // Outputへ代入
+    }
+
+    // この辺は別途、ライブラリを使って持ってくるほうが良いかも
+    public void RaiseEvent(string propertyName)
+    {
+        var handler = PropertyChanged;
+        if (handler != null) handler(this, new PropertyChangedEventArgs(propertyName));
+    }
+
+    public event PropertyChangedEventHandler PropertyChanged;
+}
+
+// xaml.csはInitializeだけ、xamlのバインディングは各プロパティへ当てるだけ。
+// ただしSL/WP7はUpdateSourceTrigger=PropertyChangedに対応してないので別途Behaviorの適用が必要
+// 詳しくは、最後にソース配布(WPF/SL/WP7全て含む)URLを置いているのでそちらを見てください
+</code></pre>
+<p>……実にダサい。はい。全くいけてないです。バインディング可能なのはプロパティなので、そういった中間レイヤへの中継が発生していて、冗長だし、美味しさがかなり損なわれています。わかりきったINotifyPropertyChangedのWhere, Selectは無駄そのもので。勿論、簡単にDelayを混ぜられるといった時間の扱いの容易さはRxならでは、ではあるのですけれど。</p>
+<h2>ReactiveProperty</h2>
+<p>中継が手間ならば、中間レイヤだけを抜き出してやればいい。通知処理を内包したIObservable&lt;T&gt;があれば解決する。というわけで、ReactivePropertyと名付けたものを作りました。それを使うと、こうなります。</p>
+<pre><code class="language-csharp">public class SampleViewModel : INotifyPropertyChanged
+{
+    public ReactiveProperty&lt;string&gt; ReactiveIn { get; private set; }
+    public ReactiveProperty&lt;string&gt; ReactiveOut { get; private set; }
+
+    public SampleViewModel()
+    {
+        // UIから入力されるものはnewで作成、デフォルト値も同時に指定出来る。
+        ReactiveIn = new ReactiveProperty&lt;string&gt;(_ =&gt; RaiseEvent(&quot;ReactiveIn&quot;), &quot;でふぉると&quot;);
+
+        // UIへ出力するIO&lt;T&gt;はToReactivePropertyで、初期値での発火も自動的にされます。
+        ReactiveOut = ReactiveIn
+            .Delay(TimeSpan.FromSeconds(1))
+            .Select(s =&gt; &quot;入力が1秒後に表示される:&quot; + s)
+            .ToReactiveProperty(_ =&gt; RaiseEvent(&quot;ReactiveOut&quot;));
+    }
+
+    // 通常は、他のMVVMフレームワークなりを使い、それの更新通知システムを利用するといいでしょう
+    // Rxを使ったからって、決してMVVMフレームワークと競合するわけではなく、むしろ協調すると考えてください
+    public void RaiseEvent(string propertyName)
+    {
+        var handler = PropertyChanged;
+        if (handler != null) handler(this, new PropertyChangedEventArgs(propertyName));
+    }
+
+    public event PropertyChangedEventHandler PropertyChanged;
+}
+</code></pre>
+<pre><code class="language-xml">// これはWPF版のもの
+&lt;Window x:Class=&quot;ReactiveProperty.MainWindow&quot;
+        xmlns=&quot;http://schemas.microsoft.com/winfx/2006/xaml/presentation&quot;
+        xmlns:x=&quot;http://schemas.microsoft.com/winfx/2006/xaml&quot;
+        xmlns:l=&quot;clr-namespace:ReactiveProperty&quot;
+        Title=&quot;MainWindow&quot; Height=&quot;350&quot; Width=&quot;525&quot;&gt;
+    &lt;Window.DataContext&gt;
+        &lt;l:SampleViewModel /&gt;
+    &lt;/Window.DataContext&gt;
+    &lt;StackPanel&gt;
+        &lt;TextBox Text=&quot;{Binding ReactiveIn.Value, UpdateSourceTrigger=PropertyChanged}&quot; /&gt;
+        &lt;TextBlock Text=&quot;{Binding ReactiveOut.Value}&quot; /&gt;
+    &lt;/StackPanel&gt;
+&lt;/Window&gt;
+</code></pre>
+<p>XAMLではPathに必ず.Valueまで指定します。これによりGetが求められれば最新の値を返し、値をSetされればPushするようになります。</p>
+<p>今回はUI-&gt;ReactiveProperty-&gt;クエリ演算-&gt;ReactiveProperty-&gt;UIという風に戻してやりましたが、勿論、UIからの入力をModelに流してそれで止めてもいいし、Modelからの値をUIに流すだけでもいいし、トリガーはタイマーであってもいいし、その辺は完全に自由です。普通の通知プロパティと何も変わりません。また普通のプロパティとして使いたい時は.Valueで値を取り出す/セットできます。</p>
+<p>かなりシンプルに仕上がります。通知付きプロパティは、本質的に値の変更毎に通知される無限長のIObservable&lt;T&gt;と見なせるので、そのことにより表現がより自然になっています。書き味も、リアクティブプログラミング(といわれてパッと浮かばれる値が自動更新されるという奴)にかなり近い感じの風合い。XAMLでのバインドも簡単ですし、VMの実装も自動実装プロパティだけで書けるので記述が楽チン。</p>
+<p>そして、Rxを使うことによる最大の利点である、他のイベント(他の変更通知プロパティ)と合成しやすかったり、時間が扱いやすくなったり、非同期と混ぜても同じように扱えたり、スレッドの切り替えが簡単であったり、などを最大限に甘受できます。VMとして独立している、かつ全てがRxに乗っているため、単体テストも非常に作成しやすい状態です(時間軸を扱う処理のテストは通常難しいのですが、Rxの場合は自分で時間をコントロール可能なSchedulerを中間に挟むと、好きなように時間を進められるようになります、イベントのテストも、この状態ならばプロパティを変更するだけで生成されますし)。また、決して他のMVVMフレームワークと競合が起こるわけではない(多分……)のも見逃せない利点です。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/ReactivePropertyModel.jpg">
+</p>
+<p>単純な例なのでModelがありませんが、まあこんな感じ？(それと今はコマンドがないので単純なデータバインドのみの図です)。Modelへのアクセスは通常恐らくRx:Query内で行い、Modelの形態は色々だと思いますが、通信してデータを処理して返す、みたいなものはRxになっているとVMのReactiveProperty側での合成処理が容易なので、非同期にしてIObservable&lt;T&gt;で返すと良いのではかと思います。自身が通知を持つReactivePropertyになっていてもいいですね。そうなると、コードのほとんどがLINQになるという素敵な夢が見れる気がしますが気のせいです。</p>
+<h2>実装</h2>
+<p>ReactivePropertyの実装はこんな感じです。ご自由にコピペって使ってみてください。</p>
+<pre><code class="language-csharp">using System;
+#if WINDOWS_PHONE
+using Microsoft.Phone.Reactive;
+#else
+using System.Reactive.Linq;
+using System.Reactive.Subjects;
+#endif
+
+public class ReactiveProperty&lt;T&gt; : IObservable&lt;T&gt;, IDisposable
+{
+    T latestValue;
+    IObservable&lt;T&gt; source;
+    Subject&lt;T&gt; anotherTrigger = new Subject&lt;T&gt;();
+    IDisposable sourceDisposable;
+
+    public ReactiveProperty(Action&lt;T&gt; propertyChanged, T initialValue = default(T))
+        : this(Observable.Never&lt;T&gt;(), propertyChanged, initialValue)
+    { }
+
+    public ReactiveProperty(IObservable&lt;T&gt; source, Action&lt;T&gt; propertyChanged, T initialValue = default(T))
+    {
+        this.latestValue = initialValue;
+
+        var merge = source.Merge(anotherTrigger)
+            .DistinctUntilChanged()
+            .Publish(initialValue);
+        this.sourceDisposable = merge.Connect();
+
+        // PropertyChangedの発火はUIスレッドで行うことにする
+        // UIへの反映の際に、WPFでは問題ないが、SL/WP7ではUIスレッドから発行しないと例外が出るため
+        merge.ObserveOnDispatcher().Subscribe(x =&gt;
+        {
+            latestValue = x;
+            propertyChanged(x);
+        });
+
+        this.source = merge;
+    }
+
+    public T Value
+    {
+        get
+        {
+            return latestValue;
+        }
+        set
+        {
+            latestValue = value;
+            anotherTrigger.OnNext(value);
+        }
+    }
+
+    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
+    {
+        return source.Subscribe(observer);
+    }
+
+    public void Dispose()
+    {
+        sourceDisposable.Dispose();
+    }
+}
+
+// 拡張メソッド
+public static class ObservableExtensions
+{
+    public static ReactiveProperty&lt;T&gt; ToReactiveProperty&lt;T&gt;(this IObservable&lt;T&gt; source, Action&lt;T&gt; propertyChanged, T initialValue = default(T))
+    {
+        return new ReactiveProperty&lt;T&gt;(source, propertyChanged, initialValue);
+    }
+}
+</code></pre>
+<p>Valueで値の中継をしているという、それだけです。Publish(value)はBehaviorSubjectというものを使った分配で、必ず最新の値一つをキャッシュとして持っていて、Subscribeされると同時に、まずその値で通知してくれます。これにより「初期値での自動発火」が自然に行える、という仕組みになっています。また、プロパティの変更時に同値の場合は変更通知をしない、というよくあるほぼ必須処理も、ここでDistinctUntilChangedを挟んで行っています(オプションで選択制にしてもいいかもしれない)。</p>
+<h2>それReactiveUI？</h2>
+<p><a href="http://www.reactiveui.net/">ReactiveUI</a>というRxを前提にしたMVVMフレームワークがあって、それに用意されているObservableAsPropertyHelperと、ReactivePropertyはかなり近いです(ということにプロトタイプ作ってから気づいた、ReactiveUIはこれまで名前は知ってたけど中身完全ノーチェックだったので)。ただ、機能的にはOAPHは双方向バインディングに対応していないので、ReactivePropertyのほうが上です。また、OAPHは使い勝手もあまり良くないし、名前がダサい(ObservableAsPropertyHelperは長すぎるし型名として宣言させるにはイマイチに思える……)などなどで、あまり気に入るものではなかったです。</p>
+<p>ReactiveUIは全体的には軽く眺めた程度なのですが、今ひとつ私には合わない。ちょっと、いや、かなり気にいらない。なので、私としてはそのうち他のMVVMライブラリをベースに置いた上での拡張として、Rx用のUI周りライブラリを作りたい。独自に上から下まで面倒を見るフレームワーク、という指針は今一つに思えるので、Rxならではの特異な部分だけを、最初から他のMVVMフレームワークの拡張として用意していく、という方向性のほうが良いものが作れると思っています。素のままのRxでは辛いので、何かしらの中間層が必要なのは間違いないので。</p>
+<p>次は、ReactiveCommandを！あー、あとReactiveCollectionも必要かしら。Validationとかも……。まあ、そういうところは普通に書けばいいんですよ、何も全部Rxでやる必要はないですからね。</p>
+<h2>まとめ</h2>
+<p>WPFのバインディングの美味しさをRxで更に美味しくする、ということでした。世の中的には弱参照が～などなどというお話もありますが、それには全然追いついてませんので、おいおいちかぢかそのうち。</p>
+<p>今回のコードの全体(WPF/SL/WP7)は<a href="https://bitbucket.org/neuecc/reactiveproperty" title="neuecc / ReactiveProperty / overview — Bitbucket">neuecc / ReactiveProperty /Bitbucket</a>に置いてありますので、好きに見てください。例が単純すぎると美味しさもよくわからないので、もう少し複雑な例で、サンプル準備中なのでしばしお待ちを。</p>
+<p>ところで9/15にいよいよRx本が出ます。</p>
+<iframe src="http://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as4&m=amazon&f=ifr&ref=ss_til&asins=1430237473" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<p>オライリーで出ているProgramming C#の著者と、ReactiveUIの作者(元Microsoft Office Labs、つい最近Githubに転職した模様)の共著です。私も買いますので、うーん、読書会とかやったら来てくれる方います？</p>
+</div>
+<h1><a href="http://neue.cc/2011/0822_340.html">linq.js LT資料</a></h1>
+<ul class="date"><li>2011-08-22</li></ul>
+<div class="entry_body"><p>LTで簡単に<a href="http://linqjs.codeplex.com/">linq.js</a>の紹介をしましたので、その資料を。といっても、資料は全く使わないでLTの場では完全にデモ一本にしました。ええ、こういう場では、やっぱデモ優先のほうがいいかなー、と。資料は資料で、要素がきっちりまとまって紹介という感じなので、見てもらえればと思います。</p>
+<div style="width:595px" id="__ss_8930196"> <strong style="display:block;margin:12px 0 4px"><a href="http://www.slideshare.net/neuecc/linqjs-linq-to-objects-for-javascript" title="linq.js - Linq to Objects for JavaScript" target="_blank">linq.js - Linq to Objects for JavaScript</a></strong> <iframe src="http://www.slideshare.net/slideshow/embed_code/8930196" width="595" height="497" frameborder="0" marginwidth="0" marginheight="0" scrolling="no"></iframe> <div style="padding:5px 0 12px"> View more <a href="http://www.slideshare.net/" target="_blank">presentations</a> from <a href="http://www.slideshare.net/neuecc" target="_blank">neuecc</a> </div> </div>
+<p>スライドのテンプレは同じの使っていてそろそろ飽きたので、新しいのに変えたいところ。基本的にはテンプレのテーマまんまですが、やっぱ細かいところでスライドマスタの調整は必要なので、面倒くさー、と思ってしまい中々に気力が。むしろデザイン変更は一年に一回でいいかしらいいかしら？</p>
+<p>そういえばどうでもよくないのですが、SlideshareをBlogに埋め込む時はlargeサイズを選んで欲しい。文字潰れてしまうもの、わざわざ小さいサイズで埋め込む必要はどこにもなくて。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0819_339.html">文字列を先頭から見て同じところまで除去をlinq.jsとC#で解いてみた</a></h1>
+<ul class="date"><li>2011-08-19</li></ul>
+<div class="entry_body"><p><a href="http://blog.livedoor.jp/okashi1/archives/51778281.html">JavaScript で「文字列を先頭から見て同じところまで除去」をやってみました。</a>という記事を見て、「linq.js を使いたかったのですが使いどころがパッと思い浮かびませんでした」とのことなので、<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js - LINQ for JavaScript</a>で答えてみます。お題の元は<a href="http://d.hatena.ne.jp/fumokmm/20110812/1313138407">お題：文字列を先頭から見て同じところまで除去</a>からです。解き方も色々あると思いますが、最長の一致する文字を見つけて、それを元に文字列を削除していく、という方法を取ることにしました。</p>
+<pre><code class="language-javascript">function dropStartsSame(array)
+{
+    var seq = Enumerable.From(array);
+    return Enumerable.From(seq.First())
+        .Scan(&quot;$+$$&quot;)
+        .TakeWhile(function (x) { return seq.All(function (y) { return y.indexOf(x) == 0 }) })
+        .Insert(0, [&quot;&quot;]) // 一つもマッチしなかった場合のため
+        .TakeFromLast(1)
+        .SelectMany(function (x) { return seq.Select(function (y) { return y.substring(x.length) }) });
+}
+
+dropStartsSame([&quot;abcdef&quot;, &quot;abc123&quot;]).WriteLine();
+dropStartsSame([&quot;あいうえお&quot;, &quot;あいさんさん&quot;, &quot;あいどる&quot;]).WriteLine();
+dropStartsSame([&quot;12345&quot;, &quot;67890&quot;, &quot;12abc&quot;]).WriteLine();
+</code></pre>
+<p>はい、ワンライナーで書けました、って何だか意味不明ですね！まず、例えば&quot;abcdef&quot;から[&quot;a&quot;,&quot;ab&quot;,&quot;abc&quot;,&quot;abcd&quot;,&quot;abcde&quot;,&quot;abcdef&quot;]を作ります。これはものすごく簡単で、Scanを使うだけです。</p>
+<pre><code class="language-javascript">// [&quot;a&quot;,&quot;ab&quot;,&quot;abc&quot;,&quot;abcd&quot;,&quot;abcde&quot;,&quot;abcdef&quot;]
+Enumerable.From(&quot;abcdef&quot;).Scan(&quot;$+$$&quot;)
+</code></pre>
+<p>素晴らしい！そうして比較のタネができたら、あとは全てのindexOfが0(先頭に一致する)の間だけ取得(TakeWhile)します。[&quot;abcdef&quot;,&quot;abc123&quot;]だとシーケンスは[&quot;a&quot;,&quot;ab&quot;,&quot;abc&quot;]に絞られます。必要なのは最長のもの一つだけなのでTakeFromLast(1)で最後のものだけを取得。もし一つもマッチしなかった場合は代わりに&quot;&quot;が通るようにInsertで事前に先頭にさしてやってます。あとは、その&quot;abc&quot;を元にして文字列を置換したシーケンスを返してやるようにすればいい、というわけです、はい。</p>
+<h2>少し修正</h2>
+<p>SelectManyで繋げるのは悪趣味なので、ちょっと変えましょう。</p>
+<pre><code class="language-javascript">function dropStartsSame(array)
+{
+    var seq = Enumerable.From(array);
+    var pre = Enumerable.From(seq.First())
+        .Scan(&quot;$+$$&quot;)
+        .TakeWhile(function (x) { return seq.All(function (y) { return y.indexOf(x) == 0 }) })
+        .LastOrDefault(&quot;&quot;);
+
+    return seq.Select(function (x) { return x.substring(pre.length) });
+}
+</code></pre>
+<p>変数を一つ置いてやるだけで随分とすっきり。無理に全部繋げるのはよくないね、という当たり前の話でした。</p>
+<h2>C# + Ix</h2>
+<p>C#とIxで書くとこうなるかな？基本的には同じです。(Ixって何？という人は<a href="http://neue.cc/2011/08/10_337.html" title="neue cc - LINQ to Objects &amp; Interactive Extensions &amp; linq.js 全メソッド概説">neue cc - LINQ to Objects &amp; Interactive Extensions &amp; linq.js 全メソッド概説</a>を参照ください)</p>
+<pre><code class="language-csharp">static IEnumerable&lt;string&gt; DropStartsSame(params string[] args)
+{
+    var pre = args.First()
+        .Scan(&quot;&quot;, (x, y) =&gt; x + y)
+        .TakeWhile(x =&gt; args.All(y =&gt; y.StartsWith(x)))
+        .LastOrDefault() ?? &quot;&quot;;
+    return args.Select(x =&gt; x.Substring(pre.Length));
+}
+
+static void Main()
+{
+    var x = DropStartsSame(&quot;abcdef&quot;, &quot;abc123&quot;).SequenceEqual(new[] { &quot;def&quot;, &quot;123&quot; });
+    var y = DropStartsSame(&quot;あいうえお&quot;, &quot;あいさんさん&quot;, &quot;あいどる&quot;).SequenceEqual(new[] { &quot;うえお&quot;, &quot;さんさん&quot;, &quot;どる&quot; });
+    var z = DropStartsSame(&quot;12345&quot;, &quot;67890&quot;, &quot;12abc&quot;).SequenceEqual(new[] { &quot;12345&quot;, &quot;67890&quot;, &quot;12abc&quot; });
+
+    Console.WriteLine(x == y == z == true);
+}
+</code></pre>
+<p>Ixで使ってるのはScanだけですけれど。</p>
+<h2>Deferの使い道</h2>
+<p>ところで、上のコードは遅延評価なのか遅延評価でないのか、微妙な感じです。preの計算までは即時で、その後は遅延されています。まるごと遅延したい場合はIxのDeferというメソッドが使えます。</p>
+<pre><code class="language-csharp">// Deferで生成を遅延する
+static IEnumerable&lt;string&gt; DropStartsSame2(params string[] args)
+{
+    return EnumerableEx.Defer(() =&gt;
+    {
+        var pre = args.First()
+            .Scan(&quot;&quot;, (x, y) =&gt; x + y)
+            .TakeWhile(x =&gt; args.All(y =&gt; y.StartsWith(x)))
+            .LastOrDefault() ?? &quot;&quot;;
+        return args.Select(x =&gt; x.Substring(pre.Length));
+    });
+}
+
+// もしくはyield returnを使ってしまうという手も私はよく使っていました
+static IEnumerable&lt;string&gt; DropStartsSame3(params string[] args)
+{
+    var pre = args.First()
+        .Scan(&quot;&quot;, (x, y) =&gt; x + y)
+        .TakeWhile(x =&gt; args.All(y =&gt; y.StartsWith(x)))
+        .LastOrDefault() ?? &quot;&quot;;
+    var query = args.Select(x =&gt; x.Substring(pre.Length));
+    
+    foreach (var item in query) yield return item;
+}
+
+// 勿論、全部LINQで組んでしまってもOK
+static IEnumerable&lt;string&gt; DropStartsSame4(params string[] args)
+{
+    return args.First()
+        .Scan(&quot;&quot;, (x, y) =&gt; x + y)
+        .TakeWhile(x =&gt; args.All(y =&gt; y.StartsWith(x)))
+        .StartWith(&quot;&quot;) // linq.jsではInsert(0, [])でした
+        .TakeLast(1) // linq.jsではTakeFromLastでした
+        .SelectMany(x =&gt; args.Select(y =&gt; y.Substring(x.Length)));
+}
+</code></pre>
+<p>私はIx以前はyield returnを結構よく使ってました。今は、Deferのほうが、例えば if(args == null) throw new ArgumentNullException(); とかがそのまま書けるのでDeferを選びたいかも。この辺の評価タイミングの話は前回、<a href="http://neue.cc/2011/08/15_338.html" title="neue cc - 詳説Ix Share/Memoize/Publish編(もしくはyield returnの注意点)">詳説Ix Share/Memoize/Publish編(もしくはyield returnの注意点)</a>で書きました。</p>
+<h2>まとめ</h2>
+<p>というわけで、Scanの使い方でした。Scan可愛いよScan。ようするにAggregateの計算途中も列挙する版なわけなので、これ、標準クエリ演算子にも入って欲しかったなあ。結構使えるシーン多いです。</p>
+<p>ああ、あとJavaScriptでもforなんて使いません(ｷﾘｯ。<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js</a>は真面目に普通に多機能なので遅い、じゃなくて、いや、それはまあ事実なんですが、便利には違いないです。他の普通のコレクションライブラリじゃ出来ないことも平然と出来ます。でもかわりに（ry</p>
+</div>
+<h1><a href="http://neue.cc/2011/0815_338.html">詳説Ix Share/Memoize/Publish編(もしくはyield returnの注意点)</a></h1>
+<ul class="date"><li>2011-08-15</li></ul>
+<div class="entry_body"><p><a href="http://neue.cc/2011/08/10_337.html" title="neue cc - LINQ to Objects &amp; Interactive Extensions &amp; linq.js 全メソッド概説">LINQ to Objects &amp; Interactive Extensions &amp; linq.js 全メソッド概説</a>でのIxのPublishの説明がおざなりだったので、一族について詳しく説明したいと思います(Ixの詳細・入手方法などは先の全メソッド概説のほうを参照ください)。ええ、これらはIBuffer&lt;T&gt;を返すという一族郎党だという共通点があります。なので、並べてみれば分かりやすい、かも？挙動を検証するためのコードは後で出しますので、ひとまず先に図をどうぞ。星がGetEnumerator、丸がMoveNext(+Current)、矢印線が二つ目の列挙子を取得したタイミングを表しています。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/ShareMemoizePublish.jpg">
+</p>
+<p>これだけじゃよく分かりません。と、いうわけで、少しだけ上の図を頭に入れて、以下の解説をどうぞ。</p>
+<h2>Memoize</h2>
+<p>Memoizeはメモ化。メモイズ。メモライズじゃないっぽいです。二度目三度目の列挙時は値をキャッシュから返すので、前段がリソースから取得したり複雑な計算処理をしていたりで重たい場合に有効、という使い道が考えられます。とりあえずEnumeratorを取ってきて、それでじっくり動きを観察してみましょう。</p>
+<pre><code class="language-csharp">// ShareやMemoizeやPublishの戻り値の型はIBuffer&lt;T&gt;で、これはIDisposableです。
+// もしリソースを抱えるものに適用するなら、usingしたほうがいいかも？
+using (var m = Enumerable.Range(1, int.MaxValue)
+    .Do(x =&gt; Console.WriteLine(&quot;spy:&quot; + x)) // 元シーケンスが列挙される確認
+    .Memoize())
+{
+    var e1 = m.GetEnumerator();
+    e1.MoveNext(); e1.MoveNext(); e1.MoveNext(); // spy:1,spy:2,spy:3
+    Console.WriteLine(e1.Current); // 3
+
+    var e2 = m.GetEnumerator();
+    e2.MoveNext(); // キャッシュから返されるので元シーケンスは不動
+    Console.WriteLine(e2.Current); // 1
+
+    e2.MoveNext(); e2.MoveNext(); e2.MoveNext(); // spy:4
+    Console.WriteLine(e2.Current); // 4
+
+    e1.MoveNext(); // 今度はe2が先行したので、こちらもキャッシュから
+    Console.WriteLine(e1.Current); // 4
+}
+</code></pre>
+<p>特に考える必要もなく分かりやすい内容です。オーバーロードにはreaderCountを受けるものがありますが、それの挙動は以下のようになります。</p>
+<pre><code class="language-csharp">// Memoizeの第二引数はreaderCount(省略した場合は無限個)
+using (var m = Enumerable.Range(1, int.MaxValue).Memoize(2))
+{
+    // readerCountはEnumeratorの取得可能数を表す
+    var e1 = m.GetEnumerator();
+    e1.MoveNext(); // MoveNextするとMemoizeに登録される
+    var e2 = m.GetEnumerator();
+
+    var e3 = m.GetEnumerator();
+    e3.MoveNext();
+
+    e2.MoveNext(); // 3つめはNGなので例外が飛んで来る
+}
+</code></pre>
+<p>これを使うと、キャッシュから値が随時削除されていくので、メモ化しつつ巨大なシーケンスを取り扱いたい場合には、メモリ節約で有効なこともあるかもしれません。とはいっても、普段はあまり考えなくてもいいかな？毎回削除処理が入るので、実行時間は当然ながら遅くなります。</p>
+<h2>Share</h2>
+<p>Shareは列挙子を共有します。</p>
+<pre><code class="language-csharp">using (var s = Enumerable.Range(1, int.MaxValue).Share())
+{
+    var e1 = s.GetEnumerator();
+    e1.MoveNext(); e1.MoveNext(); e1.MoveNext();
+    Console.WriteLine(e1.Current); // 3
+
+    var e2 = s.GetEnumerator(); // 列挙子が共有されているので3からスタート
+    Console.WriteLine(e2.Current); // 0。共有されるといっても、MoveNext前の値は不定です
+    e2.MoveNext();
+    Console.WriteLine(e2.Current); // 4。正しく初期値といえるのはここ
+
+    Console.WriteLine(e1.Current); // 3。e1とe2は同じものを共有していますが、Currentの値はMoveNextしない限りは変わらない
+
+    e1.MoveNext();
+    Console.WriteLine(e1.Current); // 5。列挙子を共有しているので、e2の続き
+}
+</code></pre>
+<p>といった形です。これの何が美味しいの？というと、例えば自分自身と結合させると、隣り合った値とくっつけられます。</p>
+<pre><code class="language-csharp">// Share, Memoize, Publishにはselectorを受けるオーバーロードがある
+// このselectorには var xs = source.Share() の xsが渡される
+// つまり、一度外部変数に置かなくてもよいという仕組み、Zipなどと相性が良い
+
+// 結果は {x = 1, y = 2}, { x = 3, y = 4}, { x = 5, y = 6}
+// 列挙子を共有して自分自身と結合するので、隣り合った値とくっつく
+Enumerable.Range(1, 6)
+    .Share(xs =&gt; xs.Zip(xs, (x, y) =&gt; new { x, y }))
+    .ForEach(x =&gt; Console.WriteLine(x));
+</code></pre>
+<p>なんだか、へぇー、という感じの動き。このShareを使うと<a href="http://d.hatena.ne.jp/okazuki/20110611/1307759414">stringの配列からDictionary&lt;string, string&gt;への変換 まとめ - かずきのBlog@Hatena</a>のコードは</p>
+<pre><code class="language-csharp">// {&quot;1&quot;:&quot;one&quot;}, {&quot;2&quot;:&quot;two&quot;}
+var array = new[] { &quot;1&quot;, &quot;one&quot;, &quot;2&quot;, &quot;two&quot; };
+var dict = array.Share(xs =&gt; xs.Zip(xs, Tuple.Create))
+    .ToDictionary(t =&gt; t.Item1, t =&gt; t.Item2);
+</code></pre>
+<p>物凄くシンプルになります。ループを回すなんて、やはり原始人のやることでしたね！</p>
+<h2>Publish</h2>
+<p>PublishはRxでは値を分散させましたが、Ixでも分散です。ただ、挙動にはかなりクセがあり、あまりお薦め出来ないというか……。動きとしては、取得時には共有された列挙子から流れてくるのでShareのようであり、列挙子取得後は全て必ず同じ値が返ってくることからMemoizeのようでもある。</p>
+<pre><code class="language-csharp">using (var p = Enumerable.Range(1, int.MaxValue).Publish())
+{
+    var e1 = p.GetEnumerator();
+    e1.MoveNext(); e1.MoveNext(); e1.MoveNext();
+    Console.WriteLine(e1.Current); // 3
+
+    var e2 = p.GetEnumerator(); // 取得時は列挙子の状態が共有されているので3からスタート
+    Console.WriteLine(e2.Current); // 0。 共有されるといっても、MoveNext前の値はやはり不定
+    e2.MoveNext();
+    Console.WriteLine(e2.Current); // 4。正しく初期値といえるのはここ
+
+    e1.MoveNext(); e1.MoveNext(); e1.MoveNext(); e1.MoveNext(); e1.MoveNext();
+    Console.WriteLine(e1.Current); // 8
+
+    e2.MoveNext(); // 取得後の状態はそれぞれ別、またキャッシュから返される
+    Console.WriteLine(e2.Current); // 5
+}
+</code></pre>
+<p>このPublish、こうして生イテレータを操作している分には理解できますが、普通に使うように演算子を組み合わせると予測不能の挙動になります。例えば</p>
+<pre><code class="language-csharp">// 自分自身と結合、GetEnumeratorのタイミングが同じなので同値で結合される
+// {1,1},{2,2},{3,3},{4,4},{5,5}
+Enumerable.Range(1, 5)
+    .Publish(xs =&gt; xs.Zip(xs, (x, y) =&gt; new { x, y }))
+    .ForEach(a =&gt; Console.WriteLine(a));
+
+// もし後者のほうをSkip(1)したらこうなります
+// {1,3},{2,4},{3,5}
+Enumerable.Range(1, 5)
+    .Publish(xs =&gt; xs.Zip(xs.Skip(1), (x, y) =&gt; new { x, y }))
+    .ForEach(a =&gt; Console.WriteLine(a));
+</code></pre>
+<p>Skip(1)すると {1,2},{2,3}... ではなくて {1,3},{2,4}... になる理由、すぐにティンと来ますか？正直私はわけがわかりませんでした。Zipの実装を見ながら考えると、少し分かりやすくなります。</p>
+<pre><code class="language-csharp">static IEnumerable&lt;TR&gt; Zip&lt;T1, T2, TR&gt;(this IEnumerable&lt;T1&gt; source1, IEnumerable&lt;T2&gt; source2, Func&lt;T1, T2, TR&gt; selector)
+{
+    using (var e1 = source1.GetEnumerator())
+    using (var e2 = source2.GetEnumerator())
+    {
+        while (e1.MoveNext() &amp;&amp; e2.MoveNext())
+        {
+            yield return selector(e1.Current, e2.Current);
+        }
+    }
+}
+</code></pre>
+<p>Skip(1)のない、そのままZipで結合したものはEnumeratorを取得するタイミングは同じなので、 {1,1},{2,2}... になるのは妥当です。では、source2がSkip(1)である場合は、というと、source2.GetEnumeratorの時点で取得されるのはSkip(1)のEnumeratorであり、Publishで分配されているEnumeratorはまだ取得開始されていません。では、いつPublishされているEnumeratorを取得するか、というと、これは最初にe2.MoveNextが呼ばれたときになります。なので、e1.MoveNextにより一回列挙されているから、e2の(MoveNext済みでの)初期値は2。更にSkip(1)するので、{1,3},{2,4}... という結果が導かれます。</p>
+<p>ZipやSkipなど、他のメソッドを組み合わせるなら、それらの内部をきっちり知らなければ挙動が導けないという、ものすごく危うさを抱えているので、Publishを上手く活用するのは難しい印象です、今のところ、私には。もともとPublishはRxに分配のためのメソッドとして存在して、その鏡としてIxにも移植されているという出自なのですが、どうしてもPull型で実現するには不向きなため、不自然な挙動となってしまっています。分配はPull(Ix)じゃなくてPush(Rx)のほうが向いている、というわけで、分配したいのならToObservableして、Observable側のPublishを使ったほうが、素直な動きをして良いと思います。</p>
+<h2>yield returnを突っつく</h2>
+<p>MemoizeのreaderCountの例でもそうでしたが、Publish/Memoizeされている列挙子を取得するのがGetEnumerator時ではなくて最初のMoveNextの時、になるのはyield returnを使うとそういう挙動で実装されるからです。例えば</p>
+<pre><code class="language-csharp">static IEnumerable&lt;T&gt; Hide&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    Console.WriteLine(&quot;列挙前&quot;);
+    using (var e = source.GetEnumerator()) // 通常は、foreachを使いますが。
+    {
+        while (e.MoveNext()) yield return e.Current;
+    }
+    Console.WriteLine(&quot;Dispose済み&quot;);
+} // yield break
+
+static void Main(string[] args)
+{
+    var e = Enumerable.Repeat(&quot;hoge&quot;, 1).Hide().GetEnumerator(); // ここではまだ何も起こらない
+    e.MoveNext(); // 列挙前 ← ここでメソッド冒頭からyield return e.Currentのところまで移動
+    Console.WriteLine(e.Current); // hoge
+    e.MoveNext(); // Dispose済み ← 最終行まで到達して終了
+}
+</code></pre>
+<p>イテレータの自動実装でメソッド本文を動きだすのは、最初のMoveNextから、というわけです。また、イテレータ内でusingなどリソースを掴む実装をしている場合は、普通にブロックを(using,lock,try-finally)超えた時に解放されます。ただし、ちゃんとブロックを超えるまでMoveNextを呼びきれる保証なんてない(例外が発生したり)ので、GetEnumeratorする時はusingも忘れずに、は大原則です。using、つまりEnumeratorをDisposeすると、using,lock,finallyがメソッド本文中で呼ばれていなかった場合は、呼ぶようになってます。</p>
+<p>ところで、本文が動き出すのは最初のMoveNextから、であることが困る場合もあります。例えば引数チェック。</p>
+<pre><code class="language-csharp">public static IEnumerable&lt;string&gt; Hoge(string arg)
+{
+    if (arg == null) throw new ArgumentNullException();
+
+    yield return arg;
+}
+
+void Main(string[] args)
+{
+    var hoge = Hoge(null); // ここでは何も起こらない！
+    hoge.GetEnumerator().MoveNext(); // ArgumentNullException発生
+}
+</code></pre>
+<p>nullチェックはメソッドに渡したその時にチェックして欲しいわけで、これではタイミングが違って良くない。これを回避するにはどうすればいいか、というと</p>
+<pre><code class="language-csharp">// 先にnullチェックを済ませて普通にreturn
+public static IEnumerable&lt;string&gt; Hoge(string arg)
+{
+    if (arg == null) throw new ArgumentNullException();
+
+    return HogeCore(arg);
+}
+
+// privateなメソッドで、こちらにyield returnで本体を書く
+private static IEnumerable&lt;string&gt; HogeCore(string arg)
+{
+    yield return arg;
+}
+
+static void Main(string[] args)
+{
+    var hoge = Hoge(null); // 例外発生！
+}
+</code></pre>
+<p>こうすれば、完璧な引数チェックの完成。実際に、LINQ to Objectsの実装はそうなっています。この時のprivateメソッドの命名には若干困りますが、私は今のところXxxCoreという形で書くようにしてます。MicrosoftのEnumerable.csではXxxIteratorという命名のようですね。また、Ixを覗くとXxx_という名前を使っている感じ。みんなバラバラなので好きな命名でいいのではかと。</p>
+<p>なお、こんなことのためだけにメソッドを分割しなければならないというのは、無駄だしバッドノウハウ的な話なので、かなり嫌いです。インラインにラムダ式でyield returnが使えればこんなことにはならないんだけれどなー、ﾁﾗﾁﾗ(次期C#に期待)</p>
+<h2>まとめ</h2>
+<p>再度、冒頭の図を眺め直してもらうと、ああ、なるほどそういうことね、と分かりますでしょうか？</p>
+<p>とはいえ、ShareもMemoizeもPublishもあんま使うことはないかと思いますぶっちゃけ！Memoizeは、使いたいシチュエーションは確かに多いのですけれど、しかし事前にToArrayしちゃってたりしちゃうことのほうが多いかなー、と。Shareは面白いんだけど使いどころを選ぶ。Publishは挙動が読みきれなくなりがちなので、避けたほうがいいと思います。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0810_337.html">LINQ to Objects & Interactive Extensions & linq.js 全メソッド概説</a></h1>
+<ul class="date"><li>2011-08-10</li></ul>
+<div class="entry_body"><p>@ITに以前書いたLINQの基礎知識の話が載りました -&gt; <a href="http://www.atmarkit.co.jp/fdotnet/chushin/greatblogentry_06/greatblogentry_06_01.html" title="LINQの仕組み＆遅延評価の正しい基礎知識 － ＠IT">LINQの仕組み＆遅延評価の正しい基礎知識 － ＠IT</a>。ああ、もっとしっかり書いていれば(図もへっぽこだし)、と思ったり思わなかったり。それでも校正していただいたのと、細部は修正してあるので、元のものよりも随分と読みやすいはずです。そういえばで1月頭の話なんですね、姉妹編としてRxの基礎知識もやるつもりだったのにまだやってないよ！</p>
+<p>ところでそもそも基礎知識といったら標準クエリ演算子が何をできるかではないのでしょうか？知ってるようで知らない標準クエリ演算子。<a href="http://msdn.microsoft.com/ja-jp/vcsharp/aa336746">101 LINQ Samples</a>もあるし<a href="http://msdn.microsoft.com/ja-jp/library/bb397926.aspx">MSDNのリファレンス</a>は十分に充実していますが、しかし意外と見逃しもあるかもしれません。また、Interactive Extensionsで何が拡張されているのかは知っていますか？ついでにJS実装のlinq.jsには何があるのか知っていますか？</p>
+<p>そんなわけで、LINQ to Objects、Ix、linq.jsの全メソッドを一行解説したいと思います。</p>
+<h2>LINQ to Objects</h2>
+<p>いわゆる、標準クエリ演算子。.NET 3.5から使えます。.NET4.0からはZipメソッドが追加されました。なお、サンプルと実行例は<a href="http://neue.cc/reference.htm" title="linq.js Reference">linq.js Reference</a>に「完全に」同じ挙動をするJS実装での例がありますので、そちらを参照にどうぞ。こういう場合はJS実装だと便利ですね。</p>
+<table>
+  <tr>
+    <td>Aggregate</td>
+    <td>汎用的な値算出</td>
+  </tr>
+  <tr>
+    <td>All</td>
+    <td>条件に全て一致するか</td>
+  </tr>
+  <tr>
+    <td>Any</td>
+    <td>条件に一つでも一致するか、引数なしの場合は空かどうか</td>
+  </tr>
+  <tr>
+    <td>AsEnumerable</td>
+    <td>IEnumerable&lt;T&gt;へアップキャスト</td>
+  </tr>
+  <tr>
+    <td>Average</td>
+    <td>平均</td>
+  </tr>
+  <tr>
+    <td>Cast</td>
+    <td>値のダウンキャスト、主な用途はIEnumerableからIEnumerable&lt;T&gt;への変換</td>
+  </tr>
+  <tr>
+    <td>Concat</td>
+    <td>引数のシーケンスを後ろに連結</td>
+  </tr>
+  <tr>
+    <td>Contains</td>
+    <td>値が含まれているか、いわばAnyの簡易版</td>
+  </tr>
+  <tr>
+    <td>Count</td>
+    <td>シーケンスの件数</td>
+  </tr>
+  <tr>
+    <td>DefaultIfEmpty</td>
+    <td>シーケンスが空の場合、デフォルト値を返す(つまり長さ1)</td>
+  </tr>
+  <tr>
+    <td>Distinct</td>
+    <td>重複除去</td>
+  </tr>
+  <tr>
+    <td>ElementAt</td>
+    <td>指定インデックスの要素の取得</td>
+  </tr>
+  <tr>
+    <td>ElementAtOrDefault</td>
+    <td>指定インデックスの要素の取得、なければデフォルト値を返す</td>
+  </tr>
+  <tr>
+    <td>Empty</td>
+    <td>空シーケンスの生成</td>
+  </tr>
+  <tr>
+    <td>Except</td>
+    <td>差集合・差分だけ、集合なので重複は除去される</td>
+  </tr>
+  <tr>
+    <td>First</td>
+    <td>最初の値の取得、ない場合は例外が発生</td>
+  </tr>
+  <tr>
+    <td>FirstOrDefault</td>
+    <td>最初の値を取得、ない場合はデフォルト値を返す</td>
+  </tr>
+  <tr>
+    <td>GroupBy</td>
+    <td>グループ化、ToLookupの遅延評価版(ただしストリーミングでの遅延評価ではない)</td>
+  </tr>
+  <tr>
+    <td>GroupJoin</td>
+    <td>右辺をグループにして結合、外部結合をしたい時にDefaultIfEmptyと合わせて使ったりもする</td>
+  </tr>
+  <tr>
+    <td>Intersect</td>
+    <td>積集合・共通の値だけ、集合なので重複は除去される</td>
+  </tr>
+  <tr>
+    <td>Join</td>
+    <td>内部結合</td>
+  </tr>
+  <tr>
+    <td>Last</td>
+    <td>最後の値を取得、ない場合は例外が発生</td>
+  </tr>
+  <tr>
+    <td>LastOrDefault</td>
+    <td>最後の値を取得、ない場合はデフォルト値を返す</td>
+  </tr>
+  <tr>
+    <td>LongCount</td>
+    <td>シーケンスの件数、longなので長い日も安心</td>
+  </tr>
+  <tr>
+    <td>Max</td>
+    <td>最大値</td>
+  </tr>
+  <tr>
+    <td>Min</td>
+    <td>最小値</td>
+  </tr>
+  <tr>
+    <td>OfType</td>
+    <td>指定した型の値だけを返す、つまりWhereとisが組み合わさったようなもの</td>
+  </tr>
+  <tr>
+    <td>OrderBy</td>
+    <td>昇順に並び替え</td>
+  </tr>
+  <tr>
+    <td>OrderByDescending</td>
+    <td>降順に並び替え</td>
+  </tr>
+  <tr>
+    <td>Range</td>
+    <td>指定個数のintシーケンスの生成</td>
+  </tr>
+  <tr>
+    <td>Repeat</td>
+    <td>一つの値を繰り返すシーケンスの生成</td>
+  </tr>
+  <tr>
+    <td>Reverse</td>
+    <td>逆から列挙</td>
+  </tr>
+  <tr>
+    <td>Select</td>
+    <td>射影、関数の第二引数はインデックス</td>
+  </tr>
+  <tr>
+    <td>SelectMany</td>
+    <td>シーケンスを一段階平らにする、モナドでいうbind</td>
+  </tr>
+  <tr>
+    <td>SequenceEqual</td>
+    <td>二つのシーケンスを値で比較</td>
+  </tr>
+  <tr>
+    <td>Single</td>
+    <td>唯一の値を取得、複数ある場合は例外が発生</td>
+  </tr>
+  <tr>
+    <td>SingleOrDefault</td>
+    <td>唯一の値を取得、複数ある場合はデフォルト値を返す</td>
+  </tr>
+  <tr>
+    <td>Skip</td>
+    <td>指定個数だけ飛ばす</td>
+  </tr>
+  <tr>
+    <td>SkipWhile</td>
+    <td>条件が正のあいだ飛ばす</td>
+  </tr>
+  <tr>
+    <td>Sum</td>
+    <td>合計</td>
+  </tr>
+  <tr>
+    <td>Take</td>
+    <td>指定個数列挙、シーケンスの個数より多く指定した場合はシーケンスの個数分だけ</td>
+  </tr>
+  <tr>
+    <td>TakeWhile</td>
+    <td>条件が正のあいだ列挙</td>
+  </tr>
+  <tr>
+    <td>ThenBy</td>
+    <td>同順の場合のソートキーの指定、昇順に並び替え</td>
+  </tr>
+  <tr>
+    <td>ThenByDescending</td>
+    <td>同順の場合のソートキーの指定、降順に並び替え</td>
+  </tr>
+  <tr>
+    <td>ToArray</td>
+    <td>配列に変換</td>
+  </tr>
+  <tr>
+    <td>ToDictionary</td>
+    <td>辞書に変換</td>
+  </tr>
+  <tr>
+    <td>ToList</td>
+    <td>リストに変換</td>
+  </tr>
+  <tr>
+    <td>ToLookup</td>
+    <td>不変のマルチ辞書(一つのキーに複数の値を持つ)に変換</td>
+  </tr>
+  <tr>
+    <td>Union</td>
+    <td>和集合・両方の値全て、集合なので重複は除去される</td>
+  </tr>
+  <tr>
+    <td>Where</td>
+    <td>フィルタ</td>
+  </tr>
+  <tr>
+    <td>Zip</td>
+    <td>二つのシーケンスの結合、長さが異なる場合短いほうに合わされる</td>
+  </tr>
+</table>
+<p>暗記する必要はなくて、なんとなくこういうのがあってこんな名前だったかなー、とぐらいに覚えておけば、IntelliSenseにお任せできるので、それで十分です。</p>
+<p>リスト処理という観点からみるとLINQはかなり充実しているわけですが、更に他の言語と比較した場合の特色は、やはりクエリ構文。SelectManyへの構文は多くの言語が備えていますが(<a href="http://matarillo.com/general/monads.php">モナドの驚異</a>を参照のこと、LINQはLINM:言語統合モナドである、というお話)、SQLの構文をベースにしたJoin、GroupBy、OrderByへの専用記法は、意外と、というか普通に便利。</p>
+<p>特にJoinはあってよかったな、と思います、インメモリで色々なところからデータ引っ張ってきて結合などすると特に。一つぐらいの結合なら別にメソッド構文でいいのですが、フツーのSQLと同じように大量のjoinを並べる場合に、クエリ構文じゃないとシンドい。インメモリからデータベースまで統一的な記法で扱える、ということの凄さを実感するところ。</p>
+<p>といっても、普段はほとんどメソッド構文で書いてるんですけどねー。あくまで、込み入った状況になるときだけクエリ構文にしています。クエリ構文では表現できないものが結構多いわけで、わざわざ、これはクエリ構文だけで表現できるからクエリ構文にするかー、とか考えるのもカッタルイので。あと、単純にIntelliSenseでポコポコ打ってるほうが快適、というのもあります。</p>
+<p>クエリ構文は、モナドへの記法というよりも、強力なリスト内包表記といった印象も、<a href="http://research.microsoft.com/en-us/um/people/simonpj/papers/list-comp/index.htm">HaskellへのOrder By, Group Byのペーパー</a>見て思ったりなんかしたりして。</p>
+<h2>Ix</h2>
+<p>Ix(Interactive Extensions)は<a href="http://msdn.microsoft.com/en-us/data/gg577609" title="Reactive Extensions">Reactive Extensions</a>で、現在は実験的なものとして提供されている、Enumerableの拡張メソッド群。NuGetの<a href="http://nuget.org/List/Packages/Ix_Experimental-Main" title="NuGet gallery">Ix_Experimental-Main</a>で入れるのが使いやすい感じ。<a href="http://www.infoq.com/jp/news/2011/07/Ix">InfoQ: LINQ to Objectsのためのインタラクティブエクステンション</a>に解説が少し出ていましたが、少し不足していたり、間違っていたり(DoWhileとTakeWhileは一見似ていますが、挙動は全然異なるし、Forは別に全く興味深くなくSelectManyと同じです)したので、こちらの方が正しいです(ｷﾘｯ</p>
+<table>
+  <tr>
+    <td>Buffer</td>
+    <td>指定個数分に区切って配列で値を列挙</td>
+  </tr>
+  <tr>
+    <td>Case</td>
+    <td>引数のIDictionaryを元に列挙するシーケンスを決める、辞書に存在しない場合はEmpty</td>
+  </tr>
+  <tr>
+    <td>Catch</td>
+    <td>例外発生時に代わりに後続のシーケンスを返す</td>
+  </tr>
+  <tr>
+    <td>Concat</td>
+    <td>可変長引数を受け入れて連結する生成子、拡張メソッド版はシーケンスのシーケンスを平らにする</td>
+  </tr>
+  <tr>
+    <td>Create</td>
+    <td>getEnumeratorを渡し任意のIEnumerableを生成する、といってもEnumerator.Createがないため、あまり意味がない</td>
+  </tr>
+  <tr>
+    <td>Defer</td>
+    <td>シーケンスの生成をGetEumerator時まで遅延</td>
+  </tr>
+  <tr>
+    <td>Distinct</td>
+    <td>比較キーを受け入れるオーバーロード</td>
+  </tr>
+  <tr>
+    <td>DistinctUntilChanged</td>
+    <td>同じ値が続くものを除去</td>
+  </tr>
+  <tr>
+    <td>Do</td>
+    <td>副作用として各値にActionを適用し、値をそのまま列挙</td>
+  </tr>
+  <tr>
+    <td>DoWhile</td>
+    <td>一度列挙後に条件判定し、合致すれば再列挙</td>
+  </tr>
+  <tr>
+    <td>Expand</td>
+    <td>幅優先探索でシーケンスを再帰的に平らにする</td>
+  </tr>
+  <tr>
+    <td>Finally</td>
+    <td>列挙完了時に指定したActionを実行</td>
+  </tr>
+  <tr>
+    <td>For</td>
+    <td>SelectManyと一緒なので存在意義はない(Rxと鏡にするためだけに存在)</td>
+  </tr>
+  <tr>
+    <td>ForEach</td>
+    <td>foreach、関数の第二引数はインデックス</td>
+  </tr>
+  <tr>
+    <td>Generate</td>
+    <td>forループを模した初期値、終了判定、増加関数、値成形関数を指定する生成子</td>
+  </tr>
+  <tr>
+    <td>Hide</td>
+    <td>IEnumerable&lt;T&gt;に変換、具象型を隠す</td>
+  </tr>
+  <tr>
+    <td>If</td>
+    <td>条件が正なら指定したシーケンスを、負なら指定したシーケンス、もしくはEmptyで列挙する</td>
+  </tr>
+  <tr>
+    <td>IgnoreElements</td>
+    <td>後に続くメソッドに何の値も流さない</td>
+  </tr>
+  <tr>
+    <td>IsEmpty</td>
+    <td>シーケンスが空か、!Any()と等しい</td>
+  </tr>
+  <tr>
+    <td>Max</td>
+    <td>IComparer&lt;T&gt;を受け入れるオーバーロード</td>
+  </tr>
+  <tr>
+    <td>MaxBy</td>
+    <td>指定されたキーで比較し最大値だった値を返す</td>
+  </tr>
+  <tr>
+    <td>Memoize</td>
+    <td>メモ化、複数回列挙する際にキャッシュされた値を返す</td>
+  </tr>
+  <tr>
+    <td>Min</td>
+    <td>IComparer&lt;T&gt;を受け入れるオーバーロード</td>
+  </tr>
+  <tr>
+    <td>MinBy</td>
+    <td>指定されたキーで比較し最小値だった値を返す</td>
+  </tr>
+  <tr>
+    <td>OnErrorResumeNext</td>
+    <td>例外が発生してもしなくても後続のシーケンスを返す</td>
+  </tr>
+  <tr>
+    <td>Publish</td>
+    <td>ShareとMemoizeが合わさったような何か</td>
+  </tr>
+  <tr>
+    <td>Repeat</td>
+    <td>無限リピート生成子、拡張メソッドのほうは列挙後に無限/指定回数最列挙</td>
+  </tr>
+  <tr>
+    <td>Retry</td>
+    <td>例外発生時に再度列挙する</td>
+  </tr>
+  <tr>
+    <td>Return</td>
+    <td>単一シーケンス生成子</td>
+  </tr>
+  <tr>
+    <td>Scan</td>
+    <td>Aggregateの算出途中の値も列挙する版</td>
+  </tr>
+  <tr>
+    <td>SelectMany</td>
+    <td>引数を使わず別のシーケンスに差し替えるオーバーロード</td>
+  </tr>
+  <tr>
+    <td>Share</td>
+    <td>列挙子を共有</td>
+  </tr>
+  <tr>
+    <td>SkipLast</td>
+    <td>後ろからn個の値をスキップ</td>
+  </tr>
+  <tr>
+    <td>StartWith</td>
+    <td>先頭に値を連結</td>
+  </tr>
+  <tr>
+    <td>TakeLast</td>
+    <td>後ろからn個の値だけを列挙</td>
+  </tr>
+  <tr>
+    <td>Throw</td>
+    <td>例外が発生するシーケンス生成子</td>
+  </tr>
+  <tr>
+    <td>Using</td>
+    <td>列挙完了後にDisposeするためのシーケンス生成子</td>
+  </tr>
+  <tr>
+    <td>While</td>
+    <td>列挙前に条件判定し合致したら列挙し、終了後再度条件判定を繰り返す生成子</td>
+  </tr>
+</table>
+<p>みんな実装したことあるForEachが載っているのが一番大きいのではないでしょうか。別に自分で実装するのは簡単ですが、公式に(といってもExperimental Releaseですが)あると、全然違いますから。なお、何故ForEachが標準クエリ演算子にないのか、というのは、<a href="http://blogs.msdn.com/b/ericlippert/archive/2009/05/18/foreach-vs-foreach.aspx">“foreach” vs “ForEach” - Fabulous Adventures In Coding</a>によれば副作用ダメ絶対とのことで。納得は……しない。</p>
+<p>Ixに含まれるメソッドは標準クエリ演算子では「できない」もしくは「面倒くさい」。Ixを知ることは標準だけでは何ができないのかを知ること。何ができないのかを知っていれば、必要な局面でIxを使うなり自前実装するなりといった対応がすぐに取れます、無理に標準クエリ演算子をこねくり回すことなく。例えばBufferやExpandは非常に有益で、使いたいシチュエーションはいっぱいあるんですが、標準クエリ演算子ではできないことです。</p>
+<p>While, DoWhileとTakeWhileの違いは条件判定する箇所。While,DoWhileは列挙完了前/後に判定し、判定がtrueならシーケンスを再び全て列挙する。TakeWhileは通る値で毎回判定する。</p>
+<p>PublishとMemoizeの違いは難解です。Memoizeは直球そのままなメモ化なんですが、Publishが凄く説明しづらくて……。Enumerator取得まではShareと同じく列挙子の状態は共有されてるんですが、取得後はMemoizeのようにキャッシュした値を返すので値の順番は保証される、といった感じです。うまく説明できません。</p>
+<p>存在意義が微妙なものも、それなりにありますね。例えばIfとCaseとForなどは、正直、使うことはないでしょう。Usingも、これを使うなら別メソッドに分けて、普通にusing + yield returnで書いてしまうほうが良いと私は考えています。</p>
+<p>Ixを加えると、ほとんど全てをLINQで表現出来るようになりますが、やりすぎて解読困難に陥ったりしがちなのには少し注意を。複雑になるようならベタベタ書かずに、一定の塊にしたものを別メソッドに分ければいいし、分けた先では、メソッドを組み合わせるよりも、yield returnで書いたほうが素直に表現出来るかもしれません。</p>
+<p>適切なバランス感覚を持って、よきLINQ生活を！</p>
+<h2>linq.js</h2>
+<p>LINQ to ObjectsのJavaScript実装である<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js</a>にも、標準クエリ演算子の他に(作者の私の趣味で)大量のメソッドが仕込んであるので、せっかくなのでそれの解説も。標準クエリ演算子にあるものは省きます(挙動は同一なので)。また、C#でIEqualityComparer&lt;T&gt;を受け取るオーバーロードは、全てキーセレクター関数のオーバーロードに置き換えられています。</p>
+<p>一行サンプルと実行は<a href="http://neue.cc/reference.htm" title="linq.js Reference">linq.js Reference</a>のほうをどうぞ。</p>
+<table>
+  <tr>
+    <td>Alternate</td>
+    <td>値の間にセパレーターを織り込む、HaskellのIntersperseと同じ</td>
+  </tr>
+  <tr>
+    <td>BufferWithCount</td>
+    <td>IxのBufferと同じ、次のアップデートでBufferに改称予定</td>
+  </tr>
+  <tr>
+    <td>CascadeBreadthFirst</td>
+    <td>幅優先探索でシーケンスを再帰的に平らにする、IxのExpandと同じ</td>
+  </tr>
+  <tr>
+    <td>CascadeDepthFirst</td>
+    <td>深さ優先探索でシーケンスを再帰的に平らにする</td>
+  </tr>
+  <tr>
+    <td>Catch</td>
+    <td>IxのCatchと同じ</td>
+  </tr>
+  <tr>
+    <td>Choice</td>
+    <td>引数の配列、もしくは可変長引数をランダムに無限に列挙する生成子</td>
+  </tr>
+  <tr>
+    <td>Cycle</td>
+    <td>引数の配列、もしくは可変長引数を無限に繰り返す生成子</td>
+  </tr>
+  <tr>
+    <td>Do</td>
+    <td>IxのDoと同じ</td>
+  </tr>
+  <tr>
+    <td>Finally</td>
+    <td>IxのFinallyと同じ</td>
+  </tr>
+  <tr>
+    <td>Flatten</td>
+    <td>ネストされた配列を平らにする</td>
+  </tr>
+  <tr>
+    <td>Force</td>
+    <td>シーケンスを列挙する</td>
+  </tr>
+  <tr>
+    <td>ForEach</td>
+    <td>IxのForEachと同じ</td>
+  </tr>
+  <tr>
+    <td>From</td>
+    <td>配列やDOMなど長さを持つオブジェクトをEnumerableに変換、linq.jsの要の生成子</td>
+  </tr>
+  <tr>
+    <td>Generate</td>
+    <td>ファクトリ関数を毎回実行して値を作る無限シーケンス生成子、IxのGenerateとは違う(IxのGenerateはUnfoldで代用可)</td>
+  </tr>
+  <tr>
+    <td>IndexOf</td>
+    <td>指定した値を含む最初のインデックス値を返す</td>
+  </tr>
+  <tr>
+    <td>Insert</td>
+    <td>指定したインデックスの箇所に値を挿入、Insert(0, value)とすればIxのStartWithと同じ</td>
+  </tr>
+  <tr>
+    <td>LastIndexOf</td>
+    <td>指定した値を含む最後のインデックス値を返す</td>
+  </tr>
+  <tr>
+    <td>Let</td>
+    <td>自分自身を引数に渡し、一時変数を使わず自分自身に変化を加えられる</td>
+  </tr>
+  <tr>
+    <td>Matches</td>
+    <td>正規表現のマッチ結果をシーケンスとして列挙する生成子</td>
+  </tr>
+  <tr>
+    <td>MaxBy</td>
+    <td>IxのMaxByと同じ</td>
+  </tr>
+  <tr>
+    <td>MemoizeAll</td>
+    <td>IxのMemoizeと同じ、次のアップデートでMemoizeに改称予定</td>
+  </tr>
+  <tr>
+    <td>MinBy</td>
+    <td>IxのMinByと同じ</td>
+  </tr>
+  <tr>
+    <td>Pairwise</td>
+    <td>隣り合う要素とのペアを列挙</td>
+  </tr>
+  <tr>
+    <td>PartitionBy</td>
+    <td>キーで指定した同じ値が続いているものをグループ化する</td>
+  </tr>
+  <tr>
+    <td>RangeDown</td>
+    <td>指定個数のマイナス方向数値シーケンス生成子</td>
+  </tr>
+  <tr>
+    <td>RangeTo</td>
+    <td>指定した値まで(プラス方向、マイナス方向)の数値シーケンス生成子</td>
+  </tr>
+  <tr>
+    <td>RepeatWithFinalize</td>
+    <td>単一要素の無限リピート、列挙完了時にその要素を受け取る指定した関数を実行</td>
+  </tr>
+  <tr>
+    <td>Return</td>
+    <td>IxのReturnと同じ</td>
+  </tr>
+  <tr>
+    <td>Scan</td>
+    <td>IxのScanと同じ</td>
+  </tr>
+  <tr>
+    <td>Share</td>
+    <td>IxのShareと同じ</td>
+  </tr>
+  <tr>
+    <td>Shuffle</td>
+    <td>シーケンスをランダム順に列挙する</td>
+  </tr>
+  <tr>
+    <td>TakeExceptLast</td>
+    <td>IxのSkipLastと同じ</td>
+  </tr>
+  <tr>
+    <td>TakeFromLast</td>
+    <td>IxのTakeLastと同じ</td>
+  </tr>
+  <tr>
+    <td>ToInfinity</td>
+    <td>無限大までの数値シーケンス生成子</td>
+  </tr>
+  <tr>
+    <td>ToJSON</td>
+    <td>シーケンスをJSON文字列に変換(組み込みのJSON関数のあるブラウザかjson2.jsの読み込みが必要)</td>
+  </tr>
+  <tr>
+    <td>ToNegativeInfinity</td>
+    <td>マイナス無限大までの数値シーケンス生成子</td>
+  </tr>
+  <tr>
+    <td>ToObject</td>
+    <td>JSのオブジェクトに変換</td>
+  </tr>
+  <tr>
+    <td>ToString</td>
+    <td>文字列として値を連結</td>
+  </tr>
+  <tr>
+    <td>Trace</td>
+    <td>console.logで値をモニタ</td>
+  </tr>
+  <tr>
+    <td>Unfold</td>
+    <td>Aggregateの逆、関数を連続適用する無限シーケンス生成子</td>
+  </tr>
+  <tr>
+    <td>Write</td>
+    <td>document.writelnで値を出力</td>
+  </tr>
+  <tr>
+    <td>WriteLine</td>
+    <td>document.writeln + &lt;br /&gt;で値を出力</td>
+  </tr>
+</table>
+<table>
+  <tr>
+    <td>TojQuery</td>
+    <td>シーケンスをjQueryオブジェクトに変換</td>
+  </tr>
+  <tr>
+    <td>toEnumerable</td>
+    <td>jQueryの選択している複数の要素を単一要素のjQueryオブジェクトにしてEnumerableへ変換</td>
+  </tr>
+  <tr>
+    <td>ToObservable</td>
+    <td>引数のSchduler上で(デフォルトはCurrentThread)Observableへ変換</td>
+  </tr>
+  <tr>
+    <td>ToEnumerable</td>
+    <td>Cold ObservableのみEnumerableへ変換</td>
+  </tr>
+</table>
+<p>Ixと被るものもあれば、そうでもないものも。ToStringなどは分かりやすく便利でよく使うのではかと。ToJSONもいいですね。Fromは拡張メソッドのない/prototype汚染をしないための、JavaScriptだけのためのメソッド。Matchesは地味に便利です、JSの正規表現は使いやすいようでいて、マッチの列挙はかなり面倒くさいので、そこを解消してくれます。linq.jsは移植しただけ、ではあるんですが、同時に移植しただけではなくて、JavaScriptでLINQはどうあるべきか、どうあると便利なのか、という考えに基づいて調整されています。</p>
+<p>JavaScriptにはyield returnがないので(Firefoxにはyieldありますが)、シーケンスは全て演算子の組み合わせだけで表現できなければならない。というのが、手厚くメソッドを用意している理由でもあります。これだけあれば何だって作れるでしょう、きっと多分恐らく。</p>
+<h2>まとめ</h2>
+<p>これで今日からLINQ to Objectsマスター。Rx版もそのうち書きます(以前に<a href="http://neue.cc/2010/07/28_269.html" title="neue cc - Reactive Extensions入門 + メソッド早見解説表">Reactive Extensions入門 + メソッド早見解説表</a>を書きましたが、今は結構変わってしまいましたからね)。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0803_336.html">ToArray vs ToList</a></h1>
+<ul class="date"><li>2011-08-03</li></ul>
+<div class="entry_body"><p>LINQの結果は遅延評価なので、その場で全部評価して欲しかったりする場合などに使うToArrayとToList。どちらを使っていますか？私はToArrayのほうが好みです。と、いうのも、LINQで書く以上、長さは決まったようなものなので、これ以上AddやRemoveしたいことなんてほとんどない。勿論、必ずないとは言いませんので、その場合だけToListを使いますが、そうでない場合は、長さが固定だという意図を示すためにもToArrayが好ましい。</p>
+<h2>パフォーマンス</h2>
+<p>T[]やList&lt;T&gt;に変換されたあとだと、T[]のほうが、大体においてパフォーマンスは良い。という点でもToArrayがいいかなあ、と思うわけですが、それはさておき、ではToArrayとToListメソッドそれ自体のパフォーマンスはどちらのほうが良いでしょうか？理屈の上ではToListのほうが上です。というのも、変換処理は下記の図のようになっているからです。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/toarraytolist.jpg">
+</p>
+<p>元ソースがIEnumerable&lt;T&gt;である以上、長さは分からないので、ToArrayでも動的配列としていっぱいになったら二倍に拡大する、という動作を行うのはToListと変わりありません。この辺の話は<a href="http://chasen.org/%7Etaku/blog/archives/2007/02/_o1.html" title="きまぐれ日記: 動的配列への追加コストはなぜ O(1)?">動的配列への追加コストはなぜ O(1)?</a>や、<a href="http://www.kmonos.net/wlog/111.html#_2334100705" title="d.y.d.">２倍だけじゃない</a>を参考に。.NETは2倍です。そして、最後に拡大された配列の長さを整えるためコピーするのがToArray、そのまま渡すのがToList。つまり、ToArrayのほうが最後の一回のコピー動作が増えているわけです。</p>
+<p>でも、ベンチマークをとると、ToArrayのほうが速かったりします。</p>
+<pre><code class="language-csharp">// 適当さ溢れている（若干恣意的な）測り方なので、それはそれとしてくだしあ
+// ToArray:00:00:01.5002685
+// ToList :00:00:01.8124284
+var source = Enumerable.Range(1, 100000000);
+
+var sw = Stopwatch.StartNew();
+source.ToArray();
+Console.WriteLine(&quot;ToArray:&quot; + sw.Elapsed);
+GC.Collect();
+sw.Restart();
+source.ToList();
+Console.WriteLine(&quot;ToList:&quot; + sw.Elapsed);
+</code></pre>
+<p>へー、ToArrayのほうが速いんだー、ではなくて、要素数1億件でこの程度しかでないので、どうでもいい程度の差でしかないということです。ここ注意。こういう適当なマイクロベンチのマイクロな差で、こっちのほうが速いからこうしなければならない、これが最適化のための10箇条、みたいなことをやるのは間抜けだと思います。JavaScriptにはそういう記事があまりにも多すぎるとも思っています。</p>
+<p>それはともかく、何で理屈の上ではコピーが多いToArrayのほうが&quot;速い&quot;のか。それは中身をゴニョゴニョしてみてみれば分かりますが</p>
+<pre><code class="language-csharp">public static List&lt;T&gt; ToList&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    // ICollection&lt;T&gt;の場合はnew List&lt;T&gt;(source)の中で最適化されてます
+    // 最適化されない場合はforach(var item in source) this.Add(item) という感じ
+    return new List&lt;T&gt;(source)
+}
+
+// 実際のコードとは違います、あくまでイメージです
+public static T[] ToArray&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    // ICollection&lt;T&gt;の場合はCopyToで最適化
+    var collection = source as ICollection&lt;T&gt;;
+    if (collection!= null)
+    {
+        var dest = new T[collection.Count];
+        collection.CopyTo(dest, 0);
+        return dest;
+    }
+
+    // そうでないなら列挙して配列を伸ばしながら作る
+    var array = new T[4];
+    var count = 0;
+    foreach (var item in source)
+    {
+        if (array.Length == count)
+        {
+            var dest = new T[count * 2];
+            Array.Copy(array, dest, count);
+            array = dest;
+        }
+        array[count++] = item;
+    }
+
+    // 生成したものと長さが同じならそのまま返す
+    if (array.Length == count) return array;
+
+    // そうでないなら長さを整えてから返す
+    var result = new T[count];
+    Array.Copy(array, result, count);
+    return result;
+}
+</code></pre>
+<p>これだけだとよくわからない？うーん、そうですね。ToArrayの場合は配列を作る、それだけに最適化されていて余計なコードが一切ありません。反面、ToList、というかnew List&lt;T&gt;(source)は、内部では少し色々なものの呼び出し回数が多かったりしています。その辺のことが、コピー回数以上に「ほんの少しだけ」速度の差を生んでいるのではないかな、ということのようです。</p>
+<pre><code class="language-csharp">// パフォーマンスを一切考えないのならこれでいいのよね
+public static T[] ToArray&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    // 実際はreturn new Buffer&lt;T&gt;(source).ToArray();
+    return new List&lt;T&gt;(source).ToArray();
+}
+</code></pre>
+<p>理屈的にはこれでいいわけですが、実際はBuffer&lt;T&gt;クラスというものをinternalでもっていて、それはLINQで使うためだけに余計なものが一切ない動的配列で、LINQ to Objectsの各メソッドは、動的配列が必要な場合ではList&lt;T&gt;ではなく、そのBuffer&lt;T&gt;クラスを使っています。DRYはどうした、という気は少しだけしますが、まあ、ユーザーとしては速いに越したことはないです。</p>
+<h2>Array.Copy</h2>
+<p>ところで、Array.CopyやICollection&lt;T&gt;のCopyToって面倒くさいですよね、長さを持った空の配列を作って、渡さなければならないって。と、<a href="http://d.hatena.ne.jp/fezg00/20110802/1312267034" title="Array Copy - Memo+">Array Copy - Memo+</a>の記事を見て改めて思いましたが、しかし、一番よくあるケースである一次元配列のコピーならToArrayを使えばOKです。↑の実装イメージであるように、ちゃんとis asで判定して最適化してくれているので、LINQだとforeachで全部舐めるから遅いんじゃないかなー、と考えなくても大丈夫。</p>
+<h2>まとめ</h2>
+<p>今日、Twitterで間違ったこと投稿しちゃって恥ずかすぃかったので反省して書いた。まる。とりあえずToArray使えばいいです。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0727_335.html">Deep Dive AsEnumerable</a></h1>
+<ul class="date"><li>2011-07-27</li></ul>
+<div class="entry_body"><p>AsEnumerable、といったらLINQのAsEnumerableです。その挙動は、IEnumerable&lt;T&gt;へと型変換をします。それだけ、なので実に影が薄いのですが、それでいて奥深く使いこなしが求められる、はずなのですが陰が薄いので無視されている感がなきにしもあらずなので、しっかりと紹介したいと思います。</p>
+<h2>AsEnumerableの実装</h2>
+<p>実装は非常に単純明快で、中身ほとんど空っぽです。</p>
+<pre><code class="language-csharp">public static IEnumerable&lt;T&gt; AsEnumerable&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    return source;
+}
+</code></pre>
+<p>ようするにアップキャストです。どういう時に使えばいいかというと、例えば可変長引数とIEnumerable&lt;T&gt;の両方を受けたいオーバーロードを作る場合。</p>
+<pre><code class="language-csharp">public void Show(params string[] values)
+{
+    Show(values.AsEnumerable());
+}
+
+public void Show(IEnumerable&lt;string&gt; values)
+{
+    foreach (var item in values)
+    {
+        Console.WriteLine(item);
+    }
+}
+</code></pre>
+<p>foreachでグルグル値を取り出すだけなので、IEnumerable&lt;T&gt;で受けるようにしたい。でも利便性のため可変長引数も用意しておきたい。という場合はよくあります。なので毎回このオーバーロードを用意するんですが、その時に、こうしてAsEnumerableを使います。なお、AsEnumerableを忘れると無限に再帰してStackOverflowしてしまいます……。</p>
+<p>AsEnumerableがラップするのではなく、ただのアップキャストにすぎないということは重要です。以前に<a href="http://neue.cc/2009/07/21_178.html" title="neue cc - LinqとCountの効率">LinqとCountの効率</a>でも書きましたが、LINQの一部のメソッドはIList&lt;T&gt;であったりICollection&lt;T&gt;であるとき、asやisを使って最適化を図ります。foreachするだけだとあまり関係ないですが、受け取ったIEnumerable&lt;T&gt;を使ってLINQで処理する場合だと、このことが効いてきます。</p>
+<p>ならば常にアップキャストでよくて、ラップなど必要ないのではないか？というと必ずしもそうではありません。アップキャストは、ダウンキャストを可能にします。</p>
+<pre><code class="language-csharp">// アップキャストされている状態というのは
+var numbers = new List&lt;int&gt;().AsEnumerable();
+
+// ダウンキャストが可能にするということ、そして、ダウンキャストは危険
+var list = (List&lt;int&gt;)numbers;
+</code></pre>
+<p>ダウンキャストが危険だ、やるな、というのなら、そもそもアップキャストをすべきではない。抽象で受けることこそがオブジェクト指向だとか、形だけのパターンにはまってるとそうなる。原則は比較的シンプルで。メソッドのシグネチャにおいて、引数の型は最大に受け入れるため出来る限り抽象で、戻り値の型は最大に利用出来るようにするため具象にすればいい。ローカル変数に関しては、原則varでよし。どうしても必要ならば、ローカル変数側、つまりメソッドの利用側が安全なアップキャストで適宜、抽象で受ければよいでしょう。</p>
+<p>ダウンキャストはダメ基本的に。そして、ダウンキャストは可能な状態にすること自体がダメなので、アップキャストも最小限に。というのがメソッド定義の基本だと思っていますが、プロパティだと少し事情は変わってくるかも。一々ラップすることのパフォーマンスロスや手間を考えると、しかたがなくアップキャストで提供するのも、ありかなー、とは。</p>
+<h2>Hide</h2>
+<p>そんなわけで、具象型を消去して、完全にラップしてIEnumerable&lt;T&gt;として提供したいという場合もあるかと思います。そこで、Ix(Interactive Extensions、<a href="http://msdn.microsoft.com/en-us/data/gg577609" title="Reactive Extensions">Reactive Extensions</a>のオマケで提供されているEnumerableの拡張メソッド群、NuGetの<a href="http://nuget.org/List/Packages/Ix_Experimental-Main" title="NuGet gallery">Ix_Experimental-Main</a>で入れるのが手っ取り早い。Experimentalのとおり、まだ実験的な代物で保証されていないことは注意)にはHideというものがあります。これも実装は単純明快で</p>
+<pre><code class="language-csharp">public static IEnumerable&lt;T&gt; Hide&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    foreach (var item in source)
+    {
+        yield return item;
+    }
+}
+</code></pre>
+<p>といった形。Hideというメソッド名は具体的な型を隠す、といった意味合いで付けられているのでしょうね。</p>
+<h2>Rx(AsObservable)の場合</h2>
+<p>Enumerableと関連性の深いObservable、Rxにも同様に型変換をするAsObservableというメソッドが用意されています。主に使うシチュエーションは、Subjectの隠蔽をするときでしょうか。</p>
+<pre><code class="language-csharp">// 5秒後に非同期で値を返すというだけのもの
+public static IObservable&lt;T&gt; SendValueAfter5Seconds&lt;T&gt;(T value)
+{
+    var asyncSubject = new AsyncSubject&lt;T&gt;();
+
+    ThreadPool.QueueUserWorkItem(_ =&gt;
+    {
+        Thread.Sleep(TimeSpan.FromSeconds(5)); // とりまsleep
+
+        asyncSubject.OnNext(value); // AsyncSubjectのキャッシュへ値送信
+        asyncSubject.OnCompleted(); // 非同期処理完了の合図（ここでObserverに値が送られる）
+    });
+
+    return asyncSubject.AsObservable();
+}
+</code></pre>
+<p>このコード自体には何の意味もありません、非同期処理を模して、スレッドプールで5秒待って値を送る、というだけです。大事なのはAsyncSubjectをAsObservableして返していること。このAsObservableはただのアップキャストではなく、新しい型でラップして具象型(AsyncSubject)を隠しています。つまり、AsEnumerableではなくHideに等しい挙動です。ここで、もしAsObservableを書いていないと</p>
+<pre><code class="language-csharp">// return時にAsObservableが書かれていないとダウンキャスト可能になる
+var subject = (AsyncSubject&lt;int&gt;)SendValueAfter5Seconds(100);
+
+subject.Subscribe(Console.WriteLine);
+
+// なので、外側から発火可能になってしまう、これは最悪
+subject.OnNext(-1);
+subject.OnCompleted(); 
+</code></pre>
+<p>Subject（標準だと4種類ある）は、Rxにおけるイベントの表現です。C#でのイベントは、内部からは発火可能、外側からは購読しかできない。というようになっていると思います。その挙動にするために、また、純粋に安全性のために、Subjectを購読させるために外側に出す場合は、AsObservableでラップして型を消さなければなりません。</p>
+<p>※極初期(RxがReactive Frameworkと言われていた頃なぐらいに前)は、このAsObservableはHideというメソッド名でした。AsObservableのほうが分かりやすくて良いとは思いますが、Enumerableでの挙動と合わせるなら、キャストするだけのAsObservableとHideに分けるべきだったのでは？と思わなくは全くないです←Rxにおいてはただのキャストしただけのものは使う機会ないと思うので、現在の形で正解</p>
+<h2>IQueryableにおけるAsEnumerableの重要性</h2>
+<p>Enumerable、Observableと来たので、QueryableでのAsEnumerableも見てみましょう。QueryableにおけるAsEnumerableは、クエリ構築の終了です。IQueryableでのクエリ構築をそこで打ち切るというスイッチです。どういうことか、というと</p>
+<pre><code class="language-csharp">// とあるContextによるQueryableはSkipWhileとCountをサポートしていなかったとします
+var count = toaru.createContext() // IQueryeable&lt;T&gt;とする
+    .Where(x =&gt; x % 2 == 0)
+    .SkipWhile(x =&gt; x &lt; 100)
+    .Count(); // 未サポートなのでExceptionが来る！
+
+// そういう場合、ToListするといい、というアドバイスがよく上がります
+var count = toaru.createContext()
+    .Where(x =&gt; x % 2 == 0)
+    .ToList() // ここまでの式でクエリ生成+List化
+    .SkipWhile(x =&gt; x &lt; 100) // ここからはIEnumerable&lt;T&gt;
+    .Count();
+
+// でも、それならAsEnumerableでいいんだよ？
+var count = toaru.createContext()
+    .Where(x =&gt; x % 2 == 0)
+    .AsEnumerable() // 後続がGetEnumeratorを呼んだ時にここまででクエリ生成
+    .SkipWhile(x =&gt; x &lt; 100) // ここからはIEnumerable&lt;T&gt;
+    .Count();
+</code></pre>
+<p>Queryableの連鎖で、例えばLinq to SqlだったらSQL文を作っていきます。で、foreachであったりToListであったりをすると、SQLが作られて発行されてデータベースと通信されて。それって、どのタイミングでQueryableの中の式木がSQL文に変換されるかというと、GetEnumeratorが呼ばれた時、です。それはいつ呼ばれるの？というと、foreachされたりToListされたり、AsEnumerableしてその後のEnumerableのメソッドがGetEnumeratorを呼んだ、その時。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/quaryable_getenumerator_enumerable.jpg">
+</p>
+<p>こんな感じです。ToArrayやToListは、そこで実体化するので、メソッドチェーンの後続がIEnumerable&lt;T&gt;なのは当然のことですが、AsEnumerableがただのキャストにすぎないのに意味合いが変化するのは、拡張メソッドの解決の優先度のため。型がIQueryable&lt;T&gt;の状態だとWhereやSelectはQueryableのWhereやSelectが選択されますが、型がIEnumerable&lt;T&gt;の状態だとEnumerableのWhereやSelectが選択される、ということです。Enumerable自体は遅延評価なので、後続のIEnumerable&lt;T&gt;がGetEnumeratorを呼び出したときに評価が開始されるのは変わらず。</p>
+<p>AsEnumerableやToArray、ToListは実はQueryableクラスにはありません。なので、素の状態で拡張メソッドの解決がIEnumerable&lt;T&gt;側を呼び出すようになっています。</p>
+<p>ところでクエリ文の構築はGetEnumeratorが呼ばれた時と言いましたが、GetEnumeratorを呼ばないとき、例えばQueryableでのFirstやSumはどうなっているのかというと、内部でExecuteが呼ばれた時です。IQueryProviderはこんなインターフェイス。</p>
+<pre><code class="language-csharp">public interface IQueryProvider
+{
+    IQueryable&lt;TElement&gt; CreateQuery&lt;TElement&gt;(Expression expression);
+    TResult Execute&lt;TResult&gt;(Expression expression);
+    // 非ジェネリックなものもありますが省略
+}
+</code></pre>
+<p>FirstやSumなど、単独の結果を返すものは内部でExecuteを呼びます。なので、クエリプロバイダの実装次第ですが、通常はこのExecuteが呼ばれた時にクエリ文の構築と実行を同時に行うものと思われます。SelectやWhereなど、後続にIQueryableのチェーンを繋げるものは、内部でCreateQueryのほうを呼びます。そして最終的に複数の結果(IEnumerable&lt;T&gt;)を返す場合は、GetEnumeratorが呼ばれた時にクエリ文の構築と実行を行うものと思われます。</p>
+<h2>まとめ</h2>
+<p>AsEnumerableは、ようするにただのキャストなだけですが、その果たしている役割というものを考えると非常に深い。その割には(QueryableでToListばかり使われたりと)今ひとつ知名度に欠ける気もしますので、ドサッと紹介を書いてみました。ただのキャストだって語ろうと思えば幾らでも語れるLINQは素敵ですね！</p>
+</div>
+<h1><a href="http://neue.cc/2011/0725_334.html">DynamicObjectでより沢山の型情報を取る方法</a></h1>
+<ul class="date"><li>2011-07-25</li></ul>
+<div class="entry_body"><p><a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>のAsDynamicに少し不具合があったので、ver.1.5.0.0として更新しました。今まではメソッドの引数にnullを渡すと死んでました。ぬるぽ！まあしかし、引数そのもののからしかTypeが取れなかったので、nullだと、どのみちメソッドを特定するための型情報がないからオーバーロードの解決は不可能なので、仕様ですよ仕様、という言い訳。</p>
+<p>などとふざけたことを思っていたのですけれど、コンパイル時に決定される引数の型を取り出す方法が判明したので、そのへんも含めて完全に解決しました。やったね。その方法は、というと</p>
+<pre><code class="language-csharp">public override bool TryInvokeMember(InvokeMemberBinder binder, object[] args, out object result)
+{
+    var csharpBinder = binder.GetType().GetInterface(&quot;Microsoft.CSharp.RuntimeBinder.ICSharpInvokeOrInvokeMemberBinder&quot;);
+    if (csharpBinder == null) throw new ArgumentException(&quot;is not csharp code&quot;); // CSharpコードではない
+
+    // ジェネリックの型引数の取得(Hoge&lt;T&gt;(1, t)とかでのTのこと)
+    var typeArgs = (csharpBinder.GetProperty(&quot;TypeArguments&quot;).GetValue(binder, null) as IList&lt;Type&gt;).ToArray();
+    // コンパイル時に決定されているパラメータの型の取得
+    var parameterTypes = (binder.GetType().GetField(&quot;Cache&quot;, BindingFlags.NonPublic | BindingFlags.Instance).GetValue(binder) as Dictionary&lt;Type, object&gt;)
+        .First()
+        .Key
+        .GetGenericArguments()
+        .Skip(2)
+        .Take(args.Length)
+        .ToArray();
+    
+    // それらの情報からMethodInfoを特定する
+    var method = MatchMethod(binder.Name, args, typeArgs, parameterTypes);
+    // 呼び出し
+    result = method.Invoke(target, args);
+
+    return true; // 呼べてれば必ずTrueなので。
+}
+</code></pre>
+<p>……。ひどそうな匂いが！まず、素のままでは情報が足りなすぎるので、基本的にリフレクション全開です。その中でも、parameterTypesが今回追加したところです。binderのCacheに、CallSiteのデリゲート(dynamicを使って呼び出すと、コンパイル時にこの辺のものが自動生成される)があるので、そこから型情報を持ってこれることに気づいたのだ(ｷﾘｯ</p>
+<p>もう少し詳しく説明しますと</p>
+<pre><code class="language-csharp">// このヘンテツもないどうでもいいコードは
+dynamic d = null;
+var result = d.Hoge&lt;string, int&gt;(100, (string)null, (ICollection&lt;int&gt;)null);
+
+// コンパイル後はこんな結果に化けちゃいますあら不思議！
+object d = null;
+if (Program.&lt;Main&gt;o__SiteContainer0.&lt;&gt;p__Site1 == null)
+{
+	Program.&lt;Main&gt;o__SiteContainer0.&lt;&gt;p__Site1 = CallSite&lt;Func&lt;CallSite, object, int, string, ICollection&lt;int&gt;, object&gt;&gt;.Create(Binder.InvokeMember(CSharpBinderFlags.None, &quot;Hoge&quot;, new Type[]
+	{
+		typeof(string), 
+		typeof(int)
+	}, typeof(Program), new CSharpArgumentInfo[]
+	{
+		CSharpArgumentInfo.Create(CSharpArgumentInfoFlags.None, null), 
+		CSharpArgumentInfo.Create(CSharpArgumentInfoFlags.UseCompileTimeType | CSharpArgumentInfoFlags.Constant, null), 
+		CSharpArgumentInfo.Create(CSharpArgumentInfoFlags.UseCompileTimeType | CSharpArgumentInfoFlags.Constant, null), 
+		CSharpArgumentInfo.Create(CSharpArgumentInfoFlags.UseCompileTimeType | CSharpArgumentInfoFlags.Constant, null)
+	}));
+}
+object result = Program.&lt;Main&gt;o__SiteContainer0.&lt;&gt;p__Site1.Target(Program.&lt;Main&gt;o__SiteContainer0.&lt;&gt;p__Site1, d, 100, null, null);
+</code></pre>
+<p>細かい部分はどうでもいいので、良く分からないFuncが生成されてるんだな、というとこだけ見てもらえれば。さて、これを頭に入れた上で、DynamicObjectのTryInvokeMemberでbinderの奥底のCacheを探してみると、</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/binder_cache.jpg">
+</p>
+<p>このFunc6というものが、Func&lt;CallSite, object, int, string, ICollection&lt;int&gt;, object&gt;です、発見出来ました！これの型引数が、コード上での呼び出し時の型引数になるわけです。なお、第一引数はCallSite、第二引数はインスタンスなので無視してSkip(2)、そして引数の個数分だけTake(まあ、ようするに最後が戻り値の型なわけですが)。</p>
+<p>というわけで、実際に改善されたAsDynamicを使ってみますと、</p>
+<pre><code class="language-csharp">// こんな何のヘンテツもないオーバーロードのあるクラスがあるとして
+public class PrivateClass
+{
+    private string Hoge(IEnumerable&lt;int&gt; xs)
+    {
+        return &quot;enumerable&quot;;
+    }
+
+    private string Hoge(List&lt;int&gt; xs)
+    {
+        return &quot;list&quot;;
+    }
+}
+
+// 型はdynamicです←意地でもvarで書きたい人
+var mock = new PrivateClass().AsDynamic();
+
+// 型でオーバーロード分けが出来るようになった！
+List&lt;int&gt; list = new List&lt;int&gt;();
+IEnumerable&lt;int&gt; enumerable = new List&lt;int&gt;();
+
+(mock.Hoge(list) as string).Is(&quot;list&quot;);
+(mock.Hoge(enumerable) as string).Is(&quot;enumerable&quot;);
+</code></pre>
+<p>というわけで、より正確なオーバーロードの解決が図れるようになりました。何をアタリマエのことを言ってるんだお前は、と思うかもしれませんが、TryInvokeMemberに渡ってくる情報はobject[] argsなのです。args[0]の型はobjectなわけで、それをGetTypeしたら、出てくるのはList&lt;int&gt;なのです。何をどうやっても、.csファイルではIEnumerable&lt;int&gt;と書かれているという情報を得ることは出来なかったわけです、今までは。ましてやnullだったら型もヘッタクレもなかったわけです。でもこれからは違う。コード上のデータが取れる！</p>
+<p>などとツラツラと書いてみましたが、利用者的にはどうでもいい話ですね、はい。それに、リフレクションはいいとしても、Cacheって何よ？CacheのFirstが決め打ちなのって何よ？などなどは、ぶっちゃけよくわかっていなくて(だって全部internalだしね……)若干怖いのですが、まあ、多分、大丈夫でしょう、多分……。それと、まだ完璧じゃあなくてサポートしてないオーバーロードのケースが幾つかあります。とはいえ、ほとんどのシチュエーションでは問題ないのではかと思います。</p>
+<h2>まとめ</h2>
+<p>この<a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>ですが、私は結構普通に使いまくっていて、ないと死にます。激しく便利。そうそう、紹介しますと、 actual.Is(expected) と、メソッドチェーン形式で流れるようにアサーションが書けます。ラムダ式での指定やコレクションへの可変長引数など、ちょうどかゆいところに手が届く拡張を施してあって、随分とテストを書くのが楽になります。</p>
+<p>AsDynamicは、オマケ機能というか。privateなメソッドやプロパティ、フィールドにもdynamicを通してアクセス出来るように変換します。たまにしか使いませんが（MSTestにはPrivate Accessorがあるので）、あると便利よね、という時もそこそこあり。</p>
+<p>MSTestだけではなく、NUnitやMbUnit、xUnit.NETでも使えますので＆NuGet経由でも入れられますので、一度是非お試しを。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0709_333.html">非同期の再帰的な辿り方、或いはRxとC# 5.0 Asyncの連携について</a></h1>
+<ul class="date"><li>2011-07-09</li></ul>
+<div class="entry_body"><p>例えば、ページを辿る。何度もアクセスを繰り返して、辿る。非同期で。単純なようで、やってみると何気にこれが結構難しい。例としてコードレシピの<a href="http://code.msdn.microsoft.com/Reactive-ExtensionsTwitter-b8238b51">Reactive Extensionsを使用してTwitterから非同期にデータを取得し表示する</a>がありました。MVVMも絡めて、素晴らしいサンプルですね！</p>
+<p>というわけで、お題を拝借して、Twitter ApiのGET statuses/friendsを使わせて頂きます。んが、今回は、手を抜いてフォロワーのscreen_name(@hogehogeのhogehogeの部分)だけを取れれば良い、ということにします。JSON解析やデシリアライズも面倒だし話の本題でもないので省略するため、<a href="http://dynamicjson.codeplex.com/">DynamicJson</a>を使って、JSONを生のまんまっぽく扱うことにします。DynamicJsonは便利だなあ（棒）</p>
+<p>さて、まずTwitter APIのcursorですが、大体こんな風になっています。目的はカーソルを辿って全てのuser(に含まれるscreen_name)を集めること。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/twitter_nextcursor.jpg">
+</p>
+<p>JSON取得毎にnext_cursor_strという、次のページへのIDが取れるので、それを辿っていって、0が出たらページ末尾。といった具合です。next_cursor_strの値は一見ランダムに見える整数(2121409421とかそんな値になっている)であり、next_cursorという数字のものもあるのに、_strという文字列として得られるほうを使っています。何故かというと、<a href="http://d.hatena.ne.jp/tmyt/20101201/1291166929">TwitterのステータスIDが53bitを越えたお話 - tmytのらくがき</a>を参照ください。DynamicJsonでは数字(Number)はdoubleとして扱うので、_strのほうを使わないと、危ういわけです。</p>
+<p>まあ、ただのお題で本題な話ではないので、その辺は深く考えずそういうものなのだなあ、ぐらいで。</p>
+<h2>同期とyield returnと非同期</h2>
+<p>コードレシピのサンプルを見させて頂いたのですが、ネットワークアクセス部分がOpenReadなので、非同期&quot;ではない&quot;です。でも挙動は非同期だよ？というのは、Scheduler.ThreadPoolを使っているからなわけですが、つまるところ挙動的にはBackgroundWorkerを使って非同期にするのと同じことです。その場合ですと、Generateも確かに良いのですが、APIへのアクセスがそもそも同期であるならば、難しく考える必要はなく、yield returnを使ったほうが簡単です。単純なものは演算子の組み合わせで、複雑なものは素直に偉大なるコンパイラ生成(yield return)に頼る。そういう切り分けがLINQ的には大事かなって。</p>
+<pre><code class="language-csharp">static IEnumerable&lt;string&gt; EnumerateFriends(string screenName)
+{
+    var cursor = &quot;-1&quot;; // 初期値は-1から
+    while (cursor != &quot;0&quot;) // 0が出たら終了
+    {
+        var url = string.Format(&quot;http://api.twitter.com/1/statuses/friends.json?screen_name={0}&amp;cursor={1}&quot;,
+            screenName, cursor);
+        using (var stream = new WebClient().OpenRead(url))
+        {
+            var json = DynamicJson.Parse(stream); // 面倒くさいんでDynamicJson使いますよ:)
+            foreach (var item in json.users)
+            {
+                yield return item.screen_name; // screen_nameを列挙
+            }
+            cursor = json.next_cursor_str; // 次のカーソルにセット
+        }
+    }
+}
+
+static void Main()
+{
+    var friends = EnumerateFriends(&quot;neuecc&quot;).ToArray();
+}
+</code></pre>
+<p>すっきりと書けるのが分かると思います。え、これだとブロックしてしまって良くない？その通り。じゃあ非同期にしましょう。いえ、<a href="http://msdn.microsoft.com/en-us/data/gg577609" title="Reactive Extensions">Reactive Extensions</a>で簡単にできてしまいます。yield returnで生成されたEnumerableをObservableに変換するのは、ToObservableです。</p>
+<pre><code class="language-csharp">static void Main()
+{
+    EnumerateFriends(&quot;neuecc&quot;)
+        .ToObservable(Scheduler.ThreadPool) // ThreadPoolで実行！
+        .Subscribe(Console.WriteLine);
+        
+    Console.ReadLine(); // 終了してしまうからね
+}
+</code></pre>
+<p>ToObservableはデフォルトでは Scheduler.CurrentThread 上で実行されるため、同期的にブロックしますが(※Push型シーケンスだからといって必ずしも非同期とは限らない)、任意のものに変更することも可能です。今回はScheduler.ThreadPoolを指定したので、ThreadPool上で動くようになっています。そのため、ブロックされません。</p>
+<p>こういった書き方のほうが、コードがクリアになるし、IEnumerable&lt;T&gt;とIObservable&lt;T&gt;に両対応できてる、という柔軟性の点でも良いかと思います。また、BackgroundWorkerを使うよりも遥かに簡単ですよね。プログレス通知もなく、ただ処理をバックグラウンドでやりたい、というだけならば、Rxを使ったほうが楽チンです。プログレスが必要な場合は、Rxだとその辺の処理を作りこまなければならないので、素直にBackgroundWorkerを用いるのもいいかもしれません。私だったらRxをちょっと拡張してプログレス処理を作り込むほうを選ぶかな？その辺の話は<a href="http://neue.cc/2010/12/09_288.html" title="neue cc - Reactive ExtensionsとAsync CTPでの非同期のキャンセル・プログレス処理">Reactive ExtensionsとAsync CTPでの非同期のキャンセル・プログレス処理</a>を参照ください。</p>
+<p>また、Observable化するとPublishによる分配 - <a href="http://neue.cc/2010/04/29_255.html" title="neue cc - C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions">C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions</a>など、色々と応用な使い方が広がるのもメリットの一つと言えるでしょう。</p>
+<h2>Async CTP</h2>
+<p>今回は例がWPFなため、WebClientで同期的(OpenRead)に取ってしまいましたし、それでも全然問題ないわけですが、SilverlightとかWP7だったらこの手(同期でJSON取ってきてyield returnで返す)は使えません。同期のOpenReadがそもそもなくて、非同期のOpenReadAsyncしかないからね。どうしましょう？それだとyield returnが使えないのはモチロンのこと、Generateでもうまく動きません。もしページ番号がカーソルのように不定ではなく1,2,3...といった形で辿れたとしても、Observable.Rangeでやると、うまくいきません。非同期なので結果が帰ってくる時間が不定だからです。結果を取得してから次の結果を取得する、という形式にしないとダメなのです。</p>
+<p>ところでそもそも、同期的に書いたとしても、本来は書くのは大変なはずなのです。それが、yield returnというコンパイラ生成があるから簡単に書ける。ということは、そうです、非同期もコンパイラ生成してしまえばいいのです、ということで<a href="http://msdn.microsoft.com/en-us/vstudio/gg316360">Async CTP</a>で書きましょう。Async CTPはC# 5.0で入る、かもしれない、async/await構文を使えるようにするためのものです。コミュニティテクノロジープレビュー。ようするにベータ版ですね。</p>
+<pre><code class="language-csharp">// このコードはAsync CTP (SP1 Refresh)によるもので、将来的にも同じコードで動作することは保証しません
+async static Task&lt;List&lt;string&gt;&gt; EnumerateFriends(string screenName)
+{
+    var list = new List&lt;string&gt;();
+
+    var cursor = &quot;-1&quot;;
+    while (cursor != &quot;0&quot;)
+    {
+        var url = string.Format(&quot;http://api.twitter.com/1/statuses/friends.json?screen_name={0}&amp;cursor={1}&quot;,
+            screenName, cursor);
+        using (var stream = await new WebClient().OpenReadTaskAsync(url)) // await!
+        {
+            var json = DynamicJson.Parse(stream);
+            foreach (var item in json.users)
+            {
+                list.Add(item.screen_name); // yield returnの代わりに……
+            }
+            cursor = json.next_cursor_str;
+        }
+    }
+
+    return list;
+}
+</code></pre>
+<p>Async CTPは簡単に解説すると、awaitキーワードを使うと、本来非同期のものが同期のように書けるようになります。詳しくは<a href="http://ufcpp.net/study/csharp/sp5_async.html">非同期処理 (C# によるプログラミング入門)</a>を参照のこと。コード的にも見たように、差異はWebClientのOpenReadの部分を、await OpenReadTaskAsyncに変更しただけで、あとはまるっきり一緒です。非同期なんて簡単なものだね。と、言いたかったのですが、全部読み込んでListで返してるぢゃん……。これじゃEnumerateじゃないよ、yield returnじゃないの？これだと結果取得に時間かかるし、Takeなどを用いて、途中で止めることもできないし。あまりよくない。</p>
+<p>結論としては今のところどうやら無理ということで。asyncの返すものはTaskもしくはTask&lt;T&gt;でなければならない。いや、Task&lt;IEnumerable&lt;T&gt;&gt;を返してくれればいいぢゃん、await yield returnとか出来たら素敵ぢゃないのん？と思わなくもないというか、<a href="http://social.msdn.microsoft.com/Forums/en-ZW/async/thread/f7a42c29-4ee6-4a3c-b346-b3718e253dc0">普通にそういうリクエストも上がっている</a>のですが、それにはIAsyncEnumerable&lt;T&gt;のようなものと、それに対するコンパイラサポートが必要だよね、という返しでした。</p>
+<h2>Rx + Async</h2>
+<p>IAsyncEnumerable&lt;T&gt;、それってIObservable&lt;T&gt;で代替出来る話だよね。IObservable&lt;T&gt;は連続的な非同期を内包しているから。（※IObservable&lt;T&gt;は一つのインターフェイスであまりにも多くのものを表現出来てしまい、内部の状態が読みづらく(同期なのか非同期なのか、遅延なのか即時なのか)混乱を生みがちという問題もありますが……）。なので、Rxでやってみましょう。といっても、Rxで完全に自前でやるのは相当大変なので、Async CTPのサポートも併用します。これにより非同期の待機が同期的に書けるようになり、yield returnであったりlist.Addであったりの部分を、OnNextに置き換えるだけになります。</p>
+<p>Stable版のRxにはAsync CTP連携は入っていないのですが、Experimental(実験的)版には、awaitで待機出来る、というだけはなく、幾つかAsync CTPと連携できるメソッドが入っています。</p>
+<pre><code class="language-csharp">// ExperimentalのRxのため、将来的にもこのコードが動作し続けることは保証しません
+static IObservable&lt;string&gt; EnumerateFriends(string screenName)
+{
+    // ラムダ式の中でasync書けることがポイント
+    return Observable.Create&lt;string&gt;(async (observer, cancelToken) =&gt;
+    {
+        try
+        {
+            var cursor = &quot;-1&quot;;
+            while (cursor != &quot;0&quot;)
+            {
+                if (cancelToken.IsCancellationRequested) return; // cancelをチェック
+
+                var url = string.Format(&quot;http://api.twitter.com/1/statuses/friends.json?screen_name={0}&amp;cursor={1}&quot;,
+                    screenName, cursor);
+                using (var stream = await new WebClient().OpenReadTaskAsync(url)) // await!
+                {
+                    var json = DynamicJson.Parse(stream);
+                    foreach (var item in json.users)
+                    {
+                        observer.OnNext(item.screen_name); // yield returnのかわりに
+                    }
+                    cursor = json.next_cursor_str;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            observer.OnError(ex);
+            return; // 例外発生時はOnErrorを呼んで終了
+        }
+
+        observer.OnCompleted(); // 例外発生もキャンセルもなく完了したなら、OnCompletedを呼ぶ
+    });
+}
+
+static void Main()
+{
+    EnumerateFriends(&quot;neuecc&quot;)
+        .Take(350) // 350件後にDisposeされてtokenがcancelになる
+        .Subscribe(
+            s =&gt; Console.WriteLine(s),
+            e =&gt; Console.WriteLine(&quot;error:&quot; + e),
+            () =&gt; Console.WriteLine(&quot;完了&quot;)); // Takeのほうから呼び出されるので、cancel扱いになっても表示される
+
+    Console.ReadLine();
+}
+</code></pre>
+<p>Observable.Create(RangeやGenerateなどの生成子、WhereやSelectなどの演算子の全てが使っている、本当のプリミティブの生成子)を使って、生のobserverでOnNext, OnError, OnCompletedの3つを制御してやります。Createやtry-catchの分、ネストが深くなってしまっていますが、コード自体は同期的に、yield returnを使って書いていたものとほとんど変わってないのが分かると思います。yield returnの部分にOnNextを置いた、それだけでそのまま置き換えられています。</p>
+<p>これならIObservable&lt;T&gt;でも十分に自動生成のサポートが効いていると言えなくもないですね。やってみて、結構満足できてしまった。パフォーマンス的にも、演算子をベタベタ組み合わせるのはあまり良くはならないので、こうしてasync/awaitと連携させて作れると、素直に書けるうえに、パフォーマンス向上も狙えるのが嬉しい。ただ、OnErrorやOnCompleted、キャンセル(Dispose)をどうするか。考慮する事項が多いので、ある程度分かっていないと大変かもしれません。全て考えておかないと、正しく動作しません。既存演算子の組み合わせだけで済ませられるなら、そういった考慮事項は演算子が受け持ってくれるので、考えなくて済むのですが……。どうしても演算子の組み合わせじゃうまく出来ない、逆に複雑になりすぎる、そういった時の奥の手、ぐらいに考えておくと良さそう。</p>
+<p>ところでasyncはメソッドの宣言だけでなく、ラムダ式の部分でも宣言できてawaitすることが出てきてしまうんですよね、ならば、同じようなコンパイラ生成であるyield returnも、現状は外部メソッドでしか使えないわけですが、以下のようにインラインでも使えるようになってくれると嬉しいなって。思ってしまうのです。</p>
+<pre><code class="language-csharp">// 妄想なので、現状はこれは出来ませんが！
+var infinity = Enumerable.Create(()=&gt;
+{
+    var num = 0;
+    while(true)
+    {
+        yield return num++;
+    }
+});
+</code></pre>
+<p>そんなもの散々突っ込み受けたですって？<a href="http://blogs.msdn.com/b/ericlippert/archive/2009/08/24/iterator-blocks-part-seven-why-no-anonymous-iterators.aspx">Iterator Blocks Part Seven: Why no anonymous iterators? - Fabulous Adventures In Coding</a>。ええ、知ってます。しかし、awaitなどで必要さの要請を受けて、コストとベネフィットが逆転するときが来た、と、思うのです。それに、VBでも、いや、なんでもない。</p>
+<h2>Expand</h2>
+<p>さて、ともかくAsync CTPは未来の話であり、現状手元にあるもので何とかする方法はないのだろうかというと、あります。ようするところ、再帰的に辿ってるわけですよね、cursorを。じゃあ、Expandです。Expandは<a href="http://neue.cc/2011/06/30_331.html">Reactive Extensions v1.0安定版リリース</a>でEnumerableバージョンのものを説明しましたが、Observableバージョンもあります。</p>
+<pre><code class="language-csharp">// 補助メソッド、Async CTPにはOpenReadTaskAsyncとか、そういうのがデフォで用意されてますが、
+// Rxにはないので、自前で用意しなきゃあいけないという、それだけの話です(ダウンロードしてストリングを返すだけのもの)
+public static class WebRequestExtensions
+{
+    public static IObservable&lt;string&gt; DownloadStringAsync(this WebRequest request)
+    {
+        return Observable.Defer(() =&gt; Observable.FromAsyncPattern&lt;WebResponse&gt;(
+                request.BeginGetResponse, request.EndGetResponse)())
+            .Select(res =&gt;
+            {
+                using (var stream = res.GetResponseStream())
+                using (var sr = new StreamReader(stream))
+                {
+                    return sr.ReadToEnd();
+                }
+            });
+    }
+}
+
+// ExpandはStable版にはまだ搭載されていないので、Experimental版を使ってください
+static IObservable&lt;string&gt; EnumerateFriends(string screenName)
+{
+    Func&lt;string, IObservable&lt;dynamic&gt;&gt; downloadJson = cursor =&gt;
+    {
+        var url = string.Format(&quot;http://api.twitter.com/1/statuses/friends.json?screen_name={0}&amp;cursor={1}&quot;,
+            screenName, cursor);
+        return WebRequest.Create(url).DownloadStringAsync().Select(DynamicJson.Parse);
+    };
+
+    return downloadJson(&quot;-1&quot;)
+        .Expand(d =&gt; (d.next_cursor_str == &quot;0&quot;)
+            ? Observable.Empty&lt;dynamic&gt;() // TakeWhileで判定すると最後の一つを取りこぼすので
+            : downloadJson(d.next_cursor_str))
+        .SelectMany(d =&gt; (dynamic[])d.users)
+        .Select(d =&gt; (string)d.screen_name);
+}
+</code></pre>
+<p>そこそこ直感的ではないでしょうか？最初 Expand().TakeWhile(next_cursor_str != &quot;0&quot;) と書いたのですが、それだと最後のページを取りこぼしてしまうのに気づいて、Emptyを投げる方針に変更しました。その辺、境界については注意を払わなきゃですね。</p>
+<p>そして、残念ながら、ExpandはRxのStable版にはまだない。ということはWP7にもないわけで。</p>
+<h2>再帰とRx</h2>
+<p>Stable版でもやりましょう。awaitなし、Expandなし。では、どうやって作りましょうか。うーん、再帰的というのなら、本当に再帰させてしまえばいいのではないか？</p>
+<pre><code class="language-csharp">static IObservable&lt;string&gt; EnumerateFriends(string screenName)
+{
+    Func&lt;string, IObservable&lt;dynamic&gt;&gt; downloadJson = null; // 再帰するにはこーして最初にnull代入
+    downloadJson = cursor =&gt;
+    {
+        var url = string.Format(&quot;http://api.twitter.com/1/statuses/friends.json?screen_name={0}&amp;cursor={1}&quot;,
+            screenName, cursor);
+        return WebRequest.Create(url)
+            .DownloadStringAsync()
+            .Select(DynamicJson.Parse) // ここまでExpandと共通
+            .SelectMany(json =&gt;
+            {
+                // Expandメソッドの中でやってることを大幅簡易化、ということです、つまるところ。
+                var next = (json.next_cursor_str == &quot;0&quot;)
+                    ? Observable.Empty&lt;dynamic&gt;()
+                    : downloadJson((string)json.next_cursor_str);
+                return (IObservable&lt;dynamic&gt;)Observable.StartWith(next, json);
+            });
+    };
+
+    return downloadJson(&quot;-1&quot;)
+        .SelectMany(d =&gt; (dynamic[])d.users) // ここからもExpandと共通
+        .Select(d =&gt; (string)d.screen_name);
+}
+</code></pre>
+<p>これを再帰というには、あまり再帰してないのですが、まあ雰囲気雰囲気。Expandと大体共通です。つまるところ、Expandを自前で作る、のは結構大変なので、Expandのように汎用的ではなく、特化したものをその場で作る、といった程度の代物。そうすれば、少しは簡単に用意できます。</p>
+<h2>まとめ</h2>
+<p>同期でListに格納するだけなら簡単。遅延でやるのもyield returnのお陰で簡単。非同期で辿るのは難しい。awaitで複数の値をyield的に列挙するのは現状難しい。Rxとawaitの連携は大変素晴らしい。Expandは便利。なければないで何とかなる。でもやっぱ大変。</p>
+<p>一見簡単なことが存外難しいってのはいくないですね。一見簡単なら、簡単なままでできないと。Expandも悪くはないんですけど、中々どうして慣れてないと分かりづらい。しかし、将来のC#には十分期待できそう。と、思いました、まる。あとRxとAsyncは全然仲良しなんですよ～、というところです。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0706_332.html">Rxでのイベント変換まとめ - FromEvent vs FromEventPattern</a></h1>
+<ul class="date"><li>2011-07-06</li></ul>
+<div class="entry_body"><p><a href="http://msdn.microsoft.com/en-us/data/gg577609">Reactive Extensions</a>の機能の一つに.NETにおけるイベントをIObservable&lt;T&gt;に変換する、というものがあります。<a href="http://msdn.microsoft.com/en-us/library/hh242978(v=VS.103).aspx">Bridging with Existing .NET Events</a>。そして、そのためのメソッドがFromEventでした。ところが最近のRxでは二つ、FromEventとFromEventPatternが用意されています。この差異は何なのでしょうか？</p>
+<p>結論としては、過去のRx(このサイトの古い記事や他のサイトの過去の記事などで触れられている)やWindows Phone 7でのFromEventはFromEventPatternに改名されました。後続にEventPatternという(object Sender, TEventArgs EventArgs)を持つ.NETのイベントの引数そのものを渡すものです。そして、空席になったFromEventに新しく追加されたFromEvent(紛らわしい！)は、EventArgsだけを送ります。それ以外の差異はありません。</p>
+<p>つまるところFromEventは FromEventPattern.Select(e =&gt; e.EventArgs) ということになります。なら、それでいいぢゃん、何も混乱を生む(WP7のFromEventがFromEventPatternである、というのは致命的よねえ)ことはないよ、とは思うのですが、パフォーマンスの問題でしょうかね。確かに、Senderは必要なく使うのはEventArgsだけの場合が多い。それなのに、毎回EventPatternを生成していたり、Selectというメソッド呼び出しが入るのは無駄です。</p>
+<p>そもそもインスタンスに対してFromEventで包むということは、クロージャでsenderは変数としていつでもどこでも使えてしまうのですよね、そもそも、そもそも。そういう意味でも送られてくるのはEventArgsだけでいいのであった。というわけで、基本的にはFromEventでいいと思います。</p>
+<h2>FromEventPatternについて</h2>
+<p>では、改めてFromEventPatternを復習します(WP7の人はFromEventで考えてください)。<a href="http://msdn.microsoft.com/en-us/library/hh229705(v=VS.103).aspx">Observable.FromEventPattern(TEventArgs) Method (Object, String) (System.Reactive.Linq)</a>にサンプルコードがあるのですけれどね。そうそう、MSDNのリファレンスには、一部のメソッド/一部のオーバーロードにはサンプルコードがあります。全部ではないのがミソです、見て回って発掘しましょう。まあ、というわけで、とりあえずそのFileSystemWatcherで。</p>
+<pre><code class="language-csharp">// FileSystemWatcherは指定フォルダを監視して、変化があった場合にイベントを通知します
+// 例えばCreatedイベントはファイルが作成されたらイベントが通知されます
+var fsw = new FileSystemWatcher(@&quot;C:\&quot;, &quot;*.*&quot;) { EnableRaisingEvents = true };
+
+// FromEventPatternその1、文字列でイベント名指定
+Observable.FromEventPattern&lt;FileSystemEventArgs&gt;(fsw, &quot;Created&quot;)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+
+// FromEventPatternその2、静的なイベントをイベント名指定(WP7にはない)
+Observable.FromEventPattern&lt;ConsoleCancelEventArgs&gt;(typeof(Console), &quot;CancelKeyPress&quot;)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.SpecialKey));
+</code></pre>
+<p>一番馴染み深いと思うのですが、文字列でイベント名を指定するものです。その2のほうはあまり見ないかもしれませんが、静的イベントに対しての指定も可能です。これら文字列指定によるメリットは、比較的シンプルであること。デメリットは、リフレクションを使うので若干遅い・スペルミスへの静的チェックが効かない・リファクタリングが効かない、といった、リフレクション系のデメリットそのものとなります。</p>
+<p>リフレクションしかないの？というと、勿論そんなことはありません。</p>
+<pre><code class="language-csharp">// FromEventPatternその3、EventHandlerに対する変換
+var current = AppDomain.CurrentDomain;
+Observable.FromEventPattern(h =&gt; current.ProcessExit += h, h =&gt; current.ProcessExit -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs));
+
+// FromEventPatternその4、EventHandler&lt;T&gt;に対する変換
+Observable.FromEventPattern&lt;ContractFailedEventArgs&gt;(
+        h =&gt; Contract.ContractFailed += h, h =&gt; Contract.ContractFailed -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.Message));
+
+// FromEventPatternその5、独自イベントハンドラに対する変換
+Observable.FromEventPattern&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; new FileSystemEventHandler(h),
+        h =&gt; fsw.Created += h,
+        h =&gt; fsw.Created -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+</code></pre>
+<p>イベントの登録と削除を行うためのラムダ式を渡してやります。その3とその4は比較的分かりやすいのではないでしょうか。その5の第一引数が謎いのですが、これはconversionです。C#の型システムの都合上、そのまんまだと独自イベントハンドラを処理出来ないので、型を変換してやる必要があるという定型句。</p>
+<p>数あるFromEventPatternのオーバーロードの中で、一番多く使うのはその5だと思います。何故なら、C#のイベントは独自イベントハンドラになっていることが多いから。はっきしいって、最低です。EventHandler&lt;T&gt;を使ってくれてさえいれば、こんな苦労はしなくて済むというのに。独自イベントハンドラは100害あって一利なし。え、WPFとか.NET標準がイベントハンドラは独自のものを使ってる？それは、WPFが悪い、.NET設計の黒歴史、悪しき伝統。</p>
+<p>それと、もはや独自デリゲートも最低です。FuncやActionを使いましょう。C#のデリゲートはメソッドの引数や戻り値が一致していようが、型が違ったら別のものとして扱われます。そのことによる不都合は、↑で見たように、あるんです。極力ジェネリックデリゲートを使いましょう。そうすれば、こんな腐った目に合わなくても済みます。</p>
+<p>ところで、その5は、もう少しだけ記述が短くなります。</p>
+<pre><code class="language-csharp">// FromEventPatternその5、第一引数別解、こう書くと短くて素敵
+Observable.FromEventPattern&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; h.Invoke,
+        h =&gt; fsw.Created += h,
+        h =&gt; fsw.Created -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+</code></pre>
+<p>h.Invoke。というのは、割とhそのものなわけですが、しかしInvokeと書くことで型が変換されます。この辺はコンパイラの都合上のマジックというか何というか。そういうものだと思えばいいのではかと。その5のスタイルで書くときは、この書き方をすると良いと思います。で、まだオーバーロードがあって</p>
+<pre><code class="language-csharp">// その6
+Observable.FromEventPattern&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; fsw.Created += h, h =&gt; fsw.Created -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+</code></pre>
+<p>conversionが不要で書けたりもします。一見素晴らしい、のですが、これ、中でなにやってるかというとconversionに相当するものをリフレクションで生成してるだけだったりして。そのため、なるべくconversionを使うオーバーロードのほうを使ったほうがよいでしょう。h =&gt; h.Invokeを書くだけですしね。このオーバーロードは紛らわしいだけで存在意義が不明すぎる。</p>
+<h2>FromEventについて</h2>
+<p>と、長々と見てきましたが、ではFromEventのほうも。</p>
+<pre><code class="language-csharp">// FromEvent
+Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; (sender, e) =&gt; h(e),
+        h =&gt; fsw.Created += h,
+        h =&gt; fsw.Created -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.FullPath));
+
+// FromEventPatternその5(比較用)
+Observable.FromEventPattern&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; (sender, e) =&gt; h(sender, e),
+        h =&gt; fsw.Created += h,
+        h =&gt; fsw.Created -= h)
+    .Select(e =&gt; e.EventArgs)
+    .Subscribe(e =&gt; Console.WriteLine(e.FullPath));
+</code></pre>
+<p>というわけで、FromEventPatternのその5に近いわけですが、conversionでEventArgsしか渡していない、という点が差異ですね。なので、後続にはsenderが伝わってこず、EventArgsしか通りません。まあ、senderは、↑の例ですとfswでどこでも使えるので、そもそも不要なわけで、これで良いかと思います。</p>
+<p>ところでFromEventも色々なオーバーロードがあるにはあるんですが、私の頭では存在意義が理解できなかったので無視します。挙動とかは理解したんですが、なんというか、存在する必要性、有効な利用法がさっぱり分からなかったのです……。まあ、多分、あんま意味ないと思うので気にしないでもいいかと。</p>
+<h2>拡張メソッドに退避させよう</h2>
+<p>FromEventにせよFromEventPatternにせよ、長いです。長い上に定型句です。なので、拡張メソッドに退避させると、スッキリします。例えば、今まで見てきたFileSystemWatcherだったら</p>
+<pre><code class="language-csharp">// .NETのFromEventなら IObservable&lt;TEventArgs&gt;
+// .NETのFromEventPatternなら IObservable&lt;EventPattern&lt;TEventArgs&gt;&gt;
+// WP7のFromEventなら IObservable&lt;IEvent&lt;TEventArgs&gt;&gt;
+// を返す拡張メソッド群を用意する。
+// 命名規則はイベント名AsObservableがIntelliSenseの順序的にお薦め
+public static class FileSystemWatcherExtensions
+{
+    public static IObservable&lt;FileSystemEventArgs&gt; CreatedAsObservable(this FileSystemWatcher watcher)
+    {
+        return Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; watcher.Created += h, h =&gt; watcher.Created -= h);
+    }
+
+    public static IObservable&lt;FileSystemEventArgs&gt; DeletedAsObservable(this FileSystemWatcher watcher)
+    {
+        return Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; watcher.Deleted += h, h =&gt; watcher.Deleted -= h);
+    }
+
+    public static IObservable&lt;RenamedEventArgs&gt; RenamedAsObservable(this FileSystemWatcher watcher)
+    {
+        return Observable.FromEvent&lt;RenamedEventHandler, RenamedEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; watcher.Renamed += h, h =&gt; watcher.Renamed -= h);
+    }
+
+    public static IObservable&lt;FileSystemEventArgs&gt; ChangedAsObservable(this FileSystemWatcher watcher)
+    {
+        return Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; watcher.Changed += h, h =&gt; watcher.Changed -= h);
+    }
+}
+</code></pre>
+<pre><code class="language-csharp">var fsw = new FileSystemWatcher(@&quot;C:\&quot;, &quot;*.*&quot;) { EnableRaisingEvents = true };
+
+// 例えば、ただ変更をロギングしたいだけなんだよ、という場合の結合
+// FromEventを外出ししていることによって、すっきり書ける
+Observable.Merge(
+        fsw.CreatedAsObservable(),
+        fsw.DeletedAsObservable(),
+        fsw.ChangedAsObservable(),
+        fsw.RenamedAsObservable())
+    .Subscribe(e =&gt; Console.WriteLine(e.ChangeType + &quot;:&quot; + e.Name));
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/fsw_intellisense.jpg">
+</p>
+<p>といった形です。また、普通に+-でのイベント以外のものへの登録も可能です。例えば</p>
+<pre><code class="language-csharp">// LayoutRootはWPFの一番外枠の&lt;Grid Name=&quot;LayoutRoot&quot;&gt;ということで。
+Observable.FromEvent&lt;MouseButtonEventHandler, MouseButtonEventArgs&gt;(
+        h =&gt; (sender, e) =&gt; h(e),
+        h =&gt; LayoutRoot.AddHandler(UIElement.MouseDownEvent, h),
+        h =&gt; LayoutRoot.RemoveHandler(UIElement.MouseDownEvent, h))
+    .Subscribe(e =&gt; Debug.WriteLine(e.ClickCount));
+</code></pre>
+<p>こんな形のものもObservable化が可能です。</p>
+<h2>イベントの解除</h2>
+<p>Subscribeの戻り値はIDisposableで、Disposeを呼ぶことでイベントが解除されます。</p>
+<pre><code class="language-csharp">// アタッチ
+var events = Observable.Merge(
+        fsw.CreatedAsObservable(),
+        fsw.DeletedAsObservable(),
+        fsw.ChangedAsObservable(),
+        fsw.RenamedAsObservable())
+    .Subscribe(e =&gt; Console.WriteLine(e.ChangeType + &quot;:&quot; + e.Name));
+
+// デタッチ(合成などをしていて、元ソースが複数ある場合も、すべて解除されます)
+events.Dispose();
+</code></pre>
+<p>Rxのこの仕組みは、従来に比べて圧倒的にイベントの解除がやりやすくなっていると思います。</p>
+<h2>まとめ</h2>
+<p>非同期の説明ばかりしてきていて、イベントはすっかり置き去りだったことを、まずはゴメンナサイ。少し前からFromEvent周りは大きな仕様変更が入ったわけですが、ようやくまともに解説できました。基本中のキの部分であるここが、過去のリソースがそのまま適用出来ないという最悪の自体に陥っていたので、とりあえずこれで何とか、でしょうかどうでしょうか。</p>
+<p>小さなこととはいえ、WP7との互換性が絶えているのが痛いのですが、その辺どうにかならなかったのかねー、とは思います。けれど、このEventArgsだけ送るFromEvent自体は良いと思います。 .Select(e =&gt; e.EventArgs) が定型句だったので、こういった変更は喜ばしい限り。それと、今まで思っていた、ぶっちゃけラムダ式とかRxでイベント登録するならsenderって不要じゃね？に対する答え(その通りで、完全に不要)を出してくれたのが嬉しい。</p>
+<p>さて、変換できるのはいいけれど、じゃあどこで使うのがいいの？という話がいつもありません。次回は、時間周りと絡めて、その辺のお話が出来ればと思いますが、いつも次回予告が達成されたことはないので、別のことを書くでしょう←ダメぢゃん。</p>
+</div>
+<a href="./publish/2011/">Prev |</a>
+<a href="./publish/2011/3">| Next</a>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

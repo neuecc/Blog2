@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - l2o.js 世界最速分解解説</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2011/0117_296.html">l2o.js 世界最速分解解説</a></h1>
+<ul class="date"><li>2011-01-17</li></ul>
+<div class="entry_body"><p>l2o.js、でググっても何も出てきませんね！じゃあl2o.jsって何？って話なのですが、その前に、<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896" title="Reactive Extensions for .NET (Rx)">Reactive Extensions</a>が12/24にChristmas Releaseと称してリリースされたわけで、RxJSにも若干更新が入っていました。</p>
+<pre><code class="language-text">· Fix for scheduling in the Concat, Catch, and OnError operators.
+· If operator can now be used without supplying an “else” case.
+</code></pre>
+<p>特に大したこともないわけでしたが。しかし、インストールディレクトリである Microsoft Cloud Programmability\Reactive Extensions\v1.0.2838.0\RX_JS を見ると、l2o.jsという見慣れないものが……？</p>
+<p>l2o.js、つまり、Linq 2 Objects.js。ええ、ええ……。linq.jsとモロにガチにかちあいそうな匂いがします。RxJS全然更新しないなあ、やる気あんのかよお、JVGoghも辞めちゃったしー、とか思っていたのですが、その裏でこっそりとんでもないものを仕込んでいたようです。いざ出てみると、むしろやらなかったのが不思議なぐらいな。</p>
+<p>では、使ってみましょう。ついでに<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js</a>と比較しましょう。</p>
+<pre><code class="language-javascript">var array = [12, 21, 4, 5, 36, 3, 10];
+
+// l2o.js
+L2O.Enumerable.FromArray(array)
+    .Where(function (x) { return x % 2 == 0 })
+    .Select(function (x) { return x * x })
+    .ForEach(function (x) { alert(x) }); // 144, 16, 1296, 100
+
+// linq.js
+Enumerable.From(array)
+    .Where(function (x) { return x % 2 == 0 })
+    .Select(function (x) { return x * x })
+    .ForEach(function (x) { alert(x) }); // 144, 16, 1296, 100
+</code></pre>
+<p>名前空間はL2Oから。そこにRange, Repeat, FromArrayなどなどの生成子があり、あとはメソッドチェーンでクエリ演算子があり。linq.jsと完全に一致。……これはlinq.jsｵﾜﾀ。</p>
+<p>いや待て。私がlinq.jsを作ったときには既に3つぐらいLinq to Objectsライブラリはあったけれど、それのどれにも不満があったから、自分で作ったわけで、同じように書けるからといって内部のクオリティが保証されているわけではない。Rxチームが作ってるからといって生半可なものだったら許さんぞ、と、いうわけで中身を覗いてみました。</p>
+<p>Minifyされてますが、改行/インデント整形を施すだけで十分読めます。変数難読化が入っても、構造がシンプルなので全然読める。と、いうか、そうして普通に読めるのは、linq.jsと構造がまるっきり一緒だからですが。……。一緒ですが。一緒ですねこれ。そりゃC#の忠実移植を目指して作ったlinq.jsなわけなので、l2o.jsも同じ目標に向かってるだろうから一緒になるのは当然なのですが当然すぎてlinq.jsの存在意義ががが。</p>
+<p>中身をチラッと見てみましょう。Selectを、Minifyされていたので変数名は私の方で付け直しました。</p>
+<pre><code class="language-javascript">// l2o.js
+L2O.Enumerable.prototype.Select = function (selector)
+{
+    var source = this;
+
+    return L2O.Enumerable.Create(function ()
+    {
+        var current, count = 0, enumerator;
+
+        return L2O.Enumerator.Create(
+            function () // MoveNext
+            {
+                if (enumerator === void 0) // initialize
+                {
+                    enumerator = source.GetEnumerator()
+                }
+                if (!enumerator.MoveNext())
+                {
+                    return false
+                }
+                current = selector(enumerator.GetCurrent(), count++);
+                return true
+            },
+            function () { return current }, // GetCurrent
+            function () { enumerator.Dispose() }) // Dispose
+    })
+}
+
+// linq.js
+Enumerable.prototype.Select = function (selector)
+{
+    var source = this;
+    selector = Utils.CreateLambda(selector);
+
+    return new Enumerable(function ()
+    {
+        var enumerator;
+        var index = 0;
+
+        return new IEnumerator(
+            function () { enumerator = source.GetEnumerator(); }, // Initialize
+            function () // MoveNext &amp; Current
+            {
+                return (enumerator.MoveNext())
+                    ? this.Yield(selector(enumerator.Current(), index++))
+                    : false;
+            },
+            function () { Utils.Dispose(enumerator); }) // Dispose
+    });
+}
+</code></pre>
+<p>完全に一致。linq.jsのほうでは、MoveNextのほうに定型句のようにif(enumerator === undefined){初期化処理}を書くのが嫌だったので、そもそも別関数として隔離、Currentはどうせキャッシュを返すだけなのだから省略してMoveNextと統合させてしまえ(this.Yieldというメソッドがその辺を受け持ってる、yield returnっぽく)とか、細々としたのを入れていますが、実質的には一緒です。</p>
+<p>なお、この辺の<a href="http://neue.cc/2011/01/13_295.html" title="neue cc - LINQの仕組みと遅延評価の基礎知識">Linq to Objectsの仕組み</a>は、先日紹介しましたが、JSでも一緒です。Selectなど拡張メソッは、以前の物(this = source)を内包したうえで、新しいオブジェクト(new Enumerable)を返し、GetEnumeratorによりEnumeratorを生成し、最初のMoveNextが呼ばれた時に初めて動作が始まる。</p>
+<h2>アルファ</h2>
+<p>現在l2o.jsはアルファ版というか、それ以前の状態と思われるので、今実践に投げ込むのはダメです。メソッド全然足りないしバグいっぱいあるし。具体的に挙げると、Rangeはこれだとオーバーフローしない？とかReverseが即時評価ですよー、とかDisposeが不徹底で機能してない場合がある、とか、いっぱい。</p>
+<p>メソッドは基本的なのしかありません。OrderByや、それと集合系がごっそり抜けているので、普通に使う分にも困るぐらいなので。まあ、集合系は(Dictionaryがないので)ちょっと実装が面倒ではある……。そのために私はDictionaryを導入しています。<a href="http://neue.cc/2010/05/18_258.html">neue cc - linq.js ver 2.1.0.0 - ToDictionary, Share, Let, MemoizeAll</a> というのはver2.1と、つい最近からで、それまではDictionary導入してないが故にバグ持ちだったんですよね、恐ろしや……。</p>
+<p>まあ、Script#からの生成だろうから、Dictionaryを持ってくるぐらいはお茶の子さいさいかもしれません。</p>
+<h2>まとめ</h2>
+<p>l2o.jsは、今はまだこんな風にやるよ、という骨組みを見せているだけに過ぎませんが、すぐに標準クエリ演算子は実装されるでしょう。勿論、歓迎すべきことです！私の心中が穏やかでないのもしょうがない話です！linq.jsはJSでのLinqライブラリでは最後発ですが、現在CodePlex調べでは、同種のライブラリで月々のDL数が最も多いところまで行きました。地道に続けていれば良いものはいつか認められる、という甘い幻想を少しだけ見させてもらったのですが（3/dayとか微々たるものな世界なのですけどね、そう考えるとLinqでJSというものは、今は需要が……。でも、ASP.NET MVCの普及と共に.NETerにJSでのでのLINQは、まだまだ需要が発生する余地はありますな)、公式で十分なクオリティのものが出てしまった以上は、ただある俺々ライブラリの一つとなる。</p>
+<p>とはいっても、公式では出来ないこと、出来ない付加価値は、まだまだ幾らでも足せるはずです！現時点でも無名関数の文字列ショートカット、WSH対応、vsdoc、大量の拡張メソッド、jQueryプラグイン化とやってきたし、これらは公式では出せないはず。で、まだネタはあります。今思っているのはClosure CompilerのAdvanced Optimizations対応、任意で配列のprototype拡張の追加、ですねえ。特に後者は、ちょっとしたことには大分便利になるはずだと思っています。</p>
+<p>あとは、もしかしたらlinq.jsがRxJSやl2o.jsに影響を与えたのではないか？と考えると、嬉しい話ですかねー。ふむふむ。ま、その辺も含めて今年のRx周りは激しく加速しそうですね。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

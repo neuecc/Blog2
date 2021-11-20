@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - BigQueryで数列生成とC#クラスからのTable生成とデータインサート</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2014/1005_480.html">BigQueryで数列生成とC#クラスからのTable生成とデータインサート</a></h1>
+<ul class="date"><li>2014-10-05</li></ul>
+<div class="entry_body"><p>連番を作りましょう！突然！SQL的なものを見ると、まず連番を作りたくなるのは<a href="http://codezine.jp/article/detail/1076">SQLで数列を扱う</a>からなのですが、というわけでBigQueryでも作りますし作れます。実際、Enumerable.Rangeはダイジですからね？また、地味にLINQ to BigQueryもver 0.3.3になってました。ひっそり。そんなわけで、LINQで書くと何が嬉しいのかPart2です。</p>
+<p>LINQ to BigQuery（やBigQuery）については、最初の記事<a href="http://neue.cc/2014/09/24_479.html">LINQ to BigQuery - C#による型付きDSLとLINQPadによるDumpと可視化</a>をどーぞ。</p>
+<h2>0-9を作る</h2>
+<p>TempTableにInsertというわけにもいかないので、まずは愚直にUNION ALLで並べましょう。BigQueryのUNION ALLはFromをカンマで並べること(ふつーのSQLとそこが違います）で、また、Subqueryも突っ込めます。ド単純に書くとこうなる。</p>
+<pre><code class="language-csharp">// 以下contextとでてきたらコレのこと
+var context = new BigQueryContext(/* BigqueryService */, /* projectId */);
+
+var seq = Enumerable.Range(0, 10).Select(x =&gt; context.Select(() =&gt; new { num  = x }));
+context.From(seq)
+    .Select(x =&gt; new { x.num })
+    .Run()
+    .Dump(); // DumpはLINQPadのDumpね。
+    
+// ↓で、こんなクエリが出てくる
+/*
+SELECT
+  [num]
+FROM
+(
+  SELECT
+    0 AS [num]
+),
+(
+  SELECT
+    1 AS [num]
+),
+// 以下9まで続くので（略） */
+</code></pre>
+<p>普通に動きはしますが、馬鹿っぽいですね！少しだけカッコヨク書いてみましょうか。どうやって列を増やすか、が割と課題なのですが、BigQueryではSplitを使って増やせます。</p>
+<pre><code class="language-csharp">// LINQPadでRun().Dump()って書くの面倒いのでまとめちゃう:)
+public static class MyExtensions
+{
+    public static QueryResponse&lt;T&gt; DumpRun&lt;T&gt;(this IExecutableBigQueryable&lt;T&gt; source)
+    {
+        return source.Run().Dump();
+    }
+}
+
+// SELECT query which references non constant fields or uses aggregation functions
+// or has one or more of WHERE, OMIT IF, GROUP BY, ORDER BY clauses must have FROM clause.
+context.Select(() =&gt; new { digit = BqFunc.Integer(BqFunc.Split(&quot;0123456789&quot;, &quot;&quot;))}).DumpRun();
+</code></pre>
+<p>怒られました！FROM句を含めないとSplitが使えないそーですなので、wordはサブクエリに分離しましょう。この辺は覚えられないので怒られたらそーいうものなんだ、って感じに対応していきましょふ。案外エラーメッセージは（親切な時は）親切です。親切じゃない時は何言ってるのか分からないエラーメッセージを吐いてきますが、まぁ7割ぐらいは分かりやすいエラーメッセージを吐いてくれます、偉い。</p>
+<pre><code class="language-csharp">context
+    .Select(() =&gt; new { word = &quot;0123456789&quot; })
+    .AsSubquery()
+    .Select(x =&gt; new { digit = BqFunc.Integer(BqFunc.Split(x.word, &quot;&quot;))})
+    .DumpRun();
+</code></pre>
+<p><img src="http://neue.cc/wp-content/uploads/image/bq_word_linqpad.jpg" alt="" /></p>
+<p>さすがにFROM句に並べまくるよりは、綺麗に書けてる感が出てる気がします！</p>
+<h2>0-99を作る</h2>
+<p>0-9が出来たら、あとは簡単に増やせます。ここはCROSS JOINです。0-9と0-9の直積を取ればおｋ。LINQでBigQueryを書くことの利点に変数にクエリを渡せて、合成可能という点が挙げられます（また、合成可能というのはLINQらしい感じさせるための重要な要素でもある）。0-9を変数に置いてやれば、コピペで同じSQLを書かないでも済みます。</p>
+<pre><code class="language-csharp">var digit = context.Select(() =&gt; new { word = &quot;0123456789&quot; })
+    .Into()
+    .Select(x =&gt; new { digit = BqFunc.Integer(BqFunc.Split(x.word, &quot;&quot;))});
+
+// これは動かないけどネ
+// Cannot query the cross product of repeated fields 
+digit.Into()
+    .JoinCross(digit, (d1, d2) =&gt; new { d1, d2 })
+    .Select(x =&gt; new { seq = x.d1.digit + x.d2.digit * 10 })
+    .DumpRun();
+</code></pre>
+<p>ネ。まぁこれは動かないんですけどネ。例によってエラーメッセージが出てから対処すればいいんですが、これはSplitで生成したカラムがrepeated fieldになってるのでcross joinできないよ、とのこと。FLATTENを使えば解決します。あとOrderByを忘れてるのでOrderByも足してやりましょうか。</p>
+<pre><code class="language-csharp">var digit = context.Select(() =&gt; new { word = &quot;0123456789&quot; })
+    .Into()
+    .Select(x =&gt; new { digit = BqFunc.Integer(BqFunc.Split(x.word, &quot;&quot;))})
+    .Into()
+    .Flatten(x =&gt; x.digit);
+    
+digit.JoinCross(digit, (d1, d2) =&gt; new { d1, d2 })
+     .Select(x =&gt; new { seq = x.d1.digit + x.d2.digit * 10 })
+     .OrderBy(x =&gt; x.seq)
+     .DumpRun();
+</code></pre>
+<pre><code class="language-sql">SELECT
+  ([d1.digit] + ([d2.digit] * 10)) AS [seq]
+FROM FLATTEN(
+(
+  SELECT
+    INTEGER(SPLIT([word], '')) AS [digit]
+  FROM
+  (
+    SELECT
+      '0123456789' AS [word]
+  )
+), [digit]) AS [d1]
+CROSS JOIN FLATTEN(
+(
+  SELECT
+    INTEGER(SPLIT([word], '')) AS [digit]
+  FROM
+  (
+    SELECT
+      '0123456789' AS [word]
+  )
+), [digit]) AS [d2]
+ORDER BY
+  [seq]
+</code></pre>
+<p><img src="http://neue.cc/wp-content/uploads/image/bq_seq_linqpad.jpg" alt="" /></p>
+<p>この辺まで来ると、圧倒的に手書きよりも捗るのではないでしょうか。というか、LINQならサクサク書けますが（エラー来たら、ああはいはいIntoね、みたいに対処するだけだし）、手書きSQLはシンドイ。むしろ無理。その上で、別に意図と全然違うクエリが吐かれるわけではない、というラインはキープされてると思います。</p>
+<p>それとネストが深くなるクエリはどう整形したらいいか悩ましいものなのですが(Stackoverflowには可読性ゼロのめちゃくちゃなインデントのBigQueryのクエリの質問が沢山転がっている！実際きちんと書くのむつかしい）、LINQ to BigQueryは、まぁまぁ読みやすい感じにきっちりフォーマットして出してくれます。若干冗長に思えるところもあるかもですが、まぁそこはルールなのだと思ってもらえれば。見やすいフォーマットといえるものにするため、微調整を繰り返したコダワリがあります。</p>
+<h2>パラメータを使う</h2>
+<p>もう一個LINQ to BigQueryのいいとこは、パラメータが使えるとこです。パラメータというか、クエリ文字列にたいして値を埋め込めるの。例えば</p>
+<pre><code class="language-csharp">// こんなメソッドを作るじゃろ
+Task&lt;string[]&gt; GetTitleBetweenRevision(int revisionIdFrom, int revisionIdTo, int limit)
+{
+    return context.From&lt;wikipedia&gt;()
+        .Where(x =&gt; BqFunc.Between(x.revision_id, revisionIdFrom, revisionIdTo))
+        .Select(x =&gt; x.title)
+        .Limit(limit)
+        .ToArrayAsync();
+}
+
+// こういうふうに使いますね、的な 
+var rows = await GetTitleBetweenRevision(1, 200, 100);
+</code></pre>
+<pre><code class="language-sql">-- 1と200が文字列置換なくSQLに埋め込まれる
+SELECT
+  [title]
+FROM
+  [publicdata:samples.wikipedia]
+WHERE
+  ([revision_id] BETWEEN 1 AND 200)
+LIMIT 100
+</code></pre>
+<p>その場でのクエリ書きには使いませんが、プログラムに埋め込んで発行する場合なんかは当然ながらあるといいですよね、と。文字列置換や組み立てはかなり手間かかるので、ずっとぐっと遥かに楽になれるかと思います。LINQなら条件によってWhereを足したり足さなかったり、みたいな書き方も簡単です。</p>
+<p>（この機能は0.3.1から入れました！アタリマエのように見えて、ExpressionTreeを操作する上で、地味に微妙に面倒くさいのですよー。とはいえ実用性考えるとこういうのないとアリエナイというか私が使ってて不便したんでようやっと入れました）</p>
+<p>クエリ書きに使うのに便利といえば日付の操作は圧倒的に楽になります。例えば昨日の20時というのをBigQueryだけでやると……</p>
+<pre><code class="language-csharp">context // 走査範囲を狭くするために適当に5日前ぐらいからのRangeにしてる
+    .From&lt;github_timeline&gt;(&quot;[githubarchive:github.timeline]&quot;).WithRange(TimeSpan.FromDays(5))
+    .Where(x =&gt; x.type==&quot;CreateEvent&quot; 
+        &amp;&amp; BqFunc.ParseUtcUsec(x.repository_created_at) &gt;= BqFunc.ParseUtcUsec(BqFunc.StrftimeUtcUsec(BqFunc.TimestampToUsec(BqFunc.DateAdd(BqFunc.UsecToTimestamp(BqFunc.Now()), -1, IntervalUnit.Day)), &quot;%Y-%m-%d 20:00:00&quot;))
+        &amp;&amp; x.repository_fork == &quot;false&quot;
+        &amp;&amp; x.payload_ref_type == &quot;repository&quot;)
+    .Select(x =&gt; x.repository_name)
+    .DumpRun();
+    
+// SQL
+SELECT
+  [repository_name]
+FROM
+  [githubarchive:github.timeline@-432000000-]
+WHERE
+  (((([type] = 'CreateEvent') AND (PARSE_UTC_USEC([repository_created_at]) &gt;= PARSE_UTC_USEC(STRFTIME_UTC_USEC(TIMESTAMP_TO_USEC(DATE_ADD(USEC_TO_TIMESTAMP(NOW()), -1, 'DAY')), '%Y-%m-%d 20:00:00')))) AND ([repository_fork] = 'false')) AND ([payload_ref_type] = 'repository'))
+</code></pre>
+<p>結構しんどいです。厄介な日付部分を取り出すと</p>
+<pre><code class="language-sql">PARSE_UTC_USEC(STRFTIME_UTC_USEC(TIMESTAMP_TO_USEC(DATE_ADD(USEC_TO_TIMESTAMP(NOW, -1, 'DAY')), '%Y-%m-%d 20:00:00'))))
+</code></pre>
+<p>ですからね！結構かなり絶望的……。これをC#のDateTimeで操作すれば</p>
+<pre><code class="language-csharp">// 今日から一日引いてその日付のみのほうを取って20時間足す
+var yesterday = DateTime.UtcNow.AddDays(-1).Date.AddHours(20);
+
+context
+    .From&lt;github_timeline&gt;(&quot;[githubarchive:github.timeline]&quot;).WithRange(TimeSpan.FromDays(5))
+    .Where(x =&gt; x.type==&quot;CreateEvent&quot; 
+        &amp;&amp; BqFunc.Timestamp(x.repository_created_at) &gt;= yesterday // ほら超スッキリに！
+        &amp;&amp; x.repository_fork == &quot;false&quot;
+        &amp;&amp; x.payload_ref_type == &quot;repository&quot;)
+    .Select(x =&gt; x.repository_name)
+    .DumpRun();
+    
+// 日付比較部分のSQLはこう出力される
+TIMESTAMP([repository_created_at]) &gt;= '2014-10-03 20:00:00.000000')
+</code></pre>
+<p>その場で書いてクエリ実行する分には、別に日付が埋め込まれようとNOW()からSQLで全部操作しようと変わらない話ですからね。楽な方でやればいいし、日付操作は圧倒的にC#で操作して持ってたほうが楽でしょう、明らかに。</p>
+<h2>Tableを作る、データを投げる</h2>
+<p>サンプルデータを扱ってるのもいいんですが、やっぱ自分でデータ入れたいですね、テーブル作りたいですね。基本的には(Google API SDKの)BigqueryServiceを使え！っていう感じなのですが、それはそれでやっぱりそれもプリミティブな感じなので、テーブル作成に関してはちょっとしたユーティリティ用意してみました。以下の様な感じで作れます。</p>
+<pre><code class="language-csharp">// DataTypeUtility.ToTableFieldSchemaでTableFieldSchema[]を定義から作れる
+// 匿名型を渡す以外に既存クラスだったら&lt;T&gt;やtypeof(T)を渡すのもOK
+// もちろん手でTableFieldSchema[]を作って渡すのも構わない
+new MetaTable(&quot;project_id&quot;, &quot;mydata&quot;, &quot;people&quot;)
+    .CreateTable(service, DataTypeUtility.ToTableFieldSchema(new
+    {
+        firstName = default(string), // STRING REQUIRED
+        lastName = default(string), // STRING REQUIRED
+        age = default(int?), // INTEGER NULLABLE
+        birth = default(DateTimeOffset) // TIMESTAMP REQUIRED
+    }));
+</code></pre>
+<p>Web Interfaceから作ると、「空のテーブルが作れない」「スキーマはなんかカンマ定義で指定してかなきゃいけなくてダルい」という点があって存外ダルいです。bqも同様。やはり時代はLINQPad、で作る。ちなみにSTRING NULLABLEはクラス定義から抽出するのが不可能だったので（こういうところが不便なのよね……）、まあTableFieldSchema[]を作ってから schemas[1].Mode = &quot;NULLABLE&quot; とでも書いてください。</p>
+<p>データの投下も同じようにMetaTableを作ってInsertAllAsyncで。</p>
+<pre><code class="language-csharp">// ExponentialBackOffを渡した場合はそれにのっとってリトライをかける
+await new MetaTable(&quot;project_id&quot;, &quot;mydata&quot;, &quot;people&quot;)
+    .InsertAllAsync(service, new[]
+    {
+        new { firstName = &quot;hoge&quot;, lastName = &quot;huga&quot;, age = 20, birth = new DateTime(2010,1,1,12,13,14, DateTimeKind.Utc)},
+        new { firstName = &quot;tako&quot;, lastName = &quot;bcbc&quot;, age = 30, birth = new DateTime(1983,3,1,10,33,24, DateTimeKind.Utc)},
+        new { firstName = &quot;oooo&quot;, lastName = &quot;zzzz&quot;, age = 45, birth = new DateTime(2043,1,3,11,4,43, DateTimeKind.Utc)},
+    }, new Google.Apis.Util.ExponentialBackOff(TimeSpan.FromMilliseconds(250), 5));
+</code></pre>
+<p>これでBigQueryのStreming Insertになります。ひどーきなので別テーブルに並走して書きたい場合は複数書いてWhenAllすれば高速で良いでしょふ。Streaming Insertはそんな頻繁、ではないですけれどそれなりに失敗することもあるので、引数にExponentialBackOff（これ自体はGoogle API SDKに含まれている）を渡せば<a href="http://en.wikipedia.org/wiki/Exponential_backoff">Exponential backoff</a>でリトライを試みます。</p>
+<h2>まとめ</h2>
+<p>基本的な機能は完全に実装完了したかなあ、という感じ。0.1 ~ 0.3.3の間に自分で使っててイラッとした細かい部分をチクチク修正してきましたが、そろそろ完全に満足！といったところです。不満ない！完璧！パーフェクち！というわけで、残るはRECORD型サポートに向けて改装すれば敵なし、LINQったらサイキョーね！</p>
+<p>な、わけですが、まぁ.NET + BigQueryというニッチに二乗かけたようなアレなので、興味関心、はあっても使ってみた！という人は少ないでしょう、というかいないでしょう、残念無念。でもBigQueryは本当に凄く良いので使ってみて欲しいんだなー。ビッグデータなんてアタクシには無縁、と思ってる人も、実は使い出、使いドコロって、絶対あります。まずはログを片っ端から突っ込んでみましょう、から始めてみませんか？</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - asyncの落とし穴Part2, SynchronizationContextの向こう側</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2013/0702_412.html">asyncの落とし穴Part2, SynchronizationContextの向こう側</a></h1>
+<ul class="date"><li>2013-07-02</li></ul>
+<div class="entry_body"><p>非同期QUIZの時間がやってきました！前回はデッドロックについてでしたが、今回はヌルポについて扱いましょう。まずは以下のコードの何が問題なのかを当ててください。ASP.NET MVCです。あ、.NET 4.5ね。</p>
+<pre><code class="language-csharp">public class HomeController : Controller
+{
+    async Task DoAsync()
+    {
+        await Task.Delay(TimeSpan.FromSeconds(3));
+    }
+
+    public ActionResult Index()
+    {
+        DoAsync();
+        return View();
+    }
+}
+</code></pre>
+<p>どこがダメで、どうすれば改善されるのかはすぐ分かると思います。「なにが起こるのか」「なぜ起こるのか」について、考えてみてください。おわり。</p>
+<p>さて、で、Ctrl+F5で実行すると、このコードは何の問題もなくふとぅーに動きます。一見何の問題もない。実際何の問題もない。オシマイ。</p>
+<p>というのもアレなので、何が起こっているのか観測します。まず、Global.asax.csに以下のコードを。</p>
+<pre><code class="language-csharp">protected void Application_Start()
+{
+    // ルーターの登録とか標準のものがこの辺に
+
+    Trace.Listeners.Add(new TextWriterTraceListener(@&quot;D:\log.txt&quot;));
+    Trace.AutoFlush = true;
+
+    System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (sender, e) =&gt;
+    {
+        Trace.WriteLine(e.Exception);
+    };
+}
+</code></pre>
+<p>で、本体はこんな風に。</p>
+<pre><code class="language-csharp">public class HomeController : Controller
+{
+    async Task DoAsync()
+    {
+        Trace.WriteLine(&quot;start&quot;); // 何か開始処理があるのだとする
+
+        await Task.Delay(TimeSpan.FromSeconds(3)); // 何か非同期処理してるとする
+
+        Trace.WriteLine(&quot;end&quot;); // 何か後処理があるのだとする
+    }
+
+    public ActionResult Index()
+    {
+        GC.Collect(); // GC自然発生待ちダルいので発動しちゃう
+
+        var _ = DoAsync(); // 非同期処理を&quot;待たない&quot;
+        return View();
+    }
+}
+</code></pre>
+<p>D:\log.txtは、まぁどこに吐いてもいいんですが、ちゃんと書き込み権限があるところに。んでは、実行しましょう。log.txtは、初回はまず、「start」と書かれます。つまり、endまで到達してないことが確認できます。二回目のアクセスではGC.Collectが走り、それによりUnobservedTaskExceptionが実行されます。で、log.txtには以下のものが書き込まれます。</p>
+<pre><code class="language-text">System.AggregateException: タスクの例外が、タスクの待機によっても、タスクの Exception プロパティへのアクセスによっても監視されませんでした。その結果、監視されていない例外がファイナライザー スレッドによって再スローされました。 ---&gt; System.NullReferenceException: オブジェクト参照がオブジェクト インスタンスに設定されていません。
+   場所 System.Web.ThreadContext.AssociateWithCurrentThread(Boolean setImpersonationContext)
+   場所 System.Web.HttpApplication.OnThreadEnterPrivate(Boolean setImpersonationContext)
+   場所 System.Web.HttpApplication.System.Web.Util.ISyncContext.Enter()
+   場所 System.Web.Util.SynchronizationHelper.SafeWrapCallback(Action action)
+   場所 System.Web.Util.SynchronizationHelper.&lt;&gt;c__DisplayClass9.&lt;QueueAsynchronous&gt;b__7(Task _)
+   場所 System.Threading.Tasks.ContinuationTaskFromTask.InnerInvoke()
+   場所 System.Threading.Tasks.Task.Execute()
+   --- 内部例外スタック トレースの終わり ---
+---&gt; (内部例外 #0) System.NullReferenceException: オブジェクト参照がオブジェクト インスタンスに設定されていません。
+   場所 System.Web.ThreadContext.AssociateWithCurrentThread(Boolean setImpersonationContext)
+   場所 System.Web.HttpApplication.OnThreadEnterPrivate(Boolean setImpersonationContext)
+   場所 System.Web.HttpApplication.System.Web.Util.ISyncContext.Enter()
+   場所 System.Web.Util.SynchronizationHelper.SafeWrapCallback(Action action)
+   場所 System.Web.Util.SynchronizationHelper.&lt;&gt;c__DisplayClass9.&lt;QueueAsynchronous&gt;b__7(Task _)
+   場所 System.Threading.Tasks.ContinuationTaskFromTask.InnerInvoke()
+   場所 System.Threading.Tasks.Task.Execute()&lt;---
+</code></pre>
+<p>おぅ！例外が発生していた！ぬるり！ぬるり！</p>
+<p>GC.Collectを実行している理由は、Taskに溜まった未処理例外は、GCが走ったタイミングでUnobservedTaskExceptionに渡されるので、それを待つ時間を短縮しているだけです。GC.Collectを明示的に実行しなくても、長く動かしてればそのうち発生します。</p>
+<p>というわけで、何が起こるのか、というと、await Task.Delayのところでヌルリが発生します。↑の例外情報からは、どこで発生していたのかの情報が一切出てこないので(さすがにこれなんとかして欲しいですけどねぇ……)、いざ発生するとなると場所を突き止めるのに割と苦労します、というか虱潰ししかないので結構大変です。そもそもUnobservedTaskExceptionをモニタしてなければ、発生していたことにすら気づけません。</p>
+<p>なぜ起こるのか、というと、awaitによってPOSTする先のContextが消滅しているからです。非同期処理を待たなかったことによって、Viewの表示まで全て完了してContextが消滅する。その後で、DoAsync内のawaitが完了し、続行しようとPOSTを開始する、と、しかしContextは消滅していてなにもなーい。ので、ぬるり。</p>
+<p>では、解決方法は、というと、例によってasyncで統一するか</p>
+<pre><code class="language-csharp">public class HomeController : Controller
+{
+    async Task DoAsync()
+    {
+        Trace.WriteLine(&quot;start&quot;); // 何か開始処理があるのだとする
+
+        await Task.Delay(TimeSpan.FromSeconds(3)); // 何か非同期処理してるとする
+
+        Trace.WriteLine(&quot;end&quot;); // 何か後処理があるのだとする
+    }
+
+    public async Task&lt;ActionResult&gt; Index()
+    {
+        GC.Collect();
+
+        await DoAsync(); // awaitする
+        return View();
+    }
+}
+</code></pre>
+<p>もしくはConfigureAwait(false)でContextを維持しないこと。</p>
+<pre><code class="language-csharp">public class HomeController : Controller
+{
+    async Task DoAsync()
+    {
+        Trace.WriteLine(&quot;start&quot;); // 何か開始処理があるのだとする
+
+        await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(false); // ConfigureAwait(false)する
+
+        Trace.WriteLine(&quot;end&quot;); // 何か後処理があるのだとする
+    }
+
+    public ActionResult Index()
+    {
+        GC.Collect();
+
+        var _ = DoAsync(); // 非同期処理を&quot;待たない&quot;
+        return View();
+    }
+}
+</code></pre>
+<p>です。</p>
+<p>そもそも、何故非同期処理を&quot;待たない&quot;のか。例えば、アクセスログを取るために記録するだけだとか、別に完了を待つ必要がないものだったりするなら、待たないことでレスポンスは速くなる。待つ必要ないのなら、待たなくてもいいぢゃない。それはそうです。</p>
+<p>なので、待たないなら待たないでいいのですが、中身について用心しないと、ヌルりで死んでしまいます。これは、同期的に待つ時もそうですね。待つなら待つでいいですけれど、中身について用心しないと、デッドロックで死んでしまいます。待っても死亡、待たなくても死亡、ホント非同期は地獄だぜ！</p>
+<p>まあ、変数で受けたりしない限りは警告は出してくれますので（ウザいと思っていたアナタ！実に有益な警告ではないですか！）、不注意による死亡はある程度は避けられはします。</p>
+<h2>.NET 4.0 vs .NET 4.5</h2>
+<p>.NET 4.5だと、↑のような挙動ですが、.NET 4.0だとちょっと事情が違ったりします。async/awaitは利用したままで、ターゲットフレームワークのバージョンだけ4.0にしましょう。</p>
+<pre><code class="language-xml">&lt;system.web&gt;
+    &lt;httpRuntime targetFramework=&quot;4.0&quot; /&gt;
+    &lt;compilation debug=&quot;true&quot; targetFramework=&quot;4.0&quot; /&gt;
+&lt;/system.web&gt;
+</code></pre>
+<p>で、Ctrl+F5で実行して、何度かブラウザをリロードしましょう。死んでます。IIS Expressが。完全に無反応になります。何故？Windowsのイベントビューアーを見ましょう。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/07/eventview_appeeror.jpg' />
+</p>
+<p>ハンドルされない例外のため、プロセスが中止されました。というわけで、未処理例外が突き抜けてアプリケーションエラーとして記録されていくためです。プロダクション環境でもIISの<a href="http://www.atmarkit.co.jp/fwin2k/dnsvrguide/iis02/iis2.html">ラピッドフェール保護</a>が発動して、デフォルトでは5分以内に5エラーでアプリケーションは停止します。これは実にクリティカル。</p>
+<p>なんで.NET 4.0と4.5で挙動が違うのか、というと、Taskの未処理例外の扱いが4.0と4.5で変わったためです。この辺はPfxTeamの<a href="http://blogs.msdn.com/b/pfxteam/archive/2011/09/28/10217876.aspx">Task Exception Handling in .NET 4.5</a>を参照にどーぞ。4.5のほうが安全っちゃー安全ですね。いずれにせよ、UnobservedTaskExceptionの例外ロギングは欠かさずやっておきましょう。</p>
+<h2>まとめ</h2>
+<p>非同期もいいんですけど、実際にマジでフルに使い出すと結構なんだかんだでハマりどころは多いですねぇ。幸い、デバッガビリティに関しては<a href="http://blogs.msdn.com/b/dotnet/archive/2013/06/26/announcing-the-net-framework-4-5-1-preview.aspx">Windows 8.1 + Visual Studio 2013である程度改善</a>するようで、待ち遠しいです。とはいえデッドロックだったりコンテキスト場外でヌルりだとかは、注意するしかない。</p>
+<p>ASP.NET MVCのフィルターはやく非同期に対応してくださいー。ASP.NET MVC 5でも予定に入ってないようでどうなってんだゴルァ。Resultで待つしかなくて非常にヒヤヒヤします。EF6も非同期対応とか、そもそもMVC 5では.NET 4.5からのみだとか、どんどん非同期使われてくにつれ、死亡率も間違いなく上がってきますにゃ。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

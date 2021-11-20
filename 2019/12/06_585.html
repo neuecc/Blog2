@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - .NET Core時代のT4によるC#のテキストテンプレート術</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2019/1206_585.html">.NET Core時代のT4によるC#のテキストテンプレート術</a></h1>
+<ul class="date"><li>2019-12-06</li></ul>
+<div class="entry_body"><p><a href="https://qiita.com/advent-calendar/2019/c-sharp">C# Advent Calendar 2019</a>用の記事となります。<a href="https://qiita.com/advent-calendar/2019/c-sharp-2">C# Advent Calendar 2019はその2</a>もあって、そちらも埋まってるので大変めでたい。</p>
+<p>さて、今回のテーマはT4で、この場合にやりたいのはソースコードジェネレートです。つまるところC#でC#を作る、ということをやりたい！そのためのツールがテンプレートエンジンです。.NETにおいてメジャーなテンプレートエンジンといえばRazorなわけですが、アレはASP.NET MVCのHTML用のViewのためのテンプレートエンジンなため、文法が全くソースコード生成に向いていません、完全にHTML特化なのです。また、利用のためのパイプラインもソースコード生成に全く向いていない（無理やりなんとか使おうとするRazorEngineといったプロジェクトもありますが……)ので、やめておいたほうが無難です。</p>
+<p>では何を使えばいいのか、の答えがT4(Text Template Transfomration Toolkit)です。過去には<a href="http://neue.cc/2013/06/30_411.html">Micro-ORMとテーブルのクラス定義自動生成について</a>という記事で、データベースのテーブル定義からマッピング用のC#コードを生成する方法を紹介しました。テーブル定義は、実際にDB通信してもいいし、あるいは何らかの定義ファイルを解析して生成、とかでもいいですね。また、最近の私の作っているライブラリには(UnityのIL2CPP対策で)コードジェネレーターがついていますが(<a href="https://github.com/Cysharp/MagicOnion">MagicOnion</a>, <a href="https://github.com/Cysharp/MasterMemory/">MasterMemory</a>, <a href="https://github.com/neuecc/MessagePack-CSharp">MessagePack-CSharp</a>など)、それらの生成テンプレートは全てT4で作っています。</p>
+<p>元々はVisual Studioべったりでしたし、実際べったりなのですが、Mac環境ではVisual Studio for Macで、あるいは（一手間入りますが）VS Codeで使用したり、最近だとRiderが2019.3 EAP 5からばっちしサポートされたようなので、MacやRider派の人も安心です。RiderのT4サポートは曰く</p>
+<pre><code class="language-txt">You asked us to support T4, and we’ve answered! T4 support is here, based on our own generator and available as a pre-installed plugin.
+The plugin is open-sourced (https://github.com/JetBrains/ForTea) and your contributions are very welcome.
+Feature-rich C# support in code blocks includes highlighting, navigation, code completion, typing assistance, refactorings, context actions, inspections, formatting, and more.
+T4-specific features include inspections, typing assistance, folding, brace matching, etc.
+Extensive support is offered for includes to make the resolve in C# code as correct as possible.
+You can execute T4 templates.
+You can also debug T4 templates.
+All these features work across Windows, macOS, and Linux.
+</code></pre>
+<p>だそうで、なかなかイケてるじゃないですか。Visual Studioも、Riderもそうですが、テンプレートエンジンでデバッガ動かしてステップ実行できたりするのが地味に便利です。VS Codeだと設定に一手間が必要なので(Qiitaにて<a href="https://qiita.com/nogic1008/items/2c4049d43a11e83df15b">.NET Core+VS CodeでもT4 テンプレートエンジンでコード生成したい！</a>といった紹介もありますが)、VS2019, VS for Mac, Riderを使ったほうが楽そうです。</p>
+<p>T4には2種類の生成パターン、<a href="https://docs.microsoft.com/ja-jp/visualstudio/modeling/design-time-code-generation-by-using-t4-text-templates?view=vs-2019">デザイン時コード生成(TextTemplatingFileGenerator)</a>と、<a href="https://docs.microsoft.com/ja-jp/visualstudio/modeling/run-time-text-generation-with-t4-text-templates?view=vs-2019">実行時テキスト生成(TextTemplatingFilePreprocessor)</a>の2種類がありますが、両方紹介します。</p>
+<p>また、詳細なドキュメントが<a href="https://docs.microsoft.com/ja-jp/visualstudio/modeling/code-generation-and-t4-text-templates?view=vs-2019">コード生成と T4 テキスト テンプレート</a>にあり、実際かなり複雑な機能も搭載してはいますが、テキストテンプレートで複雑なことはやるべきではない（テキストテンプレートなんてあまり使わないような機能で使い倒した複雑なことやられても解読に困るだけ）ので、シンプルに使いましょう。シンプルに使う分には、全く難しくないです。</p>
+<h2>デザイン時コード生成</h2>
+<p>デザイン時コード生成とは、テンプレート単体でテキストを出力するタイプです。出力されたコードが、そのまま自身のプロジェクトのコンパイル対象になるイメージ。使い道としては、手書きだと面倒くさい単純な繰り返しのあるソースコードを一気に量産するパターンがあります。例えばジェネレクスのT1~T16までの似たようなコードを作るのに、一個雛形をテンプレートとして用意して for(1..16) で生成すれば一発、というわけです。他に、プリミティブの型(intとかdoubleとか)に対してのコード生成などもよくやりますね。またマークダウンで書かれた表（別の人がドキュメントとして書いているもの）から、enumを生成する、なんてこともやったりしますね。違うようで違わないようで実際微妙に違う退屈なユニットテストコードの生成、なんかにも使えます。</p>
+<p>例としてMessagePackのカスタムシリアライザとして、以下のようなものを作りたいとします（単純な繰り返しの例としてちょうどよかったというだけなので、MessagePackの細かいAPIの部分は見なくてもいいです）。</p>
+<pre><code class="language-csharp">using System;
+using System.Buffers;
+
+namespace MessagePack.Formatters
+{
+    public sealed class ForceInt16BlockFormatter : IMessagePackFormatter&lt;Int16&gt;
+    {
+        public static readonly ForceInt16BlockFormatter Instance = new ForceInt16BlockFormatter();
+
+        private ForceInt16BlockFormatter()
+        {
+        }
+
+        public void Serialize(ref MessagePackWriter writer, Int16 value, MessagePackSerializerOptions options)
+        {
+            writer.WriteInt16(value);
+        }
+
+        public Int16 Deserialize(ref MessagePackReader reader, MessagePackSerializerOptions options)
+        {
+            return reader.ReadInt16();
+        }
+    }
+
+    // 以下、Int16の部分がInt32だったりDoubleだったりするのを用意したい。
+}
+</code></pre>
+<p>Int16になっている部分を、Int32やDoubleなど全てのプリミティブにあてはめて作りたい、と。手書きでも気合でなんとかなりますが、そもそも面倒くさいうえに、修正の時は更に面倒くさい。なので、これはT4を使うのが最適な案件といえます。</p>
+<p>例はVisual Studio 2019(for Windows)で説明していきますが、T4の中身自体は他のツールを使っても一緒なのと、最後にRiderでの使用方法を解説するので、安心してください。</p>
+<p>まずは新しい項目の追加で、「テキスト テンプレート」を選びます。</p>
+<p class="noindent">
+    <img src="https://user-images.githubusercontent.com/46207/70261367-9f852f00-17d5-11ea-87a2-bb7e00ff2ebe.png" width=640 />
+</p>
+<p>すると、以下のような空のテンプレートが生成されたんじゃないかと思われます。</p>
+<pre><code class="language-csharp">&lt;#@ template debug=&quot;false&quot; hostspecific=&quot;false&quot; language=&quot;C#&quot; #&gt;
+&lt;#@ assembly name=&quot;System.Core&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Linq&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Text&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Collections.Generic&quot; #&gt;
+&lt;#@ output extension=&quot;.txt&quot; #&gt;
+</code></pre>
+<p>csprojには以下のような追加のされ方をしています。</p>
+<pre><code class="language-xml">&lt;ItemGroup&gt;
+    &lt;None Update=&quot;ForceSizePrimitiveFormatter.tt&quot;&gt;
+        &lt;Generator&gt;TextTemplatingFileGenerator&lt;/Generator&gt;
+        &lt;LastGenOutput&gt;ForceSizePrimitiveFormatter.txt&lt;/LastGenOutput&gt;
+    &lt;/None&gt;
+    &lt;None Update=&quot;ForceSizePrimitiveFormatter.txt&quot;&gt;
+        &lt;DesignTime&gt;True&lt;/DesignTime&gt;
+        &lt;AutoGen&gt;True&lt;/AutoGen&gt;
+        &lt;DependentUpon&gt;ForceSizePrimitiveFormatter.tt&lt;/DependentUpon&gt;
+    &lt;/None&gt;
+&lt;/ItemGroup&gt;
+</code></pre>
+<p>2個のItemが追加されているのは、T4本体と、生成物の2つ分です。<code>&lt;Generator&gt;TextTemplatingFileGenerator&lt;/Generator&gt;</code>というのがT4をこれで処理しますよ、という話で、DependentUponはソリューションエクスプローラーでの見た目上、ネストする親を指定、ということになっています。Visual Studioの不正終了なので、たまに***1.csなどといった末尾にインクリメントされたファイルしか生成されなくなってムカつく！という状況にたまによく陥るのですが、その場合はLastGenOutputあたりを手書きで修正してけば直ります。</p>
+<p>さて、まず思うのはシンタックスハイライトが効いていない！ということなので、しょうがないのでVS拡張を入れます。私がよく使うのは<a href="https://t4-editor.tangible-engineering.com/T4-Editor-Visual-T4-Editing.html">tangible T4 Editor 2.5.0 plus
+UML modeling tools</a>というやつで、インストール時にmodeling Toolsとかいういらないやつはチェック外してT4 Editorだけ入れておきましょう。なお、Visual Studioは閉じておかないとインストールできません。他のT4用拡張も幾つかあるのですが、コードフォーマッタがキモいとかキモいとか色々な問題があるので、私はこれがお気に入りです（そもそもコードフォーマットがついてない！変な整形されるぐらいなら、ないほうが百億倍マシです）。</p>
+<p>さて、<code>&lt;#@ ... #&gt;</code>が基本的な設定部分で、必要な何かがあればここに足していくことになります。assembly nameは参照アセンブリ、基本的なアセンブリも最小限しか参照されていないので、必要に応じて足しておきましょう。ちなみにRiderだと何も参照されていない空テンプレートが生成されるので、デフォだとLINQすら使えなくてハァァァ？となるので要注意。System.Coreぐらい入れておけよ……。</p>
+<p>import namespaceはまんま、名前空間のusingです。output extensionは、フツーは.csを吐きたいと思うので.csにしておきましょう。場合によってはcsvとかjsonを吐きたい場合もあるかもしれないですが。</p>
+<p>次に、&lt;# ... #&gt; を使って、テンプレートに使う変数群を用意します。この中ではC#コードが書けて、別に先頭じゃなくてもいいんですが、あまりテンプレート中にC#コードが散らかっても読みづらいので、用意できるものはここで全部用意しておきましょう。</p>
+<pre><code class="language-csharp">&lt;#
+    var types = new[]
+    {
+        typeof(Int16),
+        typeof(Int32),
+        typeof(Int64),
+        typeof(UInt16),
+        typeof(UInt32),
+        typeof(UInt64),
+        typeof(byte), 
+        typeof(sbyte),
+    };
+
+    Func&lt;Type, string&gt; GetSuffix = t =&gt;
+    {
+        return t.Name == nameof(Byte) ? &quot;UInt8&quot; : (t.Name == nameof(SByte)) ? &quot;Int8&quot; : t.Name;
+    };
+#&gt;
+</code></pre>
+<p>今回は生成したいプリミティブ型を並べた配列を用意しておきます。また、ここではローカル関数を定義して、くり返し使う処理をまとめることもできるんですが(テンプレート中に式を書くと見にくくなるので、引数を受け取ってstringを返す関数を用意しておくと見やすくなります)、tangible T4 Editorがショボくてローカル関数に対してシンタックスエラー扱いしてくるので（動作はする）、Funcを使うことでお茶を濁します。</p>
+<p>ここから先は本体ですが、短いので↑で見せた部分も含めてフルコードが以下になります。Visual Studioの場合は保存時、Riderの場合は右クリックから手動で実行した場合に、ちゃんとファイルが生成されていることが確認できるはずです！</p>
+<pre><code class="language-csharp">&lt;#@ template debug=&quot;false&quot; hostspecific=&quot;false&quot; language=&quot;C#&quot; #&gt;
+&lt;#@ assembly name=&quot;System.Core&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Linq&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Text&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Collections.Generic&quot; #&gt;
+&lt;#@ output extension=&quot;.cs&quot; #&gt;
+&lt;#
+    var types = new[]
+    {
+        typeof(Int16),
+        typeof(Int32),
+        typeof(Int64),
+        typeof(UInt16),
+        typeof(UInt32),
+        typeof(UInt64),
+        typeof(byte), 
+        typeof(sbyte),
+    };
+
+    Func&lt;Type, string&gt; GetSuffix = t =&gt;
+    {
+        return t.Name == nameof(Byte) ? &quot;UInt8&quot; : (t.Name == nameof(SByte)) ? &quot;Int8&quot; : t.Name;
+    };
+#&gt;
+// &lt;auto-generated&gt;
+// THIS (.cs) FILE IS GENERATED BY T4. DO NOT CHANGE IT. CHANGE THE .tt FILE INSTEAD.
+// &lt;/auto-generated&gt;
+
+using System;
+
+namespace MessagePack.Formatters
+{
+&lt;# foreach(var t in types) { #&gt;
+    public sealed class Force&lt;#= t.Name #&gt;BlockFormatter : IMessagePackFormatter&lt;&lt;#= t.Name #&gt;&gt;
+    {
+        public static readonly Force&lt;#= t.Name #&gt;BlockFormatter Instance = new Force&lt;#= t.Name #&gt;BlockFormatter();
+
+        private Force&lt;#= t.Name #&gt;BlockFormatter()
+        {
+        }
+
+        public void Serialize(ref MessagePackWriter writer, &lt;#= t.Name #&gt; value, MessagePackSerializerOptions options)
+        {
+            writer.Write&lt;#= GetSuffix(t) #&gt;(value);
+        }
+
+        public &lt;#= t.Name #&gt; Deserialize(ref MessagePackReader reader, MessagePackSerializerOptions options)
+        {
+            return reader.Read&lt;#= t.Name #&gt;();
+        }
+    }
+
+&lt;# } #&gt;
+}
+</code></pre>
+<p>記法の基本的なルールは&lt;# ... #&gt;で括っている部分以外は平文で出力されます。そして、&lt;#= ... #&gt;が式で、そこが文字列として展開されます。</p>
+<p>なお、テンプレートを書くにあたって、長年の経験から得たおすすめのお作法があります。</p>
+<ul>
+<li>計算式はなるべくテンプレート中で書くのを避ける、ために事前に関数として定義しておく</li>
+<li><code>&lt;auto-generated&gt;</code>を冒頭に書く、これはlintによる解析対象から外れる効果があるのと、このファイルがどこから来ているのかを伝えるために有用</li>
+<li>foreachやifなどはなるべく一文で書く、複数行に渡っているとテンプレート中のノイズになって見難くなる。また、あまり</li>
+<li><code>&lt;#</code>の開始行はインデントつけずに先頭で、というのもインデントつけてると平文のテンプレート生成対象になるため生成コードのインデントがズレやすい</li>
+</ul>
+<p>この辺を守ると、割と綺麗に書けると思います。テンプレートはどうしてもコード埋め込みがあって汚くなりやすいので、なるべく綺麗にしておくのは大事です。それでもどうしても避けられないifだらけで、読みにくくなったりはしてしまいますが、そこはしょうがない。</p>
+<h2>実行時テキスト生成</h2>
+<p>実行時テキスト生成は、いわゆるふつーに想像するテンプレートエンジンの動作をするもので、プログラム実行時に、変数を渡したらテンプレートにあてはめてstringを返してくれるクラスを生成します。データベースのテーブル定義からマッピング用のC#コードを生成するツール、であったり、私がよくやってるのはRoslyn(C# Compiler)でC#コードを解析して、それをもとにして更にC#コードを生成するツールであったり、というかむしろC#コードを解析してKotlinコードを生成したりなど、やれることはいっぱいあります。リフレクションでアセンブリを舐めて、条件に一致した型、メソッドから何かを作る、みたいなのも全然よくありますね。</p>
+<p>これの作り方は、追加→新しい項目から「ランタイム テキスト テンプレート」を選ぶと、悲しいことに別に普通の「テキスト テンプレート」とほぼ同じものが生成されてます（VS2019/.NET Coreプロジェクトの場合）。なぜかというと、csprojを開くとGeneratorがTextTemplatingFileGenerator、つまり普通のテキストテンプレートと同じ指定になっているからです。これは、多分バグですね、でもなんか昔から全然直されてないのでそういうもんだと思って諦めましょう。</p>
+<p>しょーがないので手書きで直します。GeneratorのTextTemplatingFileGeneratorをTextTemplatingFilePreprocessorに変えてください。そうすると以下のようなファイルが生成されています(Visual Studioの場合は保存時、Riderの場合は右クリックから手動で実行した場合)</p>
+<pre><code class="language-csharp">    #line 1 &quot;C:\Users\neuecc\Source\Repos\ConsoleApp14\ConsoleApp14\MyCodeGenerator.tt&quot;
+    [global::System.CodeDom.Compiler.GeneratedCodeAttribute(&quot;Microsoft.VisualStudio.TextTemplating&quot;, &quot;16.0.0.0&quot;)]
+    public partial class MyCodeGenerator : MyCodeGeneratorBase
+    {
+        /// &lt;summary&gt;
+        /// Create the template output
+        /// &lt;/summary&gt;
+        public virtual string TransformText()
+        {
+            return this.GenerationEnvironment.ToString();
+        }
+    }
+</code></pre>
+<p>ファイル名で作られたパーシャルクラスと、TransformTextメソッドがあるのが分かると思います。これで何となく使い方は想像つくと思いますが、<code>new MyCodeGenerator().TransformText()</code>でテンプレート結果が実行時に得られる、という寸法です。</p>
+<p>さて、しかしきっとコンパイルエラーが出ているはずです！これはNuGetで「System.CodeDom」を参照に追加することで解決されます。別にCodeDomなんて使ってなくて、CompilerErrorとCompilerErrorCollectionというExceptionを処理する生成コードが吐かれてるから、というだけなので、自分でその辺のクラスを定義しちゃってもいいんですが、まぁ面倒くさいんでCodeDom参照するのが楽ちんです。この辺ねー、昔の名残って感じでめっちゃイケてないんですがしょーがない。</p>
+<p>それと行番号がフルパスで書かれててめっちゃ嫌、というかフルパスが書かれたのをバージョン管理に突っ込めねーよ、って感じなので、これも消しましょう。linePragmas=&quot;false&quot;をテンプレート冒頭に書いておけば消えます。</p>
+<pre><code class="language-csharp">&lt;#@ template language=&quot;C#&quot; linePragmas=&quot;false&quot; #&gt;
+&lt;#@ assembly name=&quot;System.Core&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Linq&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Text&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Collections.Generic&quot; #&gt;
+&lt;#@ output extension=&quot;.cs&quot; #&gt;
+</code></pre>
+<p>この対応はほとんど必須ですね、ていうかデフォでfalseにしといてくれよ……。</p>
+<p>さて、テンプレートにパラメーターを渡す方法ですが、これは生成されたクラス名と同じpartial classを定義すればOK。</p>
+<pre><code class="language-csharp">namespace ConsoleApp14
+{
+    // 名前空間/クラス名(ファイル名)を合わせる(親クラスの継承部分は書かなくてOK)
+    public partial class MyCodeGenerator
+    {
+        public GenerationContext Context { get; }
+
+        // とりあえずコンストラクタで受け取る
+        public MyCodeGenerator(GenerationContext context)
+        {
+            this.Context = context;
+        }
+    }
+
+    // 生成に使うパラメーターはクラス一個にまとめておいたほうが取り回しは良い
+    public class GenerationContext
+    {
+        public string NamespaceName { get; set; }
+        public string TypeSuffix { get; set; }
+        public int RepeatCount { get; set; }
+    }
+}
+</code></pre>
+<p>これでテンプレート中でContextが変数として使えりょうになります。テンプレートの例として、面白みゼロのサンプルコードを出すと……(Roslynとか使うともっと意味のあるコード例になるのですが、本題と違うところがかさばってしまうので、すみません……)</p>
+<pre><code class="language-csharp">&lt;#@ template language=&quot;C#&quot; linePragmas=&quot;false&quot; #&gt;
+&lt;#@ assembly name=&quot;System.Core&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Linq&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Text&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Collections.Generic&quot; #&gt;
+&lt;#@ output extension=&quot;.cs&quot; #&gt;
+// &lt;auto-generated&gt;
+// THIS (.cs) FILE IS GENERATED BY ConsoleApp14.exe. DO NOT CHANGE IT.
+// &lt;/auto-generated&gt;
+namespace &lt;#= Context.NamespaceName #&gt;
+{
+&lt;# foreach(var i in Enumerable.Range(0, Context.RepeatCount)) { #&gt;
+    public class Foo&lt;#= Context.TypeSuffix #&gt;&lt;#= i #&gt;
+    {
+    }
+
+&lt;# } #&gt;
+}
+</code></pre>
+<p>RepeatCountの回数で中身空のクラスを作るというしょっぱい例でした。これの注意事項は、普通のテキストテンプレートと特に変わりはないのですが、auto-generatedのところに、生成ツール名を入れておいたほうがいいです。外部ツールでコード生成するという形になるため、ファイルだけ見てもなにで生成されたかわからないんですね。あとから、何かで作られたであろう何で作られたかわからない自動生成ファイルを解析する羽目になると、ツールの特定から始めなくちゃいけなくてイライラするので、この辺をヘッダにちゃんと書いといてあげましょう。ただたんに「これは自動生成されたコードです」と書いてあるだけよりも親切で良い。</p>
+<p>記述におけるコツは、やはりテンプレート中に式を書いて文字列を生成するよりかは、この場合だとContext側にメソッドを作って、引数をもらってstringを返すようにすると見通しが良いものが作りやすいでしょう。ちなみに<code>this.Context</code>のContextのIntelliSenseは効きません、そっちの解析までしてくれないので。テンプレートファイルにおける入力補完は甘え、おまけみたいなもんなので、基本的には頼らず書きましょう。もちろん、そのせいでばんばんTypoしてエラーもらいます。これが動的型付け言語の世界だ！をC#をやりながら体感できるので、いやあ、やっぱ静的型付け言語はいいですねえ、という気持ちに浸れます。</p>
+<p>さて、こうして出来たクラスは、ただのパラメーターを受け取ってstringを返すだけのクラスなので、何に使っても良いのですが、9割はシンプルなコマンドラインツールになるのではないでしょうか。</p>
+<p>C#でコマンドラインツールといったら！私の作ってる<a href="https://github.com/Cysharp/MicroBatchFramework">MicroBatchFramework</a>が当然ながらオススメなので、それを使ってツールに仕立ててみましょう。</p>
+<pre><code class="language-csharp">using MicroBatchFramework;
+using System;
+using System.IO;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace ConsoleApp14
+{
+    class Program : BatchBase
+    {
+        static async Task Main(string[] args)
+        {
+            await BatchHost.CreateDefaultBuilder().RunBatchEngineAsync&lt;Program&gt;(args);
+        }
+
+        public void Run(
+            [Option(&quot;o&quot;, &quot;output file path&quot;)]string outputPath,
+            [Option(&quot;n&quot;, &quot;namespace name&quot;)]string namespaceName,
+            [Option(&quot;t&quot;, &quot;type name suffix&quot;)]string typeSuffix = &quot;Foo&quot;,
+            [Option(&quot;c&quot;, &quot;type generate count&quot;)]int repeatCount = 10
+            )
+        {
+            // パラメータを作って
+            var context = new GenerationContext
+            {
+                NamespaceName = namespaceName,
+                TypeSuffix = typeSuffix,
+                RepeatCount = repeatCount
+            };
+
+            // テキストを生成して
+            var text = new MyCodeGenerator(context).TransformText();
+
+            // UTF8(BOMなし)で出力
+            File.WriteAllText(outputPath, text, new UTF8Encoding(false));
+
+            Console.WriteLine(&quot;Success generate:&quot; + outputPath);
+        }
+    }
+}
+</code></pre>
+<p>これで <code>ConsoleApp14.exe -o &quot;foo.cs&quot; -n &quot;HogeHoge&quot; -t &quot;Bar&quot; -c 99</code> というしょっぱいコマンドでfoo.csが吐かれるツールが完成しました！</p>
+<h2>RiderにおけるT4</h2>
+<p>RiderでのT4は、Visual Studioが使っている生成ツールとは違う、T4の記法として互換性のあるJet Brains独自のツールを実行している気配があります（そのため、場合によっては互換性がないところもあるかもしれません、というか実際linePragms=falseで行番号が消えなかった……)</p>
+<p>実行自体は簡単で、ttに対して右クリックしてRunを選べばデザイン時コード生成、Preprocessを選べば実行時テキスト生成の出力結果が得られます。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/70267774-74eda300-17e2-11ea-9121-a760d2db38ba.png" alt="image" /></p>
+<p>現時点ではEAP、つまりプレビュー版ですが、まぁ他にもいっぱい良い機能が追加されてるっぽいので、Riderユーザーは積極的にEAPを使っていけばいいんじゃないかしら。</p>
+<h2>T4にできないこと</h2>
+<p>T4は、基本的に.ttで書かれたファイルを事前に(VSだと保存時、Riderだと任意に、あるいは設定次第でビルド時に)外部ツールが叩いて、テキスト(.csだったり色々)を生成します。いいところはC#プロジェクトと一体化して埋め込まれるので、パフォーマンスもいいし、そもそもT4生成時に型が合わなければエラーが出てくれる（動的の塊であるテンプレートファイルにとって、書き間違えは日常茶飯事なので、これは結構嬉しい）。実行効率も良いです、ファイル読んでパースして必要があればキャッシュして云々というのがないので。</p>
+<p>が、しかし、プログラムが実行時に動的にテンプレートを読み込んでなにかする、みたいなことはできません。ツールのビルド時にテンプレートが出来上がってないといけないので、プラグイン的に足すのは無理です。それは成約になる場合もある、でしょうし、私的には型もわからないようなのを動的に合わせてテンプレート作るとか苦痛なので（←最近なんかそういうのやる機会が多くて、その度にシンドイ思いをしてる）、パラメータ渡しだけでなんとかして済むようにして諦めて作り込んだほうが百億倍マシ、ぐらいには思っていますが、まぁそういうのがしたいというシチュエーション自体は否定できません。その場合は、他のテンプレートエンジンライブラリを選んで組み込めば良いでしょう、T4がやや特殊なだけで、他のテンプレートエンジンライブラリは、むしろそういう挙動だけをサポートしているので。</p>
+<h2>まとめ</h2>
+<p>T4は十分使い物になります。微妙にメンテされてるのかされてないのか不安なところもありますが、そもそもMicrosoftもバリバリ使っているので(GitHubに公開されているcorefxのコードとかはT4で生成されているものもかなりあります、最近追加されたようなコードでも)、全く問題ないでしょう。実際、記法も必要十分揃っているし、特に極端に見にくいということもないと思います、ていうかテンプレートエンジンとしてフツーなシンタックスですしね。</p>
+<p>仮に複雑なことやりたければ、例えばテンプレートをパーツ化して使い回すために分割して、都度インポートとか、というのもできます(<a href="https://docs.microsoft.com/ja-jp/visualstudio/modeling/t4-include-directive?view=vs-2019">T4 インクルード ディレクティブ</a>では.t4という拡張子が紹介されていますが(拡張子はなんでもいい)、一般的には.ttincludeという拡張子が使われています)。他いろいろな機能がありますが、あらためて、テキストテンプレートごときで複雑なことやられると、追いかける気が失せるので、なるべく単純に保ちましょう。やるとしてもせいぜいincludeまで。それ以上はやらない。</p>
+<p>というわけで、どうでしょう。MicroBatchFrameworkとも合わせて、C#のこの辺の環境は割といいほうだと思ってます。コード生成覚えるとやれることも広がるので、ぜひぜひ、コード生成生活を楽しんでください！</p>
+<p>また、Unityでも普通に便利に使えると思います。Editor拡張でソースコード生成するものを用意するパターンは多いと思いますが（なにかリソースを読み込んで生成したり、あるいはそのままAssembly.GetExecutingAssembly().GetTypes()して型から生成したり)、その時のテンプレートとして、普通にstringの連結で作ってるケースも少なくなさそうですが、「デザイン時コード生成」も「実行時テキスト生成」も、どっちも全然いけます。「T4にできないこと」セクションに書いたとおり、よくも悪くも外部ツールで実行環境への依存がないので。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>

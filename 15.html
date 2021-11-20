@@ -1,0 +1,1522 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc</title>
+    <link rel="shortcut icon" href="http://neue.cc/favicon.ico" />
+	<link rel="stylesheet" href="http://neue.cc/wp-content/themes/neuecc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css" rel="stylesheet" />
+</head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <div id="header"></div>
+        <div id="content"><h1><a href="http://neue.cc/2011/0706_332.html">Rxでのイベント変換まとめ - FromEvent vs FromEventPattern</a></h1>
+<ul class="date"><li>2011-07-06</li></ul>
+<div class="entry_body"><p><a href="http://msdn.microsoft.com/en-us/data/gg577609">Reactive Extensions</a>の機能の一つに.NETにおけるイベントをIObservable&lt;T&gt;に変換する、というものがあります。<a href="http://msdn.microsoft.com/en-us/library/hh242978(v=VS.103).aspx">Bridging with Existing .NET Events</a>。そして、そのためのメソッドがFromEventでした。ところが最近のRxでは二つ、FromEventとFromEventPatternが用意されています。この差異は何なのでしょうか？</p>
+<p>結論としては、過去のRx(このサイトの古い記事や他のサイトの過去の記事などで触れられている)やWindows Phone 7でのFromEventはFromEventPatternに改名されました。後続にEventPatternという(object Sender, TEventArgs EventArgs)を持つ.NETのイベントの引数そのものを渡すものです。そして、空席になったFromEventに新しく追加されたFromEvent(紛らわしい！)は、EventArgsだけを送ります。それ以外の差異はありません。</p>
+<p>つまるところFromEventは FromEventPattern.Select(e =&gt; e.EventArgs) ということになります。なら、それでいいぢゃん、何も混乱を生む(WP7のFromEventがFromEventPatternである、というのは致命的よねえ)ことはないよ、とは思うのですが、パフォーマンスの問題でしょうかね。確かに、Senderは必要なく使うのはEventArgsだけの場合が多い。それなのに、毎回EventPatternを生成していたり、Selectというメソッド呼び出しが入るのは無駄です。</p>
+<p>そもそもインスタンスに対してFromEventで包むということは、クロージャでsenderは変数としていつでもどこでも使えてしまうのですよね、そもそも、そもそも。そういう意味でも送られてくるのはEventArgsだけでいいのであった。というわけで、基本的にはFromEventでいいと思います。</p>
+<h2>FromEventPatternについて</h2>
+<p>では、改めてFromEventPatternを復習します(WP7の人はFromEventで考えてください)。<a href="http://msdn.microsoft.com/en-us/library/hh229705(v=VS.103).aspx">Observable.FromEventPattern(TEventArgs) Method (Object, String) (System.Reactive.Linq)</a>にサンプルコードがあるのですけれどね。そうそう、MSDNのリファレンスには、一部のメソッド/一部のオーバーロードにはサンプルコードがあります。全部ではないのがミソです、見て回って発掘しましょう。まあ、というわけで、とりあえずそのFileSystemWatcherで。</p>
+<pre><code class="language-csharp">// FileSystemWatcherは指定フォルダを監視して、変化があった場合にイベントを通知します
+// 例えばCreatedイベントはファイルが作成されたらイベントが通知されます
+var fsw = new FileSystemWatcher(@&quot;C:\&quot;, &quot;*.*&quot;) { EnableRaisingEvents = true };
+
+// FromEventPatternその1、文字列でイベント名指定
+Observable.FromEventPattern&lt;FileSystemEventArgs&gt;(fsw, &quot;Created&quot;)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+
+// FromEventPatternその2、静的なイベントをイベント名指定(WP7にはない)
+Observable.FromEventPattern&lt;ConsoleCancelEventArgs&gt;(typeof(Console), &quot;CancelKeyPress&quot;)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.SpecialKey));
+</code></pre>
+<p>一番馴染み深いと思うのですが、文字列でイベント名を指定するものです。その2のほうはあまり見ないかもしれませんが、静的イベントに対しての指定も可能です。これら文字列指定によるメリットは、比較的シンプルであること。デメリットは、リフレクションを使うので若干遅い・スペルミスへの静的チェックが効かない・リファクタリングが効かない、といった、リフレクション系のデメリットそのものとなります。</p>
+<p>リフレクションしかないの？というと、勿論そんなことはありません。</p>
+<pre><code class="language-csharp">// FromEventPatternその3、EventHandlerに対する変換
+var current = AppDomain.CurrentDomain;
+Observable.FromEventPattern(h =&gt; current.ProcessExit += h, h =&gt; current.ProcessExit -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs));
+
+// FromEventPatternその4、EventHandler&lt;T&gt;に対する変換
+Observable.FromEventPattern&lt;ContractFailedEventArgs&gt;(
+        h =&gt; Contract.ContractFailed += h, h =&gt; Contract.ContractFailed -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.Message));
+
+// FromEventPatternその5、独自イベントハンドラに対する変換
+Observable.FromEventPattern&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; new FileSystemEventHandler(h),
+        h =&gt; fsw.Created += h,
+        h =&gt; fsw.Created -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+</code></pre>
+<p>イベントの登録と削除を行うためのラムダ式を渡してやります。その3とその4は比較的分かりやすいのではないでしょうか。その5の第一引数が謎いのですが、これはconversionです。C#の型システムの都合上、そのまんまだと独自イベントハンドラを処理出来ないので、型を変換してやる必要があるという定型句。</p>
+<p>数あるFromEventPatternのオーバーロードの中で、一番多く使うのはその5だと思います。何故なら、C#のイベントは独自イベントハンドラになっていることが多いから。はっきしいって、最低です。EventHandler&lt;T&gt;を使ってくれてさえいれば、こんな苦労はしなくて済むというのに。独自イベントハンドラは100害あって一利なし。え、WPFとか.NET標準がイベントハンドラは独自のものを使ってる？それは、WPFが悪い、.NET設計の黒歴史、悪しき伝統。</p>
+<p>それと、もはや独自デリゲートも最低です。FuncやActionを使いましょう。C#のデリゲートはメソッドの引数や戻り値が一致していようが、型が違ったら別のものとして扱われます。そのことによる不都合は、↑で見たように、あるんです。極力ジェネリックデリゲートを使いましょう。そうすれば、こんな腐った目に合わなくても済みます。</p>
+<p>ところで、その5は、もう少しだけ記述が短くなります。</p>
+<pre><code class="language-csharp">// FromEventPatternその5、第一引数別解、こう書くと短くて素敵
+Observable.FromEventPattern&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; h.Invoke,
+        h =&gt; fsw.Created += h,
+        h =&gt; fsw.Created -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+</code></pre>
+<p>h.Invoke。というのは、割とhそのものなわけですが、しかしInvokeと書くことで型が変換されます。この辺はコンパイラの都合上のマジックというか何というか。そういうものだと思えばいいのではかと。その5のスタイルで書くときは、この書き方をすると良いと思います。で、まだオーバーロードがあって</p>
+<pre><code class="language-csharp">// その6
+Observable.FromEventPattern&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; fsw.Created += h, h =&gt; fsw.Created -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+</code></pre>
+<p>conversionが不要で書けたりもします。一見素晴らしい、のですが、これ、中でなにやってるかというとconversionに相当するものをリフレクションで生成してるだけだったりして。そのため、なるべくconversionを使うオーバーロードのほうを使ったほうがよいでしょう。h =&gt; h.Invokeを書くだけですしね。このオーバーロードは紛らわしいだけで存在意義が不明すぎる。</p>
+<h2>FromEventについて</h2>
+<p>と、長々と見てきましたが、ではFromEventのほうも。</p>
+<pre><code class="language-csharp">// FromEvent
+Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; (sender, e) =&gt; h(e),
+        h =&gt; fsw.Created += h,
+        h =&gt; fsw.Created -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.FullPath));
+
+// FromEventPatternその5(比較用)
+Observable.FromEventPattern&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; (sender, e) =&gt; h(sender, e),
+        h =&gt; fsw.Created += h,
+        h =&gt; fsw.Created -= h)
+    .Select(e =&gt; e.EventArgs)
+    .Subscribe(e =&gt; Console.WriteLine(e.FullPath));
+</code></pre>
+<p>というわけで、FromEventPatternのその5に近いわけですが、conversionでEventArgsしか渡していない、という点が差異ですね。なので、後続にはsenderが伝わってこず、EventArgsしか通りません。まあ、senderは、↑の例ですとfswでどこでも使えるので、そもそも不要なわけで、これで良いかと思います。</p>
+<p>ところでFromEventも色々なオーバーロードがあるにはあるんですが、私の頭では存在意義が理解できなかったので無視します。挙動とかは理解したんですが、なんというか、存在する必要性、有効な利用法がさっぱり分からなかったのです……。まあ、多分、あんま意味ないと思うので気にしないでもいいかと。</p>
+<h2>拡張メソッドに退避させよう</h2>
+<p>FromEventにせよFromEventPatternにせよ、長いです。長い上に定型句です。なので、拡張メソッドに退避させると、スッキリします。例えば、今まで見てきたFileSystemWatcherだったら</p>
+<pre><code class="language-csharp">// .NETのFromEventなら IObservable&lt;TEventArgs&gt;
+// .NETのFromEventPatternなら IObservable&lt;EventPattern&lt;TEventArgs&gt;&gt;
+// WP7のFromEventなら IObservable&lt;IEvent&lt;TEventArgs&gt;&gt;
+// を返す拡張メソッド群を用意する。
+// 命名規則はイベント名AsObservableがIntelliSenseの順序的にお薦め
+public static class FileSystemWatcherExtensions
+{
+    public static IObservable&lt;FileSystemEventArgs&gt; CreatedAsObservable(this FileSystemWatcher watcher)
+    {
+        return Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; watcher.Created += h, h =&gt; watcher.Created -= h);
+    }
+
+    public static IObservable&lt;FileSystemEventArgs&gt; DeletedAsObservable(this FileSystemWatcher watcher)
+    {
+        return Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; watcher.Deleted += h, h =&gt; watcher.Deleted -= h);
+    }
+
+    public static IObservable&lt;RenamedEventArgs&gt; RenamedAsObservable(this FileSystemWatcher watcher)
+    {
+        return Observable.FromEvent&lt;RenamedEventHandler, RenamedEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; watcher.Renamed += h, h =&gt; watcher.Renamed -= h);
+    }
+
+    public static IObservable&lt;FileSystemEventArgs&gt; ChangedAsObservable(this FileSystemWatcher watcher)
+    {
+        return Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; watcher.Changed += h, h =&gt; watcher.Changed -= h);
+    }
+}
+</code></pre>
+<pre><code class="language-csharp">var fsw = new FileSystemWatcher(@&quot;C:\&quot;, &quot;*.*&quot;) { EnableRaisingEvents = true };
+
+// 例えば、ただ変更をロギングしたいだけなんだよ、という場合の結合
+// FromEventを外出ししていることによって、すっきり書ける
+Observable.Merge(
+        fsw.CreatedAsObservable(),
+        fsw.DeletedAsObservable(),
+        fsw.ChangedAsObservable(),
+        fsw.RenamedAsObservable())
+    .Subscribe(e =&gt; Console.WriteLine(e.ChangeType + &quot;:&quot; + e.Name));
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/fsw_intellisense.jpg">
+</p>
+<p>といった形です。また、普通に+-でのイベント以外のものへの登録も可能です。例えば</p>
+<pre><code class="language-csharp">// LayoutRootはWPFの一番外枠の&lt;Grid Name=&quot;LayoutRoot&quot;&gt;ということで。
+Observable.FromEvent&lt;MouseButtonEventHandler, MouseButtonEventArgs&gt;(
+        h =&gt; (sender, e) =&gt; h(e),
+        h =&gt; LayoutRoot.AddHandler(UIElement.MouseDownEvent, h),
+        h =&gt; LayoutRoot.RemoveHandler(UIElement.MouseDownEvent, h))
+    .Subscribe(e =&gt; Debug.WriteLine(e.ClickCount));
+</code></pre>
+<p>こんな形のものもObservable化が可能です。</p>
+<h2>イベントの解除</h2>
+<p>Subscribeの戻り値はIDisposableで、Disposeを呼ぶことでイベントが解除されます。</p>
+<pre><code class="language-csharp">// アタッチ
+var events = Observable.Merge(
+        fsw.CreatedAsObservable(),
+        fsw.DeletedAsObservable(),
+        fsw.ChangedAsObservable(),
+        fsw.RenamedAsObservable())
+    .Subscribe(e =&gt; Console.WriteLine(e.ChangeType + &quot;:&quot; + e.Name));
+
+// デタッチ(合成などをしていて、元ソースが複数ある場合も、すべて解除されます)
+events.Dispose();
+</code></pre>
+<p>Rxのこの仕組みは、従来に比べて圧倒的にイベントの解除がやりやすくなっていると思います。</p>
+<h2>まとめ</h2>
+<p>非同期の説明ばかりしてきていて、イベントはすっかり置き去りだったことを、まずはゴメンナサイ。少し前からFromEvent周りは大きな仕様変更が入ったわけですが、ようやくまともに解説できました。基本中のキの部分であるここが、過去のリソースがそのまま適用出来ないという最悪の自体に陥っていたので、とりあえずこれで何とか、でしょうかどうでしょうか。</p>
+<p>小さなこととはいえ、WP7との互換性が絶えているのが痛いのですが、その辺どうにかならなかったのかねー、とは思います。けれど、このEventArgsだけ送るFromEvent自体は良いと思います。 .Select(e =&gt; e.EventArgs) が定型句だったので、こういった変更は喜ばしい限り。それと、今まで思っていた、ぶっちゃけラムダ式とかRxでイベント登録するならsenderって不要じゃね？に対する答え(その通りで、完全に不要)を出してくれたのが嬉しい。</p>
+<p>さて、変換できるのはいいけれど、じゃあどこで使うのがいいの？という話がいつもありません。次回は、時間周りと絡めて、その辺のお話が出来ればと思いますが、いつも次回予告が達成されたことはないので、別のことを書くでしょう←ダメぢゃん。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0630_331.html">Reactive Extensions v1.0安定版リリース</a></h1>
+<ul class="date"><li>2011-06-30</li></ul>
+<div class="entry_body"><p><a href="http://blogs.msdn.com/b/rxteam/archive/2011/06/29/first-official-release.aspx">Reactive Extensions v1.0 Stable and v1.1 Experimental available now!</a> ということで、今までも安定版だの正式だの何なり言っていましたが、今回こそ、本当に本当に正式リリース、v1.0だそうです。整理されたドキュメント、多くのチュートリアルビデオ、<a href="http://enumeratethis.com/2011/06/29/rx-performance-improvements/">大幅なパフォーマンス改善</a>、そして、よくテストされた(かどうかは不明)安定版としてのライブラリ本体。全てが整いました。さあ、使いましょう！実際のプロダクトに！</p>
+<ul>
+<li><p><a href="http://channel9.msdn.com/Blogs/Charles/Announcing-the-Official-Release-of-Rx">Announcing the Official Release of Rx! | Charles | Channel 9</a><br />
+下のリンク先にあるRx Workshopで、沢山のビデオで学ぶことが出来ます。</p>
+</li>
+<li><p><a href="http://msdn.microsoft.com/en-us/library/hh242985(VS.103).aspx">MSDN - .NET Development - Reactive Extensions</a><br />
+MSDNでのドキュメント。コンセプトから細かい使い方まで、しっかり書かれています。</p>
+</li>
+<li><p><a href="http://msdn.microsoft.com/en-us/library/hh242986(VS.103).aspx">Reactive Extensions Class Library Reference</a><br />
+MSDNでのクラスライブラリリファレンス。</p>
+</li>
+</ul>
+<p>また、NuGetではRx-でStable版を、Rx_experimental-で実験版を、他にIx_experimental-でIxをインストールすることが可能です。</p>
+<h2>Ix復活</h2>
+<p>Ix(Interactive Extensions、Reactiveの反対ということでEnumerableEx、Linq to Objectsを拡張する拡張メソッド群)が復活しました。復活前に、<a href="http://social.msdn.microsoft.com/Forums/en-US/rx/thread/1a75496f-0b33-41c0-bf7a-92f9802c3f0a">今後についての意見を募集</a>していたのですが、素敵なことに私の意見が全部反映されていました！XxxEnumerableはIntelliSenseの邪魔だから廃止してね、とかForEachにはindex付きのオーバーロード入れてよ、とかTreeを走査するメソッド入れてよ、とか。これは嬉しい。いやあ、やっぱり言っておくものですね。</p>
+<p>そんなわけで、もうForEachを自作する必要はありません:)</p>
+<p>標準クエリ演算子で何が「出来ない」のかを知っておくことは大切です。標準では複数回列挙なしで前後の値を使うことは出来ないし、再帰的に辿るような、複数段のSelectManyも出来ない。MaxByなどキーを使った最大値の取得もない。</p>
+<p>Ixは、そこを補完してくれます。</p>
+<h2>Expand</h2>
+<p>Ixの中から、Expandを紹介します。なお、Rx(Observable)にはExperimental Releaseのほうにはあるのですが、まだStableには入っていません。</p>
+<p>これは何かというと幅優先探索でツリーを解きほぐします。イミワカリマセンネ。ええと、ツリー状のオブジェクトを辿る場合は、通常は再帰を使って書くと思います。でも、そうして再帰で辿るのって、各枝の値が欲しいわけなんですよね？もしそうなら、ツリーは一直線上に出来る。IEnumerable&lt;T&gt;に出来る。LINQが適用できる。</p>
+<p>ええ。<a href="http://d.hatena.ne.jp/NyaRuRu/20080127/p2">熟練した C# 使いは再帰を書かない</a>のです。で、ツリーです。ツリーを辿るのは頻出の再帰構造でパターン化できて、うんたらかんたら。ああ、もう！<a href="http://d.hatena.ne.jp/NyaRuRu/20080604/p1">与えられた木から，子→親への対応を作る，を C# で - NyaRuRuの日記</a>を見るといいです、それで全部解決です！</p>
+<p>ExpandはBreadthFirstにあたります。DepthFirstはないの？というと、今のところないですねー。ないものはないです、しょうがない。それはさておき、このツリー的なものを辿るのというのは割とあるシチュエーションで、そしてExpandというメソッドは実に強力なので、是非使い方をマスターして欲しい。ので、例を出します。例えばWinFormsのコントロール。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/ix_forms.jpg">
+</p>
+<p>Panelの下にButtonや、子Panelが並んでいます。さて、この中から全てのButtonを取り出したいのですが、どうしましょうか？予め配列にButtonを持っておく、のもまあ答えですが、ルート階層から辿るようにしましょう。Formに並ぶコントロールは、階層に別れたツリー構造をしています。Expandを使ってみましょう。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/ix_buttons.jpg">
+</p>
+<p>Expandはセレクターの結果がEmptyになるまで、辿り続けます。辿る順番は階層順(幅優先)。今回はContorolsを辿って全てのControlを列挙、Buttonが欲しいのでOfTypeでフィルタリング。というわけです。WPFやSilverlightでも、同様に辿ることが出来ます(ちょっとWPFのコントロール階層が面倒くさくて、コードがゴチャゴチャするので、今回はWinFormsを例とさせていただきました)</p>
+<p>こういった走査メソッドは<a href="http://linqjs.codeplex.com/">linq.js</a>にもあります(CascadeBreadthFirst、メソッド名のとおり、NyaRuRuさんの作成されたAchiralから大きな影響を受けています)。JavaScriptの場合、ツリーの代表的なものはDOMです、というわけで勿論DOMに適用できるのですが、DOMの列挙はjQueryでやったほうがいいですよー、なので、JSONやオブジェクト(これもまたツリーになっている)の走査に使うのがいいかもしれません。何にせよ、使いどころというのは存外あるものです。</p>
+<h2>気になった点</h2>
+<p>そんな素敵なIxですが、触っていて幾つか気になった点があったので、<a href="http://social.msdn.microsoft.com/Forums/en-US/rx/thread/278f57aa-f0ef-4a95-be41-822d3dd5e299">またForumに投げておきました</a>。リクエストが反映されたことで、調子に乗って味を占めているのかもしれません。ではなくて、フィードバックは積極的に出してあげたほうがいいでしょう常識的に考えて。英語？全部機械翻訳です、はは、まあ、コードがあれば伝わるはず。伝わりました。返答が15分で来た。</p>
+<p>まず、Scanの挙動。seedなしの場合に、Rxは最初の値も列挙しますが、Ixは最初の値をスルーするという、挙動の違い。で、これ、最初の値がスルーされるのは都合が悪いので(スルーしたきゃあSkip(1)すればいい)、修正かなあ、と思います。返答では、この点については何も言ってませんでしたが。</p>
+<p>Scanにはもう一つ、seed有りの際に、Rx, Ixともにseedをスルーしますが、F#などはseedも列挙します。これは以前はScan0というseed含めて列挙する別のメソッドがあった(WP7版にはある)のですが、今はScan0は廃止されたので、それならScanの挙動をseed込みでの列挙に変更すべき。と、思ったのですが、返答はStartWith(seed)を使えばいいとのこと。それでも確かにいいのですが、基本seed有りにしてseed飛ばしたい時はSkip(1)のほうが使いやすいと思うのだけど。まあ、これはWP7版との互換性の問題もありますし、そもそもRxはStableと言った以上、もう挙動は変えられないので、しょうがないところかもしれません。</p>
+<p>他にはRepeat拡張メソッド(無限リピートする)のソースがEmptyの場合の挙動。例えば Range(1,1).Repeat().Take(3) と1,1,1になるわけですが、 Empty<int>().Repeat().Take(3) の結果はどうでしょう？答えは、無限ループを彷徨って止まらなくなります。Emptyに対するRepeatをどう解釈するか、は正直微妙なところですけれど、元ソースが空だと死ぬというのは、結構リスキーなのではないかな、と考えてしまうのです。また、Takeをつけるのは止まることを期待するという点もあるわけですが、この場合はTakeをつけようが何しようが無駄、というのも怖い。Rxチームからの回答は、この挙動は仕様とのことでした。</p>
+<p>最後にちょっとリクエストしてみた。今回のIxではDistinctにオーバーロードが足されています。通常だとIEqualityComparer&lt;T&gt;というダルいものをクラス定義して(ここが最悪！)渡さなければいけないのですが、ラムダ式でキーを指定するだけで済みます。言うならばDistinctByといったところ。これは、実に大変有益です。このオーバーロードは、<a href="http://linqcomparer.codeplex.com/">AnonymousComparer</a>という私が以前に作ったものにも載っているのですが(ちなみに拡張メソッドがかち合ってしまうため、Ixと同時使用は不可能になってしまった！まあ、.csファイル一個のライブラリなので、かち合う部分はコメントアウトすればいいのですが)、大変重宝しています。しょっちゅう使ってます。特にExceptとかで多用しているんですが……、今回IxではDistinctにしかオーバーロード足されていません。他の集合系メソッドであるIntersect, Except, Unionでも使えると便利なのになー、って思ってしまうのです。なのでリクエストしておきました。回答は、考えておく、とのことなのでもしかしたら次のバージョンでは乗っかっているかもしれません。</p>
+<p>日本語だと言えるけれど、バッサリ切って機械翻訳した英語だと伝えたいニュアンスは吹っ飛んでしまうなあ、ううみぅ。必ずしもコードがあれば伝えられる、わけでもないか、当たり前だけど。</p>
+<h2>QueryableEx(笑)</h2>
+<p>ネタ。NuGetではIx_Experimental-Providerで入るんですが、まあ、ネタ。中身はEnumerableExのIQueryable版です。何がネタなのかというと、IQueryableはそれだけでは何の意味もなくて、解釈するエンジン(Linq to SqlなりLinq to Twitterなり)が大事なわけです。そうでなければ、not supportedをぶん投げるだけです。さて、そして、標準クエリ演算子ですらnot supported率が少なくないのに、QueryableExに対応するクエリプロバイダ……。ありえない、です。</p>
+<p>そんなわけで、使う機会はないでしょう。んまあ、気合でQueryableExすらもフルサポートするクエリプロバイダを自作すれば、活用出来ますが、やはりそんな機会はないでしょう。</p>
+<h2>RxJSは？</h2>
+<p>ドキュメント書いたりとか、QueryableEx作ったり(笑)とか、色々忙しかったのでしょふ。今回「も」全く音沙汰なしですが、次こそは更新されるんじゃないですかねー、分かりませんけど。jQueryにはDeferred乗りましたが、アレは正直かなり使いづらいのでその点でも私はRxJSにしたいなあ。それと、<a href="http://www.publickey1.jp/blog/11/nodejswindows_azure.html">MS支援でのNode.jsのWindows対応</a>も発表されましたし、JavaScriptのAsyncを何とかするためのRx、はかなり価値があると思うので、もう少し頑張って欲しいな、と思います。</p>
+<h2>まとめ</h2>
+<p>しっかりとMSDN入りしている、ドキュメントもある、正式にv1 Stableと告知されている、など、もう採用できない理由はなくなりました。日本語リソースはないですが、それは気合で乗り切ればいいぢゃない(とか言ってるうちはダメなのでしょうがー)。</p>
+<iframe src="http://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as4&m=amazon&f=ifr&ref=ss_til&asins=1430237473" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<p>Jesse Liberty(オライリーから出ているプログラミングC#の著者)による解説本も今秋に出るようだし、確実に、順調にメインストリームに乗るテクノロジとしての道を歩んでいますので、安心して追えるのではないかと思います。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0623_330.html">ReactiveOAuth ver.0.4 - Twitpic(OAuth Echo)対応</a></h1>
+<ul class="date"><li>2011-06-23</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://reactiveoauth.codeplex.com/" title="ReactiveOAuth - Home">ReactiveOAuth - CodePlex</a></li>
+</ul>
+<p>ver.0.4になりました。少し前に0.3.0.1をこっそり出していたので、それを含めて0.3からの差分は、「対象Rxのバージョンが現在最新の1.0.10605(Stable)」に、というのと「Realmが含まれていると認証が正しく生成出来なかったバグの修正」と、「TwitpicClientサンプルの追加」になります。バグのほうは本当にすみません……。Twitterでしかテストしてない＆TwitterはRealm使わないため、全然気づいていなくて。ダメですねホント。</p>
+<h2>OAuth Echo</h2>
+<p>TwitpicはOAuth Echoという仕組みでTwitterと連携した認証をして、画像を投稿できます。詳しくは<a href="http://dev.twitter.com/pages/oauth_echo">Using OAuth Echo | dev.twitter.com</a>や<a href="http://dev.twitpic.com/docs/2/upload/">TwitPic Developers - API Documentation - API v2 » upload</a>にありますが、よくわかりませんね！Twitpicに画像を投稿、というわけでTwitpicのAPIにアクセスするわけですが、その際のヘッダにTwitterに認証するためのOAuthのヘッダを付けておくと、Twitpic側がTwitterに問い合せて認証を行う。という仕組みです、大雑把に言って。</p>
+<p>ただのOAuthとはちょっと違うので、今までのReactiveOAuthのOAuthClientクラスは使えない。けれど、認証用ヘッダの生成は同じように作る。というわけで、ここはReactiveOAuthにひっそり用意されているOAuthBaseクラスを継承して、Twitpic専用のTwitpicClientクラスを作りましょう。</p>
+<p>が、作るのもまた少し面倒なので Sample/TwitpicClient/TwitpicClient.cs に作成したのを置いておきました。ファイルごとコピペってご自由にお使いください。.NET 4 Client Profile, Silverlight 4, Windows Phone 7の全てに対応しています。</p>
+<h2>Windows Phone 7でのカメラ撮影＋投稿のサンプル</h2>
+<p>TwitpicClient.cs の解説は後でやりますが、その前に利用例を。WP7でカメラ撮影＋投稿をしてみます。CameraCaptureTaskの利用法に関しては <a href="http://ch3cooh.jp/index.php/tips/windowsphone7/tasks/cameracapturetask/">CameraCaptureTaskを使ってカメラで静止画撮影を行う – CH3COOH(酢酸)の実験室</a> を参考にさせて頂きました。TwitterのAccessTokenの取得に関しては、ここでは解説しませんので <a href="http://neue.cc/2010/09/12_276.html">neue cc - ReactiveOAuth - Windows Phone 7対応のOAuthライブラリ</a> を参照ください。</p>
+<pre><code class="language-csharp">// CameraCaptureTaskのCompletedイベント
+void camera_Completed(object sender, PhotoResult e)
+{
+    if (e.TaskResult == TaskResult.OK)
+    {
+        // 撮影画像(Stream)をバイト配列に格納
+        var stream = e.ChosenPhoto;
+        var buffer = new byte[stream.Length];
+        stream.Read(buffer, 0, buffer.Length);
+
+        // key, secret, tokenは別に設定・取得しておいてね
+        new TwitpicClient(ConsumerKey, ConsumerSecret, accessToken)
+            .UploadPicture(e.OriginalFileName, &quot;from WP7!&quot;, buffer)
+            .ObserveOnDispatcher()
+            .Catch((WebException ex) =&gt;
+            {
+                MessageBox.Show(new StreamReader(ex.Response.GetResponseStream()).ReadToEnd());
+                return Observable.Empty&lt;string&gt;();
+            })
+            .Subscribe(s =&gt; MessageBox.Show(s), ex =&gt; MessageBox.Show(ex.ToString()));
+    }
+}
+</code></pre>
+<p>new TwitpicClient(キー, シークレット, アクセストークン).UploadPicture(ファイル名, メッセージ, 画像) といった風に使います。戻り値はIObservable&lt;string&gt;で結果(投稿後のURLとか)が返ってくるので、あとは好きなように。投稿に失敗した場合は、WebExceptionが投げられるので、それを捉えてエラーメッセージを読み取ると開発には楽になれそうです。</p>
+<h2>TwitpicClient.cs</h2>
+<p>以下ソース。Sample/TwitpicClient/TwitpicClient.cs と同じですが、自由にコピペって使ってください。大事なことなので2回言いました。このコード自体はTwitpicに特化してありますが、認証部分のヘッダを少しと画像アップロードを変更する部分を弄れば、他のOAuth Echoサービスにも対応させることができると思います。</p>
+<pre><code class="language-csharp">using System;
+using System.Linq;
+using System.Text;
+using System.Net;
+using System.IO;
+
+#if WINDOWS_PHONE
+using Microsoft.Phone.Reactive;
+#else
+using System.Reactive.Linq;
+#endif
+
+namespace Codeplex.OAuth
+{
+    public class TwitpicClient : OAuthBase
+    {
+        const string ApiKey = &quot;&quot;; // set your apikey
+
+        readonly AccessToken accessToken;
+
+        public TwitpicClient(string consumerKey, string consumerSecret, AccessToken accessToken)
+            : base(consumerKey, consumerSecret)
+        {
+            this.accessToken = accessToken;
+        }
+
+        private WebRequest CreateRequest(string url)
+        {
+            const string ServiceProvider = &quot;https://api.twitter.com/1/account/verify_credentials.json&quot;;
+            const string Realm = &quot;http://api.twitter.com/&quot;;
+
+            var req = WebRequest.Create(url);
+
+            // generate oauth signature and parameters
+            var parameters = ConstructBasicParameters(ServiceProvider, MethodType.Get, accessToken);
+            // make auth header string
+            var authHeader = BuildAuthorizationHeader(new[] { new Parameter(&quot;Realm&quot;, Realm) }.Concat(parameters));
+
+            // set authenticate headers
+            req.Headers[&quot;X-Verify-Credentials-Authorization&quot;] = authHeader;
+            req.Headers[&quot;X-Auth-Service-Provider&quot;] = ServiceProvider;
+
+            return req;
+        }
+
+        public IObservable&lt;string&gt; UploadPicture(string filename, string message, byte[] file)
+        {
+            var req = CreateRequest(&quot;http://api.twitpic.com/2/upload.xml&quot;); // choose xml or json
+            req.Method = &quot;POST&quot;;
+
+            var boundaryKey = Guid.NewGuid().ToString();
+            var boundary = &quot;--&quot; + boundaryKey;
+            req.ContentType = &quot;multipart/form-data; boundary=&quot; + boundaryKey;
+
+            return Observable.Defer(() =&gt;
+                    Observable.FromAsyncPattern&lt;Stream&gt;(req.BeginGetRequestStream, req.EndGetRequestStream)())
+                .Do(stream =&gt;
+                {
+                    using (stream)
+                    using (var sw = new StreamWriter(stream, new UTF8Encoding(false)))
+                    {
+                        sw.WriteLine(boundary);
+                        sw.WriteLine(&quot;Content-Disposition: form-data; name=\&quot;key\&quot;&quot;);
+                        sw.WriteLine();
+                        sw.WriteLine(ApiKey);
+
+                        sw.WriteLine(boundary);
+                        sw.WriteLine(&quot;Content-Disposition: form-data; name=\&quot;message\&quot;&quot;);
+                        sw.WriteLine();
+                        sw.WriteLine(message);
+
+                        sw.WriteLine(boundary);
+                        sw.WriteLine(&quot;Content-Disposition: form-data; name=\&quot;media\&quot;; filename=\&quot;&quot; + filename + &quot;\&quot;&quot;);
+                        sw.WriteLine(&quot;Content-Type: application/octet-stream&quot;);
+                        sw.WriteLine(&quot;Content-Transfer-Encoding: binary&quot;);
+                        sw.WriteLine();
+                        sw.Flush();
+
+                        stream.Write(file, 0, file.Length);
+                        stream.Flush();
+
+                        sw.WriteLine();
+                        sw.WriteLine(&quot;--&quot; + boundaryKey + &quot;--&quot;);
+                        sw.Flush();
+                    }
+                })
+                .SelectMany(_ =&gt; Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)())
+                .Select(res =&gt;
+                {
+                    using (res)
+                    using (var stream = res.GetResponseStream())
+                    using (var sr = new StreamReader(stream, Encoding.UTF8))
+                    {
+                        return sr.ReadToEnd();
+                    }
+                });
+        }
+    }
+}
+</code></pre>
+<p>認証ヘッダ作成はConstructBasicParametersとBuildAuthorizationHeaderというprotectedメソッドで行います。わけわかんないよね…気持ち悪いよね…。使いにくいメソッドです、すみません、私もそう思います。そういうものだと思って、見ないふりしてもらえれば幸いです。</p>
+<p>コードの大半を占めているのは画像を投稿するためのmultipart/form-dataのもので、これはもうOAuth Echo関係ない話、で、面倒ぃ。特にWP7での非同期だと涙が出る。POSTはBeginGetRequestStreamとBeginGetResponseの二つの非同期メソッドをセットで使う必要があるため、コードがごちゃごちゃするのです。</p>
+<p>しかし<a href="http://msdn.microsoft.com/en-us/data/gg577609">Reactive Extensions</a>を使えばあら不思議！でもないですが、ネストがなくなって完全に平らなので、結構普通に読めるのではないでしょうか？(ストリーム書き込みのコード量が多いのは、これは同期でやっても同じ話なので)。例外処理も利用例のところで見たように、Catchメソッドをくっつけるだけ。実に色々とスッキリします。</p>
+<p>Rxがあれば非同期POSTも怖くない。</p>
+<p>やっていることは単純で、FromAsyncPatternでBegin-Endを変換。StreamへのWriteは後続への射影はなく、対象(Stream)に対しての副作用(書き込み)のみなのでDo、RequestStream-&gt;Responseへの切り替えはSelectMany、Responseから結果のStringへの変換はSelect、と、お決まりの定型メソッドに置き換えていっただけです。この辺はパターンみたいなものなので、これやるにはこのメソッドね、というのを覚えてしまえばそれでお終いです。</p>
+<h2>Stream読み書きは非同期にしないの？</h2>
+<p>StreamにもBeginReadとかBeginWriteとかありますものね。しかし、しません(ｷﾘｯ。理由は死ぬほど面倒だからです。やってみると分かりますが想像以上に大変で、おまけに何とか実現するためにはRxでのチェーンを大量に重ねる必要がありオーバーヘッドがバカにならない……。なので、わざわざやるメリットも全くありません。</p>
+<p>一応、ReactiveOAuthのOAuthClientは、そこも非同期でやってますが、わざわざ頑張った意味があったかは、かなり微妙なところ。実装は Internal/AsynchronousExtensions.cs にあるので参照ください。それと、この AsynchronousExtensions.cs は<a href="http://www.slideshare.net/neuecc/reactive-extensions-8049041">Reactive Extensionsで非同期処理を簡単に</a>で言った「拡張メソッドのすゝめ」を実践したものでもあります。WebRequestはプリミティブすぎて扱い難いので、Rxに特化したうえで簡単に扱えるようにDownloadStringやUploadValueなどといったメソッドを拡張してあります。便利だと思いますので、こちらも TwitpicClient.cs と同様に、ファイルごと自由にコピペって使ってやってください。</p>
+<h2>まとめ</h2>
+<p>ReactiveOAuthを公開する目的に、「これが入り口になってRxの世界を知ってもらえると嬉しい」というのもあったのですが、WP7開発で利用してもらったりと、その目的は少しは達成出来たかもで、良かった良かった。ちょっと練りたりなかったり、未だにバグがあったり(本当にごめんなさい！)と至らない点も多いですが、今後も改善していきますのでよろしくお願いします。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0615_329.html">MSDNの上のReactive Extensions</a></h1>
+<ul class="date"><li>2011-06-15</li></ul>
+<div class="entry_body"><p>DevLabsを卒業し、晴れて正式に<a href="http://msdn.microsoft.com/en-us/data/aa937685" title="Data Developer Center">Data Developer Center</a>入りした<a href="http://msdn.microsoft.com/en-us/data/gg577609" title="Reactive Extensions">Reactive Extensions</a>ですが、徐々に正式リリースへ向かう準備として、ついにドキュメントがMSDN入りを果たしました。</p>
+<ul>
+<li><a href="http://msdn.microsoft.com/en-us/library/hh242985(v=VS.103).aspx" title="Reactive Extensions">MSDN Library &gt; .NET Development &gt; Reactive Extensions</a></li>
+</ul>
+<p>まだPre-releaseということで工事中の部分が多いですが、これはドキドキしますね。Getting Started with Rxはどんなところで使えるかの説明とダウンロード先について、Using Rxは詳細なドキュメント（まだ工事中項目も幾つか、でもかなり充実している感）、Reactive Extensions Class Libraryはリファレンス。必要十分には揃っていますね、あとは大きめのサンプルも欲しいところだけど、追加されるかな？</p>
+<p>ところで、ツリー階層を見てください。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/rx_msdn_tree.jpg">
+</p>
+<p>.NET Development直下です。何て素晴らしい位置にあるのか！Entity FrameworkやSilverlight
+などと同列に並べられているのを見ると、ついに始まったな、と感無量です。</p>
+<h2>その他のRx</h2>
+<p>Rx本体が順風満帆なのに比べると、RxJSとIx(EnumerableEx)はどうしちゃったのでしょう……。まず、RxJSは、やる気は一応あるみたいです。ダウンロードも可能ですしね。APIは随分更新されていなくて、.NET版Rxとかなり差が開いてしまいましたが（バグも幾つか見つかっているのですが）。今はRxチーム自体がドキュメント周りで忙しいということで手を付けてられないっぽく、ゆっくり待つしかないです。プロジェクト自体は死んでいないそうなので、そこだけは安心してもいいかと。（私は内心不安ですが！）</p>
+<p>Ixのほうは、一旦死亡です。ダウンロードセンターはもとより、NuGetからも、もう手に入らなくなりました。が、しかし、完全終了ではなく、一旦引っ込めて練りなおして、Rxとは別枠となるかもですが提供する意思はあるそうで。「Don't worry.  Ix is not disappearing forever.」とのこと。そこで、フィードバックが欲しいとのことなので、答えてあげるといいんじゃないかしら。<a href="http://social.msdn.microsoft.com/Forums/en-US/rx/thread/1a75496f-0b33-41c0-bf7a-92f9802c3f0a" title="Asking your input - Interactive Extensions functionality">Asking your input - Interactive Extensions functionality</a>。私も好きなメソッドと嫌いなもの(XxxEnumerableがIntelliSenseを汚染して嫌いだった)、それとドサクサに紛れて再帰/ツリー探索系のメソッドを入れてよ！とリクエストしておきました。</p>
+<h2>NuGet</h2>
+<p>6月頭にバージョンが少し上がって、現在はStableがv1.0.10605、Experimentalがv1.1.10605が最新バージョンとなっています。そしてNuGetのパッケージ名も少し変化して、Stable版はRx-MainなどプリフィックスがRx-のもの、ExperimentalはRx_Experimental-MainなどプリフィックスがRx_Experimental-と完全に別れて提供されるようになりました。</p>
+<h2>と、まあ</h2>
+<p>そんなところです。最近は私もこうして、更新されたよー、と言うだけで、技術的な情報提供を怠っていてすみませんすみませんなので、徐々に再開していきたいと思います。Schedulerの話とか非常に重要なのに、このブログでは一度も書いていないですしね、全くもってイクない。こないだのセッション<a href="http://www.slideshare.net/neuecc/reactive-extensions-8049041" title="Reactive Extensionsで非同期処理を簡単に">Reactive Extensionsで非同期処理を簡単に</a>は非同期中心だったので、イベントサイドについての話もしっかりまとめたいなあ、とかも思いつつ。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0609_328.html">linq.js入門記事を書きました</a></h1>
+<ul class="date"><li>2011-06-09</li></ul>
+<div class="entry_body"><p>お話をいただき、@ITの.NET TIPSに<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript - Home">linq.js</a>の入門記事を、二週に渡り書きました。</p>
+<ul>
+<li><a href="http://www.atmarkit.co.jp/fdotnet/dotnettips/1058linqjsbasic/linqjsbasic.html" title="JavaScriptで配列をLINQにより処理できるライブラリ「linq.js」を利用するには？ － ＠IT">JavaScriptで配列をLINQにより処理できるライブラリ「linq.js」を利用するには？ － ＠IT</a></li>
+<li><a href="http://www.atmarkit.co.jp/fdotnet/dotnettips/1059linqjquery/linqjquery.html" title="jQueryと「linq.js」を連携させてDOMをLINQにより処理するには？ － ＠IT">jQueryと「linq.js」を連携させてDOMをLINQにより処理するには？ － ＠IT</a></li>
+</ul>
+<p>このサイトでやると、アレもコレもとダラダラと書いてしまって分かりづらくなっていたのですが、記事では文字数制限などのお陰で構成がすっきり、校正してもらったお陰で文章の揺れもなく。つまるところ、ほとんど編集で助けてもらったというだけで、本当にありがとうございました。サンプルコードは、コードを見ただけで伝わるよう単純に、でもlinq.jsの威力を伝えなければならないので多少の複雑さは持たなければならない。などと思い結構悩んで作りました。</p>
+<p>お陰様で反響も結構良かったみたいでなによりです。実績も良く分からない外部ライブラリは導入できない…… という方も、@ITに載ってるから大丈夫だよ！を説得材料(？)にできるのではないでしょうか。これを機に、是非試してみてください。</p>
+<p>ところで幾つかの話。</p>
+<h2>メソッド名大文字</h2>
+<p>失敗した。かな……。特にTojQuery()でjQueryと見かけ上(あくまで見かけだけなんですが)シームレスに繋がっていると違和感が結構あります。以前に、jQueryとLINQの世界が視覚上切れて見えるから、むしろイイぐらいなんです、とか言ってましたが勿論ただの強がりです。この辺は今更変えにくいところで、どうしたものかな、と悩んでいるところです。</p>
+<h2>パフォーマンスについて</h2>
+<p>気になりますよね？ベンチマーク的に言えば、遅い。遅延評価の実現や豊富な機能は、速度を相当犠牲にしています。では、その遅さが許容できるほどか無視できないか。これは、卑怯な逃げ口になってしまいますが、状況次第。少なくとも普通のサイトでは問題ないレベルだと思いますし、また、ブラウザのJSはどんどん速くなっていってます。Chrome/Fx4/IE9の速さ！「許容できる」の範囲はどんどん広がっていってるのでは、と。</p>
+<p>こういった話はC#でもそうです。LINQはベタforループより確実に遅い、が、じゃあベタforループで書くかといったら、よほどエクストリームに速度を求める場合以外は書きはしません。</p>
+<p>Pentium3でWindows XPでIE6な奴らにも配慮する！というのも確かに美学なのですが、そうではない方向も見ないと、素敵な未来はやってこないのではないかな、って。21世紀にもなるのに<a href="http://ja.wikipedia.org/wiki/%E3%83%AB%E3%83%BC%E3%83%97%E5%B1%95%E9%96%8B">ループアンローリング</a>で高速化！とかいう記事ばかりが踊る世界なんて悲しいじゃないですか。</p>
+<p>モバイル機器のことも考えなければならないし、HTML5も控え、JavaScriptで高負荷な処理をすることも少なくないので、まだまだ時代は追いついていないけれど。それでも、私はもう少し先の未来を見ていたい……。JavaScriptがこれから先、本当に一級の言語となっていくのなら尚の事です。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0606_327.html">Reactive ExtensionsとSQLの非同期実行</a></h1>
+<ul class="date"><li>2011-06-06</li></ul>
+<div class="entry_body"><p><a href="http://dbexecutor.codeplex.com/">DbExecutor</a>のパフォーマンスが十分トップクラスであることは、<a href="http://neue.cc/2011/06/03_326.html">こないだの計測</a>で分かりました。では次のステップはどこへ向かおう。IL生成を頑張っても、もうほんの少ししか稼げる余地は残ってない。ならば、もっと根本的なところから行こう。ええ、非同期IOを。DbExecutorは一応、拡張性を考慮してあるので継承して非同期対応しましょう。</p>
+<p>……ところで、この記事はAsyncDbExecutorの作り方、みたいになっていますが、読み取ってほしいのは「<a href="http://msdn.microsoft.com/en-us/data/gg577609">Reactive Extensions</a>の使い方」です。AsyncDbExecutorは、あくまでRxの利用法のサンプルにすぎません。DbExecutorなんて使わないしー、とか思わず、その辺を念頭において眺めてみてください。</p>
+<h2>BeginExecuteReader/EndExecuteReader</h2>
+<p>SqlServerならば<a href="http://msdn.microsoft.com/ja-jp/library/1a674khd.aspx">SqlCommand.BeginExecuteReaderメソッド</a>が使えます。IDbCommandにはないので、対象はSqlServer特化ということになってしまいますが、まあ、それはしょうがない(非同期対応してないDBもあるわけだし)。対応させる方法ですが、まずはDbExecutorを継承してコンストラクタを弄ります。</p>
+<pre><code class="language-csharp">public class AsyncDbExecutor : DbExecutor
+{
+    public AsyncDbExecutor(string connectionString)
+        : base(new SqlConnection(connectionString))
+    { }
+
+    public AsyncDbExecutor(SqlConnection connection)
+        : base(connection)
+    { }
+
+    public AsyncDbExecutor(string connectionString, IsolationLevel isolationLevel)
+        : base(new SqlConnection(connectionString), isolationLevel)
+    { }
+
+    public AsyncDbExecutor(SqlConnection connection, IsolationLevel isolationLevel)
+        : base(connection, isolationLevel)
+    { }
+}
+</code></pre>
+<p>通常のDbExecutorはIDbConnectionを受け入れるようにしていましたが、今回はSqlServer特化なのでSqlConnectionで。また、利便性を考えて生の接続文字列からも作れるようにしてやりました。IsolationLevelを受け入れるオーバーロードはTransaction処理する場合のためとなっています(別にTransactionScope使ってもいいですけどね)。あとは、非同期に対応するメソッドを作ってやれば良いだけ。</p>
+<h2>Reactive Extensions</h2>
+<p>BeginXxx-EndXxxがカッタルイのは分かりきっているので、当然のようにRxを持ち出します。</p>
+<pre><code class="language-csharp">// 引数が横に長いですがほとんど省略可能なので……
+public IObservable&lt;SqlDataReader&gt; ExecuteReaderAsyncRaw(string query, object parameter = null, CommandType commandType = CommandType.Text, CommandBehavior commandBehavior = CommandBehavior.Default)
+{
+    var cmd = (SqlCommand)this.PrepareExecute(query, commandType, parameter);
+    return Observable.FromAsyncPattern&lt;SqlDataReader&gt;(
+            (ac, o) =&gt; cmd.BeginExecuteReader(ac, o, commandBehavior), cmd.EndExecuteReader)
+        .Invoke()
+        .Finally(() =&gt; cmd.Dispose());
+}
+</code></pre>
+<p>this.PrepareExecuteですが、これはDbExecutorのprotectedメソッドで、クエリ文字列や匿名型で渡すパラメータからIDbCommandを生成します。こんなこともあろうかとちゃんとprotectedにしておいて良かった。そしてキャストですが、今回はconnectionは必ずSqlConnectionで(そうなるようコンストラクタを調整してある)、戻り値がSqlCommandであることが保証されているためアップキャストしてやります。そうしないと非同期APIが使えないですから。</p>
+<p>あとは、いつものように(？)FromAsyncPatternして、それとFinallyでcommandをDisposeしてやることを忘れないと気が効いてるかもり。利用する時は</p>
+<pre><code class="language-csharp">// async=trueを忘れずに
+var connstr = @&quot;Data Source=.;async=true;Initial Catalog=master;Integrated Security=True;&quot;;
+
+var executor = new AsyncDbExecutor(connstr);
+executor.ExecuteReaderAsyncRaw(&quot;select * from sys.tables&quot;)
+    .Finally(() =&gt; executor.Dispose()) // 接続のDisposeも忘れずに...
+    .Subscribe(dr =&gt;
+    {
+        while (dr.Read())
+        {
+            Console.WriteLine(dr.GetValue(0));
+        }
+    });
+</code></pre>
+<p>といった感じです。非同期APIはDisposeをどう仕込めばいいのかが悩ましいのですが、Rxなら簡単です、Finallyに突っ込めばいいだけ。同期APIでusingで囲むのと同じ感覚で、RxではFinallyに置いてください。非同期実行ということで、複数同時に走らせることも少なくないと思うのですが、その場合は全ての完了を自然に扱えるよう、結合して一本の流れにしてやる必要はあるでしょう。恐らくきっと。</p>
+<p>そういえば忘れてはいけないのは、非同期APIを使う場合は接続文字列にasync=trueが必要です。これについては<a href="http://msdn.microsoft.com/ja-jp/library/dd229385.aspx">ADO.NET 2.0 における非同期コマンド実行</a>によると</p>
+<blockquote>
+<p>非同期コマンドを使用するためには、コマンドが実行される接続は、接続文字列を async=true と指定して初期化する必要があります。 非同期メソッドが接続文字列に async=true と指定されていない接続を使用するコマンドで呼び出されると、例外がスローされます。</p>
+</blockquote>
+<blockquote>
+<p>所定の接続オブジェクトで同期コマンドのみを使用するとわかっている場合は、接続文字列に async キーワードを指定しないか、false に設定することをお勧めします。 非同期操作が有効になっている接続で同期操作を実行すると、リソースの利用率は著しく増大します。</p>
+</blockquote>
+<blockquote>
+<p>同期 API と非同期 API の両方が必要な場合は、可能であれば別々の接続を使用することをお勧めします。 これが不可能であれば、async=true を指定して開かれた接続で同期メソッドを使用することもできます。この場合、通常どおりに動作しますが、パフォーマンスは若干劣化します。</p>
+</blockquote>
+<p>とのことなので、少し気をつけたほうがいいかもしれません。まあ、Rx愛好家なら全てRxで非同期でやるに決まっているので(?)、別にasync=trueでも怖くありません。</p>
+<h2>SelectMany</h2>
+<p>しかし、生のDataReaderをwhileで回すとか、ダサ……。せっかくのRxなのだから値もPushで送ればいいぢゃない。</p>
+<pre><code class="language-csharp">IEnumerable&lt;IDataRecord&gt; EnumerateSqlDataReader(SqlDataReader reader)
+{
+    using (reader)
+    {
+        // Closeされるタイミングがコントロール出来ないので、IsClosedのチェックは必須
+        while (!reader.IsClosed &amp;&amp; reader.Read())
+        {
+            yield return reader;
+        }
+    }
+}
+
+// 前に定義したAsyncRawを呼んでSelectManyするだけ
+public IObservable&lt;IDataRecord&gt; ExecuteReaderAsync(string query, object parameter = null, CommandType commandType = CommandType.Text, CommandBehavior commandBehavior = CommandBehavior.Default)
+{
+    return ExecuteReaderAsyncRaw(query, parameter, commandType, commandBehavior)
+        .SelectMany(dr =&gt; EnumerateSqlDataReader(dr));
+}
+
+// 使うときはこんな感じ
+var executor = new AsyncDbExecutor(connstr);
+executor.ExecuteReaderAsync(&quot;select * from sys.tables&quot;)
+    .Select(dr =&gt; new
+    {
+        Name = dr.GetString(0),
+        ObjectId = dr.GetInt32(1)
+    })
+    .Finally(() =&gt; executor.Dispose())
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>実にLINQっぽく自然になりました。yield returnを使ったのは、IObservableのSelectManyはIEnumerableも受け入れて平らにしてくれるからです。これ、Observable.UsingとかObservable.Generateを使って、Rxだけで頑張ることも可能ではあるのですが、面倒くさいしゴチャゴチャします。なので、yield returnが使えるなら、使ってしまったほうが楽。この辺はIEnumerable&lt;T&gt;を生成するためのyield returnがあるように、IObservable&lt;T&gt;を生成するためのコンパイラサポートが欲しいところ。awaitが乗ればTaskからIObservableへの変換(は基本的に容易)なので、ある程度可能になるのかなあ、と思いつつ、謂わばAsyncEnumerableになることの難しさもあるので今のところ何とも言えません。</p>
+<p>ExecuteReaderAsyncがあればExecuteReaderAsyncRawいらないぢゃん！って感じですけれど、パフォーマンスのために非同期にするのに、SelectManyとかオーバーヘッドがあるのも嫌かなあ、と思う場合もあるかもなので、生のSqlDataReaderを返すものも残してあげるのもいいかな、とか思ったりはするところ。EnumerateSqlDataReaderのような拡張メソッドを別途定義してやれば、生のSqlDataReaderも、そう扱いが面倒というわけでもないですしね。いや、どうだろう……。</p>
+<h2>次バージョン</h2>
+<p>この調子でExecuteNonQueryやSelectなども書いていけば完成です。って、そういえばアクセサの動的生成＆キャッシュの部分はinternalで外から触れない(せいぜいPrepareExecuteだけ)からSelectは書けないぢゃん。うげげ。うーん、publicにするのもどうかと思うので、InternalVisibleToで対処しようかなあ。そんなわけで、このAsyncDbExecutorは今はまだアイディア段階で内容を詰めてませんが、もっとブラッシュアップさせて、次の<a href="http://dbexecutor.codeplex.com/">DbExecutor</a>の更新時に含めたいと思っています。Rxが必要という都合もあるので、本体とは別DLLで。勿論、NuGet対応で依存解決でインストール楽々、です。</p>
+<h2>ところで本当に速いの？</h2>
+<p>うん、分かりません。<a href="http://msdn.microsoft.com/ja-jp/library/dd229385.aspx">ADO.NET 2.0 における非同期コマンド実行</a>によれば</p>
+<blockquote>
+<p>ADO.NET/SqlClient の非同期コマンド実行サポートは、実際に、本当の意味での非同期ネットワーク I/O （共有メモリの場合は非ブロッキングのシグナル通知） を基礎としています。 ご要望が多ければ、いずれ内部実装について文書にしたいと思います。 ここでは、&quot;真の非同期&quot; を行っており、特定の I/O 操作が終わるまで待機しているブロックされたバックグラウンドのスレッドは存在しない、と申し上げておきます。Windows 2000/XP/2003 オペレーティング システムのオーバーラップ I/O 機能と I/O 完了ポートの機能を利用し、単一スレッド （または少数スレッド） によって、所定のプロセスに対する未処理の要求をすべて処理することを可能にしています。</p>
+</blockquote>
+<p>というわけで、まあ速いんじゃないかねえ、とは思うんですが、計らないことには分かりません。ベンチマークはAsyncDbExecutorのリリース時に、ちゃんと計ってみたいと思います。とりあえず非同期IOで万歳なNode.jsに負けてられませんからね(謎)。というのはともかく、この辺は以前にmono meetingでAzure Tableのパフォーマンスの話を聞いた時→資料:<a href="http://www.slideshare.net/takekazuomi/20110126-azure-monomeeting">20110126 azure table in mono meeting</a>全くサッパリだったこともあるので、ちゃんと調べたいとずっと思っていたのです(が、IOCPとかネイティブな話はさっぱり＆データベースの挙動の中身も全然なので、あくまで.NETな上層のほうで…… いずれは何とかしたいのですけれど、手一杯でどうにも)。</p>
+<p>やっぱ非同期が必須なのはサーバーサイドの話になるのですかねえ。IHttpAsyncHandlerとRx、とかそのうち書きたいのですが、そもそも私はASP.NETあんま分かりませんですよというところから始める必要があり。調べたいことがありすぎて積みタスクの山にうもれて完全死亡中。</p>
+<h2>デフォルトExecutor</h2>
+<p>最後に話は変わりますが、new DbExecutorするのに毎回コンストラクタにSqlConnection渡すのがダルいし不自然！という場合は、これまた継承して接続文字列が固定されたExecutorを用意すると良いです。</p>
+<pre><code class="language-csharp">public class HogeExecutor : DbExecutor
+{
+    public HogeExecutor()
+        : base(new SqlConnection(&quot;Data Source=hogehoge;&quot;))
+    { }
+
+    public HogeExecutor(IsolationLevel isolationLevel)
+        : base(new SqlConnection(&quot;Data Source=hogehoge;&quot;), isolationLevel)
+    { }
+}
+</code></pre>
+<p>中々悪くないのではないでしょーか。残念ながらStaticメソッドのほうは使えませんが。Staticメソッドのほうは、どうも上手いやり方が考えつかなくて色々と保留中。考えてはいるのですが。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0603_326.html">C#のMicro-ORM(Dapper, Massive, PetaPoco)について</a></h1>
+<ul class="date"><li>2011-06-03</li></ul>
+<div class="entry_body"><p>最近、巷という名の極一部で話題になっているMicro-ORMという分野。何それ？うーん、MicroなORマッパーです。まんまですが。Entity FrameworkがUltra Hugeだとしたら、その対極にあるような。定義としては「SQL本文は手書き、マッピングは自動」だけの機能を持つもの、といったところでしょうか。Microであるために「1ファイルのみ」を入れても良さそう。少なくとも、用語の発生元っぽい<a href="http://code.google.com/p/dapper-dot-net/" title="dapper-dot-net - Simple SQL object mapper for SQL Server - Google Project Hosting">Dapper</a>, <a href="https://github.com/robconery/massive" title="robconery/massive - GitHub">Massive</a>, <a href="http://www.toptensoftware.com/petapoco/" title="Topten Software">PetaPoco</a>は1ファイルのみです。</p>
+<p>他に、シンプルめなORマッパーを志している感じなのは<a href="https://github.com/markrendle/Simple.Data" title="markrendle/Simple.Data - GitHub">Simple.Data</a>や、そしてORマッパーじゃなくてただの実行機です！と言い張る私の作っている<a href="http://dbexecutor.codeplex.com/" title="DbExecutor - Simple and Lightweight Database Executor - Home">DbExecutor</a>などもMicro-ORMに入れちゃってもいいかしら？Simple.Dataは名前に反してあまりシンプルではない(MEF使ってる……)感じですが。DbExecutorは十分Microです！<a href="http://d.hatena.ne.jp/taedium/">id:taedium</a>さんの作られている<a href="http://soma.codeplex.com/" title="Soma - Sql Oriented MApping framework - Home">Soma</a>も比較的シンプルめなものに入るかしら……？</p>
+<p>この中で注目株はDapperで、<a href="http://stackoverflow.com/" title="Stack Overflow">Stack Overflow</a>のエンジニアがパフォーマンスの問題を解消するために作成したもの、ということで、超巨大サイトでの利用で鍛えられているというのは何よりも信頼への担保がある。そして、この手のO/Rマッパーにはかかせない動的コード生成によるパフォーマンス向上に関しては、パフォーマンスのエキスパート中のエキスパートである<a href="http://code.google.com/p/protobuf-net/" title="protobuf-net - Fast, portable, binary serialization for .NET - Google Project Hosting">protobuf-net</a>の作者 Marc Gravell氏がIL生成部分を担当しているという、凄いコンビでそりゃ色々と叶わないね、という感。</p>
+<h2>パフォーマンステスト</h2>
+<p>Dapperは親切にもベンチマークプログラムも公開しているので、リポジトリにあるもの＋DbExecutor、それとDataTableを追加して計測してみました。</p>
+<blockquote>
+<p>hand coded took 53ms<br />
+Mapper Query (buffered) took 55ms<br />
+Dynamic Mapper Query (non-buffered) took 55ms<br />
+Mapper Query (non-buffered) took 56ms<br />
+Dynamic Mapper Query (buffered) took 56ms<br />
+Dapper.Cotrib took 56ms<br />
+PetaPoco (Fast) took 58ms<br />
+<strong>DbExecutor Select took 58ms</strong><br />
+<strong>DbExecutor ExecuteReader(Hand Coded) took 58ms</strong>
+Dynamic Massive ORM Query took 62ms<br />
+PetaPoco (Normal) took 62ms<br />
+<strong>DbExecutor SelectDynamic took 62ms</strong><br />
+<strong>DbExecutor ExecuteReaderDynamic(Hand Coded) 65ms</strong><br />
+DataTable took 83ms<br />
+BLToolkit took 85ms<br />
+Simple.Data took 90ms<br />
+Linq 2 SQL Compiled took 100ms<br />
+SubSonic Coding Horror took 114ms<br />
+Entity framework CompiledQuery took 119ms<br />
+NHibernate SQL took 127ms<br />
+NHibernate HQL took 149ms<br />
+Soma took 168ms<br />
+NHibernate Criteria took 191ms<br />
+Linq 2 SQL ExecuteQuery took 215ms<br />
+Linq 2 SQL took 671ms<br />
+NHibernate LINQ took 708ms<br />
+Entity framework ExecuteStoreQuery took 726ms<br />
+Entity framework ESQL took 728ms<br />
+Entity framework No Tracking took 966ms<br />
+Entity framework took 969ms<br />
+SubSonic ActiveRecord.SingleOrDefault took 4259ms</p>
+</blockquote>
+<p>hand codedがExecuteReaderを手で回した手書き、「Mapper Query」はDapperのことです。複数種類があるのはオプション違い。DbExecutor(太字にしています)も同様に4種類で測っています。</p>
+<p>結果ですが、勿論Dapperは速いんですが、DbExecutorのSelectも悪くない位置にある。というか、これは普通に高速と名乗っていいレベルの速度は出てる。というか上位陣はほとんど誤差でいいんじゃないですかというところですね、実際何回か測ると若干入れ替わったりしますし。500回のループで3ms遅くて低速とか言われたら怒ります(笑)</p>
+<p>ところでDbExecutorのDynamic類が十分すぎるほど速いのは少し驚いたり(dynamic経由だからもっとずっと遅くなるのかと思ってた……)。この計測結果を前にすると、手動マッピングするならExecuteReaderはダルいからExecuteReaderDynamic使いますねー、型変換とか不要でずっとシンプルに書けますから。Selectが使えるシーンではSelectで、柔軟なマッピングをする必要があるシーンではExecuteReaderDynamicで、というのがDbExecutorを使う場合の幸せシナリオになりそう。また、ExpandoObjectをDataTableのRowの代わりとして使うSelectDynamicも十分な速度が出ていて、これぐらい速度出るなら普通に使っちゃえますねえ。非常に良い感じ。</p>
+<h2>何故速いのか、あるいは何故遅いのか</h2>
+<p>動的コード生成しているから速い。といっても、真ん中ぐらいより上のコードはみんなやっているのではないかしら。勿論、DbExecutorも生成しています。では何でDbExecutorは大体の場合において僅差とはいえDapperより遅いのか。これはコード生成する範囲の問題です。Dapperはクエリ用に最適化してガッツシ固めて生成・キャッシュしてますが、DbExecutorは汎用的に、Typeに対して行っているので、そこで若干の差が出ています。</p>
+<p>最初Dapperのコード見たときは、うわあ、これは凄い差がついちゃってるのでは？とか思ったんですが、蓋を開けてみると、誤差みたいに小さな差でたいしたことなかったので、このまんまで行きます(それと言い訳がましいですがCode Contractとかのハンデも若干あるので、どの程度響いているかは不明瞭ですが)。どちらにせよ、ようするところ、DBへのアクセス速度に比べれば、その程度のチューニングは大して差が出ないということでしょう。</p>
+<p>動的コード生成も、ILでゴリゴリじゃなくてExpressionTreeを使ったゆとり全開の生成なので、それで上位にガッツリ肉薄しているのだから、十分以上です。</p>
+<h2>まとめ</h2>
+<p><a href="http://dbexecutor.codeplex.com/" title="DbExecutor - Simple and Lightweight Database Executor - Home">DbExecutor</a>は普通に速い。他のと比べると気が効いていて、かつ洗練されたAPIを持っていて、非常に使いやすいので、Dapperなどと比べても負けてない。Micro-ORMの最前線で全然戦えます(但し1ファイルではないけれど！)。次のアップデートでは、クエリ時の戻りが複数になる場合の対応と、ストアドプロシージャのOUTPUTの対応を予定してますので是非是非お試しを。</p>
+<p>と、宣伝がましくなってて申し訳ないですね……。Micro-ORM自体については、まず、Entity Frameworkなど普通のORMを使わないようなら、必需品だと思います。完全手作業でデータベース触るのは馬鹿げてる。何らかの薄いラッパーぐらいは作っているだろうけれど、Dapperよりも優れていると確信持てなければ(そして多くの場合は持てるわけがない！)、そんなものは捨ててDapperを使ったほうがいいのではないかしら。いや、DbExecutorでもいいですけどね、というかDbExecutorは良いですよ。</p>
+<p>Entity Frameworkなどを使っている場合はどうか、というと、重量級フレームワークの欠けた部分を補ってやる感じで、良い感じに使えそうです。その辺の小回りの良さ、大きめなものと一緒に使っても上手く馴染むのはMicro-ORMならではなのではかと思います。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0530_325.html">はぢめてのWindows Phone 7でのデータベース(Linq to Sql)</a></h1>
+<ul class="date"><li>2011-05-30</li></ul>
+<div class="entry_body"><p>Windows Phone 7に新しいSDKが来ました！9月頃リリースという話のMangoアップデート(Windows Phone 7.1)対応SDK。まだベータですが色々触れます。そしてついにデータベースが搭載されました。というわけで軽く触ってみました。</p>
+<h2>Code First</h2>
+<p>フツーだとSQLを書いてデータベースの定義を用意しなければならないところですが、WP7でのデータベースプログラミングにおいて、SQLは不要です。と、いうよりも、そもそも使えません。データベース本体(SQLCE)や、データベースにSQLを発行するクラス(ADO.NET)はMicrosoft.Phone.Data.Internalに格納されており、Internalという名のとおり、外から触ることは出来ません。ではどうするか、というと、WP7ではデータベースはLinq to Sqlを介して操作します。</p>
+<p>じゃあテーブル定義どうするの、リレーションどうするの、というと、それはクラスから生成します。クラスを書いて、ある程度DB的に属性を付与して、CreateDatabaseとすれば、それらのテーブルを持ったデータベースが生成されます。まずコードを。あ、そうそう、System.Data.Linqの参照が別途必要です。</p>
+<pre><code class="language-csharp">public class Meibo : DataContext
+{
+    public Meibo()
+        : base(&quot;isostore:/Meibo.sdf&quot;) // connection string
+    { }
+
+    public Table&lt;Person&gt; Persons { get { return GetTable&lt;Person&gt;(); } }
+}
+
+[Table]
+public class Person
+{
+    [Column(IsPrimaryKey = true, IsDbGenerated = true)]
+    public int Id { get; set; }
+
+    [Column(CanBeNull = false)]
+    public string Name { get; set; }
+
+    [Column]
+    public int Age { get; set; }
+}
+</code></pre>
+<p>名前と年齢のあるPersonというテーブルを持つ、Meiboというデータベースを定義しました。データベースはDataContextを継承し、各Tableを持つプロパティを。そしてテーブルはTable属性とColumn属性を。IsPrimaryKeyは主キー、IsDbGeneratedは自動連番、CanBeNullはnull非許可です。Columnを付けて回るのが面倒くさそうですが、まぁ単純明快ではありますねん。</p>
+<p>接続文字列は基底クラスに渡す形で。保存場所はIsolatedStorage内です。どうせ場所固定で弄らないでしょ？と思うので、上の例では直接定義しちゃっていますが、弄りたい場合はその辺調整で。ちなみにisostore:/です。isostore://にするとダメです（最初うっかり引っかかった）。</p>
+<p>実際に使う場合は</p>
+<pre><code class="language-csharp">// 初回実行時はデータベースを作る、これはapp.xaml.csに書いておくといい
+using (var db = new Meibo())
+{
+    if (!db.DatabaseExists())
+    {
+        db.CreateDatabase();
+    }
+}
+
+// Insertの例
+var meibo = new Meibo();
+
+var person1 = new Person { Name = &quot;ほげほげ&quot;, Age = 20 };
+var person2 = new Person { Name = &quot;ふがふが&quot;, Age = 15 };
+var person3 = new Person { Name = &quot;たこたこ&quot;, Age = 23 };
+
+meibo.Persons.InsertOnSubmit(person1); // Insertする
+meibo.Persons.InsertAllOnSubmit(new[] { person2, person3 }); // 複数の場合
+
+meibo.SubmitChanges(); // SubmitChangesまではDBへの挿入はされていない
+
+// Selectの例(Ageが20以上のものを抽出)
+var query = meibo.Persons.Where(p =&gt; p.Age &gt;= 20);
+
+foreach (var item in query)
+{
+    MessageBox.Show(item.Id + &quot;:&quot; + item.Name + &quot;:&quot; + item.Age);
+}
+</code></pre>
+<p>というわけで、DBの存在を全く意識せず自然に書けます。実に素晴らすぃー。</p>
+<h2>リレーション</h2>
+<p>リレーションも勿論張れます。例はマクドナルドのバーガーの価格表で。地域で価格が違うので、Burger(バーガー名)、Price(値段)、Place(地域)の3つをBurger-Price-Placeで関連付けてきませう。</p>
+<pre><code class="language-csharp">public class McDonald : DataContext
+{
+    public McDonald()
+        : base(&quot;isostore:/McD.sdf&quot;)
+    { }
+
+    public Table&lt;Burger&gt; Burgers { get { return GetTable&lt;Burger&gt;(); } }
+    public Table&lt;Price&gt; Prices { get { return GetTable&lt;Price&gt;(); } }
+    public Table&lt;Place&gt; Places { get { return GetTable&lt;Place&gt;(); } }
+}
+
+[Table]
+public class Burger
+{
+    [Column(IsPrimaryKey = true, IsDbGenerated = true)]
+    public int Id { get; set; }
+    [Column]
+    public string Name { get; set; }
+
+    [Association(Storage = &quot;_Prices&quot;, OtherKey = &quot;BurgerId&quot;)]
+    public EntitySet&lt;Price&gt; Prices
+    {
+        get { return this._Prices; }
+        set { this._Prices.Assign(value); }
+    }
+    private EntitySet&lt;Price&gt; _Prices = new EntitySet&lt;Price&gt;();
+}
+
+[Table]
+public class Price
+{
+    [Column(IsPrimaryKey = true, IsDbGenerated = true)]
+    public int Id { get; set; }
+    [Column]
+    public int BurgerId { get; set; }
+    [Column]
+    public int PlaceId { get; set; }
+    [Column]
+    public int Value { get; set; }
+
+    [Association(IsForeignKey = true, Storage = &quot;_Burger&quot;, ThisKey = &quot;BurgerId&quot;)]
+    public Burger Burger
+    {
+        get { return _Burger.Entity; }
+        set { _Burger.Entity = value; }
+    }
+    private EntityRef&lt;Burger&gt; _Burger = new EntityRef&lt;Burger&gt;();
+
+    [Association(IsForeignKey = true, Storage = &quot;_Place&quot;, ThisKey = &quot;PlaceId&quot;)]
+    public Place Place
+    {
+        get { return _Place.Entity; }
+        set { _Place.Entity = value; }
+    }
+    private EntityRef&lt;Place&gt; _Place = new EntityRef&lt;Place&gt;();
+}
+
+[Table]
+public class Place
+{
+    [Column(IsPrimaryKey = true, IsDbGenerated = true)]
+    public int Id { get; set; }
+
+    [Column]
+    public string Name { get; set; }
+
+    [Association(Storage = &quot;_Prices&quot;, OtherKey = &quot;PlaceId&quot;)]
+    public EntitySet&lt;Price&gt; Prices
+    {
+        get { return this._Prices; }
+        set { this._Prices.Assign(value); }
+    }
+    private EntitySet&lt;Price&gt; _Prices = new EntitySet&lt;Price&gt;();
+}
+</code></pre>
+<p>ぎゃー。面倒くさ。本来のLinq to Sqlではデータベースが先にあって、そこから機械生成でこれを作るんですが、コードを先で作るのはちょっと骨が折れます。Entity Framework Code Firstは、コードを先に作るのが大前提だけあって書きやすいように色々調整してある感じですが、WP7/Linq to Sqlは、本当にただただ手で書きますというわけで全くイケてない。</p>
+<p>さて、リレーションはAssociation属性でつけます。また、多を辿る場合はEntitySet、一を辿る場合はEntityRefのプロパティを用意します。これがまた面倒くさ……。たいしたことはない機械的作業ですが、自動プロパティで済ませられないとウザったいことこの上なく。コードスニペットでも用意しますかねえー。</p>
+<p>しかし苦労するだけの価値は、あります！</p>
+<p>まずデータを用意しなきゃということでInsertを。</p>
+<pre><code class="language-csharp">// Insertの例
+var mcd = new McDonald();
+
+var hamburger = new Burger() { Name = &quot;ハンバーガー&quot; };
+var blt = new Burger() { Name = &quot;ベーコンレタストマト&quot; };
+
+var kanto = new Place() { Name = &quot;関東&quot; };
+var qshu = new Place() { Name = &quot;九州&quot; };
+var hokkaido = new Place() { Name = &quot;北海道&quot; };
+
+var prices = new[]
+{
+    new Price { Burger = hamburger, Place = kanto, Value = 100 },
+    new Price { Burger = hamburger, Place = qshu, Value = 150 },
+    new Price { Burger = hamburger, Place = hokkaido, Value = 160 },
+    new Price { Burger = blt, Place = kanto, Value = 250 },
+    new Price { Burger = blt, Place = qshu, Value = 230 },
+    new Price { Burger = blt, Place = hokkaido, Value = 220 }
+};
+
+mcd.Places.InsertAllOnSubmit(new[] { kanto, qshu, hokkaido });
+mcd.Burgers.InsertAllOnSubmit(new[] { hamburger, blt });
+mcd.Prices.InsertAllOnSubmit(prices);
+
+mcd.SubmitChanges();
+</code></pre>
+<p>リレーションを軽やかに片付けて、挿入してくれます。実に自然でイイ！それに、こういうののinsert文手書きはカッタルイですからねえ。更にSelectは</p>
+<pre><code class="language-csharp">var mcd = new McDonald();
+
+// 関東のバーガーのNameとPriceを抽出
+var query = mcd.Burgers.Select(b =&gt; new
+{
+    b.Name,
+    Price = b.Prices.First(p =&gt; p.Place.Name == &quot;関東&quot;).Value
+});
+
+// ハンバーガー:100, ベーコンレタス:250
+foreach (var item in query)
+{
+    MessageBox.Show(item.Name + &quot;:&quot; + item.Price);
+}
+
+// なお、IQueryable&lt;T&gt;をToStringすると手軽に発行されるSQLが確認出来る
+// もう一つの手はDataContext.Logから取ること
+MessageBox.Show(query.ToString());
+</code></pre>
+<p>コード上にjoinはないけど、発行されるSQLはjoinしています。手動でjoinすることも可能ですが、基本的にはオブジェクト間をドットで辿って操作します。その方が自然に書けるし、何より、楽ですもの。</p>
+<h2>DataContextのDispose</h2>
+<p>usingで括ってあげるのが礼儀正しいわけですが、WP7では実際どう考えるべきだろう。<a href="http://msdn.microsoft.com/en-us/library/hh202860.aspx">サンプル</a>見てると、CreateDatabaseやSchemaUpdateではusingで囲んでますが、そうでない普通の操作ではコードビハインド内でDataContext使い回してるんですね。基本的にIsolatedStorageに隔離されているわけだし、画面外に出るときだけ切った繋げたすればいいのかなあ、といったふうに思いましたがどうなのでしょ。</p>
+<h2>.NET版との差分</h2>
+<p>ほとんど.NET版のLinq to Sqlと同じなのですが、若干追加があります。一つはデータベースのスキーマのアップデート。<a href="http://msdn.microsoft.com/en-us/library/microsoft.phone.data.linq(VS.96).aspx">Microsoft.Phone.Data.Linq Namespace</a>名前空間の参照で、DataContextにCreateDatabaseSchemaUpdaterが追加されます。これにより、アップデートなどによるテーブル構造の変化にも対応出来ます。もう一つは
+<a href="http://msdn.microsoft.com/en-us/library/microsoft.phone.data.linq.mapping.indexattribute(v=VS.96).aspx">IndexAttribute Class</a>。</p>
+<p>これらは、通常Linq to Sqlが用いられていたデータベースからのクラス自動生成じゃなく、クラスからのデータベース生成になったことにより、テーブル作りに足りていなかった面の補足と見れるかな。また、その逆で.NET版でサポートされているけれど、WP7版にはないものも幾つかあります。詳しいリストはMSDNの<a href="http://msdn.microsoft.com/en-us/library/hh202872.aspx">LINQ to SQL Support for Windows Phone</a>を見ればいいんじゃないかな、ということで。</p>
+<h2>学習リソース</h2>
+<p>若干の差異はあるとはいえ、Linq to SqlはLinq to Sqlなので、<a href="http://msdn.microsoft.com/ja-jp/library/bb386976.aspx">MSDN - LINQ to SQL</a>を見るのが良いでしょう。また、慣れない間はWP7版ではなく.NET版で、ConsoleApplicationで挙動をあらかた確認しておいたほうが、スムースに行くかとは思います。属性貼ったりは、結構面倒だし罠もあるところですからね……。</p>
+<h2>まとめ</h2>
+<p>諸君らの愛したLinq to Sqlは死んだ！何故だ！そうしてEntity Frameworkに置き換えられる運命を辿ったLinq to Sqlですが、ここにきて華麗に復活するとは誰も予想だにしなかったところで、こういう展開は面白い。そして生SQLが使えないのは英断。縛りではあるのですが、Phoneでのアプリケーションの9.9割は、生SQLを必要とすることはないのではないか、とも。</p>
+<p>生SQL触れるだろうと思ってWP7版も作るぜ！な勢いで用意していた<a href="http://dbexecutor.codeplex.com/">DbExecutor</a>のWP7版は永劫さようならになってしまいましたががが。DbExecutorはDbExecutorで、もう少し機能追加しますがー。</p>
+<p>ところでMangoで、他に追加されたクラスを少し。System.Reflection.Emitが追加されました。これはILを直弄りして動的コード生成するためのクラスですが、WP7でIL生成とかヤラネーヨ。というわけでもなくはなく実は有益。シリアライザの高速化のために動的コード生成は常套手段となっているので、自分は直に使わなくても、普通にメリットは大きく。例えばJSON.NETのJSONシリアライズ/デシリアライズは、WP7版だけリフレクションを直に使ったもので見たところ遅そうでしたが、恐らく次からは.NET版と同じく動的コード生成になり、高速化されるでしょう。ORマッパーなどもそうです。そう、Linq to Sqlでも<a href="http://msdn.microsoft.com/ja-jp/library/system.data.linq.mapping.metaaccessor.aspx" title="MetaAccessor クラス (System.Data.Linq.Mapping)">MetaAccessor</a>クラスなどの辺りを覗いてみれば、ILをEmitしているコードが見えます。</p>
+<p>そういえばLambdaExpressionもCompile出来るようになりました。が、AssignやLoopなどは搭載されていません、ぐぬー。コード生成したい人はExpressionTreeでお手軽、ではなく、まだまだILGeneratorでEmit頼りしかなさそうです。更に言えばExpressionVisitorも入っていませんね。SL4に近くなったけれどSL4とは言えない、WP7はWP7としか言いようのないAPIになってまいりました。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0524_324.html">基礎からのCode Contracts</a></h1>
+<ul class="date"><li>2011-05-24</li></ul>
+<div class="entry_body"><p>23日に<a href="http://msdn.microsoft.com/en-us/devlabs/dd491992">Code Contracts</a>についてのセッションを行いました。</p>
+<div style="width:595px" id="__ss_8069150"> <strong style="display:block;margin:12px 0 4px"><a href="http://www.slideshare.net/neuecc/code-contracts-8069150" title="基礎からのCode Contracts">基礎からのCode Contracts</a></strong> <iframe src="http://www.slideshare.net/slideshow/embed_code/8069150?rel=0" width="595" height="497" frameborder="0" marginwidth="0" marginheight="0" scrolling="no"></iframe> <div style="padding:5px 0 12px"> View more <a href="http://www.slideshare.net/">presentations</a> from <a href="http://www.slideshare.net/neuecc">neuecc</a> </div> </div>
+<p>ufcppさんのレポートとセッション資料は<a href="http://csharp-users.jp/meeting/%E7%AC%AC7%E5%9B%9E%E6%97%A5%E6%9C%ACc-%E3%83%A6%E3%83%BC%E3%82%B5%E3%83%BC%E4%BC%9A-%E5%8B%89%E5%BC%B7%E4%BC%9A%E3%83%AC%E3%83%9B%E3%83%BC%E3%83%88">第7回日本C#ユーザー会 勉強会レポート - 日本 C# ユーザー会</a>に。Code Contractsを説明する場合、通常は背後にあるDesign By Contractの説明をしてから流れると思うのですが、今回はufcppさんが前の時間で受け持ってくれたので、その辺は完全スルーで.NET上のCode Contractsの話のみにフォーカスしています。</p>
+<p>標準入りしているようだけど何なの？→実際は標準入りとは全然言えません というところから入って、主眼はバイナリリライター、ということで、セッションでは<a href="http://reflector.red-gate.com/">.NET Reflector</a>を片手にどのようにリライトされるかを見ていきました。どう展開されるのかをそうして確認すると、仕組みが理解しやすいのではないかと思います。Reflector有料化ということで、代替も色々出てきているようですが、私はReflector使い続けますね。他のはまだ低速だったりと色々引っかかるところが多いので。それとまあ、恩返しというか、今までお世話になっていますし。</p>
+<p>Code Contractsは<a href="http://msdn.microsoft.com/en-us/devlabs">DevLabs</a>の中でも、Axumは死亡が確定(Blogに開発チームｵﾜﾀと書いてあった、ページから消えるのも時間の問題？)だし、Dolotoは明らかに開発止まってて何故残り続けているのかが分からないぐらいだし、というわけで最古株となっていますね。GT先輩いつ卒業するの！（やっとしました！）という感じな某車ゲーを少し思い起こしたり。卒業出来る日は来るのでしょうか。</p>
+<p>それにしてもDevLabsはTC Labsばかりとなってしまい、何かツマラナサも感じてしまうような。というかtcのロゴの3って、最初にリリースされたSho, Dataflow, Dryadと3つだから3なのかと思ってましたが、最近Solver Foundationも入ってしまって4じゃねーか、という感。ていうかSolver Foundationは結構イケてるロゴがあるので、別にTCを冠しなくても良かったような。DryadはDryadで、<a href="http://blogs.technet.com/b/windowshpc/archive/2011/05/20/dryad-becomes-linq-to-hpc.aspx">'Dryad' becomes 'LINQ to HPC' !</a>だそうで、色々整理しきれてない感。</p>
+<p>ところでスライド作りは結構楽しくはあるんですが、やっぱ大変ですねー。コードはコンパクトでなければならないし、全体的にしっかり流れが整ってなければならないし。かなり考えますが、そのお陰で、私の普段のだらだらブログ記事よりは分かりやすさアップしてるかな？というところです、前回のRxのスライド - <a href="http://www.slideshare.net/neuecc/reactive-extensions-8049041">Reactive Extensionsで非同期処理を簡単に</a>もそうでしたが。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0521_323.html">Reactive Extensionsで非同期処理を簡単に</a></h1>
+<ul class="date"><li>2011-05-21</li></ul>
+<div class="entry_body"><p><a href="http://smartphone.techtalk.jp/?KantoSpecial01WindowsPhone7" title="スマートフォン勉強会 - すまべん特別編「Windows Phone 7 開発ブーストアップ」＠関東">すまべん特別編「Windows Phone 7 開発ブーストアップ」＠関東</a>にて、Reactive Extensionsの概要と、特に非同期を中心に話しました。以下、発表資料になります。</p>
+<div style="width:640" id="__ss_8049041"> <strong style="display:block;margin:12px 0 4px"><a href="http://www.slideshare.net/neuecc/reactive-extensions-8049041" title="Reactive Extensionsで非同期処理を簡単に">Reactive Extensionsで非同期処理を簡単に</a></strong> <iframe src="http://www.slideshare.net/slideshow/embed_code/8049041" width="640" height="534" frameborder="0" marginwidth="0" marginheight="0" scrolling="no"></iframe> <div style="padding:5px 0 12px"> View more <a href="http://www.slideshare.net/">presentations</a> from <a href="http://www.slideshare.net/neuecc">neuecc</a> </div> </div>
+<p>当初は初心者向け、と思ったんですが、どう見ても一回触ったことのある人向けですねこれ……。Rxを触ったことない人は、よくわからないけど普通に書くと大変なのがスッキリして何だか凄そう、触ってみようと思ってもらえれば。Rxを既に触っている人には使いこなしのTipsとして役立てて貰えればと思います。</p>
+<p><object classid="clsid:d27cdb6e-ae6d-11cf-96b8-444553540000" width="480" height="296" id="utv73143" name="utv_n_921786"><param name="flashvars" value="loc=%2F&amp;autoplay=false&amp;vid=14850251&amp;locale=ja_JP&amp;hasticket=false&amp;v3=1" /><param name="allowfullscreen" value="true" /><param name="allowscriptaccess" value="always" /><param name="src" value="http://www.ustream.tv/flash/viewer.swf" /><embed flashvars="loc=%2F&amp;autoplay=false&amp;vid=14850251&amp;locale=ja_JP&amp;hasticket=false&amp;v3=1" width="480" height="296" allowfullscreen="true" allowscriptaccess="always" id="utv73143" name="utv_n_921786" src="http://www.ustream.tv/flash/viewer.swf" type="application/x-shockwave-flash" /></object></p>
+<p>はい、Ustreamも残っています。マイクがなかったからという言い訳をしますが、声が全然入ってないですね、声入ってないということは会場でもモゴモゴーという感じで聞き取りにくかったはずで、すみません。それと、「まぁ」言い過ぎ。繋ぐ言葉を捜す枕詞として使いまくりで、うわちゃー、という感じ。慣れてないというか、こういうの（ほぼ）初めてで全然分かってなかったんですが、これを活かして次も頑張りたいです。（Usreamで自分の発表が自分で後から見れるのは自分が嬉しい(笑)）。スピーカーできて楽しかったです。機会をくれたすまべんの方々に感謝します。</p>
+<p>……こういう機会がないと中々まとめないよね、というのもかなりあったり。合成系のメソッドの図はずーっと書こうと思っていて、書いてなくてこのセッションが初めてです。IObservableは時間軸に乗っているという話もこれが初めて。Twitterでボソッと書くだけじゃなくて、しっかりブログにまとめるようにならないといけないなぁ。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0517_322.html">Reactive Extensionsによる非同期クエリ</a></h1>
+<ul class="date"><li>2011-05-17</li></ul>
+<div class="entry_body"><p><a href="http://www.infoq.com/jp/news/2011/05/akka11">InfoQ: Future、性能、依存性の低減など多くの改善がされたAkka 1.1リリース</a>から「- Futureは完全にモナドになった。したがってfor内包表記を利用できる。」。リスト内包表記は、ようするところLINQなわけなので、では、とりあえず<a href="http://msdn.microsoft.com/en-us/data/gg577609" title="Reactive Extensions">C# + Reactive Extensions</a>で。</p>
+<pre><code class="language-csharp">// 非同期に対するLINQ(map, filter, etc...)
+var asyncQuery =
+    from a in Observable.Start(() =&gt; 10 / 2)
+    from b in Observable.Start(() =&gt; a + 1)
+    from c in Observable.Start(() =&gt; a - 1)
+    select b * c;
+
+// 非同期のまま実行したいならSubscribe
+var canceler = asyncQuery.Subscribe(Console.WriteLine);
+
+// 実行をキャンセルする場合はSubscribe時の戻り値をDispose
+canceler.Dispose();
+
+// 同期的に待って値取得したいならFirst
+var result = asyncQuery.First();
+</code></pre>
+<p>Rx抜きで、TaskのContinueWithで↑を書くのはカッタルイ。また、Rxでもメソッド構文でSelectManyを連鎖でも辛い。何故か、というと、aの値をcの部分で使えないから。メソッドチェーンの形だと、どうしても一つ手前の値しか持ち越せない。そこで、クエリ構文が活きます。また、LINQであるが故にクエリ構文が使えるRxの嬉しさ。</p>
+<p>じゃあ、調子にのって<a href="http://akka.io/docs/akka/1.1/scala/futures.html">Futures (Scala) — Akka Documentation</a>をRxで書き換えてみようかしら。同じような内容としては以前に<a href="http://neue.cc/2010/10/09_278.html" title="neue cc - Rxを使って非同期プログラミングを簡単に">Rxを使って非同期プログラミングを簡単に</a>という記事でTaskと比較していたのでそちらも参照を。</p>
+<pre><code class="language-csharp">// directly
+var f1 = Observable.Return(&quot;Hello World&quot;);
+
+// LINQが使える
+var f2 = f1.Select(x =&gt; x.Length);
+
+// Subscribeまで実行が遅延されるのでSleepしないよ
+var f3 = Observable.Defer(() =&gt;
+{
+    Thread.Sleep(1000);
+    return Observable.Return(&quot;Hello World&quot;);
+});
+var f4 = f3.Select(x =&gt; x.Length); // まだ実行されないよ
+var result = f4.First(); // ここで実行
+
+// Observableの連鎖はSelectManyで
+var f5 = f1.SelectMany(x =&gt; f3);
+
+// SelectManyはクエリ構文のfrom連打でも置き換えられる
+var f6 = from a in Observable.Return(10 / 2)
+         from b in Observable.Return(a + 1)
+         from c in Observable.Return(a - 1)
+         select b * c;
+</code></pre>
+<p>と、この辺まではいいんですが、Composing Futuresが何やってるのかよくわからないので(Scala知識ゼロですみません)、眺めながら<a href="http://msdn.microsoft.com/en-us/vstudio/gg316360" title="Visual Studio Asynchronous Programming">Async CTP</a>でも持ち出します。</p>
+<pre><code class="language-csharp">async void HomuHomu()
+{
+    var f1 = Observable.Return(100); // IObservable&lt;int&gt;
+    var f2 = TaskEx.FromResult(200); // Task&lt;int&gt;
+
+    var a = await f1; // 何気にIObservable&lt;T&gt;はawait出来る
+    var b = await f2; // 当然ですがTask&lt;T&gt;もawait出来る
+    var result = a + b; // 300
+
+    // じゃあObservableが幾つも値持ってる場合は？
+    var f3 = new[] { &quot;homu&quot;, &quot;mado&quot; }.ToObservable();
+    var c = await f3;
+    Console.WriteLine(c); // &quot;mado&quot;
+
+    // つまり、完了まで待って(OnCompleted)、最後の値が取得される
+
+    // ところでObservable.Return = TaskEx.FromResultなわけですが
+    // 以下の3つも同じと捉えていいです
+    Task.Factory.StartNew(() =&gt; 100);
+    TaskEx.Run(() =&gt; 200);
+    Observable.Start(() =&gt; 300); // つまりfunc自体は即時実行
+    
+    // こちらも等しい(実行が遅延される)
+    var t = new Task&lt;int&gt;(() =&gt; 100);
+    var o = Observable.ToAsync(() =&gt; 100);
+    // 実行するには
+    t.Start();
+    o.Invoke(); // もしくは o() ←ただのデリゲートなので
+
+    // ToAsyncでは実行時に引数を渡すことも可能
+    var o2 = Observable.ToAsync((int arg) =&gt; arg * 2);
+    o2(1000).Select(x =&gt; x).Subscribe(Console.WriteLine);
+}
+</code></pre>
+<p>雰囲気で何となくそうなのだろうと思いつつ、よくわからないので、適当に解釈しながら次。</p>
+<pre><code class="language-csharp">// IObservable&lt;T&gt;はそのものがリスト状態とも言えるので、
+// 複数値を持てるし、LINQなのでSelectしてAggregateも出来る
+var futureSum = Observable.Range(1, 1000)
+    .Select(x =&gt; x * 2)
+    .Sum();
+    
+var sum = futureSum.First();
+</code></pre>
+<p>とりあえずこの辺で(特に言いたいことはない)。全く読めないとこういう時辛い。ActorとReactiveの関係とは、とか、見えそうな見えないような気持ち悪さが脳に渦巻いていて、勉強したいところです。F#で。</p>
+<h2>上の話とは関係なく告知</h2>
+<p>二件ほどお話を頂いたので、セッションします。まず、2011/05/21(Sat)にすまべん特別編でRxについて。内容はRx全般になるので、WP7ではなくても適用出来る話になります。</p>
+<ul>
+<li><a href="http://smartphone.techtalk.jp/?KantoSpecial01WindowsPhone7" title="スマートフォン勉強会 - すまべん特別編「Windows Phone 7 開発ブーストアップ」＠関東">スマートフォン勉強会 - すまべん特別編「Windows Phone 7 開発ブーストアップ」＠関東</a></li>
+</ul>
+<p>Rxの多くの機能のうち非同期に絞って、かつ、初心者向けに説明しますので、Rxって何それ食べれるのという感じでも全然大丈夫です。また、既に触っている人も、割とためになるTipsが得られるのではないかなと思いながら資料作成中。そうなるよう頑張ります。なので、是非聞きに来てください。セッション資料は、通信環境があればセッション終了後即座に上げるつもりです。なければまた後日で。Ustreamとかもあるのかな？あれば、そちらでも。</p>
+<p>もう一件、5月23日(月)にC#ユーザー会でCode Contractsについて。</p>
+<ul>
+<li><a href="http://csharp-users.jp/meeting/%E7%AC%AC66%E5%9B%9Ecodeseek%E5%8B%89%E5%BC%B7%E4%BC%9A%EF%BC%86%E7%AC%AC7%E5%9B%9E%E6%97%A5%E6%9C%ACc-%E3%83%A6%E3%83%BC%E3%82%B5%E3%83%BC%E4%BC%9A-%E5%8B%89%E5%BC%B7%E4%BC%9A" title="第66回codeseek勉強会＆第7回日本C#ユーザー会 勉強会 - 日本 C# ユーザー会">第66回codeseek勉強会＆第7回日本C#ユーザー会 勉強会 - 日本 C# ユーザー会</a></li>
+</ul>
+<p>背景であるDbCなどについてはufcppさんが説明してくださるので、私はCode Contractsとして実装されていることを、Reflectorでこうリライトされるんですねー、とか見ながらデモ中心に、「一から使ってみよう」といった内容にしようと思っています。Code Contracts…… 名前だけなら聞いたことがある、いや、名前も聞いたことない何それ、ぐらいからが対象なのぜ、是非どうぞ。もう使っている、という人には物足りないかも(むしろそこは私が教えて欲しいもがもがもがもが)。</p>
+<p>どちらも、まだ参加申し込み出来るようなので是非聞きにきてください。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0511_321.html">Reactive Extensions RC0リリースによる変更点</a></h1>
+<ul class="date"><li>2011-05-11</li></ul>
+<div class="entry_body"><p>DevLabsの実験的プロジェクトから<a href="http://msdn.microsoft.com/en-us/data/gg577609">Data Developer Center</a>への正式プロジェクトとして昇格したRxですが、ついにDevLabsのページ自体が消滅(リダイレクトされる)し、いよいよ実験的なノリは一段落し、正式なプロジェクトとしての道を歩み始めたようです。その手始めとして、馬鹿デカい破壊的変更がやってきました。……っていきなりなんじゃそりゃ。</p>
+<p>今回の変更はRC0、そしてStableであると銘打たれ、(今度こそ)APIの破壊的変更はないものと思われます。きっとAPIを変更するなら本当の本当に最後のタイミングだから、ということなのでしょうね、変更の嵐は。そんなわけで、DLLの分け方が変わってるし、名前空間も全部変わってるし、メソッド名もばかばか変わってるし、メソッドシグネチャも変わってるし、なくなったのもあるし、大量すぎて書ききれないほどに変更点がある。</p>
+<p>しかし、本当の本当に安定版の始まりなので、つまり、学ぶなら今からが正に最適ということです！また、基本的な使い方が変わったわけではないので、既存の知識は生かせますしコード自体もそのままでも大体は行けます。大体は。</p>
+<p>詳しい変更内容自体はフォーラム <a href="http://social.msdn.microsoft.com/Forums/en-US/rx/thread/527002a3-18af-4eda-8e35-760ca0006b98">New Release: Reactive Extensions v1.0.10425</a> に書かれています。こういうのはフォーラムじゃなくてBlogのほうでちゃんと告知してください……。リリースから半月近く経つのに、まだBlogのほうは更新されてないという。</p>
+<h2>Rxの入手方法・パッケージ・DLL内容について Part2</h2>
+<p>以前に<a href="http://neue.cc/2011/01/26_300.html">Reactive Extensionsを学習するためのリソースまとめ</a>としてまとめましたが、そのうちDLL内容がまるっと変わったので、そこの部分を修正します。なお、学習リソースについては変りないので、以前のまとめ記事をそのまま参照してください。また、Windows Phone 7に標準搭載されているものは(当然)変わりはありません。最近WP7本体のアップデートにコソッと紛れて更新(バグフィックス)されたようですけど。</p>
+<p><a href="http://msdn.microsoft.com/en-us/data/gg577609">Reactive Extensions</a>のGet itからDownloadするといいでしょう。色々書いてありますが、2のDownload the Reactive ExtensionsからRx for all Platformsを選べばよいかと思います。</p>
+<p>StableとExperimentalがあるように、安定版と実験版に分かれています。そして現時点ではそのページのExperimentalをクリックしてもExperimentalは手に入りません(なにそれ……)。Experimentalが欲しい人は<a href="http://www.microsoft.com/downloads/en/results.aspx?freetext=reactive+extensions&amp;displaylang=en&amp;stype=s_basic">Microsoft Download Center: Search Results</a>のExperimental Releaseから入手するといいでしょう。バージョン番号は、Stableは1.0.10425、Experimentalは1.1.10425になっています。</p>
+<p>けれど、何だかんだで更新頻度が高いので、NuGet経由での利用が一番お薦めです。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/rxrc0nuget.jpg">
+</p>
+<p>が、NuGetの画面は新旧入り乱れていて何を入れていいか分からないカオスになっていたりして。説明すると、Rx-Mainとか、名前がRx-になっているものが新しいもので選ぶべきもの。Reactive Extensions -のものは古い残骸なので無視してください。また、NuGet経由で入るものはExperimentalのほうになります。</p>
+<p>さて、今回からDLL類の分類がばっさり変わりました。</p>
+<ul>
+<li>System.Reactive (NuGetではRx-Main)</li>
+</ul>
+<p>以前あったCoreExは消滅し、コアコンポーネントはSystem.Reactiveのみとなりました。また、名前空間も全てSystem.Reactive以下に集められていて、例えば今までObservableクラスはSystem.Linqでしたが、今回よりSystem.Reactive.Linqに変更されました（拡張メソッドの利用に名前空間の参照は必須なので、この名前空間のusingは忘れずに）。</p>
+<ul>
+<li>System.Reactive.Windows.Threading (NuGetではRx-WPF/Rx-Silverlight)</li>
+</ul>
+<p>WPF/Silverlight向けでDispatcherに対するObserveOnとSubscribeOnのオーバーロードが追加されています。また、Dispatcher.CurrentDispatcherに対してObserveOn/SubscribeOnを行うObserveOnDispatcher/SubscribeOnDispatcherの利用もこのDLLの参照が必要になりました。それとDispatcherに対してBeginInvokeして実行するスケジューラDispatcherSchedulerが追加されました。</p>
+<p>WPF/SilverlightでRxを使う場合はこれの参照は必需と思われます。NuGetを使う場合は依存の解決で、これを選択するとRx-Mainも入れてくれるので、こちらからInstallすると良いでしょう。</p>
+<ul>
+<li>System.Reactive.Windows.Forms (NuGetではRx-WinForms)</li>
+</ul>
+<p>WindowsFormsのControlに対するObserveOnとSubscribeOnのオーバーロードが追加されています。それとControlScheduler(Controlに対してBeginInvokeして実行するスケジューラ)。それだけです。というわけで、その名の通りWinFormsで使う場合だけ、あると便利。</p>
+<ul>
+<li>System.Reactive.Providers (NuGetではRx-Providers)</li>
+</ul>
+<p>Qbservableが収納されています。QbservableはIEnumerableに対するIQueryableみたいなもので、式木からObservableを生成するためのもの。今のとこ有効活用されている例も人もいないと思われます。(というかよく正式リリースにも生き残ったものだ、ぐらいの)。ちなみにQueryable Observableの略だそうで。QBみたいなものだと思えば可愛い！</p>
+<p>例えばLinq to Twitterを非同期しかないSilverlightでやるなら、これを使うのが適切でしょう。現状だとコールバックでどうだのという格好悪い仕組みなので。(但し、System.Reactive.Providersは現状ではDesktop版にしか同梱されていませんが)。あとは公式の例として挙げられているWQL Provider。WMIに対するSQLで、クエリ結果はイベント(つまりRx)になる。非常に都合よくQbservableに当てはまるようになってますね。なってるんですが、そう都合よく当てはまるのはこれぐらいしかないのではないか、感もあったり。</p>
+<p>いや、むしろ全て非同期なら全部Rxでいいんですよぅー、to SqlだってSqlCommandのBeginExecuteReaderでやればIQueryableじゃなくてIQbservableの出番なんですよぅー。……とはいっても、誰がやるかって話ですね。</p>
+<ul>
+<li>Microsoft.Reactive.Testing.dll (NuGetではRx-Testing)</li>
+</ul>
+<p>ユニットテスト用のモック生成クラス群。使いやすさ的には個人的にはちょっと微妙で、今一つ上手く活用出来なくて色々見送り中。</p>
+<h2>FromEvent/FromEventPattern</h2>
+<p>BufferWithCount/BufferWithTimeが統合されてメソッド名がBufferになった、程度の変更は割とどうでもいいのですが、Rxの中核であるFromEventに大きな変更があったのは見逃せません。簡単に解説します。</p>
+<p>今までFromEventというメソッド名だったものはFromEventPatternに変わりました。また、戻り値がIEventからEventPatternというものになりましたが、中身はプロパティにSenderとEventArgsを持つという、ほとんど同じものなので、感覚的には一緒です。今までの私の記事や古いウェブ上の記事を見る際にFromEventが使われていたら、それはFromEventPatternに置き換えてください。そうすれば、そのままで動きます。</p>
+<p>では新しく新設されたことになるFromEventは何なのかというと、よくわかりません:) そのうち使い方の説明とか出てくると思うのでそれ待ちで……。いやすみません。</p>
+<h2>ところでInteractiveはどうしたの？ClientProfileは？Asyncは？</h2>
+<p>死にました。というのもアレですが、とりあえず先行きは不透明です。少なくともStableに同梱されることはないそうです。Experimental側でのリリースは、一応計画はされているようですが、現状は同梱されていません。どうなるんでしょうかねえ……。Interactiveは欲しい人はNuGetに古いのが残っているので、それを使えば、ですね……。</p>
+<h2>Experimental</h2>
+<p>さて、今のところ、どのメソッドが実験的とされているのか、見てみましょう。幸いExperimentalAttributeでマークされているので、確認はコードで容易に出来ます。</p>
+<pre><code class="language-csharp">typeof(System.Reactive.Linq.Observable)
+    .GetMethods()
+    .Where(mi =&gt; mi.GetCustomAttributes(typeof(ExperimentalAttribute), false).Any())
+    .Select(mi =&gt; mi.Name)
+    .Distinct()
+    .OrderBy(s =&gt; s)
+    .ToList() // Interactiveが消滅してしまったから...
+    .ForEach(Console.WriteLine);
+
+// 実行結果
+Case
+Create // 追加のオーバーロードのみ、通常のはExperimentalではない
+DoWhile
+Expand
+For
+ForEachAsync
+ForkJoin
+GetAwaiter
+If
+IsEmpty
+Let
+ManySelect
+Remotable
+Start // 追加のオーバーロードのみ、通常のはExperimentalではない
+While
+</code></pre>
+<p>あまり大したものは入ってないようなので、そんな気にすることもないですね。Expandは是非入れてきて欲しいところなのだけど。CreateやStartのオーバーロードはかなりややこしい事になっているので、実験的扱いなのは納得。</p>
+<h2>ReactiveOAuth ver.0.3.0.0</h2>
+<p>そんな大移動があったわけでReactiveOAuthも動かなくなってしまった。というわけで更新しました(WP7版の人は気にしなくてもいいです)。</p>
+<ul>
+<li><a href="http://reactiveoauth.codeplex.com/">ReactiveOAuth</a></li>
+</ul>
+<p>機能は変わってなし。とりあえず最新版のRxで動くように、というだけです。コードが、とにかく名前空間が変わったので全部書き換えて、かなり面倒……。そして一部のメソッドは名前が変わったので、WP7版と完全にコードを共有していたので発狂。ifディレクティブでメソッド呼び出し部分をひたすら書き換え、などというのは見通しも悪いし格好悪いしで最悪なので、別の方法として、WP7側に拡張メソッド作ってコード上の互換を維持するようにしました。</p>
+<pre><code class="language-csharp">public static class ObservableForCompatible
+{
+    // 本体のコードはRx RC0に合わせて、WP7側だけ拡張メソッドで同名のものを作って対処
+    public static IObservable&lt;IList&lt;T&gt;&gt; Buffer&lt;T&gt;(this IObservable&lt;T&gt; source, int count)
+    {
+        return source.BufferWithCount(count);
+    }
+}
+</code></pre>
+<p>他にも挙動が若干変わってるのがあって原因掴むのに泣きそうになったりとか、思った以上に大変だった……。Stableと銘打ってるのに、次にこのクラスの大変更があったらさすがにブチ切れます。今回は、まあ、許す。</p>
+<h2>Reactive Extensions Extensions(Rxx)</h2>
+<p>コミュニティから面白いライブラリも上がってきています。</p>
+<ul>
+<li><a href="http://rxx.codeplex.com/" title="Reactive Extensions - Extensions (Rxx) - Home">Reactive Extensions - Extensions (Rxx) - Home</a></li>
+</ul>
+<p>Rx拡張メソッド集。C# 3.0の時も俺々拡張メソッドライブラリがいっぱい出てきましたが、そのノリですね。でも実際、Rx自体は原始的な機能のみなので、非同期処理とかイベント処理にフォーカスする場合は、もう一つ上の層で軽くラップしたライブラリは間違いなく必要だなと思っていますので、こういうのはいいな、と。私自身も非同期処理は<a href="http://neue.cc/2010/11/26_286.html" title="neue cc - Reactive Extensions用のWebRequest拡張メソッド">Reactive Extensions用のWebRequest拡張メソッド</a>として、結構ガッツし仕込んだものを使い回していて(ReactiveOAuthや<a href="http://neue.cc/2011/04/09_314.html" title="neue cc - Utakotoha - Windows Phone 7用の日本語歌詞表示アプリケーション">Utakotoha </a>の内部はこれ)かなり重宝しています。余裕が出たら、このRxxプロジェクトにJoinしたいな、と思ってます。</p>
+<h2>Rxの本</h2>
+<p>オライリーから出ているProgramming C#でお馴染みのJesse Libertyと、共著者として<a href="http://www.reactiveui.net/" title="ReactiveUI">ReactiveUI</a>というRxでWPFのGUI面をサポートするライブラリを作成しているPaul Betts(Microsoft Office Labsに所属)による、Rxの本が今年の秋頃に出る予定です。</p>
+<iframe src="http://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as4&m=amazon&f=ifr&ref=ss_til&asins=1430237473" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<p>執筆陣が豪華だしページ数も現時点amazon表示で300ページと、立派な仕上がりを予感させます。私は予約したよ！</p>
+<h2>まとめ</h2>
+<p>今回こそStableなはずなので、ようやーく人に自信を持って薦められるようになりました！いやマヂで。API的にも多分、じゃなくて絶対安定したわけなので、飛び込むなら今！です。</p>
+<p>ところで本題とは関係ないんですが<a href="http://smartphone.techtalk.jp/?KantoSpecial01WindowsPhone7" title="スマートフォン勉強会 - すまべん特別編「Windows Phone 7 開発ブーストアップ」＠関東">スマートフォン勉強会 - すまべん特別編「Windows Phone 7 開発ブーストアップ」＠関東</a>でWP7+Rxのセッションをします。入門編として、主に非同期処理にフォーカスして、今すぐコピペで使ってコールバックを撲殺しよう、といった内容を考えていますので、是非聞きに来てください。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0429_320.html">DbExecutor ver.2 - C#での生SQL書き補助ライブラリ</a></h1>
+<ul class="date"><li>2011-04-29</li></ul>
+<div class="entry_body"><p>データベース用のどこにでも転がっていそうなシンプルなユーティリティ、Part2。全面的につくり直しました(Part1もありました、一年前に公開してます、が、正直イマイチだった！)。</p>
+<ul>
+<li><a href="http://dbexecutor.codeplex.com/" title="DbExecutor - Simple and Lightweight Database Executor">DbExecutor - Simple and Lightweight Database Executor</a></li>
+<li><a href="http://www.nuget.org/List/Packages/DbExecutor" title="NuGet gallery">NuGet - DbExecutor</a></li>
+</ul>
+<p>何でこの時期に？というと、睨んでいるのはWP7にSQLCEが乗るという話、です。まあ、Linq to Hogeが積まれるようなので、イラネーだろという話はあるのですが！あるのですが、それでも生SQLを使わざるを得ないシチュエーションは出てくるはずで、そのために、今のうちに作っておく/作りなおしておこうかと。まだWP7でどういう形で載るのか分からないので、今は普通に.NET 4 Client Profile用です。WP7へはSDKが出次第、すぐに対応させるつもり。</p>
+<p>さて、どんな場合がターゲットかというと、生SQLを発行したい場合向け。大抵は軽くラップしたの作ってると思うんですが、そういう軽めのユーティリティとしてはベストなものを提供したいな、と考えました。この手のもので一番なのは<a href="http://entlib.codeplex.com/">Enterprise Library</a>のDataなのでしょうか。確かに立派なんですが、見た感じ高尚すぎてお口に合いません(個人的にはかなり嫌いな雰囲気……)。古いものがベースのまま拡張している感がありありなところも見えるので、余分な贅肉をバッサリ切り落として極限までライトウェイトにしました。</p>
+<h2>ExecuteReader</h2>
+<p>基本的にはADO.NETのシンプルなラッパーです。生SQLを書いて実行を、少しだけ楽にサポートするという、それだけのものです。単純明快にIDbConnectionからインターフェイスだけで生やしているので、Sql Server, Sql Server Compactはもとより、Entity SQLでも動きます。SQL Azureもいけるかな。依存は極力廃したので、MySqlやOrcale、SQLiteでも(多分)動きます。但しプレースホルダは名前付きでないとダメなので(順序依存のものは動作を保証しません)、Accessとかはきっとダメ。</p>
+<p>とりあえず、何もかぶせてないものとの比較で例を。DBは、例なので何でもいいんですが、Productsテーブルに、ProductNameとQuantityPerUnitとSupplierIDとUnitPriceというカラムがある。といったような代物です。ようは、Northwindですが。</p>
+<pre><code class="language-csharp">// こんなデータ格納クラスがあるとして
+public class Product
+{
+    public string ProductName { get; set; }
+    public string QuantityPerUnit { get; set; }
+}
+
+//
+
+var connStr = @&quot;Data Source=NORTHWIND&quot;; // Northwindサンプルから...
+
+// 何もかぶせてない素の状態だと結果セットを取得するためのListを予め作ってAdd
+// コマンドの準備も面倒、結果セットを回すのも定型句なのに行数沢山取ってシンドイ
+var products1 = new List&lt;Product&gt;();
+using (var conn = new SqlConnection(connStr))
+using (var cmd = conn.CreateCommand())
+{
+    conn.Open();
+    cmd.CommandText = @&quot;
+        select ProductName, QuantityPerUnit from Products
+        where SupplierID = @SupplierID and UnitPrice &gt; @UnitPrice&quot;;
+    cmd.Parameters.Add(new SqlParameter(&quot;SupplierID&quot;, 1));
+    cmd.Parameters.Add(new SqlParameter(&quot;UnitPrice&quot;, 10));
+
+    using (var reader = cmd.ExecuteReader())
+    {
+        while (reader.Read())
+        {
+            var p = new Product
+            {
+                ProductName = (string)reader[&quot;ProductName&quot;],
+                QuantityPerUnit = (string)reader[&quot;QuantityPerUnit&quot;]
+            };
+            products1.Add(p);
+        }
+    }
+}
+
+// DbExecutorを使うとパラメータは匿名型で生成
+// 結果はIEnumerable&lt;IDataRecord&gt;からLinq to Objectsでさらさら書ける
+var products2 = DbExecutor.ExecuteReader(new SqlConnection(connStr), @&quot;
+        select ProductName, QuantityPerUnit from Products
+        where SupplierID = @SupplierID and UnitPrice &gt; @UnitPrice
+        &quot;, new { SupplierID = 1, UnitPrice = 10 })
+    .Select(dr =&gt; new Product
+    {
+        ProductName = (string)dr[&quot;ProductName&quot;],
+        QuantityPerUnit = (string)dr[&quot;QuantityPerUnit&quot;]
+    })
+    .ToArray();
+</code></pre>
+<p>そのまんまだと、ただ結果取りたいだけなのに、物凄く行数を使うんですね。コマンドパラメータの追加なども大変面倒くさいし、結果セットの受け取りも大変。DbExecutorでは、この二つに対処するため、コマンドパラメータは匿名型で渡せるように、結果はIEnumerable&lt;IDataRecord&gt;の形で受け取ることができます。そのため、Selectした後は、ToArrayするなり、Linq to Objectsの操作にそのまま流れることが可能です。</p>
+<p>この手のユーティリティでたまに見かける、SqlDataReaderだけを返すものは、あまり意味ないのではかな。やることなんて99%、グルッと回して行の値を取ることなので、それなら、そこまで面倒見てあげよう。IEnumerable&lt;T&gt;を返されても扱いようがなかった石器時代と違って、今はLinqがあるので、yield returnで返す。Stream的なものは全てIEnumerable&lt;T&gt;に変換する。そして全部Linqで処理する。それが現代の常識(ｷﾘｯ</p>
+<p>なお、基本的には静的メソッドで(DbConnection, SQL文字列, パラメータ(匿名型))という形でメソッドを呼びます。DbConnectionは実行完了時にDisposeするため、usingで囲う必要はありません。</p>
+<h2>ExecuteReaderDynamic</h2>
+<p>C#3.0の鉄則がストリームっぽいものはyield returnで返す、ならば、C#4.0の鉄則は、動的っぽいものは全部dynamicで返す。ことです。実に色々と楽になります。</p>
+<pre><code class="language-csharp">// ExecuteReaderDynamicはIDataRecordをdynamicで包んだものを列挙する
+// dynamicであることにより、カラム名のアクセスが自然に、また、キャストが不要になる
+var products3 = DbExecutor.ExecuteReaderDynamic(new SqlConnection(connStr), @&quot;
+        select ProductName, QuantityPerUnit from Products
+        where SupplierID = @SupplierID and UnitPrice &gt; @UnitPrice
+        &quot;, new { SupplierID = 1, UnitPrice = 10 })
+    .Select(d =&gt; new Product
+    {
+        ProductName = d.ProductName,
+        QuantityPerUnit = d.QuantityPerUnit
+    })
+    .ToArray();
+</code></pre>
+<p>ExecuteReaderのものとの違いはSelectの箇所だけです。ExecuteReaderDynamicはIEnumerable&lt;dynamic&gt;を返し、そのdynamicの中身はIDataRecordをDynamicObjectで包んだものです。このことにより、見た目が更に自然に、また、煩わしい型変換をdynamicが自動でやってくれるので、キャストが不要になり、書くのがとても楽になります。</p>
+<p>更に嬉しい特典はデバッガでの表示。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/dbexecutordynamic.jpg">
+</p>
+<p>列挙中にブレークポイントを張って観察すると、動的ビューでカラム名と値、型が見えるようになります。（おっと、これはカラム名にスペースが入っているので動かないというツッコミが、いやまあ、はは……）</p>
+<p>簡単な出力ぐらいならSelectを通す必要すらないです。</p>
+<pre><code class="language-csharp">var query = DbExecutor.ExecuteReaderDynamic(new SqlConnection(connStr), @&quot;
+    select * from Products where UnitPrice &lt; @UnitPrice
+    &quot;, new { UnitPrice = 20.0 });
+
+foreach (var item in query)
+{
+    Console.WriteLine(item.ProductName + &quot;:&quot; + item.UnitPrice);
+}
+</code></pre>
+<p>大変シンプルに書けますね。C#はLLですから！</p>
+<h2>ExecuteNonQuery/ExecuteScalar</h2>
+<p>ExecuteNonQueryやExecuteScalarも同じノリで行けます。</p>
+<pre><code class="language-csharp">// パラメータはプロパティから取得するので、別に匿名型でなく普通のクラスでも可(insertやupdateで便利)
+DbExecutor.ExecuteNonQuery(new SqlConnection(connStr), @&quot;
+    insert into Products(ProductName, QuantityPerUnit)
+    values (@ProductName, @QuantityPerUnit)
+    &quot;, new Product { ProductName = &quot;何か&quot;, QuantityPerUnit = &quot;QUQNQUN&quot; });
+
+// パラメータが不要な場合は省略可
+var serverTime = DbExecutor.ExecuteScalar&lt;DateTime&gt;(new SqlConnection(connStr), @&quot;
+    select GetDate()&quot;);
+</code></pre>
+<p>パラメータは匿名型でなくても、普通のクラスでも可なので、UpdateやInsertの際に便利に使えるかと思います。クエリ文の@に書かれてないパラメータは無視されるので、クラス側に余計なパラメータがある分には問題ありません。</p>
+<h2>Select/SelectDynamic/Insert/Update/Delete</h2>
+<p>今までの4つは、IDataReaderの基本的な操作をラップしただけのものでしたが、他に、少し手の入ったメソッドを5つ用意してあります。メソッド名通り、Select/Insert/Update/Deleteをシンプルに行うためのものです。</p>
+<ul>
+<li>Select</li>
+</ul>
+<p>select文の結果をIDataRecordを触ることなく、指定した型に移します。</p>
+<pre><code class="language-csharp">// IEnumerable&lt;T&gt;を返し、カラム名とプロパティ名を自動でマッピングする
+var products4 = DbExecutor.Select&lt;Product&gt;(new SqlConnection(connStr), @&quot;
+        select ProductName, QuantityPerUnit from Products
+        where SupplierID = @SupplierID and UnitPrice &gt; @UnitPrice
+        &quot;, new { SupplierID = 1, UnitPrice = 10 })
+    .ToArray();
+</code></pre>
+<p>O/Rマッパーというには烏滸がましいというか別にそんな大仰なものではなく、単純にselect文をオブジェクトに転写するという、それだけ。それだけなんですが、それだけのシチュエーションって結構多いですよね？これだけで、生SQLの苦痛が随分と癒される。そう、生SQLを書くのが嫌なんじゃなくて、最後にオブジェクトに手作業で対応付けるのが嫌だったんだよ、と思える程度には。</p>
+<p>パフォーマンスもほとんど問題ありません。一回目の実行時にデリゲートの動的生成＋キャッシュを行い、全てリフレクション経由ではなくデリゲート経由のアクセスを行うため、十分高速です。基本は<a href="http://neue.cc/2011/04/20_317.html" title="neue cc - Expression Treeのこね方・入門編 - 動的にデリゲートを生成してリフレクションを高速化">neue cc - Expression Treeのこね方・入門編 - 動的にデリゲートを生成してリフレクションを高速化</a>で書いたものですが、若干これ向けに修正してあります。</p>
+<p>そうそう、今までのパラメータの匿名型渡しも同様にデリゲート生成していますので、匿名型渡しであることによる速度低下は全くありません。</p>
+<ul>
+<li>SelectDynamic</li>
+</ul>
+<p>select文の結果をExpandoObjectに移します。</p>
+<pre><code class="language-csharp">// IEnumerable&lt;dynamic&gt;で、dynamicの中身はExpandoObject
+var products5 = DbExecutor.SelectDynamic(new SqlConnection(connStr), @&quot;
+        select ProductName, QuantityPerUnit from Products
+        where SupplierID = @SupplierID and UnitPrice &gt; @UnitPrice
+        &quot;, new { SupplierID = 1, UnitPrice = 10 })
+    .ToArray();
+</code></pre>
+<p>SelectDynamicもExecuteReaderDynamicも、共にIEnumerable&lt;dynamic&gt;なのですが、ExecuteReaderDynamicのdynamicは、あくまでIDataRecord、というよりもIDataReaderをdynamicでラップしたに過ぎないため、Selectで何かに射影するか、そうでなければシーケンシャルにしか値が取れません。SelectDynamicは、結果の一行一行をExpandoObjectに予め射影しているので、それだけで永続化されます。</p>
+<p>使い勝手的にはDataTableが近い。実際、例えばASP.NETでは (Container.DataItem as dynamic).PropName とすることでデータバインドも行けます。また、ExpandoObjectは何気にINotifyPropertyChangedが実装されていたりするので、存外使い勝手は良いかもですね。</p>
+<p>DataTableと違ってデバッガに非常に優しいのも嬉しい。動的ビューで中身が簡単に確認できます。</p>
+<ul>
+<li>Insert</li>
+</ul>
+<p>Insertは指定したオブジェクトを元にInsertするというもの。</p>
+<pre><code class="language-csharp">// テーブル名と対象オブジェクト(匿名型でも可)を渡すだけでInsert
+DbExecutor.Insert(new SqlConnection(connStr), &quot;Products&quot;,
+    new Product { ProductName = &quot;何か2&quot;, QuantityPerUnit = &quot;QOQOQUN&quot; });
+</code></pre>
+<p>Insertって書くの面倒。table名(列名)values(@列名)。クソ単純なのに……。というわけで、テーブル名とオブジェクトを指定するだけで極々シンプルなinsert into valuesに変換されます(これはExecuteNonQueryの例で出したSQL文と同じものになります)。やりたいことがシンプルなとき、シンプルに書ける。そういうのがいいなって思っていて。</p>
+<ul>
+<li>Update</li>
+</ul>
+<p>Insertと同じようなコンセプトです。</p>
+<pre><code class="language-csharp">// where条件(複数の場合はand連結)とupdate対象を渡します
+DbExecutor.Update(new SqlConnection(connStr), &quot;Products&quot;,
+    new { ProductName = &quot;何か!!!&quot; }), // update対象
+    new { ProductName = &quot;何か!&quot;, SupplierID = 100 }); // where条件
+    
+// 以下のようなSQLが発行されます
+update Products set ProductName = @ProductName
+where ProductName = @__extra__ProductName
+  and SupplierID = @__extra__SupplierID
+</code></pre>
+<p>第三引数にupdateする値を、第四引数にwhereの条件を、。whereの条件は必須なのと、また、複数の場合はandで連結されます。発行されるSQLに__extra__というのが付くのはupdate対象とプロパティ名が被っても大丈夫なようにするため、なので、特に気にしなくてもいいです。比較的そのまんまなSQLに変換される、とだけ分かってもらえれば。</p>
+<ul>
+<li>Delete</li>
+</ul>
+<p>Updateと同じような(以下略)</p>
+<pre><code class="language-csharp">// delete条件を渡します(複数の場合は例によってand連結)
+DbExecutor.Delete(new SqlConnection(connStr), &quot;Products&quot;,
+    new { ProductName = &quot;何か2!&quot; });
+
+// 以下のSQLが発行される
+delete from Products where ProductName = @ProductName
+</code></pre>
+<p>ちなみに、nullだけを削除といったようなことは出来ません。いや、isnullがコマンド渡しで書けないからね…… そういうのは普通にExecuteNonQueryで書いてくださいな。そういえばでそれと、Insert, Update, Deleteは内部的にはExecuteNonQueryを実行しているので、戻り値は影響された行の個数が返ってきます。</p>
+<p>これらは、あくまで補助的なものとして用意したので、生SQL文を完全に代替することは最初から意識していません。それが当てはまるシンプルなシチュエーションで、シンプルに書けること。それが目的です。</p>
+<h2>接続を維持しての複数クエリ/トランザクション</h2>
+<p>今までの例は全て静的メソッドの、一接続一実行の例だけでしたが、接続をつなぎっぱなしにしたりトランザクションをかけたりも出来ます。usingで囲んでnewでインスタンス化すればOK。</p>
+<pre><code class="language-csharp">// 静的メソッドではなくnewすればDisposeまで接続をCloseしないモード
+using (var exec = new DbExecutor(new SqlConnection(connStr)))
+{
+    // 今まで第一引数に渡していたコネクションが(当然)不要になる
+    var count = exec.ExecuteScalar&lt;int&gt;(&quot;select count(*) from Products&quot;);
+
+    // なお、ストアドプロシージャの実行は第三引数でCommandTypeを変更すればOK
+    var twoyears = exec.SelectDynamic(&quot;Sales by Year&quot;,
+            new { Beginning_Date = &quot;1996-1-1&quot;, Ending_Date = &quot;1997-12-31&quot; },
+            CommandType.StoredProcedure)
+        .ToArray();
+}
+
+// 第二引数にIsolationLevelを渡すとTransactionがかかります
+using (var exec = new DbExecutor(new SqlConnection(connStr), IsolationLevel.ReadCommitted))
+{
+    // こんな露骨でなくても、配列上に沢山オブジェクトがあって
+    var products = Enumerable.Range(1, 10)
+        .Select(i =&gt; new
+        {
+            ProductName = &quot;Test!&quot;,
+            SupplierID = i
+        });
+    // サクッと一気にInsertするとか、あったりなかったり
+    foreach (var product in products)
+    {
+        exec.Insert(&quot;Products&quot;, product);
+    }
+
+
+    exec.TransactionComplete(); // usingを抜ける前にこれを呼び出せばCommit、呼び出さなければRollback
+}
+</code></pre>
+<p>new DbExecutorの際にIsolationLevelを渡すとトランザクションがかかります。TransactionScopeのように、確定させる際は最後にTransactionCompleteを。TransactionCompleteが実行されなかった場合はRollbackされます。なお、別に普通にTransactionScopeを使っても問題ありません。</p>
+<h2>まとめ</h2>
+<p>生SQLなんて、好きじゃない！どうやったって、異物だもの。生SQL文じゃないストアドプロシージャならいいかといえば勿論そんなわけはなく、呼び出し時のパラメータと値の受け取りが……。むしろ、実態のSQL文がコードと相当離れたところに置かれ、見通しが低下するわけで、それなら逐語的文字列リテラルでC#コード中に埋めたほうがいいよ。逐語的文字列リテラルのない言語だったら、悪夢すぎて考えたくないけれど。逐語的文字列リテラルの何がいいかって、コピペでSQL Server Management Studioに移せるところなんだよね。そして逆も然りで。XMLか何かに外出しも当然イマイチで、そんなことやるぐらいなら文字列埋め込みのほうがずっといい。んー、でも<a href="http://s2dao.seasar.org/ja/index.html" title="S2Dao - Top">S2Daoの2Way SQL</a>というのはいいですね。パラメータの修正などもせずManagement Studioでそのまま実行可能、という。Linq to Sql/EntitiesもLinq Padを使うことでそれらしいことは出来るかな？</p>
+<p>と、まあ、なにはともあれで、SQLをどれだけ嫌ったところで、現実問題付き合っていかなければならない。ことはなくLinq to Hogeを使いたい。けど、無理なら、それならせめて軽やかに扱いたいよね、とは皆思うはずで、皆それぞれの俺々ユーティリティは用意されていると思いますが、私も作ってみました(一年ぶりに再チャレンジで)。</p>
+<p>特徴はIEnumerableベース(Linq to Objectsに乗っかる基盤)であることと、匿名型を多用したパラメータの受け渡し、ExpressionTreeを用いた動的デリゲート生成による高速化、dynamicによるシンプルなアクセサ。C#3, 4の機能を満遍なく使って、軽快に書けるようにしたつもりです。生SQLを扱うわりには、かなりLL的な軽さは出せてるのではないかとー。とにかく簡素なAPIになるよう気を使いました。ついでに、今回はCode Contractsも全面的に導入しています。</p>
+<p>とりあえず、SQLCEも4.0になってDLLのみでよくなって、更にはNuGetでサクッと用意できてと(EF CodeFirstも用意できる)、C#でもデータベースがもんのすごく身近に扱えるようになりました。とてもいい事です！というわけで、生SQLのお供に是非どうぞ。Linq to SqlやLinq to Entities使っていても普通に共存出来ますので～。</p>
+<p>まあ私は生SQLよりもCodeFirstにしたいですが！生SQLなんてどうでもいいのでLinq to Entitiesでキャッキャウフフしたいです。そんなわけでDbExecutorのテストに使ったDBは、SQLCE4+EF CodeFirstで組んであったりして。Code FirstでDB組んだのにLinq to Entitiesではなく生SQLでアクセスするとか大変モニョる。</p>
+<h2>4/30追記</h2>
+<p>ver.2.0.0.1に。ExecuteScalarの契約で事後条件を!=nullとしていたのですが、大間違いで普通にnullりるので。DbNullが返ってくるものと勘違いしていてAssumeを足してわざわざ抑制してたんですが、全くもってダメダメな対応だった……。わざわざ（静的チェッカが）警告してくれたのを、深く考えずAssumeで消すとは、愚かすぎる。そして、1日で差し替えたのにStableリリースと言い張ったことを深く反省します。なお、リリースバイナリから事後条件は削除されているので、誤った契約による問題は、静的チェッカが正しく動作しない(nullではないとマークされる)ことだけになります。その程度の軽い障害なのだから良いかといえば、勿論全然よくはなく、本当にすみませんでした。</p>
+<h2>流れるようなインターフェイス vs 生SQL</h2>
+<p>で、思い出した。基本的には私は「流れるようなインターフェイス」自体が大嫌いというのもありますが、<a href="http://s2container.seasar.org/2.4/ja/s2jdbc_abstract.html" title="Seasar2 - S2JDBC - S2JDBCとは">Seasar2 - S2JDBC</a>のような仕掛けは全く無意味だと思いますね。Linqの式木のような深い解析が出来なければ、こういうのはただのファッションで、別に書きやすくも何ともないと思っていて。それなら生SQLのほうが遥かにマシだと。だから私はDbExecutorでは前段は生SQL、後段にLinq to Objectsという形体を取っています。「生SQLは避けられないもの」という認識が大前提のうえで、それを如何にサポートするかが主眼です（まあ、なので単純に比較しても意味のないところですが）。また、C#にはLinq to Entitesもあることですし、欠けてる部分を上手く補完出来ればというのが願うところです。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0429_319.html">XboxInfoTwit - ver.2.3.0.4</a></h1>
+<ul class="date"><li>2011-04-29</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://neue.cc/software/xboxinfotwit" title="neue cc - XboxInfoTwit">neue cc - XboxInfoTwit</a></li>
+</ul>
+<p>Twitterの認証周りが変わって、新規認証が出来なくなってしまってたので、それを修正しました。</p>
+</div>
+<h1><a href="http://neue.cc/2011/0426_318.html">Tester-DoerパターンとCode Contracts</a></h1>
+<ul class="date"><li>2011-04-26</li></ul>
+<div class="entry_body"><p>僕と契約して安全性の高いソフトウェアを作ってよ！というだけじゃ、何か、弱い。動機付けに足りない。という、分かったような分からないような<a href="http://msdn.microsoft.com/en-us/devlabs/dd491992">Code Contracts</a>。困ったところは、で、何が嬉しいの？にたいする積極的具体的な動機付けを提供しにくいということ。契約をしっかり行うことで、強固なソフトウェアが設計出来ます。うーん、理念は分かりますけど実用的に便利ー？if hoge==null throw に毛が生えた程度のものだったら、ちょっとよくわからない。</p>
+<pre><code class="language-csharp">// こういうコード見るともう目も当てられなくて、画面の半分が引数チェックで埋まってるよ！
+public void Hoge(string arg1, string arg2, string arg3)
+{
+    if (arg1 == null)
+    {
+        throw new ArgumentNullException(&quot;arg1&quot;);
+    }
+    if (arg1.Length == 0)
+    {
+        throw new ArgumentException(&quot;arg1&quot;);
+    }
+    if (arg2 == null)
+    {
+        throw new ArgumentNullException(&quot;arg2&quot;);
+    }
+    if (arg2.Length == 0)
+    {
+        throw new ArgumentException(&quot;arg2&quot;);
+    }
+    if (arg3 == null)
+    {
+        throw new ArgumentNullException(&quot;arg3&quot;);
+    }
+    if (arg3.Length == 0)
+    {
+        throw new ArgumentException(&quot;arg3&quot;);
+    }
+    
+    // やっとメソッドの本体...
+}
+</code></pre>
+<p>うん、これは、イヤ。ifは必ず{}をつけなければ、とやると行数が嵩んで最悪の視認性に。個人的には、明らかに一行な処理はifの真横に書いてもいいと思う。</p>
+<pre><code class="language-csharp">// これぐらいなら許す(えらそう)
+public void Hoge(string arg1, string arg2, string arg3)
+{
+    if (string.IsNullOrEmpty(arg1)) throw new ArgumentException(&quot;arg1&quot;);
+    if (string.IsNullOrEmpty(arg2)) throw new ArgumentException(&quot;arg2&quot;);
+    if (string.IsNullOrEmpty(arg3)) throw new ArgumentException(&quot;arg3&quot;);
+
+    // ↑もしくはGuard.NotNull(arg1, &quot;arg1&quot;); とか用意するなど、ね。
+}
+</code></pre>
+<p>そんなわけかで、この手のnullチェックが好きでなくて、必要性だって、どうせ次の行のその引数使うところで死ぬんだからどうでもよくね？と思う場合があまりにも多いともにょもにょもにょ。書くけど書かないけど。</p>
+<p>その延長線上でContractsも面倒くさいしなー、と思っていた時もありました。しかしCode Contractsは、あらゆる方向から契約を積極的に行うための動機付けを提供してくれています。Premiumにしか提供されていない静的チェックが最も強力なのは確かですが、Standardのユーザーのためにも、ドキュメント生成、<a href="http://visualstudiogallery.msdn.microsoft.com/85f0aa38-a8a8-4811-8b86-e7f0b8d8c71b/">IntelliSense表示サポート</a>、Pex自動テスト生成サポート、引数名を文字列で書かなくていい。などなど。</p>
+<p>そこまであの手この手で、契約するといいよ、と迫ってこられれば納得です。理屈上素晴らしいから、というだけじゃなくて、何だかんだで面倒くさいものを、現実的にこんなにメリットがあるから契約しようよ！という。そういう姿勢がいいよね、普及させるために全方位から攻めるというの。それだけ並べられれば、そりゃ書くってものですよ？</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/codecontracts_enumerablerange.jpg">
+</p>
+<p>特にIntelliSense厨の私は、IntelliSenseへの契約表示に感動しまして。Enumerable.Rangeで条件が表示されてるよ、きゃー！って。そして、BCLが契約を表示してくれるなら、自前のクラス群も契約表示させてあげたい。と、いうのが一番のCode Contractsやろう！という動機付けになりましたね。頻繁にクラッシュするんですが、その辺は多めに見てあげます。</p>
+<h2>Tester-DoerパターンとCode Contracts</h2>
+<p>Code Contracts自体は<a href="http://d.hatena.ne.jp/zecl/20110213/p2">第54回CLR/H勉強会発表資料を公開します。 - Bug Catharsis</a>の「オブジェクト指向と契約による設計」と「Code Contracts入門」という資料が素晴らしいので、今すぐそちらを見たほうがいいです！</p>
+<p>というわけでCode Contracts自体には全く触れないで、例でも。</p>
+<pre><code class="language-csharp">// Addのないstring, string辞書(これはひどい)
+public class StringDictionary
+{
+    Dictionary&lt;string, string&gt; dict = new Dictionary&lt;string, string&gt;();
+
+    public bool ContainsKey(string key)
+    {
+        return dict.ContainsKey(key);
+    }
+
+    public string Get(string key)
+    {
+        return dict[key];
+    }
+}
+
+static void Main(string[] args)
+{
+    var dict = new StringDictionary();
+
+    // 存在しないキーをGetすると例外
+    dict.Get(&quot;hogehoge&quot;);
+
+    // チェックしてから取得する(Tester-Doerパターン)
+    if (dict.ContainsKey(&quot;hogehoge&quot;))
+    {
+        dict.Get(&quot;hogehoge&quot;);
+    }
+}
+</code></pre>
+<p>取得時にダメな可能性があるものは、先にチェックしてから取りに行く。といったことは、.NETのクラスライブラリ設計に書いてあるので読もう～。とてもお薦め本。</p>
+<iframe src="http://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as4&m=amazon&f=ifr&ref=ss_til&asins=4891006765" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<p>問題は、キーの存在チェックをすることがほぼ必須なのに、それを強制出来ないんですね。あくまで任意でしかなく、別にチェックしなくてもコンパイラ通るし、そうして書かないでいるとうっかりな例外発生の可能性を常に抱えてしまう。こういう問題は例外自体にも言えますが。ほぅ、では検査例外が必要か…… いえ、あれはいりません。</p>
+<p>まあともかくで、ここでCode Contractsを使うとどうなるか、というと……</p>
+<pre><code class="language-csharp">public class StringDictionary
+{
+    Dictionary&lt;string, string&gt; dict = new Dictionary&lt;string, string&gt;();
+
+    [Pure] // Pureじゃないと怒られるのでPureってことにしておこう（善意の申告制です）
+    public bool ContainsKey(string key)
+    {
+        return dict.ContainsKey(key);
+    }
+
+    public string Get(string key)
+    {
+        Contract.Requires(ContainsKey(key)); // 事前条件 ContainsKeyがtrueでなければダメ
+
+        return dict[key];
+    }
+}
+
+static void Main(string[] args)
+{
+    var dict = new StringDictionary();
+
+    // ContainsKeyの前にGetしようとすると...
+    dict.Get(&quot;hogehoge&quot;);
+}
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/codecontracts_unproven.jpg">
+</p>
+<p>静的チェッカーが警告を出してくれます。いいねいいね。そんなわけで、Code Contractsを使うと、比較的安全にTester-Doerパターンが適用できるのでした。こういう、コードだけでは表現できない約束事を表現でき、実行時ではなくコンパイル時に検出出来るようになる、っていうのは、魅力的な話なのではと思います。</p>
+<h2>まとめ</h2>
+<p>Code Contractsは一部で無理矢理感が否めません。そもそもバイナリリライター必須なうえに、文法的にもContract.Requiresぐらいならまあいいとしても、Ensures(Contracts.Result)やInvariantやContractClassForはC#的に不自然さを残す介入の仕方で、些か残念と言わざるをえない。</p>
+<p>不自然さ漂う記述方法がC#に統合される(それ<a href="http://research.microsoft.com/en-us/projects/specsharp/">Spec#</a>)日は来るのだろうか(絶対来ないよね)。Spec#は軽く仕様とTutorialを眺めた感じだと、やはり言語統合されてると、洗練されてるし、書きやすさも段違いになるよねえ、などと思いました。全ては必要ないけれど、一部はC#に入って欲しい、のですが文法と衝突しなくても、既存のコードとルールが衝突してしまったりするので難しいかなあ。</p>
+<p>とはいえ、Code Contracts全体のエコシステムがもたらすメリットも多大だし、mscorlibすらContractsが書き足されている(.NET4から)ぐらいなので、今のうちにそれに従って流行りものに乗っかるのもいいと思います。流行ってるか謎ですが。単純なnullチェックぐらいならサクッと書けますが、少し凝った契約をしようとすると途端にワケワカランし正道がサッパリ。という敷居の高さはありますが……。</p>
+<p>実際ヨクワカラナイデス。少しよーし、張り切って書いちゃうぞー、とやると、それダメそれダメ、とリライターに言われてしまったりでnullチェックに毛の生えた程度しか使いこなせない昨今です。それだけでも有益といえば有益なんですが、あちこちでrequires not null, ensures not nullを書いていると、もうデフォルトを非nullにしてくれよ！と叫ばずにはいられない。何ともいえない不毛感がちょっと、かなり、嫌。</p>
+<p>あと、静的チェッカが上手く機能するように書くには静的チェッカが必要なのも。当たり前？うーん、静的チェッカなしで、ただ普通にContractsを書いているだけじゃあダメなのかな？契約自体は成立していてリライターは通るけど静的チェッカ使うと警告だらけ。みたいな形になりがちで。Standardで書いてPremiumでチェックしたら涙目の落差が激しすぎて、じゃあ結局は静的チェッカ必須なの？でもそれPremium以上じゃん、というのが残念で。そうなるとStandardにも欲しいねえ、静的チェッカー。</p>
+<p>でも、ちょっと気の利いたGuard句として、事前条件だけで画面半分が埋まるような事態が緩和されるなら、それはとっても嬉しいなって。まずは、その程度から始めよう。順を追ってステップアップすればいいのだから。</p>
+</div>
+<a href="./publish/14">Prev |</a>
+<a href="./publish/16">| Next</a>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="http://neue.cc/2021/08/">2021-08</a>
+<li><a href="http://neue.cc/2021/07/">2021-07</a>
+<li><a href="http://neue.cc/2021/05/">2021-05</a>
+<li><a href="http://neue.cc/2021/02/">2021-02</a>
+<li><a href="http://neue.cc/2020/12/">2020-12</a>
+<li><a href="http://neue.cc/2020/11/">2020-11</a>
+<li><a href="http://neue.cc/2020/10/">2020-10</a>
+<li><a href="http://neue.cc/2020/08/">2020-08</a>
+<li><a href="http://neue.cc/2020/07/">2020-07</a>
+<li><a href="http://neue.cc/2020/04/">2020-04</a>
+<li><a href="http://neue.cc/2020/01/">2020-01</a>
+<li><a href="http://neue.cc/2019/12/">2019-12</a>
+<li><a href="http://neue.cc/2019/09/">2019-09</a>
+<li><a href="http://neue.cc/2019/08/">2019-08</a>
+<li><a href="http://neue.cc/2019/07/">2019-07</a>
+<li><a href="http://neue.cc/2019/06/">2019-06</a>
+<li><a href="http://neue.cc/2019/05/">2019-05</a>
+<li><a href="http://neue.cc/2019/04/">2019-04</a>
+<li><a href="http://neue.cc/2018/12/">2018-12</a>
+<li><a href="http://neue.cc/2018/10/">2018-10</a>
+<li><a href="http://neue.cc/2018/08/">2018-08</a>
+<li><a href="http://neue.cc/2018/07/">2018-07</a>
+<li><a href="http://neue.cc/2018/05/">2018-05</a>
+<li><a href="http://neue.cc/2018/04/">2018-04</a>
+<li><a href="http://neue.cc/2018/01/">2018-01</a>
+<li><a href="http://neue.cc/2017/12/">2017-12</a>
+<li><a href="http://neue.cc/2017/09/">2017-09</a>
+<li><a href="http://neue.cc/2017/08/">2017-08</a>
+<li><a href="http://neue.cc/2017/07/">2017-07</a>
+<li><a href="http://neue.cc/2017/06/">2017-06</a>
+<li><a href="http://neue.cc/2017/04/">2017-04</a>
+<li><a href="http://neue.cc/2017/03/">2017-03</a>
+<li><a href="http://neue.cc/2016/12/">2016-12</a>
+<li><a href="http://neue.cc/2016/11/">2016-11</a>
+<li><a href="http://neue.cc/2016/10/">2016-10</a>
+<li><a href="http://neue.cc/2016/09/">2016-09</a>
+<li><a href="http://neue.cc/2016/08/">2016-08</a>
+<li><a href="http://neue.cc/2016/07/">2016-07</a>
+<li><a href="http://neue.cc/2016/06/">2016-06</a>
+<li><a href="http://neue.cc/2016/05/">2016-05</a>
+<li><a href="http://neue.cc/2016/04/">2016-04</a>
+<li><a href="http://neue.cc/2016/03/">2016-03</a>
+<li><a href="http://neue.cc/2016/01/">2016-01</a>
+<li><a href="http://neue.cc/2015/12/">2015-12</a>
+<li><a href="http://neue.cc/2015/11/">2015-11</a>
+<li><a href="http://neue.cc/2015/10/">2015-10</a>
+<li><a href="http://neue.cc/2015/09/">2015-09</a>
+<li><a href="http://neue.cc/2015/06/">2015-06</a>
+<li><a href="http://neue.cc/2015/05/">2015-05</a>
+<li><a href="http://neue.cc/2015/04/">2015-04</a>
+<li><a href="http://neue.cc/2015/03/">2015-03</a>
+<li><a href="http://neue.cc/2015/02/">2015-02</a>
+<li><a href="http://neue.cc/2015/01/">2015-01</a>
+<li><a href="http://neue.cc/2014/12/">2014-12</a>
+<li><a href="http://neue.cc/2014/11/">2014-11</a>
+<li><a href="http://neue.cc/2014/10/">2014-10</a>
+<li><a href="http://neue.cc/2014/09/">2014-09</a>
+<li><a href="http://neue.cc/2014/08/">2014-08</a>
+<li><a href="http://neue.cc/2014/07/">2014-07</a>
+<li><a href="http://neue.cc/2014/05/">2014-05</a>
+<li><a href="http://neue.cc/2014/04/">2014-04</a>
+<li><a href="http://neue.cc/2014/03/">2014-03</a>
+<li><a href="http://neue.cc/2014/01/">2014-01</a>
+<li><a href="http://neue.cc/2013/12/">2013-12</a>
+<li><a href="http://neue.cc/2013/11/">2013-11</a>
+<li><a href="http://neue.cc/2013/10/">2013-10</a>
+<li><a href="http://neue.cc/2013/09/">2013-09</a>
+<li><a href="http://neue.cc/2013/08/">2013-08</a>
+<li><a href="http://neue.cc/2013/07/">2013-07</a>
+<li><a href="http://neue.cc/2013/06/">2013-06</a>
+<li><a href="http://neue.cc/2013/05/">2013-05</a>
+<li><a href="http://neue.cc/2013/04/">2013-04</a>
+<li><a href="http://neue.cc/2013/03/">2013-03</a>
+<li><a href="http://neue.cc/2013/02/">2013-02</a>
+<li><a href="http://neue.cc/2013/01/">2013-01</a>
+<li><a href="http://neue.cc/2012/12/">2012-12</a>
+<li><a href="http://neue.cc/2012/11/">2012-11</a>
+<li><a href="http://neue.cc/2012/10/">2012-10</a>
+<li><a href="http://neue.cc/2012/09/">2012-09</a>
+<li><a href="http://neue.cc/2012/08/">2012-08</a>
+<li><a href="http://neue.cc/2012/07/">2012-07</a>
+<li><a href="http://neue.cc/2012/06/">2012-06</a>
+<li><a href="http://neue.cc/2012/05/">2012-05</a>
+<li><a href="http://neue.cc/2012/04/">2012-04</a>
+<li><a href="http://neue.cc/2012/03/">2012-03</a>
+<li><a href="http://neue.cc/2012/02/">2012-02</a>
+<li><a href="http://neue.cc/2012/01/">2012-01</a>
+<li><a href="http://neue.cc/2011/12/">2011-12</a>
+<li><a href="http://neue.cc/2011/11/">2011-11</a>
+<li><a href="http://neue.cc/2011/10/">2011-10</a>
+<li><a href="http://neue.cc/2011/09/">2011-09</a>
+<li><a href="http://neue.cc/2011/08/">2011-08</a>
+<li><a href="http://neue.cc/2011/07/">2011-07</a>
+<li><a href="http://neue.cc/2011/06/">2011-06</a>
+<li><a href="http://neue.cc/2011/05/">2011-05</a>
+<li><a href="http://neue.cc/2011/04/">2011-04</a>
+<li><a href="http://neue.cc/2011/03/">2011-03</a>
+<li><a href="http://neue.cc/2011/02/">2011-02</a>
+<li><a href="http://neue.cc/2011/01/">2011-01</a>
+<li><a href="http://neue.cc/2010/12/">2010-12</a>
+<li><a href="http://neue.cc/2010/11/">2010-11</a>
+<li><a href="http://neue.cc/2010/10/">2010-10</a>
+<li><a href="http://neue.cc/2010/09/">2010-09</a>
+<li><a href="http://neue.cc/2010/08/">2010-08</a>
+<li><a href="http://neue.cc/2010/07/">2010-07</a>
+<li><a href="http://neue.cc/2010/06/">2010-06</a>
+<li><a href="http://neue.cc/2010/05/">2010-05</a>
+<li><a href="http://neue.cc/2010/04/">2010-04</a>
+<li><a href="http://neue.cc/2010/03/">2010-03</a>
+<li><a href="http://neue.cc/2010/02/">2010-02</a>
+<li><a href="http://neue.cc/2010/01/">2010-01</a>
+<li><a href="http://neue.cc/2009/12/">2009-12</a>
+<li><a href="http://neue.cc/2009/11/">2009-11</a>
+<li><a href="http://neue.cc/2009/10/">2009-10</a>
+<li><a href="http://neue.cc/2009/09/">2009-09</a>
+<li><a href="http://neue.cc/2009/08/">2009-08</a>
+<li><a href="http://neue.cc/2009/07/">2009-07</a>
+<li><a href="http://neue.cc/2009/06/">2009-06</a>
+<li><a href="http://neue.cc/2009/05/">2009-05</a>
+<li><a href="http://neue.cc/2009/04/">2009-04</a>
+<li><a href="http://neue.cc/2009/03/">2009-03</a>
+<li><a href="http://neue.cc/2009/02/">2009-02</a>
+<li><a href="http://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul><li>Index: <a href="http://neue.cc">neue.cc</a><li></ul></div>
+    </div>
+</body>
