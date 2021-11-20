@@ -56,7 +56,7 @@ var artciles = Directory.EnumerateFiles(inputDir)
     {
         var fileName = Path.GetFileNameWithoutExtension(x);
 
-        var match = Regex.Match(fileName, @"(\d{4})-(\d{2})-(\d+)(.+)");
+        var match = Regex.Match(fileName, @"(\d{4})-(\d{2})-(\d+)(.*)");
         var yyyy = match.Groups[1].Value;
         var mm = match.Groups[2].Value;
         var dd = match.Groups[3].Value;
