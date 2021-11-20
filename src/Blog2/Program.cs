@@ -40,7 +40,7 @@ static string BuildHtml(string title, string content, string side, string footer
     <script src=""https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js""></script>
     <script src=""https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js""></script>
     <div id=""wrapper"">
-        <div id=""header""></div>
+        <a href=""https://neue.cc/""><div id=""header""></div></a>
         <div id=""content"">{content}</div>
         <div id=""side"">{side}</div>
         <div id=""footer"">{footer}</div>
