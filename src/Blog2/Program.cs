@@ -3,6 +3,7 @@ using Markdig.Renderers;
 using Markdig.Renderers.Html;
 using Markdig.Syntax;
 using System.Diagnostics;
+using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -19,8 +20,8 @@ static string BuildHtml(string title, string content, string side, string footer
         og = @$"
 <meta property=""og:url"" content=""{ogurl}"" />
 <meta property=""og:type"" content=""{type}"" />
-<meta property=""og:title"" content=""{title}"" />
-<meta property=""og:description"" content=""{ogcontent.Substring(0, Math.Min(80, ogcontent.Length)).Trim(' ', '#', '\r', '\n')}..."" />
+<meta property=""og:title"" content=""{WebUtility.HtmlEncode(title)}"" />
+<meta property=""og:description"" content=""{WebUtility.HtmlEncode(ogcontent.Substring(0, Math.Min(80, ogcontent.Length)).Trim(' ', '#', '\r', '\n'))}..."" />
 ";
     }
 
