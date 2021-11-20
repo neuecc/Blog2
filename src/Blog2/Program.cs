@@ -104,7 +104,10 @@ GitHub:<a href=""https://github.com/neuecc/"">neuecc</a>
 ";
 
 // Create footer
-var footer = "<ul><li>Index: <a href=\"https://neue.cc\">neue.cc</a><li></ul>";
+var footer = @"<ul>
+<li>Index: <a href=\""https://neue.cc\"">neue.cc</a><li>
+<li>Powered by: <a href=\""https://github.com/neuecc/Blog2\"">https://github.com/neuecc/Blog2</a>
+</ul>";
 
 // Generate Root Index
 var rootDir = outputDir;
