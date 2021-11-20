@@ -6,7 +6,8 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
 
-var dir = args[0]; // output dir
+var inputDir = args[0]; // input dir
+var outputDir = args[1]; // output dir
 
 static string BuildHtml(string title, string content, string side, string footer)
 {
@@ -34,7 +35,7 @@ static string BuildHtml(string title, string content, string side, string footer
 }
 
 // Load Files and create body.
-var artciles = Directory.EnumerateFiles(dir)
+var artciles = Directory.EnumerateFiles(inputDir)
     .AsParallel()
     .Select(x =>
     {
@@ -106,7 +107,7 @@ GitHub:<a href=""https://github.com/neuecc/"">neuecc</a>
 var footer = "<ul><li>Index: <a href=\"http://neue.cc\">neue.cc</a><li></ul>";
 
 // Generate Root Index
-var rootDir = "";
+var rootDir = outputDir;
 await GenerateIndexWithPagingAsync(artciles.OrderByDescending(x => x), rootDir, null);
 
 // Generate YYYY/index.html
@@ -209,6 +210,7 @@ public record Article(string Title, string Body, PageUrl Url) : IComparable<Arti
 {
     public int CompareTo(Article? other)
     {
+        if (other == null) return -1;
         return Comparer<(string, string, string)>.Default.Compare((Url.yyyy, Url.mm, Url.dd_no), (other.Url.yyyy, other.Url.mm, other.Url.dd_no));
     }
 }
