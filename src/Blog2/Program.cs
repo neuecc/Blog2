@@ -9,9 +9,21 @@ using System.Text.RegularExpressions;
 var inputDir = args[0]; // input dir
 var outputDir = args[1]; // output dir
 
-static string BuildHtml(string title, string content, string side, string footer)
+static string BuildHtml(string title, string content, string side, string footer, string? ogurl = null)
 {
-    return @$"<!DOCTYPE html>
+    var og = "";
+    if (ogurl != null)
+    {
+        var type = (ogurl == "https://neue.cc") ? "website" : "article";
+        og = @$"
+<meta property=""og:url"" content=""{ogurl}"" />
+<meta property=""og:type"" content=""{type}"" />
+<meta property=""og:title"" content=""{title}"" />
+<meta property=""og:description"" content=""{content.Substring(0, 80)}..."" />
+";
+    }
+
+    return @$" < !DOCTYPE html>
 <html dir=""ltr"" lang=""ja"">
 <head>
     <meta charset=""utf-8"" />
@@ -19,7 +31,8 @@ static string BuildHtml(string title, string content, string side, string footer
     <link rel=""shortcut icon"" href=""https://neue.cc/favicon.ico"" />
 	<link rel=""stylesheet"" href=""https://neue.cc/style.css"" type=""text/css"" media=""screen"" />
     <link href=""https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css"" rel=""stylesheet"" />
-</head>
+    <meta property=""og:url"" content="""" />
+ </head>
 <body>
 	<script src=""https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js""></script>
     <script src=""https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js""></script>
@@ -130,8 +143,9 @@ await Parallel.ForEachAsync(artciles.GroupBy(x => x.Url.yyyy), async (yyyy, _) =
         // Generate single .html
         foreach (var item in mm)
         {
-            var html = BuildHtml("neue cc - " + item.Title, item.Body, side, footer);
-            Console.WriteLine($"Generating {item.Url.yyyy}/{item.Url.mm}/{item.Url.dd_no}.html");
+            var filePath = $"{item.Url.yyyy}/{item.Url.mm}/{item.Url.dd_no}.html";
+            Console.WriteLine($"Generating {filePath}");
+            var html = BuildHtml("neue cc - " + item.Title, item.Body, side, footer, $"https://neue.cc/{filePath}");
             await File.WriteAllTextAsync(Path.Combine(mmmmPath, item.Url.dd_no + ".html"), html);
         }
     }
@@ -200,7 +214,8 @@ async Task GenerateIndexWithPagingAsync(IEnumerable<Article> source, string root
         }
 
         var t = (title == null) ? "neue cc" : ("neue cc - " + title);
-        var html = BuildHtml(t, body.ToString(), side!, footer!);
+        var og = (title == null && page == 1) ? "https://neue.cc" : null;
+        var html = BuildHtml(t, body.ToString(), side!, footer!, og);
 
         var path = (page == 1) ? "index.html" : $"{page}.html";
         var dir = root;
