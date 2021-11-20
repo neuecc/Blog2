@@ -183,7 +183,8 @@ string CreateDirectory(string root, string path)
 
 async Task GenerateIndexWithPagingAsync(IEnumerable<Article> source, string root, string? title)
 {
-    var pageRoot = root.Replace(outputDir, "").TrimEnd('/');
+    var pageRoot = root.Replace(outputDir, "").Trim('/');
+    var urlRoot = pageRoot == "" ? "https://neue.cc" : ("https://neue.cc/" + pageRoot);
     var page = 1;
     var articles = source.Chunk(15).ToArray();
     foreach (var items in articles)
@@ -199,18 +200,18 @@ async Task GenerateIndexWithPagingAsync(IEnumerable<Article> source, string root
         {
             if ((page - 1) == 1)
             {
-                body.AppendLine($"<a href=\"https://neue.cc/{pageRoot}/\">Prev |</a>");
+                body.AppendLine($"<a href=\"{urlRoot}\">Prev |</a>");
             }
             else
             {
-                body.AppendLine($"<a href=\"https://neue.cc/{pageRoot}/{page - 1}\">Prev |</a>");
+                body.AppendLine($"<a href=\"{urlRoot}/{page - 1}\">Prev |</a>");
             }
         }
 
         // hasNext
         if (page != articles.Length)
         {
-            body.AppendLine($"<a href=\"https://neue.cc/{pageRoot}/{page + 1}\">| Next</a>");
+            body.AppendLine($"<a href=\"{urlRoot}/{page + 1}\">| Next</a>");
         }
 
         var t = (title == null) ? "neue cc" : ("neue cc - " + title);
