@@ -166,7 +166,7 @@ string CreateDirectory(string root, string path)
 
 async Task GenerateIndexWithPagingAsync(IEnumerable<Article> source, string root, string? title)
 {
-    var pageRoot = root.Replace(outputDir, "");
+    var pageRoot = root.Replace(outputDir, "").TrimEnd('/');
     var page = 1;
     var articles = source.Chunk(15).ToArray();
     foreach (var items in articles)
@@ -193,7 +193,7 @@ async Task GenerateIndexWithPagingAsync(IEnumerable<Article> source, string root
         // hasNext
         if (page != articles.Length)
         {
-            body.AppendLine($"<a href=\"{root}/{page + 1}\">| Next</a>");
+            body.AppendLine($"<a href=\"https://neue.cc/{pageRoot}/{page + 1}\">| Next</a>");
         }
 
         var t = (title == null) ? "neue cc" : ("neue cc - " + title);
