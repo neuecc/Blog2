@@ -16,8 +16,8 @@ static string BuildHtml(string title, string content, string side, string footer
 <head>
     <meta charset=""utf-8"" />
     <title>{title}</title>
-    <link rel=""shortcut icon"" href=""http://neue.cc/favicon.ico"" />
-	<link rel=""stylesheet"" href=""http://neue.cc/wp-content/themes/neuecc/style.css"" type=""text/css"" media=""screen"" />
+    <link rel=""shortcut icon"" href=""https://neue.cc/favicon.ico"" />
+	<link rel=""stylesheet"" href=""https://neue.cc/wp-content/themes/neuecc/style.css"" type=""text/css"" media=""screen"" />
     <link href=""https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism.min.css"" rel=""stylesheet"" />
 </head>
 <body>
@@ -59,7 +59,7 @@ var artciles = Directory.EnumerateFiles(inputDir)
         }
 
         var title = first.Trim('#', ' ');
-        var bodyTitle = $"<h1><a href=\"http://neue.cc/{yyyy}/{mm}{dd_no}.html\">{title}</a></h1>";
+        var bodyTitle = $"<h1><a href=\"https://neue.cc/{yyyy}/{mm}{dd_no}.html\">{title}</a></h1>";
         var bodyDate = $"<ul class=\"date\"><li>{yyyy}-{mm}-{dd}</li></ul>";
         var body = "<div class=\"entry_body\">" + Markdown.ToHtml(others) + "</div>";
 
@@ -76,7 +76,7 @@ var artciles = Directory.EnumerateFiles(inputDir)
 var sideArchives = artciles
     .GroupBy(x => (x.Url.yyyy, x.Url.mm))
     .OrderByDescending(x => x.Key)
-    .Select(x => $"<li><a href=\"http://neue.cc/{x.Key.yyyy}/{x.Key.mm}/\">{x.Key.yyyy}-{x.Key.mm}</a>");
+    .Select(x => $"<li><a href=\"https://neue.cc/{x.Key.yyyy}/{x.Key.mm}/\">{x.Key.yyyy}-{x.Key.mm}</a>");
 
 var side = $@"
 <h3>Profile</h3>
@@ -104,7 +104,7 @@ GitHub:<a href=""https://github.com/neuecc/"">neuecc</a>
 ";
 
 // Create footer
-var footer = "<ul><li>Index: <a href=\"http://neue.cc\">neue.cc</a><li></ul>";
+var footer = "<ul><li>Index: <a href=\"https://neue.cc\">neue.cc</a><li></ul>";
 
 // Generate Root Index
 var rootDir = outputDir;
