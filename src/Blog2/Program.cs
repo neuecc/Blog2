@@ -9,17 +9,18 @@ using System.Text.RegularExpressions;
 var inputDir = args[0]; // input dir
 var outputDir = args[1]; // output dir
 
-static string BuildHtml(string title, string content, string side, string footer, string? ogurl = null)
+static string BuildHtml(string title, string content, string side, string footer, string? ogurl = null, string? ogcontent = null)
 {
     var og = "";
     if (ogurl != null)
     {
         var type = (ogurl == "https://neue.cc") ? "website" : "article";
+        ogcontent = ogcontent ?? "";
         og = @$"
 <meta property=""og:url"" content=""{ogurl}"" />
 <meta property=""og:type"" content=""{type}"" />
 <meta property=""og:title"" content=""{title}"" />
-<meta property=""og:description"" content=""{content.Substring(0, 80)}..."" />
+<meta property=""og:description"" content=""{ogcontent.Substring(0, Math.Min(80, ogcontent.Length)).Trim(' ', '#', '\r', '\n')}..."" />
 ";
     }
 
@@ -79,6 +80,7 @@ var artciles = Directory.EnumerateFiles(inputDir)
         return new Article(
             Url: new PageUrl(yyyy, mm, dd_no),
             Body: bodyTitle + Environment.NewLine + bodyDate + Environment.NewLine + body,
+            OriginalBody: others,
             Title: title
         );
     })
@@ -145,7 +147,7 @@ await Parallel.ForEachAsync(artciles.GroupBy(x => x.Url.yyyy), async (yyyy, _) =
         {
             var filePath = $"{item.Url.yyyy}/{item.Url.mm}/{item.Url.dd_no}.html";
             Console.WriteLine($"Generating {filePath}");
-            var html = BuildHtml("neue cc - " + item.Title, item.Body, side, footer, $"https://neue.cc/{filePath}");
+            var html = BuildHtml("neue cc - " + item.Title, item.Body, side, footer, $"https://neue.cc/{filePath}", item.OriginalBody);
             await File.WriteAllTextAsync(Path.Combine(mmmmPath, item.Url.dd_no + ".html"), html);
         }
     }
@@ -227,7 +229,7 @@ async Task GenerateIndexWithPagingAsync(IEnumerable<Article> source, string root
     }
 }
 
-public record Article(string Title, string Body, PageUrl Url) : IComparable<Article>
+public record Article(string Title, string Body, PageUrl Url, string OriginalBody) : IComparable<Article>
 {
     public int CompareTo(Article? other)
     {
