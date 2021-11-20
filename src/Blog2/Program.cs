@@ -59,7 +59,7 @@ var artciles = Directory.EnumerateFiles(inputDir)
         }
 
         var title = first.Trim('#', ' ');
-        var bodyTitle = $"<h1><a href=\"https://neue.cc/{yyyy}/{mm}{dd_no}.html\">{title}</a></h1>";
+        var bodyTitle = $"<h1><a href=\"https://neue.cc/{yyyy}/{mm}/{dd_no}.html\">{title}</a></h1>";
         var bodyDate = $"<ul class=\"date\"><li>{yyyy}-{mm}-{dd}</li></ul>";
         var body = "<div class=\"entry_body\">" + Markdown.ToHtml(others) + "</div>";
 
