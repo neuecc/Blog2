@@ -23,7 +23,7 @@ static string BuildHtml(string title, string content, string side, string footer
 ";
     }
 
-    return @$" < !DOCTYPE html>
+    return @$"<!DOCTYPE html>
 <html dir=""ltr"" lang=""ja"">
 <head>
     <meta charset=""utf-8"" />
