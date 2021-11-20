@@ -108,6 +108,7 @@ var footer = "<ul><li>Index: <a href=\"http://neue.cc\">neue.cc</a><li></ul>";
 
 // Generate Root Index
 var rootDir = outputDir;
+CreateDirectory(rootDir, "");
 await GenerateIndexWithPagingAsync(artciles.OrderByDescending(x => x), rootDir, null);
 
 // Generate YYYY/index.html
