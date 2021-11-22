@@ -121,6 +121,7 @@ GitHub:<a href=""https://github.com/neuecc/"">neuecc</a>
 // Create footer
 var footer = @"<ul>
 <li>Index: <a href=""https://neue.cc"">neue.cc</a><li>
+<li>RSS feed: <a href=""https://neue.cc/feed"">neue.cc/feed</a><li>
 <li>Powered by: <a href=""https://github.com/neuecc/Blog2"">https://github.com/neuecc/Blog2</a>
 </ul>";
 
