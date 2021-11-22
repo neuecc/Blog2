@@ -1,9 +1,12 @@
 ﻿using Markdig;
+using System.Diagnostics;
 using System.Net;
 using System.ServiceModel.Syndication;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml;
+
+var sw = Stopwatch.StartNew();
 
 var inputDir = args[0]; // input dir
 var outputDir = args[1]; // output dir
@@ -157,6 +160,9 @@ await Parallel.ForEachAsync(articles.GroupBy(x => x.Url.yyyy), async (yyyy, _) =
 // Generate rss(/feed/index.xml)
 var rssPath = CreateDirectory(rootDir, "feed");
 await CreateRssAsync(Path.Combine(rssPath, "index.xml"), articles.Take(10));
+
+// end
+Console.WriteLine("Completed: " + sw.Elapsed);
 
 /// <summary>Create and return combined path</summary>
 string CreateDirectory(string root, string path)
