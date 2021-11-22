@@ -1,11 +1,9 @@
 ﻿using Markdig;
-using Markdig.Renderers;
-using Markdig.Renderers.Html;
-using Markdig.Syntax;
-using System.Diagnostics;
 using System.Net;
+using System.ServiceModel.Syndication;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Xml;
 
 var inputDir = args[0]; // input dir
 var outputDir = args[1]; // output dir
@@ -50,7 +48,7 @@ static string BuildHtml(string title, string content, string side, string footer
 }
 
 // Load Files and create body.
-var artciles = Directory.EnumerateFiles(inputDir)
+var articles = Directory.EnumerateFiles(inputDir)
     .AsParallel()
     .Select(x =>
     {
@@ -79,17 +77,18 @@ var artciles = Directory.EnumerateFiles(inputDir)
         var body = "<div class=\"entry_body\">" + Markdown.ToHtml(others) + "</div>";
 
         return new Article(
-            Url: new PageUrl(yyyy, mm, dd_no),
+            Url: new PageUrl(yyyy, mm, dd, dd_no),
             Body: bodyTitle + Environment.NewLine + bodyDate + Environment.NewLine + body,
             OriginalBody: others,
             Title: title
         );
     })
     .WhereNotNull()
+    .OrderByDescending(x => x)
     .ToArray();
 
 // Create Side
-var sideArchives = artciles
+var sideArchives = articles
     .GroupBy(x => (x.Url.yyyy, x.Url.mm))
     .OrderByDescending(x => x.Key)
     .Select(x => $"<li><a href=\"https://neue.cc/{x.Key.yyyy}/{x.Key.mm}/\">{x.Key.yyyy}-{x.Key.mm}</a>");
@@ -128,10 +127,10 @@ var footer = @"<ul>
 // Generate Root Index
 var rootDir = outputDir;
 CreateDirectory(rootDir, "");
-await GenerateIndexWithPagingAsync(artciles.OrderByDescending(x => x), rootDir, null);
+await GenerateIndexWithPagingAsync(articles, rootDir, null);
 
 // Generate YYYY/index.html
-await Parallel.ForEachAsync(artciles.GroupBy(x => x.Url.yyyy), async (yyyy, _) =>
+await Parallel.ForEachAsync(articles.GroupBy(x => x.Url.yyyy), async (yyyy, _) =>
 {
     // item.OrderBy(x => x.OriginalFileName);
     var yyyyPath = CreateDirectory(rootDir, yyyy.Key);
@@ -153,6 +152,10 @@ await Parallel.ForEachAsync(artciles.GroupBy(x => x.Url.yyyy), async (yyyy, _) =
         }
     }
 });
+
+// Generate rss(/feed/index.xml)
+var rssPath = CreateDirectory(rootDir, "feed");
+await CreateRssAsync(Path.Combine(rssPath, "index.xml"), articles.Take(10));
 
 /// <summary>Create and return combined path</summary>
 string CreateDirectory(string root, string path)
@@ -230,6 +233,36 @@ async Task GenerateIndexWithPagingAsync(IEnumerable<Article> source, string root
     }
 }
 
+async Task CreateRssAsync(string path, IEnumerable<Article> articles)
+{
+    var items = articles.Select(x =>
+    {
+        var now = new DateTime(int.Parse(x.Url.yyyy), int.Parse(x.Url.mm), int.Parse(x.Url.dd), 0, 0, 0);
+        return new SyndicationItem(
+            title: x.Title,
+            content: x.Body,
+            itemAlternateLink: new Uri(x.Url.ToString()),
+            id: x.Url.ToString(),
+            lastUpdatedTime: new DateTimeOffset(now, TimeSpan.FromHours(9)))
+        {
+            PublishDate = new DateTimeOffset(now, TimeSpan.FromHours(9))
+        };
+    });
+
+    var feed = new SyndicationFeed(title: "neue cc", description: "C# Technical Blog", feedAlternateLink: new Uri("http://neue.cc"))
+    {
+        Language = "ja",
+        LastUpdatedTime = new DateTimeOffset(DateTime.UtcNow.AddHours(9).Ticks, TimeSpan.FromHours(9)),
+        Items = items.ToArray()
+    };
+
+    await using (var rssWriter = XmlWriter.Create(path, new XmlWriterSettings { Async = true, Indent = true, Encoding = new UTF8Encoding(false) }))
+    {
+        var rssFormatter = new Rss20FeedFormatter(feed);
+        rssFormatter.WriteTo(rssWriter);
+    }
+}
+
 public record Article(string Title, string Body, PageUrl Url, string OriginalBody) : IComparable<Article>
 {
     public int CompareTo(Article? other)
@@ -238,7 +271,15 @@ public record Article(string Title, string Body, PageUrl Url, string OriginalBod
         return Comparer<(string, string, string)>.Default.Compare((Url.yyyy, Url.mm, Url.dd_no), (other.Url.yyyy, other.Url.mm, other.Url.dd_no));
     }
 }
-public record PageUrl(string yyyy, string mm, string dd_no);
+
+public record PageUrl(string yyyy, string mm, string dd, string dd_no)
+{
+    public override string ToString()
+    {
+        return $"https://neue.cc/{yyyy}/{mm}/{dd_no}.html";
+    }
+}
+
 public static class Extensions
 {
     public static IEnumerable<T> WhereNotNull<T>(this IEnumerable<T?> source)
