@@ -34,7 +34,7 @@ static string BuildHtml(string title, string content, string side, string footer
     <link rel=""shortcut icon"" href=""https://neue.cc/favicon.ico"" />
     <link rel=""alternate"" type=""application/rss+xml"" href=""https://neue.cc/feed""/>
 	<link rel=""stylesheet"" href=""https://neue.cc/style.css"" type=""text/css"" media=""screen"" />
-    <link href=""https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism-twilight.min.css"" rel=""stylesheet"" />
+    <link href=""https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism-tomorrow.min.css"" rel=""stylesheet"" />
     {og}
  </head>
 <body>
