@@ -5,7 +5,481 @@
     <link>http://neue.cc/</link>
     <description>C# Technical Blog</description>
     <language>ja</language>
-    <lastBuildDate>Sat, 04 Dec 2021 04:03:31 +0900</lastBuildDate>
+    <lastBuildDate>Sat, 04 Dec 2021 23:11:25 +0900</lastBuildDate>
+    <item>
+      <guid isPermaLink="true">https://neue.cc/2021/12/04.html</guid>
+      <link>https://neue.cc/2021/12/04.html</link>
+      <title>.NET 6とAngleSharpによるC#でのスクレイピング技法</title>
+      <description>&lt;h1&gt;&lt;a href="https://neue.cc/2021/12/04.html"&gt;.NET 6とAngleSharpによるC#でのスクレイピング技法&lt;/a&gt;&lt;/h1&gt;
+&lt;ul class="date"&gt;&lt;li&gt;2021-12-04&lt;/li&gt;&lt;/ul&gt;
+&lt;div class="entry_body"&gt;&lt;p&gt;&lt;a href="https://qiita.com/advent-calendar/2021/csharplang"&gt;C# Advent Calendar 2021&lt;/a&gt;の参加記事となっています。去年は2個エントリーしたあげく、1個すっぽかした（！）という有様だったので、今年は反省してちゃんと書きます。&lt;/p&gt;
+&lt;p&gt;スクレイピングに関しては10年前に&lt;a href="https://neue.cc/2010/03/02_244.html"&gt;C#でスクレイピング:HTMLパース(Linq to Html)のためのSGMLReader利用法&lt;/a&gt;という記事でSGMLReaderを使ったやり方を紹介していたのですが、10年前ですよ、10年前！さすがにもう古臭くて、現在ではもっとずっと効率的に簡単にできるようになってます。&lt;/p&gt;
+&lt;p&gt;今回メインで使うのは&lt;a href="https://anglesharp.github.io/"&gt;AngleSharp&lt;/a&gt;というライブラリです。AngleSharp自体は2015年ぐらいからもう既に定番ライブラリとして、日本でも紹介記事が幾つかあります。が、いまいち踏み込んで書かれているものがない気がするので、今回はもう少しがっつりと紹介していきたいと思っています。それと直近Visual StudioのWatchウィンドウの使い方を知らん、みたいな話を聞いたりしたので、デバッグ方法の手順みたいなものを厚めに紹介したいなあ、という気持ちがあります！&lt;/p&gt;
+&lt;p&gt;AngleSharpの良いところは、まずはHTMLをパースしてCSSセレクターで抽出できるところです。以前はLINQ(to DOM)があればCSSセレクターじゃなくてもいいっす、WhereとSelectManyとDescendantsでやってきますよ、とか言ってましたが、そんなにきちんと構造化されてるわけじゃないHTMLを相手にするのにあたっては、CSSセレクターのほうが100億倍楽！CSSセレクターの文法なんて大したことないので、普通に覚えて使えってやつですね。SQLと正規表現とCSSセレクターは三大言語関係なく覚えておく教養、と。&lt;/p&gt;
+&lt;p&gt;もう一つは、それ自体でネットワークリクエストが可能なこと。FormへのSubmitなどもサポートして、Cookieも保持し続けるとかが出来るので、ログインして会員ページを弄る、といったようなクローラーが簡単に書けるんですね。この辺非常に良く出来ていて、もう自前クローラーなんて投げ捨てるしかないです。また、&lt;a href="https://github.com/sebastienros/jint"&gt;Jint&lt;/a&gt;というPure C#なJavaScriptインタプリタと統合したプラグインも用意されているので、JavaScriptがDOMをガリガリっと弄ってくる今風のサイトにも、すんなり対応できます。&lt;/p&gt;
+&lt;p&gt;AngleSharpの紹介記事では、よくHttpClientなどで別途HTMLを取ってきたから、それをAngleSharpのHtmlParserに読み込ませる、というやり方が書かれていることが多いのですが、取得も含めて全てAngleSharp上で行ったほうが基本的には良いでしょう。&lt;/p&gt;
+&lt;p&gt;ここまで来るとPure C#の軽量なヘッドレスブラウザとしても動作する、ということになるので、カジュアルなE2Eテストの実装基盤にもなり得ます。普通のユニットテストと並べて &lt;code&gt;dotnet test&lt;/code&gt; だけでその辺もある程度まかなえたら、とても素敵なことですよね？がっつりとしたE2Eテストを書きたい場合は&lt;a href="https://github.com/microsoft/playwright"&gt;Playwright&lt;/a&gt;などを使わなければ、ということになってしまいますが、まずは軽い感じから始めたい、という時にうってつけです。C#で書けるし。いいことです。&lt;/p&gt;
+&lt;h2&gt;BrowingContextとQuerySelectorの基本&lt;/h2&gt;
+&lt;p&gt;まずはシンプルなHTMLのダウンロードと解析を。基本は &lt;code&gt;BrowsingContext&lt;/code&gt; を作って、それをひたすら操作していくことになります。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;// この辺で色々設定する
+var config = Configuration.Default
+    .WithDefaultLoader(); // LoaderはデフォではいないのでOpenAsyncする場合につける
+
+// Headless Browser的なものを作る
+using var context = BrowsingContext.New(config);
+
+// とりあえずこのサイトの、右のArchivesのリンクを全部取ってみる
+var doc = await context.OpenAsync(&amp;quot;https://neue.cc&amp;quot;);
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;OpenAsyncで取得できた &lt;code&gt;IDocument&lt;/code&gt; をよしなにCSSセレクターで解析していくわけですが、ここで絞り込みクエリー作成に使うのがVisual StudioのWatchウィンドウ。（Chromeのデベロッパーツールなどで機械的に取得したい要素のCSSセレクターを取得できたりしますが、手セレクターのほうがブレなくルールは作りやすいかな、と）。&lt;/p&gt;
+&lt;p&gt;デバッガーを起動して、とりあえずウォッチウィンドウを開いておもむろに、Nameのところでコードを書きます。&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/144583627-0c7982e4-4933-41f7-ba04-81836f10da8c.png" alt="image" /&gt;&lt;/p&gt;
+&lt;p&gt;ウォッチウィンドウは見たい変数を並べておく、お気に入り的な機能、と思いきや本質的にはそうじゃなくて、式を自由に書いて、結果を保持する、ついでに式自体も保持できるという、実質REPLなのです。代入もラムダ式もLINQも自由に書けるし、入力補完も普通に出てくる。Immediate Windowよりも結果が遥かに見やすいので、Immediate Windowは正直不要です。&lt;/p&gt;
+&lt;p&gt;デバッガー上で動いているので実データを自由に扱えるというところがいいですね。というわけで、ToHtml()でHTMLを見て、QuerySelectorAllをゆっくり評価しながら書いていきましょう。まずはサイドバーにあるので &lt;code&gt;.side_body&lt;/code&gt; を出してみると、あれ、二個あるの？と。&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/144582934-371930f2-dbff-4341-9f92-87e27c56d477.png" alt="image" /&gt;&lt;/p&gt;
+&lt;p&gt;中開けてInnerHtml見ると、なるほどProfile部分とArchive部分、と。とりあえず後ろのほうで固定のはずなのでlast-childね、というところで一旦評価して大丈夫なのを確認した後に、あとはa、と。でここまでで期待通りの結果が取れていれば、コピペる。よし。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;// 基本、QuerySelectorかQuerySelectorAllでDOMを絞り込む
+var anchors = doc.QuerySelectorAll(&amp;quot;.side_body:last-child a&amp;quot;)
+    .Cast&amp;lt;IHtmlAnchorElement&amp;gt;() // AngleSharp.Html.Dom
+    .Select(x =&amp;gt; x.Href)
+    .ToArray();
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;単一の要素に絞り込んだ場合は、 &lt;code&gt;IHtml***&lt;/code&gt; にキャストしてあげると扱いやすくなります(attributeのhrefのtextを取得、みたいにしなくていい)。頻出パターンなので、&lt;code&gt;QuerySelectorAll&amp;lt;T&amp;gt;&lt;/code&gt;でCastもセットになってすっきり。&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;doc.QuerySelectorAll&amp;lt;IHtmlAnchorElement&amp;gt;(&amp;quot;.side_body:last-child a&amp;quot;)
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;せっかくなので、年に何本記事を書いていたかの集計を出してみたいと思います！URLから正規表現で年と月を取り出すので、とりあえずここでもウォッチウィンドウです。&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/144590970-34c3bff4-0f0b-4db3-a259-f37a6f1e5f40.png" alt="image" /&gt;&lt;/p&gt;
+&lt;p&gt;anchrosの[0]を確認して、これをデータソースとしてRegex.Matchを書いて、どのGroupに収まったのかを見ます。この程度だったら特にミスらないでしょー、と思いきや普通に割とミスったりするのが正規表現なので、こういうので確認しながらやっていけるのはいいですね。&lt;/p&gt;
+&lt;p&gt;後は普通の（？）LINQコード。グルーピングした後に、ひたすら全ページをOpenAsyncしていきます。記事の本数を数えるのはh1の数をチェックするだけなので、特に複雑なCSSセレクターは必要なし。本来はページングの考慮は必要ですが、一月単位だとページングが出てくるほどの記事量がないので、そこも考慮なしで。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;var yearGrouped = anchors
+    .Select(x =&amp;gt;
+    {
+        var match = Regex.Match(x, @&amp;quot;(\d+)/(\d+)&amp;quot;);
+        return new
+        {
+            Url = x,
+            Year = int.Parse(match.Groups[1].Value),
+            Month = int.Parse(match.Groups[2].Value)
+        };
+    })
+    .GroupBy(x =&amp;gt; x.Year);
+
+foreach (var year in yearGrouped.OrderBy(x =&amp;gt; x.Key))
+{
+    var postCount = 0;
+    foreach (var month in year)
+    {
+        var html = await context.OpenAsync(month.Url);
+        postCount += html.QuerySelectorAll(&amp;quot;h1&amp;quot;).Count(); // h1 == 記事ヘッダー
+    }
+    Console.WriteLine($&amp;quot;{year.Key}年記事更新数: {postCount}&amp;quot;);
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;結果は&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;2009年記事更新数: 92
+2010年記事更新数: 61
+2011年記事更新数: 66
+2012年記事更新数: 30
+2013年記事更新数: 33
+2014年記事更新数: 22
+2015年記事更新数: 19
+2016年記事更新数: 24
+2017年記事更新数: 13
+2018年記事更新数: 11
+2019年記事更新数: 14
+2020年記事更新数: 11
+2021年記事更新数: 5
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;ということで右肩下がりでした、メデタシメデタシ。今年は特に書いてないなあ、せめて2ヶ月に1本は書きたいところ……。&lt;/p&gt;
+&lt;p&gt;なお、&lt;a href="https://neue.cc/2021/11/21.html"&gt;C#による自家製静的サイトジェネレーターに移行した話&lt;/a&gt;
+で紹介しているのですが、このサイトは完全に&lt;a href="https://github.com/neuecc/Blog2/tree/master/articles"&gt;GitHub上に.mdがフラットに並んで.mdが管理されている&lt;/a&gt;ので、こういうの出すなら別にスクレイピングは不要です。&lt;/p&gt;
+&lt;h2&gt;UserAgentを変更する&lt;/h2&gt;
+&lt;p&gt;スクレイピングといったらログインしてごにょごにょする。というわけで、そうしたログイン処理をさくっとやってくれるのがAngleSharpの良いところです。ので紹介していきたいのですが、まずはやましいことをするので（？）、UserAgentを偽装しましょう。&lt;/p&gt;
+&lt;p&gt;AngleSharpが現在何を送っているのかを確認するために、とりあえずダミーのサーバーを立てます。その際には .NET 6 のASP .NET から搭載されたMinimal APIが非常に便利です！そしてそれを&lt;a href="https://www.linqpad.net/"&gt;LINQPad&lt;/a&gt;で動かすと、テスト用サーバーを立てるのにめっちゃ便利です！やってみましょう。&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/144586706-aa067b51-d8d3-44ac-91b3-552c62e7ce6d.png" alt="image" /&gt;&lt;/p&gt;
+&lt;p&gt;たった三行でサーバーが立ちます。便利。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;await context.OpenAsync(&amp;quot;http://localhost:5000/headers&amp;quot;);
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;でアクセスして、 &lt;code&gt;AngleSharp/1.0.0.0&lt;/code&gt; で送られていることが確認できました。&lt;/p&gt;
+&lt;p&gt;なお、LINQPadでASP.NETのライブラリを使うには、Referene ASP.NET Core assembliesのチェックを入れておく必要があります。&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/144586956-fddb4821-59a3-4f37-9086-1624d471ed36.png" alt="image" /&gt;&lt;/p&gt;
+&lt;p&gt;他、よく使うNuGetライブラリや名前空間なども設定したうえで、&lt;code&gt;Set as default for new queries&lt;/code&gt;しておくと非常に捗ります。&lt;/p&gt;
+&lt;p&gt;さて、で、このUser-Agentのカスタマイズの方法ですが、AngleSharpはServicesに機能が詰まっているようなDI、というかService Locatorパターンの設計になっているので、ロードされてるServicesを(Watch Windowで)一通り見ます。&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/144601687-3ee78e1d-2f95-404f-b2f9-162deb8eeda0.png" alt="image" /&gt;&lt;/p&gt;
+&lt;p&gt;型に限らず全Serviceを取得するメソッドが用意されていない場合でも、&lt;code&gt;&amp;lt;object&amp;gt;&lt;/code&gt;で取ってやると全部出てくるような実装は割と多い（ほんと）ので、とりあえずやってみるのはオススメです。今回も無事それで取れました。&lt;/p&gt;
+&lt;p&gt;で、型名を眺めてそれっぽそうなのを見ると &lt;code&gt;DefaultHttpRequester&lt;/code&gt; というのがかなりそれっぽく、その中身を見るとHeadersという輩がいるので、これを書き換えればいいんじゃないだろうかと当たりがつきます。&lt;/p&gt;
+&lt;p&gt;ここはやましい気持ちがあるので（？）Chromeに偽装しておきましょう。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;var requester = context.GetService&amp;lt;DefaultHttpRequester&amp;gt;();
+requester.Headers[&amp;quot;User-Agent&amp;quot;] = &amp;quot;Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.45 Safari/537.36&amp;quot;;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;再びOpenAsyncしてLINQPadの表示を見て、変更されてること確認できました。&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/144602382-aba63413-2065-46ed-bd52-f4adf65bd30f.png" alt="image" /&gt;&lt;/p&gt;
+&lt;p&gt;ちなみに、DefaultじゃないHttpRequesterをConfigurationに登録しておく、ということも出来ますが、よほどカスタムでやりたいことがなければ、デフォルトのものをちょっと弄るぐらいの方向性でやっていったほうが楽です。&lt;/p&gt;
+&lt;h2&gt;FormにSubmitする&lt;/h2&gt;
+&lt;p&gt;クローラーと言ったらFormにSubmit、つまりログイン！そしてクッキーをいただく！認証！&lt;/p&gt;
+&lt;p&gt;さて、が、まぁ認証付きの何かを例にするのはアレなので、googleの検索フォームを例にさせていただきたいと思います。先にまずはコード全体像と結果を。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;using AngleSharp;
+using AngleSharp.Dom;
+using AngleSharp.Html.Dom; // 拡張メソッドとかで有効化されたりするのでusing大事
+using AngleSharp.Io;
+
+var config = Configuration.Default
+    .WithDefaultLoader()
+    .WithDefaultCookies(); // login form的なものの場合これでクッキーを持ち歩く
+
+using var context = BrowsingContext.New(config);
+
+// お行儀悪いので（？）前述のこれやっておく
+var requester = context.GetService&amp;lt;DefaultHttpRequester&amp;gt;();
+requester.Headers[&amp;quot;User-Agent&amp;quot;] = &amp;quot;Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/47.0.2526.106 Safari/537.36&amp;quot;;
+
+var doc = await context.OpenAsync(&amp;quot;https://google.com/&amp;quot;);
+var form = doc.Forms[0];
+var result = await form.SubmitAsync(new { q = &amp;quot;AngleSharp&amp;quot; }); // name = valueは匿名型が使える
+
+// とりあえず結果を表示しておく
+var titles = result.QuerySelectorAll&amp;lt;IHtmlHeadingElement&amp;gt;(&amp;quot;h3&amp;quot;).Select(x =&amp;gt; x.TextContent);
+var i = 1;
+foreach (var item in titles)
+{
+    Console.WriteLine($&amp;quot;{i++:00}: {item}&amp;quot;);
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/144704506-b0d7038f-ad26-42e4-b8dd-b63b250759c5.png" alt="image" /&gt;&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;WithDefaultLoader&lt;/code&gt; と、そして認証クッキー持ち歩きのために &lt;code&gt;WithDefaultCookies&lt;/code&gt; をコンフィギュレーションに足しておくことが事前準備として必須です。User-Agentの書き換えはご自由に、ただやましいこと、ではなくてUA判定をもとにして処理する、みたいなサイトも少なからずあるので、余計ないこと考えなくて済む対策としてはUAをChromeに偽装しておくのはアリです。&lt;/p&gt;
+&lt;p&gt;FormへのSubmit自体は3行というか2行です。ページをOpenしてFormに対してSubmitするだけ。超簡単。 &lt;code&gt;.Forms&lt;/code&gt; で &lt;code&gt;IHtmlElementForms&lt;/code&gt;がすっと取れるので、あとは単純にSubmitするだけです。渡す値は &lt;code&gt;{ name = value }&lt;/code&gt;の匿名型で投げ込めばOK。&lt;/p&gt;
+&lt;p&gt;度々出てくるウォッチウィンドウの宣伝ですが、この何の値を投げればいいのか、を調べるのにHTMLとニラメッコではなく、ウォッチウィンドウで調査していきます。&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/144706793-3297d68e-a761-4dcb-ab1b-7c1024e95f90.png" alt="image" /&gt;&lt;/p&gt;
+&lt;p&gt;まず(&amp;quot;input&amp;quot;)を拾うのですが、9個ある。多いね、で、まぁこれはほとんどtype = &amp;quot;hidden&amp;quot;なので無視して良い（AngleSharpがSubmitAsync時にちゃんと自動でつけて送信してくれる）。値を入れる必要があるのはhiddden以外のものなので、それをウォッチで普通にLINQで書けば、3件に絞れました。で、中身見ると必要っぽいのはqだけなので、 new { q = &amp;quot;hogemoge&amp;quot; } を投下、と。&lt;/p&gt;
+&lt;p&gt;認証が必要なサイトでは、これでBrowingContextに認証クッキーがセットされた状態になるので、以降のこのContextでのOpenや画像、動画リクエストは認証付きになります。&lt;/p&gt;
+&lt;h2&gt;画像や動画を拾う&lt;/h2&gt;
+&lt;p&gt;スクレイピングといったら画像集めマンです（？）。AngleSharpでのそうしたリソース取得のやり方には幾つかあるのですが、私が最も良いかな、と思っているのはIDocumentLoader経由でのフェッチです。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;// BrowsingContextから引っ張る。Contextが認証クッキー取得済みなら認証が必要なものもダウンロードできる。
+var loader = context.GetService&amp;lt;IDocumentLoader&amp;gt;();
+
+// とりあえず適当にこのブログの画像を引っ張る
+var response = await loader.FetchAsync(new DocumentRequest(new Url(&amp;quot;https://user-images.githubusercontent.com/46207/142736833-55f36246-cb7f-4b62-addf-0e18b3fa6d07.png&amp;quot;))).Task;
+
+using var ms = new MemoryStream();
+await response.Content.CopyToAsync(ms);
+
+var bytes = ms.ToArray(); // あとは適当にFile.WriteAllBytesでもなんでもどうぞ
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;内部用なので少し引数やAPIが冗長なところもありますが、それは後述しますが別になんとでもなるところなので、どちらかというと生のStreamが取れたりといった柔軟性のところがプラスだと思っています。普通にHttpClientで自前で取るのと比べると、認証周りやってくれた状態で始められるのが楽ですね。&lt;/p&gt;
+&lt;p&gt;並列ダウンロードもいけます、例えば、このブログの全画像を引っ張るコードを、↑に書いた全ページ取得コードを発展させてやってみましょう。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;using AngleSharp;
+using AngleSharp.Dom;
+using AngleSharp.Html.Dom;
+using AngleSharp.Io;
+
+var config = Configuration.Default
+    .WithDefaultLoader()
+    .WithDefaultCookies();
+
+using var context = BrowsingContext.New(config);
+
+var requester = context.GetService&amp;lt;DefaultHttpRequester&amp;gt;();
+requester.Headers[&amp;quot;User-Agent&amp;quot;] = &amp;quot;Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/47.0.2526.106 Safari/537.36&amp;quot;;
+
+var doc = await context.OpenAsync(&amp;quot;https://neue.cc/&amp;quot;);
+var loader = context.GetService&amp;lt;IDocumentLoader&amp;gt;();
+
+foreach (var arvhives in doc.QuerySelectorAll&amp;lt;IHtmlAnchorElement&amp;gt;(&amp;quot;.side_body:last-child a&amp;quot;))
+{
+    var page = await context.OpenAsync(arvhives.Href);
+
+    // content(ページ本体)下のimgを全部。
+    // 今回はページ単位で5並列ダウンロードすることにする(粒度の考え方は色々ある)
+    var imgs = page.QuerySelectorAll&amp;lt;IHtmlImageElement&amp;gt;(&amp;quot;#content img&amp;quot;);
+    await Parallel.ForEachAsync(imgs, new ParallelOptions { MaxDegreeOfParallelism = 5 }, async (img, ct) =&amp;gt;
+     {
+         var url = new Url(img.Source);
+         var response = await loader.FetchAsync(new DocumentRequest(url)).Task;
+
+         // とりあえず雑にFile書き出し。
+         Console.WriteLine($&amp;quot;Downloading {url.Path}&amp;quot;);
+         using (var fs = new FileStream(@$&amp;quot;C:\temp\neuecc\{url.Path.Replace('/', '_')}&amp;quot;, FileMode.Create))
+         {
+             await response.Content.CopyToAsync(fs, ct);
+         }
+     });
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;.NET 6から &lt;a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.threading.tasks.parallel.foreachasync"&gt;Parallel.ForEachAsync&lt;/a&gt; が追加されたので、asyncコードを並列数(MaxDegreeOfParallelism)で制御した並列実行が容易に書けるようになりました。async/await以降、Parallel系の出番は圧倒的に減ったのは確かなのですが、Task.WhenAllだけだと並列に走りすぎてしまって逆に非効率となってしまって、そこを制御するコードを自前で用意する必要が出てきていたりと面倒なものも残っていました。それが、このParallel.ForEachAsyncで解消されたと思います。&lt;/p&gt;
+&lt;h2&gt;Kurukuru Progress&lt;/h2&gt;
+&lt;p&gt;数GBの動画をダウンロードする時などは、プログレスがないとちゃんと動いているのか確認できなくて不便です。しかし、ただ単にConsole.WriteLineするだけだとログが凄い勢いで流れていってしまって見辛くて困りものです。そこを解決するC#ライブラリが&lt;a href="https://github.com/mayuki/Kurukuru"&gt;Kurukuru&lt;/a&gt;で、見ればどんなものかすぐわかるので、まずは実行結果を見てもらいましょう（素の回線だと一瞬でダウンロード終わってしまったので回線の低速シミュレーションしてます）&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/144711389-7fa99e14-3f77-4fef-a7e7-5d12724aacd1.gif" alt="guruguru" /&gt;&lt;/p&gt;
+&lt;p&gt;一行だけを随時書き換えていってくれるので、見た目も非常に分かりやすくて良い感じです。これはとても良い。Kurukuru、今すぐ使いましょう。ちなみに今回の記事で一番時間がかかったのは、Kurukuruの並列リクエスト対応だったりして（対応していなかったのでコード書いてPR上げて、今日リリースしてもらいましたできたてほやほやコード）。&lt;/p&gt;
+&lt;p&gt;AngleSharp側のコードですが、この例は&lt;a href="https://file-examples.com/index.php/sample-video-files/sample-mp4-files/"&gt;File Examples
+&lt;/a&gt;のMP4を並列で全部取るというものです。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;using AngleSharp;
+using AngleSharp.Dom;
+using AngleSharp.Html.Dom;
+using AngleSharp.Io;
+using Kurukuru;
+using System.Text;
+
+// Kurukuruを使う上で大事なおまじない
+// え、デフォルトのEncodingがUTF8じゃないシェルがあるんです！？←Windows
+Console.OutputEncoding = Encoding.UTF8;
+
+var config = Configuration.Default
+    .WithDefaultLoader()
+    .WithDefaultCookies();
+
+using var context = BrowsingContext.New(config);
+
+var requester = context.GetService&amp;lt;DefaultHttpRequester&amp;gt;();
+requester.Headers[&amp;quot;User-Agent&amp;quot;] = &amp;quot;Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/47.0.2526.106 Safari/537.36&amp;quot;;
+
+var doc = await context.OpenAsync(&amp;quot;https://file-examples.com/index.php/sample-video-files/sample-mp4-files/&amp;quot;);
+var loader = context.GetService&amp;lt;IDocumentLoader&amp;gt;();
+
+// ここから本体
+var mp4s = doc.QuerySelectorAll&amp;lt;IHtmlAnchorElement&amp;gt;(&amp;quot;a&amp;quot;).Where(x =&amp;gt; x.Href.EndsWith(&amp;quot;.mp4&amp;quot;));
+Console.ReadLine();
+Console.WriteLine(&amp;quot;Download sample-mp4-files&amp;quot;);
+await Parallel.ForEachAsync(mp4s, new ParallelOptions { MaxDegreeOfParallelism = 5 }, async (mp4, ct) =&amp;gt;
+{
+    var bin = await loader.FetchBytesAsync(mp4.Href);
+    // あとはFile.WriteAllBytesするとか好きにして
+});
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;ポイントは &lt;code&gt;var bin = await loader.FetchBytesAsync(mp4.Href);&lt;/code&gt; で、これは拡張メソッドです。loaderにProgress付きでbyte[]返すメソッドを生やしたことで、随分シンプルに書けるようになりました。StreamのままFileStreamに書いたほうがメモリ節約的にはいいんですが、中途半端なところでコケたりした場合のケアが面倒くさいので、ガチガチなパフォーマンスが重視される場合ではないならbyte[]のまま受けちゃってもいいでしょう。1つ4GBの動画を5並列なんですが？という場合でも、たかがメモリ20GB程度なので普通にメモリ積んで処理すればいいっしょ。&lt;/p&gt;
+&lt;p&gt;FetchBytesAsyncの中身は以下のようなコードになります。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;public static class DocumentLoaderExtensions
+{
+    public static async Task&amp;lt;byte[]&amp;gt; FetchBytesAsync(this IDocumentLoader loader, string address, CancellationToken cancellationToken = default)
+    {
+        var url = new AngleSharp.Url(address);
+        var response = await loader.FetchAsync(new DocumentRequest(url)).Task;
+        if (response.StatusCode != System.Net.HttpStatusCode.OK)
+        {
+            return Array.Empty&amp;lt;byte&amp;gt;(); // return empty instead of throws error(ここをどういう挙動させるかは好みで……。)
+        }
+
+        // Content-Lengthが取れない場合は死でいいということにする
+        var contentLength = int.Parse(response.Headers[&amp;quot;Content-Length&amp;quot;]);
+
+        using var progress = new ProgressSpinner(url.Path.Split('/').Last(), contentLength);
+        try
+        {
+            return await ReadAllDataAsync(response.Content, contentLength, progress, cancellationToken);
+        }
+        catch
+        {
+            progress.Cancel();
+            throw;
+        }
+    }
+
+    static async Task&amp;lt;byte[]&amp;gt; ReadAllDataAsync(Stream stream, int contentLength, IProgress&amp;lt;int&amp;gt; progress, CancellationToken cancellationToken)
+    {
+        var buffer = new byte[contentLength];
+        var readBuffer = buffer.AsMemory();
+        var len = 0;
+        while ((len = await stream.ReadAsync(readBuffer, cancellationToken)) &amp;gt; 0)
+        {
+            progress.Report(len);
+            readBuffer = readBuffer.Slice(len);
+        }
+        return buffer;
+    }
+}
+
+public class ProgressSpinner : IProgress&amp;lt;int&amp;gt;, IDisposable
+{
+    readonly Spinner spinner;
+    readonly string fileName;
+    readonly int? totalBytes;
+    int received = 0;
+
+    public ProgressSpinner(string fileName, int? totalBytes)
+    {
+        this.totalBytes = totalBytes;
+        this.fileName = fileName;
+        this.spinner = new Spinner($&amp;quot;Downloading {fileName}&amp;quot;);
+        this.spinner.Start();
+    }
+
+    public void Report(int value)
+    {
+        received += value;
+        if (totalBytes != null)
+        {
+            var percent = (received / (double)totalBytes) * 100;
+            spinner.Text = $&amp;quot;Downloading {fileName} {ToHumanReadableBytes(received)} / {ToHumanReadableBytes(totalBytes.Value)} ( {Math.Floor(percent)}% )&amp;quot;;
+        }
+        else
+        {
+            spinner.Text = $&amp;quot;Downloading {fileName} {ToHumanReadableBytes(received)}&amp;quot;;
+        }
+    }
+
+    public void Cancel()
+    {
+        spinner.Fail($&amp;quot;Canceled {fileName}: {ToHumanReadableBytes(received)}&amp;quot;);
+        spinner.Dispose();
+    }
+
+    public void Dispose()
+    {
+        spinner.Succeed($&amp;quot;Downloaded {fileName}: {ToHumanReadableBytes(received)}&amp;quot;);
+        spinner.Dispose();
+    }
+
+    static string ToHumanReadableBytes(int bytes)
+    {
+        var b = (double)bytes;
+        if (b &amp;lt; 1024) return $&amp;quot;{b:0.00} B&amp;quot;;
+        b /= 1024;
+
+        if (b &amp;lt; 1024) return $&amp;quot;{b:0.00} KB&amp;quot;;
+        b /= 1024;
+
+        if (b &amp;lt; 1024) return $&amp;quot;{b:0.00} MB&amp;quot;;
+        b /= 1024;
+
+        if (b &amp;lt; 1024) return $&amp;quot;{b:0.00} GB&amp;quot;;
+        b /= 1024;
+
+        if (b &amp;lt; 1024) return $&amp;quot;{b:0.00} TB&amp;quot;;
+        b /= 1024;
+
+        return $&amp;quot;{0:0.00} PB&amp;quot;;
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;KurukuruのSpinnerを内包した &lt;code&gt;IProgress&amp;lt;T&amp;gt;&lt;/code&gt; を作ってあげて、その中でよしなにやってあげるということにしました。まぁちょっと長いですが、一回用意すれば後はコピペするだけなので全然いいでしょう。みなさんもこのProgressSpinner、使ってやってください。&lt;/p&gt;
+&lt;h2&gt;コマンド引数やロギング処理やオプション取得&lt;/h2&gt;
+&lt;p&gt;クローラーとしてガッツシやりたいなら、モードの切り替えとかロギングとか入れたいです、というか入れます。そこで私が定形として使っているのは&lt;a href="https://github.com/Cysharp/ConsoleAppFramework"&gt;ConsoleAppFramework&lt;/a&gt;と&lt;a href="https://github.com/Cysharp/ZLogger"&gt;ZLogger&lt;/a&gt;。Cysharpの提供です。ワシが作った。それと今回のようなケースだと&lt;a href="https://github.com/Cysharp/Kokuban"&gt;Kokuban&lt;/a&gt;も便利なので入れます。やはりCysharpの提供です。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-xml"&gt;&amp;lt;ItemGroup&amp;gt;
+    &amp;lt;PackageReference Include=&amp;quot;AngleSharp&amp;quot; Version=&amp;quot;1.0.0-alpha-844&amp;quot; /&amp;gt;
+    &amp;lt;PackageReference Include=&amp;quot;Kurukuru&amp;quot; Version=&amp;quot;1.4.0&amp;quot; /&amp;gt;
+    &amp;lt;PackageReference Include=&amp;quot;ConsoleAppFramework&amp;quot; Version=&amp;quot;3.3.2&amp;quot; /&amp;gt;
+    &amp;lt;PackageReference Include=&amp;quot;ZLogger&amp;quot; Version=&amp;quot;1.6.1&amp;quot; /&amp;gt;
+    &amp;lt;PackageReference Include=&amp;quot;Kokuban&amp;quot; Version=&amp;quot;0.2.0&amp;quot; /&amp;gt;
+&amp;lt;/ItemGroup&amp;gt;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;この場合Program.csは以下のような感じになります。割と短いですよ！&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;using ConsoleAppFramework;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using System.Text;
+using ZLogger;
+
+Console.OutputEncoding = Encoding.UTF8;
+
+await Host.CreateDefaultBuilder()
+    .ConfigureLogging(x =&amp;gt;
+    {
+        x.ClearProviders();
+        x.AddZLoggerConsole();
+        x.AddZLoggerFile($&amp;quot;logs/{args[0]}-{DateTime.Now.ToString(&amp;quot;yyyMMddHHmmss&amp;quot;)}.log&amp;quot;);
+    })
+    .ConfigureServices((hostContext, services) =&amp;gt;
+    {
+        services.Configure&amp;lt;NanikaOptions&amp;gt;(hostContext.Configuration.GetSection(&amp;quot;Nanika&amp;quot;));
+    })
+    .RunConsoleAppFrameworkAsync(args);
+
+public class NanikaOptions
+{
+    public string UserId { get; set; } = default!;
+    public string Password { get; set; } = default!;
+    public string SaveDirectory { get; set; } = default!;
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;コンソールログだけだとウィンドウ閉じちゃったときにチッとかなったりするので（？）、ファイルログあると安心します。ZLoggerは秘伝のxmlコンフィグなどを用意する必要なく、これだけで有効化されるのが楽でいいところです。それでいてパフォーマンスも抜群に良いので。&lt;/p&gt;
+&lt;p&gt;ConsoleAppFrameworkはGenericHostと統合されているので、コンフィグの読み込みもOptionsで行います。appsettings.jsonを用意して&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-json"&gt;{
+  &amp;quot;Nanika&amp;quot;: {
+    &amp;quot;UserId&amp;quot;: &amp;quot;hugahuga&amp;quot;,
+    &amp;quot;Password&amp;quot;: &amp;quot;takotako&amp;quot;,
+    &amp;quot;SaveDirectory&amp;quot;: &amp;quot;C:\\temp\\dir&amp;quot;,
+  }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;.csprojのほうに&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-xml"&gt;&amp;lt;ItemGroup&amp;gt;
+    &amp;lt;None Update=&amp;quot;appsettings.json&amp;quot;&amp;gt;
+    &amp;lt;CopyToOutputDirectory&amp;gt;Always&amp;lt;/CopyToOutputDirectory&amp;gt;
+    &amp;lt;/None&amp;gt;
+&amp;lt;/ItemGroup&amp;gt;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;と書いてあげれば、自動で読み込まれるようになるという仕様です。そして本体のコードは&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;public class NanikaDownloader : ConsoleAppBase
+{
+    readonly ILogger&amp;lt;NanikaDownloader&amp;gt; logger;
+    readonly NanikaOptions options;
+
+    // コンストラクタインジェクションでOptionsを受け取る
+    public NanikaDownloader(ILogger&amp;lt;NanikaDownloader&amp;gt; logger, IOptions&amp;lt;NanikaOptions&amp;gt; options)
+    {
+        this.logger = logger;
+        this.options = options.Value;
+    }
+
+    public async Task DownloadAre()
+    {
+        // Context.CancellationTokenを渡すのを忘れないように！(Ctrl+Cのキャンセル対応に必須)
+        await loader.FecthAsyncBytes(&amp;quot;...&amp;quot;, Context.CancellationToken)
+    }
+
+    public async Task DownloadSore(int initialPage)
+    {
+        // Kokubanを使うとConsoleに出す文字列の色分けが簡単にできる！( `Chalk.Color +` だけで色が付く)
+        logger.LogInformation(Chalk.Green + $&amp;quot;Download sore {initialPage} start&amp;quot;);
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;のように書きます。これの場合は、引数で &lt;code&gt;NanikaDownloader.DownloadAre&lt;/code&gt;, &lt;code&gt;NanikaDownloader.DownloadSore -initialPage *&lt;/code&gt; の実行切り替えができるようになるわけですね……！&lt;/p&gt;
+&lt;p&gt;また、文字色が一色だけだとコンソール上のログはかなり見づらいわけですが、Kokubanを使うことで色の出し分けが可能になります。これは、地味にめちゃくちゃ便利なのでおすすめ。別にバッチ系に限らず、コンソールログの色を調整するのってめっちゃ大事だと、最近実感しているところです。&lt;/p&gt;
+&lt;p&gt;ASP .NET Core(とかMagicOnionとか)で、ZLoggerでエラーを赤くしたい！とか、フレームワークが吐いてくる重要でない情報はグレーにして目立たなくしたい！とかの場合は、ZLoggerのPrefix/SuffixFormatterを使うのをオススメしてます(Kokubanのようにさっくり書けはしないのですが、まぁConfigurationのところで一回やるだけなので)&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;logging.AddZLoggerConsole(options =&amp;gt;
+{
+#if DEBUG
+    // \u001b[31m =&amp;gt; Red(ANSI Escape Code)
+    // \u001b[0m =&amp;gt; Reset
+    // \u001b[38;5;***m =&amp;gt; 256 Colors(08 is Gray)
+    options.PrefixFormatter = (writer, info) =&amp;gt;
+    {
+        if (info.LogLevel == LogLevel.Error)
+        {
+            ZString.Utf8Format(writer, &amp;quot;\u001b[31m[{0}]&amp;quot;, info.LogLevel);
+        }
+        else
+        {
+            if (!info.CategoryName.StartsWith(&amp;quot;MyApp&amp;quot;)) // your application namespace.
+            {
+                ZString.Utf8Format(writer, &amp;quot;\u001b[38;5;08m[{0}]&amp;quot;, info.LogLevel);
+            }
+            else
+            {
+                ZString.Utf8Format(writer, &amp;quot;[{0}]&amp;quot;, info.LogLevel);
+            }
+        }
+    };
+    options.SuffixFormatter = (writer, info) =&amp;gt;
+    {
+        if (info.LogLevel == LogLevel.Error || !info.CategoryName.StartsWith(&amp;quot;MyApp&amp;quot;))
+        {
+            ZString.Utf8Format(writer, &amp;quot;\u001b[0m&amp;quot;, &amp;quot;&amp;quot;);
+        }
+    };
+#endif
+
+}, configureEnableAnsiEscapeCode: true); // configureEnableAnsiEscapeCode
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;こういうの、地味に開発効率に響くので超大事です。やっていきましょう。&lt;/p&gt;
+&lt;h2&gt;まとめ&lt;/h2&gt;
+&lt;p&gt;AngleSharpにかこつけてウォッチウィンドウをとにかく紹介したかったのです！ウォッチウィンドウ最強！値の変化があると赤くなってくれたりするのも便利ですね、使いこなしていきましょう。別にUnityとかでもクソ便利ですからね？&lt;/p&gt;
+&lt;p&gt;あ、で、AngleSharpはめっちゃいいと思います。他の言語のスクレピングライブラリ(Beautiful Soupとか)と比べても、全然張り合えるんじゃないかな。冒頭に書きましたがE2Eテストへの応用なども考えられるので、使いこなし覚えるのとてもいいんじゃないかと思います。ドキュメントが色々書いてあるようで実は別にほとんど大したこと書いてなくて役に立たないというのは若干問題アリなんですが、まぁ触って覚えるでもなんとかなるので、大丈夫大丈夫。&lt;/p&gt;
+&lt;/div&gt;</description>
+      <pubDate>Sat, 04 Dec 2021 00:00:00 +0900</pubDate>
+      <a10:updated>2021-12-04T00:00:00+09:00</a10:updated>
+    </item>
     <item>
       <guid isPermaLink="true">https://neue.cc/2021/11/21.html</guid>
       <link>https://neue.cc/2021/11/21.html</link>
@@ -1179,518 +1653,6 @@ public class MyBatch : ConsoleAppBase
 &lt;/div&gt;</description>
       <pubDate>Thu, 01 Oct 2020 00:00:00 +0900</pubDate>
       <a10:updated>2020-10-01T00:00:00+09:00</a10:updated>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://neue.cc/2020/08/20_594.html</guid>
-      <link>https://neue.cc/2020/08/20_594.html</link>
-      <title>async decoratorパターンによるUnityWebRequestの拡張とUniTaskによる応用的設計例</title>
-      <description>&lt;h1&gt;&lt;a href="https://neue.cc/2020/08/20_594.html"&gt;async decoratorパターンによるUnityWebRequestの拡張とUniTaskによる応用的設計例&lt;/a&gt;&lt;/h1&gt;
-&lt;ul class="date"&gt;&lt;li&gt;2020-08-20&lt;/li&gt;&lt;/ul&gt;
-&lt;div class="entry_body"&gt;&lt;p&gt;&lt;a href="https://github.com/Cysharp/UniTask/"&gt;UniTask v2&lt;/a&gt;も2.0.30まで到達し、いい加減そろそろ安定したと言える頃合いです（ほんと！）。GitHub Star数も1000を超えて、準スタンダードとして安心して使ってもらえるレベルまで到達したと思うので、基盤部分から入れ込んで設計するとこんなことができますよ、という一例を出してみます。&lt;/p&gt;
-&lt;p&gt;UnityWebRequestはかなりプリミティブな代物で、そのまま使うよりかはある程度はアプリケーションに沿ったラッパーを被せることがほとんどなのではないかと思います。しかし、ライブラリ単体でアプリケーションの要求を全て満たそうとするとヘヴィになりすぎたり、というかそもそもアプリケーション固有の要求には絶対に答えられない。というわけで、理想的なラッパーというのは、それ自身が極力軽量で、拡張性を持たせたプラガブルな仕組みが用意されているものということになります。プラガブルな拡張性がないと、例えば基盤ライブラリ側で用意されたラッパーをアプリケーションで使う場合にうまく要件をあわせられなくて、Forkして直接改造しちゃう、という不毛な自体になったりします。&lt;/p&gt;
-&lt;p&gt;と、いうものを実現するにあたって、非同期リクエストにつきもののコールバックは非常に相性が悪い。コールバックの連鎖は、コード上でその場でネストしていくだけだったら数階層ネストしてもまぁまぁなんとかなりますが、プラガブルで複雑な組み合わせを実現しようとするとハンドリング不可能になります。&lt;/p&gt;
-&lt;p&gt;そこでasync/await。async/awaitならコンパイラの力に頼ることでそういうものができます！&lt;/p&gt;
-&lt;p&gt;async decoratorパターンという名前で紹介しますが、一般にはMiddlewareとして知られているものを実装します。ASP.NET Core、node.js(Express)やReactのMiddleware、PythonのWSGI、MagicOnionではFilterとして実装している、サーバーサイドではよく使われるデザインです。これは非常に強力なデザインパターンで、クライアント処理においても有用だと私は考えています。もし知らなければ絶対に覚えるべき……！&lt;/p&gt;
-&lt;p&gt;MagicOnionのフィルターの図を持ってくるとこんな感じで&lt;/p&gt;
-&lt;img src="https://user-images.githubusercontent.com/46207/50969421-cb465900-1521-11e9-8824-8a34cc52bbe4.png" width=600 /&gt;
-&lt;p&gt;メソッドが外から内側に包まれて呼ばれていきます。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;await next(
-    await next(
-        await next()
-    )
-);
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;通常やりたいことってざっくり&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;ロギング&lt;/li&gt;
-&lt;li&gt;モック&lt;/li&gt;
-&lt;li&gt;タイムアウト処理&lt;/li&gt;
-&lt;li&gt;リクエスト前のヘッダー処理&lt;/li&gt;
-&lt;li&gt;リクエスト後のヘッダー処理&lt;/li&gt;
-&lt;li&gt;ステータスコードに応じた例外時処理&lt;/li&gt;
-&lt;li&gt;エラー時の処理（ポップアップ/リトライ/画面遷移）&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;といったことだと思われますが、この仕組みなら、これだけで全て実装できます……！&lt;/p&gt;
-&lt;p&gt;というわけで、実装例を見ていきましょう。&lt;/p&gt;
-&lt;h2&gt;デコレーター例&lt;/h2&gt;
-&lt;p&gt;まずは共通のインターフェイスとして以下のものを用意します。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;public interface IAsyncDecorator
-{
-    UniTask&amp;lt;ResponseContext&amp;gt; SendAsync(RequestContext context, CancellationToken cancellationToken, Func&amp;lt;RequestContext, CancellationToken, UniTask&amp;lt;ResponseContext&amp;gt;&amp;gt; next);
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;なるほどわからん。RequestContext、ResponseContextがそれぞれリクエスト/レスポンスに必要なデータが詰まっている単純な入れ物ということで特に気にしないこととして、大事なのはFunc nextです。&lt;/p&gt;
-&lt;p&gt;とりあえず、単純な例としてヘッダーの前後で処理するなにかを。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;public class SetupHeaderDecorator : IAsyncDecorator
-{
-    public async UniTask&amp;lt;ResponseContext&amp;gt; SendAsync(RequestContext context, CancellationToken cancellationToken, Func&amp;lt;RequestContext, CancellationToken, UniTask&amp;lt;ResponseContext&amp;gt;&amp;gt; next)
-    {
-        context.RequestHeaders[&amp;quot;x-app-timestamp&amp;quot;] = context.Timestamp.ToString();
-        context.RequestHeaders[&amp;quot;x-user-id&amp;quot;] = &amp;quot;132141411&amp;quot;; // どこかから持ってくる
-        context.RequestHeaders[&amp;quot;x-access-token&amp;quot;] = &amp;quot;fafafawfafewaea&amp;quot;; // どこかから持ってくる2
-
-        var respsonse = await next(context, cancellationToken); // 次のメソッドが呼ばれる
-
-        var nextToken = respsonse.ResponseHeaders[&amp;quot;token&amp;quot;];
-        UserProfile.Token = nextToken; // どこかにセットするということにする
-
-        return respsonse;
-    }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;await next() によって連鎖しているデコレーターメソッドの内側に進んでいきます。つまり、その前に書けば前処理、後ろに書けば後処理になります。nextの定義がよくわからなくても、デコレーターを量産していくことは簡単です。そこが大事。そんなんでいいんです。&lt;/p&gt;
-&lt;p&gt;さて、async/awaitと統合されていることによって、try-catch-finallyも自然に書けます。例えばロギングを用意すると&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;public class LoggingDecorator : IAsyncDecorator
-{
-    public async UniTask&amp;lt;ResponseContext&amp;gt; SendAsync(RequestContext context, CancellationToken cancellationToken, Func&amp;lt;RequestContext, CancellationToken, UniTask&amp;lt;ResponseContext&amp;gt;&amp;gt; next)
-    {
-        var sw = Stopwatch.StartNew();
-        try
-        {
-            UnityEngine.Debug.Log(&amp;quot;Start Network Request:&amp;quot; + context.Path);
-
-            var response = await next(context, cancellationToken);
-
-            UnityEngine.Debug.Log($&amp;quot;Complete Network Request: {context.Path} , Elapsed: {sw.Elapsed}, Size: {response.GetRawData().Length}&amp;quot;);
-
-            return response;
-        }
-        catch (Exception ex)
-        {
-            if (ex is OperationCanceledException)
-            {
-                UnityEngine.Debug.Log(&amp;quot;Request Canceled:&amp;quot; + context.Path);
-            }
-            else if (ex is TimeoutException)
-            {
-                UnityEngine.Debug.Log(&amp;quot;Request Timeout:&amp;quot; + context.Path);
-            }
-            else if (ex is UnityWebRequestException webex)
-            {
-                if (webex.IsHttpError)
-                {
-                    UnityEngine.Debug.Log($&amp;quot;Request HttpError: {context.Path} Code:{webex.ResponseCode} Message:{webex.Message}&amp;quot;);
-                }
-                else if (webex.IsNetworkError)
-                {
-                    UnityEngine.Debug.Log($&amp;quot;Request NetworkError: {context.Path} Code:{webex.ResponseCode} Message:{webex.Message}&amp;quot;);
-                }
-            }
-            throw;
-        }
-        finally
-        {
-            /* log other */
-        }
-    }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;また、処理を打ち切ることも簡単に実現できます。nextを呼ばないだけですから。例えばダミーのレスポンスを返す（テストに使ったり、サーバー側の実装が整わない間に進めたりするために）デコレーターが作れます。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;public class MockDecorator : IAsyncDecorator
-{
-    Dictionary&amp;lt;string, object&amp;gt; mock;
-
-    // Pathと型を1:1にして事前定義したオブジェクトを返す辞書を渡す
-    public MockDecorator(Dictionary&amp;lt;string, object&amp;gt; mock)
-    {
-        this.mock = mock;
-    }
-
-    public UniTask&amp;lt;ResponseContext&amp;gt; SendAsync(RequestContext context, CancellationToken cancellationToken, Func&amp;lt;RequestContext, CancellationToken, UniTask&amp;lt;ResponseContext&amp;gt;&amp;gt; next)
-    {
-        // それと if (EditorProfile.EnableMocking) とか用意しておいて、モック使うかの有無をエディタ拡張辺りで切り替えれるようにしとくと楽
-        if (mock.TryGetValue(context.Path, out var value))
-        {
-            // 一致したものがあればそれを返す（実際の通信は行わない）
-            return new UniTask&amp;lt;ResponseContext&amp;gt;(new ResponseContext(value));
-        }
-        else
-        {
-            return next(context, cancellationToken);
-        }
-    }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;リトライ的な処理も考えてみましょう。例えば特殊なレスポンスコードを受信したときは、Tokenを取ってから再度処理し直してくれ、みたいな要求があるとします。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;public class AppendTokenDecorator : IAsyncDecorator
-{
-    public async UniTask&amp;lt;ResponseContext&amp;gt; SendAsync(RequestContext context, CancellationToken cancellationToken, Func&amp;lt;RequestContext, CancellationToken, UniTask&amp;lt;ResponseContext&amp;gt;&amp;gt; next)
-    {
-        string token = &amp;quot;token&amp;quot;; // どっかから取ってくるということにする
-        RETRY:
-        try
-        {
-            context.RequestHeaders[&amp;quot;x-accesss-token&amp;quot;] = token;
-            return await next(context, cancellationToken);
-        }
-        catch (UnityWebRequestException ex)
-        {
-            // 例えば700はTokenを再取得してください的な意味だったとする
-            if (ex.ResponseCode == 700)
-            {
-                // 別口でTokenを取得します的な処理
-                var newToken = await new NetworkClient(context.BasePath, context.Timeout).PostAsync&amp;lt;string&amp;gt;(&amp;quot;/Auth/GetToken&amp;quot;, &amp;quot;access_token&amp;quot;, cancellationToken);
-                context.Reset(this); // RequestContextの状態が汚れてる（？）ので、nextを最初からやり直す場合はResetする
-                token = newToken;
-                goto RETRY;
-            }
-
-            throw;
-        }
-    }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;シーケンシャルな処理を強制するために、キューを挟む場合はこのように書けます。私は並列リクエストできるなら極力並列にしたい派なので、あまりこういうのを挟むのは好きではないのですけれど、サーバー側の要求によっては必要な場合もあると思います。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;public class QueueRequestDecorator : IAsyncDecorator
-{
-    readonly Queue&amp;lt;(UniTaskCompletionSource&amp;lt;ResponseContext&amp;gt;, RequestContext, CancellationToken, Func&amp;lt;RequestContext, CancellationToken, UniTask&amp;lt;ResponseContext&amp;gt;&amp;gt;)&amp;gt; q = new Queue&amp;lt;(UniTaskCompletionSource&amp;lt;ResponseContext&amp;gt;, RequestContext, CancellationToken, Func&amp;lt;RequestContext, CancellationToken, UniTask&amp;lt;ResponseContext&amp;gt;&amp;gt;)&amp;gt;();
-    bool running;
-
-    public async UniTask&amp;lt;ResponseContext&amp;gt; SendAsync(RequestContext context, CancellationToken cancellationToken, Func&amp;lt;RequestContext, CancellationToken, UniTask&amp;lt;ResponseContext&amp;gt;&amp;gt; next)
-    {
-        if (q.Count == 0)
-        {
-            return await next(context, cancellationToken);
-        }
-        else
-        {
-            var completionSource = new UniTaskCompletionSource&amp;lt;ResponseContext&amp;gt;();
-            q.Enqueue((completionSource, context, cancellationToken, next));
-            if (!running)
-            {
-                Run().Forget();
-            }
-            return await completionSource.Task;
-        }
-    }
-
-    async UniTaskVoid Run()
-    {
-        running = true;
-        try
-        {
-            while (q.Count != 0)
-            {
-                var (tcs, context, cancellationToken, next) = q.Dequeue();
-                try
-                {
-                    var response = await next(context, cancellationToken);
-                    tcs.TrySetResult(response);
-                }
-                catch (Exception ex)
-                {
-                    tcs.TrySetException(ex);
-                }
-            }
-        }
-        finally
-        {
-            running = false;
-        }
-    }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;簡単なものから結構複雑そうなものまで、そこそこ単純に書けることがわかったと思います！ただのawait nextという仕組みを用意するだけで！&lt;/p&gt;
-&lt;p&gt;用意したデコレーターはこんな風に使います。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;// デコレーターの詰まったClientを生成（これは一度作ったらフィールドに保存可）
-var client = new NetworkClient(&amp;quot;http://localhost&amp;quot;, TimeSpan.FromSeconds(10),
-    new QueueRequestDecorator(),
-    new LoggingDecorator(),
-    new AppendTokenDecorator(),
-    new SetupHeaderDecorator());
-
-// 例えばこんな風に呼ぶということにする
-var result = await client.PostAsync(&amp;quot;/User/Register&amp;quot;, new { Id = 100 });
-&lt;/code&gt;&lt;/pre&gt;
-&lt;h2&gt;async decoratorを実装する&lt;/h2&gt;
-&lt;p&gt;ちょっと長くなりますが、そんな複雑なわけではありません。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;// 基本のインターフェイス
-public interface IAsyncDecorator
-{
-    UniTask&amp;lt;ResponseContext&amp;gt; SendAsync(RequestContext context, CancellationToken cancellationToken, Func&amp;lt;RequestContext, CancellationToken, UniTask&amp;lt;ResponseContext&amp;gt;&amp;gt; next);
-}
-
-// リクエスト用の入れ物
-public class RequestContext
-{
-    int decoratorIndex;
-    readonly IAsyncDecorator[] decorators;
-    Dictionary&amp;lt;string, string&amp;gt; headers;
-
-    public string BasePath { get; }
-    public string Path { get; }
-    public object Value { get; }
-    public TimeSpan Timeout { get; }
-    public DateTimeOffset Timestamp { get; private set; }
-
-    public IDictionary&amp;lt;string, string&amp;gt; RequestHeaders
-    {
-        get
-        {
-            if (headers == null)
-            {
-                headers = new Dictionary&amp;lt;string, string&amp;gt;();
-            }
-            return headers;
-        }
-    }
-
-    public RequestContext(string basePath, string path, object value, TimeSpan timeout, IAsyncDecorator[] filters)
-    {
-        this.decoratorIndex = -1;
-        this.decorators = filters;
-        this.BasePath = basePath;
-        this.Path = path;
-        this.Value = value;
-        this.Timeout = timeout;
-        this.Timestamp = DateTimeOffset.UtcNow;
-    }
-
-    internal Dictionary&amp;lt;string, string&amp;gt; GetRawHeaders() =&amp;gt; headers;
-    internal IAsyncDecorator GetNextDecorator() =&amp;gt; decorators[++decoratorIndex];
-
-    public void Reset(IAsyncDecorator currentFilter)
-    {
-        decoratorIndex = Array.IndexOf(decorators, currentFilter);
-        if (headers != null)
-        {
-            headers.Clear();
-        }
-        Timestamp = DateTimeOffset.UtcNow;
-    }
-}
-
-// レスポンス用の入れ物
-public class ResponseContext
-{
-    readonly byte[] bytes;
-
-    public long StatusCode { get; }
-    public Dictionary&amp;lt;string, string&amp;gt; ResponseHeaders { get; }
-
-    public ResponseContext(byte[] bytes, long statusCode, Dictionary&amp;lt;string, string&amp;gt; responseHeaders)
-    {
-        this.bytes = bytes;
-        StatusCode = statusCode;
-        ResponseHeaders = responseHeaders;
-    }
-
-    public byte[] GetRawData() =&amp;gt; bytes;
-
-    public T GetResponseAs&amp;lt;T&amp;gt;()
-    {
-        return JsonUtility.FromJson&amp;lt;T&amp;gt;(Encoding.UTF8.GetString(bytes));
-    }
-}
-
-// 本体
-public class NetworkClient : IAsyncDecorator
-{
-    readonly Func&amp;lt;RequestContext, CancellationToken, UniTask&amp;lt;ResponseContext&amp;gt;&amp;gt; next;
-    readonly IAsyncDecorator[] decorators;
-    readonly TimeSpan timeout;
-    readonly IProgress&amp;lt;float&amp;gt; progress;
-    readonly string basePath;
-
-    public NetworkClient(string basePath, TimeSpan timeout, params IAsyncDecorator[] decorators)
-        : this(basePath, timeout, null, decorators)
-    {
-    }
-
-    public NetworkClient(string basePath, TimeSpan timeout, IProgress&amp;lt;float&amp;gt; progress, params IAsyncDecorator[] decorators)
-    {
-        this.next = InvokeRecursive; // setup delegate
-
-        this.basePath = basePath;
-        this.timeout = timeout;
-        this.progress = progress;
-        this.decorators = new IAsyncDecorator[decorators.Length + 1];
-        Array.Copy(decorators, this.decorators, decorators.Length);
-        this.decorators[this.decorators.Length - 1] = this;
-    }
-
-    public async UniTask&amp;lt;T&amp;gt; PostAsync&amp;lt;T&amp;gt;(string path, T value, CancellationToken cancellationToken = default)
-    {
-        var request = new RequestContext(basePath, path, value, timeout, decorators);
-        var response = await InvokeRecursive(request, cancellationToken);
-        return response.GetResponseAs&amp;lt;T&amp;gt;();
-    }
-
-    UniTask&amp;lt;ResponseContext&amp;gt; InvokeRecursive(RequestContext context, CancellationToken cancellationToken)
-    {
-        return context.GetNextDecorator().SendAsync(context, cancellationToken, next); // マジカル再帰処理
-    }
-
-    async UniTask&amp;lt;ResponseContext&amp;gt; IAsyncDecorator.SendAsync(RequestContext context, CancellationToken cancellationToken, Func&amp;lt;RequestContext, CancellationToken, UniTask&amp;lt;ResponseContext&amp;gt;&amp;gt; _)
-    {
-        // Postしか興味ないからPostにしかしないよ！
-        // パフォーマンスを最大限にしたい場合はuploadHandler, downloadHandlerをカスタマイズすること
-
-        // JSONでbodyに送るというパラメータで送るという雑設定。
-        var data = JsonUtility.ToJson(context.Value);
-        var formData = new Dictionary&amp;lt;string, string&amp;gt; { { &amp;quot;body&amp;quot;, data } };
-
-        using (var req = UnityWebRequest.Post(basePath + context.Path, formData))
-        {
-            var header = context.GetRawHeaders();
-            if (header != null)
-            {
-                foreach (var item in header)
-                {
-                    req.SetRequestHeader(item.Key, item.Value);
-                }
-            }
-
-            // Timeout処理はCancellationTokenSourceのCancelAfterSlim(UniTask拡張)を使ってサクッと処理
-            var linkToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            linkToken.CancelAfterSlim(timeout);
-            try
-            {
-                // 完了待ちや終了処理はUniTaskの拡張自体に丸投げ
-                await req.SendWebRequest().ToUniTask(progress: progress, cancellationToken: linkToken.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                // 元キャンセレーションソースがキャンセルしてなければTimeoutによるものと判定
-                if (!cancellationToken.IsCancellationRequested)
-                {
-                    throw new TimeoutException();
-                }
-            }
-            finally
-            {
-                // Timeoutに引っかからなかった場合にてるのでCancelAfterSlimの裏で回ってるループをこれで終わらせとく
-                if (!linkToken.IsCancellationRequested)
-                {
-                    linkToken.Cancel();
-                }
-            }
-
-            // UnityWebRequestを先にDisposeしちゃうので先に必要なものを取得しておく（性能的には無駄なのでパフォーマンスを最大限にしたい場合は更に一工夫を）
-            return new ResponseContext(req.downloadHandler.data, req.responseCode, req.GetResponseHeaders());
-        }
-    }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;コアの処理はInvokeRecursiveです。もう少し単純化すると&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;UniTask&amp;lt;ResponseContext&amp;gt; InvokeRecursive(RequestContext context, CancellationToken cancellationToken)
-{
-    context.decoratorIndex++;
-    return decorators[context.decoratorIndex].SendAsync(context, cancellationToken, InvokeRecursive);
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;というように、IAsyncDecorator[]を少しずつ進めています。nextに入っているのは、配列の次の要素ということで、実際パターンの実装としてはそれだけです。&lt;/p&gt;
-&lt;p&gt;また、NetworkClient自体がIAsyncDecoratorとなっていて、つまりnextを使わないものが最奥部の、最後の処理となるわけです。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;async UniTask&amp;lt;ResponseContext&amp;gt; IAsyncDecorator.SendAsync(RequestContext context, CancellationToken cancellationToken, Func&amp;lt;RequestContext, CancellationToken, UniTask&amp;lt;ResponseContext&amp;gt;&amp;gt; _)
-{
-    // nextは使わず、ここで実際の通信処理を始める
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;今回はasync decoratorの紹介なので本体の処理は雑なんですが（とりあえずJsonシリアライズ/デシリアライズしたものを受け渡しするだけ、的な）、まぁ概ね雰囲気はわかると思うのでそれでいいでしょう。通常Pathとリクエスト/レスポンス型は1:1のはずなので（そうなってなければサーバー実装者を〆て1:1にさせましょう)、その辺のメソッドを自動生成しておくとかはよくあります。また、戻り値を複数めいたこと（ポリモーフィズム的な）のしたいんだよなあ、という場合にはMessagePack for C#のUnionという機能が使えるので、活用するといい感じになります。&lt;/p&gt;
-&lt;p&gt;面白要素としてはTimeoutの処理を CancellationTokenSource.CancelAfterSlim で行っているところでしょうか。TimeoutはWhenAnyを使って外側から処理するパターンもありますが、対象がCancellationTokenを受け取れる場合は、こっちのほうがより効率的で良いです。&lt;/p&gt;
-&lt;h2&gt;タイトル画面に戻すなどダイアログとシーン遷移を組み合わせる&lt;/h2&gt;
-&lt;p&gt;ネットワークリクエストに失敗した時って、なんかポップアップ出して 「エラーが発生しました タイトルに戻ります 「OK」」 みたいな画面が出てきますよね？それをやりましょうやりましょう。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;public enum DialogResult
-{
-    Ok,
-    Cancel
-}
-
-public static class MessageDialog
-{
-    public static async UniTask&amp;lt;DialogResult&amp;gt; ShowAsync(string message)
-    {
-        // (例えば)Prefabで作っておいたダイアログを生成する
-        var view = await Resources.LoadAsync(&amp;quot;Prefabs/Dialog&amp;quot;);
-
-        // Ok, Cancelボタンのどちらかが押されるのを待機
-        return await (view as GameObject).GetComponent&amp;lt;MessageDialogView&amp;gt;().ClickResult;
-    }
-}
-
-public class MessageDialogView : MonoBehaviour
-{
-    [SerializeField] Button okButton = default;
-    [SerializeField] Button closeButton = default;
-
-    UniTaskCompletionSource&amp;lt;DialogResult&amp;gt; taskCompletion;
-
-    // これでどちらかが押されるまで無限に待つを表現
-    public UniTask&amp;lt;DialogResult&amp;gt; ClickResult =&amp;gt; taskCompletion.Task;
-
-    private void Start()
-    {
-        taskCompletion = new UniTaskCompletionSource&amp;lt;DialogResult&amp;gt;();
-
-        okButton.onClick.AddListener(() =&amp;gt;
-        {
-            taskCompletion.TrySetResult(DialogResult.Ok);
-        });
-
-        closeButton.onClick.AddListener(() =&amp;gt;
-        {
-            taskCompletion.TrySetResult(DialogResult.Cancel);
-        });
-    }
-
-    // もしボタンが押されずに消滅した場合にネンノタメ。
-    private void OnDestroy()
-    {
-        taskCompletion.TrySetResult(DialogResult.Cancel);
-    }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;UniTaskCompletionSourceを活用して、ボタンが押されるまで待機というのを表現できます。こういう使い方、めっちゃするので覚えましょう。UniTaskCompletionSourceめっちゃ大事。&lt;/p&gt;
-&lt;p&gt;では、これとasync decoratorを組み合わせていきます。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;public class ReturnToTitleDecorator : IAsyncDecorator
-{
-    public async UniTask&amp;lt;ResponseContext&amp;gt; SendAsync(RequestContext context, CancellationToken cancellationToken, Func&amp;lt;RequestContext, CancellationToken, UniTask&amp;lt;ResponseContext&amp;gt;&amp;gt; next)
-    {
-        try
-        {
-            return await next(context, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            if (ex is OperationCanceledException)
-            {
-                // キャンセルはきっと想定されている処理なのでそのまんまスルー（呼び出し側でOperationCanceledExceptionとして飛んでいく)
-                throw;
-            }
-
-            if (ex is UnityWebRequestException uwe)
-            {
-                // ステータスコードを使って、タイトルに戻す例外です、とかリトライさせる例外です、とかハンドリングさせると便利
-                // if (uwe.ResponseCode) { }...
-            }
-
-            // サーバー例外のMessageを直接出すなんて乱暴なことはデバッグ時だけですよ勿論。
-            var result = await MessageDialog.ShowAsync(ex.Message);
-
-            // OK か Cancelかで分岐するなら。今回はボタン一個、OKのみの想定なので無視
-            // if (result == DialogResult.Ok) { }...
-
-            // シーン呼び出しはawaitしないこと！awaitして正常終了しちゃうと、この通信の呼び出し元に処理が戻って続行してしまいます
-            // のでForget。
-            SceneManager.LoadSceneAsync(&amp;quot;TitleScene&amp;quot;).ToUniTask().Forget();
-
-
-            // そしてOperationCanceledExceptionを投げて、この通信の呼び出し元の処理はキャンセル扱いにして終了させる
-            throw new OperationCanceledException();
-        }
-    }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;await使ってサクサク書いていけるので、道具が揃っていれば非同期処理とは思えないほど難なく書けます。&lt;/p&gt;
-&lt;p&gt;一つ注意なのは、呼び出し元に処理を戻すか戻さないか。普通にreturnすると処理が戻っていってしまいますが、Exceptionを再スローすればそれはそれでエラーとして出てしまってウザい。タイトル画面に戻すということは、その通信処理はキャンセルされたということなので、ここは処理がキャンセルされたとマークするのが正解です。asyncメソッドでキャンセル扱いするにはOperationCanceledExceptionを投げる必要があります。これは初見だと？？？という感じになると思いますが、そういうものなのでそういうものとして受け入れませう。&lt;/p&gt;
-&lt;h2&gt;まとめ&lt;/h2&gt;
-&lt;p&gt;UniTaskで道具を揃えたんだから、別に普通にばんばん書けるでしょ、便利に使ってね！ぐらいの気持ちでいたのであんまり応用例みたいなのの発信をしてこなかったんですが、よくよく考えると別にそんなことないよね……。ということにやっと気づいたので、色々盛りだくさんで紹介してみましたがどうでしょう。&lt;/p&gt;
-&lt;p&gt;最初はコールバックに毛が生えたもの程度でもいいとは思いますが、それだけじゃあ勿体ないわけです。せっかく言語機能として用意されているので、コールバックでは実現不可能なもう一段階上の設計が狙えるので、コールバックのことは忘れて使いこなしていって欲しいですね。&lt;/p&gt;
-&lt;p&gt;キャンセル処理に癖があるのは事実ですが（実際、最後に書いた明示的にOperationCanceledExceptionを投げよう、とかは一から発想していくのは難しいかもしれません）、「引数の最後に渡す」「明示的に投げてもいい」の二点だけなので、これは慣れるしかないし、それを理由にして利用範囲を限定的にするのはよくないかなー、と思ってます。&lt;/p&gt;
-&lt;p&gt;まぁ、ようするに普通に使ってね！便利ですよ実際！ということで。&lt;/p&gt;
-&lt;/div&gt;</description>
-      <pubDate>Thu, 20 Aug 2020 00:00:00 +0900</pubDate>
-      <a10:updated>2020-08-20T00:00:00+09:00</a10:updated>
     </item>
   </channel>
 </rss>

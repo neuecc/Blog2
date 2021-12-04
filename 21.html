@@ -15,7 +15,53 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2010/02/18_242.html">Re:Scheduled</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2010/02/25_243.html">何故C#には(Javaの)Collections.sortに相当するものがないのか</a></h1>
+<ul class="date"><li>2010-02-25</li></ul>
+<div class="entry_body"><p><a href="http://ap.atmarkit.co.jp/bbs/core/fdotnet/20105">Java は Collections.sort があるのに .NET は List 自身が Sort メソッドを持っているのはなぜ？</a></p>
+<p>だそうです。あまり疑問でもないです。だってIListはSortないし。比較するならIList - ListでありList<T> - ArrayList<T>でしょう。とはいっても、JavaのArrayListはほとんどList(Javaのほうの)と同じようなものですが、そうなってくるとむしろメソッドがなくて不便！って思ってしまうのはC#脳。</p>
+<p>そして何故かスレッドの話は迷走していて不思議。パフォーマンス？ んー……。勝手な印象論ですみませんが、1さん(名前を出すのもアレなので1さん、ということにさせてください)はJavaのCollections.sortの性能を勘違いしているんじゃないかな？ 配列のコピーを問題にしてるようだけど、Javaの方式はコピー、してますよ。もっとも最初の方の発言(効率は重要じゃない)と後ろの発言(コピーが嫌)が矛盾していますが。ともかく、実際のSunの実装を見てみましょう。</p>
+<pre><code class="language-java">public static &lt;T extends Comparable&lt;? super T&gt;&gt; void sort(List&lt;T&gt; list) {
+    Object[] a = list.toArray();
+    Arrays.sort(a);
+    ListIterator&lt;T&gt; i = list.listIterator();
+    for (int j=0; j&lt;a.length; j++) {
+        i.next();
+        i.set((T)a[j]);
+    }
+}
+</code></pre>
+<p>toArrayしてコピー。それをsortして、forで詰め替え。C#で同じような外部Sort関数を書くのならば以下のようになります。厳密には違いますが、それは最後に述べます。</p>
+<pre><code class="language-csharp">static void Sort&lt;T&gt;(IList&lt;T&gt; list)
+{
+    T[] array = new T[list.Count];
+    list.CopyTo(array, 0);
+    Array.Sort(array); // List&lt;T&gt;のSortもArray.Sortを利用しています
+
+    for (int i = 0; i &lt; array.Length; i++)
+    {
+        list[i] = array[i];
+    }
+}
+</code></pre>
+<p>forで詰め替えている様は、マジマジと見ると微妙。実際、このコードには問題があります。クイズだと思って、どこが問題なのか考えてみてください、答えは最後に述べます。</p>
+<p>List&lt;T&gt;のSortは、内部に配列を持っているため、CopyToとforでの詰め替えが不要です。パフォーマンスで言えば理想的な形になっているわけです。
+ゲッタとセッタ経由でソートの入れ替えすればいいぢゃん、というのはそうですね、違います。配列のほうが速いし！というのもそうでしょうが、それ以前にListインターフェイスの実装は自由です。例えばLinkedListのゲッタを考えてみたらどうでしょう。getの度に前(もしくは後ろ)から走査があるため、パフォーマンスが悲惨な事になるのは容易に想像出来ます。ListはArrayListだけじゃないので、ゲッタ/セッタに頼るのは無理がある。汎用的に、Listインターフェイスならば何でも受け入れるという設計にする以上、コピーを作るのは不可避です。</p>
+<p>というわけで、パフォーマンス云々を言うならば、内部を知っているListクラスがSortを持つのはベストな選択でしょう。そして利便性を考えてもベストな選択。ならばいったい何処に不満があるのでしょうか？</p>
+<p>Javaのほうが優れているのは、「自前でIListを実装したクラス」を破壊的ソートするのに、クラスにSortメソッドを用意したくない。といったところでしょうか。Sortの実装自体は通常はArray.Sortを呼ぶだけなので簡単なので別に手間でもないのですけどね……。というか、この手の基本アルゴリズムを自前実装したのを使うのは悪です(勉強用に、なら当然すべきで悪なのは自前実装の妄信です)。</p>
+<p>ようするところ、Sortメソッドを自前で用意したくないけど破壊的ソートが欲しい、ということになる。ふーむ、個人的にはなくてもいいかな。非破壊的なソートがLinqのOrderByを使うことで可能なので、破壊的のほうを欲しいとはあまり思わない。</p>
+<h2>ListIterator</h2>
+<p>では本題。何でC#には破壊的ソートをしてくれる外部関数がないの？というと、インターフェイスの都合上、不可能だから。が理由だと私は考えています(そもそも必要性薄いから、が最大の理由だと思いますがそれはそれとして)。Javaのsortと私の書いたC#のSortを見比べてください。大きな違いがあります。それは、forでソートした配列をリストに詰め直している部分。</p>
+<pre><code class="language-java">i.set((T)a[j]); // Java
+list[i] = array[i]; // C#
+</code></pre>
+<p>C#の場合、listがLinkedListのようなものだった場合は悲惨なことになります。それに比べて、JavaではListIteratorを用いているため、配列と同じ処理効率で値をセット出来ます。C#には、このJavaのListIteratorに相当するものがないので、全てのIListに対して問題なく性能を発揮する破壊的ソート関数を作成することは不可能です。</p>
+<p>「LinkedListのようなもの」という歯切れの悪い言い方をしたのは、.NETのLinkedList<T>はIListを実装していないからです。インデクサで気楽にアクセスすることは出来ません。これは、大変素晴らしい決断だと思います。軽い操作だと勘違いさせるような重たい処理は最初から用意しない。(なお、どうしてもindexで取得したい場合はLinqのElementAtが使えます)。JavaのLinkedListと比較してC#のは貧弱すぎて困るぜ！とか思っていたならば、それは大間違いで、むしろJavaのLinkedListが危険すぎて困る。</p>
+<p>ただ、IListのインデクサは取得にコストがかからないことを期待、してもいいとは思います。そんなのを一々気にしてたら何も作れない。それにちゃんと、.NETのLinkedListはIListじゃないしね。ね。というわけで上のほうで出したクイズは、問題があるかないかは何とも言えない微妙ラインです。んーと、つまりはfor(int i;i &lt; hoge.length(); i++)の問題点はどこだー！みたいな話で、基本的にはhoge.length()なんてコストがかからないのを期待して問題ないし、コストがかかるんならそのクソクラスが悪い、みたいな。</p>
+<p>ついでに個人的な意見ですがListインターフェイスにListIteratorはそこまで必要ではない。普通のIteratorと機能がかなり被る割には、使う機会はとても少ない。おまけに、ListIteratorのsetってoptionalで、実装されていることが保証されてない。この手の、実装しなくてもいいインターフェイスって撲滅した方がいいと思うんですけどねー。私は怖くて呼べません。</p>
+<p>とはいえ、保証されないインターフェイスを完全に撲滅など出来はしません。例えばList(Java)/IList(C#)のAddは実行出来ることが保証されていない。JavaならArrays.asList(1, 2, 3).add(4)を、C#なら(array as IList<int>).Add で簡単にNotSupportedを吐きます。他にもReadOnlyにしたコレクションにインデクサで値をセットしようとすれば、これまた同様に例外。コレクションフレームワークにおいてインターフェイスの完全保証を実現しようとするのは大変難しい。とは、私じゃなくて <a href="http://java.sun.com/javase/ja/6/docs/ja/technotes/guides/collections/designfaq.html">Java コレクション API の設計に関する FAQ</a>でSunが妥協した、と言うぐらいなので、無理なのでしょう。</p>
+<p>まとまってませんが、結論としては疑問に思ったらソース読むのが手っ取り早い、とかそんなところで。Javaの良いところはC#に比べてフレームワークのコードへのアクセスが簡単なところですね。C#は部分的にはコードは公開されていて大変タメになるのですが、色々と面倒くさいし、公開されてない範囲も少なくないし……。.NET Reflectorのお世話になりまくってイリーガルな気分を味わうのはもう嫌ぽ。嘘。リフレクタ大好きですがそれはそれ。</p>
+</div>
+<h1><a href="https://neue.cc/2010/02/18_242.html">Re:Scheduled</a></h1>
 <ul class="date"><li>2010-02-18</li></ul>
 <div class="entry_body"><p>Windows7杯では、無事グランプリを逃して部門賞に落ち着いたりした昨今ですがこんばんわ。長らくBlog放置、ついでにゲームも放置中という有様なので、改めてスケジュールを考えなおさないとな、というところに来てたりします。今年はまずは<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript Library">linq.js</a>のWSH対応をやるぞ！とか言ってた気がしますがちっともやってませんし。で、代わりに何をやっているかというと、何故かここ一ヶ月は延々とLinqのJava移植をやっていたりします。どうしてこうなった……。予定なんて立てるだけ無駄ってことですな。</p>
 <p>そんなわけで、今週中、無理でも来週中にはリリースするつもり、です。もう実装は出来上がっているのですがテストを一切書いてないので、テスト書きとJavaDoc書きと、あと事前条件の例外送出(これも一切書いてない)が残っているので、やらないといけない。実装はやる気満々にノリノリで書けたんですが、残ったこれらをやるのはモチベーションが全然上がらない。ダルぃ。シュタゲやりたい(やれよ)</p>
@@ -661,181 +707,6 @@ var result = args
 <iframe src="https://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=4798119539" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
 <p>Moreが先に出ていて、無印の発刊はこれから先です。無印がMoreの後に出るのは、本国では無印はC# 4.0対応の第二版が出るのでそれを待つのかなー、と思ったのですがそういうわけでもないようで。というわけで恐らくC#1.0まで対応のものだと思うので残念のような、そうでもないような。私はC#3.0から入ったにわかC#使いなので、1.0の書き方を見れるというのも新鮮で面白いんじゃないかなー、なんて思ってます。</p>
 </div>
-<h1><a href="https://neue.cc/2009/11/29_226.html">Reactive Extensions for .NET (Rx) メソッド探訪第六回:exception handling</a></h1>
-<ul class="date"><li>2009-11-29</li></ul>
-<div class="entry_body"><p>.NET Reactive FrameworkからReactive Extensions for .NET (Rx)に名称が変わったようなので、タイトルも変更。長いね。というわけで久しぶりなのですが、今回はざっとexception handling operators、つまり「Catch, Finally, Retry, OnErrorResumeNext」を見てみることにします。それとRun(ForEachなので説明不要ですが)。Rxって何？という人は<a href="http://neue.cc/2009/11/24_222.html" title="neue cc - Hello, Reactive Extensions">Hello, Reactive Extensions</a>をまず参照下さい。</p>
-<p>Rxの花形はイベント合流系のメソッドにあると思うので、ひたすら脇役ばかりを紹介してちっとも本流に入ろうとしないのはどうかと思うのですけど、EnumerableExのCatchを見て、あー、こりゃ便利だ、ヤバい、便利だ、用途すぐ浮かんでしまった、というわけでしてCatchを紹介します。まずは、その浮かんだ例であるTwitterのタイムライン取得をどうぞ。例はIEnumerableに対してのものですが、IObservableに対してのものも同じです。</p>
-<pre><code class="language-csharp">class Twitter
-{
-    public string Text { get; set; }
-    public DateTime CreatedAt { get; set; }
-}
-
-static IEnumerable&lt;Twitter&gt; EnumerateUserTimeline(string userName)
-{
-    // {0}はユーザー名、{1}はページ番号 公開ユーザーのものを取得なら認証不要
-    var format = &quot;http://twitter.com/statuses/user_timeline/{0}.xml?page={1}&quot;;
-    foreach (var page in Enumerable.Range(1, 1000))
-    {
-        var query = XDocument.Load(string.Format(format, userName, page))
-            .Descendants(&quot;status&quot;)
-            .Select(e =&gt; new Twitter
-            {
-                Text = e.Element(&quot;text&quot;).Value,
-                CreatedAt = DateTime.ParseExact(e.Element(&quot;created_at&quot;).Value,
-                    &quot;ddd MMM dd HH:mm:ss zzzz yyyy&quot;,
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.AssumeUniversal)
-            });
-        foreach (var item in query) yield return item;
-    }
-}
-
-static void Main(string[] args)
-{
-    // 2009/11/23から今日までの投稿を古い順に並べるというもの
-    var test = EnumerateUserTimeline(&quot;neuecc&quot;)
-        .TakeWhile(t =&gt; t.CreatedAt &gt;= new DateTime(2009, 11, 23))
-        .OrderBy(t =&gt; t.CreatedAt)
-        .ToArray();
-    
-    // これで基本的には問題ないわけですが、TwitterにはAPI制限があるので
-    // ちゃんと全部取得出来るわけではなく、API制限発動 =&gt; 死亡になる可能性がある
-    // 死んでもいいんだけど、せっかく取った死ぬ前のデータはがめておきたいよねえ
-    // というわけで、そこで出番なのがRxのCatch！
-
-    var test2 = EnumerateUserTimeline(&quot;neuecc&quot;)
-        .TakeWhile(t =&gt; t.CreatedAt &gt;= new DateTime(2009, 11, 23))
-        .Catch((Exception e) =&gt; Enumerable.Empty&lt;Twitter&gt;())
-        .OrderBy(t =&gt; t.CreatedAt)
-        .ToArray();
-
-    // 例外が発生したら握りつぶして、代わりにEnumerable.Emptyを返します
-    // なので、例外発生前のデータは全て取得出来ています、素晴らしい！
-}
-</code></pre>
-<p>といった感じです。つまりCatchは、そのまんまCatchです。Linqで全部書くのも良いんだけど、例外処理が出来なくてなあ、という不満がこれで解消されます。残りのFinally, Retry, OnErrorResumeNextですが、全部Catchの派生みたいなものです。とりあえず簡単な例を。</p>
-<pre><code class="language-csharp">static IEnumerable&lt;int&gt; Iterate1To5()
-{
-    yield return 1;
-    yield return 2;
-    throw new DivideByZeroException(); // 嘘例外でも投げておく
-    yield return 4;
-    yield return 5;
-}
-
-static void Main(string[] args)
-{
-    // 1,2
-    Iterate1To5().Catch((Exception e) =&gt; Enumerable.Empty&lt;int&gt;()).Run(Console.WriteLine);
-    // 1,2,100,200
-    Iterate1To5().Catch((Exception e) =&gt; new[] { 100, 200 }).Run(Console.WriteLine);
-    // 1,2 -&gt; 例外発生(ArgumentNullExceptionはDivideByZeroExceptionじゃないのでCatchしない)
-    Iterate1To5().Catch((ArgumentNullException e) =&gt; new[] { 100, 200 }).Run(Console.WriteLine);
-    // 1,2,100,200。つまりCatchの簡略版
-    Iterate1To5().OnErrorResumeNext(new[] { 100, 200 }).Run(Console.WriteLine);
-    // 1,2,Finally。これでtry-catch-finallyが出来あがる
-    Iterate1To5()
-        .Catch((Exception e) =&gt; Enumerable.Empty&lt;int&gt;())
-        .Finally(() =&gt; Console.WriteLine(&quot;Finally&quot;))
-        .Run(Console.WriteLine);
-    // 1,2 -&gt; 1,2 -&gt; 例外発生。例外を検知したら最初から列挙し直しての再試行
-    // EnumerableExのRetryはバグっぽくてObservableとは違う動きをする
-    // 明らかにオカシイのでそのうち修正されるでしょう
-    Iterate1To5().ToObservable().Retry(2).Subscribe(Console.WriteLine);
-}
-</code></pre>
-<p>最後に、中身をちゃんと知るには自分で実装するに限る、ということでIEnumerableでの拡張メソッドで再現してみました。Catchは本当に便利なので、わざわざRx使うのも、と思う場合は以下のコードを是非コピペして使ってくださいな。</p>
-<pre><code class="language-csharp">// ループをぶん回すだけ、というもの(linq.jsではForce()が同様の働き)
-public static void Run&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source)
-{
-    source.Run(_ =&gt; { });
-}
-
-// ようするにForEach
-public static void Run&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source, Action&lt;TSource&gt; action)
-{
-    foreach (var item in source) action(item);
-}
-
-// try-catch句の中でyield returnが使えないので回りっくどいことに
-public static IEnumerable&lt;TSource&gt; Catch&lt;TSource, TException&gt;(this IEnumerable&lt;TSource&gt; source,
-    Func&lt;TException, IEnumerable&lt;TSource&gt;&gt; handler) where TException : Exception
-{
-    using (var enumerator = source.GetEnumerator())
-    {
-        while (true)
-        {
-            TException exception = null;
-            var hasNext = false;
-            try
-            {
-                hasNext = enumerator.MoveNext();
-            }
-            catch (Exception e)
-            {
-                exception = e as TException;
-                if (exception == null) throw;
-            }
-
-            if (exception != null)
-            {
-                foreach (var item in handler(exception)) yield return item;
-            }
-            if (hasNext) yield return enumerator.Current;
-            else yield break;
-        }
-    }
-}
-
-// Rxにはこういう、handlerがActionのオーバーロードが欲しいです
-// わざわざ空のシーケンス投げるのは面倒くさいし、匿名型に対応できないじゃないか！
-public static IEnumerable&lt;TSource&gt; Catch&lt;TSource, TException&gt;(this IEnumerable&lt;TSource&gt; source,
-    Action&lt;TException&gt; handler) where TException : Exception
-{
-    return source.Catch((TException e) =&gt; { handler(e); return Enumerable.Empty&lt;TSource&gt;(); });
-}
-
-// OnErrorResumeNextはCatchの簡略版みたいなもんですね、別に必要ないような
-public static IEnumerable&lt;TSource&gt; OnErrorResumeNext&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source, IEnumerable&lt;TSource&gt; next)
-{
-    return source.Catch((Exception e) =&gt; next);
-
-}
-
-// ToList().ForEach()とRun()ではactionの出るタイミングが変わることに注意
-public static IEnumerable&lt;TSource&gt; Finally&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source, Action action)
-{
-    try { foreach (var item in source) yield return item; }
-    finally { action(); }
-}
-
-// 本当は無限でやるべきなんでしょうが、int.MaxValueで。
-public static IEnumerable&lt;TSource&gt; Retry&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source)
-{
-    return source.Retry(int.MaxValue);
-}
-
-// EnumerableExのRetryがバグ臭いのでObservable.Retryの挙動を採用しました
-public static IEnumerable&lt;TSource&gt; Retry&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source, int retryCount)
-{
-    var count = 0;
-    Exception exception = null;
-    while (count &lt; retryCount)
-    {
-        exception = null;
-        foreach (var item in source.Catch((Exception e) =&gt; exception = e))
-        {
-            yield return item;
-        }
-        if (exception == null) yield break;
-        count++;
-    }
-    throw exception;
-}
-</code></pre>
-<p>どれもCatchの派生のようなものです、CatchイイよCatch。これは使いまくりたくなる。それにしてもtry-catchの中でyield returnが使えないのを、はじめて知りました。こんなことやろうとしたことがなかったので。あと、EnumerableEx.Retryはひっじょーにバグ臭いです。ちなみにEnumerableEx.Mergeもバグ臭い。全体的にEnumerableExはバグ臭さ全開です。明らかに(Observableから)適当に移植した感漂ってます。ヤバい。</p>
-</div>
 <a href="https://neue.cc/20">Prev |</a>
 <a href="https://neue.cc/22">| Next</a>
 </div>
@@ -859,6 +730,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2021/12/">2021-12</a>
 <li><a href="https://neue.cc/2021/11/">2021-11</a>
 <li><a href="https://neue.cc/2021/08/">2021-08</a>
 <li><a href="https://neue.cc/2021/07/">2021-07</a>
