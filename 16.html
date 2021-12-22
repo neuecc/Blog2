@@ -15,7 +15,232 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2011/04/29_319.html">XboxInfoTwit - ver.2.3.0.4</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2011/04/29_320.html">DbExecutor ver.2 - C#での生SQL書き補助ライブラリ</a></h1>
+<ul class="date"><li>2011-04-29</li></ul>
+<div class="entry_body"><p>データベース用のどこにでも転がっていそうなシンプルなユーティリティ、Part2。全面的につくり直しました(Part1もありました、一年前に公開してます、が、正直イマイチだった！)。</p>
+<ul>
+<li><a href="http://dbexecutor.codeplex.com/" title="DbExecutor - Simple and Lightweight Database Executor">DbExecutor - Simple and Lightweight Database Executor</a></li>
+<li><a href="http://www.nuget.org/List/Packages/DbExecutor" title="NuGet gallery">NuGet - DbExecutor</a></li>
+</ul>
+<p>何でこの時期に？というと、睨んでいるのはWP7にSQLCEが乗るという話、です。まあ、Linq to Hogeが積まれるようなので、イラネーだろという話はあるのですが！あるのですが、それでも生SQLを使わざるを得ないシチュエーションは出てくるはずで、そのために、今のうちに作っておく/作りなおしておこうかと。まだWP7でどういう形で載るのか分からないので、今は普通に.NET 4 Client Profile用です。WP7へはSDKが出次第、すぐに対応させるつもり。</p>
+<p>さて、どんな場合がターゲットかというと、生SQLを発行したい場合向け。大抵は軽くラップしたの作ってると思うんですが、そういう軽めのユーティリティとしてはベストなものを提供したいな、と考えました。この手のもので一番なのは<a href="http://entlib.codeplex.com/">Enterprise Library</a>のDataなのでしょうか。確かに立派なんですが、見た感じ高尚すぎてお口に合いません(個人的にはかなり嫌いな雰囲気……)。古いものがベースのまま拡張している感がありありなところも見えるので、余分な贅肉をバッサリ切り落として極限までライトウェイトにしました。</p>
+<h2>ExecuteReader</h2>
+<p>基本的にはADO.NETのシンプルなラッパーです。生SQLを書いて実行を、少しだけ楽にサポートするという、それだけのものです。単純明快にIDbConnectionからインターフェイスだけで生やしているので、Sql Server, Sql Server Compactはもとより、Entity SQLでも動きます。SQL Azureもいけるかな。依存は極力廃したので、MySqlやOrcale、SQLiteでも(多分)動きます。但しプレースホルダは名前付きでないとダメなので(順序依存のものは動作を保証しません)、Accessとかはきっとダメ。</p>
+<p>とりあえず、何もかぶせてないものとの比較で例を。DBは、例なので何でもいいんですが、Productsテーブルに、ProductNameとQuantityPerUnitとSupplierIDとUnitPriceというカラムがある。といったような代物です。ようは、Northwindですが。</p>
+<pre><code class="language-csharp">// こんなデータ格納クラスがあるとして
+public class Product
+{
+    public string ProductName { get; set; }
+    public string QuantityPerUnit { get; set; }
+}
+
+//
+
+var connStr = @&quot;Data Source=NORTHWIND&quot;; // Northwindサンプルから...
+
+// 何もかぶせてない素の状態だと結果セットを取得するためのListを予め作ってAdd
+// コマンドの準備も面倒、結果セットを回すのも定型句なのに行数沢山取ってシンドイ
+var products1 = new List&lt;Product&gt;();
+using (var conn = new SqlConnection(connStr))
+using (var cmd = conn.CreateCommand())
+{
+    conn.Open();
+    cmd.CommandText = @&quot;
+        select ProductName, QuantityPerUnit from Products
+        where SupplierID = @SupplierID and UnitPrice &gt; @UnitPrice&quot;;
+    cmd.Parameters.Add(new SqlParameter(&quot;SupplierID&quot;, 1));
+    cmd.Parameters.Add(new SqlParameter(&quot;UnitPrice&quot;, 10));
+
+    using (var reader = cmd.ExecuteReader())
+    {
+        while (reader.Read())
+        {
+            var p = new Product
+            {
+                ProductName = (string)reader[&quot;ProductName&quot;],
+                QuantityPerUnit = (string)reader[&quot;QuantityPerUnit&quot;]
+            };
+            products1.Add(p);
+        }
+    }
+}
+
+// DbExecutorを使うとパラメータは匿名型で生成
+// 結果はIEnumerable&lt;IDataRecord&gt;からLinq to Objectsでさらさら書ける
+var products2 = DbExecutor.ExecuteReader(new SqlConnection(connStr), @&quot;
+        select ProductName, QuantityPerUnit from Products
+        where SupplierID = @SupplierID and UnitPrice &gt; @UnitPrice
+        &quot;, new { SupplierID = 1, UnitPrice = 10 })
+    .Select(dr =&gt; new Product
+    {
+        ProductName = (string)dr[&quot;ProductName&quot;],
+        QuantityPerUnit = (string)dr[&quot;QuantityPerUnit&quot;]
+    })
+    .ToArray();
+</code></pre>
+<p>そのまんまだと、ただ結果取りたいだけなのに、物凄く行数を使うんですね。コマンドパラメータの追加なども大変面倒くさいし、結果セットの受け取りも大変。DbExecutorでは、この二つに対処するため、コマンドパラメータは匿名型で渡せるように、結果はIEnumerable&lt;IDataRecord&gt;の形で受け取ることができます。そのため、Selectした後は、ToArrayするなり、Linq to Objectsの操作にそのまま流れることが可能です。</p>
+<p>この手のユーティリティでたまに見かける、SqlDataReaderだけを返すものは、あまり意味ないのではかな。やることなんて99%、グルッと回して行の値を取ることなので、それなら、そこまで面倒見てあげよう。IEnumerable&lt;T&gt;を返されても扱いようがなかった石器時代と違って、今はLinqがあるので、yield returnで返す。Stream的なものは全てIEnumerable&lt;T&gt;に変換する。そして全部Linqで処理する。それが現代の常識(ｷﾘｯ</p>
+<p>なお、基本的には静的メソッドで(DbConnection, SQL文字列, パラメータ(匿名型))という形でメソッドを呼びます。DbConnectionは実行完了時にDisposeするため、usingで囲う必要はありません。</p>
+<h2>ExecuteReaderDynamic</h2>
+<p>C#3.0の鉄則がストリームっぽいものはyield returnで返す、ならば、C#4.0の鉄則は、動的っぽいものは全部dynamicで返す。ことです。実に色々と楽になります。</p>
+<pre><code class="language-csharp">// ExecuteReaderDynamicはIDataRecordをdynamicで包んだものを列挙する
+// dynamicであることにより、カラム名のアクセスが自然に、また、キャストが不要になる
+var products3 = DbExecutor.ExecuteReaderDynamic(new SqlConnection(connStr), @&quot;
+        select ProductName, QuantityPerUnit from Products
+        where SupplierID = @SupplierID and UnitPrice &gt; @UnitPrice
+        &quot;, new { SupplierID = 1, UnitPrice = 10 })
+    .Select(d =&gt; new Product
+    {
+        ProductName = d.ProductName,
+        QuantityPerUnit = d.QuantityPerUnit
+    })
+    .ToArray();
+</code></pre>
+<p>ExecuteReaderのものとの違いはSelectの箇所だけです。ExecuteReaderDynamicはIEnumerable&lt;dynamic&gt;を返し、そのdynamicの中身はIDataRecordをDynamicObjectで包んだものです。このことにより、見た目が更に自然に、また、煩わしい型変換をdynamicが自動でやってくれるので、キャストが不要になり、書くのがとても楽になります。</p>
+<p>更に嬉しい特典はデバッガでの表示。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/dbexecutordynamic.jpg">
+</p>
+<p>列挙中にブレークポイントを張って観察すると、動的ビューでカラム名と値、型が見えるようになります。（おっと、これはカラム名にスペースが入っているので動かないというツッコミが、いやまあ、はは……）</p>
+<p>簡単な出力ぐらいならSelectを通す必要すらないです。</p>
+<pre><code class="language-csharp">var query = DbExecutor.ExecuteReaderDynamic(new SqlConnection(connStr), @&quot;
+    select * from Products where UnitPrice &lt; @UnitPrice
+    &quot;, new { UnitPrice = 20.0 });
+
+foreach (var item in query)
+{
+    Console.WriteLine(item.ProductName + &quot;:&quot; + item.UnitPrice);
+}
+</code></pre>
+<p>大変シンプルに書けますね。C#はLLですから！</p>
+<h2>ExecuteNonQuery/ExecuteScalar</h2>
+<p>ExecuteNonQueryやExecuteScalarも同じノリで行けます。</p>
+<pre><code class="language-csharp">// パラメータはプロパティから取得するので、別に匿名型でなく普通のクラスでも可(insertやupdateで便利)
+DbExecutor.ExecuteNonQuery(new SqlConnection(connStr), @&quot;
+    insert into Products(ProductName, QuantityPerUnit)
+    values (@ProductName, @QuantityPerUnit)
+    &quot;, new Product { ProductName = &quot;何か&quot;, QuantityPerUnit = &quot;QUQNQUN&quot; });
+
+// パラメータが不要な場合は省略可
+var serverTime = DbExecutor.ExecuteScalar&lt;DateTime&gt;(new SqlConnection(connStr), @&quot;
+    select GetDate()&quot;);
+</code></pre>
+<p>パラメータは匿名型でなくても、普通のクラスでも可なので、UpdateやInsertの際に便利に使えるかと思います。クエリ文の@に書かれてないパラメータは無視されるので、クラス側に余計なパラメータがある分には問題ありません。</p>
+<h2>Select/SelectDynamic/Insert/Update/Delete</h2>
+<p>今までの4つは、IDataReaderの基本的な操作をラップしただけのものでしたが、他に、少し手の入ったメソッドを5つ用意してあります。メソッド名通り、Select/Insert/Update/Deleteをシンプルに行うためのものです。</p>
+<ul>
+<li>Select</li>
+</ul>
+<p>select文の結果をIDataRecordを触ることなく、指定した型に移します。</p>
+<pre><code class="language-csharp">// IEnumerable&lt;T&gt;を返し、カラム名とプロパティ名を自動でマッピングする
+var products4 = DbExecutor.Select&lt;Product&gt;(new SqlConnection(connStr), @&quot;
+        select ProductName, QuantityPerUnit from Products
+        where SupplierID = @SupplierID and UnitPrice &gt; @UnitPrice
+        &quot;, new { SupplierID = 1, UnitPrice = 10 })
+    .ToArray();
+</code></pre>
+<p>O/Rマッパーというには烏滸がましいというか別にそんな大仰なものではなく、単純にselect文をオブジェクトに転写するという、それだけ。それだけなんですが、それだけのシチュエーションって結構多いですよね？これだけで、生SQLの苦痛が随分と癒される。そう、生SQLを書くのが嫌なんじゃなくて、最後にオブジェクトに手作業で対応付けるのが嫌だったんだよ、と思える程度には。</p>
+<p>パフォーマンスもほとんど問題ありません。一回目の実行時にデリゲートの動的生成＋キャッシュを行い、全てリフレクション経由ではなくデリゲート経由のアクセスを行うため、十分高速です。基本は<a href="http://neue.cc/2011/04/20_317.html" title="neue cc - Expression Treeのこね方・入門編 - 動的にデリゲートを生成してリフレクションを高速化">neue cc - Expression Treeのこね方・入門編 - 動的にデリゲートを生成してリフレクションを高速化</a>で書いたものですが、若干これ向けに修正してあります。</p>
+<p>そうそう、今までのパラメータの匿名型渡しも同様にデリゲート生成していますので、匿名型渡しであることによる速度低下は全くありません。</p>
+<ul>
+<li>SelectDynamic</li>
+</ul>
+<p>select文の結果をExpandoObjectに移します。</p>
+<pre><code class="language-csharp">// IEnumerable&lt;dynamic&gt;で、dynamicの中身はExpandoObject
+var products5 = DbExecutor.SelectDynamic(new SqlConnection(connStr), @&quot;
+        select ProductName, QuantityPerUnit from Products
+        where SupplierID = @SupplierID and UnitPrice &gt; @UnitPrice
+        &quot;, new { SupplierID = 1, UnitPrice = 10 })
+    .ToArray();
+</code></pre>
+<p>SelectDynamicもExecuteReaderDynamicも、共にIEnumerable&lt;dynamic&gt;なのですが、ExecuteReaderDynamicのdynamicは、あくまでIDataRecord、というよりもIDataReaderをdynamicでラップしたに過ぎないため、Selectで何かに射影するか、そうでなければシーケンシャルにしか値が取れません。SelectDynamicは、結果の一行一行をExpandoObjectに予め射影しているので、それだけで永続化されます。</p>
+<p>使い勝手的にはDataTableが近い。実際、例えばASP.NETでは (Container.DataItem as dynamic).PropName とすることでデータバインドも行けます。また、ExpandoObjectは何気にINotifyPropertyChangedが実装されていたりするので、存外使い勝手は良いかもですね。</p>
+<p>DataTableと違ってデバッガに非常に優しいのも嬉しい。動的ビューで中身が簡単に確認できます。</p>
+<ul>
+<li>Insert</li>
+</ul>
+<p>Insertは指定したオブジェクトを元にInsertするというもの。</p>
+<pre><code class="language-csharp">// テーブル名と対象オブジェクト(匿名型でも可)を渡すだけでInsert
+DbExecutor.Insert(new SqlConnection(connStr), &quot;Products&quot;,
+    new Product { ProductName = &quot;何か2&quot;, QuantityPerUnit = &quot;QOQOQUN&quot; });
+</code></pre>
+<p>Insertって書くの面倒。table名(列名)values(@列名)。クソ単純なのに……。というわけで、テーブル名とオブジェクトを指定するだけで極々シンプルなinsert into valuesに変換されます(これはExecuteNonQueryの例で出したSQL文と同じものになります)。やりたいことがシンプルなとき、シンプルに書ける。そういうのがいいなって思っていて。</p>
+<ul>
+<li>Update</li>
+</ul>
+<p>Insertと同じようなコンセプトです。</p>
+<pre><code class="language-csharp">// where条件(複数の場合はand連結)とupdate対象を渡します
+DbExecutor.Update(new SqlConnection(connStr), &quot;Products&quot;,
+    new { ProductName = &quot;何か!!!&quot; }), // update対象
+    new { ProductName = &quot;何か!&quot;, SupplierID = 100 }); // where条件
+    
+// 以下のようなSQLが発行されます
+update Products set ProductName = @ProductName
+where ProductName = @__extra__ProductName
+  and SupplierID = @__extra__SupplierID
+</code></pre>
+<p>第三引数にupdateする値を、第四引数にwhereの条件を、。whereの条件は必須なのと、また、複数の場合はandで連結されます。発行されるSQLに__extra__というのが付くのはupdate対象とプロパティ名が被っても大丈夫なようにするため、なので、特に気にしなくてもいいです。比較的そのまんまなSQLに変換される、とだけ分かってもらえれば。</p>
+<ul>
+<li>Delete</li>
+</ul>
+<p>Updateと同じような(以下略)</p>
+<pre><code class="language-csharp">// delete条件を渡します(複数の場合は例によってand連結)
+DbExecutor.Delete(new SqlConnection(connStr), &quot;Products&quot;,
+    new { ProductName = &quot;何か2!&quot; });
+
+// 以下のSQLが発行される
+delete from Products where ProductName = @ProductName
+</code></pre>
+<p>ちなみに、nullだけを削除といったようなことは出来ません。いや、isnullがコマンド渡しで書けないからね…… そういうのは普通にExecuteNonQueryで書いてくださいな。そういえばでそれと、Insert, Update, Deleteは内部的にはExecuteNonQueryを実行しているので、戻り値は影響された行の個数が返ってきます。</p>
+<p>これらは、あくまで補助的なものとして用意したので、生SQL文を完全に代替することは最初から意識していません。それが当てはまるシンプルなシチュエーションで、シンプルに書けること。それが目的です。</p>
+<h2>接続を維持しての複数クエリ/トランザクション</h2>
+<p>今までの例は全て静的メソッドの、一接続一実行の例だけでしたが、接続をつなぎっぱなしにしたりトランザクションをかけたりも出来ます。usingで囲んでnewでインスタンス化すればOK。</p>
+<pre><code class="language-csharp">// 静的メソッドではなくnewすればDisposeまで接続をCloseしないモード
+using (var exec = new DbExecutor(new SqlConnection(connStr)))
+{
+    // 今まで第一引数に渡していたコネクションが(当然)不要になる
+    var count = exec.ExecuteScalar&lt;int&gt;(&quot;select count(*) from Products&quot;);
+
+    // なお、ストアドプロシージャの実行は第三引数でCommandTypeを変更すればOK
+    var twoyears = exec.SelectDynamic(&quot;Sales by Year&quot;,
+            new { Beginning_Date = &quot;1996-1-1&quot;, Ending_Date = &quot;1997-12-31&quot; },
+            CommandType.StoredProcedure)
+        .ToArray();
+}
+
+// 第二引数にIsolationLevelを渡すとTransactionがかかります
+using (var exec = new DbExecutor(new SqlConnection(connStr), IsolationLevel.ReadCommitted))
+{
+    // こんな露骨でなくても、配列上に沢山オブジェクトがあって
+    var products = Enumerable.Range(1, 10)
+        .Select(i =&gt; new
+        {
+            ProductName = &quot;Test!&quot;,
+            SupplierID = i
+        });
+    // サクッと一気にInsertするとか、あったりなかったり
+    foreach (var product in products)
+    {
+        exec.Insert(&quot;Products&quot;, product);
+    }
+
+
+    exec.TransactionComplete(); // usingを抜ける前にこれを呼び出せばCommit、呼び出さなければRollback
+}
+</code></pre>
+<p>new DbExecutorの際にIsolationLevelを渡すとトランザクションがかかります。TransactionScopeのように、確定させる際は最後にTransactionCompleteを。TransactionCompleteが実行されなかった場合はRollbackされます。なお、別に普通にTransactionScopeを使っても問題ありません。</p>
+<h2>まとめ</h2>
+<p>生SQLなんて、好きじゃない！どうやったって、異物だもの。生SQL文じゃないストアドプロシージャならいいかといえば勿論そんなわけはなく、呼び出し時のパラメータと値の受け取りが……。むしろ、実態のSQL文がコードと相当離れたところに置かれ、見通しが低下するわけで、それなら逐語的文字列リテラルでC#コード中に埋めたほうがいいよ。逐語的文字列リテラルのない言語だったら、悪夢すぎて考えたくないけれど。逐語的文字列リテラルの何がいいかって、コピペでSQL Server Management Studioに移せるところなんだよね。そして逆も然りで。XMLか何かに外出しも当然イマイチで、そんなことやるぐらいなら文字列埋め込みのほうがずっといい。んー、でも<a href="http://s2dao.seasar.org/ja/index.html" title="S2Dao - Top">S2Daoの2Way SQL</a>というのはいいですね。パラメータの修正などもせずManagement Studioでそのまま実行可能、という。Linq to Sql/EntitiesもLinq Padを使うことでそれらしいことは出来るかな？</p>
+<p>と、まあ、なにはともあれで、SQLをどれだけ嫌ったところで、現実問題付き合っていかなければならない。ことはなくLinq to Hogeを使いたい。けど、無理なら、それならせめて軽やかに扱いたいよね、とは皆思うはずで、皆それぞれの俺々ユーティリティは用意されていると思いますが、私も作ってみました(一年ぶりに再チャレンジで)。</p>
+<p>特徴はIEnumerableベース(Linq to Objectsに乗っかる基盤)であることと、匿名型を多用したパラメータの受け渡し、ExpressionTreeを用いた動的デリゲート生成による高速化、dynamicによるシンプルなアクセサ。C#3, 4の機能を満遍なく使って、軽快に書けるようにしたつもりです。生SQLを扱うわりには、かなりLL的な軽さは出せてるのではないかとー。とにかく簡素なAPIになるよう気を使いました。ついでに、今回はCode Contractsも全面的に導入しています。</p>
+<p>とりあえず、SQLCEも4.0になってDLLのみでよくなって、更にはNuGetでサクッと用意できてと(EF CodeFirstも用意できる)、C#でもデータベースがもんのすごく身近に扱えるようになりました。とてもいい事です！というわけで、生SQLのお供に是非どうぞ。Linq to SqlやLinq to Entities使っていても普通に共存出来ますので～。</p>
+<p>まあ私は生SQLよりもCodeFirstにしたいですが！生SQLなんてどうでもいいのでLinq to Entitiesでキャッキャウフフしたいです。そんなわけでDbExecutorのテストに使ったDBは、SQLCE4+EF CodeFirstで組んであったりして。Code FirstでDB組んだのにLinq to Entitiesではなく生SQLでアクセスするとか大変モニョる。</p>
+<h2>4/30追記</h2>
+<p>ver.2.0.0.1に。ExecuteScalarの契約で事後条件を!=nullとしていたのですが、大間違いで普通にnullりるので。DbNullが返ってくるものと勘違いしていてAssumeを足してわざわざ抑制してたんですが、全くもってダメダメな対応だった……。わざわざ（静的チェッカが）警告してくれたのを、深く考えずAssumeで消すとは、愚かすぎる。そして、1日で差し替えたのにStableリリースと言い張ったことを深く反省します。なお、リリースバイナリから事後条件は削除されているので、誤った契約による問題は、静的チェッカが正しく動作しない(nullではないとマークされる)ことだけになります。その程度の軽い障害なのだから良いかといえば、勿論全然よくはなく、本当にすみませんでした。</p>
+<h2>流れるようなインターフェイス vs 生SQL</h2>
+<p>で、思い出した。基本的には私は「流れるようなインターフェイス」自体が大嫌いというのもありますが、<a href="http://s2container.seasar.org/2.4/ja/s2jdbc_abstract.html" title="Seasar2 - S2JDBC - S2JDBCとは">Seasar2 - S2JDBC</a>のような仕掛けは全く無意味だと思いますね。Linqの式木のような深い解析が出来なければ、こういうのはただのファッションで、別に書きやすくも何ともないと思っていて。それなら生SQLのほうが遥かにマシだと。だから私はDbExecutorでは前段は生SQL、後段にLinq to Objectsという形体を取っています。「生SQLは避けられないもの」という認識が大前提のうえで、それを如何にサポートするかが主眼です（まあ、なので単純に比較しても意味のないところですが）。また、C#にはLinq to Entitesもあることですし、欠けてる部分を上手く補完出来ればというのが願うところです。</p>
+</div>
+<h1><a href="https://neue.cc/2011/04/29_319.html">XboxInfoTwit - ver.2.3.0.4</a></h1>
 <ul class="date"><li>2011-04-29</li></ul>
 <div class="entry_body"><ul>
 <li><a href="http://neue.cc/software/xboxinfotwit" title="neue cc - XboxInfoTwit">neue cc - XboxInfoTwit</a></li>
@@ -1553,74 +1778,6 @@ public void SpinUntilTest()
 <li><a href="http://neue.cc/software/xboxinfotwit" title="neue cc - XboxInfoTwit">neue cc - XboxInfoTwit</a></li>
 </ul>
 <p>Xbox.comの認証周りが変わってログイン出来なくなってしまってたのですが、それを修正しました。朝っぱらに急ぎで対応したので、あまりテストしてません。マズいところあったら後で直します。</p>
-</div>
-<h1><a href="https://neue.cc/2011/02/23_304.html">Chaining Assertion for MSTest</a></h1>
-<ul class="date"><li>2011-02-23</li></ul>
-<div class="entry_body"><ul>
-<li><a href="http://chainingassertion.codeplex.com/" title="Chaining Assertion for MSTest">Chaining Assertion for MSTest</a></li>
-</ul>
-<p>MSTest用の拡張メソッド集をCodePlexと、そしてNuGet(idはChainingAssertionです)にリリースしました。ライブラリといってもたった数百行(うち300行が自動生成)の、csファイル一つです。NuGet経由でも.csが一個配置されるだけという軽量軽快さ。中心となるのはIsというTへの拡張メソッドで、これはAssert.EqualとAssert.IsTrue(pred)とCollectionAsert.AreEqualを、一つのメソッドだけで表現します。単純なものですが、それだけなのに驚くほどテストが書きやすくなります。まずは例を。</p>
-<pre><code class="language-csharp">// 全てのオブジェクトに.Isという拡張メソッドが追加されていて、3つのオーバーロードがあります
-
-// Assert.AreEqualと等しい
-Math.Pow(5, 2).Is(25);
-
-// 条件式によるAssert.IsTrueをラムダ式で
-&quot;foobar&quot;.Is(s =&gt; s.StartsWith(&quot;foo&quot;) &amp;&amp; s.EndsWith(&quot;bar&quot;));
-
-// コレクションの等値比較は可変長引数でダイレクトに書ける
-Enumerable.Range(1, 5).Is(1, 2, 3, 4, 5);
-</code></pre>
-<p>以前どこかで見たような？はい。ベースは<a href="http://neue.cc/2010/08/02_270.html" title="neue cc - テストを簡単にするほんの少しの拡張メソッド">テストを簡単にするほんの少しの拡張メソッド</a>で書いたものです。それを元に若干ブラッシュアップしています。ラムダ式によるAssert時のエラーメッセージが、非常に分かりやすくなりました。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/chainassertfail.png">
-</p>
-<p>前はFuncだったのですが、Expressionで受けるようにしたので、情報が取れるようになったらからです。それと渡ってくる値に関しても表示。これで、情報が足りなくてイライラってのがなくなって、かなり書きやすくなりました。</p>
-<p>ところでnullに関してはIsNullとIsNotNullというメソッドに分けました。あまり増やしたくはないので、入れるか悩んだんですけどね。x =&gt; x == null でもいいのだし。</p>
-<h2>TestCase/Run</h2>
-<p>以前書いた時もNUnit風のTestCaseの再現を試みていたのですが、今回は抜本的に作り替えてリベンジしました。再現度(それっぽい度)は相当上がっています。といっても、目的は再現度を上げることじゃあないですね、大丈夫です、これにより、遥かに使いやすく実用的になりました。</p>
-<pre><code class="language-csharp">[TestClass]
-public class UnitTest
-{
-    public TestContext TestContext { get; set; }
-
-    [TestMethod]
-    [TestCase(1, 2, 3)]
-    [TestCase(10, 20, 30)]
-    [TestCase(100, 200, 300)]
-    public void TestMethod2()
-    {
-        TestContext.Run((int x, int y, int z) =&gt;
-        {
-            (x + y).Is(z);
-            (x + y + z).Is(i =&gt; i &lt; 1000);
-        });
-    }
-}
-</code></pre>
-<p>TestContextへの拡張メソッドにRunというのが仕込んであって、それとTestCase属性が連動して、パラメータ指定のテストが行えるようになっています。TestCaseSource属性もありますよ？</p>
-<pre><code class="language-csharp">[TestMethod]
-[TestCaseSource(&quot;toaruSource&quot;)]
-public void TestTestCaseSource()
-{
-    TestContext.Run((int x, int y, string z) =&gt;
-    {
-        string.Concat(x, y).Is(z);
-    });
-}
-
-public static object[] toaruSource = new[]
-{
-    new object[] {1, 1, &quot;11&quot;},
-    new object[] {5, 3, &quot;53&quot;},
-    new object[] {9, 4, &quot;94&quot;}
-};
-</code></pre>
-<p>何でTestContextへの拡張メソッドという形をとっているかというと、TestContextから実行中クラス名とメソッド名が簡単に取れるから、です。この二つさえ分かれば、あとはリフレクション+LINQでやり放題ですからねー。クラス名が取れるTestContext.FullyQualifiedTestClassNameは、どうやらVS2010からの追加なようで、ナイス追加。VS2008からTest周りは何も進化しなくてNUnitと比べるとアレもコレも、な感じなわけですが、地味に改良はされていたんですね。いや、誰が嬉しいんだよって話ですが、私は大変嬉しかったです。</p>
-<p>テストケースとして分けられないので、非常にオマケ的ではあるんですが、大変お手軽なので無いよりは嬉しいかな、と。</p>
-<h2>まとめ</h2>
-<p>Assert.HogeHogeの楽しくなさは異常。本当にダルい。かといって、英語的表現を目指した流れるようなインターフェイスは爆笑ものの滑稽さ。ああいうのをDSLと言うのは止めましょうぜってぐらいの。まあ、そんなわけで、これを使うと結構快適に書けます。Isの一つ一つは馬鹿みたいに単純なたった一行のメソッドなんですが、それだけなのに、全然違うんですよね。</p>
-<p>というわけでまあ、楽しいテスト生活を！あと、最近は自動化テストなPexや、それと絡むCodeContractsを触っているので、それらについて近いうちに書けたらと思っています。</p>
 </div>
 <a href="https://neue.cc/15">Prev |</a>
 <a href="https://neue.cc/17">| Next</a>

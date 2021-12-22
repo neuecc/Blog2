@@ -15,7 +15,171 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2017/08/28_558.html">MessagePack for C#におけるオートマトンベースの文字列探索によるデシリアライズ速度の高速化</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2017/09/29_559.html">Utf8Json - C#最速のJSONシリアライザ(for .NET Standard 2.0, Unity)</a></h1>
+<ul class="date"><li>2017-09-29</li></ul>
+<div class="entry_body"><p>Utf8Jsonという新しいC#用のJSONシリアライザを作りました。.NET Standard 2.0で作っているのでふつーの.NETでもXamarinでも概ね動くはずです（.NET 4.5版もあります）。また、Unity用にもちゃんと用意しています。Unityの場合はJsonUtilityと比較してどうよ、ってことなんですが、いいと思いますよ（あとで少しだけ説明します）</p>
+<ul>
+<li><a href="https://github.com/neuecc/Utf8Json">GitHub - neuecc/Utf8Json</a></li>
+</ul>
+<p>なんかバズって、一気に350 Star超えしました。<a href="https://github.com/trending/c%23">GitHubのToday's Trending - C#</a>で1位、全体で20位ぐらいになってたりました。</p>
+<p>使い方を説明してもしょうがないので(ReadMe見てね)、ここではパフォーマンスに関する実装面での工夫について説明します。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/30982275-e17f52e8-a4c1-11e7-84b4-350c72f3011c.png" alt="image" /></p>
+<p>赤枠で囲ったのがUtf8Jsonで、それより左側はバイナリシリアライザです。JSONでは最速。ウリは超高速性と、十分な拡張性。さすがにフォーマットの違いがあるので<a href="https://github.com/neuecc/MessagePack-CSharp/">MessagePack for C#</a>には敵わないのですが（というか改めて見てもむしろデタラメに速すぎ……）、他のJSONシリアライザよりも勝っています。シリアライズに至ってはprotobuf-netより速いし。また、メモリアロケーションも非常に少ない（基本的にpayloadのサイズ分しか必要とせず、メモリプールに収まる範囲内では、ゼロアロケーションです）。</p>
+<p>コンセプトの核はシンプルです。JSONをUTF8 byte[]に直接読み書きすることで、バイナリシリアライザであるかのように動作させる。それにより、従来あったString(UTF16)との相互変換のオーバーヘッドを消して、速度を圧倒的に向上させることができる。</p>
+<p>このような試みは、corefxlabにより<a href="https://github.com/dotnet/corefxlab/blob/master/docs/specs/span.md">Span&lt;T&gt;</a>という、そろそろ標準に入りそうでまだ入ってない効率的な配列のスライスっぽい何か、の活用の一貫として研究されています。<a href="https://github.com/dotnet/corefxlab/wiki/System.Text.Formatting">corefxlabのWikiにあるSystem.Text.Formattingの解説</a>を見てみましょう。ToStringやFormattingを避け、直接UTF8として書き込むことにより、多くのアロケーションを避け、より高速に動作することを目指しています。残念ながらこれは未だ「early prototype, not complete, please don't try to use it in real world software」ではありますが。また、汎用的なJSONシリアライザとはまた別のものです。とはいえ、コンセプトの正しさ、目指さなければならない地点はどこにあるか、というのは分かると思います。Utf8Jsonは、実装した結果を持って、そこに到達しました。</p>
+<p>C#自体としても<a href="https://github.com/dotnet/csharplang/issues/909">UTF8String Constants</a>などの提案もありますが、実現するかも分からない遠い未来のことであり、UTF16のコストは払い続けなければならないでしょうね。null安全に関する話もそうですが、C#もレガシー言語と言わざるを得ない要素は色々と嵩んできてはいると思っています。Stringに関してはGoのほうがモダンでイケてる<a href="https://blog.golang.org/strings">Strings, bytes, runes and characters in Go</a>ように見えますし、しかし言語の大元に組み込まれているもの(UTF16)を変えるというのは非常に難しいところでしょう。その中で、しかし現実は現実として、今、このC#で、いかに、どこまでやれるかというのが勝負だし、C#を戦場で勝ち残れる環境に引き上げていくことでもあります。</p>
+<h2>TextReader/Writerのオーバーヘッド</h2>
+<p>通常のJSONシリアライザはstringを返しますが、別にstringを返されても使い道はないので、その後更にbyte[]に変換するでしょう、多くの場合はEncoding.UTF8.GetBytesにより。或いはTextReader/WriterでStreamに書き込みするかの、二択です。そこに着目した場合、通常のJSONシリアライザにはオーバーヘッドが存在します。例えばUtf8Jsonと<a href="https://github.com/kevin-montrose/Jil">Jil</a>(C#での高速なJSONシリアライザとしてJSON.NETのオルタナティブとしては最もメジャー)で見てみると</p>
+<pre><code class="language-csharp">// Object to UTF8 byte[]
+[Benchmark]
+public byte[] Utf8JsonSerializer()
+{
+    return Utf8Json.JsonSerializer.Serialize(obj1, jsonresolver);
+}
+
+// Object to String to UTF8 byte[]
+[Benchmark]
+public byte[] Jil()
+{
+    return utf8.GetBytes(global::Jil.JSON.Serialize(obj1));
+}
+
+// Object to Stream with StreamWriter
+[Benchmark]
+public void JilTextWriter()
+{
+    using (var ms = new MemoryStream())
+    using (var sw = new StreamWriter(ms, utf8))
+    {
+        global::Jil.JSON.Serialize(obj1, sw);
+    }
+}
+</code></pre>
+<p>Obj -&gt; String -&gt; byte[]は明らかに無駄ステップで、Obj -&gt; byte[]のほうが明らかに速そうだ、というのは単純明快でよくわかります。では Object -&gt; Stream(with StreamWriter)はどうでしょう。ベンチマークで分かる通り、StreamWriterを介したものはStringからのbyte[]よりも、むしろ低速です。一見「ストリーミング」で良いかのように見えますが、それは見せかけだけのことで、実際には内部でバッファを&quot;いい具合&quot;に抱えてやりくりしているだけのことであり、更にそれによりStreamWriterへの書き込みそのものに多くのオーバーへッドが存在するからです。このことはそもそも<a href="https://github.com/kevin-montrose/Jil#avoid-abstractions-if-able">JilのReadMe</a>にも書かれていることです、が、しかし例えばASP.NET Core MVCのシリアライザを差し替えようとして、このような実装をついしてしまうでしょう。</p>
+<pre><code class="language-csharp">// ASP.NET Core, OutputFormatter
+public class JsonOutputFormatter : IOutputFormatter //, IApiResponseTypeMetadataProvider
+{
+    const string ContentType = &quot;application/json&quot;;
+    static readonly string[] SupportedContentTypes = new[] { ContentType };
+
+    public Task WriteAsync(OutputFormatterWriteContext context)
+    {
+        context.HttpContext.Response.ContentType = ContentType;
+
+        // Jil, normaly JSON Serializer requires serialize to Stream or byte[].
+        using (var writer = new StreamWriter(context.HttpContext.Response.Body))
+        {
+            Jil.JSON.Serialize(context.Object, writer, _options);
+            writer.Flush();
+            return Task.CompletedTask;
+        }
+
+        // Utf8Json
+        // Utf8Json.JsonSerializer.NonGeneric.Serialize(context.ObjectType, context.HttpContext.Response.Body, context.Object, resolver);
+    }
+}
+</code></pre>
+<p>context.Response.BodyはStreamだから、普通にStreamWriter通して書きますよね？そのことにより謳い文句よりもずっと低速で、多くのメモリ消費をしてしまっているというのに！これが、Jilに差し替えても爆速だぜー、を達成できない理由です（とはいえさすがにもちろんJSON.NETよりは遥かに速い）。今も変わらず、JSONのシリアライゼーションは.NETのボトルネックであり続けているのです。</p>
+<p>ついでじゃないですが、StreamWriterは初期化時（コンストラクタ）に、デフォルトでchar[1024] と byte[3075] という、かなりデカいバッファをいきなり確保します。<a href="https://github.com/Microsoft/referencesource/blob/master/mscorlib/system/io/streamwriter.cs#L203-L204">referencesource/streamwriter.cs#L203-L204</a>。これは普通にデカい。こういうのがストリームの代償なんですよね、あばー。</p>
+<h2>シリアライズの最適化</h2>
+<p>こんな感じで動いています、の図。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/30877807-c7f264d8-a335-11e7-91d8-ad1029d4ae86.png" alt="" /></p>
+<pre><code class="language-csharp">// 逆コンパイル結果のイメージ。
+public sealed class PersonFormatter : IJsonFormatter&lt;Person&gt;
+{
+    // 実質シングルトンになるので永久にキャッシュ
+    private readonly byte[][] stringByteKeys;
+
+    public PersonFormatter()
+    {
+        // プロパティ名は&quot;{&quot;, &quot;:&quot;, &quot;,&quot;を引っ付けた上で事前生成してキャッシュ
+        this.stringByteKeys = new byte[][]
+        {
+            JsonWriter.GetEncodedPropertyNameWithBeginObject(&quot;Age&quot;), // {\&quot;Age\&quot;:
+            JsonWriter.GetEncodedPropertyNameWithPrefixValueSeparator(&quot;Name&quot;) // ,\&quot;Name\&quot;:
+        };
+    }
+
+    public sealed Serialize(ref JsonWriter writer, Person person, IJsonFormatterResolver jsonFormatterResolver)
+    {
+        if (person == null) { writer.WriteNull(); return; }
+
+        // WriteRawXはメモリコピーの特化版（生成時にx32/x64とsrcの長さが分かってるので、特化して生成する）
+        UnsafeMemory64.WriteRaw7(ref writer, this.stringByteKeys[0]);
+        writer.WriteInt32(person.Age); // itoaで直接書き込むことによりToString + UTF8エンコードを避ける
+        UnsafeMemory64.WriteRaw8(ref writer, this.stringByteKeys[1]);
+        writer.WriteString(person.Name);
+
+        writer.WriteEndObject();
+    }
+
+    // public unsafe Person Deserialize(ref JsonReader reader, IJsonFormatterResolver jsonFormatterResolver)
+}
+</code></pre>
+<p>この場合だと処理ステップ的には5ブロック分です。JSONのシリアライズが（バイナリに比べて）遅くなってしまう要因は色々あるのですが、各プロパティ名の書き込みには最適化の余地があります。一つに、名前は固定なので、事前にエンコードしておきましょう。更に、区切り記号&quot;:&quot;や連結&quot;,&quot;、ヘッダ&quot;{&quot;の出現位置は決まっているので、名前にくっつけて一体化してしまいます。パフォーマンス向上の基本原則は呼び出し回数を抑えること、なので一体化には大いに意味があります。あとは、ターゲットがbyte[]なので、メモリコピーするだけです。</p>
+<p>そして、更にメモリコピーの最適化の問題に入ります。C#におけるコピーの手法として、<a href="https://msdn.microsoft.com/ja-jp/library/system.array.copy%28v=vs.110%29.aspx">Array.Copy</a>、を卒業した人は<a href="https://msdn.microsoft.com/ja-jp/library/system.buffer.blockcopy.aspx">Buffer.BlockCopy</a>を使い出します。これはプリミティブ型のコピーでは、Array.Copyより高速という謳い文句で、概ね実際そうなのですが、小さいサイズのコピーの場合は話が少々違ってきます。そして、プロパティ名は通常、かなり小さい(普通は10バイト以下、多くても30バイト以下でしょう)。</p>
+<p>そしてそもそもBuffer.BlockCopyには無駄があります。<a href="https://github.com/dotnet/coreclr/pull/3118">coreclrに改善PRが出されている</a>ので、それを見るのが分かりやすいですが、Buffer.BlockCopyはランタイムのネイティブのC++コードの呼び出しになりますが、型のチェックと汎用的な型による処理が入っているんですね。というのも、Buffer.BlockCopyはプリミティブ型全てがコピーできる代物だから。でも、利用用途の9割はbyte[]のコピーのはずで、より最適なコードが叩き込めるはずです。というわけで、2016年の2月に、これは入りました。それ以前のものに関しては南無、という話です。それとCore CLRの話なのでCoreじゃないCLRにどの程度反映されているかは謎です（多分、反映されてない気がする）。</p>
+<p>とはいえどちらにせよ使いません。unsafeが許されるなら.NET 4.6から追加された<a href="https://msdn.microsoft.com/ja-jp/library/system.buffer.memorycopy(v=vs.110).aspx">Buffer.MemoryCopy</a>のほうが高速だからです。じゃあそれでOKかというと、やはりそんなことはなくて、GitHubのcoreclr上で何度か最適化PRが出されていて、現在の最新のPRは<a href="https://github.com/dotnet/coreclr/pull/9786">Optimize Buffer.MemoryCopy #9786</a>です。中身を説明すると、ある程度のThreshold(x64では2048)までは、SSE2が使える環境なら64バイト単位(RyuJITがそうする)、そうじゃなければ8バイト単位でC#のunsafeで普通にコピーするという代物です。なるほどunsafeで普通にコピー。それが速い。そうなのか。</p>
+<p>で、さらにILGeneratorによる実行時動的生成なので、コピー元の長さも知っているので、分岐も消せるんですね、直接埋め込んでしまえば。と、いうわけで、<a href="https://github.com/neuecc/Utf8Json/blob/master/src/Utf8Json/Internal/UnsafeMemory.cs">UnsafeMemory.cs</a>には31バイトまでの最適化メソッドがあります。コード生成時に長さを判定して、31バイト以下なら専用メソッドを直接呼ぶコード、それ以上はBuffer.MemoryCopyを使うコードを生成。これが真の最速コピー。</p>
+<p>なお、ILには<a href="https://msdn.microsoft.com/ja-jp/library/system.reflection.emit.opcodes.cpblk.aspx">Cpblk命令</a>がありますが(C#からは直接呼べない)、結局コレはランタイムがどう処理するかって話でしかなくて別に特にマジックもなく、むしろあまり使われないせいで最適化の手が回ってない説すらあるんで、夢は持たないでおきましょう。どうしても使いたければ現在はNuGetからSystem.Runtime.CompilerServices.Unsafeを落としてくれば使うこと自体は簡単にできます。</p>
+<h2>itoa/atoi, dtoa/atod</h2>
+<p>itoaというと古き良き香りって話で、まぁ実際古き良き話なのですが、integer to ascii、ということで数字をUTF8 byte[]に変換するなら、これが使えます。UTF8は数字はascii同様ですからね。コレの何が良いかというと、ToStringしなくて済みます。ToStringは何気にコストなのです！(ようするにInteger to UTF16だから)。更に加えてbyte[]にしたければUTF16 -&gt; UTF8へのエンコードまで必要です。絶対避けたい話ですよね、ということで数字の書き込みはitoaを実装することにしましょう。また、その逆 atoi も大事。atoiのほうは、普通だと byte[] -&gt; String -&gt; int.Parse という処理順になって無駄があるんで、そこ直接 byte[] -&gt; int に変換かけれたほうが有利になります。</p>
+<p>itoaは割と素朴に実装するだけなのでいいんですが、dtoaは問題です。doubleはねー、大変なんですよ……！ここがバイナリシリアライザと大きな違いで、バイナリシリアライザはdoubleでもサクッと高速に変換できるんですが、doubleをテキストに変換する/テキストからdoubleに変換するのは割と大仕事で、性能面に差が出てきてしまうところPart1です（Part2は文字列で、文字列はエスケープが必要になって全走査かける必要があるからめちゃくちゃネックになる）。</p>
+<p>んで、dtoaをどうするかなんですが、モダンでイケてるアルゴリズムとしてGrisu2というのがあって（<a href="http://www.cs.tufts.edu/%7Enr/cs257/archive/florian-loitsch/printf.pdf">論文は2004年</a>と比較的新しいですね）、それのC++実装として<a href="https://github.com/google/double-conversion">google/double-conversion</a>があるので(Grisu3かも、別にバージョン（？）違いは性能向上ってよりは機能面での違いってふいんきではある、<a href="http://gyafun.jp/ln/">ふぃっしゅ数</a>みたいなもんですよ←違います)、今回はそれをPure C#として移植しました。これでまぁ、概ねOKでしょう。</p>
+<p>なお、dtoaのアルゴリズムの比較はC++の高速なJSONライブラリである<a href="https://github.com/Tencent/rapidjson">RapidJSON</a>の作者が、それのために色々アルゴリズムを比較している<a href="https://github.com/miloyip/dtoa-benchmark">dtoa-benchmark</a>が割と詳しい、です。RapidJSONの作者さんはテンセント勤務。うーん、中国強い。実際、C#もGitHub見てると中国語しか説明ない謎ライブラリ、でも強そう、あと英語圏でも無名そうなのにStarいっぱいついてる、みたいな中華圏ローカルでも規模めっちゃデカいし出来も凄いんです感がとてもあって、めっちゃ面白い。時代は中国。</p>
+<p>この辺のことをSpanベースの標準サポートでやりたいのが<a href="https://github.com/dotnet/corefxlab/tree/master/src/System.Text.Primitives/System/Text">corefxlab/System.Text.Primitive</a>なんですが、まぁまだ作りかけって感じですね。実際、大事なところは TODO:そのうちやる、みたいになってるし。この辺はSpanがそもそもまだリリースされてない → Utf8Stringが全然固まってない、で、その後にくる課題だと思うんで、完成するまで先は長そうです。Utf8Jsonはcorefxlabがやりたかったことがかなり詰まってるんですよねえ。そういう意味でも未来のライブラリです。実際、JSONシリアライザとしては世代が一つ先のものと言えるでしょう。</p>
+<h2>デシリアライズの最適化</h2>
+<p>デシリアライズの最適化、に関しては<a href="http://neue.cc/2017/08/28_558.html">MessagePack for C#におけるオートマトンベースの文字列探索によるデシリアライズ速度の高速化</a>で説明したオートマトンによる検索をIL生成で埋め込んでいます。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/29754771-216b40e2-8bc7-11e7-8310-1c3602e80a08.png" alt="" /></p>
+<p>やってることは以前に書いた通りなので詳しいのはそれ読んでほしいんですが、文字列にデコードしてハッシュテーブルでマッチングするんじゃなくて、バイト列をそのまま使って、かつlong単位でバイト列を切り取ってオートマトン探索をマッチする定数ごとコード生成時に埋め込む、という割と大掛かりな代物 。大掛かりではあるんですが、コード的にもコピペして持ってきただけなので新規の手間は全然かかってません！なお、もちろん、Stringにデコードしたりとかせずに、更にエスケープされているまんまでスライスを作ってそれでオートマトンに通してます。とにかく無駄処理は徹底的に省く。テキストフォーマットだと、その辺に特にシビアにならなきゃいけなくて、性能を気にする場合はバイナリシリアライザよりも難易度がかなり高い……。</p>
+<h2>Mutable Struct Reader/Writer</h2>
+<p>Mutable Struct is Evil!というのは過去のこと、というわけではないですが、考えなしにとりあえず否定するのは時代遅れの腐った脳みそです。と、いうわけでUtf8Jsonの最もプリミティブな部位、JSONを読み書きするJsonReader/JsonWriterは状態を持つ構造体です。例えばJsonReaderはbyte[]とint offsetを保持し、読み込みのたびにoffsetが進みます。</p>
+<p>これは、値渡しをしてはいけないことを意味します。また、ローカル変数に入れるのも禁止です。コピー禁止、徹底的に。というわけで、型毎のシリアライザ、IJsonFormatterの定義はこうなっています。</p>
+<pre><code class="language-csharp">public interface IJsonFormatter&lt;T&gt; : IJsonFormatter
+{
+    void Serialize(ref JsonWriter writer, T value, IJsonFormatterResolver formatterResolver);
+    T Deserialize(ref JsonReader reader, IJsonFormatterResolver formatterResolver);
+}
+</code></pre>
+<p>ちなみに、値渡しの禁止はC# 7.2のref-like typesによって、コンパイラによる制御がかけられる、といいなあ、というのが詳しくは<a href="https://github.com/dotnet/csharplang/blob/master/proposals/csharp-7.2/span-safety.md">csharp-7.2/span-safety.md</a>をどうぞでref周りには色々と手が入る予定があるんですが、残念ながら禁止はできなさそうです(ref-likeであってref-onlyではない、みたいな)。なので自己責任で気をつけてください、という話になります。<a href="https://github.com/dotnet/csharplang/blob/master/proposals/csharp-7.2/readonly-ref.md">csharp-7.2/Readonly references</a>あたりは少し助けになりますが、それでも完全ではないですね。ref周りの強化はまだ続いてくので、今後に注視していきたいところ。</p>
+<p>また、JsonReader/Writerはあまり気の利いたステートを持ちません。中身は byte[] bufferとint offset しか持ちません。なので、例えばJSON.NETはStartArrayすると、EndArrayまではWriteValueに対して&quot;,&quot;を自動でつけてくれるとかしてくれますが、そういうのは一切してくれません。100%マニュアル管理です。これは、↑で出たプロパティ名に&quot;{&quot;とか&quot;:&quot;とか&quot;,&quot;がくっついてるなどなど、最適化のために内部ステートをガン無視した投下を行うで、管理しようがないからってのが理由になりますね。あとは、もちろん不要なステート管理は性能上の無駄なので、そうじゃなくても最初から捨てる気でした。</p>
+<p>いえいえ、別にだからといって読み書きしづらいわけじゃないですよ？むしろReadに関しては、かなりやりやすいと思います。例えばList[int]のデシリアライザを作るとして</p>
+<pre><code class="language-csharp">public List&lt;int&gt; Deserialize(ref JsonReader reader, IJsonFormatterResolver formatterResolver)
+{
+    if (reader.ReadIsNull()) return null;
+
+    var list = new List&lt;int&gt;();
+
+    var count = 0; // 外部変数で状態管理（JsonReaderは状態を持たない）
+    while (reader.ReadIsInArray(ref count))
+    {
+        list.Add(reader.ReadInt32()); // Int32で読む
+    }
+
+    return list;
+}
+</code></pre>
+<p>と、結構端的に書けます。JSON.NETだとwhile(Read())してTokenをswitchして...とやらなきゃいけないので、むしろこっちのほうが書きやすいとすら言えるでしょう。このAPIスタイルはMessagePack for C#のMessagePackBinaryを踏襲したものです。前方から、型が確定の状態で読み進めていくのにやりやすいAPIと思っています（ただしTokenを使ったdynamicな処理しようとするとReadを忘れるというミス率高し、つい数時間前にもそのミスによるバグレポを直した）。ただし、一般的なAPIスタイルではない、という自覚はあります。まぁ、ハナからMutable Structで一般的じゃないので、いいじゃないですか。つーかXmlReader辺りから続く、10年物の骨董品みたいなAPIスタイルをいつまでも有難がってるほうがおかしい。</p>
+<h2>Unity/コードジェネレーター</h2>
+<p>Unityには標準で<a href="https://docs.unity3d.com/2017.2/Documentation/Manual/JSONSerialization.html">JsonUtility</a>があって、それは十分に高速でイケてるんですが、幾つか難点が。一つはUnityのシリアライズ対応に従わなければならないところがあって、nullableダメとか配列がルートにできないとかDictionaryがダメとか（当然他のコレクションもダメ、配列とListだけ）nullのハンドリングがビミョウどころかヤバい（中身が空のインスタンスが生成される、classなのにdefault(struct)みたいな処理がされる）とか、厳しいところもあります。それを乗り越えれば高速でいいんですが。</p>
+<p>もう一つは、ターゲットがstringなので、File I/OやNetwork I/Oが相手の場合はUTF8変換が必要になりますよね（もちろんその分のアロケーションは存在する）</p>
+<p>ってことで、Utf8Jsonを使うと直接byte[]に変換出来て真のゼロアロケーションを達成出来る！おまけにどんな型でも自在にシリアライズ可能！その上で十二分に高速！まぁ高速性に関しては、JsonUtilityとbyte[]変換分を加算した上で、いい勝負ってぐらいですね。勝てるケースもありますが微妙な判定のケースもあるので、どっこい、ぐらいです。さすがに、JsonUtilityはシリアライズ対象に制約があるということは、UnityのC++エンジンの内部に都合がよい形で、C++でガリガリッと処理しているということだと思うんで（なので制約がキツいのは受け入れてあげるべきと思ってます、しょーがないじゃん、世の中なんでもトレードオフですよ）、Pure C#レイヤーだけでいい勝負できてることのほうがむしろ凄いことです。いや実際。</p>
+<p>PC版の場合は、ILGeneratorによる動的コード生成も動くので、そのまんまJsonUtilityを置き換えれるといっても過言ではないです。が、iOS/AndroidなどIL2CPPの場合は勿論動きません。……。てわけで、例によってコマンドラインアプリケーションとしてコードジェネレーターを用意してあって、動的コード生成のかわりに事前生成したのに差し替えられるようになってます。ビルド時のフックなりUnityのPre/Post処理などに入れるなりして動かせば、そこまで面倒って感じではないと思います、最初のセットアップさえ完了すれば。</p>
+<p>そして、MessagePack for C#などの場合はWindowsでしか動かなかったコードジェネレーターが、今回からwin/mac/linuxで動くようになりました……！おめでとうおめでとう。<a href="https://www.microsoft.com/net/core">.NET Core</a>によるC#でのクロスプラットフォームアプリケーションの成果物なので、みんなクロスプラットフォームでちょっとした小物作る場合はGoだけじゃなくてC#も使いましょう。</p>
+<p>てわけでUnity用には<a href="https://github.com/neuecc/Utf8Json/releases">Utf8Json/relases</a>ページにして.unitypackageと、コードジェネレーターのzipが置いてあります。</p>
+<p>ちなみにstringが欲しい場合は出来上がったbyte[]をGetString、しなくてもToJsonStringメソッドが映えてるのでそちらを使うことで、stringへの変換もできます。その場合はobject -&gt; byte<a href="utf8"></a> -&gt; string(utf16)という変換パスになるので、byte[]に比べると速度が落ちてしまいますが、この辺は最優先のターゲットとしてどちらを優先するか、というところなのでしょうがないとこです。</p>
+<h2>テキスト(JSON) vs バイナリ</h2>
+<p>JSON最強理論はあるのですが（実際Utf8Jsonはprotobuf-netより速いし）、それでも私は使い分けすべきと思ってます。というのも、バイナリ(MessagePack for C#)は鬼のように速いし、これはもうフォーマットの違いがさすがに決定的で、Utf8Jsonをそこまで高速化するのは絶対不可能です。テキストをほぼバイナリであるかのようにあつかって処理はしてますが、やっぱ限界はあります、特にdoubleとか文字列(エスケープ)とかのネックっぷりがキツい。それとどうしてもペイロードがデカくなるので、デカいってのは純粋に読み書きのコストが増大してパフォーマンス的には（比較すると）不利になりますからね。</p>
+<p>とはいえ、MesssagePackだけでOKかというと、そうじゃあないんですよね。公開API作るならJSONじゃなきゃだし、Web用もJavaScriptで読めるJSONじゃなきゃ基本ダメ。モバイルや別言語との通信だったらMessagePackでもOKではありますが、しかしJSONのほうがやりやすい場合も多いでしょう。</p>
+<p>というわけで、JSONじゃなきゃダメなシチュエーションは当然あるので、そこはUtf8Json。それ以外（いっぱいありますよね？Redisに保存するものとか）だったら、MessagePack for C#。という風な使い分けが良いと思ってます。また、MessagePack for C#のほうが多機能(Unionサポートなど、これはJsonだとInvalidなオレオレJSONが出来上がるのでサポートする気はない）なので、C#で完結する処理ではMessagePack for C#のほうが便利です。</p>
+<p>多少の機能性に違いはあれど、原則出力形式が違うこと以外は、Utf8JsonとMessagePack for C#に大きな差はありません。protobuf等の場合使い勝手が悪くてJSONを選ぶ、ということもありましたが、MessagePack for C#の場合は違います。なので、普通に使い分けしてください。これがC#におけるシリアライザに関してのファイナルアンサーです。完全に決着ついた。もう一切悩む必要はない。</p>
+<h2>まとめ</h2>
+<p>Utf8Jsonの公開効果によって<a href="https://github.com/neuecc/MessagePack-CSharp">MessagePack for C#</a>の知名度もつられて上昇し<a href="https://github.com/msgpack/msgpack-cli">MsgPack-Cli</a>のスター数を遥かに抜いてった。この辺は意図してることで、同じようなものを連発して、相互に認知度高めていくのは基本っちゃあ基本ですね。もう一つブーストさせたかったので、想定通りの結果でよきかなよきかな。</p>
+<p>目的のもう一個は最適なテキストプロトコル処理を作ることで、以前に<a href="http://neue.cc/2017/08/07_556.html">C#の高速なMySQLのドライバを書いてるよ</a>という話を書きましたが、進捗ダメです！じゃなくて、別に諦めたわけでも放置したわけでもなくて、MySQLって基本はテキストプロトコルで、そこに対して最速の処理をあてたかったんですね。んで、私自身、最速バイナリ処理の技法は持ってたんですが、最速テキスト処理の技法がなくて、MySQLにたいして研究からやってるのあんま効率良くなかった。比較対象もないし、処理通すのにMySQL叩くのも面倒なうえにピュアな処理じゃないし。そこで、JSONはめっちゃ都合よくて、サクッと手元で完結するし比較対象はいっぱいあるし、おまけに完成すれば絶対に需要がある。更にはシリアライザのアーキテクチャ自体はMessagePack for C#で完成しているので、かなりの部分を流用できる。いいことづくめじゃん。というのが、作ろうとした発端でした。というわけでMySQLドライバは諦めてないというか、むしろここが出発点なのでmattekudasai……！</p>
+<p>それと<a href="https://github.com/neuecc/MagicOnion">MagicOnion</a>(gRPCの上に構築したMessagePackを使うC# RPC)のα版からの脱出も諦めてません。んで、今もHTTP/1 Gatewayはあるんですが、どちらかというとSwaggerを動かすためだけの開発用で、プロダクションに使えるレベルのものではないんですね。<a href="https://github.com/grpc-ecosystem/grpc-gateway">grpc-gateway</a>とか<a href="https://github.com/improbable-eng/grpc-web">grpc-web</a>レベルのものになれば、HTTP/1のいわゆるREST APIみたいなものもMagicOnionで書きおこせるようになる。そのためには納得がいくレベルの高速さと拡張性を備えたJSONシリアライザが必要で(JSON.NETは拡張性はOKだけど性能がダメ、Jilは性能はまぁ良いとしても拡張性がダメ。MagicOnionはただシリアライズ-デシリアライズしてるだけじゃなくて、MessagePack for C#が微妙にメタい処理を挟んで高性能を実現するような設計になってるので)、なんと悲しいことに空席で存在してなかった。Utf8Jsonならそれを満たせます。メデタシメデタシ。実際ほんと困ってたので出来てよかった。この辺、シリアライザを自分で用意できると融通が効きまくって最高に良い。出来ることの幅がかなり広がる。</p>
+<p>と、いうわけで、かなり良いライブラリに仕上がったと思うので（特に、基礎レベルの出来はMessagePack for C#で証明済みというか、沢山issueを貰って改善してった歴史があった積み重ねが乗っかってる）、ぜひぜひ使ってみてくださいな。</p>
+</div>
+<h1><a href="https://neue.cc/2017/08/28_558.html">MessagePack for C#におけるオートマトンベースの文字列探索によるデシリアライズ速度の高速化</a></h1>
 <ul class="date"><li>2017-08-28</li></ul>
 <div class="entry_body"><p><a href="https://github.com/neuecc/MessagePack-CSharp">MessagePack for C#</a> 1.6.0出しました。目玉機能というか、かなり気合い入れて実装したのは文字列キー(Map)時のデシリアライズ速度の高速化です。なんと前バージョンに比べて2.5倍も速くなっています！！！</p>
 <p><img src="https://user-images.githubusercontent.com/46207/29755040-33e8ecf6-8bcc-11e7-9f7e-0671582dd10e.png" alt="image" /></p>
@@ -2111,60 +2275,6 @@ DateTimeOffset.Now.ToString(&quot;o&quot;);
 <p>んで、2番ってヒキが全くないわけですよ。1番と2番があったら、そりゃ1番選ぶでしょ。 <a href="https://en.wiktionary.org/wiki/first_loser">&quot;Second Place is the First Loser&quot;</a>なわけです（ちょうど勉強会の時に聞いたので早速使ってみた）。というわけで、ヒキのある要素は色々必要で、一点目が「無限大に高速」で、これは勿論、非常に差別化要素になりうる目玉機能です。でも、それだけだとキワモノ臭さが抜けない。やっぱパフォーマンスが最大の機能なんですよね、この手のものは。だから、最速。最初はそれを目指してたわけじゃなかったんですが、スライド中に書いたように、初期設計段階でStreamを排除していたりステートを抜いてたりしたのが功を奏して、ある程度出来た段階で、最速が現実的に狙えると分かったので、そっから先はギアを切り替えてガチガチに書きました。そのせいで完成が若干遅れはしたんですが、結果としては非常に良かったと思ってます。</p>
 <h2>名前の由来</h2>
 <p>ゼロ速度のシリアライザということで。ZeroSerializerよりZeroFormatterのほうが格好良いと思います、語感が。</p>
-</div>
-<h1><a href="https://neue.cc/2016/11/28_544.html">ZeroFormatterと謎RPCについて発表してきました。</a></h1>
-<ul class="date"><li>2016-11-28</li></ul>
-<div class="entry_body"><p><a href="https://kbkz.connpass.com/event/40629/">歌舞伎座.tech#12「メッセージフォーマット/RPC勉強会」</a>で話してきました。前半は<a href="https://github.com/neuecc/ZeroFormatter">ZeroFormatter</a>について、後半は謎の何かについて、です。</p>
-<iframe src="//www.slideshare.net/slideshow/embed_code/key/lbnGMStmOXMyFw" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/zeroformattermagiconion-fastest-c-serializergrpc-based-c-rpc" title="ZeroFormatter/MagicOnion - Fastest C# Serializer/gRPC based C# RPC" target="_blank">ZeroFormatter/MagicOnion - Fastest C# Serializer/gRPC based C# RPC</a> </strong> from <strong><a target="_blank" href="//www.slideshare.net/neuecc">Yoshifumi Kawai</a></strong> </div>
-<p>ZeroFormatterは良くも悪くもというか、あんま良くないんですがリリース頻度がすごくて、1.0出してから既に16回もアップデートを重ねていて最新は1.5.2です。1.0とは何だったのか……。いやまあ一応、自称、さすがに安定してきたとは思っています。思っています。思っています。常にこれで完成だ！って思ってはいます（反省）。</p>
-<p>なんでこんなに変わったかというと、社内での置き換えで200クラス以上は書き換えてったんですが（とぅらい……）、わりと重箱の隅を突っつくような使い方をしてるところがあったりなかったりで、ビミョーに引っかかりまくったせいだ、という。ようは詰めが甘いってことなんですが、かなり色々なケースで鍛え上げられたという言い方はできます。それならちゃんと社内で叩き上げてから公開しろよって気がしなくもないんですが、公開後に皆さんから頂いたフィードバックはものすごく役立ったので、大変助かりました。お陰で当初よりも、更により良いものになったと思っています。</p>
-<p>今回のセッションで省略した、C#の実装面でシリアライザのパフォーマンスを稼いでいく話については、12月1日に赤坂のbitFlyerさんで行われる<a href="https://bitflyer.connpass.com/event/45476/">【bitFlyer TechNight★ vol.2 C#LT Meetup!】</a>でお話したいと思っていますので、良ければそちらへの参加もどうぞ。</p>
-<h2>Union Again</h2>
-<p>Union(1.5からDynamicUnionという動的にUnionを作る機能も入れています）は、成功時と失敗時（汎用のstring messageだけじゃなくて特化した何かを返したい）みたいな表現にも使えます。エラー表現が複数種類ある場合は、IsSuccessをenumに変えて、Union属性のtypeofに複数書いてもらえればOKって感じにサクッと拡張していけます。</p>
-<pre><code class="language-csharp">[Union(typeof(Success), typeof(Error))]
-public abstract class MyServiceResponse
-{
-    [UnionKey]
-    public abstract bool IsSuccess { get; }
-
-    [ZeroFormattable]
-    public class Success : MyServiceResponse
-    {
-        public override bool IsSuccess =&gt; true;
-
-        [Index(0)]
-        public virtual int Foo { get; set; }
-        [Index(1)]
-        public virtual string Bar { get; set; }
-    }
-
-    [ZeroFormattable]
-    public class Error : MyServiceResponse
-    {
-        public override bool IsSuccess =&gt; false;
-
-        [Index(0)]
-        public virtual int ErrorCode { get; set; }
-        [Index(1)]
-        public virtual int Sender { get; set; }
-        [Index(2)]
-        public virtual int Receiver { get; set; }
-        [Index(3)]
-        public virtual string Message { get; set; }
-    }
-}
-</code></pre>
-<p>よくある2つだけのケースの時に一々定義するのが面倒！ジェネリックなEitherが欲しい！って感じになるかもですが（なりますねぇ）、現状の素のUnion, DynamicUnionは継承を前提にした作りになっているので、ジェネリックなEitherは作れないです。ただバイナリ仕様的にはOKなので、そこはF#サポートエクステンションでEither対応させればいいんじゃないでしょうか！ちょっとIL書くだけです（自分ではやらない）。あと、継承前提とかだっせ、F#の判別共用体なら……とかってのも、結局、判別共用体の実態は(ILレベルでは)継承したクラスになってるんですからね！（ぶっちけ実行効率的には富豪過ぎるのでは……）</p>
-<p>今回の勉強会では、Unionの話題いっぱい出ました、こんなにUnionの話が聞ける機会があるなんて……！Thriftのunion、GraphQLのUnion、ProtobufのOneof。いいですねいいですねー。</p>
-<h2>クロスプラットフォーム</h2>
-<p><a href="https://github.com/aki017/zero_formatter">Ruby実装</a>と<a href="https://github.com/yaslab/ZeroFormatter.swift">Swift実装</a>を作っていただいています！わーい、ありがとうございます！会場のQ&amp;Aにあったのですが、まぁ今回IDLを全体的に嫌った（実際、好きじゃない）内容を話していたのに、他言語で使うのにC#をIDL代わりにするという二重の苦痛なのいいの？ってことですが、そもそも、他言語で使うのにIDL自体が必須ではない、という認識に立ってます。</p>
-<p>例えばJSONを使うのに、MsgPackを使うのにIDLは必須ではないでしょう。言語を超えなければ（単一言語内で完結している）、あるいはドキュメントベースでのやり取りをするならば、この場合だとRubyネイティブやSwiftネイティブの表現でZeroFormatterのシリアライズ/デシリアライズは達成できるはずだし、それでいい、それがいいと考えています。</p>
-<p>ただ、言語を超えたやり取りをする時に、共通の語彙がないと面倒くさいよね、JSONならデータ自体がある程度自己記述的で、目で見てなんとかなるみたいな側面も実際あるけれど（あるいはデータから型を起こすことができる）、ZeroFormatterのバイナリはそうではないよね。という点で、共通のIDLはあったほうがしかりだし、そこで、まぁC#の表現をスキーマ代わりに使うという話になってきます。そこからジェネレータも兼務するかは別問題として。</p>
-<p>なのでLTで発表されていた<a href="http://www.slideshare.net/h_kishi/20161127-web-apithrift">ScalaによるサーバーとUnityによるクライアントをThriftのIDLのリポジトリ置いてやり取りする</a>は、クライアント-サーバーで別言語な状態でコミュニケーションしていくにあたっては良いやり方だなあ、と思いましたし、IDLが存在する強みとも思いました(MsgPackが(実質的に)標準のIDLがないのはこういうところで地味に痛そうですね）。私のアプローチは、サーバーとクライアントを両方C#にすることによって超えていく、ということなのですが、それはそれで共通であることの大変さも存在するので（世界に銀の弾丸は存在しない！大事なのは大変さをどう超えていくか、ですね）、それぞれ環境にあった良いやり方を探っていきたいし、色々知りたいなあというところです。いやほんと、今回の勉強会は私もとても勉強になりました！</p>
-<p>懇親会で聞いた、Protobufコードジェネレータがplugin形式になっててAST渡されて、自由に拡張できるってのは、良いですね。現在もC# -&gt; C#書き出しのzfcは、ある程度コード解析してから出してるので、もう少しまとめてプラガブルにするとか、あとは、そのデータを標準入出力経由でやり取りすることでC#でのプラグインではなくてどの言語でも書けるようにする(zfcはZeroFormatterとしてのC#スキーマの解析だけを担ってあげる）、というのは良いなぁ、って感じなのでロードマップには入れたいですが、とにかくやることが無限大に膨らんでいくので、一旦は程々にしておきます。無限大に時間が捻出できれば……！！！</p>
-<h2>RPC Revisited</h2>
-<p>3年前から、<a href="https://github.com/neuecc/LightNode">LightNode</a>というアンチREST主義なフレームワーク(HTTP1上のRPC風味なRESTフレームワーク)を作っていたので、最近のファッキンRESTな風潮は時代が追いついた……、とか悦に浸ってたりなかったりするのですが、まぁ実際、RPCっすよね、って本当に思ってます。本当に本当に。一貫して。</p>
-<p><a href="http://www.grpc.io/">gRPC</a>はそんなRPC戦国時代の中でも、頭一つ抜けているし、今後デファクトスタンダードとなっていくと思っています。なので、まず一つはgRPCにベットします。そんな中で、C#の人間としてどのようなアプローチを取っていくかの、私からのアンサーがMagicOnionというマ・ニ・ア・ワ・ナ・カ・ッ・タ、フレームワークになっているんですが、まぁ間に合わなかったんであんまり語ることはありません。スライド中では、コンセプトの入り口ぐらいしか紹介できていなくて、もっと深い意味合いが存在しているんですが、その辺を語るのは出来上がってからにしましょう。その辺の間に合わなさから、C# Everywhereという「いつものところ」に話を落とすしかなかったんですが、いやー、本当のところはもう少し大層で高尚なビジョンがあるんです、はい。</p>
 </div>
 <a href="https://neue.cc/3">Prev |</a>
 <a href="https://neue.cc/5">| Next</a>

@@ -15,7 +15,177 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2016/04/01_528.html">Microsoft MVP for Visual Studio and Development Technologies(C#)を再々々々々受賞しました</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2016/05/14_529.html">Unityにおけるコルーチンの省メモリと高速化について、或いはUniRx 5.3.0でのその反映</a></h1>
+<ul class="date"><li>2016-05-14</li></ul>
+<div class="entry_body"><p>UniRx 5.3.0をリリースしました！今回のアップデートは、内部的な最適化、です。最適化は、もうそろそろあんまやるところ残ってないよね、なんて思ってたんですが、じっくり考えるとそんなことなく割とあったので埋めました。それが表題のコルーチンの省メモリと高速化です。使い方次第ではありますが、場合によっては今回のアップデートでものすごく恩恵に授かる人もいればそこそこの人もいるかもです。ともあれ基本的に内部的に変更してるだけなので、入れるだけでそれなりに高速化したりする可能性がそれなりにあります。</p>
+<ul>
+<li><a href="https://github.com/neuecc/UniRx">GitHub/UniRx</a></li>
+<li><a href="https://www.assetstore.unity3d.com/jp/#!/content/17276">AssetStore/UniRx</a></li>
+</ul>
+<p>前回が2月だったので3ヶ月ぶりですね。あまりオペレータ追加がないので、次はオペレータ追加に集中したい気もする。なんか優先的に欲しいのあればリクエストもどうぞ(Observable.Windowとかいい加減そろそろ入れろよって話なんですが）</p>
+<h2>MicroCoroutine</h2>
+<p>今回の大きい変化はMicroCoroutine(と、自称してる)の導入です。特に大量にEveryUpdateやEveryValueChangedを呼んでるシチュエーションにおいて10倍、というのは場合によりで大雑把なのですが、相当速くなります。</p>
+<pre><code class="language-csharp">void Start()
+{
+    // Start 10000 Coroutines
+    for (int i = 0; i &lt; 10000; i++)
+    {
+        // Standard Unity Coroutine
+        // StartCoroutine(Counter());
+
+        // Use UniRx 5.3 - MicroCoroutine
+        MainThreadDispatcher
+          .StartUpdateMicroCoroutine(Counter());
+    }
+}
+
+IEnumerator Counter()
+{
+    while (true)
+    {
+        count++;
+        yield return null;
+    }
+}
+</code></pre>
+<p>こんな10000個、単純なコルーチンを起動するコードがあったとして</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/15267997/86e9ed5c-1a0c-11e6-8371-14b61a09c72c.png" alt="image" /></p>
+<p>大きく違いがでます。ちょっと恣意的すぎではあるんですが、UniRxはコルーチンを簡単にかけるが故に、これに近いシチュエーションってのが意図せず起こりがちではありました。また、Resources.LoadAsyncなど非同期系APIからの取得に関しても、一時的に多くのコルーチンを起動するシチュエーションはあり得るのではないでしょうか。</p>
+<p>性能改善した理由は、基本的にはUnityの公式ブログ<a href="http://blogs.unity3d.com/jp/2015/12/23/1k-update-calls/">UPDATE()を10000回呼ぶ</a>で紹介されていることの話で、10000個のUpdateは遅くて、配列に詰めて直接ループで呼ぼうぜ、と。どうせUpdate内のメソッドは呼ばれてC#の領域で実行されるんだから、マネージド(C#)-アンマネージド(C++)の繋ぎのレイヤーは純粋にオーバーヘッドになってくるよ、と。なるほどそうだねそりゃそうだねぇ。それはStartCoroutineにも言えて、というかコルーチンのほうがもっと性能劣化度が大きいんですよね。</p>
+<p>この記事は非常に素晴らしくて、大量にモノ出して速度遅くなってるのがスクリプト起因なら、マネージャー立ててまとめて、あとUpdateに限らずマネージド-アンマネージドの繋ぎをやってる部分が遅いだろうからそこを適切に取り除ける限り除けば、全然まだまだそれなりに捌ける余裕は残ってるぜ。ということで、むしろ希望に満ちていていい感じです。実際、ハイパフォーマンスを謳うDOTweeenとかのライブラリもそんな感じですね、動かすものそれぞれにUpdateするコンポーネントを挿したりはしない、中央管理で動かすのだ、と。</p>
+<p>さて、UniRxでは幾つかのメソッドはコルーチン依存でループを回しています。Observable.EveryUpdateとかEveryValueChangedとか。少しに使う分にはいいんですが、気楽に使えるが故に、大量に使うと、10000個とまではいかなくてもやっぱり、それぞれがコルーチンを起動することによるマネージド-アンマネージドオーバーヘッドがそのまま乗っかってきてしまいます。というわけで、やはりコルーチン自前管理の道を進むしかない……。幸い、自前管理で問題になる機能面での低下に関しては、UniRx自体がコルーチンを凌ぐだけの機能を提供しているので、気にしないでよし。というわけで純粋にいかにコルーチン(IEnumerator)を高速に回転させ、高速にメンテナンスするかにだけ集中すればよし。</p>
+<p>回転させるのはforループ回すだけの話なんですが、マネージャー作ろうぜ、となった時に、Listに詰めるのはいいんですが、面倒くさいのは削除。削除は要注意で、単純にListのRemoveやって済ませたりするのは結構アレです(Removeは相当高コストな操作です)。かといってDictionaryやSet、LinkedListでやるなんていうのは論外で（列挙の性能が死ぬので本末転倒）、基本的に配列で頑張るべきなんですが、さてはて。結局、その辺のめんどーを見るのがめんどーだからUpdateやStartCoroutineでぶん回すのだ。割と本気で。</p>
+<p>ではどうしたか、というと、UniRxのMicroCoroutineのアプローチはRemoveしない。です。しない。空いた部分はnullで埋めて純粋にスキップするだけにする。多少の空きなら、いちいち削るよりもスキップさせたほうが速い。しかし、それだけだとブヨブヨと膨らみ続けてしまうので、xフレーム毎に空きスペースに詰めなおして小さくします。縮める際も前の方に整列させるんじゃなくて、空きスペースに対して後ろから埋めるようにするので、順番はグチャグチャになります。その代わり余計な配列へのセットが発生しないので速い。そして膨らんだ配列は放置して膨らんだままにします、終端のインデックスだけ記録して管理するのみ（ところでアセットストアにアップデート申請出してから気づいたのですが、この配列の使い方なら定期的なお掃除じゃなくて、動かしながら埋めるようなコードにするのも可能っぽい感、なので次回アップデートでそうします）</p>
+<p>というわけで、UniRxのMicroCoroutineは中央集権的なので多少膨らむことが許される（でしょう！）ことを利用して、とにかく高速にコルーチンを捌く、ということだけに集中してます。ので速い。下手に自前管理するよりも速いかもしれませんし、Updateで監視するよりもObserveEveryValueChangedのほうがむしろ速い、Rxで書いたほうが速い、みたいな逆転現象も全然発生しうるような話になります。</p>
+<pre><code class="language-txt">ObserveEveryValueChanged
+EveryUpdate 
+EveryFixedUpdate
+EveryEndOfFrame
+NextFrame
+TimerFrame 
+IntervalFrame
+DelayFrame 
+SampleFrame
+ThrottleFrame
+ThrottleFirstFrame
+TimeoutFrame
+</code></pre>
+<p>この辺りのメソッドを使った場合、内部の実装がMicroCoroutineに差し替わったので自動的に恩恵に預かれます。コルーチン -&gt; Observable変換に関しては FromMicroCoroutine が追加されました。基本的にはFromCoroutineと一緒なのですが、MicroCoroutineではyield returnするのはnullだけにしてください、それ以外には対応してません（UnityEditor上ではWarning出して警告します）。MicroCoroutineの制約はそれなんですが、なんだかんだで、8割ぐらいはyield return nullだけで成立するんちゃうんちゃうん、みたいな。賢くやろうとすればもう少しは出来なくもないんですが、シンプルで高速なコルーチンの回転を損ねちゃうのでナシ。IEnuemrator.Currentの呼び出しや、その型チェックすら省きたい。残り2割ぐらいなら普通にStartCoroutineすればいいじゃん、ということで。実際、UniRxの↑のメソッドはそれでかなり置き換えることが出来る、ということを発見できたので、全面的に導入する気になったのです。</p>
+<p>また、最悪待ちたい場合は、isDoneのループを回すようにToYieldInstruction経由でIObservableを待てるので、大抵のことはなんでもできます。</p>
+<pre><code class="language-csharp">IEnumerator MicroCoroutineWithToYieldInstruction()
+{
+    var www = ObservableWWW.Get(&quot;http://aaa&quot;).ToYieldInstruction();
+    while (!(www.HasResult || www.IsCanceled || www.HasError)) // 3つもプロパティ並べるのダルいので次回アップデートでIsDoneを追加します予定
+    {
+        yield return null;
+    }
+
+    if (www.HasResult)
+    {
+        UnityEngine.Debug.Log(www.Result);
+    }
+}
+</code></pre>
+<p>もっとプリミティブに直接利用したい場合は、StartCoroutineの代わりにMainThreadDispatcherに3つ生やしてあります。</p>
+<pre><code class="language-txt">MainThreadDispatcher.StartUpdateMicroCoroutine
+MainThreadDispatcher.StartFixedUpdateMicroCoroutine
+MainThreadDispatcher.StartEndOfFrameMicroCoroutine
+</code></pre>
+<p>それぞれがコルーチンを消費するタイミングで、まぁ普通はStartUpdateMicroCoroutineを使えばよいでしょふ。もし大量のStartCoroutineがプログラム中にあるのなら、これに差し替えるだけで本当にすっごく速くなるでしょう。ほんと。</p>
+<h2>SubscribeWithState</h2>
+<p>ここから先はUniRxのアップデートの話だけ。そして本当にMicro Micro Microな最適化であんま意味はないんですが、まず、SubcribeWithStateを追加しました。これによって何が変わるか、というと、例えば……</p>
+<pre><code class="language-csharp">// Before
+public static IDisposable SubscribeToText(this IObservable&lt;string&gt; source, Text text)
+{
+    return source.Subscribe(x =&gt; text.text = x);
+}
+
+// After
+public static IDisposable SubscribeToText(this IObservable&lt;string&gt; source, Text text)
+{
+    return source.SubscribeWithState(text, (x, t) =&gt; t.text = x);
+}
+</code></pre>
+<p>という感じの使い方ができます。どういう違いが出るのかというと、以前に<a href="http://neue.cc/2016/01/06_525.html">Unityでのボクシングの殺し方、或いはラムダ式における見えないnewの見極め方</a>という記事の中で説明したのですが、ラムダ式はその中身によってコンパイル時に生成されるコードがかなり変わってきます。で、最速なのはそのメソッド内だけで完結していて外部の変数等には一切触っていない状態。onNextはActionなので、副作用かける際にどうしても外部変数をキャプチャしてしまうことが多いんですよね。そこでSubscribeWithStateを使うと、必要な変数を閉じ込めることができるので最速ゴミなしの形で記述できます。</p>
+<p>ただまぁ、これやると、じゃあSelectやWhereなんかもState取れたほうがいいんですか？（理屈上はそうです）、とか、ああクロージャ殺さなきゃ死ね死ね死ね、とか思ったりしそうなのですけれど、Subscribeの回数ってパイプライン内の実行頻度に比べれば圧倒的に少なくなるはずなんですよね。だから全体のバランスで見たら無視できるといっても過言ではないはず、特にクロージャでちょっとゴミが出る程度の話は。</p>
+<p>なのであんま神経質にやることはないんですが、↑のSubscribeToTextのようなそんな手間もかからないし、UIとかシーンの初期化時にいっぱい登録される可能性があるようなものでライブラリ的な部分でカバーできる質のものならば、少しだけ気を使ってあげると気は安らぐかもしれません。</p>
+<h2>ReactiveCommand</h2>
+<p>ReactiveCommandは.NET版のReactiveProeprtyにあった、最後のパーツなんですが、どうなんでしょうね、本来はViewModelのレイヤーのためなんですが、UnityだとPresenterにUI要素がセリ出してきてるのでイマイチベンリかどうか分からなくて入れてなかったんですが。一応、こんな風に使えます。</p>
+<pre><code class="language-csharp">public class Player
+{
+   public ReactiveProperty&lt;int&gt; Hp;
+   public ReactiveCommand Resurrect;
+
+   public Player()
+   {
+        Hp = new ReactiveProperty&lt;int&gt;(1000);
+
+        // If dead, can not execute.
+        Resurrect = Hp.Select(x =&gt; x &lt;= 0).ToReactiveCommand();
+        // Execute when clicked
+        Resurrect.Subscribe(_ =&gt;
+        {
+             Hp.Value = 1000;
+        }); 
+    }
+}
+
+public class Presenter
+{
+    public Button resurrectButton;
+
+    Player player;
+
+    void Start()
+    {
+      player = new Player();
+
+      // If Hp &lt;= 0, can't press button.
+      player.Resurrect.BindTo(resurrectButton);
+    }
+}
+</code></pre>
+<p>buttonのinteractableとonClickが抽象化されたもの、って感じですね。</p>
+<h2>その他</h2>
+<p>リリースノートから。</p>
+<pre><code class="language-txt">Add : ReactiveCommand
+Add : MainThreadDispatcher.StartUpdateMicroCoroutine, StartFixedUpdateMicroCoroutine, StartEndOfFrameMicroCoroutine
+Add : Scheduler.MainThreadFixedUpdate, MainThreadEndOfFrame
+Add : ToYieldInstruction(cancellationToken)
+Add : Observer.Create(onNext/onNext, onError/onNext, onCompleted) overload
+Add : IReadOnlyReactiveProperty.SkipLatestValueOnSubscribe
+Add : Observable.WhenAll overload (IObservable&lt;Unit&gt;(params IObservable&lt;Unit&gt;[] sources), this becomes breaking changes)
+Add : Observable.FromMicroCoroutine
+Add : Observable.AsSingleUnitObservable
+Add : Observable.SubscribeWithState
+Add : Observable.CreateWithState
+Add : Disposable.CreateWithState
+Improvement : Use MicroCoroutine on `ObserveEveryValueChanged`, `EveryUpdate`, `EveryFixedUpdate`, `EveryEndOfFrame`, `NextFrame`, `TimerFrame`, `IntervalFrame`, `DelayFrame`, `SampleFrame`, `ThrottleFrame`, `ThrottleFirstFrame`, `TimeoutFrame`
+Improvement : Performance improvement for Observable.Range, Repeat when scheduler is Scheduler.Immediate
+Improvement : Use Time.unscaledDeltaTime in IgnoreTimeScaleMainThreadScheduler
+Fix : ReadOnlyReactiveProperty(source, initialValue) does not publish initial value on subscribe
+Fix : IReadOnlyCollection has set indexer
+Fix : Ambigious property of IReactiveCollection.Count, Indexer
+Fix : Throw invalid error when ObservableWWW.LoadFromCacheOrDownload failed.
+Breaking Changes : Added IReadOnlyReactiveProperty.HasValue
+Breaking Changes : AsyncConvertsion scheduler to Scheduler.MainThread on WebGL build(WebGL doesn't support ThreadPool)
+Other : Update UniRxAnalyzer 1.4.0.1 https://www.nuget.org/packages/UniRxAnalyzer
+</code></pre>
+<p>ToYieldInstructionは<a href="http://neue.cc/2015/12/21_523.html">UniRx 5.0 - 完全書き直しによるパフォーマンス向上とヒューマンリーダブルなスタックトレース生成</a>で説明しているのですが、Unity 5.3以降のCustomYieldInstuctionを応用したもので、IObservableをコルーチンで処理できるようにするやつで、結構お薦め機能です。MicroCoroutineで回すための補助にもなりますし。</p>
+<p>SchedulerにMainThreadFixedUpdateとMainThreadEndOfFrameを足しました。ObserveOnやTimerなどで、その辺の細かい制動をしたい方にどうぞ。</p>
+<p>(ReadOnly)ReactivePropertyへのSkipLatestValueOnSubscribe拡張メソッドの追加。これは、(UniRxの)ReactivePropertyはSubscribe時に必ず値をプッシュするようになってるんですが、そういった初期値を無視したいって局面は少なからずあるんですよね。Rx.NET用のReactivePropertyでは、コンストラクタでReactiveProeprtyModeとして、None | RaiseLatestValueOnSubscribe | DistinctUntilChanged を指定できるようなデザインを選んでいるのですが（というのも、Viewにデータバインディングするため構築時の初期値はnullであることが確定している、というシチュエーションが割とあるため）、UniRxのReactivePropertyではSubscribe側が選ぶというデザインにしています。この辺はフレームワークの性質の違いに合わせてるのですが、ともあれ、初期値を無視したい場合は rxProp.SkipLatestValueOnSubscribe().Subscribe() としてもらえれば。</p>
+<p>Observable.WhenAllを、IObservable[Unit][]が相手の場合はIObservable[Unit]を返すようにしました。これは、別にUnit[]が返されても何の意味もないからというのと、それによって余計な配列確保をしないという最適化も入れています。この方が絶対に良いんですが、しかし戻り値の型が変わってしまったので破壊的変更にはなっています。最初から気づいておけば良かったですね、すびばせん。</p>
+<p>AsSingleUnitObservableは LastOrDefault().AsUnitObservable() みたいな変換をかけるやつで、Async的な保証をかけるのにベンリというあれそれ。</p>
+<p>あとは、んー、使ってる人は、<a href="http://grani.jp/">うちの社内</a>以外にないのでは疑惑も感じてますが、UniRxAnalyzerを更新してます。コンストラクタにIObservableを突っ込んでいた場合に誤検出していたのを修正しています。</p>
+<p><img src="https://raw.githubusercontent.com/neuecc/UniRx/master/StoreDocument/VSAnalyzer.jpg" alt="" /></p>
+<p>これ、Visual Studio 2015を使って開発している人は絶対に入れたほうがいいですよ！Subscribe忘れて発火しないのに気づかなかったー、みたいなポカミスが圧倒的に防げますので。</p>
+<h2>まとめ</h2>
+<p>性能面でより気にせずにカジュアルに色々使えるようになった、というのはいいことかなー。性能面で問題出た際に「そういう使いかた想定してないから」といった却下の仕方って、あんましたくないですからね。聞いてていいものでは全くない。デザインとしてカジュアルに使えるようになっているなら、性能もちゃんと担保していかないし、そういうのが頻発するならライブラリの設計が悪い。と、思ってるので、今回のでよりちゃんと自然に使えるようになったかな、と。ObserveEveryValueChangedは個人的には最高にクールな機能だと思ってるので、気兼ねなく使って欲しいし、やっと本当に気兼ねなく使えるようになりました。</p>
+<p>ObservableUpdateTrigger(UpdateAsObservable), Observable.EveryUpdate, Observable.EveryGameObjectUpdate とUpdateのハンドリングも3択、性能特性も三者三様。混乱との対話！別に特に何をレコメンドすることもなく、まあ素直に書くならUpdateTriggerが素直でよく。自身のUpdateループで周りますしね。EveryUpdateはMicroCoroutineなので性能特性的には良さげ、どうせAddTo(this)するならループのライフサイクルもUpdateTriggerと別に変わりはしないし(UpdateTriggerだとDisableでUpdateが回らなくなるので、まぁその辺で挙動に違いは出る)。EveryGameObjectUpdateはMainThreadDispatcherのSubjectに積まれるもので、UpdateTriggerが使える状況なら非推奨かな、あんまりSubjectに頻繁にAdd, Removeするのは性能特性的に悪手なので。UpdateTriggerもSubjectが駆動するのですが、性質的にグローバルじゃないのでAdd, Removeは局所化されるからそこまででは、に通常はなるでしょう、的な。</p>
+<p>そんなこんなで、少なくともRxが性能面のネックでー、と言われるのは悔しい話なので、大きいものから小さいものまで、最適化ネタは常に考えてます。利用事例としても、結構ヒットしてる某社の某ゲーム（とは）や最近でた前作に続いてヒットの予感のする某ゲーム（とは）など、かなり使いこなしてる事例もあって（個人的にはとても感動した！）、ちゃんと実用的といってもいいレベルになってると思われます。弊社の開発中タイトルである<a href="https://kuro-kishi.jp/">黒騎士と白の魔王</a>でもガッツリ使っているので、ご興味ある方は<a href="http://grani.jp/recruit">中途採用</a>は絶賛募集中です:) 当たり前ですがドッグフーディングは凄く大事で、さすがにデカいバグは出てこないにしても軽微なものはちょいちょい上がってくるので、日々、堅牢さは担保されているな、とかかんとか。あと、使いすぎてるほどに使いすぎてるので、常に性能面でネックになってはいけない、性能面でネックになってはいけない、とマントラを唱えるプレッシャーになってるのもいいことです、多分きっと。</p>
+<p>今回のアップデートでツメが甘かった案件としてはAsyncOperation.AsObservableやObservableWWWが内部的にまだFromCoroutine利用なので、FromMicroCoroutineに可能なら差し替えようかな、と。効果のほどとしては、やっぱり場合によりけりですが、初期化とかで大量に回る時は大きく変わるかも。しれない。ともあれ次回アップデートにご期待を。ただyield return wwwやasyncOperationした場合とyield return nullでisDoneチェックする場合とで、戻ってくるタイミングが異なるので、そこのルールを統一させないとかなあ。</p>
+</div>
+<h1><a href="https://neue.cc/2016/04/01_528.html">Microsoft MVP for Visual Studio and Development Technologies(C#)を再々々々々受賞しました</a></h1>
 <ul class="date"><li>2016-04-01</li></ul>
 <div class="entry_body"><p>今年の受賞で、6年目です。エキスパタイズとしてはVisual Studio and Development Technologiesという微妙な感じなので、C#です。C#です、と言わせてください。</p>
 <p>春はあけぼの、というわけで会社も新たなステージに入りました。原点を振り返りつつも、新たな創業として、より強固な姿を掲示できればいいかな、と思います。</p>
@@ -1560,21 +1730,6 @@ KillPhotonProcess = Observable.Interval(TimeSpan.FromSeconds(1))
 <p>これ、自分的には結構良い内容だなー、と思っているので見たことないかたは是非目を通してもらえると。</p>
 <h2>まとめ</h2>
 <p>第一回、というわけなんですがかなり密度濃い内容になったのでは！？懇親会でも、自分の思っていたよりもずっと遥かに使い出している、注目している、という声をいただき嬉しかったですねー。もっとドンドン良くしていかなければ、と気が引き締まります。次回がいつになるかは完全不明（というか当分後かな？）ですが、やっていきたいなー、と思いましたです。</p>
-</div>
-<h1><a href="https://neue.cc/2015/06/13_513.html">NotifyPropertyChangedGenerator - RoslynによるVS2015時代の変更通知プロパティの書き方</a></h1>
-<ul class="date"><li>2015-06-13</li></ul>
-<div class="entry_body"><p>半月前にIntroduction to NotifyPropertyChangedGeneratorというタイトルでセッションしてきました。</p>
-<iframe src="//www.slideshare.net/slideshow/embed_code/key/2wWO7MM7GaH1Uc" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/introduction-to-notifypropertychangedgenerator" title="Introduction to NotifyPropertyChangedGenerator" target="_blank">Introduction to NotifyPropertyChangedGenerator</a> </strong> from <strong><a href="//www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
-<p>コードはGitHubで公開しているのと、NuGetでインストールもできます。</p>
-<ul>
-<li><a href="https://github.com/neuecc/NotifyPropertyChangedGenerator">GitHub - NotifyPropertyChangedGenerator</a></li>
-<li><a href="http://www.nuget.org/packages/NotifyPropertyChangedGenerator">Install-Package NotifyPropertyChangedGenerator</a></li>
-</ul>
-<p>なにかというとVS2015のRoslynでのAnalyzerです。AnalyzerというとStyle Copに毛の生えたようなもの、をイメージしてしまうかもなのですが、全くそれだけじゃなく、真価はコードジェネレーターのほうにあると思っています。コンパイラでのエラーや警告も出せて、自然にVSやプロジェクトと統合されることから、Compiler Extension + Code Generatorとして私は捉えています。その例としてのINotifyPropertyChangedの生成となります。</p>
-<h2>POMO</h2>
-<p>Plain Old MVVM Object（笑）を定着させたいという意図は特にないのですが、割と語感が気に入ったので使ってみまふ。まぁとはいえ、やっぱ変更通知プロパティ程度で基底クラスを継承させるのは、そんなによろしいことではない、という認識はあるかなぁ、と。そのためのアプローチとして、こういったものが現実解にはなってくると思います、VS2015時代では。</p>
-<p>さて、ちょうどufcppさんが<a href="http://ufcpp.net/blog/2015/6/valuechangedganerator/">【Roslynメタプログラミング】ValueChangedGanerator</a>を公開されました。アプローチが異なるわけですが、結構好みも出てくるかな、と思います。特に違いはpartialで外部ファイルに隔離 or 同一ファイル内で成形、は根本的に違うかもです。私はあまりpartialって好きではなくて、というのも結構迷子になるんですよね。いや、partial自体は素晴らしい機構でT4生成の時などに捗るんですが、このINotifyPropertyChanged程度のものでファイル分離されると、ファイル数が膨大になって、ちょっと……。また、プロパティのようなコードで触るものが外のファイルにあるのも、綺麗にはなるものの見通しは低下してしまうのではないかなあ、と。まぁ、この辺は良し悪しというかは好みかなー、といった感ですね。</p>
-<p>色々なアプローチが考えられると思うので、色々試してみるのが良いと思います、Analyzer、可能性あって面白いです。ぜひ触ってみてくださいな。</p>
 </div>
 <a href="https://neue.cc/5">Prev |</a>
 <a href="https://neue.cc/7">| Next</a>

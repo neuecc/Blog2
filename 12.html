@@ -15,7 +15,289 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2012/07/29_379.html">XboxInfoTwit - ver.2.4.0.4</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2012/08/10_380.html">複数の値とC# 5.0 Async再び、或いはAsyncEnumerableへの渇望とRx</a></h1>
+<ul class="date"><li>2012-08-10</li></ul>
+<div class="entry_body"><p>以前に<a href="http://neue.cc/2012/07/11_377.html">Reactive Extensions + asyncによるC#5.0の非同期処理</a>では、単体の値であったらasync、複数の値であったらIObservable&lt;T&gt;が使い分け、とかかんとかと言ってましたが、本当にそうなの？もしくは、そもそも複数の値のシチュエーションって分かるような分からないようななのだけど？などなどと思ったりする昨今を如何様にお過ごしでしょうか。というわけで、今回はグッとこの部分に深く迫ってみましょう。</p>
+<h2>同期的なシチュエーション</h2>
+<p>さて、例、なのですけれど、データベースで行きましょう。生DataReaderを転がしてます。</p>
+<pre><code class="language-csharp">// 接続文字列に Asynchronous Processing=true は非同期でやるなら欠かさずに
+const string ConnectionString = @&quot;Data Source=.;Initial Catalog=AdventureWorks2012;Integrated Security=True;Asynchronous Processing=true;&quot;;
+
+// こういうreader.Readが尽きるまで列挙するだけのヘルパーがあるだけで
+static IEnumerable&lt;IDataRecord&gt; EachReader(IDbConnection connection, string query)
+{
+    using (var command = connection.CreateCommand())
+    {
+        command.CommandText = query;
+        if (connection.State != ConnectionState.Open) connection.Open();
+
+        using (var reader = command.ExecuteReader())
+        {
+            while (!reader.IsClosed &amp;&amp; reader.Read()) yield return reader;
+        }
+    }
+}
+
+static void Main(string[] args)
+{
+    using (var conn = new SqlConnection(ConnectionString))
+    {
+        // LINQでSelectとかいろいろ出来る！便利！抱いて！
+        var result = EachReader(conn, &quot;select * from Sales.Customer&quot;)
+            .Select(x =&gt; new
+            {
+                CustomerID = x.GetInt32(0),
+                PersonID = !x.IsDBNull(1) ? (int?)x.GetValue(1) : null,
+                StoreID = !x.IsDBNull(2) ? (int?)x.GetValue(2) : null,
+                TerritoryID = !x.IsDBNull(3) ? (int?)x.GetValue(3) : null,
+                AccountNumber = !x.IsDBNull(4) ? x.GetString(4) : null
+            })
+            .ToArray();
+
+        // PKでとりたければFirstOrDefualtとかでいいわけです
+        var customer = EachReader(conn, &quot;select * from Sales.Customer where CustomerID = 100&quot;)
+            .Select(x =&gt; new
+            {
+                CustomerID = x.GetInt32(0),
+                PersonID = !x.IsDBNull(1) ? (int?)x.GetValue(1) : null,
+                StoreID = !x.IsDBNull(2) ? (int?)x.GetValue(2) : null,
+                TerritoryID = !x.IsDBNull(3) ? (int?)x.GetValue(3) : null,
+                AccountNumber = !x.IsDBNull(4) ? x.GetString(4) : null
+            })
+            .FirstOrDefault();
+    }
+}
+</code></pre>
+<p>ExecuteReaderの結果のIDataRederは、yield returnで列挙してやると、LINQで加工できるようになるので、SelectしてToArrayとか、SelectしてFirstOrDefaultとか、非常にやりやすくて便利なわけです。</p>
+<p>ここまでは、いいと思います。じゃあ、非同期でやると、どうするの、と。</p>
+<h2>内部イテレータ的に考える</h2>
+<p>.NET Framework 4.5からは主要な非同期メソッドに全てXxxAsyncという名前のものがつきました。ADO.NETにおいては、OpenAsyncやExecuteReaderAyncなどがあります。というわけで、試してみましょう。</p>
+<pre><code class="language-csharp">// 非同期だったこうしたい、でもこれはコンパイル通らない！
+static async Task&lt;IEnumerable&lt;DbDataReader&gt;&gt; EachReaderAsync(DbConnection connection, string query)
+{
+    using (var command = connection.CreateCommand())
+    {
+        command.CommandText = query;
+        if (connection.State != ConnectionState.Open) await connection.OpenAsync();
+
+        using (var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess)) // 基本的にはSequentialAccessにしておきたい
+        {
+            while (!reader.IsClosed &amp;&amp; reader.Read()) yield return reader;
+        }
+    }
+}
+</code></pre>
+<p>残念ながら、asyncとyield returnを共存させることはできないので、どうにもなりません。……はい。しかし出来ない、では困る。さすがに、非同期実行するところに全部生のままで、こんなCreateCommand..., ExecuteReaderAsync, .... なんて書いてられないし。</p>
+<p>じゃあどうするか、というと、内部イテレータ的にしましょう。つまりList&lt;T&gt;にあるようなForEachです。yield returnが外部イテレータ的であり、それが無理なら、内部イテレータ的にすればいいぢゃない。</p>
+<pre><code class="language-csharp">// ループを回してる最中に実行するaction引数をつけた(FuncじゃなくてAction&lt;DbDataReader&gt;のオーバーロードも作るとベター)
+static async Task ForEachAsync(DbConnection connection, string query, Func&lt;DbDataReader, Task&gt; action)
+{
+    using (var command = connection.CreateCommand())
+    {
+        command.CommandText = query;
+        if (connection.State != ConnectionState.Open) await connection.OpenAsync();
+
+        using (var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess)) // 基本的にはSequentialAccessにしておきたい
+        {
+            while (!reader.IsClosed &amp;&amp; reader.Read()) await action(reader);
+        }
+    }
+}
+
+static async Task&lt;List&lt;Customer&gt;&gt; GetCustomers()
+{
+    using (var conn = new SqlConnection(ConnectionString))
+    {
+        // これで、Selectっぽくできてないこともないと言えなくもない
+        var list = new List&lt;Customer&gt;();
+
+        await ForEachAsync(conn, &quot;select * from Sales.Customer&quot;, async x =&gt;
+        {
+            var customer = new Customer
+            {
+                CustomerID = await x.GetFieldValueAsync&lt;int&gt;(0),
+                PersonID = !x.IsDBNull(1) ? await x.GetFieldValueAsync&lt;int?&gt;(1) : null,
+                StoreID = !x.IsDBNull(2) ? await x.GetFieldValueAsync&lt;int?&gt;(2) : null,
+                TerritoryID = !x.IsDBNull(3) ? await x.GetFieldValueAsync&lt;int?&gt;(3) : null,
+                AccountNumber = !x.IsDBNull(4) ? await x.GetFieldValueAsync&lt;string&gt;(4) : null
+            };
+            list.Add(customer);
+        });
+
+        return list;
+    }
+}
+
+// LINQじゃないので匿名型は使えないのね
+public class Customer
+{
+    public int CustomerID { get; set; }
+    public int? PersonID { get; set; }
+    public int? StoreID { get; set; }
+    public int? TerritoryID { get; set; }
+    public string AccountNumber { get; set; }
+}
+</code></pre>
+<p>ForEachAsync！というわけで、Actionを渡してやって、そこでグルグルッとすることにより制限を回避もどき。ToArrayしたい？古き良きListにAddすればいいぢゃない、といったものですよ、ははは。LINQじゃないので匿名型は使えないがね！</p>
+<p>さて、匿名型が使えないのはいいとしても、問題は、LINQの特徴である合成可能性を欠いているところです。一番困るのは、これ、FirstOrDefaultできないね、って。全件取るんですか？まあ、PKだったら一件なのが保証されてるし、そうでないならtop 1とでも書いておけよ、と言えなくもないですが、しかしどうなのよこれ、と。</p>
+<p>そんなわけでForEachAsyncと、もう一つ、ExecuteSingleAsyncという名前で、一件のみを列挙するようなものを別途作る必要があります。とはいえ、それでも対応できているのは一件と全件だけ。例えばTakeWhileみたいなのがやりたい、SkipWhileみたいなのがやりたいとなったらどうするの、と。答えは、どうにもなりません。諦めるしかない。</p>
+<h2>AsyncEnumerableで救われる</h2>
+<p>どうしても諦められないのならば、AsyncEnumerableを授けましょう。NuGetから<a href="http://nuget.org/packages/Ix_Experimental-Async">Ix_Experimental-Async</a>を引っ張ってきます。Ix、そう、みんな大好きReactive Extensionsの兄弟なわけですが、しかし紹介しておいてアレですが、このIx_Experimental-Asyncはお薦めはしません！完全に実験的に、できるから、というだけで実装例を掲示してみせてくれたというだけなノリがぷんぷんしているからです。実際、最初のAsync CTPが出た時に公開されて、それから更新されてませんしね……。</p>
+<p>ともあれ、どんなコンセプトの代物なのかは見ておきましょう。</p>
+<pre><code class="language-csharp">// こういうDB列挙用のIAsyncEnumerable/Enumeratorを作る。
+// yield returnのようなコンパイラサポートはないので手書きするんだよ！
+public class AsyncDbEnumerable : IAsyncEnumerable&lt;DbDataReader&gt;, IAsyncEnumerator&lt;DbDataReader&gt;
+{
+    DbConnection connection;
+    DbCommand command;
+    DbDataReader reader;
+    string query;
+
+    public AsyncDbEnumerable(DbConnection connection, string query)
+    {
+        this.connection = connection;
+        this.query = query;
+    }
+
+    public IAsyncEnumerator&lt;DbDataReader&gt; GetEnumerator()
+    {
+        return this;
+    }
+
+    public DbDataReader Current
+    {
+        get { return reader; }
+    }
+
+    public async Task&lt;bool&gt; MoveNext(System.Threading.CancellationToken cancellationToken)
+    {
+        if (command == null)
+        {
+            if (connection.State != ConnectionState.Open) await connection.OpenAsync();
+
+            command = connection.CreateCommand();
+            command.CommandText = query;
+            reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess);
+        }
+
+        if (await reader.ReadAsync())
+        {
+            return true;
+        }
+        return false;
+    }
+
+    public void Dispose()
+    {
+        reader.Dispose();
+        command.Dispose();
+    }
+}
+
+static IAsyncEnumerable&lt;DbDataReader&gt; EachReaderAsync(SqlConnection connection, string query)
+{
+    return new AsyncDbEnumerable(connection, query);
+}
+
+static async Task Test()
+{
+    using (var conn = new SqlConnection(ConnectionString))
+    {
+        // 完全にLINQなのでSelectしてToArrayで匿名型もOK
+        var result = await EachReaderAsync(new SqlConnection(ConnectionString), &quot;select * from Sales.Customer&quot;)
+            .Select(x =&gt; new
+            {
+                CustomerID = x.GetFieldValue&lt;int&gt;(0),
+                PersonID = !x.IsDBNull(1) ? x.GetFieldValue&lt;int?&gt;(1) : null,
+                StoreID = !x.IsDBNull(2) ? x.GetFieldValue&lt;int?&gt;(2) : null,
+                TerritoryID = !x.IsDBNull(3) ? x.GetFieldValue&lt;int?&gt;(3) : null,
+                AccountNumber = !x.IsDBNull(4) ? x.GetFieldValue&lt;string&gt;(4) : null
+            })
+            .ToArray();
+
+        // 勿論FirstOrDefaultもできる
+        var customer = await EachReaderAsync(new SqlConnection(ConnectionString), &quot;select * from Sales.Customer where CustomerID = 100&quot;)
+            .Select(x =&gt; new
+            {
+                CustomerID = x.GetFieldValue&lt;int&gt;(0),
+                PersonID = !x.IsDBNull(1) ? x.GetFieldValue&lt;int?&gt;(1) : null,
+                StoreID = !x.IsDBNull(2) ? x.GetFieldValue&lt;int?&gt;(2) : null,
+                TerritoryID = !x.IsDBNull(3) ? x.GetFieldValue&lt;int?&gt;(3) : null,
+                AccountNumber = !x.IsDBNull(4) ? x.GetFieldValue&lt;string&gt;(4) : null
+            })
+            .FirstOrDefault();
+    }
+}
+</code></pre>
+<p>IAsyncEnumerableの実装は完全に手作りです！真面目に使うなら、AnonymousAsyncEnumerableとかを作って、それを使って構築しますが、今回はてきとーな感じに実装しておきました。てきとーと言っても、ちゃんと動きますよ、はい。</p>
+<p>さて、これによってIAsyncEnumerableに変換されたシロモノは、LINQのメソッドが全て使えます。おー、やったね、これなら完璧。</p>
+<p>と、言いたいのですが、よーくSelectの中のラムダ式を見ると、ForEachAsyncの時のものと違うのが分かるでしょうか？ForEachAsyncの時はGetFieldValueAsyncといった、値取得まで非同期のものを使いました。でも、今回はそれは使ってない。何故かというと、そこでasyncにしてしまうと戻り値がIAsyncEnumerable&lt;Task&lt;T&gt;&gt;になってしまうから。</p>
+<p>何がいけないのか、というと、例えばToArrayした結果で見るとresult[0]はTaskなんですよ。実態はresult[0].Resultとしなきゃあいけません。おまけに、全部Taskということは、実行中かもしれないわけです。じゃあ全部待てばいいのか、 await Task.WhenAll(result) とすればいいか、というと、そうなると、一つのコネクションで複数実行が走る、この場合Connectionは複数実行は許容されていないので、まあ例外が飛んできてしまうでしょう。</p>
+<p>じゃあasyncは諦めるの？というと、幾つか手はある。ひとつはAwaitとかいうような拡張メソッドを作って、IAsyncEnumerable&lt;Task&lt;T&gt;&gt; から IAsyncEnumerable&lt;T&gt; に戻すようなものを作ればいい。作るのは、まあ、難しくはないのだけど結局yield returnがないので完全手書きしなきゃならないので面倒なので例は割愛。</p>
+<p>もしくはSelectなどのselectorに、ラムダ式がasyncで書かれている場合(戻り値がTaskになっている場合)はawaitするようなオーバーロードがあっても良かったと思うのですがねえ。んー、まあ、それはさすがに大きなお世話っぽいからダメか……。</p>
+<p>もしくは、ToArrayなどで外に出すのではなく、ForEachAsyncというメソッドが用意されているので、それを使ってawaitするか。こうなると内部イテレータとやってること同じになってきますが。</p>
+<p>とはいえともかく、例に出したAwaitメソッドのような、そういうのがないと、実用性に欠けると言わざるを得ません。また、これはあくまでもAsyncEnumerableであって、IEnumerableへのLINQ to Objectsとは別物です。Select, Where, Firstなどは挙動が同じというだけで、中身は全然違います。で、当然ながらコンセプト実装なので、内部的にもあまりこなれてませんね。なので、Ix_Experimental-Asyncは所詮はコンセプト実装であり、面白いとは思いますし満喫はしましたが、実世的なものとは言いがたいと結論づけます。</p>
+<h2>IObservable&lt;T&gt;の中へ</h2>
+<p>と、ここまで見てきたので、最後はRxで〆ましょう。ちなみにRxはバージョンが幾つかありますが、私としてはRx 2.0-RCしか使う気はありません。正直、1.0系とは雲泥の差ですからねえ。</p>
+<pre><code class="language-csharp">static IObservable&lt;DbDataReader&gt; EachReaderAsync(DbConnection connection, string query)
+{
+    // CreateAsyncで作る。OnErrorなどは手書きですが、十分に書きやすい
+    return Observable.CreateAsync&lt;DbDataReader&gt;(async observer =&gt;
+    {
+        try
+        {
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = query;
+                if (connection.State != ConnectionState.Open) await connection.OpenAsync();
+
+                using (var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess))
+                {
+                    while (!reader.IsClosed &amp;&amp; reader.Read()) observer.OnNext(reader);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            observer.OnError(ex);
+            return;
+        }
+        observer.OnCompleted();
+    });
+}
+
+static async Task Test()
+{
+    using (var conn = new SqlConnection(ConnectionString))
+    {
+        // Rxなので完全にLINQ、awaitableなのでToArrayをawaitしたりも出来るのでノリは完全に一緒
+        var result = await EachReaderAsync(new SqlConnection(ConnectionString), &quot;select * from Sales.Customer&quot;)
+            .Select(x =&gt; new
+            {
+                CustomerID = x.GetFieldValue&lt;int&gt;(0),
+                PersonID = !x.IsDBNull(1) ? x.GetFieldValue&lt;int?&gt;(1) : null,
+                StoreID = !x.IsDBNull(2) ? x.GetFieldValue&lt;int?&gt;(2) : null,
+                TerritoryID = !x.IsDBNull(3) ? x.GetFieldValue&lt;int?&gt;(3) : null,
+                AccountNumber = !x.IsDBNull(4) ? x.GetFieldValue&lt;string&gt;(4) : null
+            })
+            .ToArray();
+
+        // もちろん、そのままSubscribeしたり、FirstOrDefaultAsyncしたりしてもいい
+    }
+}
+</code></pre>
+<p>というわけでRxでも生成はしやすいし、出力結果も相当扱いやすい。素晴らしい！けれど、これもIAsyncEnumerableと同様にSelectの中でasyncしちゃうと厄介なことになるので、基本的にはできない。</p>
+<p>Await拡張メソッドを作るのは簡単だけど、Rxの場合はスレッドセーフの問題が結構難しくて、うまく決めるのは難しい……。</p>
+<p>それに加えて、ほとんど決まりきっている、ただたんに列挙したいだけ、のものにRxを使うというのはやり過ぎ感があり、性能面でちょっとね、と。うーん、言うほど悪くはないし、今まで散々持ち上げといてなんだよそれって感じですが、目の前にTaskが転がっていて、そこまで利点が大きくない中で選ぶか？と迫られたら、選びにくいなあ、って。思ってしまうのです。</p>
+<h2>おまけ：Entity Framework 6について</h2>
+<p>Entity Frameworkはロードマップによりバージョン6から非同期対応すると明言しています。また、デザインノート<a href="http://entityframework.codeplex.com/wikipage?title=Task-based%20Asynchronous%20Pattern%20support%20in%20EF.">Task-based Asynchronous Pattern support in EF.</a>も公開されていたり、それとEFはソースコードが公開されているのですが、CodePlexから最新版を落としてくれば、そこには既にTaskによる実装が存在しています。</p>
+<p>軽く見たところ、EF内部で使う用のAsyncEnumerableを定義してありました。それを使って、非同期系を動かしてましたね。ただ、完全に内部用なので外からは使えないし、色々限定的ですけれど。また、最終的に出力する場合は、やはり内部イテレータ的に、await ForEachAsyncしてListに変換するなりしていました。ふんふん、なるほどねー、と、結構眺めてて面白いのでお薦めです。</p>
+<h2>まとめ</h2>
+<p>C# 5.0で非同期は簡単になった！そして、同様に非同期はやはり難しい！こうして案を見ていったわけですが、結局どれを選ぶの？というと、まあ、内部イテレータ案が一番無難で良いと思います。</p>
+<p>それにしても、いやあもう頭ぱっつんぱっつんです。で、何でDBがネタになっているかというと、新Micro-ORMライブラリを作成中で(DbExecutor v.Next)、今から作るなら非同期対応しないとかありえないよねー、ということで色々考えてはいるんですが、これが中々にビシッ！としっくり決めるのが大変で。結構良い感じにはなってきてつもりではあるんですが、全然まだまだで。あんま人に見られたくない段階なんですが諸事情で見れる人には見れるようになってしまってて恥ずかちい。</p>
+<p>そんなわけでVS2012登場まで、もうすぐです(MSDN会員は一週間切ってる、そうでない人も一ヶ月後)。C# 5.0への備え、できてますか？さあ、カオスな非同期時代に突入しましょう！</p>
+</div>
+<h1><a href="https://neue.cc/2012/07/29_379.html">XboxInfoTwit - ver.2.4.0.4</a></h1>
 <ul class="date"><li>2012-07-29</li></ul>
 <div class="entry_body"><ul>
 <li><a href="http://neue.cc/software/xboxinfotwit" title="neue cc - XboxInfoTwit">neue cc - XboxInfoTwit</a></li>
@@ -1253,189 +1535,6 @@ public class ClassNameRewriter : SyntaxRewriter
 <p>が、しかし、こちらはクラス名の書き換えが面倒。Expression Treeと同じく基本的にイミュータブルになっているので、書き換えはプロパティに代入するだけ、とはいかず、大掛かりな仕掛けが必要です。というかこの程度のためだけにVisitorとか……。一応ReplaceNodeとかUpdateとかもあるんですが、うーん、まあ、何というか、よくわかってないので深く突っ込まれると窮します:)</p>
 <h2>まとめ</h2>
 <p>提供する機能は同じでも、使い心地とかは、両者、結構違くなるのではという印象。どちらも発展途上なのですが、ライセンス的にRoslynは今は使えないのに比べると、NRefactoryはMITライセンスで、アルファ版なのを留意しておけば使えるのではというのが、私的には大きいかなあ。割と切迫してC# Parserが必要なところなので、ここはちょっとNRefactoryを使い込んでみたいなあ、なんて思っています。いや、そこまでDeepに使い倒すというより簡単なコード解析と置換程度なので、しっかり使ってバグ報告、とかの貢献は出来なさそうですんがー。</p>
-</div>
-<h1><a href="https://neue.cc/2012/02/18_365.html">ImplicitQueryString - 暗黙的変換を活用したC#用のクエリストリング変換ライブラリ</a></h1>
-<ul class="date"><li>2012-02-18</li></ul>
-<div class="entry_body"><ul>
-<li><a href="http://implicitquerystring.codeplex.com/">ImplicitQueryString - CodePlex</a></li>
-</ul>
-<p>QueryStringかったるいですね、変換するのが。intに。boolに。それ以外に。そのままじゃどうしようもなくストレスフル。そこで、以下のように書けるライブラリを作りました。勿論<a href="http://nuget.org/packages/ImplicitQueryString">NuGet</a>でのインストールも可能です。あと、ライブラリといっても例によって.csファイル一個だけなので、導入は超お手軽。</p>
-<p>以下はASP.NETの例ですが、NameValueCollectionを使っているものは全て対象になります。QueryStringだけじゃなくてRequest.Formなどにも使えますね。</p>
-<pre><code class="language-csharp">// using Codeplex.Web;
-
-int count;
-string query;
-bool? isOrdered; // support nullable
-
-protected void Page_Load(object sender, EventArgs e)
-{
-    count = Request.QueryString.ParseValue(&quot;c&quot;);
-    query = Request.QueryString.ParseValue(&quot;q&quot;);
-    isOrdered = Request.QueryString.ParseValue(&quot;ord&quot;);
-}
-</code></pre>
-<p>NameValueCollectionへの拡張メソッドとして実装しているので、using Codeplex.Webを忘れないように。ポイントは「型の明示が不要」というところです。クエリストリングを解析したい時って、通常はフィールドで既に変数自体は作っているのではないかと思います。なら、代入時に左から型を推論させてしまえばいいわけです、モダンなC#はわざわざ明示的に型なんて書かない、書きたくない。なのでこのライブラリ、ImplicitQueryStringではParseValueだけで全ての基本型(int, long, bool, string, DateTimeなど)へと型指定不要で代入可能となっています。代入先の型がNullableである場合は、キーが見つからなかったりパースに失敗した場合はnullにすることもサポートしてます。</p>
-<p>また、よくあるクエリストリングはUrlEncodeされているのでデコードしたかったりするケースにも簡単に対応しています、UrlDecodeを渡すだけ！他にもEnumへの変換も出来ますし、キーが見つからなかったり変換不可能だったりした場合は指定したデフォルト値を返すParseValueOrDefault/ParseEnumOrDefaultも用意してあります。キーがあるかチェックするContainsKeyも。</p>
-<pre><code class="language-csharp">enum Sex
-{
-    Unknown = 0, Male = 1, Female = 2
-}
-
-enum BloodType
-{
-    Unknown, A, B, AB, O
-}
-
-int age;
-string name;
-DateTime? requestTime;  // nullableやDateTimeもサポート
-bool hasChild;
-Sex sex;               // enumもいけます
-BloodType bloodType;
-
-protected void Page_Load(object sender, EventArgs e)
-{
-     // こんなQueryStringがあるとして
-    // a=20&amp;n=John%3dJohn+Ab&amp;s=1&amp;bt=AB
-
-    // ageは左から推論してintを返します
-    age = Request.QueryString.ParseValue(&quot;a&quot;); // 20
-
-    // UrlDecodeしたstringが欲しい時は第二引数にメソッドそのものを渡すだけ
-    name = Request.QueryString.ParseValue(&quot;n&quot;, HttpUtility.UrlDecode); // John=John Ab
-
-    // 代入先の型がnullableの場合は、もしキーが見つからなかったりパースに失敗したらnullにしてくれます
-    requestTime = Request.QueryString.ParseValue(&quot;t&quot;, HttpUtility.UrlDecode); // null
-
-    // キーが見つからなかったりパースに失敗したら指定した値を返してくれます
-    hasChild = Request.QueryString.ParseValueOrDefault(&quot;cld&quot;, false); // false
-    
-    // Enumの変換は数字の場合でも文字列の場合でも、どちらでも変換可能です
-    sex = Request.QueryString.ParseEnum&lt;Sex&gt;(&quot;s&quot;); // Sex.Male
-    bloodType = Request.QueryString.ParseEnumOrDefault&lt;BloodType&gt;(&quot;bt&quot;, BloodType.Unknown); // BloodType.AB
-
-    // ContainsKeyはキーの有無をチェックします
-    var hasFlag = qs.ContainsKey(&quot;flg&quot;); // false
-}
-</code></pre>
-<p>これで、あらゆるケースでサクッと変換することが可能なのではかと思います。ちなみに、ParseValue/ParseEnumでキーが見つからなかった場合はKeyNotFoundExceptionを返します。ParseValueで失敗したらFormatException、ParseEnumで失敗したらArgumentExceptionです。この二つが分かれているのは、int.Parseとかに渡しているだけなので、そちらの都合です。</p>
-<h2>仕組み</h2>
-<p>ImplicitQueryStringという名前がネタバレなのですが、単純に暗黙的変換をしているだけです。左から推論とか、ただのハッタリです。<a href="http://neue.cc/2012/02/14_364.html">neue cc - dynamicとQueryString、或いは無限に不確定なオプション引数について</a>を書いたときに、わざわざdynamicを持ち出さなくても、暗黙的変換で十分じゃないの？そのほうが利便性も上じゃないの？と思ったのでやってみたら、やはりドンピシャでした。</p>
-<p>暗黙的変換は、あまり使う機能じゃあないと思いますし、実際、乱用すべきでない機能であることには違いないのですが、たまに活用する分には中々刺激的で創造性に満ちています。大昔からあるけれど普段使わない機能だなんて、ロストテクノロジーっぽくて浪漫に溢れています。</p>
-<p>さて、ただし活用するにはコード中に型を並べなければならないので、汎用的というわけではないのもそうなのですが、人力で書くのもシンドイところ。勿論人力でやる気はしないので<a href="http://msdn.microsoft.com/ja-jp/library/bb126445.aspx">T4 Template</a>を使いました。</p>
-<pre><code class="language-csharp">&lt;#@ template language=&quot;C#&quot; #&gt;
-&lt;#@ output extension=&quot;cs&quot; #&gt;
-&lt;#@ assembly Name=&quot;System.Core.dll&quot; #&gt;
-&lt;#@ import namespace=&quot;System&quot; #&gt;
-&lt;#@ import namespace=&quot;System.Linq&quot; #&gt;
-&lt;#@ import namespace=&quot;System.Text.RegularExpressions&quot; #&gt;
-&lt;#@ import namespace=&quot;System.Reflection&quot; #&gt;
-&lt;#
-    var methods = typeof(Convert).GetMethods(BindingFlags.Static | BindingFlags.Public);
-
-    var converters = methods.Where(x =&gt; x.Name.StartsWith(&quot;To&quot;))
-        .Select(x =&gt; Regex.Replace(x.Name, &quot;^To&quot;, &quot;&quot;))
-        .Where(x =&gt; !x.StartsWith(&quot;Base64&quot;) &amp;&amp; x != &quot;String&quot;)
-        .Distinct()
-        .ToArray();
-#&gt;
-using System;
-using System.Collections.Generic;
-using System.Collections.Specialized;
-
-namespace Codeplex.Web
-{
-    public static class NameValueCollectionExtensions
-    {
-        public static ConvertableString ParseValue(this NameValueCollection source, string key)
-        {
-            return ParseValue(source, key, null);
-        }
-
-        public static ConvertableString ParseValue(this NameValueCollection source, string key, Func&lt;string, string&gt; converter)
-        {
-            var values = source.GetValues(key);
-            if (values == null) return new ConvertableString(null);
-
-            var value = values[0];
-            return new ConvertableString(converter == null ? value : converter(value));
-        }
-        
-        // 中略
-    }
-
-    public struct ConvertableString
-    {
-        public readonly string Value;
-
-        public ConvertableString(string value)
-        {
-            this.Value = value;
-        }
-
-&lt;# foreach (var converter in converters) { #&gt;
-        public static implicit operator &lt;#= converter #&gt;(ConvertableString self)
-        {
-            if (self.Value == null) throw new KeyNotFoundException();
-            return &lt;#= converter #&gt;.Parse(self.Value);
-        }
-
-        public static implicit operator &lt;#= converter #&gt;?(ConvertableString self)
-        {
-            &lt;#= converter #&gt; value;
-            return (self.Value != null &amp;&amp; &lt;#= converter #&gt;.TryParse(self.Value, out value))
-                ? new Nullable&lt;&lt;#= converter #&gt;&gt;(value)
-                : null;
-        }
-
-&lt;# } #&gt;
-        public static implicit operator String(ConvertableString self)
-        {
-            return self.Value;
-        }
-
-        public override string ToString()
-        {
-            return Value;
-        }
-    }
-}
-</code></pre>
-<p>以上のコードから、T4生成部分を取り出すと</p>
-<pre><code class="language-csharp">public static implicit operator Boolean(ConvertableString self)
-{
-    if (self.Value == null) throw new KeyNotFoundException();
-    return Boolean.Parse(self.Value);
-}
-
-public static implicit operator Boolean?(ConvertableString self)
-{
-    Boolean value;
-    return (self.Value != null &amp;&amp; Boolean.TryParse(self.Value, out value))
-        ? new Nullable&lt;Boolean&gt;(value)
-        : null;
-}
-
-public static implicit operator Char(ConvertableString self)
-{
-    if (self.Value == null) throw new KeyNotFoundException();
-    return Char.Parse(self.Value);
-}
-
-public static implicit operator Char?(ConvertableString self)
-{
-    Char value;
-    return (self.Value != null &amp;&amp; Char.TryParse(self.Value, out value))
-        ? new Nullable&lt;Char&gt;(value)
-        : null;
-}
-
-// 以下SByte, Byte, Int16, Int32, Int64, ..., DateTimeと繰り返し
-</code></pre>
-<p>といったコードがジェネレートされます。清々しいまでのゴリ押しっぷり。一周回ってむしろエレガント。ConvertableStringのほうでKeyNotFoundExceptionを出すのがイケてないのですが、まあそこはShoganaiかなー、ということで。さて、それはそれとして、やっぱVisual Studioに組み込みで、こういった自動生成のテンプレートエンジンが用意されているというのは非常に嬉しいところです。</p>
-<h2>まとめ</h2>
-<p>特にASP.NETを使っている方々にどうぞ。ASP.NET MVCの人はしらにゃい。なのでいつもの私だったら.NET 4.0専用にするところが、今回は.NET 3.5でも大丈夫！Visual Studio 2008でも動作確認取りました！</p>
-<p>それにしても実際ASP.NETを使いこなしてる人はクエリストリングの取得はどんな風にやっていたものなのでしょうかー。何かしらの手法がないとシンドすぎやしませんか？そう思って検索してみたんですが、どうにも見つからず。さすがに ParseValueAsInt() とかって拡張メソッドぐらい作ってやり繰りは私も大昔していたし、それでintに対応しておけばほぼほぼOKではありますが（拡張メソッドがなかった時代はさすがに想像したくない！）。そう考えると、ちょっとこれはやりすぎ感も若干。でも、一度できあがればずっと使えますしね。というわけで<a href="http://implicitquerystring.codeplex.com/">ImplicitQueryString</a>、是非是非使ってみてください。本当に楽になれると思います。</p>
 </div>
 <a href="https://neue.cc/11">Prev |</a>
 <a href="https://neue.cc/13">| Next</a>

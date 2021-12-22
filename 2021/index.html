@@ -15,7 +15,134 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2021/12/04.html">.NET 6とAngleSharpによるC#でのスクレイピング技法</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2021/12/22.html">NativeMemoryArray - .NET 6 APIをフル活用した2GB超えの巨大データを扱うライブラリ</a></h1>
+<ul class="date"><li>2021-12-22</li></ul>
+<div class="entry_body"><p><a href="https://qiita.com/advent-calendar/2021/microsoft">.NET 6 Advent Calendar 2021</a>の12日の代理投稿となります。プレゼント付きですと！？<a href="https://www.balmuda.com/jp/brew/special-model">BALMUDA The Brew STARBUCKS RESERVE LIMITED EDITION</a>が欲しいです！</p>
+<p>さて、先程NativeMemoryArrayという新しいライブラリを作成し、公開しました。.NET Standard 2.0でも動作しますが、全体的に .NET 6 の新API群(NativeMemory, Scatter/Gather I/O)を活かすための作りになっていますので、今回のAdvent Calendarにもピッタリ。実用性も、ある……！あります……！もちろんUnity版も用意してあります（NativeArrayと何が違うって？まぁ違うと言えば違います）。</p>
+<ul>
+<li><a href="https://github.com/Cysharp/NativeMemoryArray">GitHub - Cysharp/NativeMemoryArray</a></li>
+</ul>
+<p>C#には配列、特にbyte[]を扱う上で大きな制約が一つあります。それは、一次元配列の上限値が0x7FFFFFC7(2,147,483,591)ということ。int.MaxValueよりちょっと小さめに設定されていて、ようするにざっくり2GBちょいが限界値になっています。</p>
+<blockquote>
+<p>この限界値は、正確には .NET 6 でひっそり破壊的変更が行われましたので、.NET 6とそれ以外で少し異なります。詳しくは後で述べます。</p>
+</blockquote>
+<p>この2GBという値は、int Lengthの都合上しょうがない(intの限界値に引っ張られている)のですが、昨今は4K/8Kビデオや、ディープラーニングの大容量データセットや、3Dスキャンの巨大点群データなどで、大きな値を扱うことも決して少ないわけではないため、2GB制約は正直厳しいです。そして、この制約は<code>Span&lt;T&gt;</code>や<code>Memory&lt;T&gt;</code>であっても変わりません(Lengthがintのため)。</p>
+<p>ちなみに<code>LongLength</code>は多次元配列における全次元の総数を返すためのAPIのため、一次元配列においては特に意味をなしません。.NET Frameworkの設定である<a href="https://docs.microsoft.com/ja-jp/dotnet/framework/configure-apps/file-schema/runtime/gcallowverylargeobjects-element">gcAllowVeryLargeObjects</a>も、構造体などを入れた場合の大きなサイズを許容するものであり(例えば4バイト構造体の配列ならば、2GB*4のサイズになる)、要素数の限界は超えられないため、byte[]としては2GBが限界であることに変わりはありません。</p>
+<p>こうした限界に突き当たった場合は、ストリーミング処理に切り替えるか、またはポインタを使って扱うかになりますが、どちらもあまり処理しやすいとは言えませんし、必ずしもインメモリで行っていた操作が代替できるわけではありません（ポインタなら頑張れば最終的にはなんとでもなりますが）。</p>
+<p>そこで、2GB制約を超えつつも、新しいAPI群(<code>Span&lt;T&gt;</code>, <code>IBufferWriter&lt;T&gt;</code>, <code>ReadOnlySequence&lt;T&gt;</code>, <code>RandomAccess.Write/Read</code>, <code>System.IO.Pipelines</code>など)と親和性の高いネイティブメモリを裏側に持つ配列（みたいな何か）を作りました。</p>
+<p>これによって、例えば巨大データの読み込み/書き込みも、 .NET 6の新Scatter/Gather APIの<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.io.randomaccess?view=net-6.0">RandomAccess</a>を用いると、簡単に処理できます。</p>
+<pre><code class="language-csharp">// for example, load large file.
+using var handle = File.OpenHandle(&quot;4GBfile.bin&quot;, FileMode.Open, FileAccess.Read, options: FileOptions.Asynchronous);
+var size = RandomAccess.GetLength(handle);
+
+// via .NET 6 Scatter/Gather API
+using var array = new NativeMemoryArray&lt;byte&gt;(size);
+await RandomAccess.ReadAsync(handle, array.AsMemoryList(), 0);
+
+// iterate Span&lt;byte&gt; as chunk
+foreach (var chunk in array)
+{
+    Console.WriteLine(chunk.Length);
+}
+</code></pre>
+<p>Scatter/Gather APIに馴染みがなくても、<code>IBufferWriter&lt;T&gt;</code>や <code>IEnumerable&lt;Memory&lt;T&gt;&gt;</code> を経由してStreamで処理する手法も選べます。</p>
+<pre><code class="language-csharp">public static async Task ReadFromAsync(NativeMemoryArray&lt;byte&gt; buffer, Stream stream, CancellationToken cancellationToken = default)
+{
+    var writer = buffer.CreateBufferWriter();
+
+    int read;
+    while ((read = await stream.ReadAsync(writer.GetMemory(), cancellationToken).ConfigureAwait(false)) != 0)
+    {
+        writer.Advance(read);
+    }
+}
+
+public static async Task WriteToAsync(NativeMemoryArray&lt;byte&gt; buffer, Stream stream, CancellationToken cancellationToken = default)
+{
+    foreach (var item in buffer.AsMemorySequence())
+    {
+        await stream.WriteAsync(item, cancellationToken);
+    }
+}
+</code></pre>
+<p>あるいは<code>Span&lt;T&gt;</code>のSliceを取り出して処理してもいいし、<code>ref T this[long index]</code>によるインデクサアクセスやポインタの取り出しもできます。 .NET 6時代に完全にマッチしたAPIを揃えることで、標準の配列と同等、もしくはそれ以上の使い心地に仕上げることによって、C#の限界をまた一つ超える提供できたと思っています。</p>
+<p>とはいえもちろん、 .NET Standard 2.0/2.1 にも対応しているので、非 .NET 6なAPIでも大丈夫です、というかScatter/Gather API以外は別に今までもありますし普通に使えますので。</p>
+<h2><code>NativeMemoryArray&lt;T&gt;</code></h2>
+<p><code>NativeMemoryArray&lt;T&gt;</code>はwhere T : unmanagedです。つまり、参照型を含まない構造体にしか使えません。まぁ巨大配列なんて使う場合には参照型含めたものなんて含めてんじゃねーよなので、いいでしょうきっと。巨大配列で使えることを念頭においてはいますが、別に普通のサイズの配列として使っても構いません。ネイティブメモリに確保するので、ヒープを汚さないため、適切な管理が行える箇所では便利に使えるはずです。</p>
+<p><code>Span&lt;T&gt;</code>との違いですが、<code>NativeMemoryArray&lt;T&gt;</code>そのものはクラスなので、フィールドに置けます。<code>Span&lt;T&gt;</code>と違って、ある程度の長寿命の確保が可能ということです。<code>Memory&lt;T&gt;</code>のSliceが作れるため、Async系のメソッドに投げ込むこともできます。また、もちろん、<code>Span&lt;T&gt;</code>の長さの限界はint.MaxValueまで(ざっくり2GB)なので、それ以上の大きさも確保できます。</p>
+<p>Unityにおける<code>NativeArray&lt;T&gt;</code>との違いですが、<code>NativeArray&lt;T&gt;</code>はUnity Engine側との効率的なやりとりのための入れ物なので、あくまでC#側で使うための<code>NativeMemoryArray&lt;T&gt;</code>とは全然役割が異なります。まぁ、必要に思えない状況ならば、おそらく必要ではありません。</p>
+<p>主な長所は、以下になります。</p>
+<ul>
+<li>ネイティブメモリから確保するためヒープを汚さない</li>
+<li>2GBの制限がなく、メモリの許す限り無限大の長さを確保できる</li>
+<li><code>IBufferWriter&lt;T&gt;</code> 経由で、MessagePackSerializer, System.Text.Json.Utf8JsonWriter, System.IO.Pipelinesなどから直接読み込み可能</li>
+<li><code>ReadOnlySequence&lt;T&gt;</code> 経由で、MessagePackSerializer, System.Text.Json.Utf8JsonReaderなどへ直接データを渡すことが可能</li>
+<li><code>IReadOnlyList&lt;Memory&lt;T&gt;&gt;</code>, <code>IReadOnlyList&lt;ReadOnlyMemory&lt;T&gt;&gt;</code> 経由で <code>RandomAccess</code>(Scatter/Gather API)に巨大データを直接渡すことが可能</li>
+</ul>
+<p>あまりピンと来ない、かもしれませんが、使ってみてもらえれば分かる、かも。</p>
+<p><code>NativeMemoryArray&lt;T&gt;</code>の全APIは以下のようになっています。</p>
+<ul>
+<li><code>NativeMemoryArray(long length, bool skipZeroClear = false)</code></li>
+<li><code>long Length</code></li>
+<li><code>ref T this[long index]</code></li>
+<li><code>ref T GetPinnableReference()</code></li>
+<li><code>Span&lt;T&gt; AsSpan()</code></li>
+<li><code>Span&lt;T&gt; AsSpan(long start)</code></li>
+<li><code>Span&lt;T&gt; AsSpan(long start, int length)</code></li>
+<li><code>Memory&lt;T&gt; AsMemory()</code></li>
+<li><code>Memory&lt;T&gt; AsMemory(long start)</code></li>
+<li><code>Memory&lt;T&gt; AsMemory(long start, int length)</code></li>
+<li><code>bool TryGetFullSpan(out Span&lt;T&gt; span)</code></li>
+<li><code>IBufferWriter&lt;T&gt; CreateBufferWriter()</code></li>
+<li><code>SpanSequence AsSpanSequence(int chunkSize = int.MaxValue)</code></li>
+<li><code>MemorySequence AsMemorySequence(int chunkSize = int.MaxValue)</code></li>
+<li><code>IReadOnlyList&lt;Memory&lt;T&gt;&gt; AsMemoryList(int chunkSize = int.MaxValue)</code></li>
+<li><code>IReadOnlyList&lt;ReadOnlyMemory&lt;T&gt;&gt; AsReadOnlyMemoryList(int chunkSize = int.MaxValue)</code></li>
+<li><code>ReadOnlySequence&lt;T&gt; AsReadOnlySequence(int chunkSize = int.MaxValue)</code></li>
+<li><code>SpanSequence GetEnumerator()</code></li>
+<li><code>void Dispose()</code></li>
+</ul>
+<p><code>AsSpan()</code>, <code>AsMemory()</code>はスライスのためのAPIです。取得したSpanやMemoryは書き込みも可能なため、 .NET 5以降に急増したSpan系のAPIに渡せます。SpanやMemoryには最大値(int.MaxValue)の限界があるため、lengthの指定がない場合は、例外が発生する可能性もあります。そこで<code>TryGetFullSpan()</code>を使うと、単一Spanでフル取得が可能かどうか判定できます。また、<code>AsSpanSequence()</code>, <code>AsMemorySequence()</code>でチャンク毎のforeachで全要素を列挙することが可能です。直接foreachした場合は、<code>AsSpanSequence()</code>と同様の結果となります。</p>
+<pre><code class="language-csharp">long written = 0;
+foreach (var chunk in array)
+{
+    // do anything
+    written += chunk.Length;
+}
+</code></pre>
+<p>ポインタの取得は、配列とほぼ同様に、そのまま渡せば0から(これは<code>GetPinnableReference()</code>の実装によって実現できます)、インデクサ付きで渡せばそこから取れます。</p>
+<pre><code class="language-csharp">fixed (byte* p = buffer)
+{
+}
+
+fixed (byte* p = &amp;buffer[42])
+{
+}
+</code></pre>
+<p><code>CreateBufferWriter()</code> によって <code>IBufferWriter&lt;T&gt;</code>を取得できます。これは<code>MessagePackSerializer.Serialize</code>などに直接渡すこともできるほかに、先の例でも出しましたがStreamからの読み込みのように、先頭からチャンク毎に取得して書き込んでいくようなケースで便利に使えるAPIとなっています。</p>
+<p><code>AsReadOnlySequence()</code> で取得できる<code>ReadOnlySequence&lt;T&gt;</code>は、<code>MessagePackSerializer.Deserialize</code>などに直接渡すこともできるほかに .NET 5から登場した <a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.buffers.sequencereader-1?view=net-6.0">SequenceReader</a>に通すことで、長大なデータのストリーミング処理をいい具合に行える余地があります。</p>
+<p><code>AsMemoryList()</code>, <code>AsReadOnlySequence()</code>は .NET 6から登場した<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.io.randomaccess?view=net-6.0">RandomAccess</a>の<code>Read/Write</code>に渡すのに都合の良いデータ構造です。プリミティブな処理なので使いにくいと思いきや、意外とすっきりと処理できるので、File経由の処理だったらStreamよりもいっそもうこちらのほうがいいかもしれません。</p>
+<h2>NativeMemory</h2>
+<p>.NET 6から<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.runtime.interopservices.nativememory?view=net-6.0">NativeMemory</a>というクラスが新たに追加されました。その名の通り、ネイティブメモリを扱いやすくするものです。今までも<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.runtime.interopservices.marshal.allochglobal?view=net-6.0">Marshal.AllocHGlobal</a>といったメソッド経由でネイティブメモリを確保することは可能であったので、何が違うのか、というと、何も違いません。実際NativeMemoryArrayの .NET 6以前版はMarshalを使ってますし。そして .NET 6 では Marshal.AllocHGlobal は NativeMemory.Alloc を呼ぶので、完全に同一です。</p>
+<p>ただしもちろん .NET 6 実装時にいい感じに整理された、ということではあるので、NativeMemory、いいですよ。NativeMemory.Allocがmalloc、NativeMemory.AllocZeroedがcalloc、NativeMemory.Freeがfreeと対応。わかりやすいですし。</p>
+<p>ちなみにゼロ初期化する NativeMemory.AllocZeroed に相当するものはMarshalにはないので、その点でも良くなったところです。<code>NativeMemoryArray&lt;T&gt;</code>では、コンストラクタのskipZeroClear(<code>public NativeMemoryArray(long length, bool skipZeroClear = false)</code>)によってゼロ初期化する/しないを選べます。デフォルトは（危ないので）初期化しています。非.NET 6版では、メモリ確保後に<code>Span&lt;T&gt;.Clear()</code>経由で初期化処理を入れています。</p>
+<h2>真のArray.MaxValue</h2>
+<p>.NET 6以前では、配列の要素数はバイト配列(1バイト構造体の配列)と、それ以外の配列で異なる値がリミットに設定されていました。例えば<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.array?view=net-6.0">System.Arrayのドキュメント</a>を引いてくると</p>
+<blockquote>
+<p>配列のサイズは、合計で40億の要素に制限され、任意の次元の0X7FEFFFFF の最大インデックス (バイト配列の場合は0X7FFFFFC7、1バイト構造体の配列の場合) に制限されます。</p>
+</blockquote>
+<p>つまり、0X7FFFFFC7の場合と、0X7FEFFFFFの場合がある、と。</p>
+<p>と、いうはずだったのですが、.NET 6から<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.array.maxlength">Array.MaxLength</a>というプロパティが新規に追加されて、これは単一の定数を返します。その値は、0X7FFFFFC7です。よって、いつのまにかひっそりと配列の限界値は(ちょびっと大きい方に)大統一されました。</p>
+<p>この変更は意外とカジュアルに行われ、まず最大値を取得する、ただし単一じゃないため型によって結果の変わる <code>Array.GetMaxLength&lt;T&gt;()</code> を入れよう、<a href="https://github.com/dotnet/runtime/pull/43301">という実装があがってきました</a>。そうしたら、そのPR上での議論で、そもそも当初は最適化を期待したけど別にそんなことなかったし、統一しちゃってよくね？という話になり、そのまま限界値は統一されました。そして新規APIも無事、Array.MaxLengthという定数返しプロパティになりました。</p>
+<p>まぁ、シンプルになって良いですけどね。大きい方で統一されたので実害も特にないでしょうし。前述のSystem.Arrayのドキュメントは更新されてないということで、正しくは、.NET 6からは0x7FFFFFC7が限界で、その値はArray.MaxLengthで取れる。ということになります。</p>
+<h2>まとめ</h2>
+<p>NativeArrayという名前にしたかったのですがUnityと被ってしまうので避けました。しょーがない。</p>
+<p>着手当時はマネージド配列のチャンクベースで作っていたのですが(<a href="https://gist.github.com/neuecc/e6293b1d88244cf942753d6408b3e966">LargeArray.cs</a>)、Sliceが作りづらいし、ネイティブメモリでやったほうが出来ること多くて何もかもが圧倒的にいいじゃん、ということに作業進めている最中に気づいて、破棄しました。参照型の配列が作れるという点で利点はありますが、まぁ参照型で巨大配列なんて作らねーだろ、思うと、わざわざ実装増やして提供するメリットもないかな、とは。</p>
+<p>配列はもう昔からあるのでint Lengthなのはしょうがないのですが、<code>Span&lt;T&gt;</code>, <code>Memory&lt;T&gt;</code>のLengthはlongであって欲しかったかなー、とは少し思っています。<a href="https://github.com/dotnet/apireviews/tree/main/2016/11-04-SpanOfT#spant-and-64-bit">2016年の段階でのSpanのAPIどうするかドキュメント</a>によると、候補は幾つかあったけど、結果的に配列踏襲のint Lengthになったそうで。2GBでも別に十分だろ、みたいなことも書いてありますが、いや、そうかなー？年にそこそこの回数でたまによく引っかかるんだけどねー？</p>
+<p>そして2016年の議論時点ではなかった、C# 9.0で<a href="https://docs.microsoft.com/ja-jp/dotnet/csharp/language-reference/builtin-types/nint-nuint">nuint, nuint</a>が追加されたので、<code>nuint Span&lt;T&gt;/Memory&lt;T&gt;.Length</code>はありなんじゃないかな、と。</p>
+<p>ただNativeMemoryArrayの開発当初は<code>nuint Length</code>で作っていたのですが、<code>AsSpan(nuint start, nuint length)</code>みたいなAPIは、カジュアルにintやlongを突っ込めなくて死ぬほど使いづらかったので、最終的にlongで統一することにしました。ので、<code>nuint Length</code>は、なしかな。つまり一周回って現状維持。そんなものかー、そんなもんですねー。</p>
+</div>
+<h1><a href="https://neue.cc/2021/12/04.html">.NET 6とAngleSharpによるC#でのスクレイピング技法</a></h1>
 <ul class="date"><li>2021-12-04</li></ul>
 <div class="entry_body"><p><a href="https://qiita.com/advent-calendar/2021/csharplang">C# Advent Calendar 2021</a>の参加記事となっています。去年は2個エントリーしたあげく、1個すっぽかした（！）という有様だったので、今年は反省してちゃんと書きます。</p>
 <p>スクレイピングに関しては10年前に<a href="https://neue.cc/2010/03/02_244.html">C#でスクレイピング:HTMLパース(Linq to Html)のためのSGMLReader利用法</a>という記事でSGMLReaderを使ったやり方を紹介していたのですが、10年前ですよ、10年前！さすがにもう古臭くて、現在ではもっとずっと効率的に簡単にできるようになってます。</p>
