@@ -15,7 +15,88 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2011/07/27_335.html">Deep Dive AsEnumerable</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2011/08/03_336.html">ToArray vs ToList</a></h1>
+<ul class="date"><li>2011-08-03</li></ul>
+<div class="entry_body"><p>LINQの結果は遅延評価なので、その場で全部評価して欲しかったりする場合などに使うToArrayとToList。どちらを使っていますか？私はToArrayのほうが好みです。と、いうのも、LINQで書く以上、長さは決まったようなものなので、これ以上AddやRemoveしたいことなんてほとんどない。勿論、必ずないとは言いませんので、その場合だけToListを使いますが、そうでない場合は、長さが固定だという意図を示すためにもToArrayが好ましい。</p>
+<h2>パフォーマンス</h2>
+<p>T[]やList&lt;T&gt;に変換されたあとだと、T[]のほうが、大体においてパフォーマンスは良い。という点でもToArrayがいいかなあ、と思うわけですが、それはさておき、ではToArrayとToListメソッドそれ自体のパフォーマンスはどちらのほうが良いでしょうか？理屈の上ではToListのほうが上です。というのも、変換処理は下記の図のようになっているからです。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/toarraytolist.jpg">
+</p>
+<p>元ソースがIEnumerable&lt;T&gt;である以上、長さは分からないので、ToArrayでも動的配列としていっぱいになったら二倍に拡大する、という動作を行うのはToListと変わりありません。この辺の話は<a href="http://chasen.org/%7Etaku/blog/archives/2007/02/_o1.html" title="きまぐれ日記: 動的配列への追加コストはなぜ O(1)?">動的配列への追加コストはなぜ O(1)?</a>や、<a href="http://www.kmonos.net/wlog/111.html#_2334100705" title="d.y.d.">２倍だけじゃない</a>を参考に。.NETは2倍です。そして、最後に拡大された配列の長さを整えるためコピーするのがToArray、そのまま渡すのがToList。つまり、ToArrayのほうが最後の一回のコピー動作が増えているわけです。</p>
+<p>でも、ベンチマークをとると、ToArrayのほうが速かったりします。</p>
+<pre><code class="language-csharp">// 適当さ溢れている（若干恣意的な）測り方なので、それはそれとしてくだしあ
+// ToArray:00:00:01.5002685
+// ToList :00:00:01.8124284
+var source = Enumerable.Range(1, 100000000);
+
+var sw = Stopwatch.StartNew();
+source.ToArray();
+Console.WriteLine(&quot;ToArray:&quot; + sw.Elapsed);
+GC.Collect();
+sw.Restart();
+source.ToList();
+Console.WriteLine(&quot;ToList:&quot; + sw.Elapsed);
+</code></pre>
+<p>へー、ToArrayのほうが速いんだー、ではなくて、要素数1億件でこの程度しかでないので、どうでもいい程度の差でしかないということです。ここ注意。こういう適当なマイクロベンチのマイクロな差で、こっちのほうが速いからこうしなければならない、これが最適化のための10箇条、みたいなことをやるのは間抜けだと思います。JavaScriptにはそういう記事があまりにも多すぎるとも思っています。</p>
+<p>それはともかく、何で理屈の上ではコピーが多いToArrayのほうが&quot;速い&quot;のか。それは中身をゴニョゴニョしてみてみれば分かりますが</p>
+<pre><code class="language-csharp">public static List&lt;T&gt; ToList&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    // ICollection&lt;T&gt;の場合はnew List&lt;T&gt;(source)の中で最適化されてます
+    // 最適化されない場合はforach(var item in source) this.Add(item) という感じ
+    return new List&lt;T&gt;(source)
+}
+
+// 実際のコードとは違います、あくまでイメージです
+public static T[] ToArray&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    // ICollection&lt;T&gt;の場合はCopyToで最適化
+    var collection = source as ICollection&lt;T&gt;;
+    if (collection!= null)
+    {
+        var dest = new T[collection.Count];
+        collection.CopyTo(dest, 0);
+        return dest;
+    }
+
+    // そうでないなら列挙して配列を伸ばしながら作る
+    var array = new T[4];
+    var count = 0;
+    foreach (var item in source)
+    {
+        if (array.Length == count)
+        {
+            var dest = new T[count * 2];
+            Array.Copy(array, dest, count);
+            array = dest;
+        }
+        array[count++] = item;
+    }
+
+    // 生成したものと長さが同じならそのまま返す
+    if (array.Length == count) return array;
+
+    // そうでないなら長さを整えてから返す
+    var result = new T[count];
+    Array.Copy(array, result, count);
+    return result;
+}
+</code></pre>
+<p>これだけだとよくわからない？うーん、そうですね。ToArrayの場合は配列を作る、それだけに最適化されていて余計なコードが一切ありません。反面、ToList、というかnew List&lt;T&gt;(source)は、内部では少し色々なものの呼び出し回数が多かったりしています。その辺のことが、コピー回数以上に「ほんの少しだけ」速度の差を生んでいるのではないかな、ということのようです。</p>
+<pre><code class="language-csharp">// パフォーマンスを一切考えないのならこれでいいのよね
+public static T[] ToArray&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    // 実際はreturn new Buffer&lt;T&gt;(source).ToArray();
+    return new List&lt;T&gt;(source).ToArray();
+}
+</code></pre>
+<p>理屈的にはこれでいいわけですが、実際はBuffer&lt;T&gt;クラスというものをinternalでもっていて、それはLINQで使うためだけに余計なものが一切ない動的配列で、LINQ to Objectsの各メソッドは、動的配列が必要な場合ではList&lt;T&gt;ではなく、そのBuffer&lt;T&gt;クラスを使っています。DRYはどうした、という気は少しだけしますが、まあ、ユーザーとしては速いに越したことはないです。</p>
+<h2>Array.Copy</h2>
+<p>ところで、Array.CopyやICollection&lt;T&gt;のCopyToって面倒くさいですよね、長さを持った空の配列を作って、渡さなければならないって。と、<a href="http://d.hatena.ne.jp/fezg00/20110802/1312267034" title="Array Copy - Memo+">Array Copy - Memo+</a>の記事を見て改めて思いましたが、しかし、一番よくあるケースである一次元配列のコピーならToArrayを使えばOKです。↑の実装イメージであるように、ちゃんとis asで判定して最適化してくれているので、LINQだとforeachで全部舐めるから遅いんじゃないかなー、と考えなくても大丈夫。</p>
+<h2>まとめ</h2>
+<p>今日、Twitterで間違ったこと投稿しちゃって恥ずかすぃかったので反省して書いた。まる。とりあえずToArray使えばいいです。</p>
+</div>
+<h1><a href="https://neue.cc/2011/07/27_335.html">Deep Dive AsEnumerable</a></h1>
 <ul class="date"><li>2011-07-27</li></ul>
 <div class="entry_body"><p>AsEnumerable、といったらLINQのAsEnumerableです。その挙動は、IEnumerable&lt;T&gt;へと型変換をします。それだけ、なので実に影が薄いのですが、それでいて奥深く使いこなしが求められる、はずなのですが陰が薄いので無視されている感がなきにしもあらずなので、しっかりと紹介したいと思います。</p>
 <h2>AsEnumerableの実装</h2>
@@ -1327,110 +1408,6 @@ var sum = futureSum.First();
 </ul>
 <p>背景であるDbCなどについてはufcppさんが説明してくださるので、私はCode Contractsとして実装されていることを、Reflectorでこうリライトされるんですねー、とか見ながらデモ中心に、「一から使ってみよう」といった内容にしようと思っています。Code Contracts…… 名前だけなら聞いたことがある、いや、名前も聞いたことない何それ、ぐらいからが対象なのぜ、是非どうぞ。もう使っている、という人には物足りないかも(むしろそこは私が教えて欲しいもがもがもがもが)。</p>
 <p>どちらも、まだ参加申し込み出来るようなので是非聞きにきてください。</p>
-</div>
-<h1><a href="https://neue.cc/2011/05/11_321.html">Reactive Extensions RC0リリースによる変更点</a></h1>
-<ul class="date"><li>2011-05-11</li></ul>
-<div class="entry_body"><p>DevLabsの実験的プロジェクトから<a href="http://msdn.microsoft.com/en-us/data/gg577609">Data Developer Center</a>への正式プロジェクトとして昇格したRxですが、ついにDevLabsのページ自体が消滅(リダイレクトされる)し、いよいよ実験的なノリは一段落し、正式なプロジェクトとしての道を歩み始めたようです。その手始めとして、馬鹿デカい破壊的変更がやってきました。……っていきなりなんじゃそりゃ。</p>
-<p>今回の変更はRC0、そしてStableであると銘打たれ、(今度こそ)APIの破壊的変更はないものと思われます。きっとAPIを変更するなら本当の本当に最後のタイミングだから、ということなのでしょうね、変更の嵐は。そんなわけで、DLLの分け方が変わってるし、名前空間も全部変わってるし、メソッド名もばかばか変わってるし、メソッドシグネチャも変わってるし、なくなったのもあるし、大量すぎて書ききれないほどに変更点がある。</p>
-<p>しかし、本当の本当に安定版の始まりなので、つまり、学ぶなら今からが正に最適ということです！また、基本的な使い方が変わったわけではないので、既存の知識は生かせますしコード自体もそのままでも大体は行けます。大体は。</p>
-<p>詳しい変更内容自体はフォーラム <a href="http://social.msdn.microsoft.com/Forums/en-US/rx/thread/527002a3-18af-4eda-8e35-760ca0006b98">New Release: Reactive Extensions v1.0.10425</a> に書かれています。こういうのはフォーラムじゃなくてBlogのほうでちゃんと告知してください……。リリースから半月近く経つのに、まだBlogのほうは更新されてないという。</p>
-<h2>Rxの入手方法・パッケージ・DLL内容について Part2</h2>
-<p>以前に<a href="http://neue.cc/2011/01/26_300.html">Reactive Extensionsを学習するためのリソースまとめ</a>としてまとめましたが、そのうちDLL内容がまるっと変わったので、そこの部分を修正します。なお、学習リソースについては変りないので、以前のまとめ記事をそのまま参照してください。また、Windows Phone 7に標準搭載されているものは(当然)変わりはありません。最近WP7本体のアップデートにコソッと紛れて更新(バグフィックス)されたようですけど。</p>
-<p><a href="http://msdn.microsoft.com/en-us/data/gg577609">Reactive Extensions</a>のGet itからDownloadするといいでしょう。色々書いてありますが、2のDownload the Reactive ExtensionsからRx for all Platformsを選べばよいかと思います。</p>
-<p>StableとExperimentalがあるように、安定版と実験版に分かれています。そして現時点ではそのページのExperimentalをクリックしてもExperimentalは手に入りません(なにそれ……)。Experimentalが欲しい人は<a href="http://www.microsoft.com/downloads/en/results.aspx?freetext=reactive+extensions&amp;displaylang=en&amp;stype=s_basic">Microsoft Download Center: Search Results</a>のExperimental Releaseから入手するといいでしょう。バージョン番号は、Stableは1.0.10425、Experimentalは1.1.10425になっています。</p>
-<p>けれど、何だかんだで更新頻度が高いので、NuGet経由での利用が一番お薦めです。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/rxrc0nuget.jpg">
-</p>
-<p>が、NuGetの画面は新旧入り乱れていて何を入れていいか分からないカオスになっていたりして。説明すると、Rx-Mainとか、名前がRx-になっているものが新しいもので選ぶべきもの。Reactive Extensions -のものは古い残骸なので無視してください。また、NuGet経由で入るものはExperimentalのほうになります。</p>
-<p>さて、今回からDLL類の分類がばっさり変わりました。</p>
-<ul>
-<li>System.Reactive (NuGetではRx-Main)</li>
-</ul>
-<p>以前あったCoreExは消滅し、コアコンポーネントはSystem.Reactiveのみとなりました。また、名前空間も全てSystem.Reactive以下に集められていて、例えば今までObservableクラスはSystem.Linqでしたが、今回よりSystem.Reactive.Linqに変更されました（拡張メソッドの利用に名前空間の参照は必須なので、この名前空間のusingは忘れずに）。</p>
-<ul>
-<li>System.Reactive.Windows.Threading (NuGetではRx-WPF/Rx-Silverlight)</li>
-</ul>
-<p>WPF/Silverlight向けでDispatcherに対するObserveOnとSubscribeOnのオーバーロードが追加されています。また、Dispatcher.CurrentDispatcherに対してObserveOn/SubscribeOnを行うObserveOnDispatcher/SubscribeOnDispatcherの利用もこのDLLの参照が必要になりました。それとDispatcherに対してBeginInvokeして実行するスケジューラDispatcherSchedulerが追加されました。</p>
-<p>WPF/SilverlightでRxを使う場合はこれの参照は必需と思われます。NuGetを使う場合は依存の解決で、これを選択するとRx-Mainも入れてくれるので、こちらからInstallすると良いでしょう。</p>
-<ul>
-<li>System.Reactive.Windows.Forms (NuGetではRx-WinForms)</li>
-</ul>
-<p>WindowsFormsのControlに対するObserveOnとSubscribeOnのオーバーロードが追加されています。それとControlScheduler(Controlに対してBeginInvokeして実行するスケジューラ)。それだけです。というわけで、その名の通りWinFormsで使う場合だけ、あると便利。</p>
-<ul>
-<li>System.Reactive.Providers (NuGetではRx-Providers)</li>
-</ul>
-<p>Qbservableが収納されています。QbservableはIEnumerableに対するIQueryableみたいなもので、式木からObservableを生成するためのもの。今のとこ有効活用されている例も人もいないと思われます。(というかよく正式リリースにも生き残ったものだ、ぐらいの)。ちなみにQueryable Observableの略だそうで。QBみたいなものだと思えば可愛い！</p>
-<p>例えばLinq to Twitterを非同期しかないSilverlightでやるなら、これを使うのが適切でしょう。現状だとコールバックでどうだのという格好悪い仕組みなので。(但し、System.Reactive.Providersは現状ではDesktop版にしか同梱されていませんが)。あとは公式の例として挙げられているWQL Provider。WMIに対するSQLで、クエリ結果はイベント(つまりRx)になる。非常に都合よくQbservableに当てはまるようになってますね。なってるんですが、そう都合よく当てはまるのはこれぐらいしかないのではないか、感もあったり。</p>
-<p>いや、むしろ全て非同期なら全部Rxでいいんですよぅー、to SqlだってSqlCommandのBeginExecuteReaderでやればIQueryableじゃなくてIQbservableの出番なんですよぅー。……とはいっても、誰がやるかって話ですね。</p>
-<ul>
-<li>Microsoft.Reactive.Testing.dll (NuGetではRx-Testing)</li>
-</ul>
-<p>ユニットテスト用のモック生成クラス群。使いやすさ的には個人的にはちょっと微妙で、今一つ上手く活用出来なくて色々見送り中。</p>
-<h2>FromEvent/FromEventPattern</h2>
-<p>BufferWithCount/BufferWithTimeが統合されてメソッド名がBufferになった、程度の変更は割とどうでもいいのですが、Rxの中核であるFromEventに大きな変更があったのは見逃せません。簡単に解説します。</p>
-<p>今までFromEventというメソッド名だったものはFromEventPatternに変わりました。また、戻り値がIEventからEventPatternというものになりましたが、中身はプロパティにSenderとEventArgsを持つという、ほとんど同じものなので、感覚的には一緒です。今までの私の記事や古いウェブ上の記事を見る際にFromEventが使われていたら、それはFromEventPatternに置き換えてください。そうすれば、そのままで動きます。</p>
-<p>では新しく新設されたことになるFromEventは何なのかというと、よくわかりません:) そのうち使い方の説明とか出てくると思うのでそれ待ちで……。いやすみません。</p>
-<h2>ところでInteractiveはどうしたの？ClientProfileは？Asyncは？</h2>
-<p>死にました。というのもアレですが、とりあえず先行きは不透明です。少なくともStableに同梱されることはないそうです。Experimental側でのリリースは、一応計画はされているようですが、現状は同梱されていません。どうなるんでしょうかねえ……。Interactiveは欲しい人はNuGetに古いのが残っているので、それを使えば、ですね……。</p>
-<h2>Experimental</h2>
-<p>さて、今のところ、どのメソッドが実験的とされているのか、見てみましょう。幸いExperimentalAttributeでマークされているので、確認はコードで容易に出来ます。</p>
-<pre><code class="language-csharp">typeof(System.Reactive.Linq.Observable)
-    .GetMethods()
-    .Where(mi =&gt; mi.GetCustomAttributes(typeof(ExperimentalAttribute), false).Any())
-    .Select(mi =&gt; mi.Name)
-    .Distinct()
-    .OrderBy(s =&gt; s)
-    .ToList() // Interactiveが消滅してしまったから...
-    .ForEach(Console.WriteLine);
-
-// 実行結果
-Case
-Create // 追加のオーバーロードのみ、通常のはExperimentalではない
-DoWhile
-Expand
-For
-ForEachAsync
-ForkJoin
-GetAwaiter
-If
-IsEmpty
-Let
-ManySelect
-Remotable
-Start // 追加のオーバーロードのみ、通常のはExperimentalではない
-While
-</code></pre>
-<p>あまり大したものは入ってないようなので、そんな気にすることもないですね。Expandは是非入れてきて欲しいところなのだけど。CreateやStartのオーバーロードはかなりややこしい事になっているので、実験的扱いなのは納得。</p>
-<h2>ReactiveOAuth ver.0.3.0.0</h2>
-<p>そんな大移動があったわけでReactiveOAuthも動かなくなってしまった。というわけで更新しました(WP7版の人は気にしなくてもいいです)。</p>
-<ul>
-<li><a href="http://reactiveoauth.codeplex.com/">ReactiveOAuth</a></li>
-</ul>
-<p>機能は変わってなし。とりあえず最新版のRxで動くように、というだけです。コードが、とにかく名前空間が変わったので全部書き換えて、かなり面倒……。そして一部のメソッドは名前が変わったので、WP7版と完全にコードを共有していたので発狂。ifディレクティブでメソッド呼び出し部分をひたすら書き換え、などというのは見通しも悪いし格好悪いしで最悪なので、別の方法として、WP7側に拡張メソッド作ってコード上の互換を維持するようにしました。</p>
-<pre><code class="language-csharp">public static class ObservableForCompatible
-{
-    // 本体のコードはRx RC0に合わせて、WP7側だけ拡張メソッドで同名のものを作って対処
-    public static IObservable&lt;IList&lt;T&gt;&gt; Buffer&lt;T&gt;(this IObservable&lt;T&gt; source, int count)
-    {
-        return source.BufferWithCount(count);
-    }
-}
-</code></pre>
-<p>他にも挙動が若干変わってるのがあって原因掴むのに泣きそうになったりとか、思った以上に大変だった……。Stableと銘打ってるのに、次にこのクラスの大変更があったらさすがにブチ切れます。今回は、まあ、許す。</p>
-<h2>Reactive Extensions Extensions(Rxx)</h2>
-<p>コミュニティから面白いライブラリも上がってきています。</p>
-<ul>
-<li><a href="http://rxx.codeplex.com/" title="Reactive Extensions - Extensions (Rxx) - Home">Reactive Extensions - Extensions (Rxx) - Home</a></li>
-</ul>
-<p>Rx拡張メソッド集。C# 3.0の時も俺々拡張メソッドライブラリがいっぱい出てきましたが、そのノリですね。でも実際、Rx自体は原始的な機能のみなので、非同期処理とかイベント処理にフォーカスする場合は、もう一つ上の層で軽くラップしたライブラリは間違いなく必要だなと思っていますので、こういうのはいいな、と。私自身も非同期処理は<a href="http://neue.cc/2010/11/26_286.html" title="neue cc - Reactive Extensions用のWebRequest拡張メソッド">Reactive Extensions用のWebRequest拡張メソッド</a>として、結構ガッツし仕込んだものを使い回していて(ReactiveOAuthや<a href="http://neue.cc/2011/04/09_314.html" title="neue cc - Utakotoha - Windows Phone 7用の日本語歌詞表示アプリケーション">Utakotoha </a>の内部はこれ)かなり重宝しています。余裕が出たら、このRxxプロジェクトにJoinしたいな、と思ってます。</p>
-<h2>Rxの本</h2>
-<p>オライリーから出ているProgramming C#でお馴染みのJesse Libertyと、共著者として<a href="http://www.reactiveui.net/" title="ReactiveUI">ReactiveUI</a>というRxでWPFのGUI面をサポートするライブラリを作成しているPaul Betts(Microsoft Office Labsに所属)による、Rxの本が今年の秋頃に出る予定です。</p>
-<iframe src="https://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as4&m=amazon&f=ifr&ref=ss_til&asins=1430237473" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
-<p>執筆陣が豪華だしページ数も現時点amazon表示で300ページと、立派な仕上がりを予感させます。私は予約したよ！</p>
-<h2>まとめ</h2>
-<p>今回こそStableなはずなので、ようやーく人に自信を持って薦められるようになりました！いやマヂで。API的にも多分、じゃなくて絶対安定したわけなので、飛び込むなら今！です。</p>
-<p>ところで本題とは関係ないんですが<a href="http://smartphone.techtalk.jp/?KantoSpecial01WindowsPhone7" title="スマートフォン勉強会 - すまべん特別編「Windows Phone 7 開発ブーストアップ」＠関東">スマートフォン勉強会 - すまべん特別編「Windows Phone 7 開発ブーストアップ」＠関東</a>でWP7+Rxのセッションをします。入門編として、主に非同期処理にフォーカスして、今すぐコピペで使ってコールバックを撲殺しよう、といった内容を考えていますので、是非聞きに来てください。</p>
 </div>
 <a href="https://neue.cc/14">Prev |</a>
 <a href="https://neue.cc/16">| Next</a>

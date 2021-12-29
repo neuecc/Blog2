@@ -15,7 +15,196 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2020/01/30_590.html">ProcessX - C#でProcessを C# 8.0非同期ストリームで簡単に扱うライブラリ</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2020/04/22_591.html">GitHub ActionsでUnityでunitypackage生成とビルド＆実機(Linux)ユニットテストを実行する</a></h1>
+<ul class="date"><li>2020-04-22</li></ul>
+<div class="entry_body"><p>以前に<a href="http://neue.cc/2019/04/08_574.html">CircleCIでUnityをテスト/ビルドする、或いは.unitypackageを作るまで</a>、それと<a href="http://neue.cc/2019/05/06_576.html">CIや実機でUnityのユニットテストを実行してSlackに通知するなどする</a>という記事を書いたのですが、時代はGitHub Actionsということで、私も全体的にCircleCIからGitHub Actionsに移行を始めてまして、それに伴ってビルドスクリプトも最新化したので、紹介します。コンフィグ作成にあたっては<a href="https://qiita.com/pCYSl5EDgo/items/690dd56ffb0fcf64e70b">【Unity】GitHub Actions v2でUnity Test Runnerを走らせて、結果をSlackに報告する【入門】</a>と<a href="https://qiita.com/pCYSl5EDgo/items/7496f39eb1ab49a594bc">UnityをGitHub Actionsで動かす際にライセンス認証周りで注意するべき点</a>も参考にしました。</p>
+<p>実際のコンフィグは <a href="https://github.com/Cysharp/ZLogger/tree/master/.github/workflows">ZLogger/.github/workflows</a> にありますが、Unityの部分だけ取り出して実行可能な形式にすると</p>
+<pre><code class="language-yaml">name: Build-Debug
+
+on:
+  push:
+    branches:
+      - &quot;**&quot;
+    tags:
+      - &quot;!*&quot; # not a tag push
+  pull_request:
+    types:
+      - opened
+      - synchronize
+
+jobs:
+  build-unity:
+    strategy:
+      matrix:
+        unity: ['2019.3.9f1', '2020.1.0b5']
+        include:
+          - unity: 2019.3.9f1
+            license: UNITY_2019_3
+          - unity: 2020.1.0b5
+            license: UNITY_2020_1
+    runs-on: ubuntu-latest
+    container:
+      # with linux-il2cpp. image from https://hub.docker.com/r/gableroux/unity3d/tags
+      image: gableroux/unity3d:${{ matrix.unity }}-linux-il2cpp
+    steps:
+      - run: apt update &amp;&amp; apt install git -y
+      - uses: actions/checkout@v2
+      # create unity activation file and store to artifacts.
+      - run: /opt/Unity/Editor/Unity -quit -batchmode -nographics -logFile -createManualActivationFile || exit 0
+      - uses: actions/upload-artifact@v1
+        with:
+          name: Unity_v${{ matrix.unity }}.alf
+          path: ./Unity_v${{ matrix.unity }}.alf
+      # activate Unity from manual license file(ulf)
+      - run: echo -n &quot;$UNITY_LICENSE&quot; &gt;&gt; .Unity.ulf
+        env:
+          UNITY_LICENSE: ${{ secrets[matrix.license] }}
+      - name: Activate Unity, always returns a success. But if a subsequent run fails, the activation may have failed(if succeeded, shows `Next license update check is after` and not shows other message(like GUID != GUID). If fails not). In that case, upload the artifact's .alf file to https://license.unity3d.com/manual to get the .ulf file and set it to secrets.
+        run: /opt/Unity/Editor/Unity -quit -batchmode -nographics -silent-crashes -logFile -manualLicenseFile .Unity.ulf || exit 0
+
+      # Execute scripts: RuntimeUnitTestToolkit
+      - name: Build UnitTest(Linux64, mono)
+        run: /opt/Unity/Editor/Unity -quit -batchmode -nographics -silent-crashes -logFile -projectPath . -executeMethod UnitTestBuilder.BuildUnitTest /headless /ScriptBackend mono /BuildTarget StandaloneLinux64
+        working-directory: src/ZLogger.Unity
+      - name: Execute UnitTest
+        run: ./src/ZLogger.Unity/bin/UnitTest/StandaloneLinux64_Mono2x/test
+
+      # Execute scripts: Export Package
+      - name: Export unitypackage
+        run: /opt/Unity/Editor/Unity -quit -batchmode -nographics -silent-crashes -logFile -projectPath . -executeMethod PackageExporter.Export
+        working-directory: src/ZLogger.Unity
+
+      # Store artifacts.      
+      - uses: actions/upload-artifact@v1
+        with:
+          name: ZLogger.Unity.unitypackage
+          path: ./src/ZLogger.Unity/ZLogger.Unity.unitypackage
+</code></pre>
+<p>となっています。微妙に長いね！（ショボいシンタックスハイライターの影響でインデントが腐ってて読みづらいので<a href="https://github.com/Cysharp/ZLogger/blob/c6c0436/.github/workflows/build-debug.yml">workflows/build-debug.yml</a>を見ていただいたほうがいいです）</p>
+<p>さて、とりあえずUnityにおいての第一関門は認証を通すことなのですが、ここは -createManualActivationFile して -manualLicenFile に投げる、というやり方を採用します（他にも幾つかやり方はある）。Unityのインストール等に関しては、インストール済みのコンテナイメージを使って、コンテナでビルドします。使用できるイメージ一覧は <a href="https://hub.docker.com/r/gableroux/unity3d/tags">DockerHub - gableroux/unity3d/tags</a>から選べますが、ここではIL2CPPビルドが実行できると謳ってる、かつ最新の2019.3.9f1-linux-il2cppと2020.1.0b5-linux-il2cppを使うことにしました。マトリックスビルドかけるなら、もっと古いのあたりも入れたほうがいいといえばいいんですが、LinuxでIL2CPPビルド可能なのは2019.3からなのでshoganai。</p>
+<p>matrix組むのは、特にアセット作っている人にとっては重要で、というのも新しいUnityサポートしたら古いUnityで使えないAPIを使っちゃってビルドエラーとか、たまによくやるんですよね、うっかり。if-def囲み忘れとか、逆に囲みすぎとか。というわけで、可能なら最低サポートバージョンから、マイナーバージョン毎ぐらいに組むのがいいと思います。そういう意味では、私は今のところ2018.3を最低サポートバージョンにしているので、2018.3, 2018.4もmatrixに組んだほうがいいのですがIL2CPPビルドのために以下略。</p>
+<p>さて、認証ですが、この辺で処理しています。</p>
+<pre><code class="language-yaml"># create unity activation file and store to artifacts.
+- run: /opt/Unity/Editor/Unity -quit -batchmode -nographics -logFile -createManualActivationFile || exit 0
+- uses: actions/upload-artifact@v1
+    with:
+      name: Unity_v${{ matrix.unity }}.alf
+      path: ./Unity_v${{ matrix.unity }}.alf
+# activate Unity from manual license file(ulf)
+- run: echo -n &quot;$UNITY_LICENSE&quot; &gt;&gt; .Unity.ulf
+    env:
+      UNITY_LICENSE: ${{ secrets[matrix.license] }}
+- name: Activate Unity, always returns a success. But if a subsequent run fails, the activation may have failed(if succeeded, shows `Next license update check is after` and not shows other message(like GUID != GUID). If fails not). In that case, upload the artifact's .alf file to https://license.unity3d.com/manual to get the .ulf file and set it to secrets.
+  run: /opt/Unity/Editor/Unity -quit -batchmode -nographics -silent-crashes -logFile -manualLicenseFile .Unity.ulf || exit 0
+</code></pre>
+<p>基本的に認証の流れは .alf を作る -&gt; .alf を <a href="https://license.unity3d.com/manual">https://license.unity3d.com/manual</a> にアップロードして .ulf ファイルをダウンロード。そのulfファイル（中身はXMLテキスト）をGitHub ActionsのSettings -&gt; Secretsに設定する、ということなのですが、.alfを手元で作るのは面倒なのでCIに作ってもらって、artifactsにあげてます。</p>
+<p>初回実行時は.ulfがないので絶対に後続の実行は失敗します(Activate処理だけはエラーにならないので、その先で認証できなかったといってコケます）。ので、ActionsのArtifactsのところからalfをダウンロードして、.ulfを作ります。それをテキストエディタで開いてSecretsのところに適切な名前で保存すればOK。名前との関連付けは</p>
+<pre><code class="language-yaml">matrix:
+unity: ['2019.3.9f1', '2020.1.0b5']
+include:
+    - unity: 2019.3.9f1
+      license: UNITY_2019_3
+    - unity: 2020.1.0b5
+      license: UNITY_2020_1
+</code></pre>
+<p>で設定してますが、ここでは2019.3.9f1用はUNITY_2019_3, 2020.1.0b5用はUNITY_2020_1にしました。2019_3といいつつ、コンテナイメージ毎に新しい認証ファイルがいるので、2019.3.10f1に変えたらSecretは設定しなおしです。面倒くさい。shoganai。</p>
+<p>ユニットテストの実行は<a href="https://github.com/Cysharp/RuntimeUnitTestToolkit/">Cysharp/RuntimeUnitTestToolkit</a>を使用します。これはUnity Test Runnerで書いたユニットテストからCUI/GUIでの実行シーンをビルド時に動的に生成するもので、まぁまぁ便利です。特にCUIでのテスト実行はCI用ですね、結果をそのまま出力で見れたり、エラーがあったらそのままエラーにしてくれたりするので非常に楽。それ以外に私はエディタからWindowsでのIL2CPPビルド実行を多用しています（よくIL2CPPで引っかかるライブラリを作っているので）</p>
+<p>設定は <code>-executeMethod UnitTestBuilder.BuildUnitTest /headless /ScriptBackend mono /BuildTarget StandaloneLinux64</code> といったものを書けばOK。そうすると <code>bin/UnitTest/StandaloneLinux64_Mono2x/test</code> に成果物ができてるので、すぐに実行すれば、CIでのテスト実行ということになります。</p>
+<pre><code class="language-csharp"># Execute scripts: RuntimeUnitTestToolkit
+- name: Build UnitTest(Linux64, mono)
+    run: /opt/Unity/Editor/Unity -quit -batchmode -nographics -silent-crashes -logFile -projectPath . -executeMethod UnitTestBuilder.BuildUnitTest /headless /ScriptBackend mono /BuildTarget StandaloneLinux64
+    working-directory: src/ZLogger.Unity
+- name: Execute UnitTest
+    run: ./src/ZLogger.Unity/bin/UnitTest/StandaloneLinux64_Mono2x/test
+</code></pre>
+<p>ここで <code>/ScriptBackend mono</code> を <code>/ScriptBackend IL2CPP</code> にするとIL2CPPビルドになるので、やったーCIでIL2CPPのテストができるぞー！と思ったんですが、現在のコンテナイメージだとなんか謎エラーでビルドに失敗するので、一旦は諦めました。誰か成功させてください。何かとIL2CPPで引っかかるライブラリを作ってるので、できればここでテストしたいんですけどねえ。</p>
+<p>最後に.unitypackageの作成ですが、これはリポジトリに仕込んである生成メソッドをキックして、artifactsにアップロードします。</p>
+<pre><code class="language-yaml"># Execute scripts: Export Package
+- name: Export unitypackage
+    run: /opt/Unity/Editor/Unity -quit -batchmode -nographics -silent-crashes -logFile -projectPath . -executeMethod PackageExporter.Export
+    working-directory: src/ZLogger.Unity
+
+# Store artifacts.      
+- uses: actions/upload-artifact@v1
+    with:
+    name: ZLogger.Unity.unitypackage
+    path: ./src/ZLogger.Unity/ZLogger.Unity.unitypackage
+</code></pre>
+<pre><code class="language-csharp">using System;
+using System.IO;
+using System.Linq;
+using UnityEditor;
+using UnityEngine;
+
+public static class PackageExporter
+{
+    [MenuItem(&quot;Tools/Export Unitypackage&quot;)]
+    public static void Export()
+    {
+        var version = Environment.GetEnvironmentVariable(&quot;UNITY_PACKAGE_VERSION&quot;);
+
+        // configure
+        var root = &quot;Scripts/ZLogger&quot;;
+        var fileName = string.IsNullOrEmpty(version) ? &quot;ZLogger.Unity.unitypackage&quot; : $&quot;ZLogger.Unity.{version}.unitypackage&quot;;
+        var exportPath = &quot;./&quot; + fileName;
+
+        var path = Path.Combine(Application.dataPath, root);
+        var assets = Directory.EnumerateFiles(path, &quot;*&quot;, SearchOption.AllDirectories)
+            .Where(x =&gt; Path.GetExtension(x) == &quot;.cs&quot; || Path.GetExtension(x) == &quot;.meta&quot; || Path.GetExtension(x) == &quot;.asmdef&quot;)
+            .Where(x =&gt; Path.GetFileNameWithoutExtension(x) != &quot;_InternalVisibleTo&quot;)
+            .Select(x =&gt; &quot;Assets&quot; + x.Replace(Application.dataPath, &quot;&quot;).Replace(@&quot;\&quot;, &quot;/&quot;))
+            .ToArray();
+
+        UnityEngine.Debug.Log(&quot;Export below files&quot; + Environment.NewLine + string.Join(Environment.NewLine, assets));
+
+        var dir = new FileInfo(exportPath).Directory;
+        if (!dir.Exists) dir.Create();
+        AssetDatabase.ExportPackage(
+            assets,
+            exportPath,
+            ExportPackageOptions.Default);
+
+        UnityEngine.Debug.Log(&quot;Export complete: &quot; + Path.GetFullPath(exportPath));
+    }
+}
+</code></pre>
+<p>と、まぁこれでいい感じに？テストとパッケージ生成ができるようになりました！</p>
+<p>なお、リリースビルドは別ワークフローのymlになっているので、マトリックスビルドとalfの処理とテストを省いてます（本当はマトリックスもテストもしたほうがよくて、全部通ったらartifact生成とかにしたほうがいいんですが、まぁ多少ザルでもいいでしょう）。</p>
+<pre><code class="language-yaml">  build-unity:
+    strategy:
+      matrix:
+        unity: ['2019.3.9f1']
+        include:
+          - unity: 2019.3.9f1
+            license: UNITY_2019_3
+    runs-on: ubuntu-latest
+    container:
+      # with linux-il2cpp. image from https://hub.docker.com/r/gableroux/unity3d/tags
+      image: gableroux/unity3d:${{ matrix.unity }}-linux-il2cpp
+    steps:
+    - run: apt update &amp;&amp; apt install git -y
+    - uses: actions/checkout@v2
+    - run: echo -n &quot;$UNITY_LICENSE&quot; &gt;&gt; .Unity.ulf
+      env:
+        UNITY_LICENSE: ${{ secrets[matrix.license] }}
+    - run: /opt/Unity/Editor/Unity -quit -batchmode -nographics -silent-crashes -logFile -manualLicenseFile .Unity.ulf || exit 0
+
+    # Execute scripts: Export Package
+    - name: Export unitypackage
+      run: /opt/Unity/Editor/Unity -quit -batchmode -nographics -silent-crashes -logFile -projectPath . -executeMethod PackageExporter.Export
+      working-directory: src/ZLogger.Unity
+
+    # Store artifacts.
+    - uses: actions/upload-artifact@v1
+      with:
+        name: ZLogger.Unity.unitypackage
+        path: ./src/ZLogger.Unity/ZLogger.Unity.unitypackage
+</code></pre>
+<h2>まとめ</h2>
+<p>GitHub Actions、最初は抵抗感あったんですが、というかCIの設定というのが、かなり嫌いな種類のエンジニアリングなので、一度覚えてコピペで済ませてるCircleCIから引っ越すのに腰が重かったんですが、まぁやってみればなんとかなる（社内でわちゃくちゃと手伝ってもらったお陰でもありますが）し、やってみれば、割といいんじゃないのかな、と思えるようになりました。CircleCIもいいんですが、最近のUI変更などがイケてない感じだったりで好感度下がっていたので、ぎっはぶActions、いいんじゃないでしょーか。</p>
+<p>とりあえずDOOM Eternalが超絶面白いのでやっておくといいです。<a href="https://www.youtube.com/watch?v=cd47x85C7Hk">YouTube - Doom Eternal - Cultist Base Master Level</a>がDoom Eternalの圧倒的なスピード感と暴力を表現しててとてもいいので、ぜひ見て買ってくださいな。今年のGame of the Yearなので。久しぶりにゲーム超面白い……！と思った。ただたんに（クラシックなFPS的に）スピード速くするだけじゃこうならないんですよねえ（実際、前作のDOOM(2016)をEternal後にやると、あまり面白く感じない）、近年ではバトルロイヤルも発明でしたが、DOOM EternalもFPSを、ゲームを進化させるゲームデザインの発明ですね、とにかく良い。めっちゃ良い。</p>
+</div>
+<h1><a href="https://neue.cc/2020/01/30_590.html">ProcessX - C#でProcessを C# 8.0非同期ストリームで簡単に扱うライブラリ</a></h1>
 <ul class="date"><li>2020-01-30</li></ul>
 <div class="entry_body"><p>C#使う人って全然外部プロセス呼び出して処理ってしないよね。というのは、Windowsがなんかそういうのを避ける雰囲気だから、というのもあるのですが、ともあれ実際、可能な限り避けるどころか絶対避ける、ぐらいの勢いがあります。ライブラリになってないと嫌だ、断固拒否、みたいな。しかし最近はLinuxでもばっちし動くのでそういう傾向もどうかなー、と思いつつ。</p>
 <p>避けるというのはOSの違いというのもありそうですが、もう一つはそもそも外部プロセスの呼び出しが死ぬほど面倒くさい。ProcessとProcessStartInfoを使ってどうこうするのですが、異常に面倒くさい。理想的にはシェルで書くように一行でコマンドと引数繋げたstringを投げておしまい、と行きたいのですが、全然そうなってない。呼び出すだけでも面倒くさいうぇに、StdOutのリダイレクトとかをやると更に面倒くさい。非同期でStdOutを読み込むとかすると絶望的に面倒くさい、うえに罠だらけでヤバい。この辺の辛さは<a href="https://qiita.com/skitoy4321/items/10c47eea93e5c6145d48">非同期外部プロセス起動で標準出力を受け取る際の注意点</a>という記事でしっかり紹介されてますが、実際これを正しくハンドリングするのは難儀です。</p>
@@ -902,65 +1091,6 @@ public class MyFirstService : ServiceBase&lt;IMyFirstService&gt;, IMyFirstServic
 <p>というわけかで、来月の6月4日に初の<a href="https://connpass.com/event/127369/">MagicOnion勉強会</a>が開催されます。私も登壇しますので、ぜひぜひ来てください（今はもうキャンセル待ちですが……！）</p>
 <p>開発的には、サーバーサイドゲームループ（まだ未サポート）などの追加を挟みつつ、もう少し野心的なものも狙っていますので、是非是非楽しみにしていただければと思います。コードジェネレーターの使い勝手が悪いのも、(MessagePack-CSharpともども)改善の最優先タスクの一つになってますので、なんとかします。</p>
 <p>また、フィードバック超大事！なので、ぜひ使ってみて、Twitterでつぶやくなり(捕捉してます)、Qiitaに書いてくれるなり（やったー！）、Issueで報告してもらったりなどなどしてくれると嬉しいです。</p>
-</div>
-<h1><a href="https://neue.cc/2019/05/06_576.html">CIや実機でUnityのユニットテストを実行してSlackに通知するなどする</a></h1>
-<ul class="date"><li>2019-05-06</li></ul>
-<div class="entry_body"><p>前回（？）<a href="http://neue.cc/2019/04/08_574.html">CircleCIでUnityをテスト/ビルドする、或いは.unitypackageを作るまで</a>では、ユニットテストに関する部分がうまく行ってなくて放置でした。放置でいっかな、と思ってたんですが、改めてユニットテストをCIでがっつり実行したい、というかIL2CPPのテストをがっつしやりたい。という切実な要望が私の中で発生したので（N回目）、改めて取り組んでみました。</p>
-<p>さて、オフィシャルな（？）ユニットテストのコマンドラインの実行の口は、<a href="https://docs.unity3d.com/Manual/PlaymodeTestFramework.html">Writing and executing tests in Unity Test Runner</a>の最後の方のRunning from the command lineの節に書いてありました(コマンドライン引数のほうのマニュアルにはリンクすら張ってなかったので気づかなかった……！)。つまり、こんなふうにやればいい、と。</p>
-<pre><code class="language-text">Unity.exe -runTests -testResults C:\temp\results.xml -testPlatform StandaloneWindows64
-</code></pre>
-<p>そうすると、テストが失敗しても正常終了して（？） results.xml に結果が入ってるからそっち見ればOK、と。んー、いや、何か違うような。「Run all in player」で出てくるGUI画面も意味不明だし、Editor上のTest Runnerはいい感じなのだけれど、ビルドしてのテストだとイマイチ感がめっちゃ否めない。</p>
-<p>と、いうわけで、なんとなく見えてきたのは、テストはUnity Test Runnerでそのまま書きたいしエディタ上でPlay Modeテストもしたい。それをそのままCIや実機でテストできるように、表示やパイプラインだけをいい具合に処理するビルドを作る何かを用意すればいいんじゃないか、と。</p>
-<h2>RuntimeUnitTestToolkit v2</h2>
-<p>ちょうどUnity Test Runnerがイマイチだった頃に作った俺々テストフレームワークがありました。ので、それを元にして、Unity Test RunnerのCLI/GUIのフロントエンドとして機能するようにリニューアルしました。コード的には全面書き換えですね……！</p>
-<ul>
-<li><a href="https://github.com/Cysharp/RuntimeUnitTestToolkit">Cysharp/RuntimeUnitTestToolkit</a></li>
-</ul>
-<p>Unity Test RunnerのPlayModeで動くテストがあれば、それだけで他に何もする必要はありません。例えばこんなやつがあるとして</p>
-<p><img src="https://user-images.githubusercontent.com/46207/57200806-27e6eb80-6fcb-11e9-9d86-dfe6c7a854c6.png" alt="image" /></p>
-<p>メニューのほうで適当にターゲットフレームワークとかIL2CPPがどうのとかを設定してもらって</p>
-<p><img src="https://user-images.githubusercontent.com/46207/57200330-a04aae00-6fc5-11e9-82fa-39006fef583e.png" alt="image" /></p>
-<p>BuildUnitTestを押すと、こんなような結果が得られます。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/57200618-29afaf80-6fc9-11e9-8515-167076b2f4d8.png" alt="image" /></p>
-<p>比較的ヒューマンリーダブルなログ！WindowsでもIL2CPPビルドができるようになったのがとっても捗るところで、検証用の小さめプロジェクトなら1分あればコード編集からチェックまで行けるので、リフレクションのキワイ部分をごりごり突いてもなんとかなる！昔のiOSでビルドして動かしてをやってたのは本当に死ぬほど辛かった……。</p>
-<p>これはHeadless(CUI)でビルドしたものですが、GUIでのビルドも可能です。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/57200784-d2aada00-6fca-11e9-8182-944abb963316.png" alt="image" /></p>
-<p>イケてる画面かどうかでは微妙ですが、機能的には十二分です。Headlessだと上から下まで全部のテストを実行しちゃいますが、GUIだとピンポイントで実行するテストを選べるので（ただしメソッド単位ではなくクラス単位）、テストプロジェクトが大きくなっている場合はこっちのほうが便利ですね。</p>
-<p>さて、Headlessでビルドしたものは、もちろんCIでそのまま実行できます。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/57200862-d12de180-6fcb-11e9-8353-5a897dd2c952.png" alt="image" /></p>
-<p>これはNGが出ている例ですが、ちゃんと真っ赤にCIのパイプラインが止まるようになってます。止まればもちろんCIの通知設定で、Slackでもなんでもどこにでもサクッと飛ばせます。実に正しい普通で普遍なやり方でいいじゃないですか。はい。というわけでやりたかったことが完璧にできてるのでめでたしめでたし。</p>
-<h2>Linux ContainerとUnity</h2>
-<p>相変わらずCircleCIで色々トライしているのですが、Linuxコンテナ + Unityでの限界、というかUnityのLinux対応が後手に回ってる影響をくらってビミョーという現実がやっと見えてきました。まず、そもそもにLinux + IL2CPPはまだサポートされてないので、CI上でIL2CPPビルドしたものを実行してテスト、みたいなのはその時点でできない。残念。しゃーないのでWindows + IL2CPPビルドを作って、実行だけ手元でやるのでもいっか、と思ったらそもそもLinuxでIL2CPPビルドができない。なるほど、そりゃそうか、って気もしますが悲しみはある。</p>
-<p>と、いうわけで、コンテナベースでやるとどうしてもLinuxの上でのパターンが中心になってしまうので、Unityだと結構厳しいところはありますよねえ、という。</p>
-<p>さて、CircleCIの場合は(有料プランでは)Mac VMも使えるので、多少コンフィグの書き方も変わってきますが（マシンセットアップ部分が面倒くさくなる！）、動かせなくもないんちゃうんちゃうんといったところです。或いはAzure DevOpsなどを使えばWindowsマシンが使えるので、こちらもUnityのインストールなどのセットアップは必要ですが、安心感はありますね。どちらにせよWindowsでしかビルドできないもの(Hololensとか)もあるので、ちょっとちゃんと考えてみるのはいいのかなあ、と思ってます。</p>
-<p>何れにせよ、VMでやるんだったらそりゃ普通にできますよね、という当たり前の結論に戻ってくるのが世の中きびすぃ。とりあえず私的にはIL2CPPビルドが実行できればいいので、Linux + IL2CPP対応をどうかどうか……。</p>
-<h2>RandomFixtureKit</h2>
-<p>ユニットテスト用にもう一個、RandomFixtureKitというライブラリを作りました。こちらは .NET Core用とUnity用の両対応です。</p>
-<ul>
-<li><a href="https://github.com/Cysharp/RandomFixtureKit">Cysharp/RandomFixtureKit</a></li>
-</ul>
-<p>なにかというと、オブジェクトにランダムで適当な値を自動で詰め込むという代物です。当然リフレクションの塊で、これのIL2CPP対応に、先のRuntimeUnitTestToolkitが役に立ちました。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/56805033-abce0480-6862-11e9-91d0-7ca9c08aa688.png" alt="" /></p>
-<p>APIも単純でFixtureFactory.Createで取り出すだけ。</p>
-<pre><code class="language-csharp">// get single value
-var value = FixtureFactory.Create&lt;Foo&gt;();
-
-// get array
-var values = FixtureFactory.CreateMany&lt;Bar&gt;();
-
-// get temporal value(you can use this values to use invoke target method)
-var (x, y, z) = FixtureFactory.Create&lt;(int, string, short)&gt;();
-</code></pre>
-<p>テスト書いていてダミーのデータを延々と書くの面倒くせー、という局面はめっちゃあって、別に賢い名前なんて必要なくて（例えばAddressにはそれっぽい住所、Nameにはそれっぽい人名を入れてくれるとか）、全然ランダム英数でもいいから詰めてくれればそれでいいの！というところにピッタリはまります。</p>
-<p>実用的には、私はシリアライザの入れ替えとか（なぜか）よくやるんですが、旧シリアライザと新シリアライザで互換性なくて壊れたりしないように、相互に値を詰めたりとかして、同一の結果が得られることを確認したりします。そのときに、dllをなめて対象になる数百の型を取って、RandomFixtureKitを使って、適当な値を詰めた上で、一致を比較するユニットテストを用意するとかやったりします。</p>
-<p>面白い機能としては、ランダムな値ではなくて、エッジケースになり得る値だけを詰めるモードを用意しています。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/56805214-44fd1b00-6863-11e9-9541-b8ff30b7599a.png" alt="" /></p>
-<p>たとえばintだったらint.MinValue, MaxValue, 0, -1, 1を。コレクションだったらnull, 長さ0, 長さ1, 長さ9の中からランダムで詰める、といったものですね。</p>
-<p>こういうキワいデータが入ったときにー、みたいなことは想定しなきゃいけないし、テストも書いておかなきゃなのは分かってるけれど、毎回データ変えて流すのクソ面倒くさいんですよね（私はシリアライザを（なぜか）よく書くので、本当にこういうデータをいっぱい用意する必要が実際ある）。ので、CreateManyで1000個ぐらい作って流し込んでチェックすれば、多少はケースが埋まった状態になるでしょうというあれそれです。使ってみると意外と便利ですよ。</p>
-<h2>ところで</h2>
-<p>ゴールデンウィークの最終日なのですが、ほとんど何もやってない！始まる前は、MessagePack-CSharpやMagicOnionのタスクを潰しつつ、Pure C#のHTTP/2 Clientを作ってMagicOnionを強化するぜ、とか息巻いていたのですが全然できてない。副産物というか横道にそれたユニットテスト関連を仕上げて終わりとか、なんと虚しい……。</p>
-<p>できなかった理由の半分はSwitchで<a href="http://www.celestegame.com/">Celeste</a>を遊び始めたらめちゃくちゃハマって延々とやり続けちゃったせいなのですが、まぁそれはそれで面白いゲームをたっぷり楽しめたということで有意義なのでよしということにしておきます。</p>
-<p><a href="https://connpass.com/event/127369/">MagicOnionは6月4日に勉強会をやります</a>。というわけで、やる気もかなりあるし、アップデートネタも溜まっているんですが、実際にアップデートはできてないので（Issueのヘンジはちゃんとやってます！）、GWでガッと手を入れておきたかったんですが、うーん、まぁ明けてからやりまうす。色々良い感じになっていると思います。いやほんと。</p>
 </div>
 <a href="https://neue.cc">Prev |</a>
 <a href="https://neue.cc/3">| Next</a>

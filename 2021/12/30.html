@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - ConsoleAppFramework v4 - Minimal API for CommandLine tool</title>
+    <link rel="shortcut icon" href="https://neue.cc/favicon.ico" />
+    <link rel="alternate" type="application/rss+xml" href="https://neue.cc/feed"/>
+	<link rel="stylesheet" href="https://neue.cc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
+    
+<meta property="og:url" content="https://neue.cc/2021/12/30.html" />
+<meta property="og:type" content="article" />
+<meta property="og:title" content="neue cc - ConsoleAppFramework v4 - Minimal API for CommandLine tool" />
+<meta property="og:description" content="皆さん .NET 6で追加された[Minimal API](https://docs.microsoft.com/ja-jp/aspnet/core/fund..." />
+
+ </head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <a href="https://neue.cc/"><div id="header"></div></a>
+        <div id="content"><h1><a href="https://neue.cc/2021/12/30.html">ConsoleAppFramework v4 - Minimal API for CommandLine tool</a></h1>
+<ul class="date"><li>2021-12-30</li></ul>
+<div class="entry_body"><p>皆さん .NET 6で追加された<a href="https://docs.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis">Minimal API</a>使ってみました？最初は別にいらんやろ、とか思ってたんですが、いや、これ正直めっちゃ凄い、いい。まぁMinimalに書くかどうかは別として（書かないかなー）、謎Startupを葬り去ってBuilder/Runが素直に繋がった形が美しい。Top level statementとの相性も良いので、もうこっちのAPI以外で作る気しないなあ。</p>
+<p>さて、ところでConsoleAppFrameworkです。今までクラスが必要だったんですよね、たった一個のメソッドを実装するにも。それがTop level statementとの相性が悪い。Top level statementだけで完結できるとき、クラスって作りたくないんですよね。と、いうわけで、そろそろ大改修が必要かなーと思っていたところにMinimal APIですよ。特にその場でラムダ式でばしばしAPI作っていくスタイルは、むしろコマンドラインツールのほうがマッチするじゃんどう考えても？</p>
+<p>と、いうわけで大改修して、Minimal APIベースになったv4、作りました。何が凄いって、一行でコマンドライン引数をパースしてハンドラー定義できちゃうんですね。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/147662718-f7756523-67a9-4295-b090-3cfc94203017.png" alt="" /></p>
+<p>これは嘘偽りなくNuGetからダウンロードしたら、そのままでこう書けます。C# 10.0のglobal using(をNuGetのライブラリ側に埋め込むというEvilな手法を使ってます)と、ラムダ式の推論の向上によって実現しました。内側では、Minimal APIの実現のために Microsoft.Extensions.* 側にもかなり改修が入っていたので、それをそっくりそのまま利用できました。そういう意味で、 .NET 6になった今だからようやく作れた形になりますね。もちろんv1~v3までの蓄積のお陰というところもあります。集大成……！</p>
+<ul>
+<li><a href="https://github.com/Cysharp/ConsoleAppFramework/">Cysharp/ConsoleAppFramework</a></li>
+</ul>
+<p>さて、Runはちょっとウケ狙いなところもあるんですが、それ以外のAPIもBuilderベースになったので、だいぶ様変わりしています。ただし特徴としてGeneric Hostの上に乗っているというのは変わらないので、DbContext埋めたりappconfig.jsonから取ったりというのは、変わらずスムーズにできます。</p>
+<pre><code class="language-csharp">// You can use full feature of Generic Host(same as ASP.NET Core).
+
+var builder = ConsoleApp.CreateBuilder(args);
+builder.ConfigureServices((ctx,services) =&gt;
+{
+    // Register EntityFramework database context
+    services.AddDbContext&lt;MyDbContext&gt;();
+
+    // Register appconfig.json to IOption&lt;MyConfig&gt;
+    services.Configure&lt;MyConfig&gt;(ctx.Configuration);
+
+    // Using Cysharp/ZLogger for logging to file
+    services.AddLogging(logging =&gt;
+    {
+        logging.AddZLoggerFile(&quot;log.txt&quot;);
+    });
+});
+
+var app = builder.Build();
+
+// setup many command, async, short-name/description option, subcommand, DI
+app.AddCommand(&quot;calc-sum&quot;, (int x, int y) =&gt; Console.WriteLine(x + y));
+app.AddCommand(&quot;sleep&quot;, async ([Option(&quot;t&quot;, &quot;seconds of sleep time.&quot;)] int time) =&gt;
+{
+    await Task.Delay(TimeSpan.FromSeconds(time));
+});
+app.AddSubCommand(&quot;verb&quot;, &quot;childverb&quot;, () =&gt; Console.WriteLine(&quot;called via 'verb childverb'&quot;));
+
+// You can insert all public methods as sub command =&gt; db select / db insert
+// or AddCommand&lt;T&gt;() all public methods as command =&gt; select / insert
+app.AddSubCommands&lt;DatabaseApp&gt;();
+
+app.Run();
+</code></pre>
+<p>単独のコマンドラインツール用に使ってもいいのですが、ASP.NETのウェブアプリが他にあって、それのバッチを作りたいみたいなときに、こうしたコンフィグの共通化はめっちゃ便利に使えるはずです。ConfigureServicesのコードはまんま一緒にできて、そのままDIできますからね。</p>
+<p>また、引き続き <code>AddCommands&lt;T&gt;</code> や <code>AddAllCommandType</code> によって、メソッド定義するだけで大量のコマンドを一括追加も可能になっています。</p>
+<h2>v3 -&gt; v4の破壊的変更</h2>
+<p>破壊的変更、は沢山あるのですが、基本的に今までの使い方をしている場合は互換オプションで動くようにしたので、アップデートしたから壊れるということはない、はずです。v4からは<code>ConsoleApp.Create/CreateBuilder</code> 経由で作るのが基本なのですが、v3は <code>Host.CreateDefaultBuilder().RunConsoleAppFrameworkAsync&lt;T&gt;()</code> 経由なので、ちょうど互換性オプションを突っ込むのに都合が良かったんですね。なお、<code>RunConsoleAppFrameworkAsync</code>はエディタから見えないようにしてます。今後は非推奨で、本当に互換のためだけに残してます。</p>
+<p>まず変わったところは、デフォルトで長いオプション名が<code>--</code>、短いオプション名が<code>-</code>になりました。v3では<code>-</code>が幾つついていてもいいというゆるふわマッチングだったのですが、(dotonet toolsと同じように)厳格化しています。</p>
+<p>また、デフォルトのコマンド/オプション名の変換ルールが単純なlower化から、hoge-hugaというlowerなkebab-caseになりました。これもdotnet tools合わせですね。</p>
+<p>また、<code>AddCommands&lt;T&gt;</code>した場合の挙動(v3では<code>RunConsoleAppFrameworkAsync&lt;T&gt;</code>した場合)が、全てのpublicメソッドをコマンドとして追加するようになりました。デフォルト(ルート)コマンドにしたい場合は<code>[RootCommand]</code>属性を付与してくださいということで。これは<code>AddSubCommand&lt;T&gt;</code>した時と挙動を合わせたかったからです、違うと一貫性がなくて戸惑うので。</p>
+<p>と、いうわけで、互換性モードで動かした場合は<code>ConsoleAppOptions</code>は以下のような変更で動くようになっています。よきかなよきかな。（それとargsのコマンド名でHoge.Hugaが来てたらHoge Hugaに分解するのも、この互換性モードだけの挙動です）</p>
+<pre><code class="language-csharp">options.StrictOption = false;
+options.NoAttributeCommandAsImplicitlyDefault = true;
+options.NameConverter = x =&gt; x.ToLower();
+options.ReplaceToUseSimpleConsoleLogger = false;
+</code></pre>
+<p>そうだ、それとCtrl+Cした場合に、正しくCancellationTokenをハンドリングしていない場合でも、タイムアウトをハンドリングしてabortするようになりました。これね、なんか強制終了できなくてウゼーってなりがちというか、私自身よく引っかかってヤバかったので。まぁむしろこれは今までがバグに近くて、正しく<code>ConfigureHostOptions.ShutdownTimeout</code>を処理していないせいでした。</p>
+<p>ちなみにこのタイムアウト時間はデフォルトは5秒で、ConfigureHostOptions(地味にこれは.NET 6(というかMicrosoft.Extensionsのv6)からの新API)で変更できます。</p>
+<pre><code class="language-csharp">var app = ConsoleApp.CreateBuilder(args)
+    .ConfigureHostOptions(options =&gt;
+    {
+        // change timeout.
+        options.ShutdownTimeout = TimeSpan.FromMinutes(30);
+    })
+    .Build();
+</code></pre>
+<h2>まとめ</h2>
+<p>無計画にアドホックに作っていったせいで、どうにもクソコードすぎて、改修にめっちゃ手間取ったというか内部的にはほぼ作り直した……。弄るのだるくて嫌だなあと内心実際今まで思ってたんですが、やはりとても嫌なコードであった。v1の時の最初の発想が Class.Method にパラメータ分解してバッチを大量に作りたい(そもそもライブラリ名もMicroBatchFrameworkだったし)というものだけだったのが、徐々に汎用コマンドラインツールに進化していって、都度、適当に追加していった結果ではある。</p>
+<p>今回がっつし仕切り直したので、しばらくはメンテが楽になれるかなあ、という感じで、よきかなよきかな。</p>
+<p>まぁしかしC# 10.0は地味にヤバいですよ！使えば使うほど味が出てくるというか、最近ようやく手に馴染んで、よくわかってきた感じです。なんというか、とにかく、めっちゃいい。それとC# 10.0 + ConsoleAppFrameworkは全言語見渡しても最強のコマンドラインツール作成ライブラリじゃないです？いや、API自体のできの良さはほとんど ASP .NET CoreのMinimal APIのコピーにすぎないんですが、まぁしかしそれでもやっぱ、これはかなり良い感じじゃないかという手応えがあります。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="https://neue.cc/2021/12/">2021-12</a>
+<li><a href="https://neue.cc/2021/11/">2021-11</a>
+<li><a href="https://neue.cc/2021/08/">2021-08</a>
+<li><a href="https://neue.cc/2021/07/">2021-07</a>
+<li><a href="https://neue.cc/2021/05/">2021-05</a>
+<li><a href="https://neue.cc/2021/02/">2021-02</a>
+<li><a href="https://neue.cc/2020/12/">2020-12</a>
+<li><a href="https://neue.cc/2020/11/">2020-11</a>
+<li><a href="https://neue.cc/2020/10/">2020-10</a>
+<li><a href="https://neue.cc/2020/08/">2020-08</a>
+<li><a href="https://neue.cc/2020/07/">2020-07</a>
+<li><a href="https://neue.cc/2020/04/">2020-04</a>
+<li><a href="https://neue.cc/2020/01/">2020-01</a>
+<li><a href="https://neue.cc/2019/12/">2019-12</a>
+<li><a href="https://neue.cc/2019/09/">2019-09</a>
+<li><a href="https://neue.cc/2019/08/">2019-08</a>
+<li><a href="https://neue.cc/2019/07/">2019-07</a>
+<li><a href="https://neue.cc/2019/06/">2019-06</a>
+<li><a href="https://neue.cc/2019/05/">2019-05</a>
+<li><a href="https://neue.cc/2019/04/">2019-04</a>
+<li><a href="https://neue.cc/2018/12/">2018-12</a>
+<li><a href="https://neue.cc/2018/10/">2018-10</a>
+<li><a href="https://neue.cc/2018/08/">2018-08</a>
+<li><a href="https://neue.cc/2018/07/">2018-07</a>
+<li><a href="https://neue.cc/2018/05/">2018-05</a>
+<li><a href="https://neue.cc/2018/04/">2018-04</a>
+<li><a href="https://neue.cc/2018/01/">2018-01</a>
+<li><a href="https://neue.cc/2017/12/">2017-12</a>
+<li><a href="https://neue.cc/2017/09/">2017-09</a>
+<li><a href="https://neue.cc/2017/08/">2017-08</a>
+<li><a href="https://neue.cc/2017/07/">2017-07</a>
+<li><a href="https://neue.cc/2017/06/">2017-06</a>
+<li><a href="https://neue.cc/2017/04/">2017-04</a>
+<li><a href="https://neue.cc/2017/03/">2017-03</a>
+<li><a href="https://neue.cc/2016/12/">2016-12</a>
+<li><a href="https://neue.cc/2016/11/">2016-11</a>
+<li><a href="https://neue.cc/2016/10/">2016-10</a>
+<li><a href="https://neue.cc/2016/09/">2016-09</a>
+<li><a href="https://neue.cc/2016/08/">2016-08</a>
+<li><a href="https://neue.cc/2016/07/">2016-07</a>
+<li><a href="https://neue.cc/2016/06/">2016-06</a>
+<li><a href="https://neue.cc/2016/05/">2016-05</a>
+<li><a href="https://neue.cc/2016/04/">2016-04</a>
+<li><a href="https://neue.cc/2016/03/">2016-03</a>
+<li><a href="https://neue.cc/2016/01/">2016-01</a>
+<li><a href="https://neue.cc/2015/12/">2015-12</a>
+<li><a href="https://neue.cc/2015/11/">2015-11</a>
+<li><a href="https://neue.cc/2015/10/">2015-10</a>
+<li><a href="https://neue.cc/2015/09/">2015-09</a>
+<li><a href="https://neue.cc/2015/06/">2015-06</a>
+<li><a href="https://neue.cc/2015/05/">2015-05</a>
+<li><a href="https://neue.cc/2015/04/">2015-04</a>
+<li><a href="https://neue.cc/2015/03/">2015-03</a>
+<li><a href="https://neue.cc/2015/02/">2015-02</a>
+<li><a href="https://neue.cc/2015/01/">2015-01</a>
+<li><a href="https://neue.cc/2014/12/">2014-12</a>
+<li><a href="https://neue.cc/2014/11/">2014-11</a>
+<li><a href="https://neue.cc/2014/10/">2014-10</a>
+<li><a href="https://neue.cc/2014/09/">2014-09</a>
+<li><a href="https://neue.cc/2014/08/">2014-08</a>
+<li><a href="https://neue.cc/2014/07/">2014-07</a>
+<li><a href="https://neue.cc/2014/05/">2014-05</a>
+<li><a href="https://neue.cc/2014/04/">2014-04</a>
+<li><a href="https://neue.cc/2014/03/">2014-03</a>
+<li><a href="https://neue.cc/2014/01/">2014-01</a>
+<li><a href="https://neue.cc/2013/12/">2013-12</a>
+<li><a href="https://neue.cc/2013/11/">2013-11</a>
+<li><a href="https://neue.cc/2013/10/">2013-10</a>
+<li><a href="https://neue.cc/2013/09/">2013-09</a>
+<li><a href="https://neue.cc/2013/08/">2013-08</a>
+<li><a href="https://neue.cc/2013/07/">2013-07</a>
+<li><a href="https://neue.cc/2013/06/">2013-06</a>
+<li><a href="https://neue.cc/2013/05/">2013-05</a>
+<li><a href="https://neue.cc/2013/04/">2013-04</a>
+<li><a href="https://neue.cc/2013/03/">2013-03</a>
+<li><a href="https://neue.cc/2013/02/">2013-02</a>
+<li><a href="https://neue.cc/2013/01/">2013-01</a>
+<li><a href="https://neue.cc/2012/12/">2012-12</a>
+<li><a href="https://neue.cc/2012/11/">2012-11</a>
+<li><a href="https://neue.cc/2012/10/">2012-10</a>
+<li><a href="https://neue.cc/2012/09/">2012-09</a>
+<li><a href="https://neue.cc/2012/08/">2012-08</a>
+<li><a href="https://neue.cc/2012/07/">2012-07</a>
+<li><a href="https://neue.cc/2012/06/">2012-06</a>
+<li><a href="https://neue.cc/2012/05/">2012-05</a>
+<li><a href="https://neue.cc/2012/04/">2012-04</a>
+<li><a href="https://neue.cc/2012/03/">2012-03</a>
+<li><a href="https://neue.cc/2012/02/">2012-02</a>
+<li><a href="https://neue.cc/2012/01/">2012-01</a>
+<li><a href="https://neue.cc/2011/12/">2011-12</a>
+<li><a href="https://neue.cc/2011/11/">2011-11</a>
+<li><a href="https://neue.cc/2011/10/">2011-10</a>
+<li><a href="https://neue.cc/2011/09/">2011-09</a>
+<li><a href="https://neue.cc/2011/08/">2011-08</a>
+<li><a href="https://neue.cc/2011/07/">2011-07</a>
+<li><a href="https://neue.cc/2011/06/">2011-06</a>
+<li><a href="https://neue.cc/2011/05/">2011-05</a>
+<li><a href="https://neue.cc/2011/04/">2011-04</a>
+<li><a href="https://neue.cc/2011/03/">2011-03</a>
+<li><a href="https://neue.cc/2011/02/">2011-02</a>
+<li><a href="https://neue.cc/2011/01/">2011-01</a>
+<li><a href="https://neue.cc/2010/12/">2010-12</a>
+<li><a href="https://neue.cc/2010/11/">2010-11</a>
+<li><a href="https://neue.cc/2010/10/">2010-10</a>
+<li><a href="https://neue.cc/2010/09/">2010-09</a>
+<li><a href="https://neue.cc/2010/08/">2010-08</a>
+<li><a href="https://neue.cc/2010/07/">2010-07</a>
+<li><a href="https://neue.cc/2010/06/">2010-06</a>
+<li><a href="https://neue.cc/2010/05/">2010-05</a>
+<li><a href="https://neue.cc/2010/04/">2010-04</a>
+<li><a href="https://neue.cc/2010/03/">2010-03</a>
+<li><a href="https://neue.cc/2010/02/">2010-02</a>
+<li><a href="https://neue.cc/2010/01/">2010-01</a>
+<li><a href="https://neue.cc/2009/12/">2009-12</a>
+<li><a href="https://neue.cc/2009/11/">2009-11</a>
+<li><a href="https://neue.cc/2009/10/">2009-10</a>
+<li><a href="https://neue.cc/2009/09/">2009-09</a>
+<li><a href="https://neue.cc/2009/08/">2009-08</a>
+<li><a href="https://neue.cc/2009/07/">2009-07</a>
+<li><a href="https://neue.cc/2009/06/">2009-06</a>
+<li><a href="https://neue.cc/2009/05/">2009-05</a>
+<li><a href="https://neue.cc/2009/04/">2009-04</a>
+<li><a href="https://neue.cc/2009/03/">2009-03</a>
+<li><a href="https://neue.cc/2009/02/">2009-02</a>
+<li><a href="https://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul>
+<li>Index: <a href="https://neue.cc">neue.cc</a><li>
+<li>RSS feed: <a href="https://neue.cc/feed">neue.cc/feed</a><li>
+<li>Powered by: <a href="https://github.com/neuecc/Blog2">https://github.com/neuecc/Blog2</a>
+</ul></div>
+    </div>
+</body>

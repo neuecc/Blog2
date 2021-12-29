@@ -15,7 +15,80 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2021/12/22.html">NativeMemoryArray - .NET 6 APIをフル活用した2GB超えの巨大データを扱うライブラリ</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2021/12/30.html">ConsoleAppFramework v4 - Minimal API for CommandLine tool</a></h1>
+<ul class="date"><li>2021-12-30</li></ul>
+<div class="entry_body"><p>皆さん .NET 6で追加された<a href="https://docs.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis">Minimal API</a>使ってみました？最初は別にいらんやろ、とか思ってたんですが、いや、これ正直めっちゃ凄い、いい。まぁMinimalに書くかどうかは別として（書かないかなー）、謎Startupを葬り去ってBuilder/Runが素直に繋がった形が美しい。Top level statementとの相性も良いので、もうこっちのAPI以外で作る気しないなあ。</p>
+<p>さて、ところでConsoleAppFrameworkです。今までクラスが必要だったんですよね、たった一個のメソッドを実装するにも。それがTop level statementとの相性が悪い。Top level statementだけで完結できるとき、クラスって作りたくないんですよね。と、いうわけで、そろそろ大改修が必要かなーと思っていたところにMinimal APIですよ。特にその場でラムダ式でばしばしAPI作っていくスタイルは、むしろコマンドラインツールのほうがマッチするじゃんどう考えても？</p>
+<p>と、いうわけで大改修して、Minimal APIベースになったv4、作りました。何が凄いって、一行でコマンドライン引数をパースしてハンドラー定義できちゃうんですね。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/147662718-f7756523-67a9-4295-b090-3cfc94203017.png" alt="" /></p>
+<p>これは嘘偽りなくNuGetからダウンロードしたら、そのままでこう書けます。C# 10.0のglobal using(をNuGetのライブラリ側に埋め込むというEvilな手法を使ってます)と、ラムダ式の推論の向上によって実現しました。内側では、Minimal APIの実現のために Microsoft.Extensions.* 側にもかなり改修が入っていたので、それをそっくりそのまま利用できました。そういう意味で、 .NET 6になった今だからようやく作れた形になりますね。もちろんv1~v3までの蓄積のお陰というところもあります。集大成……！</p>
+<ul>
+<li><a href="https://github.com/Cysharp/ConsoleAppFramework/">Cysharp/ConsoleAppFramework</a></li>
+</ul>
+<p>さて、Runはちょっとウケ狙いなところもあるんですが、それ以外のAPIもBuilderベースになったので、だいぶ様変わりしています。ただし特徴としてGeneric Hostの上に乗っているというのは変わらないので、DbContext埋めたりappconfig.jsonから取ったりというのは、変わらずスムーズにできます。</p>
+<pre><code class="language-csharp">// You can use full feature of Generic Host(same as ASP.NET Core).
+
+var builder = ConsoleApp.CreateBuilder(args);
+builder.ConfigureServices((ctx,services) =&gt;
+{
+    // Register EntityFramework database context
+    services.AddDbContext&lt;MyDbContext&gt;();
+
+    // Register appconfig.json to IOption&lt;MyConfig&gt;
+    services.Configure&lt;MyConfig&gt;(ctx.Configuration);
+
+    // Using Cysharp/ZLogger for logging to file
+    services.AddLogging(logging =&gt;
+    {
+        logging.AddZLoggerFile(&quot;log.txt&quot;);
+    });
+});
+
+var app = builder.Build();
+
+// setup many command, async, short-name/description option, subcommand, DI
+app.AddCommand(&quot;calc-sum&quot;, (int x, int y) =&gt; Console.WriteLine(x + y));
+app.AddCommand(&quot;sleep&quot;, async ([Option(&quot;t&quot;, &quot;seconds of sleep time.&quot;)] int time) =&gt;
+{
+    await Task.Delay(TimeSpan.FromSeconds(time));
+});
+app.AddSubCommand(&quot;verb&quot;, &quot;childverb&quot;, () =&gt; Console.WriteLine(&quot;called via 'verb childverb'&quot;));
+
+// You can insert all public methods as sub command =&gt; db select / db insert
+// or AddCommand&lt;T&gt;() all public methods as command =&gt; select / insert
+app.AddSubCommands&lt;DatabaseApp&gt;();
+
+app.Run();
+</code></pre>
+<p>単独のコマンドラインツール用に使ってもいいのですが、ASP.NETのウェブアプリが他にあって、それのバッチを作りたいみたいなときに、こうしたコンフィグの共通化はめっちゃ便利に使えるはずです。ConfigureServicesのコードはまんま一緒にできて、そのままDIできますからね。</p>
+<p>また、引き続き <code>AddCommands&lt;T&gt;</code> や <code>AddAllCommandType</code> によって、メソッド定義するだけで大量のコマンドを一括追加も可能になっています。</p>
+<h2>v3 -&gt; v4の破壊的変更</h2>
+<p>破壊的変更、は沢山あるのですが、基本的に今までの使い方をしている場合は互換オプションで動くようにしたので、アップデートしたから壊れるということはない、はずです。v4からは<code>ConsoleApp.Create/CreateBuilder</code> 経由で作るのが基本なのですが、v3は <code>Host.CreateDefaultBuilder().RunConsoleAppFrameworkAsync&lt;T&gt;()</code> 経由なので、ちょうど互換性オプションを突っ込むのに都合が良かったんですね。なお、<code>RunConsoleAppFrameworkAsync</code>はエディタから見えないようにしてます。今後は非推奨で、本当に互換のためだけに残してます。</p>
+<p>まず変わったところは、デフォルトで長いオプション名が<code>--</code>、短いオプション名が<code>-</code>になりました。v3では<code>-</code>が幾つついていてもいいというゆるふわマッチングだったのですが、(dotonet toolsと同じように)厳格化しています。</p>
+<p>また、デフォルトのコマンド/オプション名の変換ルールが単純なlower化から、hoge-hugaというlowerなkebab-caseになりました。これもdotnet tools合わせですね。</p>
+<p>また、<code>AddCommands&lt;T&gt;</code>した場合の挙動(v3では<code>RunConsoleAppFrameworkAsync&lt;T&gt;</code>した場合)が、全てのpublicメソッドをコマンドとして追加するようになりました。デフォルト(ルート)コマンドにしたい場合は<code>[RootCommand]</code>属性を付与してくださいということで。これは<code>AddSubCommand&lt;T&gt;</code>した時と挙動を合わせたかったからです、違うと一貫性がなくて戸惑うので。</p>
+<p>と、いうわけで、互換性モードで動かした場合は<code>ConsoleAppOptions</code>は以下のような変更で動くようになっています。よきかなよきかな。（それとargsのコマンド名でHoge.Hugaが来てたらHoge Hugaに分解するのも、この互換性モードだけの挙動です）</p>
+<pre><code class="language-csharp">options.StrictOption = false;
+options.NoAttributeCommandAsImplicitlyDefault = true;
+options.NameConverter = x =&gt; x.ToLower();
+options.ReplaceToUseSimpleConsoleLogger = false;
+</code></pre>
+<p>そうだ、それとCtrl+Cした場合に、正しくCancellationTokenをハンドリングしていない場合でも、タイムアウトをハンドリングしてabortするようになりました。これね、なんか強制終了できなくてウゼーってなりがちというか、私自身よく引っかかってヤバかったので。まぁむしろこれは今までがバグに近くて、正しく<code>ConfigureHostOptions.ShutdownTimeout</code>を処理していないせいでした。</p>
+<p>ちなみにこのタイムアウト時間はデフォルトは5秒で、ConfigureHostOptions(地味にこれは.NET 6(というかMicrosoft.Extensionsのv6)からの新API)で変更できます。</p>
+<pre><code class="language-csharp">var app = ConsoleApp.CreateBuilder(args)
+    .ConfigureHostOptions(options =&gt;
+    {
+        // change timeout.
+        options.ShutdownTimeout = TimeSpan.FromMinutes(30);
+    })
+    .Build();
+</code></pre>
+<h2>まとめ</h2>
+<p>無計画にアドホックに作っていったせいで、どうにもクソコードすぎて、改修にめっちゃ手間取ったというか内部的にはほぼ作り直した……。弄るのだるくて嫌だなあと内心実際今まで思ってたんですが、やはりとても嫌なコードであった。v1の時の最初の発想が Class.Method にパラメータ分解してバッチを大量に作りたい(そもそもライブラリ名もMicroBatchFrameworkだったし)というものだけだったのが、徐々に汎用コマンドラインツールに進化していって、都度、適当に追加していった結果ではある。</p>
+<p>今回がっつし仕切り直したので、しばらくはメンテが楽になれるかなあ、という感じで、よきかなよきかな。</p>
+<p>まぁしかしC# 10.0は地味にヤバいですよ！使えば使うほど味が出てくるというか、最近ようやく手に馴染んで、よくわかってきた感じです。なんというか、とにかく、めっちゃいい。それとC# 10.0 + ConsoleAppFrameworkは全言語見渡しても最強のコマンドラインツール作成ライブラリじゃないです？いや、API自体のできの良さはほとんど ASP .NET CoreのMinimal APIのコピーにすぎないんですが、まぁしかしそれでもやっぱ、これはかなり良い感じじゃないかという手応えがあります。</p>
+</div>
+<h1><a href="https://neue.cc/2021/12/22.html">NativeMemoryArray - .NET 6 APIをフル活用した2GB超えの巨大データを扱うライブラリ</a></h1>
 <ul class="date"><li>2021-12-22</li></ul>
 <div class="entry_body"><p><a href="https://qiita.com/advent-calendar/2021/microsoft">.NET 6 Advent Calendar 2021</a>の12日の代理投稿となります。プレゼント付きですと！？<a href="https://www.balmuda.com/jp/brew/special-model">BALMUDA The Brew STARBUCKS RESERVE LIMITED EDITION</a>が欲しいです！</p>
 <p>さて、先程NativeMemoryArrayという新しいライブラリを作成し、公開しました。.NET Standard 2.0でも動作しますが、全体的に .NET 6 の新API群(NativeMemory, Scatter/Gather I/O)を活かすための作りになっていますので、今回のAdvent Calendarにもピッタリ。実用性も、ある……！あります……！もちろんUnity版も用意してあります（NativeArrayと何が違うって？まぁ違うと言えば違います）。</p>
