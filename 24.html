@@ -15,7 +15,86 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2009/08/24_193.html">WSH用にCOMのIntelliSenseを自動生成する</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2009/08/25_194.html">enumの日本語別名とか三項演算子ネストとか</a></h1>
+<ul class="date"><li>2009-08-25</li></ul>
+<div class="entry_body"><p>enumのToStringで日本語名になって欲しいというケースはとてもあるある。<a href="http://igeta.cocolog-nifty.com/blog/2007/11/enum_string.html">enum に文字列の属性を: いげ太のブログ</a>と<a href="http://d.hatena.ne.jp/siokoshou/20080124">2008-01-24 - 当面C#と.NETな記録</a>の記事を見て、今まで拡張メソッドで処理することが多かったのですが、やっぱり見た目は属性のほうがスッキリするなあ、と思った。記述が本体と離れないのが良いですよね。処理速度とか、そんなに頻繁に繰り返し繰り返し呼ぶものでもないしリフレクション上等！それ気にしたらSerializeとか出来ない！とか思ったので、基本は属性で処理することにしてみた。</p>
+<pre><code class="language-csharp">enum Fruit
+{
+    [AliasName(&quot;ブドウ&quot;)]
+    Grape,
+    [AliasName(&quot;リンゴ&quot;)]
+    Apple,
+    [AliasName(&quot;オレンジ&quot;)]
+    Orange
+}
+
+static void Main(string[] args)
+{
+    var fruit = Fruit.Orange;
+    Console.WriteLine(fruit.ToAliasName());
+}
+</code></pre>
+<p>こんな感じに定義してこんな感じに使う、と。定義もスッキリ、呼び出し時もToString的に拡張メソッドでスッキリ。</p>
+<pre><code class="language-csharp">[AttributeUsage(AttributeTargets.Field, Inherited = false, AllowMultiple = false)]
+public sealed class AliasNameAttribute : Attribute
+{
+    public string AliasName { get; private set; }
+
+    public AliasNameAttribute(string aliasName)
+    {
+        AliasName = aliasName;
+    }
+}
+
+public static class Ext
+{
+    // どうしてもメソッドチェインを崩したくない人用
+    public static T ThrowIf&lt;T&gt;(this T value, Func&lt;T, bool&gt; predicate, Exception exception)
+    {
+        if (predicate(value)) throw exception;
+        else return value;
+    }
+
+    public static string ToAliasName(this Enum value)
+    {
+        return value.GetType()
+            .GetField(value.ToString())
+            .GetCustomAttributes(typeof(AliasNameAttribute), false)
+            .Cast&lt;AliasNameAttribute&gt;()
+            .FirstOrDefault()
+            .ThrowIf(a =&gt; a == null, new ArgumentException(&quot;属性が設定されていません。&quot;))
+            .AliasName;
+    }
+}
+</code></pre>
+<p>ドットが縦にならんでると何だか楽しい。というわけで、チェーンを崩さずに例外を放り投げるための拡張メソッドThrowIfを用意してみた。nullが邪魔！邪魔！nullが出現するせいで一個変数を置いてnullチェックかまさなきゃいけない！というシーンは多いので、predicateじゃなくてnull限定決め打ちでも良いぐらいかもかも。とにかくnull撲滅。まあ、この場合はFirstOrDefaultじゃなくてFirstにすれば、Firstが例外を吐いてくれるのですけど、一応ちゃんとメッセージ用意したいとか、ありますよね？ね？</p>
+<pre><code class="language-csharp">// 三項演算子のチェーンを崩さないためにダミーの型を返して例外を投げる
+static T Throw&lt;T&gt;(Exception exception)
+{
+    throw exception;
+}
+
+static string Test(Fruit fruit)
+{
+    return (fruit == Fruit.Apple) ? &quot;あぷる&quot;
+         : (fruit == Fruit.Grape) ? &quot;ぐれえぷ&quot;
+         : (fruit == Fruit.Orange) ? &quot;おれんじ&quot;
+         : Throw&lt;string&gt;(new ArgumentException(&quot;引数ダメぽ！&quot;));
+}
+</code></pre>
+<p>三項演算子を延々とネストしてコロンを前置にするのが好き、と<a href="http://neue.cc/2009/08/21_190.html" title="neue cc - ネストした三項演算子の書き方">以前に書いた</a>のですが、そうすると、最後にdefault的なものを書く必要があって困る。&quot;&quot;とか0とかでお茶を濁さずに、例外を吐きたいのですが、ネスト三項演算子では例外を吐けない。困った困った。というわけでThrowという補助メソッドを用意してみた。ただ例外を吐くだけメソッド。おー。これでもう大量にネストしても大丈夫！万歳！三項演算子でネストしよう！ついでにネスト時のコロンは前置にしよう！の会。</p>
+<h2>使用しないでください？</h2>
+<p>ところで、EnumのToStringはIntelliSenseに使用しないでください、が出てきてビビる。んが、よくよく眺めてみると……</p>
+<pre><code class="language-csharp">public override string ToString();
+[Obsolete(&quot;The provider argument is not used. Please use ToString().&quot;)]
+public string ToString(IFormatProvider provider);
+public string ToString(string format);
+[Obsolete(&quot;The provider argument is not used. Please use ToString(String).&quot;)]
+public string ToString(string format, IFormatProvider provider);
+</code></pre>
+<p>ObsoleteなのはIFormatProviderが絡んでるものだけで、普通のToStringは使用していいんでないのん？<a href="http://blogs.wankuma.com/jeanne/archive/2006/04/04/22239.aspx" title="文字列の列挙体">文字列の列挙体</a>←ここのコメント欄が白熱していたのを見て、どうなのかなー、と思っているのですが、どうなんでしょうか。いやほんと。</p>
+</div>
+<h1><a href="https://neue.cc/2009/08/24_193.html">WSH用にCOMのIntelliSenseを自動生成する</a></h1>
 <ul class="date"><li>2009-08-24</li></ul>
 <div class="entry_body"><p>本題、の前にJavaScript用のIntelliSenseの作成方法について。以前、<a href="http://neue.cc/2009/06/06_164.html" title="neue cc - 最もタメになる「初心者用言語」はVisualStudio(言語?)">linq.jsにIntelliSense用ファイルを追加した時</a>に利用法を書きましたが、今回はvsdocの作成方法を、ざっと書きます。まずVS2008 SP1とパッチを適用する。hoge.jsに対しhoge-vsdoc.jsを用意するとhoge.jsのかわりにhoge-vsdoc.jsがIntelliSense用に読み込まれる。IntelliSenseでVSが見ているのはメソッド名と引数だけなので、コードの中身はなくてもいい。例えば本来は存在するがprivateメソッドのつもりのものは、vsdoc.js側に書かなければIntelliSenseには表示されない。C#と同様に関数にはXMLドキュメントコメントを記述することが出来る。記述箇所はC#とは異なり開始の波括弧の直下。ドキュメントコメントのタグで現在機能しているものはsummary, params, returnsのみ。特に重要なのはreturns typeで、これにprototypeが存在する関数(ようするにクラスですなー)を指定することで戻り値の型をVSに認識させ、IntelliSenseを働かせることが出来る。ちなみに、ただのオブジェクトだと認識してくれない。</p>
 <pre><code class="language-javascript">function Hoge(aaa, bbb)
@@ -659,73 +738,6 @@ class Program
 }
 </code></pre>
 <p>という風にしたほうがいいと思われます。まあ、あと、new List()なんてやるぐらいなら.ToList()かしらん。</p>
-</div>
-<h1><a href="https://neue.cc/2009/07/16_177.html">ver 1.3.0.3 / ちょっとした拡張メソッド群</a></h1>
-<ul class="date"><li>2009-07-16</li></ul>
-<div class="entry_body"><ul>
-<li><a href="http://neue.cc/software/xboxinfotwit">neue cc - XboxInfoTwit</a></li>
-</ul>
-<p>Gears of War 2やCall of Duty : World at Warでステータスが取得出来なかった件を修正しました。GoW2は修正を確認出来ましたがCoD:WaWは持ってないので分からない。多分直ってると思うけど。あと、この修正の影響で他がダメになる可能性がなくもないです。ダメっぽいのを発見したら即直す、という方向で暴走さえしなければある程度はいっかー、的にゆるふわ気分でいるのですがダメでしょうかダメですね。</p>
-<p>ところで、int.Parseが多くなって結構面倒くさいので文字列に拡張メソッド。</p>
-<pre><code class="language-csharp">public static int ToInt(this string value)
-{
-    return int.Parse(value);
-}
-
-public static int ToIntOrDefault(this string value)
-{
-    int result;
-    int.TryParse(value, out result);
-    return result;
-}
-
-public static string Remove(this string input, string pattern)
-{
-    return Regex.Replace(input, pattern, &quot;&quot;);
-}
-
-public static Match Match(this string input, string pattern)
-{
-    return Regex.Match(input, pattern);
-}
-
-public static string Replace(this string input, string pattern, MatchEvaluator evaluator)
-{
-    return Regex.Replace(input, pattern, evaluator);
-}
-</code></pre>
-<p>RemoveとReplaceは既存のメソッド名のものに足してるので、別の名前のほうが良いかしらん。あと、Replaceは引数が被るので、ただの文字列置換は用意できなかった。まあ、_ =&gt; &quot;hogehoge&quot; といった具合に「_ =&gt; 」が増えるだけならそう手間でもないような十二分に手間のような。</p>
-<pre><code class="language-csharp">totalGamerScore = document
-    .Descendants(&quot;div&quot;)
-    .First(e =&gt; e.GetAttribute(&quot;className&quot;) == &quot;XbcProfileSubHead&quot;)
-    .Descendants(&quot;strong&quot;)
-    .Last()
-    .InnerText
-    .Match(@&quot;:\s*(\d+)/&quot;)
-    .Groups[1]
-    .Value
-    .ToInt();
-</code></pre>
-<p>こんな風に書けます。これでスクレイピングも快適ー。ドット繋げまくれてバンザイしちゃう。ただまあ、デバッグはし辛いですね。ログ吐くメソッドを仕込んだりもいいんですが、もっと単純に、ラムダ式挟めばデバッガで止められるので</p>
-<pre><code class="language-csharp">public static class Ext
-{
-    public static TResult Tap&lt;T, TResult&gt;(this T self, Func&lt;T, TResult&gt; func)
-    {
-        return func(self);
-    }
-
-    public static T Tap&lt;T&gt;(this T self, Action&lt;T&gt; action)
-    {
-        action(self);
-        return self;
-    }
-}
-</code></pre>
-<p>RubyのTapみたいな、ということで。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/tap.jpg">
-</p>
-<p>ダミー置いて、その場で止められるようになる。それで作って、出来あがったらTapの行をCtrl+Xでゴミ箱ぽい。IEnumerableの場合は、普通にダミーのSelect置けばいいだけでしたね！ 今、そのことに気付いた。うーん、あと.Groups.Cast&lt;Group&gt;().Skip(1).Select(g =&gt; g.Value) も、頻繁にあるあるなので、Matchに拡張メソッド埋めときますか。</p>
 </div>
 <a href="https://neue.cc/23">Prev |</a>
 <a href="https://neue.cc/25">| Next</a>

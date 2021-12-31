@@ -15,7 +15,106 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2011/11/07_351.html">Rx連載開始とRx本感想とZenbook買ったという話</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2011/11/09_352.html">Reactive Extensionsで前後の値を利用する</a></h1>
+<ul class="date"><li>2011-11-09</li></ul>
+<div class="entry_body"><p><a href="https://twitter.com/#!/toya256tweet">@Toya256tweet</a>さんの作成された<a href="http://dependencyvariable.codeplex.com/">Dependency Variable Lib</a>を見て、<a href="http://reactiveproperty.codeplex.com/">ReactiveProperty</a>でも大体再現できるかなあ、でもOldValueとNewValueのところが少し面倒なのよね、というところで一例。ReactivePropertyの値の変更時に、古い値と新しい値を同時に得られるようにします。</p>
+<pre><code class="language-csharp">var p = new ReactiveProperty&lt;int&gt;(1, mode: ReactivePropertyMode.RaiseLatestValueOnSubscribe);
+
+p.Zip(p.Skip(1), (Old, New) =&gt; new { Old, New })
+    .Subscribe(a =&gt; Console.WriteLine(a.Old + &quot; -&gt; &quot; + a.New));
+
+p.Value = 10; // 1 -&gt; 10
+p.Value = 100; // 10 -&gt; 100
+</code></pre>
+<p>挙動は<a href="http://d.hatena.ne.jp/okazuki/20111109/1320817437">@okazukiさんの解説されている</a>通りです。残念ながら、頭やわらかい、というわけではなくて頻出パターンのイディオムなだけなので、ただたんに覚えているから、というだけです、がくり。まあ、LINQにせよRxにせよ、メソッドの組み合わせで成り立っているということは、パターン化しやすいということなのですね。イディオムを知っていればいるほど、更にそのイディオムを組み合わせて、と、手法は無限に広がっていきます。</p>
+<p>私は非同期をvoidにしてモデル作り込むっての好きくないです。IObservableなりTaskなりを返してくれれば、先があるのですが、そうでないとやりようがないですから。例えば<a href="http://d.hatena.ne.jp/okachimachiorz/20111010/1318250533">データモデル考え中 - 急がば回れ、選ぶなら近道</a>で示される「2」のパターンが、Silverlightなどでの従来のやり方だったと思われます。実行のトリガーだけを外から渡して、モデルの中で結果は閉じる。変更はINotifyPropertyChanged経由で通知。正直言って、私はこのやり方はナシだと思っています。スパゲティになりがちだから。Rxは「3」のパターンに近いと思います。順序の制御は、まさにミドルウェア足るReactive Extensionsが保証する。柔軟性は見ての通りで、無限の広がりがあります。</p>
+<p>今まではコールバックしかなかったので必然的に2に収まらざるを得なかったですが、今はRxもあるし、C#5.0からはawaitもあるし、なので、モデルの作り方も「変わっていく」と思います。Viewの機能の強さによってViewModelのありようが変わるように、言語やフレームワークの機能の強さによってModelのありようが変わるのは当然でしょう。</p>
+<h2>ScanとPairwise</h2>
+<p>さて、自分自身と結合というのは、結局のところ二つ購読しているということなので、これはIObservableがHotでないと成り立ちません(ReactivePropertyはHotです)。というわけで、ColdなIObservableでも対応したい時はScanを使うといいでしょう。HotとかColdとか何言ってるのか分からないという場合は<a href="http://d.hatena.ne.jp/okazuki/20111107/1320677760">Reactive Extensions再入門 その５「HotとCold」 - かずきのBlog@Hatena</a>を読むといいでしょう。最近、自分で解説してるのを放棄しだしてる気がするよくない傾向、ではなくて、次回の<a href="http://www.atmarkit.co.jp/fdotnet/introrx/index/index.html">Reactive Extensions（Rx）入門 － ＠IT</a>ではまさにObservable.TimerとフツーのTimerを使ってColdとHotの解説しようと思ってたのですよ！ネタ被った、けれど気にせず書きます:)</p>
+<pre><code class="language-csharp">var p = new ReactiveProperty&lt;int&gt;(1, mode: ReactivePropertyMode.RaiseLatestValueOnSubscribe);
+
+var oldNewPair = p.Scan(Tuple.Create(0, 0), (t, x) =&gt; Tuple.Create(t.Item2, x)).Skip(1);
+
+oldNewPair.Subscribe(Console.WriteLine);
+
+p.Value = 10; // (1, 10)
+p.Value = 100; // (10, 100)
+</code></pre>
+<p>Scanは自分自身の前の値を参照できるので、色々と応用が効きます。値の入れ物のための初期値は不要なのでSkip(1)で除去してやるのがポイント。</p>
+<p>もう一つ、メソッドの組み合わせでのパターン化、というのは、つまりパーツ化しやすいということでもあります。拡張メソッドに分離してやりましょう。</p>
+<pre><code class="language-csharp">public static class ObservablePairwiseExtensions
+{
+    // OldNewPair&lt;T&gt;はReactivePropertyに入っています
+    // using Codeplex.Reactive.Extensions;
+
+    public static IObservable&lt;OldNewPair&lt;T&gt;&gt; Pairwise&lt;T&gt;(this IObservable&lt;T&gt; source)
+    {
+        return source.Scan(
+                new OldNewPair&lt;T&gt;(default(T), default(T)),
+                (pair, newValue) =&gt; new OldNewPair&lt;T&gt;(pair.NewItem, newValue))
+            .Skip(1);
+    }
+
+    public static IObservable&lt;TR&gt; Pairwise&lt;T, TR&gt;(this IObservable&lt;T&gt; source, Func&lt;T, T, TR&gt; selector)
+    {
+        return source.Pairwise().Select(x =&gt; selector(x.OldItem, x.NewItem));
+    }
+}
+
+// ↑というような拡張メソッドを作ってやったとして
+var p = new ReactiveProperty&lt;int&gt;(1, mode: ReactivePropertyMode.RaiseLatestValueOnSubscribe);
+
+p.Pairwise().Subscribe(x =&gt; Console.WriteLine(x.OldItem + &quot; -&gt; &quot; + x.NewItem));
+
+p.Value = 10; // 1 -&gt; 10
+p.Value = 100; // 10 -&gt; 100
+</code></pre>
+<p>OldNewPairを使ったのは、TupleがSL/WP7にないから、というのと、OldItemとNewItemというプロパティ名に意味があって、分かりやすいから、です。基本的にC#でTupleを使うことはあんまないですね。LINQのパイプライン内でならば匿名型、それを超えるなら面倒くさくてもクラスを立ててあげたほうがいいと、私は思っています。勿論、今後Tupleのための構文やパターンマッチが入るとしたら別ですけど。というか、つまるところ専用構文がない状態ではTupleを使うメリットはそんなにないのです。匿名型かわいいよ匿名型。言語比較の際に、<a href="http://d.hatena.ne.jp/ymotongpoo/20111105/1320506449">C#はTupleがこんな腐ってるぜー</a>、とかやられるのはちょっと勘弁願いたいところ(まぁでも普通に敵いませんのは認めます、けれど言語・IDE・フレームワークは三位一体だとも思っています。引き離して単独で評価することには、あまり価値を感じません。IDEでうまく機能することを優先した言語、それを前提にしたフレームワーク。どの要素も引き離せませんから。はいはい、C#がお好きなんですね、という感じですが、でも例えばHTML/ブラウザというGUIフレームワークの上だったらJavaScriptがベストだ、といった捉え方でもありますね)</p>
+<p>それはともかくとして、Pairwiseは多用しそうなので、次のReactiveProperty(ver.0.3)で入れたいと思います(あとOldNewPairのToStringのオーバーライド)。ちなみに<a href="http://linqjs.codeplex.com/">linq.js - LINQ for JavaScript</a>にはPairwise、入ってます。そう、Rxでの頻出パターンということは、それはIx(Enumerable)にも存在するパターンなのです。この辺がRxの面白いところです！私にとって、こういった書き方の初出は<a href="http://d.hatena.ne.jp/NyaRuRu/20090311/p1">前後の値も利用したシーケンス処理 - NyaRuRuの日記</a>でした。</p>
+<h2>ObserveChanged</h2>
+<p>突然出てきたOldNewPairですが、これが既にReactiveProperty内で定義されているのは、ObservableCollectionの拡張メソッド群で使用しているからです。今まで紹介していなかったと思うので、ここで紹介しましょう。</p>
+<pre><code class="language-csharp">// using Codeplex.Reactive.Extensionsとすると
+// ObservableCollection&lt;T&gt;に(ReactiveColelctionとか継承したものでも可)
+// ObserveXxxChangedという拡張メソッドが利用できる
+var collection = new ObservableCollection&lt;int&gt;();
+
+// 追加されたのを監視できる、IObservable&lt;T&gt;
+collection.ObserveAddChanged()
+    .Subscribe(x =&gt; Console.WriteLine(&quot;Add:&quot; + x));
+// 削除されたのを監視できる、IObservable&lt;T&gt;
+collection.ObserveRemoveChanged()
+    .Subscribe(x =&gt; Console.WriteLine(&quot;Remove:&quot; + x));
+// 置換を監視できる、IObservable&lt;OldNewPair&lt;T&gt;&gt;
+collection.ObserveReplaceChanged()
+    .Subscribe(p =&gt; Console.WriteLine(p.OldItem + &quot;→&quot; + p.NewItem));
+// リセットを監視できる、IObservable&lt;Unit&gt;
+collection.ObserveResetChanged()
+    .Subscribe(_ =&gt; Console.WriteLine(&quot;Clear&quot;));
+
+collection.Add(100); // Add:100
+collection.Add(1000); // Add:1000
+collection[1] = 300; // 1000→300
+collection.Remove(100); // Remove:100
+collection.Clear(); // Clear
+</code></pre>
+<p>この手の監視では、通常CollectionChangedイベント経由でNotifyCollectionChangedEventArgsを使って値を取り出すわけですが、型がobject[]なので一々キャストしたりなど、非常に使いにくいと思っていました。ObserveXxxChangedを使えば、完全にタイプセーフで、値も取り出しやすい形に整形してくれています。是非是非どうぞ。</p>
+<h2>まとめ</h2>
+<p>@Toya256tweetさんにも示唆頂いたのですが、ReactivePropertyはMVVMに限定されない、汎用的なものだと考えています。値の導出ルールを宣言的に書く、というのは色々なところで使える、気がします。でもやはり、Functional Reactive Programmingが全然流行ってないことを考えても、ルールによって自動的に変動する値って、基本的にGUI向けなのだろうなあ、って。そして、GUIで強いのはやっぱJavaとか.NETといったFRP不毛地帯なので、流行るなんて考えられないことでした。しかし、今は違う。C#にはRxが来た。C#で実現できるのならば、強力なGUIプラットフォームが目の前にあるわけなので、かなり可能性はあるんじゃないかな！と思いたいところです。</p>
+<p><a href="http://www.kmonos.net/wlog/83.html#_2259080315">d.y.d. - ReaJ / Reactive JavaScript</a>の例は</p>
+<pre><code class="language-csharp">// RaiseLatestValueOnSubscribeはv0.3ではデフォルトに変更する予定
+var mode = ReactivePropertyMode.RaiseLatestValueOnSubscribe;
+
+var x = new ReactiveProperty&lt;int&gt;(10, mode);
+var y = x.Select(n =&gt; n + 100).ToReactiveProperty(mode: mode);
+x.Value = 20;
+x.Value = 30;
+Console.WriteLine(y.Value); // 130
+</code></pre>
+<p>まあ、不格好です。ReactiveProperty用の専用構文でも用意してくれないとね、rp x = 10; rp y = x + 100; とかで上記の形に整形されたら素敵なのですが。というのはともかくとして、一応、実現できています。GUI環境への反映はWPFのバインディング機構に投げて解決ですし。JavaScriptにおいても、ReactivePropertyを移植して、ベースとして<a href="http://knockoutjs.com/">Knockout.js</a>辺りを採用すればいい感じに実用的になりそうです。その辺は追々やっていきたいところ。</p>
+<p>勿論、Rx自体の可能性はGUI(や非同期)だけに閉じているわけではないので、全く別なところでの可能性、使い道というのも追い求めていきたいです。</p>
+<p>ともあれともかく、<a href="http://reactiveproperty.codeplex.com/">ReactiveProperty</a>、試してみてくださいな。</p>
+</div>
+<h1><a href="https://neue.cc/2011/11/07_351.html">Rx連載開始とRx本感想とZenbook買ったという話</a></h1>
 <ul class="date"><li>2011-11-07</li></ul>
 <div class="entry_body"><p>まーたブログを放置気味な昨今は大変よろしくなく、だらだらTwitterを眺めているだけで一日が終わる症にかかっています。さて、そんなわけですが、@ITにてRx入門の連載を開始しました。</p>
 <ul>
@@ -1808,583 +1907,6 @@ static void Main(string[] args)
 <h2>まとめ</h2>
 <p>再度、冒頭の図を眺め直してもらうと、ああ、なるほどそういうことね、と分かりますでしょうか？</p>
 <p>とはいえ、ShareもMemoizeもPublishもあんま使うことはないかと思いますぶっちゃけ！Memoizeは、使いたいシチュエーションは確かに多いのですけれど、しかし事前にToArrayしちゃってたりしちゃうことのほうが多いかなー、と。Shareは面白いんだけど使いどころを選ぶ。Publishは挙動が読みきれなくなりがちなので、避けたほうがいいと思います。</p>
-</div>
-<h1><a href="https://neue.cc/2011/08/10_337.html">LINQ to Objects & Interactive Extensions & linq.js 全メソッド概説</a></h1>
-<ul class="date"><li>2011-08-10</li></ul>
-<div class="entry_body"><p>@ITに以前書いたLINQの基礎知識の話が載りました -&gt; <a href="http://www.atmarkit.co.jp/fdotnet/chushin/greatblogentry_06/greatblogentry_06_01.html" title="LINQの仕組み＆遅延評価の正しい基礎知識 － ＠IT">LINQの仕組み＆遅延評価の正しい基礎知識 － ＠IT</a>。ああ、もっとしっかり書いていれば(図もへっぽこだし)、と思ったり思わなかったり。それでも校正していただいたのと、細部は修正してあるので、元のものよりも随分と読みやすいはずです。そういえばで1月頭の話なんですね、姉妹編としてRxの基礎知識もやるつもりだったのにまだやってないよ！</p>
-<p>ところでそもそも基礎知識といったら標準クエリ演算子が何をできるかではないのでしょうか？知ってるようで知らない標準クエリ演算子。<a href="http://msdn.microsoft.com/ja-jp/vcsharp/aa336746">101 LINQ Samples</a>もあるし<a href="http://msdn.microsoft.com/ja-jp/library/bb397926.aspx">MSDNのリファレンス</a>は十分に充実していますが、しかし意外と見逃しもあるかもしれません。また、Interactive Extensionsで何が拡張されているのかは知っていますか？ついでにJS実装のlinq.jsには何があるのか知っていますか？</p>
-<p>そんなわけで、LINQ to Objects、Ix、linq.jsの全メソッドを一行解説したいと思います。</p>
-<h2>LINQ to Objects</h2>
-<p>いわゆる、標準クエリ演算子。.NET 3.5から使えます。.NET4.0からはZipメソッドが追加されました。なお、サンプルと実行例は<a href="http://neue.cc/reference.htm" title="linq.js Reference">linq.js Reference</a>に「完全に」同じ挙動をするJS実装での例がありますので、そちらを参照にどうぞ。こういう場合はJS実装だと便利ですね。</p>
-<table>
-  <tr>
-    <td>Aggregate</td>
-    <td>汎用的な値算出</td>
-  </tr>
-  <tr>
-    <td>All</td>
-    <td>条件に全て一致するか</td>
-  </tr>
-  <tr>
-    <td>Any</td>
-    <td>条件に一つでも一致するか、引数なしの場合は空かどうか</td>
-  </tr>
-  <tr>
-    <td>AsEnumerable</td>
-    <td>IEnumerable&lt;T&gt;へアップキャスト</td>
-  </tr>
-  <tr>
-    <td>Average</td>
-    <td>平均</td>
-  </tr>
-  <tr>
-    <td>Cast</td>
-    <td>値のダウンキャスト、主な用途はIEnumerableからIEnumerable&lt;T&gt;への変換</td>
-  </tr>
-  <tr>
-    <td>Concat</td>
-    <td>引数のシーケンスを後ろに連結</td>
-  </tr>
-  <tr>
-    <td>Contains</td>
-    <td>値が含まれているか、いわばAnyの簡易版</td>
-  </tr>
-  <tr>
-    <td>Count</td>
-    <td>シーケンスの件数</td>
-  </tr>
-  <tr>
-    <td>DefaultIfEmpty</td>
-    <td>シーケンスが空の場合、デフォルト値を返す(つまり長さ1)</td>
-  </tr>
-  <tr>
-    <td>Distinct</td>
-    <td>重複除去</td>
-  </tr>
-  <tr>
-    <td>ElementAt</td>
-    <td>指定インデックスの要素の取得</td>
-  </tr>
-  <tr>
-    <td>ElementAtOrDefault</td>
-    <td>指定インデックスの要素の取得、なければデフォルト値を返す</td>
-  </tr>
-  <tr>
-    <td>Empty</td>
-    <td>空シーケンスの生成</td>
-  </tr>
-  <tr>
-    <td>Except</td>
-    <td>差集合・差分だけ、集合なので重複は除去される</td>
-  </tr>
-  <tr>
-    <td>First</td>
-    <td>最初の値の取得、ない場合は例外が発生</td>
-  </tr>
-  <tr>
-    <td>FirstOrDefault</td>
-    <td>最初の値を取得、ない場合はデフォルト値を返す</td>
-  </tr>
-  <tr>
-    <td>GroupBy</td>
-    <td>グループ化、ToLookupの遅延評価版(ただしストリーミングでの遅延評価ではない)</td>
-  </tr>
-  <tr>
-    <td>GroupJoin</td>
-    <td>右辺をグループにして結合、外部結合をしたい時にDefaultIfEmptyと合わせて使ったりもする</td>
-  </tr>
-  <tr>
-    <td>Intersect</td>
-    <td>積集合・共通の値だけ、集合なので重複は除去される</td>
-  </tr>
-  <tr>
-    <td>Join</td>
-    <td>内部結合</td>
-  </tr>
-  <tr>
-    <td>Last</td>
-    <td>最後の値を取得、ない場合は例外が発生</td>
-  </tr>
-  <tr>
-    <td>LastOrDefault</td>
-    <td>最後の値を取得、ない場合はデフォルト値を返す</td>
-  </tr>
-  <tr>
-    <td>LongCount</td>
-    <td>シーケンスの件数、longなので長い日も安心</td>
-  </tr>
-  <tr>
-    <td>Max</td>
-    <td>最大値</td>
-  </tr>
-  <tr>
-    <td>Min</td>
-    <td>最小値</td>
-  </tr>
-  <tr>
-    <td>OfType</td>
-    <td>指定した型の値だけを返す、つまりWhereとisが組み合わさったようなもの</td>
-  </tr>
-  <tr>
-    <td>OrderBy</td>
-    <td>昇順に並び替え</td>
-  </tr>
-  <tr>
-    <td>OrderByDescending</td>
-    <td>降順に並び替え</td>
-  </tr>
-  <tr>
-    <td>Range</td>
-    <td>指定個数のintシーケンスの生成</td>
-  </tr>
-  <tr>
-    <td>Repeat</td>
-    <td>一つの値を繰り返すシーケンスの生成</td>
-  </tr>
-  <tr>
-    <td>Reverse</td>
-    <td>逆から列挙</td>
-  </tr>
-  <tr>
-    <td>Select</td>
-    <td>射影、関数の第二引数はインデックス</td>
-  </tr>
-  <tr>
-    <td>SelectMany</td>
-    <td>シーケンスを一段階平らにする、モナドでいうbind</td>
-  </tr>
-  <tr>
-    <td>SequenceEqual</td>
-    <td>二つのシーケンスを値で比較</td>
-  </tr>
-  <tr>
-    <td>Single</td>
-    <td>唯一の値を取得、複数ある場合は例外が発生</td>
-  </tr>
-  <tr>
-    <td>SingleOrDefault</td>
-    <td>唯一の値を取得、複数ある場合はデフォルト値を返す</td>
-  </tr>
-  <tr>
-    <td>Skip</td>
-    <td>指定個数だけ飛ばす</td>
-  </tr>
-  <tr>
-    <td>SkipWhile</td>
-    <td>条件が正のあいだ飛ばす</td>
-  </tr>
-  <tr>
-    <td>Sum</td>
-    <td>合計</td>
-  </tr>
-  <tr>
-    <td>Take</td>
-    <td>指定個数列挙、シーケンスの個数より多く指定した場合はシーケンスの個数分だけ</td>
-  </tr>
-  <tr>
-    <td>TakeWhile</td>
-    <td>条件が正のあいだ列挙</td>
-  </tr>
-  <tr>
-    <td>ThenBy</td>
-    <td>同順の場合のソートキーの指定、昇順に並び替え</td>
-  </tr>
-  <tr>
-    <td>ThenByDescending</td>
-    <td>同順の場合のソートキーの指定、降順に並び替え</td>
-  </tr>
-  <tr>
-    <td>ToArray</td>
-    <td>配列に変換</td>
-  </tr>
-  <tr>
-    <td>ToDictionary</td>
-    <td>辞書に変換</td>
-  </tr>
-  <tr>
-    <td>ToList</td>
-    <td>リストに変換</td>
-  </tr>
-  <tr>
-    <td>ToLookup</td>
-    <td>不変のマルチ辞書(一つのキーに複数の値を持つ)に変換</td>
-  </tr>
-  <tr>
-    <td>Union</td>
-    <td>和集合・両方の値全て、集合なので重複は除去される</td>
-  </tr>
-  <tr>
-    <td>Where</td>
-    <td>フィルタ</td>
-  </tr>
-  <tr>
-    <td>Zip</td>
-    <td>二つのシーケンスの結合、長さが異なる場合短いほうに合わされる</td>
-  </tr>
-</table>
-<p>暗記する必要はなくて、なんとなくこういうのがあってこんな名前だったかなー、とぐらいに覚えておけば、IntelliSenseにお任せできるので、それで十分です。</p>
-<p>リスト処理という観点からみるとLINQはかなり充実しているわけですが、更に他の言語と比較した場合の特色は、やはりクエリ構文。SelectManyへの構文は多くの言語が備えていますが(<a href="http://matarillo.com/general/monads.php">モナドの驚異</a>を参照のこと、LINQはLINM:言語統合モナドである、というお話)、SQLの構文をベースにしたJoin、GroupBy、OrderByへの専用記法は、意外と、というか普通に便利。</p>
-<p>特にJoinはあってよかったな、と思います、インメモリで色々なところからデータ引っ張ってきて結合などすると特に。一つぐらいの結合なら別にメソッド構文でいいのですが、フツーのSQLと同じように大量のjoinを並べる場合に、クエリ構文じゃないとシンドい。インメモリからデータベースまで統一的な記法で扱える、ということの凄さを実感するところ。</p>
-<p>といっても、普段はほとんどメソッド構文で書いてるんですけどねー。あくまで、込み入った状況になるときだけクエリ構文にしています。クエリ構文では表現できないものが結構多いわけで、わざわざ、これはクエリ構文だけで表現できるからクエリ構文にするかー、とか考えるのもカッタルイので。あと、単純にIntelliSenseでポコポコ打ってるほうが快適、というのもあります。</p>
-<p>クエリ構文は、モナドへの記法というよりも、強力なリスト内包表記といった印象も、<a href="http://research.microsoft.com/en-us/um/people/simonpj/papers/list-comp/index.htm">HaskellへのOrder By, Group Byのペーパー</a>見て思ったりなんかしたりして。</p>
-<h2>Ix</h2>
-<p>Ix(Interactive Extensions)は<a href="http://msdn.microsoft.com/en-us/data/gg577609" title="Reactive Extensions">Reactive Extensions</a>で、現在は実験的なものとして提供されている、Enumerableの拡張メソッド群。NuGetの<a href="http://nuget.org/List/Packages/Ix_Experimental-Main" title="NuGet gallery">Ix_Experimental-Main</a>で入れるのが使いやすい感じ。<a href="http://www.infoq.com/jp/news/2011/07/Ix">InfoQ: LINQ to Objectsのためのインタラクティブエクステンション</a>に解説が少し出ていましたが、少し不足していたり、間違っていたり(DoWhileとTakeWhileは一見似ていますが、挙動は全然異なるし、Forは別に全く興味深くなくSelectManyと同じです)したので、こちらの方が正しいです(ｷﾘｯ</p>
-<table>
-  <tr>
-    <td>Buffer</td>
-    <td>指定個数分に区切って配列で値を列挙</td>
-  </tr>
-  <tr>
-    <td>Case</td>
-    <td>引数のIDictionaryを元に列挙するシーケンスを決める、辞書に存在しない場合はEmpty</td>
-  </tr>
-  <tr>
-    <td>Catch</td>
-    <td>例外発生時に代わりに後続のシーケンスを返す</td>
-  </tr>
-  <tr>
-    <td>Concat</td>
-    <td>可変長引数を受け入れて連結する生成子、拡張メソッド版はシーケンスのシーケンスを平らにする</td>
-  </tr>
-  <tr>
-    <td>Create</td>
-    <td>getEnumeratorを渡し任意のIEnumerableを生成する、といってもEnumerator.Createがないため、あまり意味がない</td>
-  </tr>
-  <tr>
-    <td>Defer</td>
-    <td>シーケンスの生成をGetEumerator時まで遅延</td>
-  </tr>
-  <tr>
-    <td>Distinct</td>
-    <td>比較キーを受け入れるオーバーロード</td>
-  </tr>
-  <tr>
-    <td>DistinctUntilChanged</td>
-    <td>同じ値が続くものを除去</td>
-  </tr>
-  <tr>
-    <td>Do</td>
-    <td>副作用として各値にActionを適用し、値をそのまま列挙</td>
-  </tr>
-  <tr>
-    <td>DoWhile</td>
-    <td>一度列挙後に条件判定し、合致すれば再列挙</td>
-  </tr>
-  <tr>
-    <td>Expand</td>
-    <td>幅優先探索でシーケンスを再帰的に平らにする</td>
-  </tr>
-  <tr>
-    <td>Finally</td>
-    <td>列挙完了時に指定したActionを実行</td>
-  </tr>
-  <tr>
-    <td>For</td>
-    <td>SelectManyと一緒なので存在意義はない(Rxと鏡にするためだけに存在)</td>
-  </tr>
-  <tr>
-    <td>ForEach</td>
-    <td>foreach、関数の第二引数はインデックス</td>
-  </tr>
-  <tr>
-    <td>Generate</td>
-    <td>forループを模した初期値、終了判定、増加関数、値成形関数を指定する生成子</td>
-  </tr>
-  <tr>
-    <td>Hide</td>
-    <td>IEnumerable&lt;T&gt;に変換、具象型を隠す</td>
-  </tr>
-  <tr>
-    <td>If</td>
-    <td>条件が正なら指定したシーケンスを、負なら指定したシーケンス、もしくはEmptyで列挙する</td>
-  </tr>
-  <tr>
-    <td>IgnoreElements</td>
-    <td>後に続くメソッドに何の値も流さない</td>
-  </tr>
-  <tr>
-    <td>IsEmpty</td>
-    <td>シーケンスが空か、!Any()と等しい</td>
-  </tr>
-  <tr>
-    <td>Max</td>
-    <td>IComparer&lt;T&gt;を受け入れるオーバーロード</td>
-  </tr>
-  <tr>
-    <td>MaxBy</td>
-    <td>指定されたキーで比較し最大値だった値を返す</td>
-  </tr>
-  <tr>
-    <td>Memoize</td>
-    <td>メモ化、複数回列挙する際にキャッシュされた値を返す</td>
-  </tr>
-  <tr>
-    <td>Min</td>
-    <td>IComparer&lt;T&gt;を受け入れるオーバーロード</td>
-  </tr>
-  <tr>
-    <td>MinBy</td>
-    <td>指定されたキーで比較し最小値だった値を返す</td>
-  </tr>
-  <tr>
-    <td>OnErrorResumeNext</td>
-    <td>例外が発生してもしなくても後続のシーケンスを返す</td>
-  </tr>
-  <tr>
-    <td>Publish</td>
-    <td>ShareとMemoizeが合わさったような何か</td>
-  </tr>
-  <tr>
-    <td>Repeat</td>
-    <td>無限リピート生成子、拡張メソッドのほうは列挙後に無限/指定回数最列挙</td>
-  </tr>
-  <tr>
-    <td>Retry</td>
-    <td>例外発生時に再度列挙する</td>
-  </tr>
-  <tr>
-    <td>Return</td>
-    <td>単一シーケンス生成子</td>
-  </tr>
-  <tr>
-    <td>Scan</td>
-    <td>Aggregateの算出途中の値も列挙する版</td>
-  </tr>
-  <tr>
-    <td>SelectMany</td>
-    <td>引数を使わず別のシーケンスに差し替えるオーバーロード</td>
-  </tr>
-  <tr>
-    <td>Share</td>
-    <td>列挙子を共有</td>
-  </tr>
-  <tr>
-    <td>SkipLast</td>
-    <td>後ろからn個の値をスキップ</td>
-  </tr>
-  <tr>
-    <td>StartWith</td>
-    <td>先頭に値を連結</td>
-  </tr>
-  <tr>
-    <td>TakeLast</td>
-    <td>後ろからn個の値だけを列挙</td>
-  </tr>
-  <tr>
-    <td>Throw</td>
-    <td>例外が発生するシーケンス生成子</td>
-  </tr>
-  <tr>
-    <td>Using</td>
-    <td>列挙完了後にDisposeするためのシーケンス生成子</td>
-  </tr>
-  <tr>
-    <td>While</td>
-    <td>列挙前に条件判定し合致したら列挙し、終了後再度条件判定を繰り返す生成子</td>
-  </tr>
-</table>
-<p>みんな実装したことあるForEachが載っているのが一番大きいのではないでしょうか。別に自分で実装するのは簡単ですが、公式に(といってもExperimental Releaseですが)あると、全然違いますから。なお、何故ForEachが標準クエリ演算子にないのか、というのは、<a href="http://blogs.msdn.com/b/ericlippert/archive/2009/05/18/foreach-vs-foreach.aspx">“foreach” vs “ForEach” - Fabulous Adventures In Coding</a>によれば副作用ダメ絶対とのことで。納得は……しない。</p>
-<p>Ixに含まれるメソッドは標準クエリ演算子では「できない」もしくは「面倒くさい」。Ixを知ることは標準だけでは何ができないのかを知ること。何ができないのかを知っていれば、必要な局面でIxを使うなり自前実装するなりといった対応がすぐに取れます、無理に標準クエリ演算子をこねくり回すことなく。例えばBufferやExpandは非常に有益で、使いたいシチュエーションはいっぱいあるんですが、標準クエリ演算子ではできないことです。</p>
-<p>While, DoWhileとTakeWhileの違いは条件判定する箇所。While,DoWhileは列挙完了前/後に判定し、判定がtrueならシーケンスを再び全て列挙する。TakeWhileは通る値で毎回判定する。</p>
-<p>PublishとMemoizeの違いは難解です。Memoizeは直球そのままなメモ化なんですが、Publishが凄く説明しづらくて……。Enumerator取得まではShareと同じく列挙子の状態は共有されてるんですが、取得後はMemoizeのようにキャッシュした値を返すので値の順番は保証される、といった感じです。うまく説明できません。</p>
-<p>存在意義が微妙なものも、それなりにありますね。例えばIfとCaseとForなどは、正直、使うことはないでしょう。Usingも、これを使うなら別メソッドに分けて、普通にusing + yield returnで書いてしまうほうが良いと私は考えています。</p>
-<p>Ixを加えると、ほとんど全てをLINQで表現出来るようになりますが、やりすぎて解読困難に陥ったりしがちなのには少し注意を。複雑になるようならベタベタ書かずに、一定の塊にしたものを別メソッドに分ければいいし、分けた先では、メソッドを組み合わせるよりも、yield returnで書いたほうが素直に表現出来るかもしれません。</p>
-<p>適切なバランス感覚を持って、よきLINQ生活を！</p>
-<h2>linq.js</h2>
-<p>LINQ to ObjectsのJavaScript実装である<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js</a>にも、標準クエリ演算子の他に(作者の私の趣味で)大量のメソッドが仕込んであるので、せっかくなのでそれの解説も。標準クエリ演算子にあるものは省きます(挙動は同一なので)。また、C#でIEqualityComparer&lt;T&gt;を受け取るオーバーロードは、全てキーセレクター関数のオーバーロードに置き換えられています。</p>
-<p>一行サンプルと実行は<a href="http://neue.cc/reference.htm" title="linq.js Reference">linq.js Reference</a>のほうをどうぞ。</p>
-<table>
-  <tr>
-    <td>Alternate</td>
-    <td>値の間にセパレーターを織り込む、HaskellのIntersperseと同じ</td>
-  </tr>
-  <tr>
-    <td>BufferWithCount</td>
-    <td>IxのBufferと同じ、次のアップデートでBufferに改称予定</td>
-  </tr>
-  <tr>
-    <td>CascadeBreadthFirst</td>
-    <td>幅優先探索でシーケンスを再帰的に平らにする、IxのExpandと同じ</td>
-  </tr>
-  <tr>
-    <td>CascadeDepthFirst</td>
-    <td>深さ優先探索でシーケンスを再帰的に平らにする</td>
-  </tr>
-  <tr>
-    <td>Catch</td>
-    <td>IxのCatchと同じ</td>
-  </tr>
-  <tr>
-    <td>Choice</td>
-    <td>引数の配列、もしくは可変長引数をランダムに無限に列挙する生成子</td>
-  </tr>
-  <tr>
-    <td>Cycle</td>
-    <td>引数の配列、もしくは可変長引数を無限に繰り返す生成子</td>
-  </tr>
-  <tr>
-    <td>Do</td>
-    <td>IxのDoと同じ</td>
-  </tr>
-  <tr>
-    <td>Finally</td>
-    <td>IxのFinallyと同じ</td>
-  </tr>
-  <tr>
-    <td>Flatten</td>
-    <td>ネストされた配列を平らにする</td>
-  </tr>
-  <tr>
-    <td>Force</td>
-    <td>シーケンスを列挙する</td>
-  </tr>
-  <tr>
-    <td>ForEach</td>
-    <td>IxのForEachと同じ</td>
-  </tr>
-  <tr>
-    <td>From</td>
-    <td>配列やDOMなど長さを持つオブジェクトをEnumerableに変換、linq.jsの要の生成子</td>
-  </tr>
-  <tr>
-    <td>Generate</td>
-    <td>ファクトリ関数を毎回実行して値を作る無限シーケンス生成子、IxのGenerateとは違う(IxのGenerateはUnfoldで代用可)</td>
-  </tr>
-  <tr>
-    <td>IndexOf</td>
-    <td>指定した値を含む最初のインデックス値を返す</td>
-  </tr>
-  <tr>
-    <td>Insert</td>
-    <td>指定したインデックスの箇所に値を挿入、Insert(0, value)とすればIxのStartWithと同じ</td>
-  </tr>
-  <tr>
-    <td>LastIndexOf</td>
-    <td>指定した値を含む最後のインデックス値を返す</td>
-  </tr>
-  <tr>
-    <td>Let</td>
-    <td>自分自身を引数に渡し、一時変数を使わず自分自身に変化を加えられる</td>
-  </tr>
-  <tr>
-    <td>Matches</td>
-    <td>正規表現のマッチ結果をシーケンスとして列挙する生成子</td>
-  </tr>
-  <tr>
-    <td>MaxBy</td>
-    <td>IxのMaxByと同じ</td>
-  </tr>
-  <tr>
-    <td>MemoizeAll</td>
-    <td>IxのMemoizeと同じ、次のアップデートでMemoizeに改称予定</td>
-  </tr>
-  <tr>
-    <td>MinBy</td>
-    <td>IxのMinByと同じ</td>
-  </tr>
-  <tr>
-    <td>Pairwise</td>
-    <td>隣り合う要素とのペアを列挙</td>
-  </tr>
-  <tr>
-    <td>PartitionBy</td>
-    <td>キーで指定した同じ値が続いているものをグループ化する</td>
-  </tr>
-  <tr>
-    <td>RangeDown</td>
-    <td>指定個数のマイナス方向数値シーケンス生成子</td>
-  </tr>
-  <tr>
-    <td>RangeTo</td>
-    <td>指定した値まで(プラス方向、マイナス方向)の数値シーケンス生成子</td>
-  </tr>
-  <tr>
-    <td>RepeatWithFinalize</td>
-    <td>単一要素の無限リピート、列挙完了時にその要素を受け取る指定した関数を実行</td>
-  </tr>
-  <tr>
-    <td>Return</td>
-    <td>IxのReturnと同じ</td>
-  </tr>
-  <tr>
-    <td>Scan</td>
-    <td>IxのScanと同じ</td>
-  </tr>
-  <tr>
-    <td>Share</td>
-    <td>IxのShareと同じ</td>
-  </tr>
-  <tr>
-    <td>Shuffle</td>
-    <td>シーケンスをランダム順に列挙する</td>
-  </tr>
-  <tr>
-    <td>TakeExceptLast</td>
-    <td>IxのSkipLastと同じ</td>
-  </tr>
-  <tr>
-    <td>TakeFromLast</td>
-    <td>IxのTakeLastと同じ</td>
-  </tr>
-  <tr>
-    <td>ToInfinity</td>
-    <td>無限大までの数値シーケンス生成子</td>
-  </tr>
-  <tr>
-    <td>ToJSON</td>
-    <td>シーケンスをJSON文字列に変換(組み込みのJSON関数のあるブラウザかjson2.jsの読み込みが必要)</td>
-  </tr>
-  <tr>
-    <td>ToNegativeInfinity</td>
-    <td>マイナス無限大までの数値シーケンス生成子</td>
-  </tr>
-  <tr>
-    <td>ToObject</td>
-    <td>JSのオブジェクトに変換</td>
-  </tr>
-  <tr>
-    <td>ToString</td>
-    <td>文字列として値を連結</td>
-  </tr>
-  <tr>
-    <td>Trace</td>
-    <td>console.logで値をモニタ</td>
-  </tr>
-  <tr>
-    <td>Unfold</td>
-    <td>Aggregateの逆、関数を連続適用する無限シーケンス生成子</td>
-  </tr>
-  <tr>
-    <td>Write</td>
-    <td>document.writelnで値を出力</td>
-  </tr>
-  <tr>
-    <td>WriteLine</td>
-    <td>document.writeln + &lt;br /&gt;で値を出力</td>
-  </tr>
-</table>
-<table>
-  <tr>
-    <td>TojQuery</td>
-    <td>シーケンスをjQueryオブジェクトに変換</td>
-  </tr>
-  <tr>
-    <td>toEnumerable</td>
-    <td>jQueryの選択している複数の要素を単一要素のjQueryオブジェクトにしてEnumerableへ変換</td>
-  </tr>
-  <tr>
-    <td>ToObservable</td>
-    <td>引数のSchduler上で(デフォルトはCurrentThread)Observableへ変換</td>
-  </tr>
-  <tr>
-    <td>ToEnumerable</td>
-    <td>Cold ObservableのみEnumerableへ変換</td>
-  </tr>
-</table>
-<p>Ixと被るものもあれば、そうでもないものも。ToStringなどは分かりやすく便利でよく使うのではかと。ToJSONもいいですね。Fromは拡張メソッドのない/prototype汚染をしないための、JavaScriptだけのためのメソッド。Matchesは地味に便利です、JSの正規表現は使いやすいようでいて、マッチの列挙はかなり面倒くさいので、そこを解消してくれます。linq.jsは移植しただけ、ではあるんですが、同時に移植しただけではなくて、JavaScriptでLINQはどうあるべきか、どうあると便利なのか、という考えに基づいて調整されています。</p>
-<p>JavaScriptにはyield returnがないので(Firefoxにはyieldありますが)、シーケンスは全て演算子の組み合わせだけで表現できなければならない。というのが、手厚くメソッドを用意している理由でもあります。これだけあれば何だって作れるでしょう、きっと多分恐らく。</p>
-<h2>まとめ</h2>
-<p>これで今日からLINQ to Objectsマスター。Rx版もそのうち書きます(以前に<a href="http://neue.cc/2010/07/28_269.html" title="neue cc - Reactive Extensions入門 + メソッド早見解説表">Reactive Extensions入門 + メソッド早見解説表</a>を書きましたが、今は結構変わってしまいましたからね)。</p>
 </div>
 <a href="https://neue.cc/13">Prev |</a>
 <a href="https://neue.cc/15">| Next</a>

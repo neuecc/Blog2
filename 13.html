@@ -15,7 +15,171 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2012/02/23_366.html">とあるRoslynではないC# Parser、NRefactoryの紹介</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2012/03/08_367.html">LINQのWhereやSelect連打のパフォーマンス最適化について</a></h1>
+<ul class="date"><li>2012-03-08</li></ul>
+<div class="entry_body"><p>Where連打していますか？それともパフォーマンスの悪化を心配して&amp;&amp;連結にしていますか？<a href="http://www.atmarkit.co.jp/fdotnet/chushin/greatblogentry_06/greatblogentry_06_01.html">LINQの仕組み＆遅延評価の正しい基礎知識 － ＠IT</a>ではWhere+Selectに対して</p>
+<blockquote>
+<p>「WhereSelectEnumerableIterator」となっていて、名前のとおり、WhereとSelectが統合されていることです。これは、「Where」-&gt;「Select」が頻出パターンなので、それらを統合することでパフォーマンスを向上させるためでしょう。</p>
+</blockquote>
+<p>と書きましたが、では連打の場合はどうなっているでしょうか。見てみましょう。</p>
+<pre><code class="language-csharp">var seq1 = Enumerable.Range(1, 10)
+    .Where(x =&gt; x % 2 == 0)
+    .Where(x =&gt; x % 3 == 0);
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linqwherewhere.jpg">
+</p>
+<p>// どうでもいいんですが、これは<a href="http://www.microsoft.com/visualstudio/11/ja-jp">Visual Studio 11 Beta</a>です。VS11最高ですよ！</p>
+<p>@ITの記事では、sourceに格納されて内包した形の連鎖となっている、と書きました。しかしseq1のsourceはRangeIteratorで、Where連打のはずなのに、すぐ上の階層が元ソースとなっています。そして、predicateの名前がCombinePredicates。はい、その通りで、2つの条件式が連結されています。確認してみましょう。</p>
+<pre><code class="language-csharp">var pred = (Func&lt;int, bool&gt;)seq1.GetType().GetField(&quot;predicate&quot;, BindingFlags.NonPublic | BindingFlags.Instance).GetValue(seq1);
+
+Console.WriteLine(pred(2)); // false
+Console.WriteLine(pred(3)); // false
+Console.WriteLine(pred(6)); // true
+</code></pre>
+<p>というわけで、Where連打はpredicateが連結されて一つのWhereに最適化されることが確認できました。<a href="http://neue.cc/2009/07/21_178.html">LinqとCountの効率</a>でICollectionやIListの場合の特別扱いなケースがあることを紹介しましたが、Whereに関しても同様な特別扱いが発生するというわけです。</p>
+<h2>Selectの場合</h2>
+<p>Whereの他にSelectの場合も、同じような最適化を行ってくれます。</p>
+<pre><code class="language-csharp">var seq2 = Enumerable.Range(1, 10)
+    .Select(x =&gt; x * 2)
+    .Select(x =&gt; x + 10);
+
+var selector = (Func&lt;int, int&gt;)seq2.GetType().GetField(&quot;selector&quot;, BindingFlags.NonPublic | BindingFlags.Instance).GetValue(seq2);
+
+Console.WriteLine(selector(2)); // 2 * 2 + 10 = 14
+Console.WriteLine(selector(5)); // 5 * 2 + 10 = 20
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linqselectselect.jpg">
+</p>
+<p>sourceのすぐ上がRangeIteratorで、selectorにCombineSelectorsとして格納されていました。なお、型名であるWhereSelectEnumerableIteratorのとおり、現在はpredicateはnullですが、前段にWhereを書けばpredicateに格納されて、やはりWhere+Selectの最適化となります。では、後段にWhereを書いた場合は……？</p>
+<h2>最適化されない場合</h2>
+<p>Where+SelectとSelect+Whereは異なるものです。見てみましょう。</p>
+<pre><code class="language-csharp">var whereSelect = Enumerable.Range(1, 10)
+    .Where(x =&gt; x % 2 == 0)
+    .Select(x =&gt; x * 2);
+
+var selectWhere = Enumerable.Range(1, 10)
+    .Select(x =&gt; x * 2)
+    .Where(x =&gt; x % 2 == 0);
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linqwhereselectselectwhere.jpg">
+</p>
+<p>Where+SelectはWhereSelectEnumerableIteratorのpredicateとselectorにそれぞれデリゲートが格納され、ひとまとめに最適化されていますが、Select+WhereはsourceがRangeIteratorではなくWhereSelectEnumerableIteratorであるように、普通に階層の内包構造となっています。Selectの後にWhereは最適化されません。まあ、そりゃ値が変形されているのだからpredicateがひとまとまりになるわけがなく、当たり前ではあります。</p>
+<p>次にインデックスが使えるオーバーロードのケースを見てみましょう。</p>
+<pre><code class="language-csharp">var whereIndex = Enumerable.Range(1, 10)
+    .Where(x =&gt; x % 2 == 0)
+    .Where((x, i) =&gt; i % 2 == 0);
+
+var selectIndex = Enumerable.Range(1, 10)
+    .Select(x =&gt; x * 2)
+    .Select((x, i) =&gt; i * 2);
+
+// GetEnumeratorしないとpredicate/selectorとsourceがnullです
+// これはyield returnによる生成なためです
+whereIndex.GetEnumerator();
+selectIndex.GetEnumerator();
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linqehereindexselectindex.jpg">
+</p>
+<p>これもひとまとめにしようにも、しようがないので、当然といえば当然ですね。</p>
+<h2>IQueryableの場合</h2>
+<p>IQueryableだとどうなのか、というと……</p>
+<pre><code class="language-csharp">// LINQ to SQL - AdventureWorks sample
+var ctx = new AdventureWorksDataContext();
+var query = from model in ctx.ProductModel
+            where model.Name == &quot;hoge&quot;
+            where model.ProductModelID == 100
+            select model.Instructions;
+
+Console.WriteLine(query);
+</code></pre>
+<pre><code class="language-txt">// 結果
+SELECT [t0].[Instructions]
+FROM [Production].[ProductModel] AS [t0]
+WHERE ([t0].[ProductModelID] = @p0) AND ([t0].[Name] = @p1)
+</code></pre>
+<p>というわけで、LINQ to SQLはand連結されますね。ここで注意なのが、どういう挙動を取るのかは全てクエリプロバイダの解釈次第です。例えば<a href="http://linqtotwitter.codeplex.com/">LINQ to Twitter</a>はwhere連打ではダメで、&amp;&amp;で連結しなければなりません。</p>
+<h2>Reactive Extensionsの場合</h2>
+<p><a href="http://msdn.microsoft.com/en-us/data/gg577609">Reactive Extensions</a>の場合も見てみましょうか。Rx-Main(1.0.11226)では、というと</p>
+<pre><code class="language-csharp">var rx = Observable.Range(1, 10)
+    .Where(x =&gt; x % 2 == 0)
+    .Where(x =&gt; x % 3 == 0);
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linqrxstable.jpg">
+</p>
+<p>さっぱりワケワカメですが、とりあえずひとまとめになってないのでは感でしょうか。それにしても本当にワケワカメ。次にRx_Experimental-Main(1.1.11111)は、というと</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linqrxexperimental.jpg">
+</p>
+<pre><code class="language-csharp">var pred = (Func&lt;int, bool&gt;)rx.GetType().GetField(&quot;_predicate&quot;, BindingFlags.NonPublic | BindingFlags.Instance).GetValue(rx);
+
+Console.WriteLine(pred(2)); // false
+Console.WriteLine(pred(3)); // false
+Console.WriteLine(pred(6)); // true
+</code></pre>
+<p>_predicate発見！Experimental版では挙動が改善され、ひとまとめにされているようです。IDisposable&lt;Generate&gt;は、Rangeの生成がGenerateメソッドによってなされているからですね。しかし、やはり読み取りにくい。</p>
+<h2>Rx v2</h2>
+<p>3/5に<a href="http://www.microsoft.com/download/en/details.aspx?id=29058">Reactive Extensions (Rx) v2.0 Beta</a>の配布がスタートしています。NuGetでは<a href="http://nuget.org/packages/Rx-Main">Install-Package Rx-Main -Pre</a>で配布されていますね。改善内容は後日詳しくということでまだ詳しくは出てないのですが、v2というだけあって中身はガラッと変わっています。とりあえず、見てみましょう。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linqrxv2.jpg">
+</p>
+<p>もちろん、predicateはひとまとめにされているのですが、それだけじゃなくて、とにかく見やすい、分かりやすい。しかし、ところどころ変ですね、Observαble(aがアルファ)だのΩだの。v2はソースのキチガイ度が跳ね上がっているのでILSpyとかで覗いちゃえる人は一度見ちゃうといいと思います、頭おかしい。あと、C#でのプログラミング的な小技も効いてたりして、テクニックの学習にもとても良い。</p>
+<h2>スタックトレースへの影響</h2>
+<p>このコードのクリアさはスタックトレースにも良い影響を与えています。まず、Rx v1で見てみると</p>
+<pre><code class="language-csharp">try
+{
+    Observable.Range(1, 10)
+        .Where(x =&gt; x % 2 == 0)
+        .Take(10)
+        .Timestamp()
+        .Subscribe(_ =&gt; { throw new Exception(); });
+}
+catch (Exception ex)
+{
+    Console.WriteLine(ex.StackTrace);
+}
+</code></pre>
+<pre><code class="language-txt">場所 ConsoleApplication9.Program.&lt;Main&gt;b__1(Timestamped`1 _) 場所 c:\Users\ne
+場所 System.Reactive.AnonymousObserver`1.Next(T value)
+場所 System.Reactive.AbstractObserver`1.OnNext(T value)
+場所 System.Reactive.AnonymousObservable`1.AutoDetachObserver.Next(T value)
+場所 System.Reactive.AbstractObserver`1.OnNext(T value)
+場所 System.Reactive.Linq.Observable.&lt;&gt;c__DisplayClass408`2.&lt;&gt;c__DisplayClass40a.&lt;Select&gt;b__407(TSource x)
+場所 System.Reactive.AnonymousObserver`1.Next(T value)
+場所 System.Reactive.AbstractObserver`1.OnNext(T value)
+場所 System.Reactive.AnonymousObservable`1.AutoDetachObserver.Next(T value)
+場所 System.Reactive.AbstractObserver`1.OnNext(T value)
+場所 System.Reactive.Linq.Observable.&lt;&gt;c__DisplayClass43e`1.&lt;&gt;c__DisplayClass440.&lt;Take_&gt;b__43d(TSource x)
+// 以下略
+</code></pre>
+<p>これは酷い。こんなの見ても何一つ分かりはしません。では、Rx v2で試してみると</p>
+<pre><code class="language-txt">場所 ConsoleApplication10.Program.&lt;Main&gt;b__1(Timestamped`1 _) 場所 c:\Users\n
+場所 System.Reactive.AnonymousObserver`1.Next(T value)
+場所 System.Reactive.ObserverBase`1.OnNext(T value)
+場所 System.Reactive.Linq.Observαble.Timestamp`1._.OnNext(TSource value)
+場所 System.Reactive.Linq.Observαble.Take`1._.OnNext(TSource value)
+場所 System.Reactive.Linq.Observαble.Where`1._.OnNext(TSource value)
+場所 System.Reactive.Linq.Observαble.Range._.LoopRec(Int32 i, Action`1 recurse)
+場所 System.Reactive.Concurrency.Scheduler.&lt;&gt;c__DisplayClass3a`1.&lt;InvokeRec1&gt;b__37(TState state1)
+// 以下略
+</code></pre>
+<p>めっちゃよく分かる。Timestamp-&gt;Take-&gt;Where-&gt;Rangeという遡りがしっかり見える。何て素晴らしいんだ！</p>
+<h2>匿名 vs 有名</h2>
+<p>さて、どういうことかというと、これ、<a href="http://neue.cc/2010/07/05_265.html">neue cc - Rx(Reactive Extensions)を自前簡易再実装する</a>で紹介したような、ラムダ式をぶん投げてその場で匿名のクラスを作るAnonymousパターンをやめたんですね。で、代わりに名前付きのクラスを立ててる。だから分かりやすい。</p>
+<p>これ、uupaaさんが仰ってる<a href="http://blog.7kai.org/2011/03/markdown-binder-js-navi/">ナビ子記法</a>←ググッた先の本人のスライドが、Handsoutがサービス終了で見れないので、紹介のある記事にリンクします-などにも近いところがあるかなあ、と。</p>
+<p>ただやっぱ書くのにはコスト高というか匿名で書けることの良さを殺してしまうので、ライブラリサイドだったら検討する、アプリケーションサイドだったらやらない、になってしまうかなあ。ライブラリサイドであってもかなり手間なので、よほど余裕あるとかでないとやらない、かなあ。JavaScriptならともかくC#では、特に……。</p>
+<h2>Rx v2についてもう少し</h2>
+<p>詳しい話は詳細が出てから、と思いますが（と言いながらRxJSの話も結局書いてないので、あうあう）、とりあえずObservableへの拡張メソッド郡はExperimentalから変化は特にありません。ただ、Experimentalは既にStableとはかなり違っているので、Stableしか追っかけてない人は、かなり目新しいものを見かけることができると思います。</p>
+<p>内部実装は見たとおりガラッと変わって、スタックトレースも見やすくなった、などなどなわけですが、それとあわせてパフォーマンスも相当上がっています。v1で基本的な部分を固めたので、v2ではそういった周辺部分に本気で取り組みだした、ということですね。</p>
+<h2>まとめ</h2>
+<p>LINQは細かいところまで配慮が行き届いていて本当に素晴らしいですね。というわけで平然とWhereの連打かましましょう。私もつい昨日にWhere6連打かましたりしてました。</p>
+<p><a href="http://linqjs.codeplex.com/">linq.js - LINQ for JavaScript</a>はさすがにここまではやってないんですが、いずれかはやりたいですね。その前にやらなきゃならないことがありすぎて当面はないですけれど。うーん、なんかもう色々やることありすぎて、かつそれなりに忙しくて、頭が爆発しそうです。はっきしいってヤバい。で、こうしてヤバくなると、硬直しちゃって余計に何もできなくなったり、唐突にこうして息抜き記事を書き出したり、うみみぅ。まあともかく、がんばろふ。</p>
+</div>
+<h1><a href="https://neue.cc/2012/02/23_366.html">とあるRoslynではないC# Parser、NRefactoryの紹介</a></h1>
 <ul class="date"><li>2012-02-23</li></ul>
 <div class="entry_body"><p>ﾛｯｽﾞﾘｰﾝ、はっじまらないよ～。というわけで<a href="http://msdn.microsoft.com/ja-jp/roslyn">Microsoft “Roslyn” CTP</a>、Compiler as a Service。<a href="http://nuget.org/packages/Roslyn">NuGet - Roslyn</a>でも手に入るので、サンプル類やC# Interactiveとかはなしで、とりあえずScriptingやCompilerを触ってみたい、ということなら、お手軽です。しかし、まあ未実装も少なくなく、まだまだ先は長そうな雰囲気ではある。今すぐ欲しいのに！切実にC# Parserが！というわけで、今日はその良き代替となる（かもしれない）<a href="https://github.com/icsharpcode/NRefactory">NRefactory</a>を紹介します。</p>
 <p>NRefactoryは<a href="https://packages.nuget.org/packages/ICSharpCode.NRefactory/">NuGet - NRefactory</a>からも入ります。verは5.0.0.4、「This is an alpha release. Expect bugs and breaking changes in the future.」とのことで、こちらもまだまだこれからのよう(MonoDevelopの新しいC#エディタで使われる予定、だそうです)。とりあえずNuGetで参照してみませう。</p>
@@ -1844,105 +2008,6 @@ Observable.Range(1, 5)
 <p>Xbox.comがリニューアルしたので、それに対応しました。今回より.NET Framework 4.0専用になりましたので(今までは3.5)、もし動かなくなった！とかの場合は、.NET Framework 4.0をインストールしてください。</p>
 <p>最近はすっかり放置気味ですみませんでした、わざわざブログのコメント欄に報告頂いたものもスルーしていて、大変申し訳ありません。ええと、一応、今回プログラムを少し見直しまして、最近絶不調にエラーばっかだったと思うのですが、若干改善されたのではかと思います。</p>
 <p>あと、リニューアルにともない、内部がかなり変わったんですが「全然テストしてない」ので、動作がヘンテコな可能性は大いにあります。変なとこあったら報告していただけると助かります。</p>
-</div>
-<h1><a href="https://neue.cc/2011/11/09_352.html">Reactive Extensionsで前後の値を利用する</a></h1>
-<ul class="date"><li>2011-11-09</li></ul>
-<div class="entry_body"><p><a href="https://twitter.com/#!/toya256tweet">@Toya256tweet</a>さんの作成された<a href="http://dependencyvariable.codeplex.com/">Dependency Variable Lib</a>を見て、<a href="http://reactiveproperty.codeplex.com/">ReactiveProperty</a>でも大体再現できるかなあ、でもOldValueとNewValueのところが少し面倒なのよね、というところで一例。ReactivePropertyの値の変更時に、古い値と新しい値を同時に得られるようにします。</p>
-<pre><code class="language-csharp">var p = new ReactiveProperty&lt;int&gt;(1, mode: ReactivePropertyMode.RaiseLatestValueOnSubscribe);
-
-p.Zip(p.Skip(1), (Old, New) =&gt; new { Old, New })
-    .Subscribe(a =&gt; Console.WriteLine(a.Old + &quot; -&gt; &quot; + a.New));
-
-p.Value = 10; // 1 -&gt; 10
-p.Value = 100; // 10 -&gt; 100
-</code></pre>
-<p>挙動は<a href="http://d.hatena.ne.jp/okazuki/20111109/1320817437">@okazukiさんの解説されている</a>通りです。残念ながら、頭やわらかい、というわけではなくて頻出パターンのイディオムなだけなので、ただたんに覚えているから、というだけです、がくり。まあ、LINQにせよRxにせよ、メソッドの組み合わせで成り立っているということは、パターン化しやすいということなのですね。イディオムを知っていればいるほど、更にそのイディオムを組み合わせて、と、手法は無限に広がっていきます。</p>
-<p>私は非同期をvoidにしてモデル作り込むっての好きくないです。IObservableなりTaskなりを返してくれれば、先があるのですが、そうでないとやりようがないですから。例えば<a href="http://d.hatena.ne.jp/okachimachiorz/20111010/1318250533">データモデル考え中 - 急がば回れ、選ぶなら近道</a>で示される「2」のパターンが、Silverlightなどでの従来のやり方だったと思われます。実行のトリガーだけを外から渡して、モデルの中で結果は閉じる。変更はINotifyPropertyChanged経由で通知。正直言って、私はこのやり方はナシだと思っています。スパゲティになりがちだから。Rxは「3」のパターンに近いと思います。順序の制御は、まさにミドルウェア足るReactive Extensionsが保証する。柔軟性は見ての通りで、無限の広がりがあります。</p>
-<p>今まではコールバックしかなかったので必然的に2に収まらざるを得なかったですが、今はRxもあるし、C#5.0からはawaitもあるし、なので、モデルの作り方も「変わっていく」と思います。Viewの機能の強さによってViewModelのありようが変わるように、言語やフレームワークの機能の強さによってModelのありようが変わるのは当然でしょう。</p>
-<h2>ScanとPairwise</h2>
-<p>さて、自分自身と結合というのは、結局のところ二つ購読しているということなので、これはIObservableがHotでないと成り立ちません(ReactivePropertyはHotです)。というわけで、ColdなIObservableでも対応したい時はScanを使うといいでしょう。HotとかColdとか何言ってるのか分からないという場合は<a href="http://d.hatena.ne.jp/okazuki/20111107/1320677760">Reactive Extensions再入門 その５「HotとCold」 - かずきのBlog@Hatena</a>を読むといいでしょう。最近、自分で解説してるのを放棄しだしてる気がするよくない傾向、ではなくて、次回の<a href="http://www.atmarkit.co.jp/fdotnet/introrx/index/index.html">Reactive Extensions（Rx）入門 － ＠IT</a>ではまさにObservable.TimerとフツーのTimerを使ってColdとHotの解説しようと思ってたのですよ！ネタ被った、けれど気にせず書きます:)</p>
-<pre><code class="language-csharp">var p = new ReactiveProperty&lt;int&gt;(1, mode: ReactivePropertyMode.RaiseLatestValueOnSubscribe);
-
-var oldNewPair = p.Scan(Tuple.Create(0, 0), (t, x) =&gt; Tuple.Create(t.Item2, x)).Skip(1);
-
-oldNewPair.Subscribe(Console.WriteLine);
-
-p.Value = 10; // (1, 10)
-p.Value = 100; // (10, 100)
-</code></pre>
-<p>Scanは自分自身の前の値を参照できるので、色々と応用が効きます。値の入れ物のための初期値は不要なのでSkip(1)で除去してやるのがポイント。</p>
-<p>もう一つ、メソッドの組み合わせでのパターン化、というのは、つまりパーツ化しやすいということでもあります。拡張メソッドに分離してやりましょう。</p>
-<pre><code class="language-csharp">public static class ObservablePairwiseExtensions
-{
-    // OldNewPair&lt;T&gt;はReactivePropertyに入っています
-    // using Codeplex.Reactive.Extensions;
-
-    public static IObservable&lt;OldNewPair&lt;T&gt;&gt; Pairwise&lt;T&gt;(this IObservable&lt;T&gt; source)
-    {
-        return source.Scan(
-                new OldNewPair&lt;T&gt;(default(T), default(T)),
-                (pair, newValue) =&gt; new OldNewPair&lt;T&gt;(pair.NewItem, newValue))
-            .Skip(1);
-    }
-
-    public static IObservable&lt;TR&gt; Pairwise&lt;T, TR&gt;(this IObservable&lt;T&gt; source, Func&lt;T, T, TR&gt; selector)
-    {
-        return source.Pairwise().Select(x =&gt; selector(x.OldItem, x.NewItem));
-    }
-}
-
-// ↑というような拡張メソッドを作ってやったとして
-var p = new ReactiveProperty&lt;int&gt;(1, mode: ReactivePropertyMode.RaiseLatestValueOnSubscribe);
-
-p.Pairwise().Subscribe(x =&gt; Console.WriteLine(x.OldItem + &quot; -&gt; &quot; + x.NewItem));
-
-p.Value = 10; // 1 -&gt; 10
-p.Value = 100; // 10 -&gt; 100
-</code></pre>
-<p>OldNewPairを使ったのは、TupleがSL/WP7にないから、というのと、OldItemとNewItemというプロパティ名に意味があって、分かりやすいから、です。基本的にC#でTupleを使うことはあんまないですね。LINQのパイプライン内でならば匿名型、それを超えるなら面倒くさくてもクラスを立ててあげたほうがいいと、私は思っています。勿論、今後Tupleのための構文やパターンマッチが入るとしたら別ですけど。というか、つまるところ専用構文がない状態ではTupleを使うメリットはそんなにないのです。匿名型かわいいよ匿名型。言語比較の際に、<a href="http://d.hatena.ne.jp/ymotongpoo/20111105/1320506449">C#はTupleがこんな腐ってるぜー</a>、とかやられるのはちょっと勘弁願いたいところ(まぁでも普通に敵いませんのは認めます、けれど言語・IDE・フレームワークは三位一体だとも思っています。引き離して単独で評価することには、あまり価値を感じません。IDEでうまく機能することを優先した言語、それを前提にしたフレームワーク。どの要素も引き離せませんから。はいはい、C#がお好きなんですね、という感じですが、でも例えばHTML/ブラウザというGUIフレームワークの上だったらJavaScriptがベストだ、といった捉え方でもありますね)</p>
-<p>それはともかくとして、Pairwiseは多用しそうなので、次のReactiveProperty(ver.0.3)で入れたいと思います(あとOldNewPairのToStringのオーバーライド)。ちなみに<a href="http://linqjs.codeplex.com/">linq.js - LINQ for JavaScript</a>にはPairwise、入ってます。そう、Rxでの頻出パターンということは、それはIx(Enumerable)にも存在するパターンなのです。この辺がRxの面白いところです！私にとって、こういった書き方の初出は<a href="http://d.hatena.ne.jp/NyaRuRu/20090311/p1">前後の値も利用したシーケンス処理 - NyaRuRuの日記</a>でした。</p>
-<h2>ObserveChanged</h2>
-<p>突然出てきたOldNewPairですが、これが既にReactiveProperty内で定義されているのは、ObservableCollectionの拡張メソッド群で使用しているからです。今まで紹介していなかったと思うので、ここで紹介しましょう。</p>
-<pre><code class="language-csharp">// using Codeplex.Reactive.Extensionsとすると
-// ObservableCollection&lt;T&gt;に(ReactiveColelctionとか継承したものでも可)
-// ObserveXxxChangedという拡張メソッドが利用できる
-var collection = new ObservableCollection&lt;int&gt;();
-
-// 追加されたのを監視できる、IObservable&lt;T&gt;
-collection.ObserveAddChanged()
-    .Subscribe(x =&gt; Console.WriteLine(&quot;Add:&quot; + x));
-// 削除されたのを監視できる、IObservable&lt;T&gt;
-collection.ObserveRemoveChanged()
-    .Subscribe(x =&gt; Console.WriteLine(&quot;Remove:&quot; + x));
-// 置換を監視できる、IObservable&lt;OldNewPair&lt;T&gt;&gt;
-collection.ObserveReplaceChanged()
-    .Subscribe(p =&gt; Console.WriteLine(p.OldItem + &quot;→&quot; + p.NewItem));
-// リセットを監視できる、IObservable&lt;Unit&gt;
-collection.ObserveResetChanged()
-    .Subscribe(_ =&gt; Console.WriteLine(&quot;Clear&quot;));
-
-collection.Add(100); // Add:100
-collection.Add(1000); // Add:1000
-collection[1] = 300; // 1000→300
-collection.Remove(100); // Remove:100
-collection.Clear(); // Clear
-</code></pre>
-<p>この手の監視では、通常CollectionChangedイベント経由でNotifyCollectionChangedEventArgsを使って値を取り出すわけですが、型がobject[]なので一々キャストしたりなど、非常に使いにくいと思っていました。ObserveXxxChangedを使えば、完全にタイプセーフで、値も取り出しやすい形に整形してくれています。是非是非どうぞ。</p>
-<h2>まとめ</h2>
-<p>@Toya256tweetさんにも示唆頂いたのですが、ReactivePropertyはMVVMに限定されない、汎用的なものだと考えています。値の導出ルールを宣言的に書く、というのは色々なところで使える、気がします。でもやはり、Functional Reactive Programmingが全然流行ってないことを考えても、ルールによって自動的に変動する値って、基本的にGUI向けなのだろうなあ、って。そして、GUIで強いのはやっぱJavaとか.NETといったFRP不毛地帯なので、流行るなんて考えられないことでした。しかし、今は違う。C#にはRxが来た。C#で実現できるのならば、強力なGUIプラットフォームが目の前にあるわけなので、かなり可能性はあるんじゃないかな！と思いたいところです。</p>
-<p><a href="http://www.kmonos.net/wlog/83.html#_2259080315">d.y.d. - ReaJ / Reactive JavaScript</a>の例は</p>
-<pre><code class="language-csharp">// RaiseLatestValueOnSubscribeはv0.3ではデフォルトに変更する予定
-var mode = ReactivePropertyMode.RaiseLatestValueOnSubscribe;
-
-var x = new ReactiveProperty&lt;int&gt;(10, mode);
-var y = x.Select(n =&gt; n + 100).ToReactiveProperty(mode: mode);
-x.Value = 20;
-x.Value = 30;
-Console.WriteLine(y.Value); // 130
-</code></pre>
-<p>まあ、不格好です。ReactiveProperty用の専用構文でも用意してくれないとね、rp x = 10; rp y = x + 100; とかで上記の形に整形されたら素敵なのですが。というのはともかくとして、一応、実現できています。GUI環境への反映はWPFのバインディング機構に投げて解決ですし。JavaScriptにおいても、ReactivePropertyを移植して、ベースとして<a href="http://knockoutjs.com/">Knockout.js</a>辺りを採用すればいい感じに実用的になりそうです。その辺は追々やっていきたいところ。</p>
-<p>勿論、Rx自体の可能性はGUI(や非同期)だけに閉じているわけではないので、全く別なところでの可能性、使い道というのも追い求めていきたいです。</p>
-<p>ともあれともかく、<a href="http://reactiveproperty.codeplex.com/">ReactiveProperty</a>、試してみてくださいな。</p>
 </div>
 <a href="https://neue.cc/12">Prev |</a>
 <a href="https://neue.cc/14">| Next</a>
