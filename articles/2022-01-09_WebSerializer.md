@@ -45,7 +45,7 @@ async Task SearchAsync(string? sortBy, SortDirection direction, int currentPage)
 }
 ```
 
-動的に組み立てる場合は、`Dictionary<string, object>` も渡せます。
+動的に組み立てる場合は、`Dictionary<string, object>` も渡せます。(`FormUrlEncodedContent`は`Dictionary<string, string>`で、Value側のToString()が必須なのが地味に面倒くさいので、`object`で良いというのは何気に楽だったりします)。
 
 ```csharp
 var req = new Dictionary<string, object>
