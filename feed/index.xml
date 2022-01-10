@@ -5,7 +5,110 @@
     <link>http://neue.cc/</link>
     <description>C# Technical Blog</description>
     <language>ja</language>
-    <lastBuildDate>Tue, 04 Jan 2022 14:30:04 +0900</lastBuildDate>
+    <lastBuildDate>Mon, 10 Jan 2022 23:12:33 +0900</lastBuildDate>
+    <item>
+      <guid isPermaLink="true">https://neue.cc/2022/01/09_WebSerializer.html</guid>
+      <link>https://neue.cc/2022/01/09_WebSerializer.html</link>
+      <title>WebSerializer - オブジェクトからクエリストリングに変換するHttpClientリクエスト用シリアライザ</title>
+      <description>&lt;h1&gt;&lt;a href="https://neue.cc/2022/01/09_WebSerializer.html"&gt;WebSerializer - オブジェクトからクエリストリングに変換するHttpClientリクエスト用シリアライザ&lt;/a&gt;&lt;/h1&gt;
+&lt;ul class="date"&gt;&lt;li&gt;2022-01-09&lt;/li&gt;&lt;/ul&gt;
+&lt;div class="entry_body"&gt;&lt;p&gt;&lt;code&gt;T value&lt;/code&gt;から URLエンコードされたクエリストリング、または&lt;code&gt;x-www-form-urlencoded&lt;/code&gt;なHttpContentを生成する、つまりはウェブ(HTTP/1)リクエスト用のシリアライザを作りました。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href="https://github.com/Cysharp/WebSerializer/"&gt;github.com/Cysharp/WebSerializer&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;クエリストリングの生成、意外と面倒くさいな！と。(C#用の)専用のSDKが存在しないWeb APIの場合は、自分でURL組み立てたり&lt;code&gt;FormUrlEncodedContent&lt;/code&gt;を組み立てたりしますが、数が多いとまぁ面倒くさい。リクエストのパラメーター数が多いと、null抜いたりも面倒くさい。&lt;/p&gt;
+&lt;p&gt;レスポンス側は&lt;a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.net.http.json.httpcontentjsonextensions.readfromjsonasync?view=net-6.0"&gt;ReadFromJsonAsync&lt;/a&gt;などでダイレクトに変換できるようになって特に問題はないのですが、リクエスト側は、かなりの手作業が要求されます。そのへんを全部やってくれる&lt;a href="https://github.com/reactiveui/refit"&gt;refit&lt;/a&gt;というライブラリもありますが(Androidの&lt;a href="https://github.com/square/retrofit"&gt;retrofit&lt;/a&gt;にインスパイアされたもの)、導入するにはちょっと大仰だな、と思うときも多々あります、というか私は今まで一度も使ってません。&lt;/p&gt;
+&lt;p&gt;HttpClient用にURLを組み立てるのを簡略化してくれるぐらいでいいな、と思って考えていたら、そういえばそもそもそれってT valueから何かに変換する、つまりシリアライザじゃん、ということに気づきました。T -&amp;gt; msgpack byte[]に変換すればMessagePackシリアライザだし、T -&amp;gt; Json stringに変換すればJSONシリアライザだし、これはT -&amp;gt; UrlEncoded stringに変換するということなのだと。シリアライザ脳なので、そう理解すれば話が早い。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;using Cysharp.Web;
+
+var req = new Request(sortBy: &amp;quot;id&amp;quot;, direction: SortDirection.Desc, currentPage: 3)
+
+// sortBy=id&amp;amp;direction=Desc&amp;amp;currentPage=3
+var q = WebSerializer.ToQueryString(req);
+
+await httpClient.GetAsync(&amp;quot;/sort?&amp;quot;+ q);
+
+// data...
+public record Request(string? sortBy, SortDirection direction, int currentPage);
+
+public enum SortDirection
+{
+    Default,
+    Asc,
+    Desc
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;基本的に使うメソッドは &lt;code&gt;WebSerializer.ToQueryString&lt;/code&gt; か &lt;code&gt;WebSerializer.ToHttpContent&lt;/code&gt; だけです。URLエンコードされてname=valueで&amp;amp;連結された文字列が取り出せます。メソッドとして叩いたりする場合は、そのまま匿名型で渡してあげればちょうど良い。urlも一緒に渡してあげれば全て同時に組み立ててくれます。値が&lt;code&gt;null&lt;/code&gt;のものは文字列化対象から自動で外されます。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;const string UrlBase = &amp;quot;https://foo.com/search&amp;quot;;
+
+// null, SortDirection.Asc, 0
+async Task SearchAsync(string? sortBy, SortDirection direction, int currentPage)
+{
+    // &amp;quot;https://foo.com/search?direction=Asc&amp;amp;currentPage=0&amp;quot;
+    var url = WebSerializer.ToQueryString(UrlBase, new { sortBy, direction, currentPage });
+    await httpClient.GetAsync(url);
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;動的に組み立てる場合は、&lt;code&gt;Dictionary&amp;lt;string, object&amp;gt;&lt;/code&gt; も渡せます。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;var req = new Dictionary&amp;lt;string, object&amp;gt;
+{
+    { &amp;quot;sortBy&amp;quot;, &amp;quot;id&amp;quot; },
+    { &amp;quot;direction&amp;quot;, SortDirection.Desc },
+    { &amp;quot;currentPage&amp;quot;, 10 }
+};
+var q = WebSerializer.ToQueryString(req);
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;POST用には、&lt;code&gt;ToHttpContent&lt;/code&gt;を使います。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;async Task PostMessage(string name, string email, string message)
+{
+    var content = WebSerializer.ToHttpContent(new { name, email, message });
+    await httpClient.PostAsync(&amp;quot;/postmsg&amp;quot;, content);
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;内部的には&lt;code&gt;FormUrlEncodedContent&lt;/code&gt;は使わずに、専用のHttpContentを通しているため、&lt;code&gt;byte[]&lt;/code&gt;変換のオーバーヘッドがありません。&lt;/p&gt;
+&lt;h2&gt;シリアライザ設計&lt;/h2&gt;
+&lt;p&gt;ただたんにクエリストリング組み立てるだけっしょ！というと軽く見られてしまうかもしれないのですが、中身はかなりガチめに作ってあって、構成としては&lt;a href="https://github.com/neuecc/MessagePack-CSharp/"&gt;MessagePack for C#&lt;/a&gt;と同様です。パフォーマンスに関しても超ギチギチに詰めているわけではないですが、かなり気を配って作られているので、手で組み立てるよりもむしろ高速になるケースも多いはずです。拡張性もかなり高く作れているはずです。&lt;/p&gt;
+&lt;p&gt;シリアライザのデザインに関してはMessagePack for C#の次期バージョン(v3)をどうしていこうかなあ、と考えているタイミングでもあるので、そのプロトタイプ的な意識もありますね。なので設計としてはむしろ最新型で、かなり洗練されています。.NET 5/6のみにしているので、レガシーも徹底的に切り捨てていますし。最初は .NET 6のみだったのですが、さすがにそれはやりすぎかと思い .NET 5は足しました。&lt;/p&gt;
+&lt;p&gt;例えばコンフィグ(&lt;code&gt;WebSerializerOptions&lt;/code&gt;)はイミュータブルなのですが、これ自体はrecordで作ってあってwith式でカスタムのコンフィグを作れます。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;// CultureInfo: 数値型やDateTimeの文字列化変換に渡すCultureInfo、デフォルトはnull
+// CollectionSeparator: 配列などを変換する場合のセパレーター、デフォルトは&amp;quot;,&amp;quot;
+// Provider: 対象の型をどのように変換するか(`IWebSerialzier&amp;lt;T&amp;gt;`)の変更
+var newConfig = WebSerializerOptions.Default with
+{
+    CultureInfo = CultureInfo.InvariantCulture,
+    CollectionSeparator = &amp;quot;  &amp;quot;,
+    Provider = WebSerializerProvider.Create(
+        new[] { new BoolZeroOneSerializer() },
+        new[] { WebSerializerProvider.Default })
+};
+
+// Bool値を0, 1に変換する（こういうの求めてくるWeb APIあるんですよねー！）
+public class BoolZeroOneSerializer : IWebSerializer&amp;lt;bool&amp;gt;
+{
+    public void Serialize(ref WebSerializerWriter writer, bool value, WebSerializerOptions options)
+    {
+        // true =&amp;gt; 0, false =&amp;gt; 1
+        writer.AppendPrimitive(value ? 0 : 1);
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;&lt;code&gt;IWebSerializer&amp;lt;T&amp;gt;&lt;/code&gt;のインターフェイスについて、&lt;code&gt;ref T value&lt;/code&gt;にしようか検討したのですが、最終的にやめました。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;public interface IWebSerializer&amp;lt;T&amp;gt; : IWebSerializer
+{
+    void Serialize(ref WebSerializerWriter writer, T value, WebSerializerOptions options);
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;&lt;code&gt;ref T value&lt;/code&gt;にすると、プロパティをそのまま渡せなくて、かなり面倒くさくなってね。理屈的にはlarge structに対するコピーコスト削減、ではあるけれど、まぁこのままだと99%効力ないかなあ、という感じがあり。入り口だけinにして一回分コピーを消すぐらいを落とし所にしました、とりあえず今回は。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;public static string ToQueryString&amp;lt;T&amp;gt;(in T value, WebSerializerOptions? options = default)
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;それとSource Generator対応についても考えましたが、まぁ一旦今回は見送って、後でやるかもという感じでしょうか。アイディアは色々ありますが、まずは作ってみないとうまくハマるか見えないところがあるし、MessagePack for C#のような大きなものでドカンとやるよりは、最初は小さなものでテストしていくのが良いものを作る正攻法でもありますね。&lt;/p&gt;
+&lt;h2&gt;まとめ&lt;/h2&gt;
+&lt;p&gt;手で組み立てている人は結構多いと思うので、使えるシチュエーションはかなりあると思ってます。ただまあ、こんぐらいなら手でやるよ！と思う人は多いと思うので、その点ではニッチかなあ、というところですね。Web APIの仕様によってはリクエストパラメーターが微妙にデカくてイライラすることがあったり、まぁあとは数を作るときにはやっぱダルいので、ハマるシチュエーションも少なくはないかな、と。&lt;/p&gt;
+&lt;p&gt;とりあえずは試してみてもらえればと思います。&lt;/p&gt;
+&lt;/div&gt;</description>
+      <pubDate>Sun, 09 Jan 2022 00:00:00 +0900</pubDate>
+      <a10:updated>2022-01-09T00:00:00+09:00</a10:updated>
+    </item>
     <item>
       <guid isPermaLink="true">https://neue.cc/2021/12/31.html</guid>
       <link>https://neue.cc/2021/12/31.html</link>
@@ -1333,30 +1436,6 @@ async void FooAsync() { }
 &lt;/div&gt;</description>
       <pubDate>Fri, 26 Feb 2021 00:00:00 +0900</pubDate>
       <a10:updated>2021-02-26T00:00:00+09:00</a10:updated>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://neue.cc/2020/12/30_598.html</guid>
-      <link>https://neue.cc/2020/12/30_598.html</link>
-      <title>2020年を振り返る</title>
-      <description>&lt;h1&gt;&lt;a href="https://neue.cc/2020/12/30_598.html"&gt;2020年を振り返る&lt;/a&gt;&lt;/h1&gt;
-&lt;ul class="date"&gt;&lt;li&gt;2020-12-30&lt;/li&gt;&lt;/ul&gt;
-&lt;div class="entry_body"&gt;&lt;p&gt;今年は前半が絶好調で、&lt;a href="http://neue.cc/2020/01/09_588.html"&gt;ConsoleAppFramework&lt;/a&gt;、&lt;a href="http://neue.cc/2020/01/30_590.html"&gt;ProcessX&lt;/a&gt;、&lt;a href="https://tech.cygames.co.jp/archives/3383/"&gt;ZString&lt;/a&gt;、&lt;a href="https://tech.cygames.co.jp/archives/3401/"&gt;ZLogger&lt;/a&gt;、そして&lt;a href="https://tech.cygames.co.jp/archives/3417/"&gt;UniTask v2&lt;/a&gt;と、凄い勢いでプログラミング的なクリエイティビティを発揮できていました。なので今年トータルとしてみれば良かったと言えます。&lt;/p&gt;
-&lt;p&gt;が、後半が絶不調で無。とにかく無。なんでこんな無になったのか分からないほどに無。コロナか、コロナが悪いんか。それも実際あるんですが、いや、というかそれが全てかなー。リモートワーク向いてないんすよー、みたいな。リモート前半で魂の貯金を使い切った。無が加速してからヤバいと思って自主リモート返納（自分だけオフィスワーク）に戻したんですが、それでもなんか違うんですよねえ。まぁ、言い訳なんですけどね！新環境に適応できない旧世代民には死あるのみ、って感じなので、来年は脳みそ入れ替えてやってきたいと思います。&lt;/p&gt;
-&lt;p&gt;この12月は、書く予定だったアドベントカレンダーも書けずにフィニッシュと最悪な感じですからねえ、終わりが全くしまらなかった結果、今年の印象としてはあんま良くない。でも客観的に一年通しで見たら、中々の成果を上げたとは言えます。&lt;/p&gt;
-&lt;p&gt;OSSがかなり出揃ったことで、&lt;a href="https://cysharp.co.jp/"&gt;Cysharp&lt;/a&gt;という会社の輪郭をはっきりさせられた年になりました。対外的には何やってる会社か分からない、まぁ実際そこは今もよくわからないと思うんですが、それでもC#の最先端を突っ走っている会社だというイメージは確固たるものになったのではないでしょうか。去年ではまだまだ足りてないと考えていたのですが、今年追加したOSS群によって、一つポジションを引き上げられたと思っています。&lt;/p&gt;
-&lt;p&gt;&lt;a href="https://github.com/Cysharp/MagicOnion/"&gt;MagicOnion&lt;/a&gt;もv4になって .NET 5/Pure C# gRPC 対応を果たしましたし、今年は実際に採用しているアプリケーションがリリースされていったことで、よりCysharpの目指しているヴィジョンの現実感が出てきました。来年はそのヴィジョンをより鮮明にしていくことと、もうプラスαに仕込んでいるものがあるので、その辺の露出がうまくできるといいかなーと思ってます。&lt;/p&gt;
-&lt;p&gt;私個人の能力の成長という点でも、UniTask v2を始めとしてパワーある実装をやりきったことと、そこから深く学んだこともいっぱいあるので、まだまだ行けるぞという感じです。ちゃんとね、毎年成長してますよ。はい。人間、停滞＝衰退ですから。&lt;/p&gt;
-&lt;p&gt;私は出したもののウケ度に割と拘るところがあるんですが、これは自分の感覚と市場の感覚が乖離していないかを測っているという面もあります。今日が誕生日でもうN回この振り返りも書いてるわけですが、そろそろ油断すると感性が腐る頃合いなんですよね。なんかピンとのズレたことを言い始めてしまうという。端的に言えばそれが老害というわけなんですが、自分も油断するとなりかねない。という危機感がそぞろ出てくるような頃合いでして。しかもね、そういうのは自覚がないわけですよ、本人は自覚がない！本人はイケてると思っているのが余計辛い！自覚がないからこそ老害なのだ。みたいなところがある。&lt;/p&gt;
-&lt;p&gt;と、いうわけで、客観的な指標が必要で、とりあえず今年はOKじゃないですかね。はい。&lt;/p&gt;
-&lt;h2&gt;その他文化&lt;/h2&gt;
-&lt;p&gt;今年のGame of the Yearは&lt;a href="https://bethesda.net/ja/game/doom"&gt;DOOM Eternal&lt;/a&gt;ですよね……！震えるほど面白いゲームって本当に数年単位で久々で、腐った感性を復活させてくれた神の救いですよ。というわけでマストバイ。（しかし超期待したDLCは微妙だった……）&lt;/p&gt;
-&lt;p&gt;今年のベストアルバムは中村佳穂のAINOUです。&lt;a href="https://mikiki.tokyo.jp/articles/-/19940"&gt;中村佳穂『AINOU』はなぜ2018年を代表する名盤なのか?&lt;/a&gt;とかって記事出てるように全然今年のアルバムじゃないんですが、聴いたのは今年だからshoganai。名盤。&lt;/p&gt;
-&lt;p&gt;読み物としては、ちょくちょく&lt;a href="https://www.shibatashoten.co.jp/magazine.php?cid=3"&gt;月刊専門料理&lt;/a&gt;を買ってて、これが面白いんですよね。料理とエンジニアリングは共通するものがあると&lt;a href="https://www.oreilly.co.jp/books/9784873117874/"&gt;Cooking for Geeks&lt;/a&gt;をはじめとしてよく言われるやつですが、それプラス経営的な話とかも中々身に沁みるものがあって良いわけです。あと、料理業界はまだまだ多分アナログなんですよね、だから紙の雑誌にも相応の密度がある。その点エンジニアの場合はウェブ媒体のほうが紙より良い状態なので、雑誌が面白くないんですよね（Web+DBとかもはやつまらんでしょ）。良くも悪くもですが、まぁもう進んでしまった業界は紙の媒体が面白くなることはないのでしょう。&lt;/p&gt;
-&lt;h2&gt;来年&lt;/h2&gt;
-&lt;p&gt;アドベントカレンダーネタは書いてないしGitHub Issuesもかなり手を付けてないのが残っちゃったしで、あんまりスッキリして来年を迎えられないんですが……！そのへんはなるはやですっきりさせたいとして、今年はCysharpの仕込みフェーズがとてもうまくいった。実際うまくいった。そして仕込みフェーズは終了。つまり来年はどーんといきましょう。というわけで、ぜひぜひ大躍進にご期待くださいな。&lt;/p&gt;
-&lt;/div&gt;</description>
-      <pubDate>Wed, 30 Dec 2020 00:00:00 +0900</pubDate>
-      <a10:updated>2020-12-30T00:00:00+09:00</a10:updated>
     </item>
   </channel>
 </rss>

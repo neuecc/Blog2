@@ -15,7 +15,72 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2014/01/27_446.html">C#での動的なメソッド選択における定形高速化パターン</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2014/03/11_447.html">RespClient - PowerShell向けのRedisクライアント/コマンドレット</a></h1>
+<ul class="date"><li>2014-03-11</li></ul>
+<div class="entry_body"><p>というものを作りました。</p>
+<ul>
+<li><a href="https://github.com/neuecc/RespClient">GitHub - RespClient</a></li>
+<li>PM&gt; Install-Package <a href="https://www.nuget.org/packages/RespClient/">RespClient</a></li>
+</ul>
+<p>例によってインストールはNuGetで。PowerShellのコマンドレットを含んでいるのでSystem.Management.Automationがないと動きません（多分、よく知らない）。</p>
+<h2>RESPって？</h2>
+<p><a href="http://redis.io/topics/protocol">REdis Serialization Protocol</a>です。RespClientは、何かのRedisClientのラッパーではなくて、自前でプロトコルを解釈してSocket経由で叩いてます。といっても、RESPは非常にシンプルなプロトコロでして、そんなに難しくはありません。作ろうと思った発端は、プロトコルの定義を見てて、先頭の識別子がEnumで</p>
+<pre><code class="language-CSharp">public enum RespType : byte
+{
+    SimpleStrings = (byte)'+',
+    Erorrs = (byte)'-',
+    Integers = (byte)':',
+    BulkStrings = (byte)'$',
+    Arrays = (byte)'*'
+}
+</code></pre>
+<p>こんな風に定義できて面白いなー、という、それがきっかけなのでした。ただ、せめて実用的なものを作りたいと思ったので、特にPowerShellに強くフォーカスするようにしています。</p>
+<p>既存のクライアント、私が作ってる<a href="https://github.com/neuecc/CloudStructures">CloudStructures</a>なり、その元の<a href="https://code.google.com/p/booksleeve/">BookSleeve</a>なり、<a href="https://github.com/ServiceStack/ServiceStack.Redis">ServiceStack.Redis</a>というのは、やはりC#から使うのが前提で、結構ヘヴィーだと思うのです、PowerShell的なコマンドラインインターフェイスで使うには。なので、Redis-Cli的な感覚で使える、Windowsネイティブのクライアントは、隙間産業的に、ちょうどなかったので良いかな、と。なので私にしては珍しくというか初めてコマンドレット作りましたし！</p>
+<h2>PowerShellコマンドレット</h2>
+<p>こんなふーに使います。</p>
+<pre><code class="language-PowerShell"># モジュールはdllで提供されています。
+Import-Module RespClient.dll
+
+# RedisServerへのコネクションは、一度コネクションを張るとセッション中、ずっと維持されます。
+# 他のパラメータは　-Host, -Port, -Timeout　があります。
+Connect-RedisServer 127.0.0.1
+
+# コマンドを送るのはSend-RedisCommandで。戻り値はUTF8Stringでデコードされます。
+Send-RedisCommand &quot;set test abcde&quot;
+
+# パイプラインモードもサポートしています。
+Begin-RedisPipeline
+Send-RedisCommand &quot;set test fghijk&quot;
+Send-RedisCommand &quot;incr testb&quot;
+Send-RedisCommand &quot;incr testc&quot;
+Send-RedisCommand &quot;get test&quot;
+Execute-RedisPipeline
+
+# 明示的にコネクションを切るときはDisconnectしてください。
+Disconnect-RedisServer
+</code></pre>
+<h2>RespClient(.NET)</h2>
+<p>生の.NETクライアントのほうが、よりコマンドレット経由よりも高機能です。場合によってはPowerShellで使う場合も、コマンドレットではなくて、こちらを使ったほうがいいこともあるかもしれません。具体的な差は、バイナリセーフな値を投げることができるのと、戻り値のバイナリのデコード形式を自由に選べます。</p>
+<pre><code class="language-CSharp">using (var client = new Redis.Protocol.RespClient())
+{
+    // string command
+    client.SendCommand(&quot;set a 1&quot;, Encoding.UTF8.GetString);
+
+    // binary safe command
+    client.SendCommand(&quot;set&quot;, new[] { Encoding.UTF8.GetBytes(&quot;test&quot;), Encoding.UTF8.GetBytes(&quot;abcde&quot;) }, Encoding.UTF8.GetString);
+
+    // use pipeline
+    var results = client.UsePipeline()
+        .QueueCommand(&quot;incr a&quot;)
+        .QueueCommand(&quot;incrby b 10&quot;)
+        .QueueCommand(&quot;get a&quot;, Encoding.UTF8.GetString)
+        .Execute();
+} // disconnect on dispose
+</code></pre>
+<h2>まとめ</h2>
+<p>弊社で<a href="http://tech.guitarrapc.com/">ぎたぱそさん</a>がたまに使ってます。（私は……そもそもあんま生で触る機会がなく、かな！？）</p>
+</div>
+<h1><a href="https://neue.cc/2014/01/27_446.html">C#での動的なメソッド選択における定形高速化パターン</a></h1>
 <ul class="date"><li>2014-01-27</li></ul>
 <div class="entry_body"><p>動的なメソッド選択、といってもなんのこっちゃというわけですが、身近な例だと、ようするにURLをルーティングして何のコントローラーの何のメソッドを呼ぶのか決めるって奴です、ASP.NET MVCとかの。ようするに<a href="http://neue.cc/2013/12/23_439.html">LightNode</a>はいかにして速度を叩きだしているのか、のお話。自慢。嘘本当。</p>
 <p>以前に<a href="http://neue.cc/2011/04/20_317.html">Expression Treeのこね方・入門編 - 動的にデリゲートを生成してリフレクションを高速化</a>という記事を書いたのですが(2011/04ですって！もうすっかり大昔！)、その実践編です。Real World メタプログラミング。</p>
@@ -2197,88 +2262,6 @@ public class RedisCounterLoggingModule : IHttpModule
 <p>ところで、プロダクション環境下で――と書いているように、謎社のアプリケーションは完全にC#に移行しました。結果ですが、最先端環境で練り上げたC#によるウェブアプリケーションは、超絶速い。しかも、完全にAWSクラウドに乗っけての話ですからね、オンプレミスでのスペシャルなマシンやFusion-ioなDBでやってるわけじゃなく、成果出せてる。</p>
 <p>Sumo LogicやNew Relicなど外部サービスの活用やRedisの使い倒しかた、非同期処理の塊、などなど、次世代のC#ウェブアプリケーションのスタンダードというものを示せたのではないかな、と思っています。詳しい話はそのうちまたどこかで発表したいとは思うので待っててください。</p>
 </div>
-<h1><a href="https://neue.cc/2013/07/10_414.html">C#で扱うRedisのLuaスクリプティング</a></h1>
-<ul class="date"><li>2013-07-10</li></ul>
-<div class="entry_body"><p>Redis 2.6からLuaスクリプティングが使えるようになりました。コマンドは<a href="http://redis.io/commands/eval">EVAL</a>です。というわけでC#のRedisライブラリ、<a href="https://code.google.com/p/booksleeve/">BookSleeve</a>で、試してみましょう。RedisやBookSleeveに関しては、以前に私がBuildInsiderで書いた<a href="http://www.buildinsider.net/small/rediscshap/01">C#のRedisライブラリ「BookSleeve」の利用法</a>を参照ください。</p>
-<p>BookSleeveは当然NuGet経由で入れるとして、Windows版のRedisバイナリもNuGetで配布されています。手軽に試してみるなら、<a href="https://nuget.org/packages/Redis-64/">Install-Package Redis-64</a>が良いのではないでしょーか。現在の最新は2.6.12.1ということで、Evalにも対応しています。インストールするとpackages\Redis-64.2.6.12.1\toolsにredis-server.exeが転がっているので、それを起動すれば、とりあえず127.0.0.1:6379で動きます。</p>
-<h2>多重アクセスの検出</h2>
-<p>HelloWorld!ということで、多重アクセス検知のスクリプトでも書いてみます。ルールとしては、X秒以内にY回アクセスしてきた人間はZ秒アク禁にする。という感じですね。DOSアタック対策的な。LUAスクリプティングを使わないと、キーを2つ用意したりしなけりゃいけなかったり複数コマンド打ったりしたりとか、若干面倒だったり効率悪いのですが、スクリプティング使えば一発で済ませられます。</p>
-<pre><code class="language-csharp">    public static class RedisExtensions
-    {
-        public static async Task&lt;bool&gt; DetectAttack(this RedisConnection redis, int db, string key, int limitCount = 10, int durationSecond = 1, int bannedSecond = 300)
-        {
-            var result = await redis.Scripting.Eval(db, @&quot;
-local key = KEYS[1]
-local limit = tonumber(ARGV[1])
-local count = redis.call('incr', key)
-if(count &gt;= limit) then
-    local banSec = tonumber(ARGV[3])
-    redis.call('EXPIRE', key, banSec)
-    return true
-else
-    local expireSec = tonumber(ARGV[2])
-    redis.call('EXPIRE', key, expireSec)
-    return false
-end&quot;, new[] { key }, new object[] { limitCount, durationSecond, bannedSecond }).ConfigureAwait(false);
-
-            // Lua-&gt;Redisはtrueの時に1を、falseの時にnullを返す
-            return (result == null) ? false
-                : ((long)result == 1) ? true
-                : false;
-        }
-    }
-</code></pre>
-<p>こんな感じですね。基本的にはEvalメソッドでスクリプトを渡すだけです、あとKEYS配列とARGV配列を必要ならば。戻り値の扱いなどに若干のクセがありますので、その辺はRedisのEVALのドキュメントを読んでおくといいでしょう。</p>
-<p>スクリプトは、まずincrを呼んでカウントを取る。そのカウントが指定数を超えてたらExpireの時間をBanの時間（デフォは300秒=5分）引き伸ばす。超えてなければ、Expireの時間を指定間隔(デフォは1秒)だけ伸ばす。もし1秒以内に連続でアクセスがあれば、Incrのカウントが増えていく。1秒以上経過すればExpireされているので、countは0スタートになる。といった感じです。</p>
-<p>利用する場合はこんな具合。</p>
-<pre><code class="language-csharp">var redis = new RedisConnection(&quot;127.0.0.1&quot;);
-await redis.Open();
-
-var v = await redis.DetectAttack(0, &quot;hogehoge&quot;);
-Console.WriteLine(v); // false
-
-for (int i = 0; i &lt; 15; i++)
-{
-    var v2 = await redis.DetectAttack(0, &quot;hogehoge&quot;);
-    Console.WriteLine(v2); // false,false,...,true,true
-}
-</code></pre>
-<p>いい具合ですにぇ？</p>
-<h2>EVALSHA</h2>
-<p>BookSleeveのEvalは、正確には<a href="http://redis.io/commands/evalsha">EVALSHA</a>です（更に正しくはデフォルトの、引数のuseCacheがtrueの場合）。</p>
-<p>EVALSHAは、事前にスクリプトのSHA1を算出し、初回に登録しておくことで、コマンドの転送をSHA1の転送だけで済ませます。スクリプトを毎回投げていたらコマンド転送に時間がかかるので、それの節約です。この辺をBookSleeveは何も意識しなくても、やってくれるのが非常に楽ちん。素晴らしい。</p>
-<h2>Increment/DecrementLimit</h2>
-<p>せっかくなので、もう一つ例を。RedisのIncrementやDecrementはアトミックな操作で非常に使いやすいのですが、上限や下限を設けたい場合があります。例えば、HPは0以下になって欲しくないし、最大HPを超えて回復されても困る、みたいな。それも当然、Luaスクリプティングを使えば簡単に実現可能です。</p>
-<pre><code class="language-csharp">        public static async Task&lt;long&gt; IncrementWithLimit(this RedisConnection redis, int db, string key, long value, long maxLimit)
-        {
-            var result = await redis.Scripting.Eval(db, @&quot;
-local inc = tonumber(ARGV[1])
-local max = tonumber(ARGV[2])
-local x = redis.call('incrby', KEYS[1], inc)
-if(x &gt; max) then
-    redis.call('set', KEYS[1], max)
-    x = max
-end
-return x&quot;, new[] { key }, new object[] { value, maxLimit }).ConfigureAwait(false);
-            return (long)result;
-        }
-</code></pre>
-<p>incrbyの結果が指定の値を超えていたら、setで固定する、といった感じです、単純単純。使うときはこんな具合。</p>
-<pre><code class="language-csharp">var redis = new RedisConnection(&quot;127.0.0.1&quot;);
-await redis.Open();
-
-var v1 = await redis.IncrementWithLimit(0, &quot;hoge&quot;, 40, maxLimit: 100);
-var v2 = await redis.IncrementWithLimit(0, &quot;hoge&quot;, 40, maxLimit: 100);
-var v3 = await redis.IncrementWithLimit(0, &quot;hoge&quot;, 40, maxLimit: 100);
-
-// 40-&gt;80-&gt;100
-Console.WriteLine(v1 + &quot;-&gt;&quot; + v2 + &quot;-&gt;&quot; + v3);
-</code></pre>
-<p>楽ちん、これは捗る。</p>
-<h2>まとめ</h2>
-<p>というわけで、RedisいいよRedis。いやほんと色々な面で使ってて嬉しいことが多いです。RDBMSだけで頑張ると非常に辛ぽよ、Redisがあるだけで何かと楽になれますので、一家に一台は置いておきたい。</p>
-<p>Luaスクリプティングは複数コマンド間で戻り値が扱えるため、利用範囲がグッと広がります。そしてスクリプティング中の動作もまたアトミックである、というのが嬉しい点です（C#コード上で複数コマンドを扱うと、そこの保証がないというのが大きな違い）。と同時に注意しなければならないのは、アトミックなので、スクリプト実行中は完全にブロックされてます。ので、あまりヘヴィなことをLuaスクリプティングでやるのは避けたほうがいいのではないかなー、と思われます。</p>
-</div>
 <a href="https://neue.cc/8">Prev |</a>
 <a href="https://neue.cc/10">| Next</a>
 </div>
@@ -2302,6 +2285,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2022/01/">2022-01</a>
 <li><a href="https://neue.cc/2021/12/">2021-12</a>
 <li><a href="https://neue.cc/2021/11/">2021-11</a>
 <li><a href="https://neue.cc/2021/08/">2021-08</a>
