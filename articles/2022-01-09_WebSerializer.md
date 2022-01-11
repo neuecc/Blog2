@@ -79,12 +79,12 @@ async Task PostMessage(string name, string email, string message)
 
 ```csharp
 // CultureInfo: 数値型やDateTimeの文字列化変換に渡すCultureInfo、デフォルトはnull
-// CollectionSeparator: 配列などを変換する場合のセパレーター、デフォルトは","
+// CollectionSeparator: 配列などを変換する場合のセパレーター、デフォルトはnullでname=value&name=value...
 // Provider: 対象の型をどのように変換するか(`IWebSerialzier<T>`)の変更
 var newConfig = WebSerializerOptions.Default with
 {
     CultureInfo = CultureInfo.InvariantCulture,
-    CollectionSeparator = "  ",
+    CollectionSeparator = ",",
     Provider = WebSerializerProvider.Create(
         new[] { new BoolZeroOneSerializer() },
         new[] { WebSerializerProvider.Default })
