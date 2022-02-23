@@ -75,7 +75,7 @@ var articles = Directory.EnumerateFiles(inputDir)
             throw new Exception($".md file does not contains #title, {Path.GetFileName(x)}");
         }
 
-        var title = first.Trim('#', ' ');
+        var title = first.TrimStart('#', ' ').TrimEnd(' ');
         var bodyTitle = $"<h1><a href=\"https://neue.cc/{yyyy}/{mm}/{dd_no}.html\">{title}</a></h1>";
         var bodyDate = $"<ul class=\"date\"><li>{yyyy}-{mm}-{dd}</li></ul>";
         var body = "<div class=\"entry_body\">" + Markdown.ToHtml(others) + "</div>";
