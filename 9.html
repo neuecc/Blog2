@@ -15,7 +15,97 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2014/03/11_447.html">RespClient - PowerShell向けのRedisクライアント/コマンドレット</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2014/03/14_448.html">ForEachAsync - 非同期の列挙の方法 Part2</a></h1>
+<ul class="date"><li>2014-03-14</li></ul>
+<div class="entry_body"><p>Part2って、Part1はあったのかというと、うーん、<a href="http://neue.cc/2013/12/04_435.html">非同期時代のLINQ</a>、かな……？さて、今回はForEachがテーマです。といってもそれってSelect+WhenAllでしょ！「Selectは非同期時代のForEach」って言ってたじゃない、というと、はい、言ってました。まだ他に言うことあるの？というと、例えば以下のシチュエーション。</p>
+<pre><code class="language-csharp">var httpClient = new HttpClient();
+var tasks = Enumerable.Range(1, 100000)
+    .Select(async x =&gt;
+    {
+        var str = await httpClient.GetStringAsync(&quot;http://hogehoge?q=&quot; + x);
+        Console.WriteLine(str);
+    });
+await Task.WhenAll(tasks);
+</code></pre>
+<p>別に動きはしますが、制御不能に10万件、同時リクエスト走ります。これはまぁいくないですよね。もはや途中で死んだりしますので動くとも言えない……。というわけで、元シーケンスが巨大な時は、Select+WhenAllはForEachになりえないのです。</p>
+<p>さて、この事態に手抜きで対抗すると？</p>
+<pre><code class="language-csharp">var httpClient = new HttpClient();
+Parallel.ForEach(Enumerable.Range(1, 100000), x =&gt;
+{
+    var str = httpClient.GetStringAsync(&quot;http://hogehoge?q=&quot; + x).Result;
+    Console.WriteLine(str);
+});
+</code></pre>
+<p>みんな大好きParallel.ForEachです。CPUバウンドとかI/Oバウンドとか面倒くさいんですよ、動きゃあいいんですよ(ﾎｼﾞﾎｼﾞ。という楽さ。実際これは普通に機能します。ので、バッチとかはこんなんでもいーんじゃないでしょうか、マジで。でも、これ、序盤はじわじわと並列数が上がってくので、初速がイマイチに感じるかもしれません。最初はコア数分しか並列にならず、待ちが多いことを検出してからじわじわ上がっていくので。あと終盤の挙動をアレゲに感じたりするかもしれません。待ち時間が長いと、際限なく並列数が上がってっちゃうんですよ。でも別に極端に上がっても速くなるわけじゃなくて、逆にむしろ余計遅くなる。</p>
+<p>※これは別に作り話じゃなくて、私はプロダクション環境で実際に数十万リクエストを叩くコードを走らせていて、常に同時並列数やスレッド消費量のモニタ取って、調整いれてます。</p>
+<p>どう調整入れるか、というと……</p>
+<pre><code class="language-csharp">// 最小スレッドプール数を最初に適当に伸ばしてやると初速に効く
+// 設定は一回でいいので、アプリケーションスタートアップのところにでも置いときましょう
+ThreadPool.SetMinThreads(200, 200);
+
+// 無尽蔵に伸び続けるのもいくないのでMaxDegreeOfParallelismを設定
+var httpClient = new HttpClient();
+Parallel.ForEach(Enumerable.Range(1, 100000), new ParallelOptions { MaxDegreeOfParallelism = 200 }, x =&gt;
+{
+    var str = httpClient.GetStringAsync(&quot;http://hogehoge?q=&quot; + x).Result;
+    Console.WriteLine(str);
+});
+</code></pre>
+<p>SetMinThreadsとMaxDegreeOfParallelism、この2つはふとぅーに影響大きくて大事。なので適当に、とか書きましたがあんまり適当にやるのはよくない。</p>
+<h2>ForEachAsync</h2>
+<p>とはいえ、非同期は非同期として扱いたい！そりゃそーだ。で、つまり、ようするに、同時実行数を抑えながら非同期を走らせられればいい。それにうってつけのクラスが<a href="http://msdn.microsoft.com/ja-jp/library/system.threading.semaphoreslim.aspx">SemaphoreSlim</a>。「リソースまたはリソースのプールに同時にアクセスできるスレッドの数を制限する Semaphore の軽量版です。SemaphoreSlim は、Windows カーネルのセマフォを使用しない、軽量セマフォ クラスを提供します。」。です。.NET 4.0からの登場。使うメソッドはWaitAsync(これは.NET 4.5から)とReleaseがほとんどかな。.NET 4.0の場合はWaitAsyncのかわりにWaitで。</p>
+<p>内部にCountを持っていて、それをWaitAsyncで減らし、Releaseで増やします。Countが0に達すると、WaitAsyncは待機するようになります。これを用いてForEachAsyncを作ってみると？</p>
+<pre><code class="language-csharp">public static class EnumerableExtensions
+{
+    public static async Task ForEachAsync&lt;T&gt;(this IEnumerable&lt;T&gt; source, Func&lt;T, Task&gt; action, int concurrency, CancellationToken cancellationToken = default(CancellationToken), bool configureAwait = false)
+    {
+        if (source == null) throw new ArgumentNullException(&quot;source&quot;);
+        if (action == null) throw new ArgumentNullException(&quot;action&quot;);
+        if (concurrency &lt;= 0) throw new ArgumentOutOfRangeException(&quot;concurrencyは1以上の必要があります&quot;);
+
+        using (var semaphore = new SemaphoreSlim(initialCount: concurrency, maxCount: concurrency))
+        {
+            var exceptionCount = 0;
+            var tasks = new List&lt;Task&gt;();
+
+            foreach (var item in source)
+            {
+                if (exceptionCount &gt; 0) break;
+                cancellationToken.ThrowIfCancellationRequested();
+
+                await semaphore.WaitAsync(cancellationToken).ConfigureAwait(configureAwait);
+                var task = action(item).ContinueWith(t =&gt;
+                {
+                    semaphore.Release();
+
+                    if (t.IsFaulted)
+                    {
+                        Interlocked.Increment(ref exceptionCount);
+                        throw t.Exception;
+                    }
+                });
+                tasks.Add(task);
+            }
+
+            await Task.WhenAll(tasks.ToArray()).ConfigureAwait(configureAwait);
+        }
+    }
+}
+</code></pre>
+<p>ほむ、わからん。ExceptionとかCancellationTokenとかでゴチャついてますが、よーわ、実行開始しようとするとWaitAsyncでカウントを減らして、実行完了したらReleaseでカウントを増やす。初期値の指定がそのまま並列実行数になる、って感じ。利用例を見ると</p>
+<pre><code class="language-csharp">var httpClient = new HttpClient();
+await Enumerable.Range(1, 100000)
+    .ForEachAsync(async x =&gt;
+    {
+        var str = await httpClient.GetStringAsync(&quot;http://hogehoge?q=&quot; + x);
+        Console.WriteLine(str);
+    }, concurrency: 200);
+</code></pre>
+<p>実に簡単にひどぅーきなForEachができました。これは、Taskの実行開始はシーケンシャルです。これも何気に有難かったりしますねえ。実行完了のほうは順不同です。まあ、そりゃそうだ、って話ですね。</p>
+<h2>まとめ</h2>
+<p>SemaphoreSlimかわいい。</p>
+</div>
+<h1><a href="https://neue.cc/2014/03/11_447.html">RespClient - PowerShell向けのRedisクライアント/コマンドレット</a></h1>
 <ul class="date"><li>2014-03-11</li></ul>
 <div class="entry_body"><p>というものを作りました。</p>
 <ul>
@@ -2020,248 +2110,6 @@ var value = await new RedisString&lt;string&gt;(settings, &quot;hogekey&quot;).G
 <p>弊社では、簡易なリアルタイムな表示はMiniProfilerとビュー統合のログ表示。実アプリケーションでは片っ端から収集し、NewRelicとSumoLogicに流しこんで簡単に集計・可視化できる体制を整えています。実際、C#移行を果たしてからの弊社のアプリケーションは業界最速、といってよいほどの速度を叩きだしています。基礎設計からガチガチにパフォーマンスを意識しているから、というのはもちろんあるのですが(そしてC# 5.0の非同期がそれを可能にした！)、現在自分が作っているものがどのぐらいのパフォーマンスなのか、を常に意識できる状態に置けたことも一因ではないかな、と考えています。(ただし、<a href="http://www.slideshare.net/neuecc/net-22662425">.NET最先端技術によるハイパフォーマンスウェブアプリケーション</a>で述べましたが、そのためには開発環境も本番と等しいぐらいのネットワーク環境にしてないとダメですよ！)</p>
 <p>私は今年は、言語や設計などの小さな優劣の話よりも、実際に現実に成功させることに重きを置いてます。C#で素晴らしい成果が出せる、その証明を果たしていくフェーズにある。成果は出せるに決まってるでしょ、と、仮に理屈では分かっていても、しかしモデルケースがなければ誰もついてこない。だから、そのための先陣を切っていきたい。勿論、同時に、成果物はどんどん公開していきます。C#が皆さんのこれからの選択肢の一番に上がってくれるといいし、また、C#といったらグラニ、となれるよう頑張ります。</p>
 </div>
-<h1><a href="https://neue.cc/2013/07/20_416.html">ASP.NETでの定期的なモニタリング手法</a></h1>
-<ul class="date"><li>2013-07-20</li></ul>
-<div class="entry_body"><p>cron的な定期実行といったら、タスクスケジューラ使え。完。なわけですが、それとは別にして、アプリケーションサーバー内部からしか分からない情報を定期的に吐き出したいようなシチュエーションにどうしましょうか？例えばスレッドプールの情報！かなり古いのですが<a href="http://msdn.microsoft.com/ja-jp/library/ff650682.aspx">How To 情報: カスタム カウンタを使った ASP.NET スレッド プールの監視方法</a>なんて、まずレジストリに登録して、そこから定期的に無限ループ＋Thread.Sleep（ダセぇ）で出力という、なんともトホホな感じ。いや、これトホホでしょう。というわけで、もっとモダンにいきましょう。</p>
-<h2>IHttpModuleとInit, Dispose</h2>
-<p><a href="http://msdn.microsoft.com/ja-jp/library/ms227673.aspx">カスタム HTTP モジュールを作成および登録する</a>ということで、IHttpModuleを作成することで、ASP.NETパイプライン上での各イベント時に実行されるものを追加していくことができます。Global.asax.csに直書きでもいいですが、こっちのほうが分離されてる感はありますにぇ。さて、通常はapplication.BeginRequest+=とか、イベント登録するんですが、Application_Startイベントに相当するものは……ありません。はい。ただしかわりにInitメソッドがあります。普段はイベント登録しますが、ここでメソッド実行すれば、それApplication_Startに等しいよねー、と思っていた時もありました。</p>
-<pre><code class="language-csharp">public class CountModule : IHttpModule
-{
-    public static int Count = 0;
-
-    public void Init(HttpApplication context)
-    {
-        Interlocked.Increment(ref Count);
-    }
-}
-</code></pre>
-<p>これ、ブレークポイントを張って様子みたり、Countの値を表示して見たりするとわかりますが、何度も呼ばれます。何度も何度も。どーいうことかというと、Application_StartとInitは等しくないです。ASP.NET Runtimeは複数のアプリケーションプールを作り、それごとにInitは呼ばれてるんですね。じゃあ、どうするか、というと……</p>
-<pre><code class="language-csharp">public class CallOnceModule : IHttpModule
-{
-    static int initializedModuleCount;
-
-    public void Init(HttpApplication context)
-    {
-        var count = Interlocked.Increment(ref initializedModuleCount);
-        if (count != 1) return;
-
-        // ここに本体書く
-    }
-
-    public void Dispose()
-    {
-        var count = Interlocked.Decrement(ref initializedModuleCount);
-        if (count == 0)
-        {
-            // ここに本体書く
-        }
-    }
-}
-</code></pre>
-<p>Initが呼ばれた回数を取れば、正しく1回になります。ちなみに属性を張るだけで、Application_Startっぽく呼び出されるメソッドを作れる<a href="https://nuget.org/packages/WebActivator">WebActivator</a>も、似たような感じの仕組みです。</p>
-<h2>Timer</h2>
-<p>IHttpModuleの話はこのぐらいにして、本体の話にいきましょう。定期的に、例えば1分間隔に、とかは、Timer使えばいいんですよ、Timer。あ、Timerは幾つかありますが、<a href="http://msdn.microsoft.com/ja-jp/library/system.threading.timer.aspx">System.Threading.Timer</a>のほうね。</p>
-<pre><code class="language-csharp">/// &lt;summary&gt;
-/// 1分間隔でThreadInfoをログ取りするモジュール
-/// &lt;/summary&gt;
-public class ThreadInfoLoggingModule : IHttpModule
-{
-    static NLog.Logger logger = NLog.LogManager.GetLogger(&quot;ThreadInfo&quot;);
-    static NLog.Logger classLogger = NLog.LogManager.GetCurrentClassLogger();
-    static int initializedModuleCount;
-    static Timer timer;
-
-    public void Init(HttpApplication context)
-    {
-        var count = Interlocked.Increment(ref initializedModuleCount);
-        if (count != 1) return;
-
-        timer = new Timer(_ =&gt;
-        {
-            try
-            {
-                var date = DateTime.Now;
-
-                int availableWorkerThreads, availableCompletionPortThreads;
-                ThreadPool.GetAvailableThreads(out availableWorkerThreads, out availableCompletionPortThreads);
-
-                int maxWorkerThreads, maxCompletionPortThreads;
-                ThreadPool.GetMaxThreads(out maxWorkerThreads, out maxCompletionPortThreads);
-
-                using (var sw = new System.IO.StringWriter())
-                using (var jw = new Newtonsoft.Json.JsonTextWriter(sw))
-                {
-                    jw.Formatting = Newtonsoft.Json.Formatting.None;
-
-                    jw.WriteStartObject(); // {
-
-                    jw.WritePropertyName(&quot;date&quot;);
-                    jw.WriteValue(date);
-                    jw.WritePropertyName(&quot;availableWorkerThreads&quot;);
-                    jw.WriteValue(availableWorkerThreads);
-                    jw.WritePropertyName(&quot;availableCompletionPortThreads&quot;);
-                    jw.WriteValue(availableCompletionPortThreads);
-                    jw.WritePropertyName(&quot;maxWorkerThreads&quot;);
-                    jw.WriteValue(maxWorkerThreads);
-                    jw.WritePropertyName(&quot;maxCompletionPortThreads&quot;);
-                    jw.WriteValue(maxCompletionPortThreads);
-
-                    jw.WriteEndObject(); // }
-
-                    jw.Flush();
-
-                    var message = sw.ToString();
-                    logger.Trace(message);
-                }
-            }
-            catch (Exception ex)
-            {
-                classLogger.ErrorException(&quot;ThreadInfoLogging encounts error&quot;, ex);
-            }
-        }, null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
-    }
-
-
-    public void Dispose()
-    {
-        var count = Interlocked.Decrement(ref initializedModuleCount);
-        if (count == 0)
-        {
-            var target = Interlocked.Exchange(ref timer, null);
-            if (target != null)
-            {
-                target.Dispose();
-            }
-        }
-    }
-}
-</code></pre>
-<p>なにをやっているか。よーするに、Timerで1分置きにロガーでJSONを吐き出してます。ロガーは謎社では<a href="https://github.com/nlog/NLog/">NLog</a>を使ってます。というかこのModuleでは<a href="http://grani.jp/">謎社</a>のプロダクション環境で動いてるものです。なお、JsonTextWriter使ってるところは、別に普通にSerializeで構いませんですよ、なんとなく手書きしちゃっただけなので。</p>
-<p>というわけで、これでThreadPoolの情報が取れました。やったね！あとはJSONなので好きな様にゴリゴリすればいいんですが、賢く解析したいなら、とりあえず謎社では<a href="http://www.sumologic.com/">Sumo Logic</a>を使っています。Next Generation Log Management &amp; Analyticsということで、集計ツールと解析ウェブアプリをワンセットで提供してくれてます。</p>
-<p style="noindent">
-<img src='http://neue.cc/wp-content/uploads/2013/07/sumo_threadinfo1.jpg' />
-</p>
-<p>独自のクエリ言語でガッと解析してグラフ化できてる、ってのは伝わるでしょうか？ふいんきね。便利そう、とか思ってもらえれば。クエリと可視化、更に閾値による通知など、色々できちゃいます。こいつぁイイね？←ちなみに、私はまだ全然クエリ書けないので、これは<a href="http://guitarrapc.wordpress.com/">謎社の誇るPowerShellマスター</a>が用意してくれました。</p>
-<p>（ここではparseが手書きチックですが、実際にJSONをSumoでパースする際はJsonコマンドが用意されているので、それを使えばもっと綺麗にparseできます）</p>
-<h2>BookSleeveのMonitor</h2>
-<p>ついでに、謎社ではRedisを多用しているんですが、Redisライブラリである<a href="https://code.google.com/p/booksleeve/">BookSleeve</a>は、GetCountersというメソッドで、それぞれのRedisConnectionの情報を吐き出すことができます。これを1分置きに、ThreadInfoと同様に吐き出すようにしてます。</p>
-<pre><code class="language-csharp">/// &lt;summary&gt;
-/// 1分間隔でRedis(BookSleeve)のCounterをログ取りするモジュール
-/// &lt;/summary&gt;
-public class RedisCounterLoggingModule : IHttpModule
-{
-    static NLog.Logger logger = NLog.LogManager.GetLogger(&quot;RedisCounter&quot;);
-    static NLog.Logger classLogger = NLog.LogManager.GetCurrentClassLogger();
-    static int initializedModuleCount;
-    static Timer timer;
-
-    public void Init(HttpApplication context)
-    {
-        var count = Interlocked.Increment(ref initializedModuleCount);
-        if (count != 1) return;
-
-        timer = new Timer(_ =&gt;
-        {
-            try
-            {
-                var date = DateTime.Now;
-
-                // ここは謎社Internalな部分なのでテキトーにスルーしてくださいな 
-                var query = Grani.Core.GlobalConfig.RedisGroupDictionary
-                    .SelectMany(x =&gt; x.Value.Settings, (x, settings) =&gt; new { x.Value.GroupName, settings });
-                foreach (var item in query)
-                {
-                    var connection = item.settings.GetConnection();
-                    var counters = connection.GetCounters();
-
-                    using (var sw = new System.IO.StringWriter())
-                    using (var jw = new Newtonsoft.Json.JsonTextWriter(sw))
-                    {
-                        jw.Formatting = Newtonsoft.Json.Formatting.None;
-
-                        jw.WriteStartObject(); // {
-
-                        jw.WritePropertyName(&quot;date&quot;);
-                        jw.WriteValue(date);
-
-                        jw.WritePropertyName(&quot;GroupName&quot;);
-                        jw.WriteValue(item.GroupName);
-                        jw.WritePropertyName(&quot;Host&quot;);
-                        jw.WriteValue(item.settings.Host + &quot;:&quot; + item.settings.Port);
-                        jw.WritePropertyName(&quot;Db&quot;);
-                        jw.WriteValue(item.settings.Db);
-
-                        jw.WritePropertyName(&quot;MessagesSent&quot;);
-                        jw.WriteValue(counters.MessagesSent);
-                        jw.WritePropertyName(&quot;MessagesReceived&quot;);
-                        jw.WriteValue(counters.MessagesReceived);
-                        jw.WritePropertyName(&quot;MessagesCancelled&quot;);
-                        jw.WriteValue(counters.MessagesCancelled);
-                        jw.WritePropertyName(&quot;Timeouts&quot;);
-                        jw.WriteValue(counters.Timeouts);
-                        jw.WritePropertyName(&quot;QueueJumpers&quot;);
-                        jw.WriteValue(counters.QueueJumpers);
-                        jw.WritePropertyName(&quot;Ping&quot;);
-                        jw.WriteValue(counters.Ping);
-                        jw.WritePropertyName(&quot;SentQueue&quot;);
-                        jw.WriteValue(counters.SentQueue);
-                        jw.WritePropertyName(&quot;UnsentQueue&quot;);
-                        jw.WriteValue(counters.UnsentQueue);
-                        jw.WritePropertyName(&quot;ErrorMessages&quot;);
-                        jw.WriteValue(counters.ErrorMessages);
-                        jw.WritePropertyName(&quot;SyncCallbacks&quot;);
-                        jw.WriteValue(counters.SyncCallbacks);
-                        jw.WritePropertyName(&quot;AsyncCallbacks&quot;);
-                        jw.WriteValue(counters.AsyncCallbacks);
-                        jw.WritePropertyName(&quot;SyncCallbacksInProgress&quot;);
-                        jw.WriteValue(counters.SyncCallbacksInProgress);
-                        jw.WritePropertyName(&quot;AsyncCallbacksInProgress&quot;);
-                        jw.WriteValue(counters.AsyncCallbacksInProgress);
-                        jw.WritePropertyName(&quot;LastSentMillisecondsAgo&quot;);
-                        jw.WriteValue(counters.LastSentMillisecondsAgo);
-                        jw.WritePropertyName(&quot;LastKeepAliveMillisecondsAgo&quot;);
-                        jw.WriteValue(counters.LastKeepAliveMillisecondsAgo);
-                        jw.WritePropertyName(&quot;KeepAliveSeconds&quot;);
-                        jw.WriteValue(counters.KeepAliveSeconds);
-                        jw.WritePropertyName(&quot;State&quot;);
-                        jw.WriteValue(counters.State.ToString());
-
-                        jw.WriteEndObject(); // }
-
-                        jw.Flush();
-
-                        var message = sw.ToString();
-                        logger.Trace(message);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                classLogger.ErrorException(&quot;RedisCounterLogging encounts error&quot;, ex);
-            }
-        }, null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
-    }
-
-    public void Dispose()
-    {
-        var count = Interlocked.Decrement(ref initializedModuleCount);
-        if (count == 0)
-        {
-            var target = Interlocked.Exchange(ref timer, null);
-            if (target != null)
-            {
-                target.Dispose();
-            }
-        }
-    }
-}
-</code></pre>
-<p>RedisGroupとかコネクション管理はBookSleeveの上に被せてる<a href="https://github.com/neuecc/CloudStructures">CloudStructures</a>によるものです（プロダクション環境でヘヴィに使ってますよ！）。CloudStructuresの使い方とかもまたそのうち。</p>
-<h2>まとめ</h2>
-<p>とまぁ、そんなふうにして色々データ取ってます。改善の基本はデータ取りから。色々なところからデータ取ってチェック取れるような体制を整えています。次回は、SQLやHttp、Redisの実行時間をどう取得するかについてお話しましょふ。たぶんね。きっと。</p>
-<p>ところで、プロダクション環境下で――と書いているように、謎社のアプリケーションは完全にC#に移行しました。結果ですが、最先端環境で練り上げたC#によるウェブアプリケーションは、超絶速い。しかも、完全にAWSクラウドに乗っけての話ですからね、オンプレミスでのスペシャルなマシンやFusion-ioなDBでやってるわけじゃなく、成果出せてる。</p>
-<p>Sumo LogicやNew Relicなど外部サービスの活用やRedisの使い倒しかた、非同期処理の塊、などなど、次世代のC#ウェブアプリケーションのスタンダードというものを示せたのではないかな、と思っています。詳しい話はそのうちまたどこかで発表したいとは思うので待っててください。</p>
-</div>
 <a href="https://neue.cc/8">Prev |</a>
 <a href="https://neue.cc/10">| Next</a>
 </div>
@@ -2285,6 +2133,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2022/02/">2022-02</a>
 <li><a href="https://neue.cc/2022/01/">2022-01</a>
 <li><a href="https://neue.cc/2021/12/">2021-12</a>
 <li><a href="https://neue.cc/2021/11/">2021-11</a>

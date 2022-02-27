@@ -15,7 +15,249 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2013/07/10_414.html">C#で扱うRedisのLuaスクリプティング</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2013/07/20_416.html">ASP.NETでの定期的なモニタリング手法</a></h1>
+<ul class="date"><li>2013-07-20</li></ul>
+<div class="entry_body"><p>cron的な定期実行といったら、タスクスケジューラ使え。完。なわけですが、それとは別にして、アプリケーションサーバー内部からしか分からない情報を定期的に吐き出したいようなシチュエーションにどうしましょうか？例えばスレッドプールの情報！かなり古いのですが<a href="http://msdn.microsoft.com/ja-jp/library/ff650682.aspx">How To 情報: カスタム カウンタを使った ASP.NET スレッド プールの監視方法</a>なんて、まずレジストリに登録して、そこから定期的に無限ループ＋Thread.Sleep（ダセぇ）で出力という、なんともトホホな感じ。いや、これトホホでしょう。というわけで、もっとモダンにいきましょう。</p>
+<h2>IHttpModuleとInit, Dispose</h2>
+<p><a href="http://msdn.microsoft.com/ja-jp/library/ms227673.aspx">カスタム HTTP モジュールを作成および登録する</a>ということで、IHttpModuleを作成することで、ASP.NETパイプライン上での各イベント時に実行されるものを追加していくことができます。Global.asax.csに直書きでもいいですが、こっちのほうが分離されてる感はありますにぇ。さて、通常はapplication.BeginRequest+=とか、イベント登録するんですが、Application_Startイベントに相当するものは……ありません。はい。ただしかわりにInitメソッドがあります。普段はイベント登録しますが、ここでメソッド実行すれば、それApplication_Startに等しいよねー、と思っていた時もありました。</p>
+<pre><code class="language-csharp">public class CountModule : IHttpModule
+{
+    public static int Count = 0;
+
+    public void Init(HttpApplication context)
+    {
+        Interlocked.Increment(ref Count);
+    }
+}
+</code></pre>
+<p>これ、ブレークポイントを張って様子みたり、Countの値を表示して見たりするとわかりますが、何度も呼ばれます。何度も何度も。どーいうことかというと、Application_StartとInitは等しくないです。ASP.NET Runtimeは複数のアプリケーションプールを作り、それごとにInitは呼ばれてるんですね。じゃあ、どうするか、というと……</p>
+<pre><code class="language-csharp">public class CallOnceModule : IHttpModule
+{
+    static int initializedModuleCount;
+
+    public void Init(HttpApplication context)
+    {
+        var count = Interlocked.Increment(ref initializedModuleCount);
+        if (count != 1) return;
+
+        // ここに本体書く
+    }
+
+    public void Dispose()
+    {
+        var count = Interlocked.Decrement(ref initializedModuleCount);
+        if (count == 0)
+        {
+            // ここに本体書く
+        }
+    }
+}
+</code></pre>
+<p>Initが呼ばれた回数を取れば、正しく1回になります。ちなみに属性を張るだけで、Application_Startっぽく呼び出されるメソッドを作れる<a href="https://nuget.org/packages/WebActivator">WebActivator</a>も、似たような感じの仕組みです。</p>
+<h2>Timer</h2>
+<p>IHttpModuleの話はこのぐらいにして、本体の話にいきましょう。定期的に、例えば1分間隔に、とかは、Timer使えばいいんですよ、Timer。あ、Timerは幾つかありますが、<a href="http://msdn.microsoft.com/ja-jp/library/system.threading.timer.aspx">System.Threading.Timer</a>のほうね。</p>
+<pre><code class="language-csharp">/// &lt;summary&gt;
+/// 1分間隔でThreadInfoをログ取りするモジュール
+/// &lt;/summary&gt;
+public class ThreadInfoLoggingModule : IHttpModule
+{
+    static NLog.Logger logger = NLog.LogManager.GetLogger(&quot;ThreadInfo&quot;);
+    static NLog.Logger classLogger = NLog.LogManager.GetCurrentClassLogger();
+    static int initializedModuleCount;
+    static Timer timer;
+
+    public void Init(HttpApplication context)
+    {
+        var count = Interlocked.Increment(ref initializedModuleCount);
+        if (count != 1) return;
+
+        timer = new Timer(_ =&gt;
+        {
+            try
+            {
+                var date = DateTime.Now;
+
+                int availableWorkerThreads, availableCompletionPortThreads;
+                ThreadPool.GetAvailableThreads(out availableWorkerThreads, out availableCompletionPortThreads);
+
+                int maxWorkerThreads, maxCompletionPortThreads;
+                ThreadPool.GetMaxThreads(out maxWorkerThreads, out maxCompletionPortThreads);
+
+                using (var sw = new System.IO.StringWriter())
+                using (var jw = new Newtonsoft.Json.JsonTextWriter(sw))
+                {
+                    jw.Formatting = Newtonsoft.Json.Formatting.None;
+
+                    jw.WriteStartObject(); // {
+
+                    jw.WritePropertyName(&quot;date&quot;);
+                    jw.WriteValue(date);
+                    jw.WritePropertyName(&quot;availableWorkerThreads&quot;);
+                    jw.WriteValue(availableWorkerThreads);
+                    jw.WritePropertyName(&quot;availableCompletionPortThreads&quot;);
+                    jw.WriteValue(availableCompletionPortThreads);
+                    jw.WritePropertyName(&quot;maxWorkerThreads&quot;);
+                    jw.WriteValue(maxWorkerThreads);
+                    jw.WritePropertyName(&quot;maxCompletionPortThreads&quot;);
+                    jw.WriteValue(maxCompletionPortThreads);
+
+                    jw.WriteEndObject(); // }
+
+                    jw.Flush();
+
+                    var message = sw.ToString();
+                    logger.Trace(message);
+                }
+            }
+            catch (Exception ex)
+            {
+                classLogger.ErrorException(&quot;ThreadInfoLogging encounts error&quot;, ex);
+            }
+        }, null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
+    }
+
+
+    public void Dispose()
+    {
+        var count = Interlocked.Decrement(ref initializedModuleCount);
+        if (count == 0)
+        {
+            var target = Interlocked.Exchange(ref timer, null);
+            if (target != null)
+            {
+                target.Dispose();
+            }
+        }
+    }
+}
+</code></pre>
+<p>なにをやっているか。よーするに、Timerで1分置きにロガーでJSONを吐き出してます。ロガーは謎社では<a href="https://github.com/nlog/NLog/">NLog</a>を使ってます。というかこのModuleでは<a href="http://grani.jp/">謎社</a>のプロダクション環境で動いてるものです。なお、JsonTextWriter使ってるところは、別に普通にSerializeで構いませんですよ、なんとなく手書きしちゃっただけなので。</p>
+<p>というわけで、これでThreadPoolの情報が取れました。やったね！あとはJSONなので好きな様にゴリゴリすればいいんですが、賢く解析したいなら、とりあえず謎社では<a href="http://www.sumologic.com/">Sumo Logic</a>を使っています。Next Generation Log Management &amp; Analyticsということで、集計ツールと解析ウェブアプリをワンセットで提供してくれてます。</p>
+<p style="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/07/sumo_threadinfo1.jpg' />
+</p>
+<p>独自のクエリ言語でガッと解析してグラフ化できてる、ってのは伝わるでしょうか？ふいんきね。便利そう、とか思ってもらえれば。クエリと可視化、更に閾値による通知など、色々できちゃいます。こいつぁイイね？←ちなみに、私はまだ全然クエリ書けないので、これは<a href="http://guitarrapc.wordpress.com/">謎社の誇るPowerShellマスター</a>が用意してくれました。</p>
+<p>（ここではparseが手書きチックですが、実際にJSONをSumoでパースする際はJsonコマンドが用意されているので、それを使えばもっと綺麗にparseできます）</p>
+<h2>BookSleeveのMonitor</h2>
+<p>ついでに、謎社ではRedisを多用しているんですが、Redisライブラリである<a href="https://code.google.com/p/booksleeve/">BookSleeve</a>は、GetCountersというメソッドで、それぞれのRedisConnectionの情報を吐き出すことができます。これを1分置きに、ThreadInfoと同様に吐き出すようにしてます。</p>
+<pre><code class="language-csharp">/// &lt;summary&gt;
+/// 1分間隔でRedis(BookSleeve)のCounterをログ取りするモジュール
+/// &lt;/summary&gt;
+public class RedisCounterLoggingModule : IHttpModule
+{
+    static NLog.Logger logger = NLog.LogManager.GetLogger(&quot;RedisCounter&quot;);
+    static NLog.Logger classLogger = NLog.LogManager.GetCurrentClassLogger();
+    static int initializedModuleCount;
+    static Timer timer;
+
+    public void Init(HttpApplication context)
+    {
+        var count = Interlocked.Increment(ref initializedModuleCount);
+        if (count != 1) return;
+
+        timer = new Timer(_ =&gt;
+        {
+            try
+            {
+                var date = DateTime.Now;
+
+                // ここは謎社Internalな部分なのでテキトーにスルーしてくださいな 
+                var query = Grani.Core.GlobalConfig.RedisGroupDictionary
+                    .SelectMany(x =&gt; x.Value.Settings, (x, settings) =&gt; new { x.Value.GroupName, settings });
+                foreach (var item in query)
+                {
+                    var connection = item.settings.GetConnection();
+                    var counters = connection.GetCounters();
+
+                    using (var sw = new System.IO.StringWriter())
+                    using (var jw = new Newtonsoft.Json.JsonTextWriter(sw))
+                    {
+                        jw.Formatting = Newtonsoft.Json.Formatting.None;
+
+                        jw.WriteStartObject(); // {
+
+                        jw.WritePropertyName(&quot;date&quot;);
+                        jw.WriteValue(date);
+
+                        jw.WritePropertyName(&quot;GroupName&quot;);
+                        jw.WriteValue(item.GroupName);
+                        jw.WritePropertyName(&quot;Host&quot;);
+                        jw.WriteValue(item.settings.Host + &quot;:&quot; + item.settings.Port);
+                        jw.WritePropertyName(&quot;Db&quot;);
+                        jw.WriteValue(item.settings.Db);
+
+                        jw.WritePropertyName(&quot;MessagesSent&quot;);
+                        jw.WriteValue(counters.MessagesSent);
+                        jw.WritePropertyName(&quot;MessagesReceived&quot;);
+                        jw.WriteValue(counters.MessagesReceived);
+                        jw.WritePropertyName(&quot;MessagesCancelled&quot;);
+                        jw.WriteValue(counters.MessagesCancelled);
+                        jw.WritePropertyName(&quot;Timeouts&quot;);
+                        jw.WriteValue(counters.Timeouts);
+                        jw.WritePropertyName(&quot;QueueJumpers&quot;);
+                        jw.WriteValue(counters.QueueJumpers);
+                        jw.WritePropertyName(&quot;Ping&quot;);
+                        jw.WriteValue(counters.Ping);
+                        jw.WritePropertyName(&quot;SentQueue&quot;);
+                        jw.WriteValue(counters.SentQueue);
+                        jw.WritePropertyName(&quot;UnsentQueue&quot;);
+                        jw.WriteValue(counters.UnsentQueue);
+                        jw.WritePropertyName(&quot;ErrorMessages&quot;);
+                        jw.WriteValue(counters.ErrorMessages);
+                        jw.WritePropertyName(&quot;SyncCallbacks&quot;);
+                        jw.WriteValue(counters.SyncCallbacks);
+                        jw.WritePropertyName(&quot;AsyncCallbacks&quot;);
+                        jw.WriteValue(counters.AsyncCallbacks);
+                        jw.WritePropertyName(&quot;SyncCallbacksInProgress&quot;);
+                        jw.WriteValue(counters.SyncCallbacksInProgress);
+                        jw.WritePropertyName(&quot;AsyncCallbacksInProgress&quot;);
+                        jw.WriteValue(counters.AsyncCallbacksInProgress);
+                        jw.WritePropertyName(&quot;LastSentMillisecondsAgo&quot;);
+                        jw.WriteValue(counters.LastSentMillisecondsAgo);
+                        jw.WritePropertyName(&quot;LastKeepAliveMillisecondsAgo&quot;);
+                        jw.WriteValue(counters.LastKeepAliveMillisecondsAgo);
+                        jw.WritePropertyName(&quot;KeepAliveSeconds&quot;);
+                        jw.WriteValue(counters.KeepAliveSeconds);
+                        jw.WritePropertyName(&quot;State&quot;);
+                        jw.WriteValue(counters.State.ToString());
+
+                        jw.WriteEndObject(); // }
+
+                        jw.Flush();
+
+                        var message = sw.ToString();
+                        logger.Trace(message);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                classLogger.ErrorException(&quot;RedisCounterLogging encounts error&quot;, ex);
+            }
+        }, null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
+    }
+
+    public void Dispose()
+    {
+        var count = Interlocked.Decrement(ref initializedModuleCount);
+        if (count == 0)
+        {
+            var target = Interlocked.Exchange(ref timer, null);
+            if (target != null)
+            {
+                target.Dispose();
+            }
+        }
+    }
+}
+</code></pre>
+<p>RedisGroupとかコネクション管理はBookSleeveの上に被せてる<a href="https://github.com/neuecc/CloudStructures">CloudStructures</a>によるものです（プロダクション環境でヘヴィに使ってますよ！）。CloudStructuresの使い方とかもまたそのうち。</p>
+<h2>まとめ</h2>
+<p>とまぁ、そんなふうにして色々データ取ってます。改善の基本はデータ取りから。色々なところからデータ取ってチェック取れるような体制を整えています。次回は、SQLやHttp、Redisの実行時間をどう取得するかについてお話しましょふ。たぶんね。きっと。</p>
+<p>ところで、プロダクション環境下で――と書いているように、謎社のアプリケーションは完全にC#に移行しました。結果ですが、最先端環境で練り上げたC#によるウェブアプリケーションは、超絶速い。しかも、完全にAWSクラウドに乗っけての話ですからね、オンプレミスでのスペシャルなマシンやFusion-ioなDBでやってるわけじゃなく、成果出せてる。</p>
+<p>Sumo LogicやNew Relicなど外部サービスの活用やRedisの使い倒しかた、非同期処理の塊、などなど、次世代のC#ウェブアプリケーションのスタンダードというものを示せたのではないかな、と思っています。詳しい話はそのうちまたどこかで発表したいとは思うので待っててください。</p>
+</div>
+<h1><a href="https://neue.cc/2013/07/10_414.html">C#で扱うRedisのLuaスクリプティング</a></h1>
 <ul class="date"><li>2013-07-10</li></ul>
 <div class="entry_body"><p>Redis 2.6からLuaスクリプティングが使えるようになりました。コマンドは<a href="http://redis.io/commands/eval">EVAL</a>です。というわけでC#のRedisライブラリ、<a href="https://code.google.com/p/booksleeve/">BookSleeve</a>で、試してみましょう。RedisやBookSleeveに関しては、以前に私がBuildInsiderで書いた<a href="http://www.buildinsider.net/small/rediscshap/01">C#のRedisライブラリ「BookSleeve」の利用法</a>を参照ください。</p>
 <p>BookSleeveは当然NuGet経由で入れるとして、Windows版のRedisバイナリもNuGetで配布されています。手軽に試してみるなら、<a href="https://nuget.org/packages/Redis-64/">Install-Package Redis-64</a>が良いのではないでしょーか。現在の最新は2.6.12.1ということで、Evalにも対応しています。インストールするとpackages\Redis-64.2.6.12.1\toolsにredis-server.exeが転がっているので、それを起動すれば、とりあえず127.0.0.1:6379で動きます。</p>
@@ -1586,83 +1828,6 @@ public class DisposableThreadLocal&lt;T&gt; : ThreadLocal&lt;T&gt;
 </code></pre>
 <p>まぁまぁ許せる、かな？</p>
 </div>
-<h1><a href="https://neue.cc/2013/03/06_399.html">C#とランダム</a></h1>
-<ul class="date"><li>2013-03-06</li></ul>
-<div class="entry_body"><p>古くて新しいわけはない昔ながらのSystem.Randomのお話。Randomのコンストラクタは二種類あって、seed引数アリの場合は必ず同じ順序で数値を返すようになります。</p>
-<pre><code class="language-csharp">// 何度実行しても同じ結果
-var rand = new Random(0);
-Console.WriteLine(rand.Next()); // 1559595546
-Console.WriteLine(rand.Next()); // 1755192844
-Console.WriteLine(rand.Next()); // 1649316166
-</code></pre>
-<p>例えばゲームのリプレイなどは、ランダムだけど同一の結果が得られることを期待したいわけなので、大事大事ですね。(とはいえ、Windows-CLIとLinux-monoでは結果が違ったりするので、マルチプラットフォームでの共有などという場合は、別策を取ったほうがよさそうです)。何も渡さない場合はseedとしてEnvironment.TickCountが渡されます。精度はミリ秒。ということは、ですね、例えばループの中でRandomをnewするとですよ、</p>
-<pre><code class="language-csharp">for (int i = 0; i &lt; 100; i++)
-{
-    var rand = new Random();
-    Console.WriteLine(rand.Next());
-}
-</code></pre>
-<p>マシンスペックにもよりますが、私の環境では30個ぐらい同じ数値が出た後に、別の、また30個ぐらい同じ数値が続き……となりました。何故か、というと、seedがEnvironment.TickCountだからで、ループ内といったようなミリ秒を超える超高速の状態で生成されている時は、seed値が同じとなってしまうから。なので、正しくは</p>
-<pre><code class="language-csharp">var rand = new Random();
-for (int i = 0; i &lt; 100; i++)
-{
-    Console.WriteLine(rand.Next());
-}
-</code></pre>
-<p>といったように、ループの外に出す必要性があります。</p>
-<h2>ランダムなランダム</h2>
-<p>では、ランダムなランダムが欲しい場合は。例えばマルチスレッド。そうでなくても、例えばループの外に出す（直接的でなくてもメソッドの中身がそうなっていて、意図せず使われてしまう可能性がある）のを忘れてしまうのを強制的に避ける場合。もしくは、別にマルチスレッドは気を付けるよー、といっても、ASP.NETとか複数リクエストが同時に走るわけで、同タイミングでのRandom生成になってしまう可能性は十分にある。そういう時は、RandomNumberGeneratorを使います。</p>
-<pre><code class="language-csharp">using (var rng = new RNGCryptoServiceProvider())
-{
-    // 厳密にランダムなInt32を作る
-    var buffer = new byte[sizeof(int)];
-    rng.GetBytes(buffer);
-    var seed = BitConverter.ToInt32(buffer, 0);
-    // そのseedを基にRandomを作る
-    var rand = new Random(seed);
-}
-</code></pre>
-<p>これでマルチスレッドでも安全安心だ！勿論、RNGCryptoServiceProviderはちょっとコスト高。でも、全然我慢できる範囲ではある。お終い。</p>
-<h2>ThreadLocal</h2>
-<p>でも、これって別にスレッドセーフなランダムが欲しいってだけなわけだよね、それなのにちょっとした、とはいえ、コスト高を背負うのって馬鹿げてない？そこで出てくるのが<a href="http://msdn.microsoft.com/ja-jp/library/dd642243.aspx">ThreadLocal&lt;T&gt;</a>、.NET 4.0以降ですが、スレッド単位で一意な変数を宣言できます。それを使った、<a href="http://csharpindepth.com/Articles/Chapter12/Random.aspx">Jon Skeet氏（ゆーめーじん）の実装</a>は</p>
-<pre><code class="language-csharp">public static class RandomProvider
-{    
-    private static int seed = Environment.TickCount;
-    
-    private static ThreadLocal&lt;Random&gt; randomWrapper = new ThreadLocal&lt;Random&gt;(() =&gt;
-        new Random(Interlocked.Increment(ref seed))
-    );
-
-    public static Random GetThreadRandom()
-    {
-        return randomWrapper.Value;
-    }
-}
-</code></pre>
-<p>なるほどねー！これなら軽量だし、とってもセーフで安心できるしイイね！もし複数スレッドで同時タイミングで初期化が走った時のために、Interlocked.Incrementで、必ず違う値がseedになるようになってるので、これなら色々大丈夫。</p>
-<h2>マルチスレッド→マルチサーバー</h2>
-<p>けれど、大丈夫なのは、一台のコンピューターで完結する時だけの時の話。クラウドでしょ！サーバー山盛りでしょ！な時代では、サーバーをまたいで同時タイミングなEnvironment.TickCountで初期化されてしまう可能性が微レ存。というわけで、Environment.TickCountに頼るのは完全に安全ではない。じゃあ、そう、合わせ技で行けばいいじゃない、seedは完全ランダムで行きましょう。</p>
-<pre><code class="language-csharp">public static class RandomProvider
-{
-    private static ThreadLocal&lt;Random&gt; randomWrapper = new ThreadLocal&lt;Random&gt;(() =&gt;
-    {
-        using (var rng = new RNGCryptoServiceProvider())
-        {
-            var buffer = new byte[sizeof(int)];
-            rng.GetBytes(buffer);
-            var seed = BitConverter.ToInt32(buffer, 0);
-            return new Random(seed);
-        }
-    });
-
-    public static Random GetThreadRandom()
-    {
-        return randomWrapper.Value;
-    }
-}
-</code></pre>
-<p>これで、軽量かつ安全安泰なRandomが手に入りました。めでたしめでたし。</p>
-</div>
 <a href="https://neue.cc/9">Prev |</a>
 <a href="https://neue.cc/11">| Next</a>
 </div>
@@ -1686,6 +1851,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2022/02/">2022-02</a>
 <li><a href="https://neue.cc/2022/01/">2022-01</a>
 <li><a href="https://neue.cc/2021/12/">2021-12</a>
 <li><a href="https://neue.cc/2021/11/">2021-11</a>

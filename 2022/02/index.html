@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <title>neue cc - 2022-02</title>
+    <link rel="shortcut icon" href="https://neue.cc/favicon.ico" />
+    <link rel="alternate" type="application/rss+xml" href="https://neue.cc/feed"/>
+	<link rel="stylesheet" href="https://neue.cc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
+    
+ </head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <a href="https://neue.cc/"><div id="header"></div></a>
+        <div id="content"><h1><a href="https://neue.cc/2022/02/28_DFrame.html">DFrame - C#でテストシナリオを書く分散負荷テストフレームワーク</a></h1>
+<ul class="date"><li>2022-02-28</li></ul>
+<div class="entry_body"><p>と、いうものをリリースしました。Web UIとなるDFrame.Controllerと、負荷テストシナリオをC#で書くDFrame.Workerの組み合わせで成り立っていて、DFrame.Workerをウェブ上のクラスターに配置することで(Controllerと接続するただの常駐アプリなので、配置先はオンプレでもVMでもコンテナでもKuberenetesでもなんでもいい)、1から数千のワーカーが連動して、大量のリクエストを発生させます。また、テストシナリオをプレーンなC#で記述できるということは、HTTP/1だけではなく、あらゆる種類の通信をカバーできます。WebSocket、HTTP/2、gRPC、MagicOnion、あるいはPhotonや自作のTCPトランスポート、更にはRedisやデータベースなどが対象になります。</p>
+<p>DFrame.Workerは通常の.NETの他に、Unityにも対応しています！つまり、大量のHeadless Unity、あるいはデバイスファームに配置することで、Unityでしか動かないような独自通信フレームワークであっても負荷テストをかけることが可能です。</p>
+<p>また、あまり注目されていませんが負荷テストツールにもパフォーマンスの違いは「かなり」あり、性能の良さは重要で、そこのところにもかなりチューニングしました。</p>
+<ul>
+<li><a href="https://github.com/Cysharp/DFrame/">github - Cysharp/DFrame</a></li>
+</ul>
+<p><img src="https://user-images.githubusercontent.com/46207/155902346-8dc6459f-d545-4557-854b-0920f0b36c07.gif" alt="dframe" /></p>
+<p>Web UI(DFrame.Controller)はBlazor Serverで作られていて、分散ワーカーとの通信はMagicOnionで行っています。自動化のためのWeb APIの口もあるため、Blazor Server, ASP.NET Minimum API, MagicOnionのキメラ同居なアーキテクチャでC#でフル活用なのが設計的にも面白いポイントです。</p>
+<h2>C#で負荷テストシナリオを書く意義</h2>
+<p>負荷テストフレームワークは世の中に山のようにあります。代表的なものでも<a href="https://httpd.apache.org/docs/2.4/programs/ab.html">ab</a>, <a href="https://jmeter.apache.org/">jMeter</a>, <a href="https://k6.io/">k6</a>, <a href="https://www.artillery.io/">Artillery</a>, <a href="https://gatling.io/">Gatling</a>, <a href="https://github.com/wg/wrk">wrk</a>, <a href="https://github.com/codesenberg/bombardier">bombardier</a>, <a href="https://locust.io/">Locust</a>、k6やArtillery、GatlingなどはSaaSとしても提供していますし、クラウドサービス側も、<a href="https://azure.microsoft.com/ja-jp/services/load-testing/">Azure Load Testing(Managed jMeter)</a>のようなマネージドサービスを出していますし、.NETでも<a href="https://github.com/dotnet/crank">dotnet/crank</a>というものが存在していたりします。</p>
+<p>DFrameはこの中でいうとアーキテクチャ含めLocustに近い(Controller-Worker構成やWebUIなど)のですが、その特徴の中で重要な点として挙げられているのが、シナリオをコードで書けること、です。よくわからんUIで設定させたり、複雑怪奇なXMLやYAMLやJSON書かせたりせず、プレーンなコードで書ける。これが大事。LocustはPythonですが、他にk6はJavaScriptで書けるようになっています。</p>
+<p>じゃあLocustでいいじゃん、k6でいいじゃん、という話になるのですが、C#で書きたいんですね、シナリオを。これは別にただ単に自分の好きな言語で書きたいからというわけではなくて、サーバーあるいはクライアント言語と負荷試験シナリオ作成言語は同一のものであるべきだからです。例えばUnityのゲームを開発している場合（サーバーサイドの言語は何でもいい）、UnityのゲームはC#で記述されていますが、その場合C#でテストシナリオが書けるのなら</p>
+<ul>
+<li>最初からクライアントSDK(エンドポイントと型付きのRequest/Response)に相当するものがある</li>
+<li>クライアントの実装と完全に等しいのでゲームのドメインロジックが最初からある</li>
+</ul>
+<p>となります。それによりテストシナリオの記述の手間を大幅に削減できます。もちろん、Unity依存の部分を引き剥がすなどの追加の作業は必要ですが、完全に書き起こすなどといった無駄は発生しません。もしPythonでもJavaScriptでもLuaでも、とにかく異なる言語である場合は、比較にならないほどに作業量が膨大になってきます。</p>
+<p>そして実際のクライアントコードとある程度共通になることで、サーバー/クライアント側の変化への追随が用意になります。それにより一回のリリースのための負荷テストではなく、継続的な負荷テスト環境を作っていけます。</p>
+<p>また、プレーンなC#で記述できることで、冒頭にも書きましたがあらゆる通信の種類をカバーできるのは、通信プロトコルが多様化している昨今、大きな利点となります。</p>
+<h2>DFrameApp.Run</h2>
+<p>NuGetからDFrameをパッケージ参照したうえで、一行で起動します。テストシナリオ(Workload)の記述の行数もありますが、それでもこれだけで。</p>
+<pre><code class="language-csharp">using DFrame;
+
+DFrameApp.Run(7312, 7313); // WebUI:7312, WorkerListen:7313
+
+public class SampleWorkload : Workload
+{
+    public override async Task ExecuteAsync(WorkloadContext context)
+    {
+        Console.WriteLine($&quot;Hello {context.WorkloadId}&quot;);
+    }
+}
+</code></pre>
+<p>これで <code>http://localhost:7312</code> をブラウザで開けば、<code>SampleWorkload</code>がいます。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/155892546-c00f1554-0e2c-4e11-acdd-f0d9be9c40c9.png" alt="image" /></p>
+<p>と、いうわけで、WorkloadのExecuteAsyncにコードを書くのが基本です。ExecuteAsync前の準備用としてSetupAsync、後始末としてTeardownAsyncもあります。単純なgRPCのテストを書くとこなります。</p>
+<pre><code class="language-csharp">public class GrpcTest : Workload
+{
+    GrpcChannel? channel;
+    Greeter.GreeterClient? client;
+
+    public override async Task SetupAsync(WorkloadContext context)
+    {
+        channel = GrpcChannel.ForAddress(&quot;http://localhost:5027&quot;);
+        client = new Greeter.GreeterClient(channel);
+    }
+
+    public override async Task ExecuteAsync(WorkloadContext context)
+    {
+        await client!.SayHelloAsync(new HelloRequest(), cancellationToken: context.CancellationToken);
+    }
+
+    public override async Task TeardownAsync(WorkloadContext context)
+    {
+        if (channel != null)
+        {
+            await channel.ShutdownAsync();
+            channel.Dispose();
+        }
+    }
+}
+</code></pre>
+<p>Concurrencyの数だけWorkloadが生成されて、Total Request / Workers / Concurrencyの数だけExecuteAsyncが実行されます。コードで書くと言っても別にそう複雑なこともなく、よくわからんDSLで書くわけでもないので、むしろ(C#が書けるなら)とても書きやすいでしょう。中身も見てのとおり単純なので、gRPCでもMagicOnionでも何でも実行できます。</p>
+<p>引数を受け取ることも可能なので、任意のURLを渡すようなものも作れます。コンストラクタでは、パラメーター、あるいはDIでインジェクトしたインスタンスを受け取れます。</p>
+<pre><code class="language-csharp">using DFrame;
+using Microsoft.Extensions.DependencyInjection;
+
+// use builder can configure services, logging, configuration, etc.
+var builder = DFrameApp.CreateBuilder(7312, 7313);
+builder.ConfigureServices(services =&gt;
+{
+    services.AddSingleton&lt;HttpClient&gt;();
+});
+await builder.RunAsync();
+
+public class HttpGetString : Workload
+{
+    readonly HttpClient httpClient;
+    readonly string url;
+
+    // HttpClient is from DI, URL is passed from Web UI
+    public HttpGetString(HttpClient httpClient, string url)
+    {
+        this.httpClient = httpClient;
+        this.url = url;
+    }
+
+    public override async Task ExecuteAsync(WorkloadContext context)
+    {
+        await httpClient.GetStringAsync(url, context.CancellationToken);
+    }
+}
+</code></pre>
+<p><img src="https://user-images.githubusercontent.com/46207/155893829-fc9f5e9d-fb05-4bcc-b8ee-6067be674b51.png" alt="image" /></p>
+<p>WWebUI画面にString urlの入力箇所が現れて、好きなURLを叩き込むことができるようになりました。</p>
+<p>なお、単純なHTTPのGET/POST/PUT/DELETEをテストしたいという場合は、IncludesDefaultHttpWorkloadを有効にしてもらうと、内蔵のパラメーターを受け取るWorkloadが追加されます。</p>
+<pre><code class="language-csharp">using DFrame;
+
+var builder = DFrameApp.CreateBuilder(7312, 7313);
+builder.ConfigureWorker(x =&gt;
+{
+    x.IncludesDefaultHttpWorkload = true;
+});
+builder.Run();
+</code></pre>
+<h2>分散テスト</h2>
+<p>Workerは起動時に指定したControllerのアドレスにHTTP/2(MagicOnion/gRPC)で繋ぎに行って、常駐します。という普通の（？）アプリケーションなので、ウェブサーバーを分散させるのと同様に複数のWorkerを立ち上げてもらえれば、自動的に繋がります。</p>
+<p>構成としては、以下の画像のようにControllerとWorkerのプロジェクトを分けるのが正当派（？）ですが</p>
+<p><img src="https://user-images.githubusercontent.com/46207/154921606-b9955331-1d15-4c4f-a769-faeb61b13872.png" alt="" /></p>
+<p>同居させてしまって、起動時のコマンドライン引数でどちらかのモード（あるいは両方）が起動するようにすることも、ローカルでの開発がしやすくなるのでお薦めです。 <code>DFrameApp.CreateBuilder</code> にはそのための補助的な機構が用意されています。</p>
+<pre><code class="language-csharp">using DFrame;
+
+var builder = DFrameApp.CreateBuilder(5555, 5556); // portWeb, portListenWorker
+
+if (args.Length == 0)
+{
+    // local, run both(host WebUI on http://localhost:portWeb)
+    await builder.RunAsync();
+}
+else if (args[0] == &quot;controller&quot;)
+{
+    // listen http://*:portWeb as WebUI and http://*:portListenWorker as Worker listen gRPC
+    await builder.RunControllerAsync();
+}
+else if (args[0] == &quot;worker&quot;)
+{
+    // worker connect to (controller) address.
+    // You can also configure from appsettings.json via builder.ConfigureWorker((ctx, options) =&gt; { options.ControllerAddress = &quot;&quot; });
+    await builder.RunWorkerAsync(&quot;http://foobar:5556&quot;);
+}
+</code></pre>
+<p>ローカルでWorkerの.exeを複数実行する、とかでも手元でとりあえずのWorker connectionsが増える様は確認できます。</p>
+<p>Workerを増やすと表がにぎやかになって楽しい。実行するWorkerの数はスライダーで調整できるので、各種パラメーターを台数1で調整したあとに、徐々に実行Workerを増やしていく、といった使い方も可能です。また、その辺を自動でやってくれるRepeatモード(TotalRequestとWorkerを完了後に指定数増やして繰り返す)も用意しました。jMeterでいうところのRamp-Upの代わりに使えればいいかな、という想定でもあります。</p>
+<p>アーキテクチャ的に最初から分散前提で作られているというのもあり、増やしても性能が劣化しない、リニアに性能が向上していくように作りました。Controllerは単一なのでスケールしないのですが、なるべく多くのWorkerをぶら下げられるように工夫しています。Controller &lt;-&gt; WorkerはMagicOnionで通信しているので、DFrame自身がMagicOnionの負荷テストになっているのです。</p>
+<h2>パフォーマンス</h2>
+<p>多数ある負荷テストフレームワークですが、パフォーマンスはそれぞれかなり異なります。詳しくはk6のブログ<a href="https://k6.io/blog/comparing-best-open-source-load-testing-tools/">Open source load testing tool review 2020</a>に非常に詳細に書かれていますが、例えばとにかくwrkがぶっちぎって他の数十倍~数百倍速かったりする、と。パフォーマンスは当然ながらとても重要で、ワーガーの非力さでターゲットに負荷をかけきれなかったりします。それに対応するためクラスターを組んでいくにしても、多くの台数やより高いスペックのマシンが必要になって、色々と辛い。</p>
+<p>というわけでパフォーマンスは高ければ高いほうがいいのですが、先のブログに書かれている通り、拡張性の口やレポート取り出しの口などは必要です。その点でWrkは機能を満たさないということで、ブログではなんか結果から取り除かれてますね（その対応がいいのかどうかはなんとも言えませんが、まぁk6自身のアピールのためでもあるのでしょうがないね）。ちなみにフレームワークのパフォーマンスの指標として使われている<a href="https://www.techempower.com/benchmarks/">TechEmpower Web Framework Benchmarks</a>の負荷クライアントはwrkのようです。</p>
+<p>さて、で、DFrameはどうかというと、かなり良好です。というのも、DFrameはライブラリとして提供されて、実行時は全てがC#の実行ファイルとしてコンパイル済みの状態になるのですね。スクリプトを動的に読んで実行するから遅くなってしまう、みたいなことがない。比較的高速な言語であるC#をそのまま利用するので、その時点である程度はいける。理論上。理屈上。</p>
+<p>と、いう甘い見込みのもと実際作っていくと、さすがにそこまでさっくりとはいかず、相応にチューニングが必要だったのですが、最終的にはかなりの数字が出るようになりました。比較としてabとk6で測ってみると</p>
+<p><img src="https://user-images.githubusercontent.com/46207/155854372-6cd3976c-fb08-4ddb-b4a8-75235421cfc8.png" alt="image" /></p>
+<p><img src="https://user-images.githubusercontent.com/46207/155854390-a2360f29-956f-4ace-a848-ecc03c79cb21.png" alt="image" /></p>
+<p><img src="https://user-images.githubusercontent.com/46207/155854413-969e59c2-a914-4131-b3d7-f1f50591413b.png" alt="image" /></p>
+<p>本来はターゲットとワーカーは別マシンにしないといけないのですが(ワーカーの負荷でCPUが跳ね上がる影響をサーバー側がモロに影響受けてしまうので)、それでもそれなりに数字は変動しますし動きはするしマシンパワーも結構強め(Ryzen 9 5950x)なので、ちょっと手抜きでlocalhost上の無を返すHTTP/1サーバーをターゲットに、32並列(-c 32, -32VUs, Concurrency=32)で実行。</p>
+<p>abが、6287 req/sec、k6が125619 req/sec、DFrameが207634 req/secです。abは、厳しい、厳しい……。もっと出るはずと思っているんですが、私の環境(Windows)だと昔からこんな感じなので、性能的には信用できないかなぁ。Windowsだとダメだったりするのかもしないのかもしれませんね。DFrameの場合Concurrencyにまだ余裕があって、増やすとまだまだ伸びたのですが、k6は割と頭打ちでした。</p>
+<p>また、画像は出してませんがLocustは残念ながらかなり遅い上にCPUを食いまくるという感じで(Pythonだしね……）、いくらクラスタ化が容易とはいえ、ここまで1ワーカーあたりの性能が低いと、ないかなあ、という感想です。JMeterはそこまで悪くはないですが、パフォーマンスに影響を与える地雷コンフィグを必死にかいくぐってなおそこそこ程度なのはしんどみ。</p>
+<p>ちなみになんで圧倒的性能番長であるwrkと比較しないのかというと、Windowsで動かすのが大変だからです。すみません……。</p>
+<h2>自動化のためのREST API</h2>
+<p>最初はいいけど、毎回GUIでポチポチやるの面倒で、それはそれで嫌だよね。CIで定期的に回したりもできないし。というわけで、バッチ起動モード、はついていないのですが、代わりにREST APIが自動で有効になっています。例えば <code>/api/connections</code> で現在接続中のワーカーコネクション数が取れます。実行パラメーターなどはPostでJSONを投げる形になっています。</p>
+<p>REST APIでJSONをやり取りするだけなので、どの言語から叩くことも可能ですが、C#の場合は <code>DFrame.RestSdk</code> パッケージにて型付けされたクライアントが用意されているので、手間なくはじめられます。</p>
+<pre><code class="language-csharp">using DFrame.RestSdk;
+
+var client = new DFrameClient(&quot;http://localhost:7312/&quot;);
+
+// start request
+await client.ExecuteRequestAsync(new()
+{
+    Workload = &quot;SampleWorkload&quot;,
+    Concurrency = 10,
+    TotalRequest = 100000
+});
+
+// loadtest is running, wait complete.
+await client.WaitUntilCanExecute();
+
+// get summary and results[]
+var result = await client.GetLatestResultAsync();
+</code></pre>
+<p>実行状況は全て連動しているので、REST APIから実行した進捗もWeb UI側でリアルタイムに状況確認できます。</p>
+<h2>Unityでも動く</h2>
+<p>Unityで動かしやすいかといったら全然そんなことないので、動かせるようにするのはもはや執念という感じではあるのですが、Unity対応しました。冒頭で書いたようにヘッドレスUnityを並べてコントロールする、みたいな用途は考えられます。まぁ、あと普通の負荷テストでも、通信部分のC#を普通の .NET に切り出すのが面倒だという場合に、ヘッドレスUnityでとりあえずビルドすることで何もしなくてもOK（そうか？）という策もあります。</p>
+<p>Unityで動かす場合は、依存の解決(MagicOnion、gRPC、MessagePack for C#)が大変です！まぁ、それは置いておいて。それが出来ているなら、以下のようなMonoBehaviourに寿命をくっつけたインスタンスで起動させると良い感じです（MagicOnionというかネイティブgRPCは適切にコネクションをCloseしないとUnity Editorがフリーズするという酷い問題があるのですが、このコードは問題なくちゃんとクリーンアップしてくれるようになっています）。</p>
+<pre><code class="language-csharp">public class DFrameWorker : MonoBehaviour
+{
+    DFrameWorkerApp app;
+
+    [RuntimeInitializeOnLoadMethod]
+    static void Init()
+    {
+        new GameObject(&quot;DFrame Worker&quot;, typeof(SampleOne));
+    }
+
+    private void Awake()
+    {
+        DontDestroyOnLoad(gameObject);
+    }
+
+    async void Start()
+    {
+        // setup your controller address
+        app = new DFrameWorkerApp(&quot;localhost:7313&quot;);
+        await app.Run();
+    }
+
+    private void OnDestroy()
+    {
+        app.Dispose();
+    }
+}
+
+[Preserve]
+public class SampleWorkload : Workload
+{
+    public override Task ExecuteAsync(WorkloadContext context)
+    {
+        Debug.Log(&quot;Exec&quot;);
+        return Task.CompletedTask;
+    }
+
+    public override Task TeardownAsync(WorkloadContext context)
+    {
+        Debug.Log(&quot;Teardown&quot;);
+        return Task.CompletedTask;
+    }
+}
+
+// Preserve for Unity IL2CPP
+
+internal class PreserveAttribute : System.Attribute
+{
+}
+</code></pre>
+<p>Editor上の確認だとこんな具合です。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/155901725-4ce8a36f-46e9-4437-aba7-639425f4b93f.png" alt="image" /></p>
+<h2>ライブラリかツールか</h2>
+<p>DFrame.Controller、他の設定を入れなければただのウェブアプリなので、ビルド済みのexeとしての提供も可能です。Locustなど他のツールも入れたら、とりあえず実行できる、のに比べると、必ず自分で組み込んでビルドしなきゃいけない。のは欠点に見える。</p>
+<p>なのでビルド済みコンテナをDocker Hubかなんかで提供するという案もあったのですが、Workerはどうしても自分で組み込んでビルドする必要があるので、そこだけ省けても利点あるのかな？と考えて、最終的に却下しました。かわりに <code>DFrameApp.Run</code> の一行だけでController+Workerの同居が起動できるようにして、最初の一歩の面倒臭さをライブラリデザインの工夫で乗り切ることにしました。Controller自体も、<code>Microsoft.NET.Sdk.Web</code>ではなく、コンソールアプリケーションのテンプレートの<code>Microsoft.NET.Sdk</code>から起動できるようにしました。</p>
+<p>DFrame.Controllerがツールとして提供されていることのメリットは、コンフィグが通常のコードやASP.NETの仕組みに乗っかったほうが圧倒的にシンプルになります。DIで好きなロガーを設定して、URLの指定やSSLなどもappsettings.jsonで行うのは、大量の複雑怪奇なコマンドラインオプションよりもずっと良いでしょう。</p>
+<p>ログの永続化処理も、プラグイン的に用意するのではなく、普通にDIでインジェクトしてもらう(<code>IExecutionResultHistoryProvider</code>というものが用意されていて、これを実装したものをDIに登録してもらえば、結果をデータベースに入れたり時系列DBに入れたりして統計的な参照ができるようになります)ほうが、使いやすいはずです。</p>
+<h2>Blazor Server + MagicOnion</h2>
+<p>DFrame.ControllerはBlazor ServerとMagicOnion(grpc-dotnet)が同居した構成になっています。これは中々面白い構成で、Web UIとMagicOnion(Server側)が同じメモリを共有しているので、末端のMagicOnion(Client側)の変更をダイレクトにC#だけを通してブラウザにまで届けているんですね。逆もしかりで、APIからのアクセス含めて、全てがリアルタイムに伝搬して画面も同期しているのですが、普通にやるとかなり複雑怪奇になるはずが、かなりシンプルに実装できています。</p>
+<p>と、いうわけで、Cysharpではこの組み合わせに可能性を感じていて、別のサービスも同種のアーキテクチャで絶賛制作中なので興味ありましたら以下略。</p>
+<h2>紆余曲折</h2>
+<p>最初のバージョンは2年ぐらい前に作っていました。コンセプトは「自己分裂する分散バッチフレームワーク」ということで、自分自身のコピーを動的に作って無限大に分散して実行していくというもので。分散のための基盤としてKubernetesを使って。クラウドネイティブ！かっこいい！そして、一応動くものはできていました。あとは仕上げていくだけ、といったところで、放置していました。完成させなきゃ、と思いつつ、内心薄々あんまいい感じではないな、と思っていたため手が進まず無限放置モードへ。そして時が流れ、社内でもがっつり使うことになり引っ張り出されてきたそれは、やはりあまりいい感じではなく。で、最終的に言われたんですね、そもそも分裂機能いらなくね？と。</p>
+<p>それでようやく気づくわけです、コンセプトから完全に間違っているからうまくいくわけがない！</p>
+<p>反省として良くなかった理由としては、まず、現代のクラウドコンピューターを過大に評価していた。「自己分裂する」のは、一瞬で無限大にスケールして即起動、そして終わったら即終了、ならば、まぁそれでいいんですが、現実のスケールする時間はそんなに立派じゃない。サーバーレスといいつつ、別に1リクエスト毎にコンテナが起動して処理するわけはなく、常駐してリクエストを待つ。そりゃそうだ、と。自己分裂のコンセプトだと、分裂コストが重たいのは否めない。</p>
+<p>もう一つは分裂するためのコードがDFrame内に記述されている。Kuberentesをコントロールするコードがたっぷり入ってしまって。そのせいでコードサイズが膨らんでしまったし、使う方も複雑なコンフィグをDFrame側に埋めなきゃいけなくなってしまった。これは二重にイケてない。作るのも複雑で、使うのも複雑ですからね、いいところがない……。</p>
+<p>と、いうわけで、最初のかっこいいコンセプトを否定して、自己分裂しない。単純に繋ぎに行くだけ。としたことで、頭を抱えてうまくいかないと感じていた行き詰まりは解消したのでした。</p>
+<h2>まとめ</h2>
+<p>もう少し早くに作って提供したかった、という後悔がめっちゃあるのですが、同時に .NET 6だから出来たという要素もめっちゃあるので(パラメーター渡しの仕組みなどは<a href="https://neue.cc/2021/12/30.html">ConsoleAppFramework v4</a>の設計の経験からスムーズに実装できた)、しょーがない。という気もする。Blazor Serverなどの進化も必要だったし。</p>
+<p>しかし↑で書いたとおり最初に立てたコンセプトが間違っていて、長いこと軌道修正できず放置してしまっていたというのは個人的には割と手痛い経験です……。まぁ、間違ったコンセプトのまま進行してしまうというのは別によくあるので、それはしょーがないものとして別にいいんですが、自力で気づいてパーッと作り上げられてたらなあ、みたいな、みたいな。。。</p>
+<p>ともあれ、完成したものとしてはかなり良い感じで（私の出すものとしては珍しくUIもちゃんとついているし！←UI作業は他の人に助力を請うてます）、ちょっとニッチ感もありますがC#アプリケーション開発の必需品として成り得る出来だと思っていますので、ぜひぜひお試しください。</p>
+</div>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="https://neue.cc/2022/02/">2022-02</a>
+<li><a href="https://neue.cc/2022/01/">2022-01</a>
+<li><a href="https://neue.cc/2021/12/">2021-12</a>
+<li><a href="https://neue.cc/2021/11/">2021-11</a>
+<li><a href="https://neue.cc/2021/08/">2021-08</a>
+<li><a href="https://neue.cc/2021/07/">2021-07</a>
+<li><a href="https://neue.cc/2021/05/">2021-05</a>
+<li><a href="https://neue.cc/2021/02/">2021-02</a>
+<li><a href="https://neue.cc/2020/12/">2020-12</a>
+<li><a href="https://neue.cc/2020/11/">2020-11</a>
+<li><a href="https://neue.cc/2020/10/">2020-10</a>
+<li><a href="https://neue.cc/2020/08/">2020-08</a>
+<li><a href="https://neue.cc/2020/07/">2020-07</a>
+<li><a href="https://neue.cc/2020/04/">2020-04</a>
+<li><a href="https://neue.cc/2020/01/">2020-01</a>
+<li><a href="https://neue.cc/2019/12/">2019-12</a>
+<li><a href="https://neue.cc/2019/09/">2019-09</a>
+<li><a href="https://neue.cc/2019/08/">2019-08</a>
+<li><a href="https://neue.cc/2019/07/">2019-07</a>
+<li><a href="https://neue.cc/2019/06/">2019-06</a>
+<li><a href="https://neue.cc/2019/05/">2019-05</a>
+<li><a href="https://neue.cc/2019/04/">2019-04</a>
+<li><a href="https://neue.cc/2018/12/">2018-12</a>
+<li><a href="https://neue.cc/2018/10/">2018-10</a>
+<li><a href="https://neue.cc/2018/08/">2018-08</a>
+<li><a href="https://neue.cc/2018/07/">2018-07</a>
+<li><a href="https://neue.cc/2018/05/">2018-05</a>
+<li><a href="https://neue.cc/2018/04/">2018-04</a>
+<li><a href="https://neue.cc/2018/01/">2018-01</a>
+<li><a href="https://neue.cc/2017/12/">2017-12</a>
+<li><a href="https://neue.cc/2017/09/">2017-09</a>
+<li><a href="https://neue.cc/2017/08/">2017-08</a>
+<li><a href="https://neue.cc/2017/07/">2017-07</a>
+<li><a href="https://neue.cc/2017/06/">2017-06</a>
+<li><a href="https://neue.cc/2017/04/">2017-04</a>
+<li><a href="https://neue.cc/2017/03/">2017-03</a>
+<li><a href="https://neue.cc/2016/12/">2016-12</a>
+<li><a href="https://neue.cc/2016/11/">2016-11</a>
+<li><a href="https://neue.cc/2016/10/">2016-10</a>
+<li><a href="https://neue.cc/2016/09/">2016-09</a>
+<li><a href="https://neue.cc/2016/08/">2016-08</a>
+<li><a href="https://neue.cc/2016/07/">2016-07</a>
+<li><a href="https://neue.cc/2016/06/">2016-06</a>
+<li><a href="https://neue.cc/2016/05/">2016-05</a>
+<li><a href="https://neue.cc/2016/04/">2016-04</a>
+<li><a href="https://neue.cc/2016/03/">2016-03</a>
+<li><a href="https://neue.cc/2016/01/">2016-01</a>
+<li><a href="https://neue.cc/2015/12/">2015-12</a>
+<li><a href="https://neue.cc/2015/11/">2015-11</a>
+<li><a href="https://neue.cc/2015/10/">2015-10</a>
+<li><a href="https://neue.cc/2015/09/">2015-09</a>
+<li><a href="https://neue.cc/2015/06/">2015-06</a>
+<li><a href="https://neue.cc/2015/05/">2015-05</a>
+<li><a href="https://neue.cc/2015/04/">2015-04</a>
+<li><a href="https://neue.cc/2015/03/">2015-03</a>
+<li><a href="https://neue.cc/2015/02/">2015-02</a>
+<li><a href="https://neue.cc/2015/01/">2015-01</a>
+<li><a href="https://neue.cc/2014/12/">2014-12</a>
+<li><a href="https://neue.cc/2014/11/">2014-11</a>
+<li><a href="https://neue.cc/2014/10/">2014-10</a>
+<li><a href="https://neue.cc/2014/09/">2014-09</a>
+<li><a href="https://neue.cc/2014/08/">2014-08</a>
+<li><a href="https://neue.cc/2014/07/">2014-07</a>
+<li><a href="https://neue.cc/2014/05/">2014-05</a>
+<li><a href="https://neue.cc/2014/04/">2014-04</a>
+<li><a href="https://neue.cc/2014/03/">2014-03</a>
+<li><a href="https://neue.cc/2014/01/">2014-01</a>
+<li><a href="https://neue.cc/2013/12/">2013-12</a>
+<li><a href="https://neue.cc/2013/11/">2013-11</a>
+<li><a href="https://neue.cc/2013/10/">2013-10</a>
+<li><a href="https://neue.cc/2013/09/">2013-09</a>
+<li><a href="https://neue.cc/2013/08/">2013-08</a>
+<li><a href="https://neue.cc/2013/07/">2013-07</a>
+<li><a href="https://neue.cc/2013/06/">2013-06</a>
+<li><a href="https://neue.cc/2013/05/">2013-05</a>
+<li><a href="https://neue.cc/2013/04/">2013-04</a>
+<li><a href="https://neue.cc/2013/03/">2013-03</a>
+<li><a href="https://neue.cc/2013/02/">2013-02</a>
+<li><a href="https://neue.cc/2013/01/">2013-01</a>
+<li><a href="https://neue.cc/2012/12/">2012-12</a>
+<li><a href="https://neue.cc/2012/11/">2012-11</a>
+<li><a href="https://neue.cc/2012/10/">2012-10</a>
+<li><a href="https://neue.cc/2012/09/">2012-09</a>
+<li><a href="https://neue.cc/2012/08/">2012-08</a>
+<li><a href="https://neue.cc/2012/07/">2012-07</a>
+<li><a href="https://neue.cc/2012/06/">2012-06</a>
+<li><a href="https://neue.cc/2012/05/">2012-05</a>
+<li><a href="https://neue.cc/2012/04/">2012-04</a>
+<li><a href="https://neue.cc/2012/03/">2012-03</a>
+<li><a href="https://neue.cc/2012/02/">2012-02</a>
+<li><a href="https://neue.cc/2012/01/">2012-01</a>
+<li><a href="https://neue.cc/2011/12/">2011-12</a>
+<li><a href="https://neue.cc/2011/11/">2011-11</a>
+<li><a href="https://neue.cc/2011/10/">2011-10</a>
+<li><a href="https://neue.cc/2011/09/">2011-09</a>
+<li><a href="https://neue.cc/2011/08/">2011-08</a>
+<li><a href="https://neue.cc/2011/07/">2011-07</a>
+<li><a href="https://neue.cc/2011/06/">2011-06</a>
+<li><a href="https://neue.cc/2011/05/">2011-05</a>
+<li><a href="https://neue.cc/2011/04/">2011-04</a>
+<li><a href="https://neue.cc/2011/03/">2011-03</a>
+<li><a href="https://neue.cc/2011/02/">2011-02</a>
+<li><a href="https://neue.cc/2011/01/">2011-01</a>
+<li><a href="https://neue.cc/2010/12/">2010-12</a>
+<li><a href="https://neue.cc/2010/11/">2010-11</a>
+<li><a href="https://neue.cc/2010/10/">2010-10</a>
+<li><a href="https://neue.cc/2010/09/">2010-09</a>
+<li><a href="https://neue.cc/2010/08/">2010-08</a>
+<li><a href="https://neue.cc/2010/07/">2010-07</a>
+<li><a href="https://neue.cc/2010/06/">2010-06</a>
+<li><a href="https://neue.cc/2010/05/">2010-05</a>
+<li><a href="https://neue.cc/2010/04/">2010-04</a>
+<li><a href="https://neue.cc/2010/03/">2010-03</a>
+<li><a href="https://neue.cc/2010/02/">2010-02</a>
+<li><a href="https://neue.cc/2010/01/">2010-01</a>
+<li><a href="https://neue.cc/2009/12/">2009-12</a>
+<li><a href="https://neue.cc/2009/11/">2009-11</a>
+<li><a href="https://neue.cc/2009/10/">2009-10</a>
+<li><a href="https://neue.cc/2009/09/">2009-09</a>
+<li><a href="https://neue.cc/2009/08/">2009-08</a>
+<li><a href="https://neue.cc/2009/07/">2009-07</a>
+<li><a href="https://neue.cc/2009/06/">2009-06</a>
+<li><a href="https://neue.cc/2009/05/">2009-05</a>
+<li><a href="https://neue.cc/2009/04/">2009-04</a>
+<li><a href="https://neue.cc/2009/03/">2009-03</a>
+<li><a href="https://neue.cc/2009/02/">2009-02</a>
+<li><a href="https://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul>
+<li>Index: <a href="https://neue.cc">neue.cc</a><li>
+<li>RSS feed: <a href="https://neue.cc/feed">neue.cc/feed</a><li>
+<li>Powered by: <a href="https://github.com/neuecc/Blog2">https://github.com/neuecc/Blog2</a>
+</ul></div>
+    </div>
+</body>

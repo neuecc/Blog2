@@ -15,7 +15,186 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2009/11/01_212.html">Replace, Intersperse, Init</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2009/11/05_213.html">C#でTwitterのStreaming APIを使ってリスト自動追加</a></h1>
+<ul class="date"><li>2009-11-05</li></ul>
+<div class="entry_body"><p><a href="http://neue.cc/software/xboxinfotwit" title="neue cc - XboxInfoTwit">XboxInfoTwit</a>の認証数は現在450を越えて、近いうちに500には届きそうです。現在の実装はIEを裏で動かすという、しょーもないものになっていて、それに起因する不具合や、どうしょうもない点が幾つかあるため、クローラー部分は全面的に書き変えようと思っています。あと、エラーメッセージがド不親切とか至らない点だらけでした、すみません。そんな次期バージョンの作業は全然捗ってないのですが、せめて年内ぐらいには何とかしたいです。</p>
+<h2>@のお話</h2>
+<p>ゲーム名に@が含まれるものをポストする(例えばTHE IDOLM@STER)と、STERさんに@が飛んで迷惑。というお話を見たので検証してみました。@は行頭かスペース + @ + 数字/アルファベットのものがあると飛びます。つまり、@の前にアルファベットがあれば@は飛びません。なので、別にIDOLM@STERだからってSTERさんに@が飛びまくる、なんてことはありません。正規表現で表すと「(?&lt;=^| )@[a-zA-Z0-9_]+」になります。ついでに、ハッシュタグのほうも軽く検証してみました。基本的には@と同じですが、英単語以外にもリンクが張られるようなので、正規表現は「(?&lt;=^| )#[^ ]+」になるようです。</p>
+<h2>List</h2>
+<p>Twitterにリストが実装されました。そこで、<a href="https://twitter.com/neuecc/xboxinfotwitusers" title="Twitter / @neuecc/XboxInfoTwitUsers">XboxInfoTwitユーザーのリスト</a>を作ってみることにしました。手動で探して登録も大変なので、プログラムでクロールして追加していきましょう。パブリックイタイムラインからXboxInfoTwit利用者(Source=XboxInfoTwit)の人を片っ端からリスト登録するという方針で行きます。以下、C#でのTwitterストリーミングAPIの使用法と実際のコードになります。同じようなことをやりたい人は、適当に書き替えてどうぞ使ってください。突っ込みどころ多数なのでむしろ突っ込んで欲しい……。</p>
+<p>2010/4/29 追記：このコードはストリームAPIの利用法にしては冗長すぎるので、書き直しました → <a href="http://neue.cc/2010/04/29_255.html" title="neue cc - C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions">neue cc - C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions</a> ストリームAPI取得コードを参考にする場合は、新しいほうを見てください。</p>
+<pre><code class="language-csharp">using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Net;
+using System.IO;
+using System.Xml.Linq;
+using System.Collections.Specialized;
+using System.Threading;
+using System.Xml;
+
+static class Program
+{
+    // ザ・決めうち文字列s
+    const string UserName = &quot;neuecc&quot;; // 自分のアカウントのユーザー名を
+    const string Password = &quot;password&quot;; // 同じくパスワードを
+    const string ListName = &quot;xboxinfotwitusers&quot;; // リストを、入力ですです
+    const string StreamApi = &quot;http://stream.twitter.com/1/statuses/sample.xml&quot;;
+    const string ListMembersApiFormat = &quot;http://twitter.com/{0}/{1}/members.xml&quot;;
+
+    /// &lt;summary&gt;指定リストにメンバーを追加する&lt;/summary&gt;
+    static void AddMemberToList(string userName, string listName, int id)
+    {
+        var url = string.Format(ListMembersApiFormat, userName, listName);
+        var wc = new WebClient { Credentials = new NetworkCredential(UserName, Password) };
+        wc.UploadValues(url, new NameValueCollection() { { &quot;id&quot;, id.ToString() } });
+    }
+
+    /// &lt;summary&gt;指定リストのメンバーIDを全て取得する&lt;/summary&gt;
+    static IEnumerable&lt;int&gt; EnumerateListMemberID(string userName, string listName)
+    {
+        var format = string.Format(ListMembersApiFormat, userName, listName) + &quot;?cursor={0}&quot;;
+        var cursor = -1L;
+        var xmlReaderSettings = new XmlReaderSettings
+        {
+            XmlResolver = new XmlUrlResolver { Credentials = new NetworkCredential(UserName, Password) }
+        };
+        while (true)
+        {
+            using (var xr = XmlReader.Create(string.Format(format, cursor), xmlReaderSettings))
+            {
+                var xEle = XElement.Load(xr);
+                foreach (var item in xEle.Descendants(&quot;user&quot;).Select(x =&gt; (int)x.Element(&quot;id&quot;)))
+                {
+                    yield return item;
+                }
+                cursor = long.Parse(xEle.Element(&quot;next_cursor&quot;).Value);
+                if (cursor == 0) yield break;
+            }
+        }
+    }
+
+    /// &lt;summary&gt;ストリームAPIのパブリックタイムラインから無限に取得&lt;/summary&gt;
+    static IEnumerable&lt;XElement&gt; EnumeratePublicTimeline(StreamReader reader)
+    {
+        while (true)
+        {
+            var xmlString = reader.EnumerateLines()
+                .TakeWhile(s =&gt; s != &quot;&lt;?xml version=\&quot;1.0\&quot; encoding=\&quot;UTF-8\&quot;?&gt;&quot;)
+                .Join();
+            if (xmlString == &quot;&quot;) continue;
+            yield return XElement.Parse(xmlString);
+        }
+    }
+
+    /// &lt;summary&gt;サーバーが死んでないか確認&lt;/summary&gt;
+    static bool IsServerStatusOK()
+    {
+        var req = WebRequest.Create(&quot;http://twitter.com/help/test.xml&quot;);
+        HttpWebResponse res = null;
+        try
+        {
+            res = (HttpWebResponse)req.GetResponse();
+            if (res.StatusCode == HttpStatusCode.OK) return true;
+        }
+        catch (WebException e) { Console.WriteLine(e); }
+        finally { if (res != null) res.Close(); } // どうでもいいと思っていたり
+
+        return false;
+    }
+
+    static void Main(string[] args)
+    {
+        ServicePointManager.Expect100Continue = false; // おまじない(笑)
+        var count = 0; // モニタリング用のカウント変数(動作的には別に使わない)
+
+        var following = new HashSet&lt;int&gt;(EnumerateListMemberID(UserName, ListName));
+        var webRequest = (HttpWebRequest)HttpWebRequest.Create(StreamApi);
+        webRequest.KeepAlive = true;
+        webRequest.Credentials = new NetworkCredential(UserName, Password);
+
+    LOOP:
+        using (var res = webRequest.GetResponse())
+        using (var stream = res.GetResponseStream())
+        using (var reader = new StreamReader(stream))
+        {
+            try
+            {
+                // 例外が発生しなければ、無限リピートになっているのでこの部分を永久に続けます
+                EnumeratePublicTimeline(reader)
+                    .Do(_ =&gt; { if (++count % 100 == 0) Console.WriteLine(&quot;{0} : {1}&quot;, DateTime.Now, count); }) // 確認表示用
+                    .Where(x =&gt; x.Name == &quot;status&quot;)
+                    .Select(x =&gt; new
+                    {
+                        Source = x.Element(&quot;source&quot;).Value,
+                        ID = (int)x.Element(&quot;user&quot;).Element(&quot;id&quot;),
+                        Name = x.Element(&quot;user&quot;).Element(&quot;screen_name&quot;).Value
+                    })
+                    .Where(a =&gt; a.Source.Contains(&quot;XboxInfoTwit&quot;))
+                    .Do(a =&gt; Console.WriteLine(&quot;Found:{0}&quot;, a.Name)) // ここでも確認表示用
+                    .Where(a =&gt; following.Add(a.ID))
+                    .ForEach(a =&gt;
+                    {
+                        AddMemberToList(UserName, ListName, a.ID);
+                        Console.WriteLine(&quot;{0} : {1} : {2}&quot;, a.Name, DateTime.Now, count); // 確認表示用
+                    });
+            }
+            catch (IOException e)
+            {
+                Console.WriteLine(e); // 接続が閉じられてたりするのでー。
+                while (!IsServerStatusOK())
+                {
+                    Thread.Sleep(TimeSpan.FromMinutes(5)); // サーバー死んでたら5分間お休み
+                }
+            }
+            finally
+            {
+                webRequest.Abort(); // これ呼ぶ前にCloseするとハング
+            }
+        }
+        goto LOOP; // goto! goto!
+    }
+
+    // Extension Methods
+
+    public static IEnumerable&lt;string&gt; EnumerateLines(this StreamReader streamReader)
+    {
+        while (!streamReader.EndOfStream)
+        {
+            yield return streamReader.ReadLine();
+        }
+    }
+
+    public static string Join&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+    {
+        return source.Aggregate(new StringBuilder(), (sb, s) =&gt; sb.Append(s)).ToString();
+    }
+
+    public static void ForEach&lt;T&gt;(this IEnumerable&lt;T&gt; source, Action&lt;T&gt; action)
+    {
+        foreach (var item in source)
+        {
+            action(item);
+        }
+    }
+
+    public static IEnumerable&lt;T&gt; Do&lt;T&gt;(this IEnumerable&lt;T&gt; source, Action&lt;T&gt; action)
+    {
+        foreach (var item in source)
+        {
+            action(item);
+            yield return item;
+        }
+    }
+}
+</code></pre>
+<p>ストリーミングAPIとは無関係のリスト関連の処理や、投げやりなtry-catch-gotoがあって、ちょっとゴチャゴチャしてますが、基本的にはusing三段重ねの部分だけです。無限にXMLが継ぎ足されてくるので、接続を切らさずひたすらReadLine。XMLの切れ目は、XML宣言部を使うことにしましたが、今一つスマートではないです。文字列にしてParseってのもあまり良い感じじゃなく。あ、あと例外処理は全然出来てませんので何かあると平然と死にます。</p>
+<p>コードは、書き捨て感全開。例によって何でもLinq、何でもIEnumerable。コレクションになりそうな気配があると、すぐにじゃあyieldね、と考える癖がついてしまっていて。細かいことは後段に任せればいーんだよ、というのが楽ちんでして。リストメンバー全件取得の部分なんかは、わりとスマートに書けてるかと思うのですがどうでしょう。</p>
+<p>なお、このストリーミングAPIは全件を漏れなく取得出来るわけではないので、それなり、というかかなり漏れが出ます。なのでXboxInfoTwit使ってるのに登録されねーぞ、という場合は、しょーがない。です。そのうち登録されると思います。あと、このプログラムはサーバー上で24時間動かしているわけじゃなく、私のローカルPC上で動かしているだけなので、私の気まぐれで動かしてたり動かしてなかったりします。私が寝てる間はPCがウルサイので動いてませんし、私が家に居ない時は省エネのために動いてません。なので、むしろ登録されるほうが珍しいです。レアです。効率的には20000件に1人登録出来るか出来ないか、って感じでした。一時間に一人見つかるかどうかも怪しいぐらいの頻度。とてもレア。ぶっちゃけgoogle経由で引っ張ってくるとかしたほうが遙かに効率良さそうですが、まあ、Streaming API使ってみたかったというだけなので。</p>
+<p>そういえばですが、逆にリストに登録されてUZEEEE、という場合は、現状はリスト機能がベータのせいなのか拒否は出来ないようです。すみません。UZEEEE、と思っても我慢してください。どうしても嫌な場合は私の方にメッセージをくれれば、リストからの撤去と、プログラムから以後の追加をしないようなコードを入れたいと思っています。</p>
+</div>
+<h1><a href="https://neue.cc/2009/11/01_212.html">Replace, Intersperse, Init</a></h1>
 <ul class="date"><li>2009-11-01</li></ul>
 <div class="entry_body"><pre><code class="language-csharp">static void Main(string[] args)
 {
@@ -1100,16 +1279,6 @@ canvas.GetMouseMove()
 <h2>次回</h2>
 <p>全10回ぐらいで、全部のメソッドを紹介するつもりです。私が理解できればの話ですが。ちょこちょこと実例的なものも交えていきたいと思います。私が使いこなせればの話ですが。というわけで、次回はSubscribeのオーバーロードの紹介にしたいと思います。Reactive Frameworkならではの魅力、に関してはもう少し先になってしまいそう。少し飛ばして、非同期連結の話なんかを先に持ってきた方が良いかなあ。</p>
 </div>
-<h1><a href="https://neue.cc/2009/08/30_196.html">3桁到達</a></h1>
-<ul class="date"><li>2009-08-30</li></ul>
-<div class="entry_body"><p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/xitoauthusers.jpg">
-</p>
-<p>開発者用のOAuth管理ページで認証ユーザー数が見れるのですが(「誰が」までは分からないので安心してください)、いつのまにやらユーザー数が100を超えていました。三桁！奇跡的ですね。はてな同期云々とかフォトライフ云々は壊滅的な状態なので。世の中そんなものです。ついでにこのサイトのアクセス数も壊滅的だったりはします。成り行きでプログラミング系サイトに転換してから半年、以上は経つ感じですが、伸びもせず縮みもせず、ずっと低調をキープ。サイトの内容がガラッと変わったのにアクセス平均が変わらないってのも面白いですけど。検索サイトからのアクセスがほとんどなので、検索キーワードが入れ替わって、でも流入人口は変わらずという。あー、まあ、少し増えた、かな。つまりかわりに常連的な人口が減った、と。おお、虚しい！悲しい！RSSリーダー登録数も伸びないしね。しょぼーん。</p>
-<p>ゲーム系サイトへは、XNAで返り咲きしたいとこっそり思ってます。XNAは使用言語がC#だからね。C#好きーなのです、私。積みタスクを全部消化したらXNAやりたいんですが中々どうして……。 そういえばインディーズゲーム(XBIG)を完全スルー状態なのはぶっちけ（略）</p>
-<p>fromにクライアント名が出るようになってからは、googleのサイト検索で利用具合が見つかるので、毎日<a href="http://www.google.co.jp/search?q=site%3Atwitter.com%20xboxinfotwit&amp;hl=ja&amp;lr=lang_ja&amp;safe=off&amp;rlz=1B5GGGL_jaJP296JP296&amp;sa=G&amp;num=100&amp;output=search&amp;tbs=qdr:d&amp;tbo=1" title="site:twitter.com xboxinfotwit - Google 検索">24時間以内の結果</a>を眺めていたりします。見ていて思うというか教訓は、デフォルト設定大事ってことでしょうかね。カスタマイズせずそのまま、カスタマイズする場合も、デフォルトを残しつつ細部を変える、という感じなので、デフォルトの投稿文はちゃんとしたものを用意しなきゃダメなんですね。当たり前といえば当たり前なのですけど、この辺はてなついったー同期ツールは大失敗していて、どうせカスタマイズするだろうと踏んで、書式のサンプルとばかりにゴテゴテのものをデフォルトにしてしまったので……。反省。</p>
-<p>あと、デフォルトでは「プレイ中タイトルの状況が変わった時の投稿」はオフにしているのですが、意外とこれをオンにする人が多かったのも驚き。これオンにすると物凄い勢いで投稿されるんですよ。更新間隔を5分にすると、例えばGoW2のHordeすると、WAVE44,45,46...と、全部のWAVE投稿するんじゃないか、最新50個の投稿が全部XboxInfoTwit経由になってますが大丈夫？みたいなことになる。こういう滅茶苦茶なことが出来るのはローカルで動くツールならでは、なのですが(ウェブサービス系じゃあ、ちいと無理ですね、秋のTwitter対応が仮に実績やプレイ状況の投稿に対応するとしても、ここまでの連投は無理かと)フォロワーの目からどうなのか、というと、まあ、分からにゃい。いや、本人の満足が一番だと思いますよ。一日のプレイ後に投稿を眺めると、状況の変化がよく見えて結構楽しかったりはします。お薦めはしませんけどお薦め。別アカでやるなら何も問題なくお薦め。</p>
-</div>
 <a href="https://neue.cc/22">Prev |</a>
 <a href="https://neue.cc/24">| Next</a>
 </div>
@@ -1133,6 +1302,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2022/02/">2022-02</a>
 <li><a href="https://neue.cc/2022/01/">2022-01</a>
 <li><a href="https://neue.cc/2021/12/">2021-12</a>
 <li><a href="https://neue.cc/2021/11/">2021-11</a>

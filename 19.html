@@ -15,7 +15,326 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2010/09/28_277.html">Reactive Extensionsの非同期周りの解説と自前実装</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2010/10/09_278.html">Rxを使って非同期プログラミングを簡単に</a></h1>
+<ul class="date"><li>2010-10-09</li></ul>
+<div class="entry_body"><p>こないだ公開されたMSDNマガジンの記事、<a href="http://msdn.microsoft.com/ja-jp/magazine/ff959203.aspx" title="非同期タスク - タスクを使って非同期プログラミングを簡単に">非同期タスク - タスクを使って非同期プログラミングを簡単に</a>。おお、これは分かりやすく非同期周りについて網羅されてる！あと、私はTask全然知らないので初歩から入る導入はお役立ちです。いやまあ、実際のとこTask周りの導入記事っていっぱいあるのに、未だにお役立ち、とか言ってるのもどうかと思わなくもないところではあるんですが不勉強なもので。</p>
+<p>同期処理でUIをブロックしてしまう、スレッドプールに投げればいいぢゃない、イベントベースのパターンとAPM(IAsyncResultを使うAsynchronous Programming Model)、そしてTask。おお、全部ですね。全部、全部？そう、何か欠けてます、ええ、<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Reactive Extensions</a>が欠けています。というわけで、Taskと対比させながらRxでのコードを見ていきましょう。</p>
+<h2>非同期実行、そして待機</h2>
+<p>MSDNマガジンでは真ん中辺りからのタスクのコードを、Rxでのコードと一緒に並べてみます。</p>
+<pre><code class="language-csharp">// タスクパターン
+Task&lt;double&gt; task = Task.Factory.StartNew(() =&gt;
+{
+    double result = 0;
+    for (int i = 0; i &lt; 10000000; i++)
+        result += Math.Sqrt(i);
+    return result;
+});
+
+Console.WriteLine(&quot;The task is running asynchronously...&quot;);
+task.Wait(); // 実行完了まで待機
+Console.WriteLine(&quot;The task computed: {0}&quot;, task.Result);
+
+// Reactive Extensions
+var obs = Observable.Start(() =&gt;
+{
+    double result = 0;
+    for (int i = 0; i &lt; 10000000; i++)
+        result += Math.Sqrt(i);
+    return result;
+});
+
+Console.WriteLine(&quot;Observable.Start非同期実行中&quot;);
+var r = obs.First(); // 結果が返るまで待機
+Console.WriteLine(&quot;完了 : {0}&quot;, r);
+
+// 余談：タスクはIObservableに変換出来たりする
+task.ToObservable().Run(Console.WriteLine);
+</code></pre>
+<p>どちらもデフォルトではThreadPoolで非同期を実行します。ThreadPoolと違うのは、待機するのも戻り値を取り出すのも簡単。Rxでは長さ1のReactiveシーケンスとして扱われるので、Firstを使うと同期的にブロックして値を取り出せます。ここだけを見ると、Wait() + task.ResultなTaskより扱いやすいのではないかと思います。また、両者ともに似ているので、TaskからIObservable&lt;T&gt;への変換も容易です。System.Reactive.dllを読みこめば、Taskに対してToObservableメソッドが追加され、簡単に変換することが出来ます。</p>
+<h2>自由な変換</h2>
+<p>汎用的に非同期処理をTaskに、Rxに変換しよう。TaskにはTaskCompletionSourceが、RxにはAsyncSubjectがあります。</p>
+<pre><code class="language-csharp">// Construct a TaskCompletionSource and get its 
+// associated Task
+TaskCompletionSource&lt;int&gt; tcs = new TaskCompletionSource&lt;int&gt;();
+Task&lt;int&gt; task = tcs.Task;
+
+// Asynchronously, call SetResult on TaskCompletionSource
+ThreadPool.QueueUserWorkItem(_ =&gt;
+{
+    Thread.Sleep(1000); // Do something
+    tcs.SetResult(123);
+});
+
+Console.WriteLine(&quot;The operation is executing asynchronously...&quot;);
+task.Wait();
+
+// And get the result that was placed into the task by 
+// the TaskCompletionSource
+Console.WriteLine(&quot;The task computed: {0}&quot;, task.Result);
+
+// ---
+
+// TaskCompletionSourceは、RxではAsyncSubjectと対比させられる
+// AsyncSubjectはRxでの非同期表現を自前で実装する場合に使う（Rx内部でも当然使われている）
+var async = new AsyncSubject&lt;int&gt;();
+
+ThreadPool.QueueUserWorkItem(_ =&gt;
+{
+    Thread.Sleep(1000); // 何か重い処理をしてたとする
+    async.OnNext(123); // 値のセット
+    async.OnCompleted(); // 値を確定し非同期実行完了
+});
+
+Console.WriteLine(&quot;重い処理を非同期で実行中...&quot;);
+var r = async.First(); // 同期的に結果を待機し取得
+Console.WriteLine(&quot;処理完了：{0}&quot;, r);
+</code></pre>
+<p>こちらもまた、両者ともに実によく似ています。何らかの任意の非同期処理は、使いやすいようにRxに包んでしまうと素敵な気分になれる。</p>
+<h2>IAsyncResultパターンの変換</h2>
+<p>IAsyncResultパターン。Rxの辺りでは、というか多分.NET周りで言う分には、Asynchronous Programming Model、略してAPMと呼ぶそうです。私がその言葉を見たのは、<a href="http://www.amazon.co.jp/gp/product/4891005238?ie=UTF8&tag=ilsgeometrati-22&linkCode=as2&camp=247&creative=7399&creativeASIN=4891005238">プログラミングMicrosoft .NET Framework 第2版 (マイクロソフト公式解説書)</a><img src="http://www.assoc-amazon.jp/e/ir?t=ilsgeometrati-22&l=as2&o=9&a=4891005238" width="1" height="1" border="0" alt="" style="border:none !important; margin:0px !important;" />でした。Richterはリッチャーと呼ぶべきかリヒターと呼ぶべきなのか謎という話ががが。この本は.NET3種の良書のうちの一冊だと思うので（もう一冊は<a href="http://www.amazon.co.jp/gp/product/4891006765?ie=UTF8&tag=ilsgeometrati-22&linkCode=as2&camp=247&creative=7399&creativeASIN=4891006765">.NETのクラスライブラリ設計 開発チーム直伝の設計原則、コーディング標準、パターン (Microsoft.net Development Series)</a><img src="http://www.assoc-amazon.jp/e/ir?t=ilsgeometrati-22&l=as2&o=9&a=4891006765" width="1" height="1" border="0" alt="" style="border:none !important; margin:0px !important;" />、もう一冊は未定というか将来のために取っておくというか)だと思うので未読の人は是非是非。と思ったら絶版じゃないですか！いや、amazonで偶然品切れなだけかもしれませんが、どうなんでしょう。これが手に入らないのは損失です！海外では既に.NET 4に対応したThird Editionが出ています。ということは、であり、風のウワサによると―― らしいですので、まあ、ですね！</p>
+<p>今読み返したら20ページほど費やされて色々書いてありました。ぶっちゃけ面倒くさいと思って半分以上流し読みしてたという事実に気づいてしまったり。おおぉ。まあ、その辺はThird Editionの時に拾い直せば……。そんなわけで、その面倒くささを緩和するFromAsync/FromAsyncPatternをどうぞ。</p>
+<pre><code class="language-csharp">// FromAsyncで包むとその場で実行
+Task&lt;IPAddress[]&gt; task = Task&lt;IPAddress[]&gt;.Factory.FromAsync(
+    Dns.BeginGetHostAddresses, Dns.EndGetHostAddresses, &quot;www.microsoft.com&quot;, null);
+
+task.Wait();
+foreach (var item in task.Result) Console.WriteLine(item);
+
+// RxのFromAsyncPatternの型指定は引数と戻り値の二つを指定する
+// FromAsyncPatternで包んだら即実行ではなく、funcをInvokeするまでは開始されない
+var obs = Observable.FromAsyncPattern&lt;string, IPAddress[]&gt;(Dns.BeginGetHostAddresses, Dns.EndGetHostAddresses)
+    .Invoke(&quot;www.microsoft.com&quot;); // 即実行なら変数に代入せずメソッドチェーン、実行を遅らせたい場合はfuncで持っておくと良いかも
+
+var r = obs.First();
+foreach (var item in r) Console.WriteLine(item);
+</code></pre>
+<h2>イベントベースのパターンの変換</h2>
+<p>残念なことに、Taskには組み込みの変換パターンがないので、TaskCompletionSourceを使って自前で作る必要があるようです。RxではAsyncSubjectを使って自前で用意するまでもなく、そもそもイベントのLinq化として売り出されたので、イベントベースのパターンの変換はお手の物です。見てみましょう。</p>
+<pre><code class="language-csharp">var client = new WebClient();
+
+Observable.FromEvent&lt;DownloadStringCompletedEventArgs&gt;(client, &quot;DownloadStringCompleted&quot;)
+    .Select(e =&gt; e.EventArgs.Result)
+    .Subscribe(s =&gt; Console.WriteLine(s));
+
+client.DownloadStringAsync(new Uri(&quot;http://www.microsoft.com/&quot;));
+Console.ReadKey(); // 完了待ち
+
+// こういう風に書くとリフレクションを使わないので軽くて望ましい、けど結構面倒くさい（ので事前に自動生成しておくといいよ）
+var obs = Observable.FromEvent&lt;DownloadStringCompletedEventHandler, DownloadStringCompletedEventArgs&gt;(
+    h =&gt; new DownloadStringCompletedEventHandler(h),
+    h =&gt; client.DownloadStringCompleted += h,
+    h =&gt; client.DownloadStringCompleted -= h);
+
+client.DownloadStringAsync(new Uri(&quot;http://www.bing.com/&quot;));
+var result = obs.Select(e =&gt; e.EventArgs.Result).First(); // 同期で待機＆受け取り
+Console.WriteLine(result);
+</code></pre>
+<p>FromEvent。実に美しい！Linq！Linq！おっと、興奮してしまった。とはいえ、stringでイベント名を指定するのも、h=&gt;hoge+=の連打も、どちらも悲しくダサい。そこでT4 TemplateでFromEventに包んだのを一気に自動生成してしまうのをお薦めします。そのためのT4は以前に書きましたので、<a href="http://neue.cc/2010/08/19_272.html" title="neue cc - Reactive ExtensionsのFromEventをT4 Templateで自動生成する">Reactive ExtensionsのFromEventをT4 Templateで自動生成する</a> 是非どうぞ。割と頑張ったし便利だと思ったけれど、はてブ数がああああ。まあ、そんなわけで、Rxをガリガリ使う分には必需品です。</p>
+<h2>しかし、それで大丈夫か？</h2>
+<p>FromEventの後者の書き方は問題を残しています。DownloadStringAsyncの後にFirst。これは、危険です。どう危険かというと……。</p>
+<pre><code class="language-csharp">// T4自動生成を使うとFromEventがこんなスッキリ！
+var client = new WebClient();
+var obs = client.DownloadStringCompletedAsObservable();
+
+// ところで、実行を開始した後にSubscribe(Firstもそうです)したら？
+// それも、超速で非同期実行が完了したとしたら？
+client.DownloadStringAsync(new Uri(&quot;http://www.bing.com/&quot;));
+Thread.Sleep(5000); // ダウンロードが完了した後にSubscribeする、をシミュレート
+
+// 次の値は（完了済みなので）永遠にやってこない、つまり永久フリーズ
+var result = obs.Select(e =&gt; e.EventArgs.Result).First(); 
+</code></pre>
+<p>Firstだと同期で延々と待つのでフリーズ。Subscribeならフリーズはありませんが、結果がこないので意図した結果ではないでしょう。これは大変マズい。そんな時はTake-Prune-Connectパターン、なんてものはなく今思いつきました。今思いついたのでこれがベストなやり方なのか、ちょっとよく分からないのであとでForumとか見て調べておきます。挙動的には全然問題ない。</p>
+<pre><code class="language-csharp">// Take(1).Prune and ConnectでAsyncSubjectっぽい挙動に変換
+var client = new WebClient();
+var obs = client.DownloadStringCompletedAsObservable()
+    .Select(e =&gt; e.EventArgs.Result) // Selectはどこに書いてもいいので自分がスッキリと思うところへ
+    .Take(1)
+    .Prune();
+obs.Connect();
+
+client.DownloadStringAsync(new Uri(&quot;http://www.bing.com/&quot;));
+Thread.Sleep(5000); // ダウンロードが完了した後にSubscribeする、をシミュレート
+
+var result = obs.First(); // 大丈夫だ、問題ない
+Console.WriteLine(result);
+
+var result2 = obs.First(); // 何度でも取り出せる
+Console.WriteLine(result2);
+</code></pre>
+<p>わけわかんなくなってきました？失望のため息が聞こえます。どうしたものかねえ、これ。PruneはキャッシュとしてAsyncSubjectを持って後続に渡します。また、値を流すタイミングを自由に調整出来ます(Connectしたら流す、それまでは値が来ていても堰止める)。今回はFromAsyncPatternをなぞらえるため、即座にConnectしました。やっていることは、上の方で出したAsyncSubjectのパターンのシミュレーションです。つまり、OnNextが一回来て、OnCompletedが来る。そうでないと、AsyncSubjectが完了しない。FromEventはそのままだと無限リスト状態で完了の状態がこないので、Take(1)で長さ1のReactiveシーケンスとする。こうすることで、後ろに非同期結果の値が流れ出します。</p>
+<p>といったイミフな話は<a href="http://neue.cc/2010/09/28_277.html" title="neue cc - Reactive Extensionsの非同期周りの解説と自前実装">Reactive Extensionsの非同期周りの解説と自前実装</a>で少し、それと、それに関連してufcppさんが分かりやすいスライドにしてまとめてくれていますので、必見 =&gt; <a href="http://ufcpp.wordpress.com/2010/09/28/%e3%81%95%e3%81%a6%e3%80%81wordpress-%e3%81%ab%e3%81%aa%e3%81%a3%e3%81%9f%e3%81%a8%e3%81%93%e3%82%8d%e3%81%a7%e5%86%8d%e5%ba%a6%e3%80%81powerpoint-%e8%b2%bc%e3%82%8a%e4%bb%98%e3%81%91%e3%83%86/" title="さて、WordPress になったところで再度、PowerPoint 貼り付けテスト « ++C++; // 未確認飛行 C ブログ">さて、WordPress になったところで再度、PowerPoint 貼り付けテスト « ++C++; // 未確認飛行 C ブログ</a>。貼りつけテストという実に分かりにくいタイトルでサラッと流してしまうところが漢らしい（謎）</p>
+<h2>タスクの操作と構成</h2>
+<p>一つの非同期実行程度なら、APMだろうがイベントモデルだろうが、素のまま扱っても別にそこまで面倒なわけではない。Taskが、Rxが真価を発揮するのは複数の操作を行うとき。まずは、待機を。</p>
+<pre><code class="language-csharp">Task&lt;int&gt; task1 = new Task&lt;int&gt;(() =&gt; ComputeSomething(0));
+Task&lt;int&gt; task2 = new Task&lt;int&gt;(() =&gt; ComputeSomething(1));
+Task&lt;int&gt; task3 = new Task&lt;int&gt;(() =&gt; ComputeSomething(2));
+
+task1.Start(); task2.Start(); task3.Start(); // 実行しとかないと永遠待機しちゃうよ
+task1.Wait();
+Console.WriteLine(&quot;Task 1 is definitely done.&quot;);
+
+Task.WaitAny(task2, task3); // どっちかが完了するまで待機
+Console.WriteLine(&quot;Task 2 or task 3 is also done.&quot;);
+
+Task.WaitAll(task1, task2, task3); // 全部完了するまで待機
+Console.WriteLine(&quot;All tasks are done.&quot;);
+
+// ---
+
+// Observable.Startは即時実行だけど、ToAsyncはInvokeまで実行開始されない
+var async1 = Observable.ToAsync(() =&gt; ComputeSomething(0));
+var async2 = Observable.ToAsync(() =&gt; ComputeSomething(1));
+var async3 = Observable.ToAsync(() =&gt; ComputeSomething(2));
+var io1 = async1(); // Invokeってのはデリゲートのなので()でもおk
+var io2 = async2();
+var io3 = async3();
+
+io1.Run(); // 引数なしRunで実行結果も受けずただの待機になる
+
+// WaitAnyはどちらか先に完了したほうを1つだけ流す Merge().Take(1) して待機
+io2.Merge(io3).Take(1).Run();
+
+Observable.Concat(io1, io2, io3).Run(); // WaitAllは全部連結して待機
+Observable.ForkJoin(io1, io2, io3).Run(); // こちらは並列実行で待機
+</code></pre>
+<p>複数を同時に走らせて待機がいとも簡単に。で、面白いのがRx。Rxは非同期特化というわけではないので直接的にアレとコレのどっちかが来るまで待ってね、なんていうメソッドはないのですが、豊富な結合系メソッドで余裕でシミュレート出来てしまいます。WaitAnyはMerge.Takeで。WaitAllはConcatで。素晴らしい。凄い。と同時に、若干パズル的な気がしなくもない。が、しかし、面白い。Reactiveモデルの何でもできるという底力を感じる。</p>
+<h2>継続・継続・継続</h2>
+<p>今までは待機してたという、おいおい、非同期でやってるのに同期かよ、って感じだったので本領発揮で非同期のままの流るような実行を。TaskではContinueWith、Rxでは、72通りあるから何を言えばいいのか。</p>
+<pre><code class="language-csharp">// ほう、メソッドチェーンが生きたな
+Task&lt;IPAddress[]&gt;.Factory.FromAsync(Dns.BeginGetHostAddresses, Dns.EndGetHostAddresses, &quot;www.microsoft.com&quot;, null)
+    .ContinueWith(t =&gt;
+    {
+        foreach (var item in t.Result) // IPAddress[]なので。
+        {
+            Console.WriteLine(item);
+        }
+    });
+
+// しかしRxはそれどころじゃない
+Observable.FromAsyncPattern&lt;string, IPAddress[]&gt;(Dns.BeginGetHostAddresses, Dns.EndGetHostAddresses)
+    .Invoke(&quot;www.microsoft.com&quot;)
+    .SelectMany(xs =&gt; xs) // xsはIPAddress[]、つまりIEnumerableとIObservableを区別なくバラしているという狂気の融合！
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>ContinueWithは、まあごく普通に結果が流れてきてるんだなー、程度。しかしRxのほうはヤバい。この場合のContinueWithに該当するのはSubscribeで、まあそれは普通なのですが、それよりしかし流れてくるIPAddress[]の[]がウザいので、Linq的に扱うならフラットにしたいよね。というわけで、IObservable&lt;IPAddress[]&gt;をSelectManyでIObservable&lt;IPAddress&gt;に変換しています。SelectManyはIObservableだろうとIEnumerableだろうと、平等にバラします。これは実にヤバい。狂気すら感じるパワー。皆も是非Rxを使ってこのヤバさを知って欲しい。</p>
+<h2>実行・待機</h2>
+<p>同時実行して、その結果を一辺に受けたい場合ってありますよね。そんな場合はForkJoinで。ForkJoinよく出てくるなあ。</p>
+<pre><code class="language-csharp">string[] urls = new[] { &quot;www.microsoft.com&quot;, &quot;www.msdn.com&quot; };
+Task&lt;IPAddress[]&gt;[] tasks = new Task&lt;IPAddress[]&gt;[urls.Length];
+
+for (int i = 0; i &lt; urls.Length; i++)
+{
+    tasks[i] = Task&lt;IPAddress[]&gt;.Factory.FromAsync(
+        Dns.BeginGetHostAddresses,
+        Dns.EndGetHostAddresses,
+        urls[i], null);
+}
+
+Task.WaitAll(tasks);
+
+Console.WriteLine(
+    &quot;microsoft.com resolves to {0} IP addresses. msdn.com resolves to {1}&quot;,
+    tasks[0].Result.Length,
+    tasks[1].Result.Length);
+
+
+// WaitAll? ああ、ForkJoinで並行実行のことですか
+Observable.ForkJoin(urls.Select(url =&gt;
+        Observable.FromAsyncPattern&lt;string, IPAddress[]&gt;(Dns.BeginGetHostAddresses, Dns.EndGetHostAddresses)(url)))
+    .Run(xs =&gt; Console.WriteLine(
+        &quot;microsoft.com resolves to {0} IP addresses. msdn.com resolves to {1}&quot;,
+        xs[0].Length, xs[1].Length));
+</code></pre>
+<p>そろそろマンネリ気味で疲れてきた。あ、最後にデッカイのがありますね。TaskではContinueWhenAllが初お目見え。でもRxでは別に変わらずForkJoinなんだよねえ。</p>
+<pre><code class="language-csharp">// Task要の定義
+static Task&lt;string&gt; DownloadStringAsTask(Uri address)
+{
+    TaskCompletionSource&lt;string&gt; tcs = new TaskCompletionSource&lt;string&gt;();
+    WebClient client = new WebClient();
+    client.DownloadStringCompleted += (sender, args) =&gt;
+    {
+        if (args.Error != null) tcs.SetException(args.Error);
+        else if (args.Cancelled) tcs.SetCanceled();
+        else tcs.SetResult(args.Result);
+    };
+    client.DownloadStringAsync(address);
+    return tcs.Task;
+}
+
+// Rx用の定義
+public static IObservable&lt;IEvent&lt;DownloadStringCompletedEventArgs&gt;&gt; DownloadStringAsObservable(Uri address)
+{
+    var client = new WebClient();
+    var con = Observable.FromEvent&lt;DownloadStringCompletedEventHandler, DownloadStringCompletedEventArgs&gt;(
+            h =&gt; new System.Net.DownloadStringCompletedEventHandler(h),
+            h =&gt; client.DownloadStringCompleted += h,
+            h =&gt; client.DownloadStringCompleted -= h)
+        .Take(1).Prune();
+    con.Connect();
+    client.DownloadStringAsync(address);
+    return con;
+}
+
+static int CountParagraphs(string s)
+{
+    return Regex.Matches(s, &quot;&lt;p&gt;&quot;).Count;
+}
+
+static void Main(string[] args)
+{
+    Task&lt;string&gt; page1Task = DownloadStringAsTask(new Uri(&quot;http://www.microsoft.com&quot;));
+    Task&lt;string&gt; page2Task = DownloadStringAsTask(new Uri(&quot;http://www.msdn.com&quot;));
+
+    Task&lt;int&gt; count1Task = page1Task.ContinueWith(t =&gt; CountParagraphs(t.Result));
+    Task&lt;int&gt; count2Task = page2Task.ContinueWith(t =&gt; CountParagraphs(t.Result));
+
+    /// 全てが完了したら、Actionを実行
+    Task.Factory.ContinueWhenAll(new[] { count1Task, count2Task },
+        tasks =&gt;
+        {
+            // tasks引数使わないのね(笑)
+            Console.WriteLine(&quot;&lt;P&gt; tags on microsoft.com: {0}&quot;, count1Task.Result);
+            Console.WriteLine(&quot;&lt;P&gt; tags on msdn.com: {0}&quot;, count2Task.Result);
+        });
+
+    // Rxではこうなる
+    Observable.ForkJoin(
+            DownloadStringAsObservable(new Uri(&quot;http://www.microsoft.com&quot;)),
+            DownloadStringAsObservable(new Uri(&quot;http://www.msdn.com&quot;)))
+        .Select(xs =&gt; xs.Select(e =&gt; CountParagraphs(e.EventArgs.Result)).ToArray())
+        .Subscribe(xs =&gt;
+        {
+            Console.WriteLine(&quot;&lt;P&gt; tags on microsoft.com: {0}&quot;, xs[0]);
+            Console.WriteLine(&quot;&lt;P&gt; tags on msdn.com: {0}&quot;, xs[1]);
+        });
+
+    Console.ReadKey(); // 非同期実行なので終了しないように
+}
+</code></pre>
+<p>ふむ（何がふむだ）</p>
+<h2>非同期とUIスレッド</h2>
+<p>Dispatcher.BeginInvokeさようなら！ですね。ObserveOnはRxだけの専売特許じゃない。Taskにだってあるもん。</p>
+<pre><code class="language-csharp">void Button_Click(object sender, RoutedEventArgs e)
+{
+    // ContinueWithの引数にTaskSchedulerを入れると非同期実行結果からUIを触れる
+    TaskScheduler uiTaskScheduler = TaskScheduler.FromCurrentSynchronizationContext();
+    DownloadStringAsTask(new Uri(&quot;http://www.microsoft.com&quot;))
+        .ContinueWith(t =&gt; { textBox1.Text = t.Result; }, uiTaskScheduler);
+
+    // Rxではすっかりお馴染みなObserveOnで(WPFの場合は省略形としてObserveOnDispatcherがある)
+    DownloadStringAsObservable(new Uri(&quot;http://www.microsoft.com&quot;))
+        .ObserveOnDispatcher()
+        .Subscribe(ev =&gt; { textBox1.Text = ev.EventArgs.Result; });
+}
+</code></pre>
+<p>真面目に、このObserveOnDispatcherは死ぬほど役立ちです。</p>
+<h2>まとめ</h2>
+<p>機能的には十分被る。そして、より汎用的なはずのRxが専用のはずのTaskでの処理を十分に代替出来てしまうという事実に驚く。Rx始まりすぎてる。今更言うのもアレですが、これは確実にヤバい。ビッグウェーブはもう既に来てる。乗り遅れてもいいんで乗ろう！</p>
+<p>それにしてもMSDNマガジン素晴らしいなあ。この記事は実に入門向けに満遍なくも濃密で、素敵な時間を過ごせた。いやあ、一時期は機械翻訳のみになってたけれど、再び翻訳に戻って大変ありがたい。そして、そろそろRxもMSDNマガジンに記事が来てもいいのでは？もしくはMSKKの人がですね。どうでしょう。どうなんでしょう。どうなってるんでしょう。</p>
+<p>あ、そういえば私は10月期のMicrosoft MVPに応募してたんですがそれはやっぱりダメだったよ。言うことを聞かないからね。これを見てるそこの君、以下略。来年の1月にretryしようかなー。それまでには記事増量、ってやること変わってないんじゃ結果は同じじゃないのというのががが。</p>
+</div>
+<h1><a href="https://neue.cc/2010/09/28_277.html">Reactive Extensionsの非同期周りの解説と自前実装</a></h1>
 <ul class="date"><li>2010-09-28</li></ul>
 <div class="entry_body"><p>最近<a href="http://d.hatena.ne.jp/okazuki/" title="かずきのBlog@Hatena">id:okazuki</a>さんが凄い勢いでRx解説を書いていて凄い！そして、刺激を受けますねー。というわけで、今回はRxの非同期周りの解説をします。今日の昼に<a href="http://d.hatena.ne.jp/okazuki/20100927/1285553227" title="非同期処理を行うメソッドの戻り値は全てIObservable&lt;T&gt;にしてしまえばいいんじゃないんだろうか - かずきのBlog@Hatena">非同期処理を行うメソッドの戻り値は全てIObservable&lt;T&gt;にしてしまえばいいんじゃないんだろうか</a>を読んで、Twitterで少しAsyncSubjectについて書いたのでそれをまとめて……、と思ったら<a href="http://d.hatena.ne.jp/okazuki/20100927/1285590312" title="Reactive Extensions入門 11「非同期処理用のSubject」 - かずきのBlog@Hatena">Reactive Extensions入門 11「非同期処理用のSubject」</a>ですって！早！私なんて一年かけて何も書いていやしなかったりするのに、この早さは本当に見習いたい、ごほごほ。</p>
 <p>そんなわけかで、色々と被ってしまっているのですが、Rxの非同期実行についてまとめます。まず、Rxの非同期の起点はStart, ToAsync, FromAsyncPatternの3つ。Start,ToAsyncはFromAsyncPatternの簡易化みたいなものなので、実質は1つです。これらを使うと長さ1のIObservable&lt;T&gt;として非同期処理が扱えるわけです。ところで非同期処理が完了するまでの間に複数Subscribeしたらどうなるのだろう、または非同期処理が完了してしまった後にSubscribeしたらどうなるのだろう？ Silverlightで実際に触って試してみてください。</p>
@@ -2286,211 +2605,6 @@ ok(1 !== &quot;1&quot;);  // okay - notの場合は!で
 <p>linq.js ver.2出したときには、もう当分更新することなんてないよなあ、なんて思っていたのですが、普通にポコポコと見つかったり。でもさすがに、もうないと思いたい。C#との挙動互換性も、私の知る限りでは今回の配列最適化が最後で、やり残しはない。そして今回がラストだー、とばかりに思いつく要素を全部突っ込んでやりました。</p>
 <p>そんなわけなので、使ってやってください。私がVisualStudio使いなのでVS関連の補助が多めですが、別にVS必須というわけじゃなくプラスアルファ的なもの(入力補完ドキュメントだのコードスニペットだの)でしかないので、エディタ書きでも何ら問題なく使える、かな、きっと。</p>
 </div>
-<h1><a href="https://neue.cc/2010/06/24_263.html">Reactive Extensions for .NET (Rx) メソッド探訪第7回:IEnumerable vs IObservable</a></h1>
-<ul class="date"><li>2010-06-24</li></ul>
-<div class="entry_body"><p>物凄く期間を開けてしまいましたが、<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Reactive Extensions for .NET (Rx)</a>紹介を再開していきます。もはやRxってなんだっけ？という感じなので、今回は最も基本である、IObservableについて扱います。ボケーッとしている間にIQbservable(IQueryableのデュアル)とか出てきてて置いてかれちゃってるし。</p>
-<p>そんなこんなで、IObservableはIEnumerableのデュアルなんだよ、とか言われてもぶっちゃけさっぱり分かりません。なので、その辺のことはスルーして普通にコードで対比させながら見ていくことにします。</p>
-<p class="noindent">
-<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="300px">
-<param name="source" value="http://neue.cc/wp-content/uploads/silverlight/IEvsIO.xap"/>
-<param name="background" value="white" />
-<param name="minRuntimeVersion" value="4.0.50401.0" />
-<param name="initparams" value="Start=1" />
-<a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=4.0.50401.0" style="text-decoration:none">
- 	<img src="http://go.microsoft.com/fwlink/?LinkId=161376" alt="Microsoft Silverlight の取得" style="border-style:none"/>
-</a>
-</object>
-</p>
-<pre><code class="language-csharp">// IEnumerable (RunはForEachです、ようするに)
-Enumerable.Range(1, 10)
-    .Where(i =&gt; i % 2 == 0)
-    .Select(i =&gt; i * 2)
-    .Run(Console.WriteLine, () =&gt; Console.WriteLine(&quot;completed!&quot;));
-
-// IObservable
-Observable.Range(1, 10)
-    .Where(i =&gt; i % 2 == 0)
-    .Select(i =&gt; i * 2)
-    .Subscribe(Console.WriteLine, () =&gt; Console.WriteLine(&quot;completed!&quot;));
-</code></pre>
-<p>ボタンを押して確認する、までもなく同じ結果です。1から10までを偶数だけ通して二倍して出力。見た目は同じですが、中身は丸っきり違います。見た目が一緒すぎて言葉で表現出来ないので図に表してみました。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/rx_pullandpush.jpg">
-</p>
-<p>何という下手っぴな図、さっぱり伝わらん。……。というのはおいておいて、矢印の向きに注目。IEnumerableの連鎖は、列挙を消費する時にIEnumeratorの伝搬に変わります。Run-&gt;Select-&gt;Where-&gt;RangeとMoveNextが駆け上がったら、今度はRange-&gt;Where-&gt;Select-&gt;RunとCurrentが降りていきます。末尾(Run)が値を要求(MoveNext)して値(Current)を取り出すという連鎖。末端から根元の値を引っ張ってくる(Pull)ようなイメージ。</p>
-<p>IObservableは、根元自体が値を押し出していく(Push)ようなイメージ。こちらはIObserverの連鎖になっていて、根元からOnNextで値を伝えていきます。</p>
-<h2>Pushのメリット</h2>
-<p>Observable.Rangeのような、もしくはEunmerableに対してToObservableした時のような、普通のPull型シーケンスをPush型に変換することのメリットは？イベントや非同期など、他の形式から生成されたIObservableと連携出来る、というのは当然一番の話ですが、もう一つ、要素を分配出来るようになります。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/rx_pullandpush_2.jpg">
-</p>
-<p>このイミフな図の言わんとしていることが伝わる、わけはないので説明。Pull型はソースと1対1の関係である必要があるため、複数の列挙の消費者(RunだったりCountだったりSumだったりLastだったり)がいる場合、接続した回数だけ列挙が最初から回ることになります。かたやPush型は、1対多の関係を持つことが出来るため、一度の列挙で全ての消費者に値を配分することが可能です。</p>
-<h2>Hot vs Cold</h2>
-<p>同じように見えるIObservableにも、HotとColdという性質があります。それはyield returnで作る遅延評価のIEnumerableと、配列のように既に値が生成済みのIEnumerableとの違い、のようなものかもしれません。</p>
-<p class="noindent">
-<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="300px">
-<param name="source" value="http://neue.cc/wp-content/uploads/silverlight/IEvsIO.xap"/>
-<param name="background" value="white" />
-<param name="minRuntimeVersion" value="4.0.50401.0" />
-<param name="initparams" value="Start=2" />
-<a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=4.0.50401.0" style="text-decoration:none">
- 	<img src="http://go.microsoft.com/fwlink/?LinkId=161376" alt="Microsoft Silverlight の取得" style="border-style:none"/>
-</a>
-</object>
-</p>
-<pre><code class="language-csharp">var seq = Observable.Range(1, 5)
-    .Do(i =&gt; Console.WriteLine(&quot;source -&gt; &quot; + i));
-
-button1.Click += (sender, e) =&gt;
-    seq.Subscribe(i =&gt; Console.WriteLine(&quot;button1 -&gt; &quot; + i));
-
-button2.Click += (sender, e) =&gt;
-    seq.Subscribe(i =&gt; Console.WriteLine(&quot;button2 -&gt; &quot; + i));
-</code></pre>
-<p>Doは、列挙に通ったものを取り出しつつも素通しします。つまり、 Select(i =&gt; { action(i); return i; }) です。今回は列挙がその箇所を通ったかどうかを書き出しています。余談ですが、IEnumerableならNyaRuRuさんの作成されたAchiralには<a href="http://d.hatena.ne.jp/NyaRuRu/20080131/p1">Hookというメソッド</a>があって、細かい列挙中のモニタリングが出来るようになっています。</p>
-<p>実行結果を見てみると、ボタンを押す=Subsribeを繋げると、即座に列挙が開始されていて、これだとIEnumerableのforeachと何も変わません。よって、このIObservableはColdです。もう値は生成され終わっているので。Subscribeの度に即座に全ての値をPushします。</p>
-<p>ではHotは？</p>
-<p class="noindent">
-<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="300px">
-<param name="source" value="http://neue.cc/wp-content/uploads/silverlight/IEvsIO.xap"/>
-<param name="background" value="white" />
-<param name="minRuntimeVersion" value="4.0.50401.0" />
-<param name="initparams" value="Start=3" />
-<a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=4.0.50401.0" style="text-decoration:none">
- 	<img src="http://go.microsoft.com/fwlink/?LinkId=161376" alt="Microsoft Silverlight の取得" style="border-style:none"/>
-</a>
-</object>
-</p>
-<pre><code class="language-csharp">// FromEvent(canvas,&quot;MouseMove&quot;)は手軽ですが、丁寧にこう書くほうが理想的かしら
-Func&lt;IObservable&lt;Point&gt;&gt; GetMouseMovePosition = () =&gt;
-    Observable.FromEvent&lt;MouseEventHandler, MouseEventArgs&gt;(
-            h =&gt; (sender, e) =&gt; h(sender, e),
-            h =&gt; canvas.MouseMove += h,
-            h =&gt; canvas.MouseMove -= h)
-        .Select(e =&gt; e.EventArgs.GetPosition(canvas));
-
-// ICollection&lt;IDisposable&gt;です。
-var disposables = new CompositeDisposable();
-
-evenButton.Click += (sender, e) =&gt;
-{
-    disposables.Add(
-        GetMouseMovePosition()
-            .Where(p =&gt; p.X % 2 == 0 &amp;&amp; p.Y % 2 == 0)
-            .Subscribe(p =&gt; Console.WriteLine(&quot;Even -&gt; &quot; + p.X + &quot;:&quot; + p.Y)));
-};
-
-oddButton.Click += (sender, e) =&gt;
-{
-    disposables.Add(
-        GetMouseMovePosition()
-            .Where(p =&gt; p.X % 2 != 0 &amp;&amp; p.Y % 2 != 0)
-            .Subscribe(p =&gt; Console.WriteLine(&quot;Odd -&gt; &quot; + p.X + &quot;:&quot; + p.Y)));
-};
-
-disposeButton.Click += (sender, e) =&gt;
-{
-    // Disposeでイベントのデタッチ + 再登録不可
-    // Clearでイベントのデタッチ + 再登録可
-    disposables.Clear();
-};
-</code></pre>
-<p>例えばマウスイベント。クリックの度にOnNextに値を送る、ムーブの度に値を送るといったイベントをIObservable化するFromEventはHot。無限リスト状態になっているものは、接続しただけでは値が送られてこないとも言えるので、幾つでもSubscribeすることが出来ます。サンプルでは、ボタンをクリックすればしただけ、右側のログ表示に同内容のものが連続して表示されるのが確認出来ます。</p>
-<p>両者が混ざったような挙動をするIObservableもあります(例えばReplaySubject)ので、HotなのかColdなのか両方なのか。というのを意識してみると理解が深まるかもしれません。また、メソッドの動作確認などの際にHotとColdを区別せずにいると、思わぬ挙動で混乱するかもしれないので注意。というか、私はよくやります……。Observable.Rangeばかりで確認していてイミフ！と思ったら、FromEventでチェックしたら何て分かりやすいこと！というのが何度も。</p>
-<h2>CompositeDisposable</h2>
-<p>本題と離れますがTips。イベントのデタッチが簡単なのもRxのメリットの一つです。さて、複数イベントをデタッチする場合はどうしましょうか？List&lt;IDisposable&gt;に格納してforeachで列挙してDispose、というのも悪くないですが、そういう用途で使うためのCompositeDisposableというICollection&lt;IDisposable&gt;なクラスが用意されているので、そちらを使ったほうがよりスマートに書けます。</p>
-<p>上のSilverlightのHotのサンプルコードでは、ボタンを押す(=Subscribeする=イベントを登録する)度にCompositeDisposableにAdd。そしてDisposeAllボタンでまとめてデタッチしています。</p>
-<pre><code class="language-csharp">var subject = new Subject&lt;int&gt;();
-var d1 = subject.Subscribe(i =&gt; Console.WriteLine(i));
-var d2 = subject.Subscribe(i =&gt; Console.WriteLine(i * i));
-using (new CompositeDisposable(d1, d2))
-{
-    subject.OnNext(2); // 2, 4
-    subject.OnNext(3); // 3, 9
-}
-subject.OnNext(2); // usingを抜けデタッチ済みなので何も起こらない
-</code></pre>
-<p>List&lt;IDisposable&gt;に対するCompositeDisposableのメリットは、Disposeで解除出来るということ。つまり、using構文に放りこむことが可能です。多段Usingよりも綺麗に見えるのでお薦め。</p>
-<p>上の例にコソッと出したSubjectクラスはPush型シーケンスの大本で、OnNextやOnCompletedを後続に送ることが出来ます。イベントのラップじゃなく、Rxネイティブなクラスを作る場合に使います。Subjectはちゃんと詳しく書かなきゃいけない大事なクラスの一つなので、また次にでもきっちり紹介する予定は未定。</p>
-<h2>列挙の分配</h2>
-<p>Pushのメリットとして分配可能なことを挙げたのに、Coldなので分配出来ません。以上終了。で終わるわけは当然ないわけで、Cold to Hot変換メソッドが使えます。Publishです。Publishの戻り値はIConnectableObservable。</p>
-<pre><code class="language-csharp">public interface IConnectableObservable&lt;out T&gt; : IObservable&lt;T&gt;
-{
-    IDisposable Connect();
-}
-</code></pre>
-<p>IObservableなのでメソッドチェインを繋げることが出来ます。そして、Subscribeしても列挙は始まりません。Connectを呼んだ時に、一度だけ列挙することが出来ます(二度以降Connectを呼んでも何もしない)</p>
-<p>私はダムの堰止をイメージしています。何もしないとドバドバと水が流れてしまうのでPublishで一時的に止めて、Connectで放水。放水後は空っぽ。みたいな。</p>
-<h2>Max/Sumなど集計系</h2>
-<p>インターフェイスを挙げただけじゃよく分からないので実例を。SumやMaxといった集計系メソッドと合わせて使ってみます。そこら中にモニタリング用のDoが入っていてコードが若干分かりづらいですが、実行結果で、どのタイミングで値が通過するのかを確認してみてください。</p>
-<p class="noindent">
-<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="300px">
-<param name="source" value="http://neue.cc/wp-content/uploads/silverlight/IEvsIO.xap"/>
-<param name="background" value="white" />
-<param name="minRuntimeVersion" value="4.0.50401.0" />
-<param name="initparams" value="Start=4" />
-<a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=4.0.50401.0" style="text-decoration:none">
- 	<img src="http://go.microsoft.com/fwlink/?LinkId=161376" alt="Microsoft Silverlight の取得" style="border-style:none"/>
-</a>
-</object>
-</p>
-<pre><code class="language-csharp">var source = Enumerable.Range(1, 5)
-    .Do(i =&gt; Console.WriteLine(&quot;Source -&gt; &quot; + i));
-
-enumerableButton.Click += (sender, e) =&gt;
-{
-    var sum = source.Sum();
-    var max = source.Max();
-    var all = source.All(i =&gt; i &lt; 3);
-    Console.WriteLine(&quot;sum = &quot; + sum);
-    Console.WriteLine(&quot;max = &quot; + max);
-    Console.WriteLine(&quot;all = &quot; + all);
-};
-
-observableButton.Click += (sender, e) =&gt;
-{
-    var connectable = source.ToObservable().Publish();
-
-    connectable.Subscribe(_ =&gt; { }, () =&gt; Console.WriteLine(&quot;OnCompleted&quot;));
-
-    var sum = default(int);
-    connectable
-        .Do(i =&gt; Console.WriteLine(&quot;BeforeSum -&gt; &quot; + i))
-        .Sum()
-        .Do(i =&gt; Console.WriteLine(&quot;AfterSum -&gt; &quot; + i))
-        .Subscribe(i =&gt; sum = i);
-
-    var max = default(int);
-    connectable
-        .Do(i =&gt; Console.WriteLine(&quot;BeforeMax -&gt; &quot; + i))
-        .Max()
-        .Do(i =&gt; Console.WriteLine(&quot;AfterMax -&gt; &quot; + i))
-        .Subscribe(i =&gt; max = i);
-
-    var all = default(bool);
-    connectable
-        .Do(i =&gt; Console.WriteLine(&quot;BeforeAll -&gt; &quot; + i))
-        .All(i =&gt; i &lt; 3)
-        .Do(b =&gt; Console.WriteLine(&quot;AfterAll -&gt; &quot; + b))
-        .Subscribe(b =&gt; all = b);
-
-    connectable.Connect();
-    Console.WriteLine(&quot;sum = &quot; + sum);
-    Console.WriteLine(&quot;max = &quot; + max);
-    Console.WriteLine(&quot;all = &quot; + all);
-};
-</code></pre>
-<p>値が確定した時、Allならば全ての列挙が完了した(OnCompletedを受信する)か、条件がfalseのものが見つかったときに、1つだけSubscribeに値が届きます。SumやMaxは、全ての列挙が完了しないと算出出来ないので、全て完了したとき。こういった結果の確定するタイミングは、Enumerableでの場合と変わりません。</p>
-<p>このような動作(戻り値が長さ1のIObservable)をするものには、 Aggreagte, Count, Any... 、ようするにIEnumerableにもあって戻り値がIEnumerableじゃないメソッドは全てそうです。全部似たりよったりなので具体的な紹介は省きます。</p>
-<h2>Pushのデメリット</h2>
-<p>IObservable便利すぎてIEnumerableいらなくネ？ と、言いたいところですが、例えばこれら集計系メソッドは全て長さ1のIObservableになります。Sumの場合、欲しいのはintであってIObservableではありません。長さ1のIObservableは、いつConnectされるか分からないのでSubscribeで外の値に受け渡してやらなければならないわけですが、見た目が美しくなく宣言も冗長になる。</p>
-<p>また、集計するのに複数回列挙は確かに格好悪いな！よし、そういう場合はRx使おう。と思った場合はとりあえず待った。ただの配列からの列挙程度の場合は、ふつーに複数回列挙したほうがPublishで分岐させるよりも遥かに速かったりします。元ソースが複雑にLinqで繋いであって重たかったり、ファイルやネットワーク経由だったりで複数呼び出しを避けたい、副作用があって複数回呼びだすと内容が変化している、という場合はRxです。が、一旦ToListしてキャッシュすれば済むシーンならば、キャッシュした方が分かりやすく速い場合が多かったりします。</p>
-<p>Publishの具体的な使い処としては、以前に、<a href="http://neue.cc/2010/04/29_255.html" title="neue cc - C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions">TwitterのStreamAPIをRxを使って分配する</a>という記事で紹介しました。</p>
-<h2>まとめ</h2>
-<p>PullとPushは、むしろ動作的にはPushのほうが素直で分かりやすい雰囲気。難解だと思って避けていたそこのアナタ、さあ、Rxを使おう！ しかしColdとHotは大いなる罠。初見ではきっとつまづく。この区別は本当に大事。Rxが難解っぽいとしたら、Cold/Hotのせい。挙動がまるっと変わるんだもの。でも、ゆっくり紐解けば全然大丈夫。さあ、Rxを使おう！Publishや集計系はそんなには使わないかもですが、覚えておくと便利な時も割とある。さあ、Rxを(ry</p>
-<p>個人的にRxの特色・使いどころは「イベントの合成」「タイマー・ネットワーク・スレッドなど非同期処理の一元化」「シーケンスの分配」の3つだと思っているのですが、このブログでは、延々とシーケンス分配という、3つの中で一番どうでもいい機能しか紹介していない！という酷い事実に気がつきました。そんなんじゃRxのポテンシャルを全然伝えられない。</p>
-<p>というわけで、次回はタイマー辺りを紹介したいと思います予定は未定。というか計画ではObservableの合流周りとMarble Diagramについてを書く予定。Rxの知名度も徐々に上がってきているようなので、しっかり紹介していきたいですし、他の人も書いて欲すぃ。</p>
-</div>
 <a href="https://neue.cc/18">Prev |</a>
 <a href="https://neue.cc/20">| Next</a>
 </div>
@@ -2514,6 +2628,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2022/02/">2022-02</a>
 <li><a href="https://neue.cc/2022/01/">2022-01</a>
 <li><a href="https://neue.cc/2021/12/">2021-12</a>
 <li><a href="https://neue.cc/2021/11/">2021-11</a>

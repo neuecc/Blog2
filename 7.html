@@ -15,7 +15,349 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2015/09/29_517.html">実例からみるC#でのメタプログラミング用法集</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2015/10/23_518.html">同期（風）コードと対比させたUnity+UniRxで非同期を扱う場合のパターン集</a></h1>
+<ul class="date"><li>2015-10-23</li></ul>
+<div class="entry_body"><p><a href="https://github.com/neuecc/UniRx/">UniRx</a>のGitHubのStar数が500行きました！</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/10682950/165b9eea-7977-11e5-87ec-9b98269e912a.png" alt="image" /></p>
+<p>今のところGitHub上での<a href="https://github.com/search?l=C%23&amp;o=desc&amp;q=Unity&amp;s=stars&amp;type=Repositories&amp;utf8=%E2%9C%93">Unity + C#</a>でスター順の検索だと、世界5位です。おおー。更に上を狙いたいところですね。最近はちょっと更新が滞っていますが、ネタはあるのでより完成度を高めたい。(滞った理由は、<a href="http://neue.cc/2015/09/29_517.html">PhotonWire</a>とか色々他のところに手を出していたため……)</p>
+<p>さて、本題。イベント結合に使う際はあてはまりませんが、Rx(<a href="https://github.com/neuecc/UniRx/">UniRx</a>)を非同期（長さ1のIOservableシーケンス)として扱う場合、それなりに癖があります。とはいえ、基本的には同期（或いはyield return)で書いていた際と、1:1で対比できるパターン化した形で概ね対応できるので、そのためのチートシートを考えてみました。コード例はC# 5.0のasync/awaitで出しますが、同期コード or IEnumeratorと同じように思ってもらえればいいです。例えば</p>
+<pre><code class="language-csharp">public void Sync()
+{
+    /* before action */
+    Method();
+    /* after action */
+}
+
+public IEnumerator IEnumerator()
+{
+    /* before action */
+    yield return StartCoroutine(Method());
+    /* after action */
+}
+
+public async Task Task()
+{
+    /* before action */
+    await MethodAsync();
+    /* after action */
+}
+</code></pre>
+<p>みたいな感じです、awaitに馴染みのない人も、なんとなくイメージしながら眺めてみてもらえると嬉しいです。</p>
+<h2>非同期汚染</h2>
+<p>コード例の前に非同期汚染、或いは非同期の伝搬について。まぁ、あんまし汚染という言い方は好きじゃないのですが、基本的に非同期、つまりTaskでもFutureでもPromiseでもIObservableでも、は、下層から上層まで伝搬していきます。メソッドが非同期であるなら戻り値はIObservableであり、そのIObservableを呼ぶメソッドもまた自然と非同期でなければならないので、IObservableになる、と。何故非同期の連鎖でなければならないのか。消費(Subscribe)してしまうと、その瞬間Fire and Forgetになってしまい、戻りを待ったりキャンセルしたりなどの別の操作が行えなくなってしまうからです。別にFire and Forgetしたければ、呼び元がそれを選択(Subscribeして放置)すればいいわけで、呼ばれる側が決定することではない。</p>
+<p>もちろん、最終的にはどこかの層で消費(Subscribe)しなければならないので、そこで伝搬は止まるのですけれど、それは、基本的には上層であればあるほどよいということですね。どこが上層やねんって話はあるかもしれませんが、ユーザーインタラクションに近かったり、MonoBehaviourのイベント層に近かったり、あたりがそうですかねー。あとは、ごく一部でしか使わないんだ！という確固たる思いがあれば、早い段階でSubscribeして伝搬を止めるのも策ではあります、その辺はケースバイケースで。</p>
+<p>非同期の伝搬に都合の良いメソッドが現状のUniRxには足りてません。実は！というわけで、次期バージョンではForEachAsyncというものを足したいのですが、それまでは以下のものをコピペって代用してください。挙動的にはシーケンスを消費して長さ1のIObservable[Unit]を返すもので、元シーケンスが非同期(長さ1)ならDoやSelectと、概ね一緒です。</p>
+<pre><code class="language-csharp">// 次期バージョンに入るので、それまでの代用ということで。
+// 元シーケンスが非同期なら .Select(x =&gt; { /* action(); */ return Unit.Default; }) とほぼ同様
+namespace UniRx
+{
+    public static class UniRxExtensions
+    {
+        public static IObservable&lt;Unit&gt; ForEachAsync&lt;T&gt;(this IObservable&lt;T&gt; source, Action&lt;T&gt; onNext)
+        {
+            return Observable.Create&lt;Unit&gt;(observer =&gt;
+            {
+                return source.Subscribe(x =&gt;
+                {
+                    try
+                    {
+                        onNext(x);
+                    }
+                    catch (Exception ex)
+                    {
+                        observer.OnError(ex);
+                        return;
+                    }
+                }, observer.OnError, () =&gt;
+                {
+                    observer.OnNext(Unit.Default);
+                    observer.OnCompleted();
+                });
+            });
+        }
+    }
+}
+</code></pre>
+<p>また、副作用（外の変数への代入など）に関しては、あまり気にしないほうが吉です。いや、Rxのパイプラインに押し込めたほうが美しくはあるんですが、それがオブジェクトであるなら、副作用かけてフィールド変数を変えたり、ReactivePropertyに結果を伝えたりとかは、あって然りかな、と。考える際には「もしこれが同期コードだったらどうなのか」を意識したほうがいいかもしれません、同期コードで自然なら、別にRxでそれを行っても、構わないのです。とはいえ、以下に紹介するコードは全部、副作用大前提みたいな説明なので、それはそれで若干の狂気でもありますが、その辺は慣れてきてからでよいかと。</p>
+<h2>戻り値のない場合</h2>
+<pre><code class="language-csharp">public async Task Demo1_TaskAsync()
+{
+    /* before action */
+    var x = await Task.Factory.StartNew(() =&gt; 100);
+    /* after action */
+}
+
+public IObservable&lt;Unit&gt; Demo1_IOAsync()
+{
+    /* before action */
+    return Observable.Start(() =&gt; 100)
+        .ForEachAsync(_ =&gt;
+        {
+            /* after action */
+        });
+}
+</code></pre>
+<p>メソッドに戻り値がない場合は、awaitの位置にForEachAsyncで、その中にactionを書く形になります。RxにおいてはIObservable[Unit]を戻り値のないことの表明として使います。</p>
+<h2>内部に複数の非同期がある場合</h2>
+<pre><code class="language-csharp">public async Task Demo2_TaskAsync()
+{
+    /* before action */
+    var x = await Task.Factory.StartNew(() =&gt; 100);
+    /* after action 1 */
+    var y = await Task.Factory.StartNew(() =&gt; 200);
+    /* after action 2 */
+}
+
+public IObservable&lt;Unit&gt; Demo2_IO_1Async()
+{
+    /* before action */
+    return Observable.Start(() =&gt; 100)
+        .SelectMany(x =&gt;
+        {
+            /* after action 1 */
+
+            return Observable.Start(() =&gt; 200);
+        })
+        .ForEachAsync(y =&gt;
+        {
+            /* after action 2 */
+        });
+}
+</code></pre>
+<p>awaitの位置にSelectManyを置くことで繋げることができます。最後の消費だけForEachAsyncで。</p>
+<h2>パイプライン中に複数の値を伝搬したい場合</h2>
+<pre><code class="language-csharp">public IObservable&lt;Unit&gt; Demo2_IO_2Async()
+{
+    /* before action */
+    return Observable.Start(() =&gt; 100)
+        .SelectMany(x =&gt;
+        {
+            /* after action 1 */
+            return Observable.Start(() =&gt; 200);
+        }, (x, y) =&gt; new { x, y }) // transport argument to next chain
+        .ForEachAsync(o =&gt;
+        {
+            /* after action 2 */
+            // { o.x, o,y } 
+        });
+}
+
+public IObservable&lt;Unit&gt; Demo2_IO_2_2Async()
+{
+    /* before action */
+    return Observable.Start(() =&gt; 100)
+        .SelectMany(x =&gt;
+        {
+            /* after action 1 */
+            var z = SyncMethod();
+            return Observable.Start(() =&gt; 200).Select(y =&gt; new { x, y, z });
+        })
+        .ForEachAsync(o =&gt;
+        {
+            /* after action 2 */
+            // { o.x, o,y, o.z } 
+        });
+}
+</code></pre>
+<p>同期コードでは、そのスコープ中の全ての値が使えるわけですが、Rxのメソッドチェーンでは次のパイプラインに送り込める値は一つしかありません。というわけで、匿名型（もしくはUniRx.Tuple）を使って、次のパイプラインへは値をまとめて上げる必要があります。SelectManyには第二引数があり、それにより前の値と次の値をまとめることができます。また、SelectMany内部で作った値を送り込みたい場合は、戻り値のところでSelectを使ってスコープ内でキャプチャして返してあげればいいでしょう。(匿名型、Tupleともにclassなので、気になる場合はstructの入れ物を用意してもいいかもしれない、何か箱を作って運搬しなきゃいけないのは残念ながら仕様です)</p>
+<h2>非同期が連鎖する場合</h2>
+<pre><code class="language-csharp">public IObservable&lt;Unit&gt; Demo2_IO_2_MoreChainAsync()
+{
+    /* before action */
+    return Observable.Start(() =&gt; 100)
+        .SelectMany(x =&gt;
+        {
+            /* after action 1 */
+            return Observable.Start(() =&gt; 200);
+        }, (x, y) =&gt; new { x, y })
+        .SelectMany(o =&gt;
+        {
+            /* after action 2 */
+            return Observable.Start(() =&gt; 300);
+        }, (o, z) =&gt; new { o.x, o.y, z }) // re-construct self
+        .ForEachAsync(o =&gt;
+        {
+            /* after action 3 */
+            // { o.x, o,y, o.z } 
+        });
+}
+</code></pre>
+<p>SelectManyの連打になります。また、伝搬する値は自分で分解して付け直してあげる必要があります、これは面倒くさいですね！この辺はクエリ構文を使った場合、Transparent Identifierという仕組みで自動的にコンパイラが行うのですが(<a href="http://www.slideshare.net/neuecc/an-internal-of-linq-to-objects-29200657">An Internal of LINQ to Objects</a>の35P、Rxでクエリ構文は結構頻繁にクエリ構文の範疇を逸脱するのと、副作用をパイプライン途中に書けないためあまり使い勝手は良くないので、面倒くさいながら手作業再構築を薦めます。</p>
+<h2>戻り値を返す場合</h2>
+<pre><code class="language-csharp">public async Task&lt;int&gt; Demo3_TaskAsync()
+{
+    /* before action */
+    var x = await Task.Factory.StartNew(() =&gt; 100);
+    /* after action */
+    return x; // return value
+}
+
+public IObservable&lt;int&gt; Demo3_IOAsync()
+{
+    /* before action */
+    return Observable.Start(() =&gt; 100)
+        .Select(x =&gt;
+        {
+            /* after action */
+            return x; // return value
+        });
+}
+</code></pre>
+<p>ForEachAsyncではなく、Selectを使っていきましょう。戻り値の型が同一で副作用だけ起こしたいならDoでも構わないのですが、まぁどっちでもいいです。また、awaitが複数になる場合は、SelectManyになります。そのうえでSelectManyのままreturnするか、最後に再びSelect(もしくはDo)を使うかどうかは、状況次第、かな。</p>
+<h2>例外をキャッチ</h2>
+<pre><code class="language-csharp">public async Task Demo4_TaskAsync()
+{
+    /* before action */
+    try
+    {
+        var x = await Task.Factory.StartNew(() =&gt; 100);
+    }
+    catch (Exception ex)
+    {
+        /* onerror action */
+        throw;
+    }
+
+    /* after action */
+}
+
+public IObservable&lt;Unit&gt; Demo4_IOAsync()
+{
+    /* before action */
+    return Observable.Start(() =&gt; 100)
+        .Catch((Exception ex) =&gt;
+        {
+            /* onerror action */
+            return Observable.Throw&lt;int&gt;(ex);
+        })
+        .ForEachAsync(x =&gt;
+        {
+            /* after action */
+        });
+}
+</code></pre>
+<p>これはCatchで賄えます。なお、Catchメソッドを使う際は、Catch&lt;T&gt;で例外の型を指定するよりも、ラムダ式の引数側で例外の型を書いたほうが書きやすいです（そうしたほうが型推論の関係上、ソースシーケンスの型を書かなくて済むため）。Catchの戻り値では再スローをObservable.Throw、握りつぶしをObservable.Return/Emptyで表現可能です。</p>
+<h2>Finally</h2>
+<pre><code class="language-csharp">public async Task Demo5_TaskAsync()
+{
+    /* before action(1) */
+    try
+    {
+        var x = await Task.Factory.StartNew(() =&gt; 100);
+    }
+    finally
+    {
+        /* finally action(2) */
+    }
+
+    /* after action(3) */
+}
+
+// not equivant try-finally
+public IObservable&lt;Unit&gt; Demo5_IO_PseudoAsync()
+{
+    /* before action(1) */
+    return Observable.Start(() =&gt; 100)
+        .Finally(() =&gt;
+        {
+            /* finally action(3) */
+        })
+        .ForEachAsync(x =&gt;
+        {
+            /* after action(2) */
+        });
+}
+
+public IObservable&lt;Unit&gt; Demo5_IO_CorrectLightweightButIsNotDryAsync()
+{
+    /* before action(1) */
+    return Observable.Start(() =&gt; 100)
+        .Do(_ =&gt; { /* finally action(2) */}, _ =&gt; {/* same finally action(2) */})
+        .ForEachAsync(x =&gt;
+        {
+            /* after action(3) */
+        });
+}
+</code></pre>
+<p>Finallyに関しては、実は同じに扱える表現がありません!RxのFinallyはパイプラインの終了時の実行なので、実行順序がベタtry-finallyで書いた時と異なるんですよねえ。いちおう、DoでOnNextとOnErrorのところに同じコードを書くことでそれっぽい表現は可能ではありますが……。</p>
+<h2>並列処理</h2>
+<pre><code class="language-csharp">public async Task ParallelAsync()
+{
+    var a = Task.Factory.StartNew(() =&gt; 100);
+    var b = Task.Factory.StartNew(() =&gt; 200);
+    var c = Task.Factory.StartNew(() =&gt; 300);
+    
+    var xs = await Task.WhenAll(a, b, c);
+    /* after action */
+}
+
+
+public IObservable&lt;Unit&gt; ParallelIO()
+{
+    var a = Observable.Start(() =&gt; 100);
+    var b = Observable.Start(() =&gt; 200);
+    var c = Observable.Start(() =&gt; 300);
+    
+    return Observable.WhenAll(a, b, c)
+        .ForEachAsync(xs =&gt;
+        {
+            /* after action */
+        });
+}
+</code></pre>
+<p>並列処理は非同期固有の実行ですが、WhenAllでドバッとまとめるというのが基本方針。</p>
+<h2>タイムアウト</h2>
+<pre><code class="language-csharp">public async Task TimeoutAsync(TimeSpan timeout)
+{
+    var task = Task.Factory.StartNew(() =&gt; 100);    
+    var delay = Task.Delay(timeout);
+    if (await Task.WhenAny(task, delay) == delay)
+    {
+        /* timeout action */
+        throw new TimeoutException();
+    }
+    /* after action */
+}
+
+
+public IObservable&lt;Unit&gt; TimeoutIO(TimeSpan timeout)
+{
+    return Observable.Start(() =&gt; 100)
+        .Timeout(timeout)
+        .Catch((TimeoutException ex) =&gt;
+        {
+            /* timeout action */
+            return Observable.Throw&lt;int&gt;(ex);
+        })
+        .ForEachAsync(x =&gt;
+        {
+            /* after action */
+        });
+}
+</code></pre>
+<p>タイマウトも非同期固有の処理。async/awaitの場合、特有のイディオムがあります。UniRxの場合はTimeoutだけでOK。特に例外時に処理するものもないなら、Catchは不要です。</p>
+<h2>IEnumeratorに戻す</h2>
+<pre><code class="language-csharp">public IObservable&lt;Unit&gt; Demo6_IE()
+{
+    /* before action(1) */
+    return Observable.FromCoroutine(() =&gt; Demo6_IECore());
+}
+
+IEnumerator Demo6_IECore()
+{
+    // 戻り値の不要な場合
+    yield return Observable.Start(() =&gt; 100).StartAsCoroutine();
+    
+    int ret;
+    yield return Observable.Start(() =&gt; 100).StartAsCoroutine(x =&gt; ret = x);
+}
+</code></pre>
+<p>SelectManyの連打が辛い場合、ふつーのコルーチンに戻して、更にIObservableでラップするという手段も取れます。まあ、この辺は複雑さ度合いで自由に！</p>
+<p>だったらもはや最初から全部コルーチンでええやん！Rxでメソッドチェーン複雑だし見た目だけならコルーチン最強にスッキリじゃん！というのは正しい。正しいんですが、例外処理・戻り値・合成可能性・並列処理・マルチスレッド、などといった要素が欠落してるので、コルーチンはコルーチンで苦しいところが多いというか実際のところシンプルなケース以外では相当苦しいので、基本的にはRxのほうが有利です。</p>
+<h2>async/awaitは必要？</h2>
+<p>みたとーり、必要です。どう考えても。さすがにSelectManyの連打を同期コードほどスッキリと言い張るのは無理があるでしょう。とはいえまぁ、書いて書けないこともないので、今あるツールの中でベストを尽くすのまた良きかな、とは思いますねー。というわけで良き非同期生活を！UniRxでイベントを扱う際のパターン集は、またそのうちにでも！</p>
+</div>
+<h1><a href="https://neue.cc/2015/09/29_517.html">実例からみるC#でのメタプログラミング用法集</a></h1>
 <ul class="date"><li>2015-09-29</li></ul>
 <div class="entry_body"><p>Metaprogramming Universe in C# - 実例に見るILからRoslynまでの活用、という題で<a href="https://roommetro.doorkeeper.jp/events/30482">Metro.cs #1</a>にて話してきました。</p>
 <iframe src="//www.slideshare.net/slideshow/embed_code/key/pF55iU0qXIeRFv" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/metaprogramming-universe-in-c-ilroslyn" title="Metaprogramming Universe in C# - 実例に見るILからRoslynまでの活用例" target="_blank">Metaprogramming Universe in C# - 実例に見るILからRoslynまでの活用例</a> </strong> from <strong><a href="//www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
@@ -1517,310 +1859,6 @@ static IEnumerator WrapEnumerator(IEnumerator enumerator, IObserver&lt;Unit&gt; 
 <p>コルーチンをコルーチンたらしめているのは消費者であるStartCoroutineであって、IEnumerator自体はただのイテレータにすぎない。なので、分解も可能だし、他の形式に展開することもできる。</p>
 <p><a href="https://github.com/neuecc/UniRx">UniRx</a>経由でコルーチンを実行すると「色々なものと合成できる」「（複数の）戻り値を扱える」「キャンセルが容易」「MonoBehaviourが不要」「スレッドセーフ」「エディターでも実行可能」になる。いいことづくめっぽい！Reactive Programmingの力！そんな感じに、UniRxはなるべくシームレスにRxの世界とUnityの世界を繋げるような仕組みを用意しています。是非ダウンロードして、色々遊んでみてください。</p>
 </div>
-<h1><a href="https://neue.cc/2014/12/08_496.html">VS2015+RoslynによるCodeRefactoringProviderの作り方と活用法</a></h1>
-<ul class="date"><li>2014-12-08</li></ul>
-<div class="entry_body"><p>この記事は<a href="http://qiita.com/advent-calendar/2014/csharp">C# Advent Calendar 2014</a>のための記事になります。私は去年のAdvent Calendarでは<a href="http://neue.cc/2013/12/04_435.html">非同期時代のLINQ</a>というものを書いていました、うん、中々良い記事であった（自分で言う）。今年のテーマはRoslynです。</p>
-<p>先月に<a href="http://neue.cc/2014/11/20_485.html">VS2015のRoslynでCode Analyzerを自作する(ついでにUnityコードも解析する)</a>という記事を書きましたが、VS2015 PreviewではRoslynで作る拡張にもう一つ、Code Refactoringがあります。こちらも簡単に作れて、中々ベンリなので（前にVS2015のRoslynは以前から後退して「あんま大したことはできない」と言いましたが、それはそれでかなり役立ちです）、是非作っていきましょう。Code Analyzerと同じく非常に簡単に作れるのと、テンプレートがよくできていてちゃんとガイドになってるので、すんなり入れるかと思います。なお、こちらはCode Analyzerと違いNuGet配布やプロジェクト単位での参照は不可能、VSIXのみ。そこはちょっと残念……。</p>
-<h2>Code Refactoring</h2>
-<p>下準備としてはCode Analyzerの時と同じく<a href="http://www.visualstudio.com/downloads/visual-studio-2015-downloads-vs">Visual Studio 2015 Preview</a>のインストールの他に、<a href="http://www.visualstudio.com/downloads/visual-studio-2015-downloads-vs">Visual Studio 2015 Preview SDK</a>と<a href="https://visualstudiogallery.msdn.microsoft.com/849f3ab1-05cf-4682-b4af-ef995e2aa1a5">.NET Compiler Platform SDK Templates</a>、そして<a href="https://visualstudiogallery.msdn.microsoft.com/70e184da-9b3a-402f-b210-d62a898e2887">.NET Compiler Platform Syntax Visualizer</a>を入れてください。</p>
-<p>さて、まずテンプレートのVisual C#→Extensibilityから「Code Refactoring(VSIX)」を選びます。とりあえずこのテンプレート（がサンプルになってます）をCtrl+F5で実行しましょう。これで立ち上がるVSは通常のVSに影響を及ぼさず自作拡張がインストールされる特殊なインスタンスになってます（devenv.exeを引数「/rootsuffix Roslyn」で立ち上げてる、のがDebugのとこで確認できる）。というわけで、このテンプレートの拡張によりクラス名をCtrl+.することにより</p>
-<p><img src="http://neue.cc/wp-content/uploads/2014/12/roslyn_reverse.jpg" alt="" /></p>
-<p>クラス名が逆になる、という（実にどうでもいい）機能拡張が追加されました！と、いうわけで、Code RefactoringはCode Analyzerと同じく「Light Bulb」によるCode Actionが実装可能になります。Code AnalyzerはDiagnosticが起点でしたが、こちらは、指し示された位置を起点にコードの削除/追加/変更を行えるという感じ。「リファクタリング」というとコード修正のイメージが個人的には強いんですが、RoslynのCode Refactoringはどちらかというと「コード生成」に使えるな、という印象です。例えばプロパティを選択してCode RefactoringでINotifyPropertyChangedのコードに展開してしまうとか。大量に作る場合、一個一個コードスニペットで作るより、そっちのほうが速く作れそうですよね？など、色々使い手はあるでしょふ。結構可能性を感じるし、良い機能だと思っています（それR#で今までも出来たよ！とかそれEclipseで既に！とか言いたいことはあるかもしれませんが！）</p>
-<p>ただまあ、Code Refactoringって名前は好きじゃない。けれど、じゃあ何がいいかっていうと、なんでしょうねぇ。Code Generate、ジェネレートだけじゃないから、まぁCode Actionかなぁ。AnalyzerもCode Actionだから区別付かなくて嫌だって可能性もあるか、うーん、うーん、ま、いっか……。</p>
-<h2>ArgumentNullExceptionProvider</h2>
-<p>サンプルコードがたった1ファイルのように、作るのはとても簡単です。CodeRefactoringProviderを継承してComputeRefactoringsAsyncを実装する、だけ。適当にシンタックスツリーを探索して、もしLight Bulbを出したければcontext.RegisterRefactoringにCodeActionを追加する、と。</p>
-<p>というわけで早速何か一個作ってみましょう。実用的なのがいいなぁ、ということでnullチェック、if(hoge == null) throw new ArgumetNullException(); というクソ面倒くさい恒例のアレを自動生成しよう！絶対使うし、あるとめちゃくちゃ捗りますものね！</p>
-<p class="noindent">
-<img src="http://neue.cc/wp-content/uploads/2014/12/roslyn_argnullfix2.jpg" />
-</p>
-<p>上の画像のが完成品です。便利そう！便利そう！</p>
-<p>さて、まずはLight Bulbをどこで出したいか。メソッドの引数で出すんで、引数を選択してたらそれは対象にしたいかなぁ？あと、一々選択するのも面倒だから、メソッド名でも出しましょうか。ふむ、とりあえず実装が簡単そうなメソッド名だけで行きましょう。何事も作る時は単純なところから広げていくのが一番、特に初めてのものはね。</p>
-<pre><code class="language-csharp">// ArgumentNullExceptionProviderという名前でプロジェクト作ったらクラス名が酷いことに、その辺はちゃんと調整しましょふ
-[ExportCodeRefactoringProvider(ArgumentNullExceptionProviderCodeRefactoringProvider.RefactoringId, LanguageNames.CSharp), Shared]
-internal class ArgumentNullExceptionProviderCodeRefactoringProvider : CodeRefactoringProvider
-{
-    public const string RefactoringId = &quot;ArgumentNullExceptionProvider&quot;;
-
-    public sealed override async Task ComputeRefactoringsAsync(CodeRefactoringContext context)
-    {
-        // とりあえずコード全体を取る（これはほとんど定形）
-        var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
-        
-        // SemanticModel(コードをテキストとしてではなく意味を持ったモデルとして取るようにするもの、これもほぼ必須)
-        var model = await context.Document.GetSemanticModelAsync(context.CancellationToken).ConfigureAwait(false);
-        
-        // context.Spanが選択位置、ということで選択位置のコードを取る（この辺もほぼ定形かな）
-        // もし選択範囲に含まれてるものから一部のものを取り出す、とかならroot.DescendantNodes(context.Span).OfType&lt;XxxSyntax&gt;() という手とか色々
-        var node = root.FindNode(context.Span);
-        
-        // メソッド定義じゃなかったら無視
-        var methodDecl = node as MethodDeclarationSyntax;
-        if (methodDecl == null) return;
-        
-        // コード生成作る
-        var action = CodeAction.Create(&quot;Generate ArgumentNullException&quot;, c =&gt; GenerateArgumentNullException(context.Document, model, root, methodDecl, c));
-        
-        // とりあえず追加
-        context.RegisterRefactoring(action);
-    }
-
-    async Task&lt;Document&gt; GenerateArgumentNullException(Document document, SemanticModel model, SyntaxNode root, MethodDeclarationSyntax methodDecl, CancellationToken cancellationToken)
-    {
-        // あとで書く:)
-        return document;
-    }
-}
-</code></pre>
-<p>まずはこんなとこですね、ようはサンプルからClassDeclarationSyntaxをMethodDeclarationSyntaxに変えただけ + CodeActionを作るところの引数にSemanticModelとrootのSyntaxNodeを足してあります。この辺はほとんど定形で必要になってくるので、とりあえず覚えておくといいでしょう。さて、一旦こいつで実行してみて、ちゃんとLight Bulbが思ったところに出るか確認してから次に行きましょー。続いて本題のコード生成部分。</p>
-<pre><code class="language-csharp">Task&lt;Document&gt; GenerateArgumentNullException(Document document, SemanticModel model, SyntaxNode root, MethodDeclarationSyntax methodDecl, CancellationToken cancellationToken)
-{
-    // 引数はParameterListから取れる。
-    // この辺はVSでMethodDeclarationSyntaxをF12で飛んで、metadataからそれっぽいのを探しだすといいんじゃないかな？
-    // ドキュメントがなくてもVisual StudioとIntelliSenseがあれば、なんとなく作れてしまうのがC#のいいところだからね！
-    var parameterList = methodDecl.ParameterList;
-
-    // ただのType(TypeSyntax)はコード上のテキスト以上の意味を持たない、
-    // そこからstructかclassか、など型としての情報を取るにはSemanticModelから照合する必要がある
-    var targets = parameterList.Parameters
-        .Where(x =&gt;
-        {
-            var typeSymbol = model.GetTypeInfo(x.Type).Type;
-            return typeSymbol != null &amp;&amp; typeSymbol.IsReferenceType;
-        });
-
-    // C#コードを手組みするのは(Trivia対応とか入れると)死ぬほど面倒なのでParseする
-    var statements = targets.Select(x =&gt;
-    {
-        var name = x.Identifier.Text;
-        // String Interpolationベンリ(ただし文法はまだ変更される模様……)
-        return SyntaxFactory.ParseStatement(&quot;if (\{name} == null) throw new ArgumentNullException(nameof(\{name}));&quot;);
-    }).ToArray();
-
-    // 追加、メソッドBodyはBody以下なのでそこの先頭に(AddStatementsだと一番下に置かれてしまうのでダメ、nullチェックは「先頭」にしたい)
-    var newBody = methodDecl.Body.WithStatements(methodDecl.Body.Statements.InsertRange(0, statements));
-
-    // 入れ替え
-    var newRoot = root.ReplaceNode(methodDecl.Body, newBody);
-    var newDocument = document.WithSyntaxRoot(newRoot);
-
-    return Task.FromResult(newDocument);
-}
-</code></pre>
-<p>SemanticModelがキーです。SyntaxTreeから取ってきただけのものは、何の情報も持ってません、ほんとただのコード上の字面だけです。今回で言うとnullチェックしたいのは参照型だけですが、それを識別することが出来ません。そこからTypeInfoを取り出すことができるのがSemanticModelになります。例えば「Dictionary」から「System.Collections.Generic.Dictionary」といったフルネームを取り出したりなど、とかくコード操作するには重要です。今回はこれでIsReferenceTypeを引き出しています。</p>
-<p>あとは、コードの手組みは辛すぎるのでSyntaxFactory.ParseXxxを活用して済ませちゃうのは楽です。その後は、rootからReplaceと、documentから丸っと差し替えなどは定形ですね。あ、そうそう、あとnameofはC# 6.0の新機能です。ベンリベンリ。</p>
-<p>では、実際使ってみると……。</p>
-<pre><code class="language-csharp">// これが
-static void Hoge(string[] a, string b, Dictionary&lt;int, int&gt; huga, int tako)
-{
-}
-
-// こうなる、あ、れ……？
-static void Hoge(string[] a, string b, Dictionary&lt;int, int&gt; huga, int tako)
-{
-if (a == null) throw new ArgumentNullException(nameof(a));if (b == null) throw new ArgumentNullException(nameof(b));if (huga == null) throw new ArgumentNullException(nameof(huga));}
-</code></pre>
-<p>はい。ちゃんと機能するコードができてはいます。が、なんじゃこりゃーーーーー。なんでかっていうとTrivia（空白とか改行）が一切考慮されてないから、なんですね。Code Refactoringを作る上でメンドウクサイのは、こうしたTriviaへの考慮です。置換なら既存のTriviaをそのまま使えるんですが、コード追加系だと、自分でTrivia入れたり削ったりの調整しないと見れたもんじゃなくなります。というわけで、こっから先が地獄……。まぁ、頑張りましょう。さすがにそのままだと使えないので、調整しましょう。</p>
-<p>まずは改行です。改行は結構簡単で、（大抵の場合）TrailingTrivia（後方のTrivia（空白や改行など））にCRLFを仕込むだけ。</p>
-<pre><code class="language-csharp">// statementsのところをこう変更すると
-var statements = targets.Select(x =&gt;
-{
-    var name = x.Identifier.Text;
-    var statement = SyntaxFactory.ParseStatement(&quot;if (\{name} == null) throw new ArgumentNullException(nameof(\{name}));&quot;);
-    // TrailingTriviaは行末、というわけで改行を仕込む
-    return statement.WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed);
-})
-.ToArray();
-
-        // 置換結果はこうなります、だいぶ良くなった！
-        static void Hoge(string[] a, string b, Dictionary&lt;int, int&gt; huga, int tako)
-        {
-if (a == null) throw new ArgumentNullException(nameof(a));
-if (b == null) throw new ArgumentNullException(nameof(b));
-if (huga == null) throw new ArgumentNullException(nameof(huga));
-        }
-</code></pre>
-<p>だいぶいい線いってますね！このぐらいできれば、あとは実行後にCtrl+K, D（ドキュメントフォーマット）押してね、で済むんで全然妥協ラインです。が、もう少し完璧にしたいならインデントも挟みましょうか。インデントの量は直前の{から引っ張ってきて調整してみましょふ。</p>
-<pre><code class="language-csharp">// WithLeadingTriviaの追加
-var statements = targets.Select(x =&gt;
-{
-    var name = x.Identifier.Text;
-    var statement = SyntaxFactory.ParseStatement(&quot;if (\{name} == null) throw new ArgumentNullException(nameof(\{name}));&quot;);
-
-    // LeadingTriviaに「{」のとこのインデント + 4つ分の空白を入れる
-    return statement
-        .WithLeadingTrivia(methodDecl.Body.OpenBraceToken.LeadingTrivia.Add(SyntaxFactory.Whitespace(&quot;    &quot;)))
-        .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed);
-})
-.ToArray();
-
-        // 置換結果はこうなります、完璧！
-        static void Hoge(string[] a, string b, Dictionary&lt;int, int&gt; huga, int tako)
-        {
-            if (a == null) throw new ArgumentNullException(nameof(a));
-            if (b == null) throw new ArgumentNullException(nameof(b));
-            if (huga == null) throw new ArgumentNullException(nameof(huga));
-        }
-
-</code></pre>
-<p>こんなところですね。さて、勿論このコードはOpenBraceTokenが改行された位置にあることを前提にしているので、後ろに{を入れるスタイルのコードには適用できません。また、空白4つをインデントとして使うというのが決め打ちされています。また、なんども実行しても大丈夫なように既にthrow new ArgumentNullExceptionが記述されてる引数は無視したいよねえ、などなど、完璧を求めるとキリがありません。キリがないということは、適当なところでやめておくのが無難ということです、適度な妥協大事！</p>
-<h2>フォーマットする</h2>
-<p>とはいえ、フォーマットはもう少しきちんとやりたいところです。実は簡単にやる手段が用意されていて、.WithAdditionalAnnotations(Formatter.Annotation) を呼ぶことで、その部分だけフォーマットがかかります。正確にはフォーマットが可能になるタイミングでフォーマットがかかるようになります、どういうことかというと、例えばインデントのフォーマットは前後のコード情報がなければかけることは出来ません。このコード例でいうとif()...は前後空白もない完全一行だけなのでフォーマットもなにもできない。なのでAnnotationのついたコード片がフォーマット可能なドキュメントにくっついたタイミングで自動でかかるようになります。AnnotationはRoslynの構文木内でのみ使われるオプション情報とでも思ってもらえれば。</p>
-<pre><code class="language-csharp">var statements = targetParameters
-    .Select(x =&gt;
-    {
-        var name = x.Identifier.Text;
-        var statement = SyntaxFactory.ParseStatement(&quot;if (\{name} == null) throw new ArgumentNullException(nameof(\{name}));&quot;);
-
-        // Formatter.Annotationつけてフォーマット
-        return statement
-            .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed)
-            .WithAdditionalAnnotations(Formatter.Annotation);
-    })
-    .ToArray();
-</code></pre>
-<p>これは簡単でイイですね！！！なのでTriviaの付与は、最低限のCRLFぐらいを部分的に入れるだけでOK。これは、これからもめちゃくちゃ多用するのではかと思われます。他にAnnotationにはSimplifier.Annotationなどが用意されてます。</p>
-<h2>フルコード</h2>
-<p>最初に妥協した（？）引数を選択してたらそれも対象に、ってコードも入れましょうか。というのを含めたフルコードは以下になります。</p>
-<pre><code class="language-csharp">using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CodeActions;
-using Microsoft.CodeAnalysis.CodeRefactorings;
-using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.Formatting;
-using System.Collections.Generic;
-using System.Composition;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
-
-namespace Grani.RoslynTools
-{
-    [ExportCodeRefactoringProvider(GenerateArgumentNullExceptionCodeRefactoringProvider.RefactoringId, LanguageNames.CSharp), Shared]
-    internal class GenerateArgumentNullExceptionCodeRefactoringProvider : CodeRefactoringProvider
-    {
-        public const string RefactoringId = &quot;GenerateArgumentNullException&quot;;
-
-        public sealed override async Task ComputeRefactoringsAsync(CodeRefactoringContext context)
-        {
-            // とりあえずコード全体を取る（これはほとんど定形）
-            var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
-
-            // SemanticModel(コードをテキストとしてではなく意味を持ったモデルとして取るようにするもの、これもほぼ必須)
-            var model = await context.Document.GetSemanticModelAsync(context.CancellationToken).ConfigureAwait(false);
-
-            // context.Spanが選択位置、ということで選択位置のコードを取る（この辺もほぼ定形かな）
-            var node = root.FindNode(context.Span);
-
-            // パラメータリストの場合はそれだけ、クラス名だったらその定義の全部の引数を取る
-            MethodDeclarationSyntax methodDecl;
-            IEnumerable&lt;ParameterSyntax&gt; selectedParameters;
-            if (node is MethodDeclarationSyntax)
-            {
-                methodDecl = (MethodDeclarationSyntax)node;
-                selectedParameters = methodDecl.ParameterList.Parameters;
-            }
-            else
-            {
-                // 単品選択のばやい(名前の部分選択でParameterSyntax、型の部分選択でParentがParameterSyntax)
-                if (node is ParameterSyntax || node.Parent is ParameterSyntax)
-                {
-                    var targetParameter = (node as ParameterSyntax) ?? (node.Parent as ParameterSyntax);
-                    // 親方向にMethodDeclarationSyntaxを探す
-                    methodDecl = targetParameter.Ancestors().OfType&lt;MethodDeclarationSyntax&gt;().FirstOrDefault();
-                    selectedParameters = new[] { targetParameter };
-                }
-                else
-                {
-                    // 選択範囲から取り出すばやい
-                    var parameters = root.DescendantNodes(context.Span).OfType&lt;ParameterSyntax&gt;().ToArray();
-                    if (parameters.Length == 0) return;
-                    methodDecl = parameters[0].Ancestors().OfType&lt;MethodDeclarationSyntax&gt;().FirstOrDefault();
-                    selectedParameters = parameters;
-                }
-            }
-            if (methodDecl == null) return;
-
-            // ただのType(TypeSyntax)はコード上のテキスト以上の意味を持たない、
-            // そこからstructかclassか、など型としての情報を取るにはSemanticModelから照合する必要がある
-            var replaceTargets = selectedParameters
-                .Where(x =&gt;
-                {
-                    var typeSymbol = model.GetTypeInfo(x.Type).Type;
-                    // ジェネリック型で型引数がclassでstructでもない場合はIsXxxが両方false、これはif(xxx == null)の対象にする
-                    return typeSymbol != null &amp;&amp; typeSymbol.IsReferenceType || (!typeSymbol.IsReferenceType &amp;&amp; !typeSymbol.IsValueType);
-                })
-                .ToArray();
-
-            if (replaceTargets.Length == 0) return;
-
-            // コード生成作る(nameof利用の有無で2つ作ってみたり)
-            var action1 = CodeAction.Create(&quot;Generate ArgumentNullException&quot;, c =&gt; GenerateArgumentNullException(context.Document, root, methodDecl, replaceTargets, true, c));
-            var action2 = CodeAction.Create(&quot;Generate ArgumentNullException(unuse nameof)&quot;, c =&gt; GenerateArgumentNullException(context.Document, root, methodDecl, replaceTargets, false, c));
-
-            // 追加
-            context.RegisterRefactoring(action1);
-            context.RegisterRefactoring(action2);
-        }
-        
-        Task&lt;Document&gt; GenerateArgumentNullException(Document document, SyntaxNode root, MethodDeclarationSyntax methodDecl, ParameterSyntax[] targetParameters, bool useNameof, CancellationToken cancellationToken)
-        {
-            // nameof版と非nameof版を用意
-            var template = (useNameof)
-                ? &quot;if ({0} == null) throw new ArgumentNullException(nameof({0}));&quot;
-                : &quot;if ({0} == null) throw new ArgumentNullException(\&quot;{0}\&quot;);&quot;;
-
-            var statements = targetParameters
-                .Select(x =&gt;
-                {
-                    // C#コードを手組みするのは(Trivia対応とか入れると)死ぬほど面倒なのでParseする
-                    var name = x.Identifier.Text;
-                    var statement = SyntaxFactory.ParseStatement(string.Format(template, name));
-
-                    // Formatter.Annotationつけてフォーマット
-                    return statement
-                        .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed)
-                        .WithAdditionalAnnotations(Formatter.Annotation);
-                })
-                .ToArray();
-
-            // 追加
-            var newBody = methodDecl.Body.WithStatements(methodDecl.Body.Statements.InsertRange(0, statements));
-
-            // 入れ替え
-            var newRoot = root.ReplaceNode(methodDecl.Body, newBody);
-            var newDocument = document.WithSyntaxRoot(newRoot);
-
-            return Task.FromResult(newDocument);
-        }
-    }
-}
-</code></pre>
-<p>まずLight Bulbを出すためのチェックがFindNodeだけでは済まなくなるので、root.DescendantNodes(context.Span)が活躍します。あとは、もう、色々もしゃもしゃと。とにかくコーナーケース探していくとかなり面倒くさかったり。例えば、引数の型の部分を選択した時と、名前の部分を選択した時の対処、などなど……。しょうがないけれどね。</p>
-<p>それと、もしメソッドの中に参照型の引数がなかったらLight Bulbを出さないようにするため、replaceTargetsの生成をRegisterRefactoringの前に変更しています。それと、ジェネリックな型引数の場合で制約がついてない状態も生成対象に含めるよう微調整。といったような、この辺の細かい調整はある程度出来上がってからやってくのが良いでしょうねー。</p>
-<h2>Portable？</h2>
-<p>ところで、CodeRefactoringにせよAnalyzerにせよ、テンプレートではコア部分はPCLで生成されています。ということは、実は、System.IOとか使えない。これ、ちょっと色々な邪道な操作したい時に不便なんですよ……。ていうかVisual Studio前提なんだからPCLである必要ないじゃん！いみわからない、なんでもPCLって言っておけばいいってもんでもないでしょう！あー、もう私はPCL大嫌いだよぅー。しかもPCLで生成されたプロジェクトは普通のプロジェクトタイプには簡単には戻せないんですよ、うわぁ……。</p>
-<p>まあcsprojを手で書き換えればできます。やりかたは</p>
-<pre><code class="language-xml">&lt;!-- こいつを消す --&gt;
-&lt;ProjectTypeGuids&gt;{786C830F-07A1-408B-BD7F-6EE04809D6DB};{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}&lt;/ProjectTypeGuids&gt;
-
-&lt;!-- こいつを消す --&gt;
-&lt;TargetFrameworkProfile&gt;Profile7&lt;/TargetFrameworkProfile&gt;
-
-&lt;!-- こいつを消して --&gt;
-&lt;Import Project=&quot;$(MSBuildExtensionsPath32)\Microsoft\Portable\$(TargetFrameworkVersion)\Microsoft.Portable.CSharp.targets&quot; /&gt;
-&lt;!-- かわりにこれを追加 --&gt;
-&lt;Import Project=&quot;$(MSBuildToolsPath)\Microsoft.CSharp.targets&quot; /&gt;
-</code></pre>
-<p>なんだかなぁー。</p>
-<h2>ビルトイン拡張</h2>
-<p>VS2015ではビルトインで幾つかCode Refactoringが入っています。が、ノーヒント（Ctrl+.を押すまではLight Bulbが出ない)なので、宝探し状態です！例えばプロパティを選択すると「Generate Constructor」が出てきたり。まぁ、これはそのうちリストが公開されるでしょう。</p>
-<h2>まとめ</h2>
-<p>拡張を作るのは簡単！うーん、んー、簡単？まぁ簡単！少なくとも今までよりは比較的遥かに簡単カジュアルに作れるようになりました。こうした自動生成って、一般的なものだけではなく、プロジェクト固有で必要になるものもあると思います。例えばうちの会社ではシリアライザに<a href="https://code.google.com/p/protobuf-net/">protobuf-net</a>を使っているので、クラスのプロパティの各属性にDataMemberをつけて回る必要がある。ちゃんとOrderの順番を連番にして。でも手作業は面倒、そこで、CodeRefactoring。</p>
-<p><img src="http://neue.cc/wp-content/uploads/2014/12/roslyn_adddatamember.jpg" alt="" /></p>
-<p>こんな風にプロパティを選択してCtrl+.でほいっと生成できる。このコードはちゃんと属性の振り直しとかも配慮してある（場合によって追加、場合によって置き換え、とかのコードを書くのはやっぱり結構面倒！フルコードは<a href="https://gist.github.com/neuecc/cc1578e8ee85b3ddadcf">neuecc/AddDataMemberWithOrderCodeRefactoringProvider.cs</a>に置いておきます、使いたい方 もしくは CodeRefactoring作りの参考にどうぞ）</p>
-<p>こうしたプロジェクト固有の必要な自動生成のためのコードがサクッと作れるようになったのは地味に革命的かなぁ、なんて思ってます。どんどん活用されていくといいですね、少なくともうちの会社（グラニ）では社内用に皆で色々作って配布していこうかなあと計画しています（ところで<a href="http://grani.jp/">グラニ</a>はまだまだアクティブにエンジニアの求人してます！最先端のC#に興味のある方は是非是非どうぞ、「今から」VS2015を使い倒しましょう）。</p>
-<p>AnalyzerもCode Refactoringも、すっごくミニマムな仕様に落ち着いていて、限りなく削っていった形なんだろうなぁ、と想像します。すごく小さくて、でも、すごく使い手がある。いい落とし所だと思ってます。あとはもう活用するもしないも全て自分達次第。とにかくまずは、是非触ってみてください。可能性を感じましょう。</p>
-</div>
 <a href="https://neue.cc/6">Prev |</a>
 <a href="https://neue.cc/8">| Next</a>
 </div>
@@ -1844,6 +1882,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2022/02/">2022-02</a>
 <li><a href="https://neue.cc/2022/01/">2022-01</a>
 <li><a href="https://neue.cc/2021/12/">2021-12</a>
 <li><a href="https://neue.cc/2021/11/">2021-11</a>
