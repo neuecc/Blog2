@@ -29,6 +29,14 @@ static string BuildHtml(string title, string content, string side, string footer
     return @$"<!DOCTYPE html>
 <html dir=""ltr"" lang=""ja"">
 <head>
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src=""https://www.googletagmanager.com/gtag/js?id=UA-2834006-1""></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag() {{ dataLayer.push(arguments); }}
+        gtag('js', new Date());
+        gtag('config', 'UA-2834006-1');
+    </script>
     <meta charset=""utf-8"" />
     <title>{title}</title>
     <link rel=""shortcut icon"" href=""https://neue.cc/favicon.ico"" />
