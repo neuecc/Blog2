@@ -1,6 +1,6 @@
-# プリコネ！グランドマスターズのサーバー開発をCysharpが担当しました
+# プリコネ！グランドマスターズのサーバー開発をCysharpが開発協力しました
 
-Cygamesから4/1にリリースされた[プリコネ！グランドマスターズ](https://priconne-grandmasters.jp/)のサーバーサイドとインフラ開発をCysharpが担当しました。リアルタイム通信を含むオートバトラー系のゲームです。
+Cygamesから4/1にリリースされた[プリコネ！グランドマスターズ](https://priconne-grandmasters.jp/)のサーバーサイドとインフラ開発をCysharpが開発協力しました。リアルタイム通信を含むオートバトラー系のゲームです。
 
 ![image](https://user-images.githubusercontent.com/46207/162343388-734840a1-4b7d-467b-902c-1e06e527d208.png)
 
