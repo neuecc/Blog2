@@ -23,7 +23,286 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2013/07/20_416.html">ASP.NETでの定期的なモニタリング手法</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2013/07/30_420.html">Http, SQL, Redisのロギングと分析・可視化について</a></h1>
+<ul class="date"><li>2013-07-30</li></ul>
+<div class="entry_body"><p>改善は計測から。何がどれだけの回数通信されているか、どれだけ時間がかかっているのか、というのは言うまでもなく重要な情報です。障害対策でも大事ですしね。が、じゃあどうやって取るの、というとパッとでてくるでしょうか？そして、それ、実際に取っていますか？存外、困った話なのですねー。TraceをONにすると内部情報が沢山出てきますが、それはそれで情報過多すぎるし、欲しいのはそれじゃないんだよ、みたいな。</p>
+<p><a href="http://grani.jp/">Grani</a>←「謎社」で検索一位取ったので、ちょっと英語表記の検索ランキングをあげようとしている――では自前で中間を乗っ取ってやる形で統一していて、使用している通信周り、Http, RDBMS, Redisは全てログ取りして分析可能な状態にしています。</p>
+<h2>HTTP</h2>
+<p>HttpClient(HttpClientについては<a href="http://www.slideshare.net/neuecc/httpclient">HttpClient詳解</a>を読んでね)には、DelegatingHandlerが用意されているので、その前後でStopwatchを動かしてやるだけで済みます。</p>
+<pre><code class="language-csharp">public class TraceHandler : DelegatingHandler
+{
+    static readonly Logger httpLogger = NLog.LogManager.GetLogger(&quot;Http&quot;);
+
+    public TraceHandler()
+        : base(new HttpClientHandler())
+    {
+
+    }
+
+    public TraceHandler(HttpMessageHandler innerHandler)
+        : base(innerHandler)
+    {
+
+    }
+
+    protected override async Task&lt;HttpResponseMessage&gt; SendAsync(HttpRequestMessage request, System.Threading.CancellationToken cancellationToken)
+    {
+        var sw = Stopwatch.StartNew();
+
+        // SendAsyncの前後を挟むだけ
+        var result = await base.SendAsync(request, cancellationToken);
+
+        sw.Stop();
+        httpLogger.Trace(Newtonsoft.Json.JsonConvert.SerializeObject(new
+        {
+            date = DateTime.Now,
+            command = request.Method,
+            key = request.RequestUri,
+            ms = sw.ElapsedMilliseconds
+        }, Newtonsoft.Json.Formatting.None));
+
+        return result;
+    }
+}
+</code></pre>
+<pre><code class="language-csharp">// 使う時はこんな感じにコンストラクタへ突っ込む
+var client = new HttpClient(new TraceHandler());
+
+// {&quot;date&quot;:&quot;2013-07-30T21:29:03.2314858+09:00&quot;,&quot;command&quot;:{&quot;Method&quot;:&quot;GET&quot;},&quot;key&quot;:&quot;http://www.google.co.jp/&quot;,&quot;ms&quot;:129}
+client.GetAsync(&quot;http://google.co.jp/&quot;).Wait();
+</code></pre>
+<p>なお、StreamをReadする時間は含まれていないので、あくまで向こうが反応を返した速度だけの記録になりますが、それでも十分でしょう。
+Loggerは別にConsole.WriteLineでもTraceでも何でもいいのですが、弊社では基本的に<a href="https://github.com/nlog/NLog/">NLog</a>を使っています。フォーマットは、Http, Sql, Redisと統一するためにdate, command, key, msにしていますが、この辺もお好みで。</p>
+<p>なお、DelegatingHandlerは連鎖して多段に組み合わせることが可能です。実際<a href="http://neue.cc/2013/02/27_398.html">AsyncOAuth</a>と合わせて使うと</p>
+<pre><code class="language-csharp">var client = new HttpClient(
+    new TraceHandler(
+        new OAuthMessageHandler(&quot;key&quot;, &quot;secret&quot;)));
+</code></pre>
+<p>といった感じになります。AsyncOAuthはHttpClientの拡張性がそのまま活かせるのが強い。</p>
+<h2>SQL</h2>
+<p>全てのデータベース通信は最終的にはADO.NETのDbCommandを通ります、というわけで、そこをフックしてしまえばいいのです。というのが<a href="http://miniprofiler.com/">MiniProfiler</a>で、以下のように使います。</p>
+<pre><code class="language-csharp">var conn = new ProfiledDbConnection(new SqlConnection(&quot;connectionString&quot;), MiniProfiler.Current);
+</code></pre>
+<p>MiniProfilerはASP.NET MVCでの開発に超絶必須な拡張なわけで、当然、弊社でも使っています。さて、これはこれでいいのですけれど、MiniProfiler.Currentは割とヘヴィなので、そのまま本番に投入するわけもいかずで、単純にトレースするだけのがあるといいんだよねー。なので、ここは、MiniProfiler.Current = IDbProfilerを作りましょう。</p>
+<p>なお、DbCommandをフックするProfiledDbConnectionに関してはそのまま使わせてもらいます。ただたんに移譲してるだけなんですが、DbCommandやDbTransactionや、とか、関連するもの全てを作って回らなければならなくて、自作するのカッタルイですから。ありものがあるならありものを使おう。ちなみに、MiniProfilerにはSimpleProfiledConnectionという、もっとシンプルな、本当に本当に移譲しただけのものもあるのですけれど、これはIDbConnectionがベースになってるので実質使えません。ProfiledDbConnectionのベースはDbConnection。IDbConnectionとDbConnectionの差異はかなり大きいので(*AsyncもDb...のほうだし)、実用的にはDbConnectionが基底と考えてしまっていいかな。</p>
+<pre><code class="language-csharp">public class TraceDbProfiler : IDbProfiler
+{
+    static readonly Logger sqlLogger = NLog.LogManager.GetLogger(&quot;Sql&quot;);
+
+    public bool IsActive
+    {
+        get { return true; }
+    }
+
+    public void OnError(System.Data.IDbCommand profiledDbCommand, ExecuteType executeType, System.Exception exception)
+    {
+        // 何も記録しない
+    }
+
+    // 大事なのは↓の3つ
+
+    Stopwatch stopwatch;
+    string commandText;
+
+    // コマンドが開始された時に呼ばれる(ExecuteReaderとかExecuteNonQueryとか)
+    public void ExecuteStart(System.Data.IDbCommand profiledDbCommand, ExecuteType executeType)
+    {
+        stopwatch = Stopwatch.StartNew();
+    }
+
+    // コマンドが完了された時に呼ばれる
+    public void ExecuteFinish(System.Data.IDbCommand profiledDbCommand, ExecuteType executeType, System.Data.Common.DbDataReader reader)
+    {
+        commandText = profiledDbCommand.CommandText;
+        if (executeType != ExecuteType.Reader)
+        {
+            stopwatch.Stop();
+            sqlLogger.Trace(Newtonsoft.Json.JsonConvert.SerializeObject(new
+            {
+                date = DateTime.Now,
+                command = executeType,
+                key = commandText,
+                ms = stopwatch.ElapsedMilliseconds
+            }, Newtonsoft.Json.Formatting.None));
+        }
+    }
+
+    // Readerが完了した時に呼ばれる
+    public void ReaderFinish(System.Data.IDataReader reader)
+    {
+        stopwatch.Stop();
+        sqlLogger.Trace(Newtonsoft.Json.JsonConvert.SerializeObject(new
+        {
+            date = DateTime.Now,
+            command = ExecuteType.Reader,
+            key = commandText,
+            ms = stopwatch.ElapsedMilliseconds
+        }, Newtonsoft.Json.Formatting.None));
+    }
+}
+</code></pre>
+<p>これで、</p>
+<pre><code class="language-csharp">{&quot;date&quot;:&quot;2013-07-15T18:24:17.4465207+09:00&quot;,&quot;command&quot;:&quot;Reader&quot;,&quot;key&quot;:&quot;select * from hogemoge where id = @id&quot;,&quot;ms&quot;:6}
+</code></pre>
+<p>のようなデータが取れます。パラメータの値も展開したい！とかいう場合は自由にcommandのとこから引っ張れば良いでしょう。更に、MiniProfiler.Currentと共存したいような場合は、合成するIDbProfilerを用意すればなんとかなる。Time的には若干ずれますが、そこまで問題でもないかしらん。</p>
+<pre><code class="language-csharp">public class CompositeDbProfiler : IDbProfiler
+{
+    readonly IDbProfiler[] profilers;
+
+    public CompositeDbProfiler(params IDbProfiler[] dbProfilers)
+    {
+        this.profilers = dbProfilers;
+    }
+
+    public void ExecuteFinish(IDbCommand profiledDbCommand, ExecuteType executeType, DbDataReader reader)
+    {
+        foreach (var item in profilers)
+        {
+            if (item != null &amp;&amp; item.IsActive)
+            {
+                item.ExecuteFinish(profiledDbCommand, executeType, reader);
+            }
+        }
+    }
+
+    public void ExecuteStart(IDbCommand profiledDbCommand, ExecuteType executeType)
+    {
+        foreach (var item in profilers)
+        {
+            if (item != null &amp;&amp; item.IsActive)
+            {
+                item.ExecuteStart(profiledDbCommand, executeType);
+            }
+        }
+    }
+
+    public bool IsActive
+    {
+        get
+        {
+            return true;
+        }
+    }
+
+    public void OnError(IDbCommand profiledDbCommand, ExecuteType executeType, Exception exception)
+    {
+        foreach (var item in profilers)
+        {
+            if (item != null &amp;&amp; item.IsActive)
+            {
+                item.OnError(profiledDbCommand, executeType, exception);
+            }
+        }
+    }
+
+    public void ReaderFinish(IDataReader reader)
+    {
+        foreach (var item in profilers)
+        {
+            if (item != null &amp;&amp; item.IsActive)
+            {
+                item.ReaderFinish(reader);
+            }
+        }
+    }
+}
+</code></pre>
+<p>といったものを用意しておけば、</p>
+<pre><code class="language-csharp">var profiler = new CompositeDbProfiler(
+    StackExchange.Profiling.MiniProfiler.Current,
+    new TraceDbProfiler());
+
+var conn = new ProfiledDbConnection(new SqlConnection(&quot;connectionString&quot;), profiler); 
+</code></pre>
+<p>と、書けます。</p>
+<h2>SumoLogicによる分析</h2>
+<p>データ取るのはいいんだけど、それどーすんのー？って話なわけですが、以前に<a href="http://neue.cc/2013/07/20_416.html">ASP.NETでの定期的なモニタリング手法</a>に少し出しましたけれど、弊社では<a href="http://www.sumologic.com/">Sumo Logic</a>を利用しています。例えば、SQLで採取したログに以下のようクエリが発行できます。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/2013/07/sql_sumo.jpg" />
+</p>
+<p>これは10ミリ秒よりかかったDELETE文を集計、ですね。Sumoは結構柔軟なクエリで、ログのパースもできるんですが、最初からJSONで吐き出しておけばjsonコマンドだけでパースできるので非常に楽ちん。で、パース後は10msより上なら ms &gt; 10 といった形でクエリ書けます。</p>
+<p>問題があった時の分析に使ってもいいし、別途グラフ化も可能(棒でも円でも色々)されるので、幾つか作成してダッシュボードに置いてもいいし、閾値を設定してアラートメールを飛ばしてもいい。slow_logも良いし当然併用しますが、それとは別に持っておくと、柔軟に処理できて素敵かと思われます。</p>
+<h2>Redis</h2>
+<p>弊社ではキャッシュ層もMemcachedではなく、全てRedisを用いています。Redisに関しては、<a href="http://www.buildinsider.net/small/rediscshap/01">C#のRedisライブラリ「BookSleeve」の利用法</a>を読んでもらいたいのですが、ともあれ、<a href="https://code.google.com/p/booksleeve/">BookSleeve</a>と、その上に被せているお手製ライブラリの<a href="https://github.com/neuecc/CloudStructures">CloudStructures</a>を使用しています。</p>
+<p>実質的に開発者が触るのはCloudStructuresだけです。というわけで、CloudStructuresに用意してあるモニター用のものを使いましょう。というかそのために用意しました。まず、ICommandTracerを実装します。</p>
+<pre><code class="language-csharp">public class RedisProfiler : ICommandTracer
+{
+    static readonly Logger redisLogger = NLog.LogManager.GetLogger(&quot;Redis&quot;);
+
+    Stopwatch stopwatch;
+    string command;
+    string key;
+
+    public void CommandStart(string command, string key)
+    {
+        this.command = command;
+        this.key = key;
+        stopwatch = Stopwatch.StartNew();
+    }
+
+    public void CommandFinish()
+    {
+        stopwatch.Stop();
+
+        redisLogger.Trace(Newtonsoft.Json.JsonConvert.SerializeObject(new
+        {
+            date = DateTime.Now,
+            command = command,
+            key = key,
+            ms = stopwatch.ElapsedMilliseconds
+        }, Newtonsoft.Json.Formatting.None));
+
+        // NewRelic使うなら以下のも。後で解説します。
+        var ms = (long)System.Math.Round(stopwatch.Elapsed.TotalMilliseconds);
+        NewRelic.Api.Agent.NewRelic.RecordResponseTimeMetric(&quot;Custom/Redis&quot;, ms);
+    }
+}
+</code></pre>
+<p>何らかのRedisへの通信が走る際にCommandStartとCommandFinishが呼ばれるようになってます。そして、RedisSettingsに渡してあげれば</p>
+<pre><code class="language-csharp">// tracerFactoryにFuncを渡すか、.configに書くかのどちらかで指定できます
+var settings = new RedisSettings(&quot;127.0.0.1&quot;, tracerFactory: () =&gt; new RedisProfiler());
+            
+// {&quot;date&quot;:&quot;2013-07-30T22:41:34.2669518+09:00&quot;,&quot;command&quot;:&quot;RedisString.TryGet&quot;,&quot;key&quot;:&quot;hogekey&quot;,&quot;ms&quot;:18}
+var value = await new RedisString&lt;string&gt;(settings, &quot;hogekey&quot;).GetValueOrDefault();
+</code></pre>
+<p>みたいになります。</p>
+<p>CloudStructuresは、既に実アプリケーションに投下していて、凄まじい数のメッセージを捌いているので、割と安心して使っていいと思いますですよ。ServiceStack.Redisはショッパイけど、BookSleeveはプリミティブすぎて辛ぽよ、な方々にフィットするはずです。実際、C# 5.0と合わせた際のBookSleeveの破壊力は凄まじいので、是非試してみて欲しいですね。</p>
+<h2>New Relicによるグラフ化</h2>
+<p>Sumo Logicはいいんですけど、しかし、もう少し身近なところにも観測データを置いておきたい。そして見やすく。弊社ではモニタリングに<a href="http://newrelic.com/">New Relic</a>を採用していますが、そこに、そもそもSQLやHttpのカジュアルな監視は置いてあるんですね。なので、Redis情報も統合してあげればいい、というのが↑のNewRelicのAPIを叩いているものです。ただたんにNuGetからNewRelicのライブラリを持ってきて呼ぶだけの簡単さ。それだけで、以下の様なグラフが！</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/2013/07/redis_callcount.jpg" />
+</p>
+<p>これはCall Countですが、他にAverageのResponse Timeなどもグラフ化してカスタムダッシュボードに置いています。</p>
+<p>線が6本ありますが、これは用途によってRedisの台を分けているからです。例えばRedis.Cache, Redis.Session、のように。NewRelicのAPIを叩く際に、Custom/Redis/Cache、Custon/Redis/Sessionのようなキーのつけ方をすることで、個別に記録されます(それぞれのSettingsに個別のICommandTracerを渡しています)。ダッシュボードの表示時にCustom/Redis/*にするだけでひとまとめに表示できるから便利。</p>
+<p>今のところ、Redisは全台平等に分散ではなく、グループ分け＋負荷の高いものは複数台で構成しています。キャッシュ用途の台はファイルへのセーブなしで、完全インメモリ(Memcachedに近い)にしているなど、個別チューニングも入っています。</p>
+<p>一番カジュアルに確認できるNew Relic、詳細な情報や解析クエリはSumo Logic。見る口が複数あるのは全然いいことです。</p>
+<h2>レスポンスタイム</h2>
+<p>HttpContextのTimestampに最初の時間が入っているので、Application_EndRequestで捕まえて差分を取ればかかった時間がサクッと。</p>
+<pre><code class="language-csharp">protected void Application_EndRequest()
+{
+    var context = HttpContext.Current;
+    if (context != null)
+    {
+        var responseTime = (DateTime.Now - context.Timestamp);
+  
+        // 解析するにあたってクエリストリングは邪魔なのでkeyには含めずの形で
+        logger.Trace(Newtonsoft.Json.JsonConvert.SerializeObject(new
+        {
+            date = DateTime.Now,
+            command = this.Request.Url.GetComponents(UriComponents.Path, UriFormat.Unescaped),
+            key = this.Request.Url.GetComponents(UriComponents.Query, UriFormat.Unescaped),
+            ms = (long)responseTime.TotalMilliseconds
+        }, Newtonsoft.Json.Formatting.None));
+    }
+}
+</code></pre>
+<p>取れますね。</p>
+<h2>まとめ</h2>
+<p>改善は計測から！足元を疎かにして改善もクソもないのです。そして、存外、当たり前のようで、当たり前にはできないのね。また、データは取るだけじゃなく、大事なのは開発メンバーの誰もが見れる場所にあるということ。いつでも。常に。そうじゃないと数字って相対的に比較するものだし、肌感覚が養えないから。</p>
+<p>弊社では、簡易なリアルタイムな表示はMiniProfilerとビュー統合のログ表示。実アプリケーションでは片っ端から収集し、NewRelicとSumoLogicに流しこんで簡単に集計・可視化できる体制を整えています。実際、C#移行を果たしてからの弊社のアプリケーションは業界最速、といってよいほどの速度を叩きだしています。基礎設計からガチガチにパフォーマンスを意識しているから、というのはもちろんあるのですが(そしてC# 5.0の非同期がそれを可能にした！)、現在自分が作っているものがどのぐらいのパフォーマンスなのか、を常に意識できる状態に置けたことも一因ではないかな、と考えています。(ただし、<a href="http://www.slideshare.net/neuecc/net-22662425">.NET最先端技術によるハイパフォーマンスウェブアプリケーション</a>で述べましたが、そのためには開発環境も本番と等しいぐらいのネットワーク環境にしてないとダメですよ！)</p>
+<p>私は今年は、言語や設計などの小さな優劣の話よりも、実際に現実に成功させることに重きを置いてます。C#で素晴らしい成果が出せる、その証明を果たしていくフェーズにある。成果は出せるに決まってるでしょ、と、仮に理屈では分かっていても、しかしモデルケースがなければ誰もついてこない。だから、そのための先陣を切っていきたい。勿論、同時に、成果物はどんどん公開していきます。C#が皆さんのこれからの選択肢の一番に上がってくれるといいし、また、C#といったらグラニ、となれるよう頑張ります。</p>
+</div>
+<h1><a href="https://neue.cc/2013/07/20_416.html">ASP.NETでの定期的なモニタリング手法</a></h1>
 <ul class="date"><li>2013-07-20</li></ul>
 <div class="entry_body"><p>cron的な定期実行といったら、タスクスケジューラ使え。完。なわけですが、それとは別にして、アプリケーションサーバー内部からしか分からない情報を定期的に吐き出したいようなシチュエーションにどうしましょうか？例えばスレッドプールの情報！かなり古いのですが<a href="http://msdn.microsoft.com/ja-jp/library/ff650682.aspx">How To 情報: カスタム カウンタを使った ASP.NET スレッド プールの監視方法</a>なんて、まずレジストリに登録して、そこから定期的に無限ループ＋Thread.Sleep（ダセぇ）で出力という、なんともトホホな感じ。いや、これトホホでしょう。というわけで、もっとモダンにいきましょう。</p>
 <h2>IHttpModuleとInit, Dispose</h2>
@@ -1679,163 +1958,6 @@ var seq = EnumerableEx.Create&lt;int&gt;(async Yield =&gt;
 <p>async、フツーに使うのもそろそろ飽きてき頃だと思うので、弄って遊ぶのは大正義。実際に投下しだすかどうかは判断次第。あと、↑のはまだ大事な要素ができていないので絶対使いませんけれど。大事な要素はIDisposableであること。foreachで大事だと思ってるのはDisposeしてくれるとこ！だとも思っているので、それが実現できてないのはナイナー、と。</p>
 <p>そういえばAsyncについてですが、3/30の土曜に<a href="http://metrostyledev.net/index.php/event/20130330/">Room metro #15</a>でHttpClient(非同期の塊！)について話すので、まだ残席ありますので良ければお越しくだしあー。</p>
 </div>
-<h1><a href="https://neue.cc/2013/03/09_400.html">並列実行とSqlConnection</a></h1>
-<ul class="date"><li>2013-03-09</li></ul>
-<div class="entry_body"><p>どうも、ParallelやThreadな処理が苦痛度100なペチパーです。嘘です。空前のThreadLocalブームが来てたり来てなかったりする昨今です。あ、謎社の宣伝しますと<a href="http://corp.gree.net/jp/ja/news/press/2013/0308-01.html">グリーとグラニ、「GREE」におけるソーシャルゲームの提供などについて戦略的業務提携に合意</a>というわけで、ぐりとぐら、としかいいようがない昨今でもあります。その日に開催されていたGREEプラットフォームカンファレンスでは、謎社はC#企業になる！と大宣言したので、ちゃんと実現させていきたいところです、いや、むしろそのためにフル回転しています。</p>
-<p>そんな宣伝はおいておいて本題なのですけれど、SQL。データベース。大量にクエリ発行したい時など、パラレル実行したいの！インサートだったら当然BulkInsertが一番早いんですが、Updateとかね。シンドイんだよね。あとUpsert(Merge/ON DUPLICATE KEY UPDATE)とかも使っちゃったりしてね。そんなわけで、お手軽お気楽な手法としてはParallelがありますねー、.NETはこの辺本当に楽なんだよねー、ぴーHPはシラネ。</p>
-<p>で、実際パラレールにこんな感じに書くと……</p>
-<pre><code class="language-csharp">using (var connection = new SqlConnection(&quot;接続文字列&quot;))
-{
-    connection.Open();
-    Parallel.For(1, 1000, x =&gt;
-    {
-        var _ = connection.Query&lt;DateTime&gt;(&quot;select current_timestamp&quot;).First(); // Dapper
-    });
-}
-</code></pre>
-<p>落ちます。理由は単純明快でSqlConnectionはスレッドセーフじゃないから。というわけで、やるなら</p>
-<pre><code class="language-csharp">Parallel.For(1, 1000, x =&gt;
-{
-    using (var connection = new SqlConnection(&quot;接続文字列&quot;))
-    {
-        connection.Open();
-        var _ = connection.Query&lt;DateTime&gt;(&quot;select current_timestamp&quot;).First(); // Dapper
-    }
-});
-</code></pre>
-<p>となります、これなら絶対安全。でも、スレッドって基本的にコアの数とちょびっとしか立てられないわけだし、連続的に実行しているのだから、たとえコネクションプール行きだとかなんだりであっても、一々コネクションを開いて閉じてをするよりも、開きっぱで行きたいよね。</p>
-<p>ようするにSqlConnectionがスレッドセーフじゃないからいけない。これはどこかで聞いたような話です。先日<a href="http://neue.cc/2013/03/06_399.html">C#とランダム</a>で出したThreadLocalの出番ではないでしょうか！</p>
-<h2>ThreadLocal</h2>
-<p>というわけでスレッドセーフなSqlConnectionを作りましょう、ThreadLocalを使って。</p>
-<pre><code class="language-csharp">using (var connection = new ThreadLocal&lt;SqlConnection&gt;(() =&gt; { var conn = new SqlConnection(&quot;接続文字列&quot;); conn.Open(); return conn; }))
-{
-    Parallel.For(1, 1000, x =&gt;
-    {
-        var _ = connection.Value.Query&lt;DateTime&gt;(&quot;select current_timestamp&quot;).First(); // Dapper
-    });
-}
-</code></pre>
-<p>new SqlConnectionがThreadLocalに変わっただけのお手軽さ。これで、安全なんですって！本当に？本当に。で、実際こうして速度はどうなのかというと、私の環境で実行したところ、シングルスレッドで16秒、毎回new SqlConnectionするParallelで5秒、ThreadLocalなParallelで2秒でした。これは圧勝。幸せになれそう。</p>
-<h2>Disposeを忘れない、或いは忘れた</h2>
-<p>でも↑のコードはダメです。ダメな理由は、コネクションをDisposeしてないからです。ThreadLocalのDisposeは、あくまでThreadLocalのDisposeなのであって、中身のDisposeはしてくれてないのです。ここ忘れると悲劇が待ってます。でもFactoryで作ってる上にThreadで一意なValue、どうやってまとめてDisposeすればいいの！というと、trackAllValuesというオプションを有効にすると簡単に実現できます。</p>
-<pre><code class="language-csharp">using (var connection = new ThreadLocal&lt;SqlConnection&gt;(() =&gt; { var conn = new SqlConnection(&quot;接続文字列&quot;); conn.Open(); return conn; }
-    , trackAllValues: true)) // ThreadLocalの.Valuesプロパティの参照を有効化する
-{
-    Parallel.For(1, 1000, x =&gt;
-    {
-        var _ = connection.Value.Query&lt;DateTime&gt;(&quot;select current_timestamp&quot;).First(); // Dapper
-    });
-
-    // 生成された全てのConnectionを一括Dispose
-    foreach (var item in connection.Values.OfType&lt;IDisposable&gt;()) item.Dispose();
-}
-</code></pre>
-<p>この<a href="http://msdn.microsoft.com/ja-jp/library/hh139139.aspx">trackAllValuesが可能なThreadLocal</a>は.NET 4.5からです。それ以前の人は、残念でした……。謎社は遠慮なく.NET 4.5を使いますので全然問題ありません(</p>
-<h2>もう一つまとめて</h2>
-<p>とはいえ、なんか面倒くさいので、ちょっとラップしませう、以下のようなクラスを用意します。</p>
-<pre><code class="language-csharp">public static class DisposableThreadLocal
-{
-    public static DisposableThreadLocal&lt;T&gt; Create&lt;T&gt;(Func&lt;T&gt; valueFactory)
-        where T : IDisposable
-    {
-        return new DisposableThreadLocal&lt;T&gt;(valueFactory);
-    }
-}
-
-public class DisposableThreadLocal&lt;T&gt; : ThreadLocal&lt;T&gt;
-    where T : IDisposable
-{
-    public DisposableThreadLocal(Func&lt;T&gt; valueFactory)
-        : base(valueFactory, trackAllValues: true)
-    {
-
-    }
-
-    protected override void Dispose(bool disposing)
-    {
-        var exceptions = new List&lt;Exception&gt;();
-        foreach (var item in this.Values.OfType&lt;IDisposable&gt;())
-        {
-            try
-            {
-                item.Dispose();
-            }
-            catch (Exception e)
-            {
-                exceptions.Add(e);
-            }
-        }
-
-        base.Dispose(disposing);
-
-        if (exceptions.Any()) throw new AggregateException(exceptions);
-    }
-}
-</code></pre>
-<p>これを使うと</p>
-<pre><code class="language-csharp">using (var connection = DisposableThreadLocal.Create(() =&gt; { var conn = new SqlConnection(&quot;接続文字列&quot;); conn.Open(); return conn; }))
-{
-    Parallel.For(1, 1000, x =&gt;
-    {
-        var _ = connection.Value.Query&lt;DateTime&gt;(&quot;select current_timestamp&quot;).First(); // Dapper
-    });
-}
-</code></pre>
-<p>といったように、超シンプルに書けます。うん。いいね。</p>
-<h2>それAsync？</h2>
-<p>Asyncでドバッと発行してTask.WhenAll的なやり方も、接続が非スレッドセーフなのは変わらなくて、結構やりづらいんですよ……。それで、なんか色々細かくawaitしまくりで逆に遅くなったら意味ないし。それならドストレートに行ったほうがいいのでは感が若干ある。どうせThreadなんてそこそこ余ってるんだから（←そうか？）局所的にParallelってもいいぢゃないと思いたい、とかなんとかかんとか。</p>
-<h2>非.NET 4.5の場合</h2>
-<p>Parallel.For, ForEachに関しては、localInit, localFinallyというタスク内で一意になる変数を利用したオーバーロードを利用して、似たような雰囲気で書けます。正確には同じ挙動ではないですが、まぁまぁ悪くない結果が得られます。</p>
-<pre><code class="language-csharp">Parallel.For(1, 1000,
-    () =&gt;
-    {
-        // local init
-        var conn = new SqlConnection(&quot;接続文字列&quot;);
-        conn.Open();
-        return conn;
-    },
-    (x, state, connection) =&gt;
-    {
-        var _ = connection.Query&lt;DateTime&gt;(&quot;select current_timestamp&quot;).First(); // Dapper
-        return connection;
-    },
-    (connection) =&gt;
-    {
-        // local finally
-        connection.Dispose();
-    });
-</code></pre>
-<p>オーバーロードが結構地獄でシンドイですね！ここも簡単にラップしたものを作りましょう。</p>
-<pre><code class="language-csharp">public static class ParallelEx
-{
-    public static ParallelLoopResult DisposableFor&lt;TDisposable&gt;(long fromInclusive, long toExclusive, Func&lt;TDisposable&gt; resourceFactory, Action&lt;long, ParallelLoopState, TDisposable&gt; body)
-        where TDisposable : IDisposable
-    {
-        return Parallel.For(fromInclusive, toExclusive, resourceFactory, (item, state, resource) =&gt; { body(item, state, resource); return resource; }, disp =&gt; disp.Dispose());
-    }
-
-    public static ParallelLoopResult DisposableForEach&lt;T, TDisposable&gt;(IEnumerable&lt;T&gt; source, Func&lt;TDisposable&gt; resourceFactory, Action&lt;T, ParallelLoopState, TDisposable&gt; body)
-        where TDisposable : IDisposable
-    {
-        return Parallel.ForEach(source, resourceFactory, (item, state, resource) =&gt; { body(item, state, resource); return resource; }, disp =&gt; disp.Dispose());
-    }
-}
-</code></pre>
-<p>こうしたものを作れば、</p>
-<pre><code class="language-csharp">ParallelEx.DisposableFor(1, 1000,
-    () =&gt;
-    {
-        var conn = new var conn = new SqlConnection(&quot;接続文字列&quot;);
-        conn.Open();
-        return conn;
-    },
-    (x, state, connection) =&gt;
-    {
-        var _ = connection.Query&lt;DateTime&gt;(&quot;select current_timestamp&quot;).First(); // Dapper
-    });
-</code></pre>
-<p>まぁまぁ許せる、かな？</p>
-</div>
 <a href="https://neue.cc/9">Prev |</a>
 <a href="https://neue.cc/11">| Next</a>
 </div>
@@ -1859,6 +1981,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2022/04/">2022-04</a>
 <li><a href="https://neue.cc/2022/02/">2022-02</a>
 <li><a href="https://neue.cc/2022/01/">2022-01</a>
 <li><a href="https://neue.cc/2021/12/">2021-12</a>
