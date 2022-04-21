@@ -4,8 +4,16 @@
 
 // TODO:なんか図とかいつものとか
 
+```
+AlterNats         10000000         4333160 msgs/s
+AlterNats8b_Opt   10000000         5265377 msgs/s
+PubSub8b          10000000         1453208 msgs/s
+StackExch.Redis   10000000          817436 msgs/s
+```
 
 // TODO:API解説とか簡単に
+
+// ゼロアロケーション・ゼロコピー
 
 
 
@@ -165,7 +173,7 @@ public class MessagePackNatsSerializer : INatsSerializer
 
 プロトコルが単純で少ないのでちゃちゃっと作れると思いきや、まあ確かに雑にTcpClientとStreamReader/Writerでやれば秒殺だったのですが、プロトコルって量産部分でしかないので、そこがどんだけ量少なかろうと、基盤の作り込みは相応に必要で、普通に割と時間かかってしまった、のですが結構良い感じに作れたと思います。コード的にも例によって色々な工夫が盛り込まれていますので、是非読んでみてください。
 
-
+// TODO: クライアントのパフォーマンスの重要性、実装の違い（MessagePack）で変わる
 
 
 
