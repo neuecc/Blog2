@@ -1,30 +1,81 @@
-# AlterNats - //TODO:いい感じのタイトル
+# AlterNats - ハイパフォーマンスな.NET PubSubクライアントと、その実装に見る.NET 6時代のSocketプログラミング最適化のTips、或いはMagicOnionを絡めたメタバース構築のアーキテクチャについて
 
+タイトルはここぞとばかりに全盛りにしてみました！今回NATSの.NETクライアント実装としてAlterNatsというライブラリを新しく作成し、公開しました。
 
+* [github - Cysharp/AlterNats](https://github.com/Cysharp/AlterNats)
 
-// TODO:なんか図とかいつものとか
+公式の既存クライアントの3倍以上、StackExchange.RedisのPubSubと比較して5倍以上高速であり、通常のPubSubメソッドは全てゼロアロケーションです。
 
-```
-AlterNats         10000000         4333160 msgs/s
-AlterNats8b_Opt   10000000         5265377 msgs/s
-PubSub8b          10000000         1453208 msgs/s
-StackExch.Redis   10000000          817436 msgs/s
-```
+![image](https://user-images.githubusercontent.com/46207/164392256-46d09111-ec70-4cf3-b33d-38dc5d258455.png)
 
-// TODO:API解説とか簡単に
+そもそも[NATS](https://nats.io/)とはなんぞやか、というと、クラウドネイティブなPubSubのミドルウェアです。[Cloud Native Computing Foundation](https://www.cncf.io/)のincubating projectなので、それなりの知名度と実績はあります。
 
-// ゼロアロケーション・ゼロコピー
+PubSubというと、特にC#だと[Redis](https://redis.io/)のPubSub機能で行うのが、[StackExchange.Redis](https://github.com/StackExchange/StackExchange.Redis)という実績あるライブラリもあるし、AWSやAzure、GCPがマネージドサービスも用意しているしで、お手軽でいいのですが、盲目的にそれを使うのが良いのか少し疑問に思っていました。
 
+RedisはKVS的な使い方がメインであり、PubSubはどちらかというとオマケ機能であるため
 
+* PubSub専用のモニタリングの欠如
+* PubSub用のクラスタリング対応
+* マネージドサービスでの価格体系のバランスの悪さ（PubSub特化ならメモリはあまりいらない）
+* そもそものパフォーマンス
 
+といった点が具体的な懸念です。そして、NATSはPubSub専用に特化されているため、そのためのシステムが豊富に組まれているし、性能も申し分なさそうに思えました。しいて欠点を言えばマネージドサービスが存在しないのがネックですが、純粋なPubSubとしての利用ならば永続化処理について考える必要がないので、ミドルウェアとしては運用しやすい部類にはいるのではないかと思っています。（NATS自体はNATS JetStreamという機能によってAt-least / exactly onceの保証のあるメッセージングの対応も可能ですが、そこに対応させるにはストレージが必要になる場合もあります）
+
+しかし調べていくうちに懸念となったのが公式クライアントである[nats.net](https://github.com/nats-io/nats.net)で、あまり使いやすくないのですね。async/awaitにも対応していない古くさく、それどころかそもそも.NET的に奇妙に見えるAPIであり、そうなるとパフォーマンスに関しても疑問に思えてくる。
+
+何故そうなっているかの理由はReadMeにも明記されていて、メンテナンス性のためにGoクライアント(ちなみにNATS Server自体はGoで書かれている)と同じようなコードベースになっている、と。そのためC#的ではない部分が多々あるし、GoとC#ではパフォーマンスを出すための書き方が全く異なるので、あまり良い状況ではなさそう。
+
+それならば完全にC#に特化して独自に作ってしまうほうがいいだろうということで、作りました。公式クライアントと比べると全ての機能をサポートしているわけではない（JetStreamにも対応していないしLeaf Nodes運用で必須になるであろうTLSにも対応していません）のですが、PubSubのNATS Coreに特化して、まずは最高速を叩き出せるようにしました。PubSub利用する分には機能面での不足はないはずです。
+
+AlterNatsは公式じゃないAlternativeなNATSクライアントという意味です。まんまですね。割と語感が良いので命名的には結構気に入ってます。
+
+## Getting Started
+
+// TODO:後で書く
 
 ## メタバースアーキテクチャ
 
-// TODO:MagicOnionとか絡めて
+Cysharpでは[MagicOnion](https://github.com/Cysharp/MagicOnion)という .NET/Unity で使えるネットワークフレームワークを作っているわけですが、AlterNatsはこれと絡めることで、構成の幅を広げることができると考えています、というかむしろそのために作りました。
 
+クライアントにUnity、サーバーにMagicOnionがいるとして、サーバーが一台構成なら、平和です、繋げるだけですもの。開発の最初とかローカルでは楽なのでこの状態でもいいですね。
 
-// TODO:バッチとパイプライニングについて何か書く
+![image](https://user-images.githubusercontent.com/46207/164406771-58318153-c6a7-49c0-b3af-2b8389e2c9c1.png)
 
+しかし現実的にはサーバーは複数台になるので、そうなると色々なパターンが出てきます。よくあるのが、ロードバランサーを立ててそれぞれが別々のサーバーに繋がっているものを、更に後ろのPubSubサーバーを通して全サーバーに分配するパターン。
+
+![image](https://user-images.githubusercontent.com/46207/164409016-b6e99f36-bdf7-47a9-80a6-558010963a36.png)
+
+これはNode.jsのリアルタイムフレームワークである[Socket.IO](https://socket.io/)のRedisアダプター、それの.NET版である[SignalR](https://docs.microsoft.com/ja-jp/aspnet/signalr/overview/getting-started/introduction-to-signalr)のRedisバックプレーン、もちろんMagicOnionにもあるのですが、このパターンはフレームワークでサポートされている場合も多いです。RedisのPubSubでできることはNATSでもできる、ということで、NATSでもできます。
+
+これは各サーバーをステートレスにできるのと、スケールしやすいので、Chatなどの実装にはやりやすい。欠点はステートを持ちにくいので、クライアントにステートがあり、データのやり取りをするタイプしか実装できません。サーバー側にステートを持ったゲームロジックは持たせずらいでしょう（ステートそのものは各サーバーで共有できないため）。また、PubSubを通すことによるオーバーヘッドも気になるところかもしれません。
+
+ロードバランサーを立てる場合、ロードバランサーのスティッキーセッションを活用して一台のサーバーに集約させるというパターンもあるにはありますが、色々なユーザーを同一サーバーに集約させたいようなケースでは、そのクッキーの発行誰がやるの、みたいなところはあります。だったらもう直繋ぎすれば？という話もあります。
+
+そうした外側に対象のIPアドレスを教えてくれるサービスがいて、先にそれに問い合わせてから、対象のサーバーへ繋ぎに行くパターンは、古典的ですが安定です。
+
+![image](https://user-images.githubusercontent.com/46207/164417937-7d1adedb-36ee-453b-9ca6-9d41aded50af.png)
+
+この場合は同一サーバーに繋ぎにいくためにサーバー内にインメモリでフルにステートを持たせることが出来ますし、いわゆるゲームループを中で動かして処理するようなこともできます。また、画面のないヘッドレスUnityなどをホストして、クライアントそのものをサーバー上で動かすこともできますね。
+
+しかし、このパターンは素直なようでいて、実際VMだとやりやすいのですが、Kubernetesでやるのは難しかったりします。というのも、Kubernetesの場合は外部にIPが露出していないため、クラスター内の一台の特定サーバーに繋ぎにいくというのが難しい……！
+
+このような場合に最近よく活用されているのが[Agones](https://agones.dev/site/)というGoogleが主導して作っているKubernetesの拡張で、まさにゲーム向きにKubernetesを使えるようにするためのシステムです。
+
+ただし、これはこれで難点があって、Agonesが想定しているゲームサーバーは1プロセス1ゲームセッション(まさにヘッドレスUnityのような)のホスティングであるため、1つのプロセスに多数のゲームセッションをホストさせるような使い方はそのままだと出来ません。コンテナなので、仮想的なプロセスを複数立ち上げればいいでしょ、というのが思想なのはわからなくもないのですが、現実的には軽量なゲームサーバー（それこそMagicOnionで組んだりする場合）なら、1プロセスに多数のゲームセッションを詰め込めれるし、これをコンテナで分けて立ち上げてしまうとコスト面では大きな差が出てしまいます。
+
+さて、Cysharpではステートフルな、特にゲームに向いたC#サーバーを構築するための補助ライブラリとして[LogicLooper](https://github.com/Cysharp/LogicLooper)というゲームループを公開しています。このライブラリは今月リリースした[プリコネ！グランドマスターズ](https://neue.cc/2022/04/08_priconne-grandmasters.html)でも使用していますが、従来MagicOnionと同居して使っていたLogicLooperを、剥がしたアーキテクチャはどうだろうか、という提案があります。
+
+![image](https://user-images.githubusercontent.com/46207/164417734-f2ec80e7-f12f-4a84-8252-ce28f9b53f05.png)
+
+パーツが増えて複雑になったように見えて、この構成には大きな利点があります。まず、同居しているものがなくなったので複雑になったようで実はシンプルになっています。それぞれがそれぞれの役割にフルに集中できるようになるため、パフォーマンスも良くなり、かつ、性能予測もしやすくなります。特にロジックをフルに回転させるLogicLooperがクライアントや接続数の影響を受けずに独立できているのは大きな利点です。
+
+ゲーム全体のステートはLogicLooper自体が管理するため、クライアントとの接続を直接受けているMagicOnion自体はステートレスな状態です。そのため、インフラ的にもロードバランサーの下にMagicOnionを並べるだけで済みますし、サーバー間の接続に伴う面倒事は全てNATSに押し付けられるため、インフラ管理自体はかなりシンプルな構成が取れます。
+
+また、MagicOnion自体はステートを持てるシステムであり、各ユーザーそれぞれのステートを持つのは容易です（サーバーを越えなければいい）。そこで、LogicLooperから届いたデータのうち、繋がってるユーザーに届ける必要がないデータは、MagicOnionの持つユーザーのステートを使ってカリング処理をして、そもそも転送しなかったり間引いたりして通信量を削減することで、ユーザーの体験が良くなります。
+
+各ユーザーから届くデータを使ったステート更新/データ送信に関しては、LogicLooperがゲームループ状になっているので、ループの間に溜まったデータをもとにしてバッチ処理を行えばいいでしょう。バッチ化というと、通信「回数」の削減のためのコマンドを単純にまとめあげて一斉送信するものと、内容を見て処理内容を縮小するパターンが考えられますが、LogicLooperを使ったアプローチでは後者を効率的に行なえます。前者のコマンドの一斉送信に関しては、AlterNatsが裏側で自動パイプライニング化としてまとめているので（後で詳しく説明します）、そこに関しても効率化されています。
+
+このアーキテクチャで気になるのがPubSub通信のオーバーヘッドですが、それに関しての解決策がAlterNatsで、究極的に高速なクライアントがあれば（さすがにインメモリには到底及ばないとはいえ）、そもそものクライアントとサーバーの間にもネットワークがいるわけで、経路のトータルで見れば実用的な範囲に収められる。という想定で作りました。
 
 ## ハイパフォーマンスSocketプログラミング
 
@@ -80,7 +131,9 @@ internal static class ServerOpCodes
     public const int Ok = 223039275;     // Encoding.ASCII.GetBytes("+OK\r") |> MemoryMarshal.Read<int>
     public const int Error = 1381123373; // Encoding.ASCII.GetBytes("-ERR") |> MemoryMarshal.Read<int>
 }
-````
+```
+
+バイナリプロトコルなら特に何のひねりも必要なく実装できるので、バイナリプロトコルのほうが実装者に優しくて好きです……。
 
 ### 自動パイプライニング
 
@@ -122,21 +175,79 @@ internal interface IObjectPoolNode<T>
 
 そしてawait時のコールバックとして、書き込みループを阻害しないためにThreadPoolに流す必要があります。そこで従来の`ThreadPool.QueueUserWorkItem(callback)`を使うと、内部的には `ThreadPoolWorkItem` を生成してキューに詰め込むため、余計なアロケーションがあります。 .NET Core 3.0から[IThreadPoolWorkItem](https://docs.microsoft.com/ja-jp/dotnet/api/system.threading.ithreadpoolworkitem)を実装することで、内部の`ThreadPoolWorkItem`の生成をなくすことができます。
 
-// TODO:ObjectPoolの説明
+最後に、同居させることで必要なオブジェクトが1つになりましたが、その1つをプーリングしてゼロアロケーション化します。オブジェクトプールは`ConcurrentQueue<T>`などを使うと簡単に実装できますが、自分自身をStackのNodeにすることで、配列を確保しないで済むようにしています。また、Nodeの出し入れに関しては、今回のキャッシュの実装では正確に取り出せる必要性はないため、lockは使わず、マルチスレッドで競合が発生した場合はキャッシュミス扱いにして新規生成するようにしています。これはオブジェクトプーリングにおける性能バランスとしては、良いチョイスだと考えています。
 
+```csharp
+internal sealed class ObjectPool<T>
+    where T : class, IObjectPoolNode<T>
+{
+    int gate;
+    int size;
+    T? root;
+    readonly int limit;
 
+    public ObjectPool(int limit)
+    {
+        this.limit = limit;
+    }
 
+    public int Size => size;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryPop([NotNullWhen(true)] out T? result)
+    {
+        // Instead of lock, use CompareExchange gate.
+        // In a worst case, missed cached object(create new one) but it's not a big deal.
+        if (Interlocked.CompareExchange(ref gate, 1, 0) == 0)
+        {
+            var v = root;
+            if (!(v is null))
+            {
+                ref var nextNode = ref v.NextNode;
+                root = nextNode;
+                nextNode = null;
+                size--;
+                result = v;
+                Volatile.Write(ref gate, 0);
+                return true;
+            }
 
+            Volatile.Write(ref gate, 0);
+        }
+        result = default;
+        return false;
+    }
 
-
-
-
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryPush(T item)
+    {
+        if (Interlocked.CompareExchange(ref gate, 1, 0) == 0)
+        {
+            if (size < limit)
+            {
+                item.NextNode = root;
+                root = item;
+                size++;
+                Volatile.Write(ref gate, 0);
+                return true;
+            }
+            else
+            {
+                Volatile.Write(ref gate, 0);
+            }
+        }
+        return false;
+    }
+}
+```    
 
 ### Zero-copy Architecture
 
+Publish/Subscribeするデータは通常、C#の型をJSONやMessagePackなどにシリアライズしたものを流します。この場合、どうしてもbyte[]でやり取りすることが多くなります、例えばStackExchange.Redisの`RedisValue`の中身は実質byte[]で、送信にせよ受信にせよ、byte[]を生成して保持することになります。
 
-TODO: ReadOnlySequence とかSystem.IO.Pipeline
+これを避けるために、ArrayPoolから出し入れしてごまかしてゼロアロケーションにする、みたいなのはありがちではありますが、それでもコピーのコストが発生していることには代わりありません。ゼロアロケーションは当然目指すところですが、ゼロコピーに向けても頑張りましょう！
+
+AlterNatsのシリアライザーはWriteに`IBufferWriter<byte>`, Readに`ReadOnlySequence<byte>`を要求します。
 
 ```csharp
 public interface INatsSerializer
@@ -152,6 +263,7 @@ public interface ICountableBufferWriter : IBufferWriter<byte>
 ```
 
 ```csharp
+// 例えばMessagePack for C#を使う場合の実装
 public class MessagePackNatsSerializer : INatsSerializer
 {
     public int Serialize<T>(ICountableBufferWriter bufferWriter, T? value)
@@ -168,14 +280,19 @@ public class MessagePackNatsSerializer : INatsSerializer
 }
 ```
 
+System.Text.JsonやMessagePack for C#のSerializeメソッドには`IBufferWriter<byte>`を受け取るオーバーロードが用意されています。`IBufferWriter<byte>`経由でSocketに書き込むために用意しているバッファーにシリアライザが直接アクセスし、書き込みすることで、Socketとシリアライザ間でのbyte[]のコピーをなくします。
+
+Read側では、[`ReadOnlySequence<byte>`](https://docs.microsoft.com/ja-jp/dotnet/api/system.buffers.readonlysequence-1)を要求します。Socketからのデータの受信は断片的な場合も多く、それをバッファのコピーと拡大ではなく、連続した複数のバッファを一塊として扱うことでゼロコピーで処理するために用意されたクラスが`ReadOnlySequence<T>`です。
+
+「ハイパフォーマンスの I/O をより簡単に行えるように設計されたライブラリ」である[System.IO.Pipelines](https://docs.microsoft.com/ja-jp/dotnet/standard/io/pipelines)の`PipeReader`で読み取ったものを扱うのが、よくあるパターンとなります。ただし、AlterNatsではPipelinesは使わずに独自の読み取り機構と`ReadOnlySequence<byte>`を使用しました。
+
+System.Text.JsonやMessagePack for C#のSerializeメソッドには`IBufferWriter<byte>`を受け取るオーバーロードが用意されているため、それを直接渡すことができます。つまり、現代的なシリアライザは`IBufferWriter<byte>`と`ReadOnlySequence<byte>`のサポートは必須です。これらをサポートしていないシリアライザはそれだけで失格です。
+
 
 ## まとめ
 
-プロトコルが単純で少ないのでちゃちゃっと作れると思いきや、まあ確かに雑にTcpClientとStreamReader/Writerでやれば秒殺だったのですが、プロトコルって量産部分でしかないので、そこがどんだけ量少なかろうと、基盤の作り込みは相応に必要で、普通に割と時間かかってしまった、のですが結構良い感じに作れたと思います。コード的にも例によって色々な工夫が盛り込まれていますので、是非読んでみてください。
+プロトコルが単純で少ないのでちゃちゃっと作れると思いきや、まあ確かに雑にTcpClientとStreamReader/Writerでやれば秒殺だったのですが、プロトコルって量産部分でしかないので、そこがどんだけ量少なかろうと、基盤の作り込みは相応に必要で、普通に割と時間かかってしまった、のですが結構良い感じに作れたと思います。コード的にも例によって色々な工夫が盛り込まれていますので、是非ソースコードも読んでみてください。
 
-// TODO: クライアントのパフォーマンスの重要性、実装の違い（MessagePack）で変わる
+クライアント側の実装によってパフォーマンスが大きく違うというのはシリアライザでもよくあり経験したことですが、NATSのパフォーマンスを論じるにあたって、その言語のクライアントは大丈夫ですか？というところがあり、そして、C#は大丈夫ですよ、と言えるものになっていると思います。
 
-
-
-
-
+NATSの活用に関してはこれからやっていくので実例あるんですか？とか言われると知らんがな、というところですが（ところでMagicOnionはこないだの[プリコネ！グランドマスターズ](https://neue.cc/2022/04/08_priconne-grandmasters.html)だけではなく最近特によくあるので、実例めっちゃあります）、これから色々使っていこうかなと思っているので、まぁ是非AlterNatsと共に試してみてください。
