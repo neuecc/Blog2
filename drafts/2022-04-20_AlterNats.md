@@ -31,7 +31,84 @@ AlterNatsは公式じゃないAlternativeなNATSクライアントという意�
 
 ## Getting Started
 
-// TODO:後で書く
+APIは、`nats.net`があまりにもC#っぽくなくややこしい、ということを踏まえて、シンプルに、簡単に、C#っぽく書けるように調整しました。
+
+```csharp
+// create connection(default, connect to nats://localhost:4222)
+await using var conn = new NatsConnection();
+
+// subscribe
+var subscription = await conn.SubscribeAsync<Person>("foo", x =>
+{
+    Console.WriteLine($"Received {x}");
+});
+
+// publish
+await conn.PublishAsync("foo", new Person(30, "bar"));
+
+// unsubscribe
+subscription.Dipose();
+
+// ---
+
+public record Person(int Age, string Name);
+```
+
+Subscribeでhandlerを登録し、Publishでメッセージを飛ばす。データは全て自動でシリアライズされます（デフォルトではSystem.Text.Json、MessagePack for C#を用いたハイパフォーマンスなシリアライズも可能な拡張オプションも標準で用意してあります）
+
+別のURLへの接続や、認証のための設定などを行うNatsOptions/ConnectOptionsはイミュータブルです。そのため、with式で構築するやり方を取っています。
+
+```csharp
+// Options can configure `with` expression
+var options = NatsOptions.Default with
+{
+    Url = "nats://127.0.0.1:9999",
+    LoggerFactory = new MinimumConsoleLoggerFactory(LogLevel.Information),
+    Serializer = new MessagePackNatsSerializer(),
+    ConnectOptions = ConnectOptions.Default with
+    {
+        Echo = true,
+        Username = "foo",
+        Password = "bar",
+    }
+};
+
+await using var conn = new NatsConnection(options);
+````
+
+NATSには標準で結果を受け取るプロトコルも用意されています。サーバー間の簡易的なRPCとして使うと便利なところもあるのではないかと思います。これも`SubscribeRequestAsync`/`RequestAsync`という形で簡単に直感的に書けるようにしました（Request側は戻り値の型を指定する必要があるため、型指定が少しだけ冗長になります）
+
+```csharp
+// Server
+await conn.SubscribeRequestAsync("foobar", (int x) => $"Hello {x}");
+
+// Client(response: "Hello 100")
+var response = await conn.RequestAsync<int, string>("foobar", 100);
+```
+
+例では `await using`ですぐに破棄してしまっていますが、基本的にはConnectionはシングルトンによる保持を推奨しています。staticな変数に詰めてもいいし、DIでシングルトンとして登録してしまってもいいでしょう。接続は明示的にConnectAsyncすることもできますが、接続されていない場合は自動で接続を開くようにもなっています。
+
+コネクションはスレッドセーフで、物理的にも一つのコネクションには一つの接続として繋がり、全てのコマンドは自動的に多重化されます。これにより裏側で自動的にバッチ化された高効率な通信を実現していますが、負荷状況に応じて複数のコネクションを貼った場合が良いケースもあります。AlterNatsではNatsConnectionPoolという複数コネクションを内包したコネクションも用意しています。また、クライアント側で水平シャーディングを行うためのNatsShardingConnectionもあるため、必要に応じて使い分けることが可能です。
+
+内部のロギングはMicrosoft.Extensions.Loggingで管理されています。`AlterNats.Hosting`パッケージを使うと、Generic Hostと統合された形で適切なILoggerFactoryの設定と、シングルトンのサービス登録を行ってくれます。
+
+DIでの取り出しは直接NatsConnectionを使わずに、INatsCommandを渡すことで余計な操作（コネクションの切断など）が出来ないようになります。
+
+```csharp
+using AlterNats;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Register NatsConnectionPool, NatsConnection, INatsCommand to ServiceCollection
+builder.Services.AddNats();
+
+var app = builder.Build();
+
+app.MapGet("/subscribe", (INatsCommand command) => command.SubscribeAsync("foo", (int x) => Console.WriteLine($"received {x}")));
+app.MapGet("/publish", (INatsCommand command) => command.PublishAsync("foo", 99));
+
+app.Run();
+```
 
 ## メタバースアーキテクチャ
 
@@ -49,7 +126,7 @@ Cysharpでは[MagicOnion](https://github.com/Cysharp/MagicOnion)という .NET/U
 
 これは各サーバーをステートレスにできるのと、スケールしやすいので、Chatなどの実装にはやりやすい。欠点はステートを持ちにくいので、クライアントにステートがあり、データのやり取りをするタイプしか実装できません。サーバー側にステートを持ったゲームロジックは持たせずらいでしょう（ステートそのものは各サーバーで共有できないため）。また、PubSubを通すことによるオーバーヘッドも気になるところかもしれません。
 
-ロードバランサーを立てる場合、ロードバランサーのスティッキーセッションを活用して一台のサーバーに集約させるというパターンもあるにはありますが、色々なユーザーを同一サーバーに集約させたいようなケースでは、そのクッキーの発行誰がやるの、みたいなところはあります。だったらもう直繋ぎすれば？という話もあります。
+ロードバランサーを立てる場合、ロードバランサーのスティッキーセッションを活用して一台のサーバーに集約させるというパターンもあります（あるいは独自プロトコルでもリバースプロキシーを全面に立てて、カスタムなロジックで後ろの台を決定することもほぼ同様の話です）。ただし、色々なユーザーを同一サーバーに集約させたいようなケースでは、そのクッキーの発行誰がやるの、みたいなところは変わらずありますね。そこまで決めれるならIPアドレスを返して直繋ぎさせてしまってもいいんじゃないの？というのも真です。
 
 そうした外側に対象のIPアドレスを教えてくれるサービスがいて、先にそれに問い合わせてから、対象のサーバーへ繋ぎに行くパターンは、古典的ですが安定です。
 
@@ -63,7 +140,7 @@ Cysharpでは[MagicOnion](https://github.com/Cysharp/MagicOnion)という .NET/U
 
 ただし、これはこれで難点があって、Agonesが想定しているゲームサーバーは1プロセス1ゲームセッション(まさにヘッドレスUnityのような)のホスティングであるため、1つのプロセスに多数のゲームセッションをホストさせるような使い方はそのままだと出来ません。コンテナなので、仮想的なプロセスを複数立ち上げればいいでしょ、というのが思想なのはわからなくもないのですが、現実的には軽量なゲームサーバー（それこそMagicOnionで組んだりする場合）なら、1プロセスに多数のゲームセッションを詰め込めれるし、これをコンテナで分けて立ち上げてしまうとコスト面では大きな差が出てしまいます。
 
-さて、Cysharpではステートフルな、特にゲームに向いたC#サーバーを構築するための補助ライブラリとして[LogicLooper](https://github.com/Cysharp/LogicLooper)というゲームループを公開しています。このライブラリは今月リリースした[プリコネ！グランドマスターズ](https://neue.cc/2022/04/08_priconne-grandmasters.html)でも使用していますが、従来MagicOnionと同居して使っていたLogicLooperを、剥がしたアーキテクチャはどうだろうか、という提案があります。
+さて、Cysharpではステートフルな、特にゲームに向いたC#サーバーを構築するための補助ライブラリとして[LogicLooper](https://github.com/Cysharp/LogicLooper)というゲームループを公開しています。このライブラリは今月リリースした[プリコネ！グランドマスターズ](https://neue.cc/2022/04/08_priconne-grandmasters.html)でも使用していますが、従来MagicOnionと同居して使っていたLogicLooperを、剥がしたアーキテクチャはどうだろうか、という提案があります。（実際のプリコネ！グランドマスターズのアーキテクチャはリバースプロキシーを使った方式を採用しているので、この案とは異なります）
 
 ![image](https://user-images.githubusercontent.com/46207/164417734-f2ec80e7-f12f-4a84-8252-ce28f9b53f05.png)
 
@@ -142,6 +219,8 @@ internal static class ServerOpCodes
 NATSプロトコルの書き込み、読み込みは全てパイプライン（バッチ）化されています。これは[RedisのPipelining](https://redis.io/docs/manual/pipelining/)の解説が分かりやすいですが、例えばメッセージを3つ送るのに、一つずつ送って、都度応答を待っていると、送受信における多数の往復がボトルネックになります。
 
 メッセージの送信において、AlterNatsは自動でパイプライン化しています。[System.Threading.Channels](https://devblogs.microsoft.com/dotnet/an-introduction-to-system-threading-channels/)を用いてメッセージは一度キューに詰め込まれ、書き込み用のループが一斉に取り出してバッチ化します。ネットワーク送信が完了したら、再び送信処理待ち中に溜め込まれたメッセージを一括処理していく、という書き込みループのアプローチを取ることで、最高速の書き込み処理を実現しました。
+
+![image](https://user-images.githubusercontent.com/46207/167585601-5634057e-812d-4b60-ab5b-61d9c8c37063.png)
 
 ラウンドトリップタイムの話だけではなく（そもそもNATSの場合はPublish側とSubscribe側が独立しているので応答待ちというのもないのですが）、システムコールの連続した呼び出し回数を削減できるという点でも効果が高いです。
 
@@ -283,6 +362,8 @@ public class MessagePackNatsSerializer : INatsSerializer
 ```
 
 System.Text.JsonやMessagePack for C#のSerializeメソッドには`IBufferWriter<byte>`を受け取るオーバーロードが用意されています。`IBufferWriter<byte>`経由でSocketに書き込むために用意しているバッファーにシリアライザが直接アクセスし、書き込みすることで、Socketとシリアライザ間でのbyte[]のコピーをなくします。
+
+![image](https://user-images.githubusercontent.com/46207/167587816-c50b0af3-edaa-4a2a-b536-67aed0a5f908.png)
 
 Read側では、[`ReadOnlySequence<byte>`](https://docs.microsoft.com/ja-jp/dotnet/api/system.buffers.readonlysequence-1)を要求します。Socketからのデータの受信は断片的な場合も多く、それをバッファのコピーと拡大ではなく、連続した複数のバッファを一塊として扱うことでゼロコピーで処理するために用意されたクラスが`ReadOnlySequence<T>`です。
 
