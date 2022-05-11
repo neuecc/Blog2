@@ -160,7 +160,7 @@ Cysharpでは[MagicOnion](https://github.com/Cysharp/MagicOnion)という .NET/U
 
 ## ハイパフォーマンスSocketプログラミング
 
-### Socket API
+* Socket API
 
 C#で最も低レベルにネットワーク処理を扱えるクラスは[Socket](https://docs.microsoft.com/ja-jp/dotnet/api/system.net.sockets.socket)です。そして、非同期でハイパフォーマンスな処理を求めるなら[SocketAsyncEventArgs](https://docs.microsoft.com/ja-jp/dotnet/api/system.net.sockets.socketasynceventargs)をうまく再利用しながらコールバックを仕込む必要があります。
 
@@ -185,7 +185,7 @@ public Task<int> SendAsync(ArraySegment<byte> buffer, SocketFlags socketFlags)
 
 ValueTask返しのAPIは内部的には `AwaitableSocketAsyncEventArgs` というものがValueTaskの中身になるようになっていて、これがいい感じに使いまわされる(awaitされると内部に戻るようになっている）ことで、Taskのアロケーションもなく効率的な非同期処理を実現しています。`SocketAsyncEventArgs`の使いにくさとは雲泥の差なので、これは非常にお薦めできます。
 
-### テキストプロトコルのバイナリコード判定
+* テキストプロトコルのバイナリコード判定
 
 [NATSのプロトコル](https://docs.nats.io/reference/reference-protocols/nats-protocol)はテキストプロトコルになっていて、文字列処理で簡単に切り出すことができます。実際これはStreamReaderを使うことで簡単にプロトコルの実装ができます。ReadLineするだけですから。しかし、ネットワークに流れるのは(UTF8)バイナリデータであり、文字列化は無駄なオーバーヘッドとなるため、パフォーマンスを求めるなら、バイナリデータのまま処理する必要があります。
 
@@ -216,7 +216,7 @@ internal static class ServerOpCodes
 
 バイナリプロトコルなら特に何のひねりも必要なく実装できるので、バイナリプロトコルのほうが実装者に優しくて好きです……。
 
-### 自動パイプライニング
+* 自動パイプライニング
 
 NATSプロトコルの書き込み、読み込みは全てパイプライン（バッチ）化されています。これは[RedisのPipelining](https://redis.io/docs/manual/pipelining/)の解説が分かりやすいですが、例えばメッセージを3つ送るのに、一つずつ送って、都度応答を待っていると、送受信における多数の往復がボトルネックになります。
 
@@ -228,7 +228,7 @@ NATSプロトコルの書き込み、読み込みは全てパイプライン（�
 
 なお、.NET最高速ロガーである[ZLogger](https://github.com/Cysharp/ZLogger/)でも同じアプローチを取っています。
 
-### 一つのオブジェクトに機能を盛る
+* 一つのオブジェクトに機能を盛る
 
 Channelに詰め込む都合上、データを書き込みメッセージオブジェクトに入れてヒープに保持しておく必要があります。また、書き込み完了まで待つ非同期メソッドのためのPromiseも必要です。
 
@@ -324,7 +324,7 @@ internal sealed class ObjectPool<T>
 }
 ```    
 
-### Zero-copy Architecture
+* Zero-copy Architecture
 
 Publish/Subscribeするデータは通常、C#の型をJSONやMessagePackなどにシリアライズしたものを流します。この場合、どうしてもbyte[]でやり取りすることが多くなります、例えばStackExchange.Redisの`RedisValue`の中身は実質byte[]で、送信にせよ受信にせよ、byte[]を生成して保持することになります。
 
