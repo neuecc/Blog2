@@ -37,13 +37,13 @@ APIは、`nats.net`があまりにもC#っぽくなくややこしい、とい�
 // create connection(default, connect to nats://localhost:4222)
 await using var conn = new NatsConnection();
 
-// subscribe
+// for subscriber. await register to NATS server(not means await complete)
 var subscription = await conn.SubscribeAsync<Person>("foo", x =>
 {
     Console.WriteLine($"Received {x}");
 });
 
-// publish
+// for publisher.
 await conn.PublishAsync("foo", new Person(30, "bar"));
 
 // unsubscribe
@@ -59,7 +59,7 @@ Subscribeでhandlerを登録し、Publishでメッセージを飛ばす。デー
 別のURLへの接続や、認証のための設定などを行うNatsOptions/ConnectOptionsはイミュータブルです。そのため、with式で構築するやり方を取っています。
 
 ```csharp
-// Options can configure `with` expression
+// Options can configure `with` operator
 var options = NatsOptions.Default with
 {
     Url = "nats://127.0.0.1:9999",
