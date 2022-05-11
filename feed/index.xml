@@ -5,7 +5,291 @@
     <link>http://neue.cc/</link>
     <description>C# Technical Blog</description>
     <language>ja</language>
-    <lastBuildDate>Wed, 11 May 2022 16:36:31 +0900</lastBuildDate>
+    <lastBuildDate>Wed, 11 May 2022 16:36:51 +0900</lastBuildDate>
+    <item>
+      <guid isPermaLink="true">https://neue.cc/2022/05/11_AlterNats.html</guid>
+      <link>https://neue.cc/2022/05/11_AlterNats.html</link>
+      <title>AlterNats - ハイパフォーマンスな.NET PubSubクライアントと、その実装に見る.NET 6時代のSocketプログラミング最適化のTips、或いはMagicOnionを絡めたメタバース構築のアーキテクチャについて</title>
+      <description>&lt;h1&gt;&lt;a href="https://neue.cc/2022/05/11_AlterNats.html"&gt;AlterNats - ハイパフォーマンスな.NET PubSubクライアントと、その実装に見る.NET 6時代のSocketプログラミング最適化のTips、或いはMagicOnionを絡めたメタバース構築のアーキテクチャについて&lt;/a&gt;&lt;/h1&gt;
+&lt;ul class="date"&gt;&lt;li&gt;2022-05-11&lt;/li&gt;&lt;/ul&gt;
+&lt;div class="entry_body"&gt;&lt;p&gt;タイトルはここぞとばかりに全盛りにしてみました！今回NATSの.NETクライアント実装としてAlterNatsというライブラリを新しく作成し、公開しました。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href="https://github.com/Cysharp/AlterNats"&gt;github - Cysharp/AlterNats&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;公式の既存クライアントの3倍以上、StackExchange.RedisのPubSubと比較して5倍以上高速であり、通常のPubSubメソッドは全てゼロアロケーションです。&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/164392256-46d09111-ec70-4cf3-b33d-38dc5d258455.png" alt="image" /&gt;&lt;/p&gt;
+&lt;p&gt;そもそも&lt;a href="https://nats.io/"&gt;NATS&lt;/a&gt;とはなんぞやか、というと、クラウドネイティブなPubSubのミドルウェアです。&lt;a href="https://www.cncf.io/"&gt;Cloud Native Computing Foundation&lt;/a&gt;のincubating projectなので、それなりの知名度と実績はあります。&lt;/p&gt;
+&lt;p&gt;PubSubというと、特にC#だと&lt;a href="https://redis.io/"&gt;Redis&lt;/a&gt;のPubSub機能で行うのが、&lt;a href="https://github.com/StackExchange/StackExchange.Redis"&gt;StackExchange.Redis&lt;/a&gt;という実績あるライブラリもあるし、AWSやAzure、GCPがマネージドサービスも用意しているしで、お手軽でいいのですが、盲目的にそれを使うのが良いのか少し疑問に思っていました。&lt;/p&gt;
+&lt;p&gt;RedisはKVS的な使い方がメインであり、PubSubはどちらかというとオマケ機能であるため&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;PubSub専用のモニタリングの欠如&lt;/li&gt;
+&lt;li&gt;PubSub用のクラスタリング対応&lt;/li&gt;
+&lt;li&gt;マネージドサービスでの価格体系のバランスの悪さ（PubSub特化ならメモリはあまりいらない）&lt;/li&gt;
+&lt;li&gt;そもそものパフォーマンス&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;といった点が具体的な懸念です。そして、NATSはPubSub専用に特化されているため、そのためのシステムが豊富に組まれているし、性能も申し分なさそうに思えました。しいて欠点を言えばマネージドサービスが存在しないのがネックですが、純粋なPubSubとしての利用ならば永続化処理について考える必要がないので、ミドルウェアとしては運用しやすい部類にはいるのではないかと思っています。（NATS自体はNATS JetStreamという機能によってAt-least / exactly onceの保証のあるメッセージングの対応も可能ですが、そこに対応させるにはストレージが必要になる場合もあります）&lt;/p&gt;
+&lt;p&gt;しかし調べていくうちに懸念となったのが公式クライアントである&lt;a href="https://github.com/nats-io/nats.net"&gt;nats.net&lt;/a&gt;で、あまり使いやすくないのですね。async/awaitにも対応していないし、古くさく、それどころかそもそも.NET的に奇妙に見えるAPIであり、そうなるとパフォーマンスに関しても疑問に思えてくる。&lt;/p&gt;
+&lt;p&gt;何故そうなっているかの理由はReadMeにも明記されていて、メンテナンス性のためにGoクライアント(ちなみにNATS Server自体はGoで書かれている)と同じようなコードベースになっている、と。そのためC#的ではない部分が多々あるし、GoとC#ではパフォーマンスを出すための書き方が全く異なるので、あまり良い状況ではなさそう。&lt;/p&gt;
+&lt;p&gt;それならば完全にC#に特化して独自に作ってしまうほうがいいだろうということで、作りました。公式クライアントと比べると全ての機能をサポートしているわけではない（JetStreamにも対応していないしLeaf Nodes運用で必須になるであろうTLSにも対応していません）のですが、PubSubのNATS Coreに特化して、まずは最高速を叩き出せるようにしました。PubSub利用する分には機能面での不足はないはずです。&lt;/p&gt;
+&lt;p&gt;AlterNatsは公式じゃないAlternativeなNATSクライアントという意味です。まんまですね。割と語感が良いので命名的には結構気に入ってます。&lt;/p&gt;
+&lt;h2&gt;Getting Started&lt;/h2&gt;
+&lt;p&gt;APIは、&lt;code&gt;nats.net&lt;/code&gt;があまりにもC#っぽくなくややこしい、ということを踏まえて、シンプルに、簡単に、C#っぽく書けるように調整しました。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;// create connection(default, connect to nats://localhost:4222)
+await using var conn = new NatsConnection();
+
+// for subscriber. await register to NATS server(not means await complete)
+var subscription = await conn.SubscribeAsync&amp;lt;Person&amp;gt;(&amp;quot;foo&amp;quot;, x =&amp;gt;
+{
+    Console.WriteLine($&amp;quot;Received {x}&amp;quot;);
+});
+
+// for publisher.
+await conn.PublishAsync(&amp;quot;foo&amp;quot;, new Person(30, &amp;quot;bar&amp;quot;));
+
+// unsubscribe
+subscription.Dipose();
+
+// ---
+
+public record Person(int Age, string Name);
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Subscribeでhandlerを登録し、Publishでメッセージを飛ばす。データは全て自動でシリアライズされます（デフォルトではSystem.Text.Json、MessagePack for C#を用いたハイパフォーマンスなシリアライズも可能な拡張オプションも標準で用意してあります）&lt;/p&gt;
+&lt;p&gt;別のURLへの接続や、認証のための設定などを行うNatsOptions/ConnectOptionsはイミュータブルです。そのため、with式で構築するやり方を取っています。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;// Options can configure `with` operator
+var options = NatsOptions.Default with
+{
+    Url = &amp;quot;nats://127.0.0.1:9999&amp;quot;,
+    LoggerFactory = new MinimumConsoleLoggerFactory(LogLevel.Information),
+    Serializer = new MessagePackNatsSerializer(),
+    ConnectOptions = ConnectOptions.Default with
+    {
+        Echo = true,
+        Username = &amp;quot;foo&amp;quot;,
+        Password = &amp;quot;bar&amp;quot;,
+    }
+};
+
+await using var conn = new NatsConnection(options);
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;NATSには標準で結果を受け取るプロトコルも用意されています。サーバー間の簡易的なRPCとして使うと便利なところもあるのではないかと思います。これも&lt;code&gt;SubscribeRequestAsync&lt;/code&gt;/&lt;code&gt;RequestAsync&lt;/code&gt;という形で簡単に直感的に書けるようにしました（Request側は戻り値の型を指定する必要があるため、型指定が少しだけ冗長になります）&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;// Server
+await conn.SubscribeRequestAsync(&amp;quot;foobar&amp;quot;, (int x) =&amp;gt; $&amp;quot;Hello {x}&amp;quot;);
+
+// Client(response: &amp;quot;Hello 100&amp;quot;)
+var response = await conn.RequestAsync&amp;lt;int, string&amp;gt;(&amp;quot;foobar&amp;quot;, 100);
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;例では &lt;code&gt;await using&lt;/code&gt;ですぐに破棄してしまっていますが、基本的にはConnectionはシングルトンによる保持を推奨しています。staticな変数に詰めてもいいし、DIでシングルトンとして登録してしまってもいいでしょう。接続は明示的にConnectAsyncすることもできますが、接続されていない場合は自動で接続を開くようにもなっています。&lt;/p&gt;
+&lt;p&gt;コネクションはスレッドセーフで、物理的にも一つのコネクションには一つの接続として繋がり、全てのコマンドは自動的に多重化されます。これにより裏側で自動的にバッチ化された高効率な通信を実現していますが、負荷状況に応じて複数のコネクションを貼った場合が良いケースもあります。AlterNatsではNatsConnectionPoolという複数コネクションを内包したコネクションも用意しています。また、クライアント側で水平シャーディングを行うためのNatsShardingConnectionもあるため、必要に応じて使い分けることが可能です。&lt;/p&gt;
+&lt;p&gt;内部のロギングはMicrosoft.Extensions.Loggingで管理されています。&lt;code&gt;AlterNats.Hosting&lt;/code&gt;パッケージを使うと、Generic Hostと統合された形で適切なILoggerFactoryの設定と、シングルトンのサービス登録を行ってくれます。&lt;/p&gt;
+&lt;p&gt;DIでの取り出しは直接NatsConnectionを使わずに、INatsCommandを渡すことで余計な操作（コネクションの切断など）が出来ないようになります。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;using AlterNats;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Register NatsConnectionPool, NatsConnection, INatsCommand to ServiceCollection
+builder.Services.AddNats();
+
+var app = builder.Build();
+
+app.MapGet(&amp;quot;/subscribe&amp;quot;, (INatsCommand command) =&amp;gt; command.SubscribeAsync(&amp;quot;foo&amp;quot;, (int x) =&amp;gt; Console.WriteLine($&amp;quot;received {x}&amp;quot;)));
+app.MapGet(&amp;quot;/publish&amp;quot;, (INatsCommand command) =&amp;gt; command.PublishAsync(&amp;quot;foo&amp;quot;, 99));
+
+app.Run();
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h2&gt;メタバースアーキテクチャ&lt;/h2&gt;
+&lt;p&gt;Cysharpでは&lt;a href="https://github.com/Cysharp/MagicOnion"&gt;MagicOnion&lt;/a&gt;という .NET/Unity で使えるネットワークフレームワークを作っているわけですが、AlterNatsはこれと絡めることで、構成の幅を広げることができると考えています、というかむしろそのために作りました。&lt;/p&gt;
+&lt;p&gt;クライアントにUnity、サーバーにMagicOnionがいるとして、サーバーが一台構成なら、平和です、繋げるだけですもの。開発の最初とかローカルでは楽なのでこの状態でもいいですね。&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/164406771-58318153-c6a7-49c0-b3af-2b8389e2c9c1.png" alt="image" /&gt;&lt;/p&gt;
+&lt;p&gt;しかし現実的にはサーバーは複数台になるので、そうなると色々なパターンが出てきます。よくあるのが、ロードバランサーを立ててそれぞれが別々のサーバーに繋がっているものを、更に後ろのPubSubサーバーを通して全サーバーに分配するパターン。&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/164409016-b6e99f36-bdf7-47a9-80a6-558010963a36.png" alt="image" /&gt;&lt;/p&gt;
+&lt;p&gt;これはNode.jsのリアルタイムフレームワークである&lt;a href="https://socket.io/"&gt;Socket.IO&lt;/a&gt;のRedisアダプター、それの.NET版である&lt;a href="https://docs.microsoft.com/ja-jp/aspnet/signalr/overview/getting-started/introduction-to-signalr"&gt;SignalR&lt;/a&gt;のRedisバックプレーン、もちろんMagicOnionにもあるのですが、このパターンはフレームワークでサポートされている場合も多いです。RedisのPubSubでできることはNATSでもできる、ということで、NATSでもできます。&lt;/p&gt;
+&lt;p&gt;これは各サーバーをステートレスにできるのと、スケールしやすいので、Chatなどの実装にはやりやすい。欠点はステートを持ちにくいので、クライアントにステートがあり、データのやり取りをするタイプしか実装できません。サーバー側にステートを持ったゲームロジックは持たせずらいでしょう（ステートそのものは各サーバーで共有できないため）。また、PubSubを通すことによるオーバーヘッドも気になるところかもしれません。&lt;/p&gt;
+&lt;p&gt;ロードバランサーを立てる場合、ロードバランサーのスティッキーセッションを活用して一台のサーバーに集約させるというパターンもあります（あるいは独自プロトコルでもリバースプロキシーを全面に立てて、カスタムなロジックで後ろの台を決定することもほぼ同様の話です）。ただし、色々なユーザーを同一サーバーに集約させたいようなケースでは、そのクッキーの発行誰がやるの、みたいなところは変わらずありますね。そこまで決めれるならIPアドレスを返して直繋ぎさせてしまってもいいんじゃないの？というのも真です。&lt;/p&gt;
+&lt;p&gt;そうした外側に対象のIPアドレスを教えてくれるサービスがいて、先にそれに問い合わせてから、対象のサーバーへ繋ぎに行くパターンは、古典的ですが安定です。&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/164417937-7d1adedb-36ee-453b-9ca6-9d41aded50af.png" alt="image" /&gt;&lt;/p&gt;
+&lt;p&gt;この場合は同一サーバーに繋ぎにいくためにサーバー内にインメモリでフルにステートを持たせることが出来ますし、いわゆるゲームループを中で動かして処理するようなこともできます。また、画面のないヘッドレスUnityなどをホストして、クライアントそのものをサーバー上で動かすこともできますね。&lt;/p&gt;
+&lt;p&gt;しかし、このパターンは素直なようでいて、実際VMだとやりやすいのですが、Kubernetesでやるのは難しかったりします。というのも、Kubernetesの場合は外部にIPが露出していないため、クラスター内の一台の特定サーバーに繋ぎにいくというのが難しい……！&lt;/p&gt;
+&lt;p&gt;このような場合に最近よく活用されているのが&lt;a href="https://agones.dev/site/"&gt;Agones&lt;/a&gt;というGoogleが主導して作っているKubernetesの拡張で、まさにゲーム向きにKubernetesを使えるようにするためのシステムです。&lt;/p&gt;
+&lt;p&gt;ただし、これはこれで難点があって、Agonesが想定しているゲームサーバーは1プロセス1ゲームセッション(まさにヘッドレスUnityのような)のホスティングであるため、1つのプロセスに多数のゲームセッションをホストさせるような使い方はそのままだと出来ません。コンテナなので、仮想的なプロセスを複数立ち上げればいいでしょ、というのが思想なのはわからなくもないのですが、現実的には軽量なゲームサーバー（それこそMagicOnionで組んだりする場合）なら、1プロセスに多数のゲームセッションを詰め込めれるし、これをコンテナで分けて立ち上げてしまうとコスト面では大きな差が出てしまいます。&lt;/p&gt;
+&lt;p&gt;さて、Cysharpではステートフルな、特にゲームに向いたC#サーバーを構築するための補助ライブラリとして&lt;a href="https://github.com/Cysharp/LogicLooper"&gt;LogicLooper&lt;/a&gt;というゲームループを公開しています。このライブラリはこないだリリースした&lt;a href="https://neue.cc/2022/04/08_priconne-grandmasters.html"&gt;プリコネ！グランドマスターズ&lt;/a&gt;でも使用していますが、従来MagicOnionと同居して使っていたLogicLooperを、剥がしたアーキテクチャはどうだろうか、という提案があります。（実際のプリコネ！グランドマスターズのアーキテクチャはリバースプロキシーを使った方式を採用しているので、この案とは異なります）&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/164417734-f2ec80e7-f12f-4a84-8252-ce28f9b53f05.png" alt="image" /&gt;&lt;/p&gt;
+&lt;p&gt;パーツが増えて複雑になったように見えて、この構成には大きな利点があります。まず、同居しているものがなくなったので複雑になったようで実はシンプルになっています。それぞれがそれぞれの役割にフルに集中できるようになるため、パフォーマンスも良くなり、かつ、性能予測もしやすくなります。特にロジックをフルに回転させるLogicLooperがクライアントや接続数の影響を受けずに独立できているのは大きな利点です。&lt;/p&gt;
+&lt;p&gt;ゲーム全体のステートはLogicLooper自体が管理するため、クライアントとの接続を直接受けているMagicOnion自体はステートレスな状態です。そのため、インフラ的にもロードバランサーの下にMagicOnionを並べるだけで済みますし、サーバー間の接続に伴う面倒事は全てNATSに押し付けられるため、インフラ管理自体はかなりシンプルな構成が取れます。&lt;/p&gt;
+&lt;p&gt;また、MagicOnion自体はステートを持てるシステムであり、各ユーザーそれぞれのステートを持つのは容易です（サーバーを越えなければいい）。そこで、LogicLooperから届いたデータのうち、繋がってるユーザーに届ける必要がないデータは、MagicOnionの持つユーザーのステートを使ってカリング処理をして、そもそも転送しなかったり間引いたりして通信量を削減することで、ユーザーの体験が良くなります。&lt;/p&gt;
+&lt;p&gt;各ユーザーから届くデータを使ったステート更新/データ送信に関しては、LogicLooperがゲームループ状になっているので、ループの間に溜まったデータをもとにしてバッチ処理を行えばいいでしょう。バッチ化というと、通信「回数」の削減のためのコマンドを単純にまとめあげて一斉送信するものと、内容を見て処理内容を縮小するパターンが考えられますが、LogicLooperを使ったアプローチでは後者を効率的に行なえます。前者のコマンドの一斉送信に関しては、AlterNatsが裏側で自動パイプライニング化としてまとめているので（後で詳しく説明します）、そこに関しても効率化されています。&lt;/p&gt;
+&lt;p&gt;このアーキテクチャで気になるのがPubSub通信のオーバーヘッドですが、それに関しての解決策がAlterNatsで、究極的に高速なクライアントがあれば（さすがにインメモリには到底及ばないとはいえ）、そもそものクライアントとサーバーの間にもネットワークがいるわけで、経路のトータルで見れば実用的な範囲に収められる。という想定で作りました。&lt;/p&gt;
+&lt;p&gt;ところで、そして究極的な利点は、全てC#で組めるということです。どういうことかというと、MagicOnionもLogicLooperも汎用的なC#フレームワークです。特別なプラグインを差し込んで処理するというわけではなくて、ふつーのC#コードをふつーに書くことで、それぞれの箇所に、アプリケーション固有のコードを仕込んでいくことができる。これが、本当の大きな利点です。専用のC++ミドルウェアを作って挟んで最適化できるぞ！などといったシステムは、素晴らしいことですが、専門性が高く再現性が低い。MagicOnionとLogicLooper、そしてAlterNatsを活用したこの構成なら、C#エンジニアなら誰でも（容易に）できる構成です。&lt;a href="https://cysharp.co.jp/"&gt;Cysharp&lt;/a&gt;のメッセージは「C#の可能性を切り開いていく」ですが、誰もが実現できる世界を作っていくというのが目標でもあります。&lt;/p&gt;
+&lt;p&gt;なお、ワーカーとしてのLogicLooperを作るに&lt;a href="https://docs.microsoft.com/ja-jp/dotnet/core/extensions/workers"&gt;Worker Service&lt;/a&gt;という.NET 6からのプロジェクトタイプが適切です。&lt;/p&gt;
+&lt;h2&gt;ハイパフォーマンスSocketプログラミング&lt;/h2&gt;
+&lt;h3&gt;Socket API&lt;/h3&gt;
+&lt;p&gt;C#で最も低レベルにネットワーク処理を扱えるクラスは&lt;a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.net.sockets.socket"&gt;Socket&lt;/a&gt;です。そして、非同期でハイパフォーマンスな処理を求めるなら&lt;a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.net.sockets.socketasynceventargs"&gt;SocketAsyncEventArgs&lt;/a&gt;をうまく再利用しながらコールバックを仕込む必要があります。&lt;/p&gt;
+&lt;p&gt;これは非常に厄介で些か難易度も高いのですが、現在はasync/awaitの時代、ちゃんとawaitできる***Asyncメソッド郡が用意されています。しかし、使ってはいけないAPI、使ってはいけないオーバーロードも並んでいるので、その選別が必要です。SocketのAPIは歴史的事情もあり混沌としてしまっているのです……。&lt;/p&gt;
+&lt;p&gt;使うべきAPIを分かりやすく見分ける手段があります。それは戻り値が &lt;code&gt;ValueTask&lt;/code&gt; のものを選ぶことです。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;public ValueTask ConnectAsync(string host, int port, CancellationToken cancellationToken)
+public ValueTask&amp;lt;int&amp;gt; ReceiveAsync(Memory&amp;lt;byte&amp;gt; buffer, SocketFlags socketFlags, CancellationToken cancellationToken)
+public ValueTask&amp;lt;int&amp;gt; SendAsync(ReadOnlyMemory&amp;lt;byte&amp;gt; buffer, SocketFlags socketFlags, CancellationToken cancellationToken))
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;オーバーロードにはTask返しのものもあるので、気をつけてください。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;// これらのAPIは使ってはいけない
+public Task ConnectAsync(string host, int port)
+public Task&amp;lt;int&amp;gt; ReceiveAsync(ArraySegment&amp;lt;byte&amp;gt; buffer, SocketFlags socketFlags)
+public Task&amp;lt;int&amp;gt; SendAsync(ArraySegment&amp;lt;byte&amp;gt; buffer, SocketFlags socketFlags)
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;ValueTask返しのAPIは内部的には &lt;code&gt;AwaitableSocketAsyncEventArgs&lt;/code&gt; というものがValueTaskの中身になるようになっていて、これがいい感じに使いまわされる(awaitされると内部に戻るようになっている）ことで、Taskのアロケーションもなく効率的な非同期処理を実現しています。&lt;code&gt;SocketAsyncEventArgs&lt;/code&gt;の使いにくさとは雲泥の差なので、これは非常にお薦めできます。&lt;/p&gt;
+&lt;h3&gt;テキストプロトコルのバイナリコード判定&lt;/h3&gt;
+&lt;p&gt;&lt;a href="https://docs.nats.io/reference/reference-protocols/nats-protocol"&gt;NATSのプロトコル&lt;/a&gt;はテキストプロトコルになっていて、文字列処理で簡単に切り出すことができます。実際これはStreamReaderを使うことで簡単にプロトコルの実装ができます。ReadLineするだけですから。しかし、ネットワークに流れるのは(UTF8)バイナリデータであり、文字列化は無駄なオーバーヘッドとなるため、パフォーマンスを求めるなら、バイナリデータのまま処理する必要があります。&lt;/p&gt;
+&lt;p&gt;NATSでは先頭の文字列(&lt;code&gt;INFO&lt;/code&gt;, &lt;code&gt;MSG&lt;/code&gt;, &lt;code&gt;PING&lt;/code&gt;, &lt;code&gt;+OK&lt;/code&gt;, &lt;code&gt;-ERR&lt;/code&gt;など)によって流れてくるメッセージの種類が判定できます。文字列処理で空白でSplitして if (msg == &amp;quot;INFO&amp;quot;) などとすればめちゃくちゃ簡単ですが、先にも言った通り文字列変換は意地でも通しません。INFOは[73, 78, 70, 79]なので、Slice(0, 4).SequenceEqual で判定するのは悪くないでしょう。&lt;a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.memoryextensions.sequenceequal"&gt;&lt;code&gt;ReadOnlySpan&amp;lt;byte&amp;gt;&lt;/code&gt;のSequenceEqual&lt;/a&gt;はめちゃくちゃ最適化されていて、長いものであれば必要であればSIMDとかも使って高速に同値判定します。LINQのSequenceEqualとは別物です！&lt;/p&gt;
+&lt;p&gt;しかし、もっと欲張って見てみましょう、プロトコルの識別子はサーバーから送られてくるものは全て4文字以内に収まっています。つまり、これはIntに変換しやすい状態です！というわけで、AlterNatsのメッセージ種判定コードはこうなっています。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;// msg = ReadOnlySpan&amp;lt;byte&amp;gt;
+if(Unsafe.ReadUnaligned&amp;lt;int&amp;gt;(ref MemoryMarshal.GetReference&amp;lt;byte&amp;gt;(msg)) == 1330007625) // INFO
+{
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;これ以上速い判定はできないと思うので、理論上最速ということでいいでしょう。3文字の命令も、直後に必ずスペースや改行が来るので、それを含めた以下のような定数を使って判定に回しています。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;internal static class ServerOpCodes
+{
+    public const int Info = 1330007625;  // Encoding.ASCII.GetBytes(&amp;quot;INFO&amp;quot;) |&amp;gt; MemoryMarshal.Read&amp;lt;int&amp;gt;
+    public const int Msg = 541545293;    // Encoding.ASCII.GetBytes(&amp;quot;MSG &amp;quot;) |&amp;gt; MemoryMarshal.Read&amp;lt;int&amp;gt;
+    public const int Ping = 1196312912;  // Encoding.ASCII.GetBytes(&amp;quot;PING&amp;quot;) |&amp;gt; MemoryMarshal.Read&amp;lt;int&amp;gt;
+    public const int Pong = 1196314448;  // Encoding.ASCII.GetBytes(&amp;quot;PONG&amp;quot;) |&amp;gt; MemoryMarshal.Read&amp;lt;int&amp;gt;
+    public const int Ok = 223039275;     // Encoding.ASCII.GetBytes(&amp;quot;+OK\r&amp;quot;) |&amp;gt; MemoryMarshal.Read&amp;lt;int&amp;gt;
+    public const int Error = 1381123373; // Encoding.ASCII.GetBytes(&amp;quot;-ERR&amp;quot;) |&amp;gt; MemoryMarshal.Read&amp;lt;int&amp;gt;
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;バイナリプロトコルなら特に何のひねりも必要なく実装できるので、バイナリプロトコルのほうが実装者に優しくて好きです……。&lt;/p&gt;
+&lt;h3&gt;自動パイプライニング&lt;/h3&gt;
+&lt;p&gt;NATSプロトコルの書き込み、読み込みは全てパイプライン（バッチ）化されています。これは&lt;a href="https://redis.io/docs/manual/pipelining/"&gt;RedisのPipelining&lt;/a&gt;の解説が分かりやすいですが、例えばメッセージを3つ送るのに、一つずつ送って、都度応答を待っていると、送受信における多数の往復がボトルネックになります。&lt;/p&gt;
+&lt;p&gt;メッセージの送信において、AlterNatsは自動でパイプライン化しています。&lt;a href="https://devblogs.microsoft.com/dotnet/an-introduction-to-system-threading-channels/"&gt;System.Threading.Channels&lt;/a&gt;を用いてメッセージは一度キューに詰め込まれ、書き込み用のループが一斉に取り出してバッチ化します。ネットワーク送信が完了したら、再び送信処理待ち中に溜め込まれたメッセージを一括処理していく、という書き込みループのアプローチを取ることで、最高速の書き込み処理を実現しました。&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/167585601-5634057e-812d-4b60-ab5b-61d9c8c37063.png" alt="image" /&gt;&lt;/p&gt;
+&lt;p&gt;ラウンドトリップタイムの話だけではなく（そもそもNATSの場合はPublish側とSubscribe側が独立しているので応答待ちというのもないのですが）、システムコールの連続した呼び出し回数を削減できるという点でも効果が高いです。&lt;/p&gt;
+&lt;p&gt;なお、.NET最高速ロガーである&lt;a href="https://github.com/Cysharp/ZLogger/"&gt;ZLogger&lt;/a&gt;でも同じアプローチを取っています。&lt;/p&gt;
+&lt;h3&gt;一つのオブジェクトに機能を盛る&lt;/h3&gt;
+&lt;p&gt;Channelに詰め込む都合上、データを書き込みメッセージオブジェクトに入れてヒープに保持しておく必要があります。また、書き込み完了まで待つ非同期メソッドのためのPromiseも必要です。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;await connection.PublishAsync(value);
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;こうしたAPIを効率よく実装するために、どうしても確保する必要のある一つのメッセージオブジェクト（内部的にはCommandと命名されている）に、あらゆる機能を同居して詰め込みましょう。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;class AsyncPublishCommand&amp;lt;T&amp;gt; : ICommand, IValueTaskSource, IThreadPoolWorkItem, IObjectPoolNode&amp;lt;AsyncPublishCommand&amp;lt;T&amp;gt;&amp;gt;
+
+internal interface ICommand
+{
+    void Write(ProtocolWriter writer);
+}
+
+internal interface IObjectPoolNode&amp;lt;T&amp;gt;
+{
+    ref T? NextNode { get; }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;このオブジェクト(&lt;code&gt;AsyncPublishCommand&amp;lt;T&amp;gt;&lt;/code&gt;)自体は、T dataを保持して、Socketにバイナリデータとして書き込むための役割(&lt;code&gt;ICommand&lt;/code&gt;)をまずは持っています。&lt;/p&gt;
+&lt;p&gt;それに加えて&lt;a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.threading.tasks.sources.ivaluetasksource"&gt;IValueTaskSource&lt;/a&gt;であることにより、このオブジェクト自身がValueTaskになります。&lt;/p&gt;
+&lt;p&gt;そしてawait時のコールバックとして、書き込みループを阻害しないためにThreadPoolに流す必要があります。そこで従来の&lt;code&gt;ThreadPool.QueueUserWorkItem(callback)&lt;/code&gt;を使うと、内部的には &lt;code&gt;ThreadPoolWorkItem&lt;/code&gt; を生成してキューに詰め込むため、余計なアロケーションがあります。 .NET Core 3.0から&lt;a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.threading.ithreadpoolworkitem"&gt;IThreadPoolWorkItem&lt;/a&gt;を実装することで、内部の&lt;code&gt;ThreadPoolWorkItem&lt;/code&gt;の生成をなくすことができます。&lt;/p&gt;
+&lt;p&gt;最後に、同居させることで必要なオブジェクトが1つになりましたが、その1つをプーリングしてゼロアロケーション化します。オブジェクトプールは&lt;code&gt;ConcurrentQueue&amp;lt;T&amp;gt;&lt;/code&gt;などを使うと簡単に実装できますが、自分自身をStackのNodeにすることで、配列を確保しないで済むようにしています。また、Nodeの出し入れに関しては、今回のキャッシュの実装では正確に取り出せる必要性はないため、lockは使わず、マルチスレッドで競合が発生した場合はキャッシュミス扱いにして新規生成するようにしています。これはオブジェクトプーリングにおける性能バランスとしては、良いチョイスだと考えています。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;internal sealed class ObjectPool&amp;lt;T&amp;gt;
+    where T : class, IObjectPoolNode&amp;lt;T&amp;gt;
+{
+    int gate;
+    int size;
+    T? root;
+    readonly int limit;
+
+    public ObjectPool(int limit)
+    {
+        this.limit = limit;
+    }
+
+    public int Size =&amp;gt; size;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryPop([NotNullWhen(true)] out T? result)
+    {
+        // Instead of lock, use CompareExchange gate.
+        // In a worst case, missed cached object(create new one) but it's not a big deal.
+        if (Interlocked.CompareExchange(ref gate, 1, 0) == 0)
+        {
+            var v = root;
+            if (!(v is null))
+            {
+                ref var nextNode = ref v.NextNode;
+                root = nextNode;
+                nextNode = null;
+                size--;
+                result = v;
+                Volatile.Write(ref gate, 0);
+                return true;
+            }
+
+            Volatile.Write(ref gate, 0);
+        }
+        result = default;
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryPush(T item)
+    {
+        if (Interlocked.CompareExchange(ref gate, 1, 0) == 0)
+        {
+            if (size &amp;lt; limit)
+            {
+                item.NextNode = root;
+                root = item;
+                size++;
+                Volatile.Write(ref gate, 0);
+                return true;
+            }
+            else
+            {
+                Volatile.Write(ref gate, 0);
+            }
+        }
+        return false;
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;Zero-copy Architecture&lt;/h3&gt;
+&lt;p&gt;Publish/Subscribeするデータは通常、C#の型をJSONやMessagePackなどにシリアライズしたものを流します。この場合、どうしてもbyte[]でやり取りすることが多くなります、例えばStackExchange.Redisの&lt;code&gt;RedisValue&lt;/code&gt;の中身は実質byte[]で、送信にせよ受信にせよ、byte[]を生成して保持することになります。&lt;/p&gt;
+&lt;p&gt;これを避けるために、ArrayPoolから出し入れしてごまかしてゼロアロケーションにする、みたいなのはありがちではありますが、それでもコピーのコストが発生していることには代わりありません。ゼロアロケーションは当然目指すところですが、ゼロコピーに向けても頑張りましょう！&lt;/p&gt;
+&lt;p&gt;AlterNatsのシリアライザーはWriteに&lt;code&gt;IBufferWriter&amp;lt;byte&amp;gt;&lt;/code&gt;, Readに&lt;code&gt;ReadOnlySequence&amp;lt;byte&amp;gt;&lt;/code&gt;を要求します。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;public interface INatsSerializer
+{
+    int Serialize&amp;lt;T&amp;gt;(ICountableBufferWriter bufferWriter, T? value);
+    T? Deserialize&amp;lt;T&amp;gt;(in ReadOnlySequence&amp;lt;byte&amp;gt; buffer);
+}
+
+public interface ICountableBufferWriter : IBufferWriter&amp;lt;byte&amp;gt;
+{
+    int WrittenCount { get; }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;// 例えばMessagePack for C#を使う場合の実装
+public class MessagePackNatsSerializer : INatsSerializer
+{
+    public int Serialize&amp;lt;T&amp;gt;(ICountableBufferWriter bufferWriter, T? value)
+    {
+        var before = bufferWriter.WrittenCount;
+        MessagePackSerializer.Serialize(bufferWriter, value);
+        return bufferWriter.WrittenCount - before;
+    }
+
+    public T? Deserialize&amp;lt;T&amp;gt;(in ReadOnlySequence&amp;lt;byte&amp;gt; buffer)
+    {
+        return MessagePackSerializer.Deserialize&amp;lt;T&amp;gt;(buffer);
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;System.Text.JsonやMessagePack for C#のSerializeメソッドには&lt;code&gt;IBufferWriter&amp;lt;byte&amp;gt;&lt;/code&gt;を受け取るオーバーロードが用意されています。&lt;code&gt;IBufferWriter&amp;lt;byte&amp;gt;&lt;/code&gt;経由でSocketに書き込むために用意しているバッファーにシリアライザが直接アクセスし、書き込みすることで、Socketとシリアライザ間でのbyte[]のコピーをなくします。&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/167587816-c50b0af3-edaa-4a2a-b536-67aed0a5f908.png" alt="image" /&gt;&lt;/p&gt;
+&lt;p&gt;Read側では、&lt;a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.buffers.readonlysequence-1"&gt;&lt;code&gt;ReadOnlySequence&amp;lt;byte&amp;gt;&lt;/code&gt;&lt;/a&gt;を要求します。Socketからのデータの受信は断片的な場合も多く、それをバッファのコピーと拡大ではなく、連続した複数のバッファを一塊として扱うことでゼロコピーで処理するために用意されたクラスが&lt;code&gt;ReadOnlySequence&amp;lt;T&amp;gt;&lt;/code&gt;です。&lt;/p&gt;
+&lt;p&gt;「ハイパフォーマンスの I/O をより簡単に行えるように設計されたライブラリ」である&lt;a href="https://docs.microsoft.com/ja-jp/dotnet/standard/io/pipelines"&gt;System.IO.Pipelines&lt;/a&gt;の&lt;code&gt;PipeReader&lt;/code&gt;で読み取ったものを扱うのが、よくあるパターンとなります。ただし、AlterNatsではPipelinesは使わずに独自の読み取り機構と&lt;code&gt;ReadOnlySequence&amp;lt;byte&amp;gt;&lt;/code&gt;を使用しました。&lt;/p&gt;
+&lt;p&gt;System.Text.JsonやMessagePack for C#のSerializeメソッドには&lt;code&gt;IBufferWriter&amp;lt;byte&amp;gt;&lt;/code&gt;を受け取るオーバーロードが用意されているため、それを直接渡すことができます。つまり、現代的なシリアライザは&lt;code&gt;IBufferWriter&amp;lt;byte&amp;gt;&lt;/code&gt;と&lt;code&gt;ReadOnlySequence&amp;lt;byte&amp;gt;&lt;/code&gt;のサポートは必須です。これらをサポートしていないシリアライザはそれだけで失格です。&lt;/p&gt;
+&lt;h2&gt;まとめ&lt;/h2&gt;
+&lt;p&gt;プロトコルが単純で少ないのでちゃちゃっと作れると思いきや、まあ確かに雑にTcpClientとStreamReader/Writerでやれば秒殺だったのですが、プロトコルって量産部分でしかないので、そこがどんだけ量少なかろうと、基盤の作り込みは相応に必要で、普通に割と時間かかってしまった、のですが結構良い感じに作れたと思います。コード的にも例によって色々な工夫が盛り込まれていますので、是非ソースコードも読んでみてください。&lt;/p&gt;
+&lt;p&gt;クライアント側の実装によってパフォーマンスが大きく違うというのはシリアライザでもよくあり経験したことですが、NATSのパフォーマンスを論じるにあたって、その言語のクライアントは大丈夫ですか？というところがあり、そして、C#は大丈夫ですよ、と言えるものになっていると思います。&lt;/p&gt;
+&lt;p&gt;NATSの活用に関してはこれからやっていくので実例あるんですか？とか言われると知らんがな、というところですが（ところでMagicOnionはこないだの&lt;a href="https://neue.cc/2022/04/08_priconne-grandmasters.html"&gt;プリコネ！グランドマスターズ&lt;/a&gt;だけではなく最近特によくあるので、実例めっちゃあります）、これから色々使っていこうかなと思っているので、まぁ是非AlterNatsと共に試してみてください。&lt;/p&gt;
+&lt;/div&gt;</description>
+      <pubDate>Wed, 11 May 2022 00:00:00 +0900</pubDate>
+      <a10:updated>2022-05-11T00:00:00+09:00</a10:updated>
+    </item>
     <item>
       <guid isPermaLink="true">https://neue.cc/2022/04/08_priconne-grandmasters.html</guid>
       <link>https://neue.cc/2022/04/08_priconne-grandmasters.html</link>
@@ -1238,23 +1522,6 @@ steps:
 &lt;/div&gt;</description>
       <pubDate>Mon, 23 Aug 2021 00:00:00 +0900</pubDate>
       <a10:updated>2021-08-23T00:00:00+09:00</a10:updated>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://neue.cc/2021/07/02_601.html</guid>
-      <link>https://neue.cc/2021/07/02_601.html</link>
-      <title>Microsoft MVP for Developer Technologies(C#)を再々々々々々々々々々受賞しました</title>
-      <description>&lt;h1&gt;&lt;a href="https://neue.cc/2021/07/02_601.html"&gt;Microsoft MVP for Developer Technologies(C#)を再々々々々々々々々々受賞しました&lt;/a&gt;&lt;/h1&gt;
-&lt;ul class="date"&gt;&lt;li&gt;2021-07-02&lt;/li&gt;&lt;/ul&gt;
-&lt;div class="entry_body"&gt;&lt;p&gt;11回目。一年ごとに再審査があって7月に一斉更新されるシステムになっていて、今年も継続しました。&lt;/p&gt;
-&lt;p&gt;&lt;a href="https://github.com/neuecc/MessagePack-CSharp/"&gt;MessagePack for C#&lt;/a&gt;はprotobuf-netを抜いて、 .NET で最もGitHubのスター数の多いバイナリシリアライザになりそうな感じです（今はまだちょっと負けてるので、勢い的に8月か9月ぐらいには）。まぁ、たった3000ちょいがMost StarsというC#の狭さみたいなところがなきにしもあらずではありますが(JavaScriptだと桁が違うからなあ）、.NET の存在感というのは決して劣ってはいないと思います。&lt;/p&gt;
-&lt;p&gt;MessagePack for C#は&lt;a href="https://github.com/neuecc/MessagePack-CSharp/pull/1272"&gt;v3を計画&lt;/a&gt;しています。パフォーマンスの大幅な向上（特にUnityで！）や、より良い使い勝手、ゼロアロケーションを超えたゼロコピー、SourceGenerator対応によるAOT対応の強化などなどを、破壊的変更も含めた上で考えてます。改めて、 .NET 6時代の最高のシリアライザを目指しています。&lt;/p&gt;
-&lt;p&gt;&lt;a href="https://github.com/Cysharp"&gt;GitHub/Cysharp&lt;/a&gt;で公開しているものも、新規には &lt;a href="https://github.com/Cysharp/MessagePipe"&gt;MessagePipe&lt;/a&gt;は結構良いと思いますし、引き続き &lt;a href="https://github.com/Cysharp/MagicOnion"&gt;MagicOnion&lt;/a&gt;や&lt;a href="https://github.com/Cysharp/UniTask"&gt;UniTask&lt;/a&gt;は開発進めています。&lt;/p&gt;
-&lt;p&gt;つまり全体的にとてもC#に貢献している。なるほどえらい。そりゃ更新も当然ですね（&lt;/p&gt;
-&lt;p&gt;今年は会社として、今ひとつ大きなプロダクトを仕込んでいる最中でして、それで大きなインパクトを Unity と .NET 、双方で引き起こせるはず、です……！乞うご期待。&lt;/p&gt;
-&lt;p&gt;というわけかで引き続きC#の最前線で戦っていきますので、今年もよろしくおねがいします。&lt;/p&gt;
-&lt;/div&gt;</description>
-      <pubDate>Fri, 02 Jul 2021 00:00:00 +0900</pubDate>
-      <a10:updated>2021-07-02T00:00:00+09:00</a10:updated>
     </item>
   </channel>
 </rss>

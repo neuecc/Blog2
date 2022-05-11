@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-2834006-1"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag() { dataLayer.push(arguments); }
+        gtag('js', new Date());
+        gtag('config', 'UA-2834006-1');
+    </script>
+    <meta charset="utf-8" />
+    <title>neue cc - AlterNats - ハイパフォーマンスな.NET PubSubクライアントと、その実装に見る.NET 6時代のSocketプログラミング最適化のTips、或いはMagicOnionを絡めたメタバース構築のアーキテクチャについて</title>
+    <link rel="shortcut icon" href="https://neue.cc/favicon.ico" />
+    <link rel="alternate" type="application/rss+xml" href="https://neue.cc/feed"/>
+	<link rel="stylesheet" href="https://neue.cc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
+    
+<meta property="og:url" content="https://neue.cc/2022/05/11_AlterNats.html" />
+<meta property="og:type" content="article" />
+<meta property="og:title" content="neue cc - AlterNats - ハイパフォーマンスな.NET PubSubクライアントと、その実装に見る.NET 6時代のSocketプログラミング最適化のTips、或いはMagicOnionを絡めたメタバース構築のアーキテクチャについて" />
+<meta property="og:description" content="タイトルはここぞとばかりに全盛りにしてみました！今回NATSの.NETクライアント実装としてAlterNatsというライブラリを新しく作成し、公開しました。..." />
+
+ </head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <a href="https://neue.cc/"><div id="header"></div></a>
+        <div id="content"><h1><a href="https://neue.cc/2022/05/11_AlterNats.html">AlterNats - ハイパフォーマンスな.NET PubSubクライアントと、その実装に見る.NET 6時代のSocketプログラミング最適化のTips、或いはMagicOnionを絡めたメタバース構築のアーキテクチャについて</a></h1>
+<ul class="date"><li>2022-05-11</li></ul>
+<div class="entry_body"><p>タイトルはここぞとばかりに全盛りにしてみました！今回NATSの.NETクライアント実装としてAlterNatsというライブラリを新しく作成し、公開しました。</p>
+<ul>
+<li><a href="https://github.com/Cysharp/AlterNats">github - Cysharp/AlterNats</a></li>
+</ul>
+<p>公式の既存クライアントの3倍以上、StackExchange.RedisのPubSubと比較して5倍以上高速であり、通常のPubSubメソッドは全てゼロアロケーションです。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/164392256-46d09111-ec70-4cf3-b33d-38dc5d258455.png" alt="image" /></p>
+<p>そもそも<a href="https://nats.io/">NATS</a>とはなんぞやか、というと、クラウドネイティブなPubSubのミドルウェアです。<a href="https://www.cncf.io/">Cloud Native Computing Foundation</a>のincubating projectなので、それなりの知名度と実績はあります。</p>
+<p>PubSubというと、特にC#だと<a href="https://redis.io/">Redis</a>のPubSub機能で行うのが、<a href="https://github.com/StackExchange/StackExchange.Redis">StackExchange.Redis</a>という実績あるライブラリもあるし、AWSやAzure、GCPがマネージドサービスも用意しているしで、お手軽でいいのですが、盲目的にそれを使うのが良いのか少し疑問に思っていました。</p>
+<p>RedisはKVS的な使い方がメインであり、PubSubはどちらかというとオマケ機能であるため</p>
+<ul>
+<li>PubSub専用のモニタリングの欠如</li>
+<li>PubSub用のクラスタリング対応</li>
+<li>マネージドサービスでの価格体系のバランスの悪さ（PubSub特化ならメモリはあまりいらない）</li>
+<li>そもそものパフォーマンス</li>
+</ul>
+<p>といった点が具体的な懸念です。そして、NATSはPubSub専用に特化されているため、そのためのシステムが豊富に組まれているし、性能も申し分なさそうに思えました。しいて欠点を言えばマネージドサービスが存在しないのがネックですが、純粋なPubSubとしての利用ならば永続化処理について考える必要がないので、ミドルウェアとしては運用しやすい部類にはいるのではないかと思っています。（NATS自体はNATS JetStreamという機能によってAt-least / exactly onceの保証のあるメッセージングの対応も可能ですが、そこに対応させるにはストレージが必要になる場合もあります）</p>
+<p>しかし調べていくうちに懸念となったのが公式クライアントである<a href="https://github.com/nats-io/nats.net">nats.net</a>で、あまり使いやすくないのですね。async/awaitにも対応していないし、古くさく、それどころかそもそも.NET的に奇妙に見えるAPIであり、そうなるとパフォーマンスに関しても疑問に思えてくる。</p>
+<p>何故そうなっているかの理由はReadMeにも明記されていて、メンテナンス性のためにGoクライアント(ちなみにNATS Server自体はGoで書かれている)と同じようなコードベースになっている、と。そのためC#的ではない部分が多々あるし、GoとC#ではパフォーマンスを出すための書き方が全く異なるので、あまり良い状況ではなさそう。</p>
+<p>それならば完全にC#に特化して独自に作ってしまうほうがいいだろうということで、作りました。公式クライアントと比べると全ての機能をサポートしているわけではない（JetStreamにも対応していないしLeaf Nodes運用で必須になるであろうTLSにも対応していません）のですが、PubSubのNATS Coreに特化して、まずは最高速を叩き出せるようにしました。PubSub利用する分には機能面での不足はないはずです。</p>
+<p>AlterNatsは公式じゃないAlternativeなNATSクライアントという意味です。まんまですね。割と語感が良いので命名的には結構気に入ってます。</p>
+<h2>Getting Started</h2>
+<p>APIは、<code>nats.net</code>があまりにもC#っぽくなくややこしい、ということを踏まえて、シンプルに、簡単に、C#っぽく書けるように調整しました。</p>
+<pre><code class="language-csharp">// create connection(default, connect to nats://localhost:4222)
+await using var conn = new NatsConnection();
+
+// for subscriber. await register to NATS server(not means await complete)
+var subscription = await conn.SubscribeAsync&lt;Person&gt;(&quot;foo&quot;, x =&gt;
+{
+    Console.WriteLine($&quot;Received {x}&quot;);
+});
+
+// for publisher.
+await conn.PublishAsync(&quot;foo&quot;, new Person(30, &quot;bar&quot;));
+
+// unsubscribe
+subscription.Dipose();
+
+// ---
+
+public record Person(int Age, string Name);
+</code></pre>
+<p>Subscribeでhandlerを登録し、Publishでメッセージを飛ばす。データは全て自動でシリアライズされます（デフォルトではSystem.Text.Json、MessagePack for C#を用いたハイパフォーマンスなシリアライズも可能な拡張オプションも標準で用意してあります）</p>
+<p>別のURLへの接続や、認証のための設定などを行うNatsOptions/ConnectOptionsはイミュータブルです。そのため、with式で構築するやり方を取っています。</p>
+<pre><code class="language-csharp">// Options can configure `with` operator
+var options = NatsOptions.Default with
+{
+    Url = &quot;nats://127.0.0.1:9999&quot;,
+    LoggerFactory = new MinimumConsoleLoggerFactory(LogLevel.Information),
+    Serializer = new MessagePackNatsSerializer(),
+    ConnectOptions = ConnectOptions.Default with
+    {
+        Echo = true,
+        Username = &quot;foo&quot;,
+        Password = &quot;bar&quot;,
+    }
+};
+
+await using var conn = new NatsConnection(options);
+</code></pre>
+<p>NATSには標準で結果を受け取るプロトコルも用意されています。サーバー間の簡易的なRPCとして使うと便利なところもあるのではないかと思います。これも<code>SubscribeRequestAsync</code>/<code>RequestAsync</code>という形で簡単に直感的に書けるようにしました（Request側は戻り値の型を指定する必要があるため、型指定が少しだけ冗長になります）</p>
+<pre><code class="language-csharp">// Server
+await conn.SubscribeRequestAsync(&quot;foobar&quot;, (int x) =&gt; $&quot;Hello {x}&quot;);
+
+// Client(response: &quot;Hello 100&quot;)
+var response = await conn.RequestAsync&lt;int, string&gt;(&quot;foobar&quot;, 100);
+</code></pre>
+<p>例では <code>await using</code>ですぐに破棄してしまっていますが、基本的にはConnectionはシングルトンによる保持を推奨しています。staticな変数に詰めてもいいし、DIでシングルトンとして登録してしまってもいいでしょう。接続は明示的にConnectAsyncすることもできますが、接続されていない場合は自動で接続を開くようにもなっています。</p>
+<p>コネクションはスレッドセーフで、物理的にも一つのコネクションには一つの接続として繋がり、全てのコマンドは自動的に多重化されます。これにより裏側で自動的にバッチ化された高効率な通信を実現していますが、負荷状況に応じて複数のコネクションを貼った場合が良いケースもあります。AlterNatsではNatsConnectionPoolという複数コネクションを内包したコネクションも用意しています。また、クライアント側で水平シャーディングを行うためのNatsShardingConnectionもあるため、必要に応じて使い分けることが可能です。</p>
+<p>内部のロギングはMicrosoft.Extensions.Loggingで管理されています。<code>AlterNats.Hosting</code>パッケージを使うと、Generic Hostと統合された形で適切なILoggerFactoryの設定と、シングルトンのサービス登録を行ってくれます。</p>
+<p>DIでの取り出しは直接NatsConnectionを使わずに、INatsCommandを渡すことで余計な操作（コネクションの切断など）が出来ないようになります。</p>
+<pre><code class="language-csharp">using AlterNats;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Register NatsConnectionPool, NatsConnection, INatsCommand to ServiceCollection
+builder.Services.AddNats();
+
+var app = builder.Build();
+
+app.MapGet(&quot;/subscribe&quot;, (INatsCommand command) =&gt; command.SubscribeAsync(&quot;foo&quot;, (int x) =&gt; Console.WriteLine($&quot;received {x}&quot;)));
+app.MapGet(&quot;/publish&quot;, (INatsCommand command) =&gt; command.PublishAsync(&quot;foo&quot;, 99));
+
+app.Run();
+</code></pre>
+<h2>メタバースアーキテクチャ</h2>
+<p>Cysharpでは<a href="https://github.com/Cysharp/MagicOnion">MagicOnion</a>という .NET/Unity で使えるネットワークフレームワークを作っているわけですが、AlterNatsはこれと絡めることで、構成の幅を広げることができると考えています、というかむしろそのために作りました。</p>
+<p>クライアントにUnity、サーバーにMagicOnionがいるとして、サーバーが一台構成なら、平和です、繋げるだけですもの。開発の最初とかローカルでは楽なのでこの状態でもいいですね。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/164406771-58318153-c6a7-49c0-b3af-2b8389e2c9c1.png" alt="image" /></p>
+<p>しかし現実的にはサーバーは複数台になるので、そうなると色々なパターンが出てきます。よくあるのが、ロードバランサーを立ててそれぞれが別々のサーバーに繋がっているものを、更に後ろのPubSubサーバーを通して全サーバーに分配するパターン。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/164409016-b6e99f36-bdf7-47a9-80a6-558010963a36.png" alt="image" /></p>
+<p>これはNode.jsのリアルタイムフレームワークである<a href="https://socket.io/">Socket.IO</a>のRedisアダプター、それの.NET版である<a href="https://docs.microsoft.com/ja-jp/aspnet/signalr/overview/getting-started/introduction-to-signalr">SignalR</a>のRedisバックプレーン、もちろんMagicOnionにもあるのですが、このパターンはフレームワークでサポートされている場合も多いです。RedisのPubSubでできることはNATSでもできる、ということで、NATSでもできます。</p>
+<p>これは各サーバーをステートレスにできるのと、スケールしやすいので、Chatなどの実装にはやりやすい。欠点はステートを持ちにくいので、クライアントにステートがあり、データのやり取りをするタイプしか実装できません。サーバー側にステートを持ったゲームロジックは持たせずらいでしょう（ステートそのものは各サーバーで共有できないため）。また、PubSubを通すことによるオーバーヘッドも気になるところかもしれません。</p>
+<p>ロードバランサーを立てる場合、ロードバランサーのスティッキーセッションを活用して一台のサーバーに集約させるというパターンもあります（あるいは独自プロトコルでもリバースプロキシーを全面に立てて、カスタムなロジックで後ろの台を決定することもほぼ同様の話です）。ただし、色々なユーザーを同一サーバーに集約させたいようなケースでは、そのクッキーの発行誰がやるの、みたいなところは変わらずありますね。そこまで決めれるならIPアドレスを返して直繋ぎさせてしまってもいいんじゃないの？というのも真です。</p>
+<p>そうした外側に対象のIPアドレスを教えてくれるサービスがいて、先にそれに問い合わせてから、対象のサーバーへ繋ぎに行くパターンは、古典的ですが安定です。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/164417937-7d1adedb-36ee-453b-9ca6-9d41aded50af.png" alt="image" /></p>
+<p>この場合は同一サーバーに繋ぎにいくためにサーバー内にインメモリでフルにステートを持たせることが出来ますし、いわゆるゲームループを中で動かして処理するようなこともできます。また、画面のないヘッドレスUnityなどをホストして、クライアントそのものをサーバー上で動かすこともできますね。</p>
+<p>しかし、このパターンは素直なようでいて、実際VMだとやりやすいのですが、Kubernetesでやるのは難しかったりします。というのも、Kubernetesの場合は外部にIPが露出していないため、クラスター内の一台の特定サーバーに繋ぎにいくというのが難しい……！</p>
+<p>このような場合に最近よく活用されているのが<a href="https://agones.dev/site/">Agones</a>というGoogleが主導して作っているKubernetesの拡張で、まさにゲーム向きにKubernetesを使えるようにするためのシステムです。</p>
+<p>ただし、これはこれで難点があって、Agonesが想定しているゲームサーバーは1プロセス1ゲームセッション(まさにヘッドレスUnityのような)のホスティングであるため、1つのプロセスに多数のゲームセッションをホストさせるような使い方はそのままだと出来ません。コンテナなので、仮想的なプロセスを複数立ち上げればいいでしょ、というのが思想なのはわからなくもないのですが、現実的には軽量なゲームサーバー（それこそMagicOnionで組んだりする場合）なら、1プロセスに多数のゲームセッションを詰め込めれるし、これをコンテナで分けて立ち上げてしまうとコスト面では大きな差が出てしまいます。</p>
+<p>さて、Cysharpではステートフルな、特にゲームに向いたC#サーバーを構築するための補助ライブラリとして<a href="https://github.com/Cysharp/LogicLooper">LogicLooper</a>というゲームループを公開しています。このライブラリはこないだリリースした<a href="https://neue.cc/2022/04/08_priconne-grandmasters.html">プリコネ！グランドマスターズ</a>でも使用していますが、従来MagicOnionと同居して使っていたLogicLooperを、剥がしたアーキテクチャはどうだろうか、という提案があります。（実際のプリコネ！グランドマスターズのアーキテクチャはリバースプロキシーを使った方式を採用しているので、この案とは異なります）</p>
+<p><img src="https://user-images.githubusercontent.com/46207/164417734-f2ec80e7-f12f-4a84-8252-ce28f9b53f05.png" alt="image" /></p>
+<p>パーツが増えて複雑になったように見えて、この構成には大きな利点があります。まず、同居しているものがなくなったので複雑になったようで実はシンプルになっています。それぞれがそれぞれの役割にフルに集中できるようになるため、パフォーマンスも良くなり、かつ、性能予測もしやすくなります。特にロジックをフルに回転させるLogicLooperがクライアントや接続数の影響を受けずに独立できているのは大きな利点です。</p>
+<p>ゲーム全体のステートはLogicLooper自体が管理するため、クライアントとの接続を直接受けているMagicOnion自体はステートレスな状態です。そのため、インフラ的にもロードバランサーの下にMagicOnionを並べるだけで済みますし、サーバー間の接続に伴う面倒事は全てNATSに押し付けられるため、インフラ管理自体はかなりシンプルな構成が取れます。</p>
+<p>また、MagicOnion自体はステートを持てるシステムであり、各ユーザーそれぞれのステートを持つのは容易です（サーバーを越えなければいい）。そこで、LogicLooperから届いたデータのうち、繋がってるユーザーに届ける必要がないデータは、MagicOnionの持つユーザーのステートを使ってカリング処理をして、そもそも転送しなかったり間引いたりして通信量を削減することで、ユーザーの体験が良くなります。</p>
+<p>各ユーザーから届くデータを使ったステート更新/データ送信に関しては、LogicLooperがゲームループ状になっているので、ループの間に溜まったデータをもとにしてバッチ処理を行えばいいでしょう。バッチ化というと、通信「回数」の削減のためのコマンドを単純にまとめあげて一斉送信するものと、内容を見て処理内容を縮小するパターンが考えられますが、LogicLooperを使ったアプローチでは後者を効率的に行なえます。前者のコマンドの一斉送信に関しては、AlterNatsが裏側で自動パイプライニング化としてまとめているので（後で詳しく説明します）、そこに関しても効率化されています。</p>
+<p>このアーキテクチャで気になるのがPubSub通信のオーバーヘッドですが、それに関しての解決策がAlterNatsで、究極的に高速なクライアントがあれば（さすがにインメモリには到底及ばないとはいえ）、そもそものクライアントとサーバーの間にもネットワークがいるわけで、経路のトータルで見れば実用的な範囲に収められる。という想定で作りました。</p>
+<p>ところで、そして究極的な利点は、全てC#で組めるということです。どういうことかというと、MagicOnionもLogicLooperも汎用的なC#フレームワークです。特別なプラグインを差し込んで処理するというわけではなくて、ふつーのC#コードをふつーに書くことで、それぞれの箇所に、アプリケーション固有のコードを仕込んでいくことができる。これが、本当の大きな利点です。専用のC++ミドルウェアを作って挟んで最適化できるぞ！などといったシステムは、素晴らしいことですが、専門性が高く再現性が低い。MagicOnionとLogicLooper、そしてAlterNatsを活用したこの構成なら、C#エンジニアなら誰でも（容易に）できる構成です。<a href="https://cysharp.co.jp/">Cysharp</a>のメッセージは「C#の可能性を切り開いていく」ですが、誰もが実現できる世界を作っていくというのが目標でもあります。</p>
+<p>なお、ワーカーとしてのLogicLooperを作るに<a href="https://docs.microsoft.com/ja-jp/dotnet/core/extensions/workers">Worker Service</a>という.NET 6からのプロジェクトタイプが適切です。</p>
+<h2>ハイパフォーマンスSocketプログラミング</h2>
+<h3>Socket API</h3>
+<p>C#で最も低レベルにネットワーク処理を扱えるクラスは<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.net.sockets.socket">Socket</a>です。そして、非同期でハイパフォーマンスな処理を求めるなら<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.net.sockets.socketasynceventargs">SocketAsyncEventArgs</a>をうまく再利用しながらコールバックを仕込む必要があります。</p>
+<p>これは非常に厄介で些か難易度も高いのですが、現在はasync/awaitの時代、ちゃんとawaitできる***Asyncメソッド郡が用意されています。しかし、使ってはいけないAPI、使ってはいけないオーバーロードも並んでいるので、その選別が必要です。SocketのAPIは歴史的事情もあり混沌としてしまっているのです……。</p>
+<p>使うべきAPIを分かりやすく見分ける手段があります。それは戻り値が <code>ValueTask</code> のものを選ぶことです。</p>
+<pre><code class="language-csharp">public ValueTask ConnectAsync(string host, int port, CancellationToken cancellationToken)
+public ValueTask&lt;int&gt; ReceiveAsync(Memory&lt;byte&gt; buffer, SocketFlags socketFlags, CancellationToken cancellationToken)
+public ValueTask&lt;int&gt; SendAsync(ReadOnlyMemory&lt;byte&gt; buffer, SocketFlags socketFlags, CancellationToken cancellationToken))
+</code></pre>
+<p>オーバーロードにはTask返しのものもあるので、気をつけてください。</p>
+<pre><code class="language-csharp">// これらのAPIは使ってはいけない
+public Task ConnectAsync(string host, int port)
+public Task&lt;int&gt; ReceiveAsync(ArraySegment&lt;byte&gt; buffer, SocketFlags socketFlags)
+public Task&lt;int&gt; SendAsync(ArraySegment&lt;byte&gt; buffer, SocketFlags socketFlags)
+</code></pre>
+<p>ValueTask返しのAPIは内部的には <code>AwaitableSocketAsyncEventArgs</code> というものがValueTaskの中身になるようになっていて、これがいい感じに使いまわされる(awaitされると内部に戻るようになっている）ことで、Taskのアロケーションもなく効率的な非同期処理を実現しています。<code>SocketAsyncEventArgs</code>の使いにくさとは雲泥の差なので、これは非常にお薦めできます。</p>
+<h3>テキストプロトコルのバイナリコード判定</h3>
+<p><a href="https://docs.nats.io/reference/reference-protocols/nats-protocol">NATSのプロトコル</a>はテキストプロトコルになっていて、文字列処理で簡単に切り出すことができます。実際これはStreamReaderを使うことで簡単にプロトコルの実装ができます。ReadLineするだけですから。しかし、ネットワークに流れるのは(UTF8)バイナリデータであり、文字列化は無駄なオーバーヘッドとなるため、パフォーマンスを求めるなら、バイナリデータのまま処理する必要があります。</p>
+<p>NATSでは先頭の文字列(<code>INFO</code>, <code>MSG</code>, <code>PING</code>, <code>+OK</code>, <code>-ERR</code>など)によって流れてくるメッセージの種類が判定できます。文字列処理で空白でSplitして if (msg == &quot;INFO&quot;) などとすればめちゃくちゃ簡単ですが、先にも言った通り文字列変換は意地でも通しません。INFOは[73, 78, 70, 79]なので、Slice(0, 4).SequenceEqual で判定するのは悪くないでしょう。<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.memoryextensions.sequenceequal"><code>ReadOnlySpan&lt;byte&gt;</code>のSequenceEqual</a>はめちゃくちゃ最適化されていて、長いものであれば必要であればSIMDとかも使って高速に同値判定します。LINQのSequenceEqualとは別物です！</p>
+<p>しかし、もっと欲張って見てみましょう、プロトコルの識別子はサーバーから送られてくるものは全て4文字以内に収まっています。つまり、これはIntに変換しやすい状態です！というわけで、AlterNatsのメッセージ種判定コードはこうなっています。</p>
+<pre><code class="language-csharp">// msg = ReadOnlySpan&lt;byte&gt;
+if(Unsafe.ReadUnaligned&lt;int&gt;(ref MemoryMarshal.GetReference&lt;byte&gt;(msg)) == 1330007625) // INFO
+{
+}
+</code></pre>
+<p>これ以上速い判定はできないと思うので、理論上最速ということでいいでしょう。3文字の命令も、直後に必ずスペースや改行が来るので、それを含めた以下のような定数を使って判定に回しています。</p>
+<pre><code class="language-csharp">internal static class ServerOpCodes
+{
+    public const int Info = 1330007625;  // Encoding.ASCII.GetBytes(&quot;INFO&quot;) |&gt; MemoryMarshal.Read&lt;int&gt;
+    public const int Msg = 541545293;    // Encoding.ASCII.GetBytes(&quot;MSG &quot;) |&gt; MemoryMarshal.Read&lt;int&gt;
+    public const int Ping = 1196312912;  // Encoding.ASCII.GetBytes(&quot;PING&quot;) |&gt; MemoryMarshal.Read&lt;int&gt;
+    public const int Pong = 1196314448;  // Encoding.ASCII.GetBytes(&quot;PONG&quot;) |&gt; MemoryMarshal.Read&lt;int&gt;
+    public const int Ok = 223039275;     // Encoding.ASCII.GetBytes(&quot;+OK\r&quot;) |&gt; MemoryMarshal.Read&lt;int&gt;
+    public const int Error = 1381123373; // Encoding.ASCII.GetBytes(&quot;-ERR&quot;) |&gt; MemoryMarshal.Read&lt;int&gt;
+}
+</code></pre>
+<p>バイナリプロトコルなら特に何のひねりも必要なく実装できるので、バイナリプロトコルのほうが実装者に優しくて好きです……。</p>
+<h3>自動パイプライニング</h3>
+<p>NATSプロトコルの書き込み、読み込みは全てパイプライン（バッチ）化されています。これは<a href="https://redis.io/docs/manual/pipelining/">RedisのPipelining</a>の解説が分かりやすいですが、例えばメッセージを3つ送るのに、一つずつ送って、都度応答を待っていると、送受信における多数の往復がボトルネックになります。</p>
+<p>メッセージの送信において、AlterNatsは自動でパイプライン化しています。<a href="https://devblogs.microsoft.com/dotnet/an-introduction-to-system-threading-channels/">System.Threading.Channels</a>を用いてメッセージは一度キューに詰め込まれ、書き込み用のループが一斉に取り出してバッチ化します。ネットワーク送信が完了したら、再び送信処理待ち中に溜め込まれたメッセージを一括処理していく、という書き込みループのアプローチを取ることで、最高速の書き込み処理を実現しました。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/167585601-5634057e-812d-4b60-ab5b-61d9c8c37063.png" alt="image" /></p>
+<p>ラウンドトリップタイムの話だけではなく（そもそもNATSの場合はPublish側とSubscribe側が独立しているので応答待ちというのもないのですが）、システムコールの連続した呼び出し回数を削減できるという点でも効果が高いです。</p>
+<p>なお、.NET最高速ロガーである<a href="https://github.com/Cysharp/ZLogger/">ZLogger</a>でも同じアプローチを取っています。</p>
+<h3>一つのオブジェクトに機能を盛る</h3>
+<p>Channelに詰め込む都合上、データを書き込みメッセージオブジェクトに入れてヒープに保持しておく必要があります。また、書き込み完了まで待つ非同期メソッドのためのPromiseも必要です。</p>
+<pre><code class="language-csharp">await connection.PublishAsync(value);
+</code></pre>
+<p>こうしたAPIを効率よく実装するために、どうしても確保する必要のある一つのメッセージオブジェクト（内部的にはCommandと命名されている）に、あらゆる機能を同居して詰め込みましょう。</p>
+<pre><code class="language-csharp">class AsyncPublishCommand&lt;T&gt; : ICommand, IValueTaskSource, IThreadPoolWorkItem, IObjectPoolNode&lt;AsyncPublishCommand&lt;T&gt;&gt;
+
+internal interface ICommand
+{
+    void Write(ProtocolWriter writer);
+}
+
+internal interface IObjectPoolNode&lt;T&gt;
+{
+    ref T? NextNode { get; }
+}
+</code></pre>
+<p>このオブジェクト(<code>AsyncPublishCommand&lt;T&gt;</code>)自体は、T dataを保持して、Socketにバイナリデータとして書き込むための役割(<code>ICommand</code>)をまずは持っています。</p>
+<p>それに加えて<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.threading.tasks.sources.ivaluetasksource">IValueTaskSource</a>であることにより、このオブジェクト自身がValueTaskになります。</p>
+<p>そしてawait時のコールバックとして、書き込みループを阻害しないためにThreadPoolに流す必要があります。そこで従来の<code>ThreadPool.QueueUserWorkItem(callback)</code>を使うと、内部的には <code>ThreadPoolWorkItem</code> を生成してキューに詰め込むため、余計なアロケーションがあります。 .NET Core 3.0から<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.threading.ithreadpoolworkitem">IThreadPoolWorkItem</a>を実装することで、内部の<code>ThreadPoolWorkItem</code>の生成をなくすことができます。</p>
+<p>最後に、同居させることで必要なオブジェクトが1つになりましたが、その1つをプーリングしてゼロアロケーション化します。オブジェクトプールは<code>ConcurrentQueue&lt;T&gt;</code>などを使うと簡単に実装できますが、自分自身をStackのNodeにすることで、配列を確保しないで済むようにしています。また、Nodeの出し入れに関しては、今回のキャッシュの実装では正確に取り出せる必要性はないため、lockは使わず、マルチスレッドで競合が発生した場合はキャッシュミス扱いにして新規生成するようにしています。これはオブジェクトプーリングにおける性能バランスとしては、良いチョイスだと考えています。</p>
+<pre><code class="language-csharp">internal sealed class ObjectPool&lt;T&gt;
+    where T : class, IObjectPoolNode&lt;T&gt;
+{
+    int gate;
+    int size;
+    T? root;
+    readonly int limit;
+
+    public ObjectPool(int limit)
+    {
+        this.limit = limit;
+    }
+
+    public int Size =&gt; size;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryPop([NotNullWhen(true)] out T? result)
+    {
+        // Instead of lock, use CompareExchange gate.
+        // In a worst case, missed cached object(create new one) but it's not a big deal.
+        if (Interlocked.CompareExchange(ref gate, 1, 0) == 0)
+        {
+            var v = root;
+            if (!(v is null))
+            {
+                ref var nextNode = ref v.NextNode;
+                root = nextNode;
+                nextNode = null;
+                size--;
+                result = v;
+                Volatile.Write(ref gate, 0);
+                return true;
+            }
+
+            Volatile.Write(ref gate, 0);
+        }
+        result = default;
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryPush(T item)
+    {
+        if (Interlocked.CompareExchange(ref gate, 1, 0) == 0)
+        {
+            if (size &lt; limit)
+            {
+                item.NextNode = root;
+                root = item;
+                size++;
+                Volatile.Write(ref gate, 0);
+                return true;
+            }
+            else
+            {
+                Volatile.Write(ref gate, 0);
+            }
+        }
+        return false;
+    }
+}
+</code></pre>
+<h3>Zero-copy Architecture</h3>
+<p>Publish/Subscribeするデータは通常、C#の型をJSONやMessagePackなどにシリアライズしたものを流します。この場合、どうしてもbyte[]でやり取りすることが多くなります、例えばStackExchange.Redisの<code>RedisValue</code>の中身は実質byte[]で、送信にせよ受信にせよ、byte[]を生成して保持することになります。</p>
+<p>これを避けるために、ArrayPoolから出し入れしてごまかしてゼロアロケーションにする、みたいなのはありがちではありますが、それでもコピーのコストが発生していることには代わりありません。ゼロアロケーションは当然目指すところですが、ゼロコピーに向けても頑張りましょう！</p>
+<p>AlterNatsのシリアライザーはWriteに<code>IBufferWriter&lt;byte&gt;</code>, Readに<code>ReadOnlySequence&lt;byte&gt;</code>を要求します。</p>
+<pre><code class="language-csharp">public interface INatsSerializer
+{
+    int Serialize&lt;T&gt;(ICountableBufferWriter bufferWriter, T? value);
+    T? Deserialize&lt;T&gt;(in ReadOnlySequence&lt;byte&gt; buffer);
+}
+
+public interface ICountableBufferWriter : IBufferWriter&lt;byte&gt;
+{
+    int WrittenCount { get; }
+}
+</code></pre>
+<pre><code class="language-csharp">// 例えばMessagePack for C#を使う場合の実装
+public class MessagePackNatsSerializer : INatsSerializer
+{
+    public int Serialize&lt;T&gt;(ICountableBufferWriter bufferWriter, T? value)
+    {
+        var before = bufferWriter.WrittenCount;
+        MessagePackSerializer.Serialize(bufferWriter, value);
+        return bufferWriter.WrittenCount - before;
+    }
+
+    public T? Deserialize&lt;T&gt;(in ReadOnlySequence&lt;byte&gt; buffer)
+    {
+        return MessagePackSerializer.Deserialize&lt;T&gt;(buffer);
+    }
+}
+</code></pre>
+<p>System.Text.JsonやMessagePack for C#のSerializeメソッドには<code>IBufferWriter&lt;byte&gt;</code>を受け取るオーバーロードが用意されています。<code>IBufferWriter&lt;byte&gt;</code>経由でSocketに書き込むために用意しているバッファーにシリアライザが直接アクセスし、書き込みすることで、Socketとシリアライザ間でのbyte[]のコピーをなくします。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/167587816-c50b0af3-edaa-4a2a-b536-67aed0a5f908.png" alt="image" /></p>
+<p>Read側では、<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.buffers.readonlysequence-1"><code>ReadOnlySequence&lt;byte&gt;</code></a>を要求します。Socketからのデータの受信は断片的な場合も多く、それをバッファのコピーと拡大ではなく、連続した複数のバッファを一塊として扱うことでゼロコピーで処理するために用意されたクラスが<code>ReadOnlySequence&lt;T&gt;</code>です。</p>
+<p>「ハイパフォーマンスの I/O をより簡単に行えるように設計されたライブラリ」である<a href="https://docs.microsoft.com/ja-jp/dotnet/standard/io/pipelines">System.IO.Pipelines</a>の<code>PipeReader</code>で読み取ったものを扱うのが、よくあるパターンとなります。ただし、AlterNatsではPipelinesは使わずに独自の読み取り機構と<code>ReadOnlySequence&lt;byte&gt;</code>を使用しました。</p>
+<p>System.Text.JsonやMessagePack for C#のSerializeメソッドには<code>IBufferWriter&lt;byte&gt;</code>を受け取るオーバーロードが用意されているため、それを直接渡すことができます。つまり、現代的なシリアライザは<code>IBufferWriter&lt;byte&gt;</code>と<code>ReadOnlySequence&lt;byte&gt;</code>のサポートは必須です。これらをサポートしていないシリアライザはそれだけで失格です。</p>
+<h2>まとめ</h2>
+<p>プロトコルが単純で少ないのでちゃちゃっと作れると思いきや、まあ確かに雑にTcpClientとStreamReader/Writerでやれば秒殺だったのですが、プロトコルって量産部分でしかないので、そこがどんだけ量少なかろうと、基盤の作り込みは相応に必要で、普通に割と時間かかってしまった、のですが結構良い感じに作れたと思います。コード的にも例によって色々な工夫が盛り込まれていますので、是非ソースコードも読んでみてください。</p>
+<p>クライアント側の実装によってパフォーマンスが大きく違うというのはシリアライザでもよくあり経験したことですが、NATSのパフォーマンスを論じるにあたって、その言語のクライアントは大丈夫ですか？というところがあり、そして、C#は大丈夫ですよ、と言えるものになっていると思います。</p>
+<p>NATSの活用に関してはこれからやっていくので実例あるんですか？とか言われると知らんがな、というところですが（ところでMagicOnionはこないだの<a href="https://neue.cc/2022/04/08_priconne-grandmasters.html">プリコネ！グランドマスターズ</a>だけではなく最近特によくあるので、実例めっちゃあります）、これから色々使っていこうかなと思っているので、まぁ是非AlterNatsと共に試してみてください。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2022<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="https://neue.cc/2022/05/">2022-05</a>
+<li><a href="https://neue.cc/2022/04/">2022-04</a>
+<li><a href="https://neue.cc/2022/02/">2022-02</a>
+<li><a href="https://neue.cc/2022/01/">2022-01</a>
+<li><a href="https://neue.cc/2021/12/">2021-12</a>
+<li><a href="https://neue.cc/2021/11/">2021-11</a>
+<li><a href="https://neue.cc/2021/08/">2021-08</a>
+<li><a href="https://neue.cc/2021/07/">2021-07</a>
+<li><a href="https://neue.cc/2021/05/">2021-05</a>
+<li><a href="https://neue.cc/2021/02/">2021-02</a>
+<li><a href="https://neue.cc/2020/12/">2020-12</a>
+<li><a href="https://neue.cc/2020/11/">2020-11</a>
+<li><a href="https://neue.cc/2020/10/">2020-10</a>
+<li><a href="https://neue.cc/2020/08/">2020-08</a>
+<li><a href="https://neue.cc/2020/07/">2020-07</a>
+<li><a href="https://neue.cc/2020/04/">2020-04</a>
+<li><a href="https://neue.cc/2020/01/">2020-01</a>
+<li><a href="https://neue.cc/2019/12/">2019-12</a>
+<li><a href="https://neue.cc/2019/09/">2019-09</a>
+<li><a href="https://neue.cc/2019/08/">2019-08</a>
+<li><a href="https://neue.cc/2019/07/">2019-07</a>
+<li><a href="https://neue.cc/2019/06/">2019-06</a>
+<li><a href="https://neue.cc/2019/05/">2019-05</a>
+<li><a href="https://neue.cc/2019/04/">2019-04</a>
+<li><a href="https://neue.cc/2018/12/">2018-12</a>
+<li><a href="https://neue.cc/2018/10/">2018-10</a>
+<li><a href="https://neue.cc/2018/08/">2018-08</a>
+<li><a href="https://neue.cc/2018/07/">2018-07</a>
+<li><a href="https://neue.cc/2018/05/">2018-05</a>
+<li><a href="https://neue.cc/2018/04/">2018-04</a>
+<li><a href="https://neue.cc/2018/01/">2018-01</a>
+<li><a href="https://neue.cc/2017/12/">2017-12</a>
+<li><a href="https://neue.cc/2017/09/">2017-09</a>
+<li><a href="https://neue.cc/2017/08/">2017-08</a>
+<li><a href="https://neue.cc/2017/07/">2017-07</a>
+<li><a href="https://neue.cc/2017/06/">2017-06</a>
+<li><a href="https://neue.cc/2017/04/">2017-04</a>
+<li><a href="https://neue.cc/2017/03/">2017-03</a>
+<li><a href="https://neue.cc/2016/12/">2016-12</a>
+<li><a href="https://neue.cc/2016/11/">2016-11</a>
+<li><a href="https://neue.cc/2016/10/">2016-10</a>
+<li><a href="https://neue.cc/2016/09/">2016-09</a>
+<li><a href="https://neue.cc/2016/08/">2016-08</a>
+<li><a href="https://neue.cc/2016/07/">2016-07</a>
+<li><a href="https://neue.cc/2016/06/">2016-06</a>
+<li><a href="https://neue.cc/2016/05/">2016-05</a>
+<li><a href="https://neue.cc/2016/04/">2016-04</a>
+<li><a href="https://neue.cc/2016/03/">2016-03</a>
+<li><a href="https://neue.cc/2016/01/">2016-01</a>
+<li><a href="https://neue.cc/2015/12/">2015-12</a>
+<li><a href="https://neue.cc/2015/11/">2015-11</a>
+<li><a href="https://neue.cc/2015/10/">2015-10</a>
+<li><a href="https://neue.cc/2015/09/">2015-09</a>
+<li><a href="https://neue.cc/2015/06/">2015-06</a>
+<li><a href="https://neue.cc/2015/05/">2015-05</a>
+<li><a href="https://neue.cc/2015/04/">2015-04</a>
+<li><a href="https://neue.cc/2015/03/">2015-03</a>
+<li><a href="https://neue.cc/2015/02/">2015-02</a>
+<li><a href="https://neue.cc/2015/01/">2015-01</a>
+<li><a href="https://neue.cc/2014/12/">2014-12</a>
+<li><a href="https://neue.cc/2014/11/">2014-11</a>
+<li><a href="https://neue.cc/2014/10/">2014-10</a>
+<li><a href="https://neue.cc/2014/09/">2014-09</a>
+<li><a href="https://neue.cc/2014/08/">2014-08</a>
+<li><a href="https://neue.cc/2014/07/">2014-07</a>
+<li><a href="https://neue.cc/2014/05/">2014-05</a>
+<li><a href="https://neue.cc/2014/04/">2014-04</a>
+<li><a href="https://neue.cc/2014/03/">2014-03</a>
+<li><a href="https://neue.cc/2014/01/">2014-01</a>
+<li><a href="https://neue.cc/2013/12/">2013-12</a>
+<li><a href="https://neue.cc/2013/11/">2013-11</a>
+<li><a href="https://neue.cc/2013/10/">2013-10</a>
+<li><a href="https://neue.cc/2013/09/">2013-09</a>
+<li><a href="https://neue.cc/2013/08/">2013-08</a>
+<li><a href="https://neue.cc/2013/07/">2013-07</a>
+<li><a href="https://neue.cc/2013/06/">2013-06</a>
+<li><a href="https://neue.cc/2013/05/">2013-05</a>
+<li><a href="https://neue.cc/2013/04/">2013-04</a>
+<li><a href="https://neue.cc/2013/03/">2013-03</a>
+<li><a href="https://neue.cc/2013/02/">2013-02</a>
+<li><a href="https://neue.cc/2013/01/">2013-01</a>
+<li><a href="https://neue.cc/2012/12/">2012-12</a>
+<li><a href="https://neue.cc/2012/11/">2012-11</a>
+<li><a href="https://neue.cc/2012/10/">2012-10</a>
+<li><a href="https://neue.cc/2012/09/">2012-09</a>
+<li><a href="https://neue.cc/2012/08/">2012-08</a>
+<li><a href="https://neue.cc/2012/07/">2012-07</a>
+<li><a href="https://neue.cc/2012/06/">2012-06</a>
+<li><a href="https://neue.cc/2012/05/">2012-05</a>
+<li><a href="https://neue.cc/2012/04/">2012-04</a>
+<li><a href="https://neue.cc/2012/03/">2012-03</a>
+<li><a href="https://neue.cc/2012/02/">2012-02</a>
+<li><a href="https://neue.cc/2012/01/">2012-01</a>
+<li><a href="https://neue.cc/2011/12/">2011-12</a>
+<li><a href="https://neue.cc/2011/11/">2011-11</a>
+<li><a href="https://neue.cc/2011/10/">2011-10</a>
+<li><a href="https://neue.cc/2011/09/">2011-09</a>
+<li><a href="https://neue.cc/2011/08/">2011-08</a>
+<li><a href="https://neue.cc/2011/07/">2011-07</a>
+<li><a href="https://neue.cc/2011/06/">2011-06</a>
+<li><a href="https://neue.cc/2011/05/">2011-05</a>
+<li><a href="https://neue.cc/2011/04/">2011-04</a>
+<li><a href="https://neue.cc/2011/03/">2011-03</a>
+<li><a href="https://neue.cc/2011/02/">2011-02</a>
+<li><a href="https://neue.cc/2011/01/">2011-01</a>
+<li><a href="https://neue.cc/2010/12/">2010-12</a>
+<li><a href="https://neue.cc/2010/11/">2010-11</a>
+<li><a href="https://neue.cc/2010/10/">2010-10</a>
+<li><a href="https://neue.cc/2010/09/">2010-09</a>
+<li><a href="https://neue.cc/2010/08/">2010-08</a>
+<li><a href="https://neue.cc/2010/07/">2010-07</a>
+<li><a href="https://neue.cc/2010/06/">2010-06</a>
+<li><a href="https://neue.cc/2010/05/">2010-05</a>
+<li><a href="https://neue.cc/2010/04/">2010-04</a>
+<li><a href="https://neue.cc/2010/03/">2010-03</a>
+<li><a href="https://neue.cc/2010/02/">2010-02</a>
+<li><a href="https://neue.cc/2010/01/">2010-01</a>
+<li><a href="https://neue.cc/2009/12/">2009-12</a>
+<li><a href="https://neue.cc/2009/11/">2009-11</a>
+<li><a href="https://neue.cc/2009/10/">2009-10</a>
+<li><a href="https://neue.cc/2009/09/">2009-09</a>
+<li><a href="https://neue.cc/2009/08/">2009-08</a>
+<li><a href="https://neue.cc/2009/07/">2009-07</a>
+<li><a href="https://neue.cc/2009/06/">2009-06</a>
+<li><a href="https://neue.cc/2009/05/">2009-05</a>
+<li><a href="https://neue.cc/2009/04/">2009-04</a>
+<li><a href="https://neue.cc/2009/03/">2009-03</a>
+<li><a href="https://neue.cc/2009/02/">2009-02</a>
+<li><a href="https://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul>
+<li>Index: <a href="https://neue.cc">neue.cc</a><li>
+<li>RSS feed: <a href="https://neue.cc/feed">neue.cc/feed</a><li>
+<li>Powered by: <a href="https://github.com/neuecc/Blog2">https://github.com/neuecc/Blog2</a>
+</ul></div>
+    </div>
+</body>

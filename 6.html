@@ -23,7 +23,110 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2016/07/16_534.html">BigQueryを中心としたヴァルハラゲートのログ分析システム</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2016/07/28_535.html">LightNode 2 - OWINからASP.NET Coreへの移植実例</a></h1>
+<ul class="date"><li>2016-07-28</li></ul>
+<div class="entry_body"><p><a href="https://docs.asp.net/en/latest/">ASP.NET Core</a>以前に<a href="https://www.microsoft.com/net/core">.NET Core</a>をガン無視している昨今。というのも、.NET Coreというかようするところ最近の.NETは横、つまりクロスプラットフォームへの広がりなんですよね。それ自体は素晴らしく良いことではあるのですが、縦、つまり機能面での拡充があるのかどうかというと、あんまない気がしています。それは、クロスプラットフォームいうても基本的にはWindowsでしか現状/当分は使わないんだよなー、という私みたいな人間にとってはあまり興味を引かれるものではないのであった。</p>
+<p>とかっていつまでも言ってるのもアレなので、とりあえず<a href="http://neuecc.github.io/LightNode/">LightNode</a>(という私の作ってるOwinで動くMicro REST Framework、ようはASP.NET Web APIみたいなやつ)をASP.NET Coreに移植してみました。アプリケーションの移植じゃなくてライブラリの移植なので、むしろ楽です。LightNodeはガチガチにOwinのみで構築していたので、ほとんど単純な置換のみでOKでした。</p>
+<ul>
+<li><a href="https://www.nuget.org/packages/LightNode/">Install-Package LightNode -Pre</a></li>
+</ul>
+<p>ASP.NET Coreで動作させるだけなら、OWIN - ASP.NET Coreのブリッジを使うという手もありますが、今回は完全にASP.NET Core向けに書き直しました。せっかくやるなら、ちゃんとしっかりしたものにしたいですしね、HttpContextのほうが望ましいのにIDictionaryなEnvironmentが露出してたりすると嫌じゃん。そんなわけでつまり、OWINに関連する部分は完全にASP.NET Core仕様に変わったので、互換性はありません。</p>
+<h2>ASP.NET Coreライブラリ開発の準備と移植手順</h2>
+<p>準備として<a href="https://www.visualstudio.com/en-us/news/releasenotes/vs2015-update3-vs">Visual Studio 2015 Update 3</a>と<a href="https://www.microsoft.com/net/core">.NET Core SDK</a>を入れればOK。が、しかしいきなり.NET Core SDKがUpdate 3が入ってねーよエラーが出てインストールできなくて泣いた。世の中厳しい。<a href="http://forums.asp.net/t/2099735.aspx?Cannot+install+DotNetCore+1+0+0+VS2015Tools+Preview2">Forumによるとそういう事例多数</a>。対応としては「DotNetCore.1.0.0-VS2015Tools.Preview2.exe SKIP_VSU_CHECK=1」で叩けば入るよって話で、そうして叩くことによってようやく準備OK。幸先は悪い。</p>
+<p>そうして入ったらテンプレートに.NET Core系があるので、とりあえずClass Library(.NET Core)を作る。参照してるのは .NETStandard Library 1.6.0。この辺良く分からないんですが、<a href="https://github.com/dotnet/corefx/blob/master/Documentation/architecture/net-platform-standard.md">corefx/.NET Platform Standard</a>によると.NET 4.6.3ぐらいに相当するそうで。ふーむ、まぁASP.NET Core系がnetcoreapp 1.0で1.6と同じところらしいので、このままでOKっぽい。気がする。とりあえず。UWPとかが視野の場合はちょっと話は違うのでしょうけれど。</p>
+<p>次にASP.NET系のライブラリをNuGetで入れる。のですが、どの参照をいれればいいのかがまず分からない:) 今回はOwin的なMiddlewareを作りたかったんですが、ここは<a href="https://www.nuget.org/packages/Microsoft.AspNetCore.Http.Abstractions/">Microsoft.AspNetCore.Http.Abstractions</a>が最適のようですね。これでようやくスタートライン。</p>
+<p>既存のLightNodeのコードを突っ込むと当然激しくコンパイルエラーが出るのでここからチマチマと直していきました。まず目につくのがリフレクション関連で、IsEnumとかTypeに生えてる判別系のメソッドが片っ端から動いてません。誰しもが通る.NET Coreの洗礼！これは、type.GetTypeInfo() によるTypeInfoのほうにIsEnumなどなどが生えてるので、ひたすら<a href="https://msdn.microsoft.com/ja-jp/library/system.reflection.introspectionextensions.gettypeinfo(v=vs.110).aspx">GetTypeInfo</a>を書き加えるだけの簡単なお仕事をします。GetTypeInfoの嫌なところはSystem.Reflection名前空間への拡張メソッドとして実装されてるので、IntelliSenseに出てこなくてイラッとする率が高いこと……。まぁ、あと実際にひたすらGetTypeInfoを書きまくるのは面倒くさいので、Typeへの拡張メソッドとして GetTypeInfo().IsEnum とかコンパイルエラー出てるものだけ定義してやることで作業量低減（まぁプロパティは()を書かなきゃいけないのでアレですけど。拡張プロパティはよ）</p>
+<p>また、Parallel.ForEach がない！これは.NETStandardには含まれてないそうなので、別途<a href="https://www.nuget.org/packages/System.Threading.Tasks.Parallel/">System.Threading.Tasks.Parallel</a>をNuGetから拾ってくる。なんかこう、標準に入ってて当たり前だろ、みたいに思うものが別添えになってるの、不思議な感覚ですね。これだともはやReactive Extensionsが標準にないとかImmutable Collecitonsが標準にないとか、どうでもというか全く大したことない話に見えます。なんせParallel.ForEachすらないんだから！（ところでNuGetのVersion History見ると結構細かくアップデートされてはいるんですが、いったいなにが変わったのかRelease Note出して欲しくはある……）</p>
+<p>AppDomain.CurrentDomain.GetAssemblies もない！対象アセンブリ内からControllerがわりのクラスを引っ張ってきたくて、読み込み済みのAssemblyからGetTypesして全部検査したい、というのをやりたいわけですが、ないんですねえ。そして実際、これの代替は今のところないらしい……（というかAppDomainが今のところない）。フレームワーク系の常套手段なのに……。Loaderがどうのこうのとか、あとASP.NET Core側で特化した何かはありそうな気配を感じなくもなかったんですが、今回はGetAssembliesじゃなくても回避可能なので（一手間ではあるんですが、外側からその対象AssemblyのTypeを渡してさえくれればAssembly拾えてGetTypesできる）、Typeを渡してもらう方式のみに制限することでとりあえず回避しました。</p>
+<p>ここから先はASP.NET Core的なところ。 <code>IDictionary[string, object]</code> を <code>HttpContext</code>に変える。そして<code>AppFunc</code>を<code>RequestDelegate</code>に変える。だけの簡単なお仕事。OWINとASP.NET Coreの差異はそれだけだし中身一緒なので、機械的に置き換えていくだけ。OWINに関してはどうだのこうだのと一悶着あったりなかったりで色々ありましたが、一番下のレイヤーで触ってる限りは、概念はほんと完全に一緒なので無駄なことは全くなかったですね。上のレイヤーで触っていても、それはそれで何も考えず置き換えられるはずなので、実際のとこOWINは良かったと思ってます。新しい、ASP.NET CoreのHttpContextは、昔のHttpContextというよりかは、OWINのEnvironmentそのものだったりしますからね。</p>
+<p>これでコンパイル通ったので、実行確認のためASP.NET Core Web Application(.NET Core)テンプレートから新規プロジェクトを作成。ASP.NET Core的なテンプレートはもちろんEmptyで。Startupに以下のを書いて</p>
+<pre><code class="language-csharp">using LightNode;
+using LightNode.Server;
+
+public class Startup
+{
+    public void Configure(IApplicationBuilder app, IHostingEnvironment env, ILoggerFactory loggerFactory)
+    {
+        app.UseLightNode(typeof(Startup));
+    }
+}
+
+public class Toriaezu : LightNodeContract
+{
+    public string Echo(string x)
+    {
+        return x;
+    }
+}
+</code></pre>
+<p><code>http://localhost:15944/Toriaezu/Echo?x=hoge</code> にアクセスでhogeが出力される。おー、ちゃんとできてますね！当たり前っちゃあ当たり前でしょうけれど、あまりに意外にすんなり動いたので普通に感動した。いやあ、いいじゃんASP.NET Core。</p>
+<h2>Swagger Included</h2>
+<p>LightNode 1の時は<a href="http://swagger.io/">Swagger</a>は別添えだったんですが、今回はとりあえず一緒に突っ込んじゃいました。JSON.NET使ったJSON出力とかも同梱です（というかデフォルトがそれになってます）。まぁSwaggerに関してはDependencyが増えるわけでもないしいいじゃんといえばいいじゃん、なので。いいかな、と。LightNodeのSwagger統合はビュー(HTMLとかCSSとか画像とか）がDLLに埋め込んでやってたんですが、そうしたリソースを.NET Coreで埋め込むにはどうすればいいのか。今まではPropertiesで埋めてったんですが、.NET Coreではproject.jsonに書くのが正解のようですねー。</p>
+<pre><code class="language-json">&quot;buildOptions&quot;: {
+        &quot;embed&quot;: [
+            &quot;Swagger/SwaggerUI/**&quot;
+        ]
+}
+</code></pre>
+<p>buildOptions.embedで指定できるようで、ああ、なるほど、これはこれで知ってれば凄く楽なので、全然良いですね。良いです。いいじゃん.NET Core。</p>
+<p>というわけでサクッとSwagger統合も果たせた。</p>
+<pre><code class="language-csharp">public class Startup
+{
+    public void Configure(IApplicationBuilder app, IHostingEnvironment env, ILoggerFactory loggerFactory)
+    {
+        app.Map(&quot;/api&quot;, builder =&gt;
+        {
+            builder.UseLightNode(typeof(Startup));
+        });
+
+        app.Map(&quot;/swagger&quot;, builder =&gt;
+        {
+            var xmlName = &quot;AspNetCoreSample.xml&quot;;
+            var xmlPath = Path.Combine(Path.GetDirectoryName(Assembly.GetEntryAssembly().Location), xmlName);
+
+            builder.UseLightNodeSwagger(new LightNode.Swagger.SwaggerOptions(&quot;AspNetCoreSample&quot;, &quot;/api&quot;)
+            {
+                XmlDocumentPath = xmlPath,
+                IsEmitEnumAsString = true
+            });
+        });
+    }
+}
+</code></pre>
+<p>うーん、全然いけますね、じゃあ次行こう、次。</p>
+<h2>Glimpse not Included</h2>
+<p>LightNodeのウリはSwagger統合と<a href="http://getglimpse.com/">Glimpse</a>統合、特にGlimpseへの診断情報表示は力を入れていて(Glimpseへのハックも含めて）他にここまでやってるフレームワークはないほどでした。ので、当然ASP.NET Coreでもやりたいわけですが、んー、そもそもGlimpseがまだASP.NET Coreに本対応してない……。2.0 Betaで一応対応してるということで、あるだけマシか？と思いきや、かなり古いもので全然動かない。というかGitHubでの開発も(1.x系も2.x系も)なんかもうほとんど動いてない……。<a href="http://blog.getglimpse.com/2015/07/14/glimpse-and-microsoft-join-forces/">メイン開発者2名がMicrosoftに転職</a>ということで、ASP.NET Core対応含めてよりアクティブになるのかなー、とか思ってたら、まさかの大失速……。多分、Microsoft内では別のことやっていて、そっちが忙しくて以前よりもなお作業できなくなってるんでしょうね。しかし、うーん、残念だなあ。</p>
+<p>ASP.NET Coreに移れない/移りたくない理由があるとしたら、このGlimpseが全然対応してないってことでしょうかねえ。Glimpse自体はほんと素晴らしいので、なんとか再生してくれればいいのですけれど。</p>
+<h2>感想</h2>
+<p>.NET CoreにせよASP.NET Coreにせよ、結構コマンド操作がフィーチャーされてて、ゆとりな私には辛いものがあるんですが、さすがに1.0、普通に書いてる限りは、Visual Studio使ってる限りは特にコマンドの必要性もなく、それなりに快適に書けますね。安定してねえー、とか不満に思うことも全然ないので、もう普通に良さそう。いや、思ってたよりも全然いい感じだった。</p>
+<p>さて、じゃあASP.NET CoreでもLightNode使おうぜ！になるかというと、うーん、とりあえずまずは普通にASP.NET Core MVCでいいでしょう（笑）。時代がねー、ちょっと違いますからね。LightNodeも3年前ですから。まぁ、でも設計思想とか全然古くなってないというかむしろASP.NET Core MVCがようやく追いついてきたかな、ぐらいの勢いだとは思ってます！例えば<a href="https://docs.asp.net/en/latest/mvc/controllers/filters.html">ASP.NET Core MVCのFilter</a>は完全にLightNodeのフィルターと一緒ですからね。</p>
+<pre><code class="language-csharp">// ASP.NET Core MVC
+public class SampleAsyncActionFilter : IAsyncActionFilter
+{
+    public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
+    {
+        // do something before the action executes
+        await next();
+        // do something after the action executes
+    }
+}
+
+// LightNode
+public class SampleFilterAttribute : LightNodeFilterAttribute
+{
+    public override async Task Invoke(OperationContext operationContext, Func&lt;Task&gt; next)
+    {
+        // do something before the action executes
+        await next();
+        // do something after the action executes
+    }
+}
+</code></pre>
+<p><a href="https://docs.asp.net/en/latest/mvc/controllers/filters.html#filters-vs-middleware">Filters vs. Middleware</a>の話なんかも、それは3年前に全部考えきって実装し実践してますから(ﾎｼﾞﾎｼﾞ。という話なんで、まぁ全然LightNode 2もいいじゃないでしょうか。LightNodeは他に、密接に統合されたクライアント自動生成などもありますしね。かわりにMVC + Web API的な、Razorのビューを返すコントローラーとWeb APIコントローラーとの統合、みたいなのができてないのは痛み。ここ馴染ませられないのは普通に不便だということを最近良く感じてるので、ASP.NET Core MVCいいですね。いいですね。</p>
+<p>OWINベースで書いたものの移行はそこそこすんなり行けるだろうなあ、という感触はなんとなく掴めた気がします。逆に、やっぱASP.NET MVC 5あたりからの移行は厳しそう。厳しいでしょう。どうするんでしょうね、どうしようかな、参りましたね……。</p>
+<p>ともあれせっかくの新しい.NETの幕開けなので、もう少しポジティブに情報掴んで行こうかなー、という気にはなれたのでめでたしめでたし。</p>
+</div>
+<h1><a href="https://neue.cc/2016/07/16_534.html">BigQueryを中心としたヴァルハラゲートのログ分析システム</a></h1>
 <ul class="date"><li>2016-07-16</li></ul>
 <div class="entry_body"><p>というタイトルで<a href="https://events.withgoogle.com/google-for-mobile-game-boot-camp-tokyo/">Google for Mobile | Game Bootcamp</a>で発表しました。4月なので3ヶ月遅れでスライド公開です。</p>
 <iframe src="//www.slideshare.net/slideshow/embed_code/key/dcoplrKYrwc1hP" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/bigquery-64082920" title="BigQueryを中心としたヴァルハラゲートのログ分析システム" target="_blank">BigQueryを中心としたヴァルハラゲートのログ分析システム</a> </strong> from <strong><a href="//www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
@@ -1415,161 +1518,6 @@ rxProp.Value = 100;
 <p>劇的！Unityのスタックトレースの表示形式に100%フォーカスして、読みやすさ第一にハックしたので、圧倒的な読みやすさだと思います。スタックトレース芸極めた。普通にWhere.Select.Take.Subscribeがそのまま表示されてますからね。勿論、メソッドコール数が減っているのは単純に性能にも寄与しています。ここまでやれば文句もないでせう。</p>
 <p>そんなvNextの完成時期ですが、今までやるやる詐欺すぎたのですが、そろそろ実際本当に出します。来週ぐらいには本当に出します。これは意地でも仕上げます（想像通りだけれど作業量は多いわコーナーケースの想定が複雑すぎて頭が爆発しそうになるしで辛い……）。というわけでもうちょっとだけ待っててください。</p>
 </div>
-<h1><a href="https://neue.cc/2015/11/03_520.html">EtwStream - ETW/EventSourceのRx化 + ビューアーとしてのLINQPad統合</a></h1>
-<ul class="date"><li>2015-11-03</li></ul>
-<div class="entry_body"><p><a href="https://github.com/neuecc/EtwStream">EtwStream</a>というのをリリースしました。<a href="https://msdn.microsoft.com/en-us/library/windows/desktop/bb968803.aspx">ETW(Event Tracing for Windows)</a> + <a href="https://msdn.microsoft.com/en-us/library/system.diagnostics.tracing.eventsource.aspx">EventSource</a>が.NETで構造化ログをやる際の決定版というか、ETWの最強度が高すぎてそれ以外考えられないレベルなんですが、しかし、がETWは最強な反面ビューアーがありませんでした。ETWというブラックホールにログを投げ込むのはいいんですが、それが自分自身ですら容易に見れないのは不便すぎる！PerfViewとか骨董品みたいなゴミUIを操ってなんとかして見るのは、無理ゲーなわけで、カジュアルにDumpしたいだけなんだよ！テキストのようなログビューアーが欲しいだけなんだよ！に対する答えです。いや、ほんと自分自身が死ぬほど欲しかったのが、これ。</p>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/10905625/cae5a122-825e-11e5-8def-d53feedb879d.gif" alt="etwstreamgif" /></p>
-<p>インストールはLINQPadのNuGetで「EtwStream.LinqPad」。だけ。デフォルトにでも登録しとけばLINQPadを立ち上げるだけですぐにビューアーに！</p>
-<p>EtwStreamが提供するのは、ETWをIObsevable[TraceEvent]に変換することです。Logs are streamsですから、そしてストリームといったらRxですから。あとは、LINQPadのDumpをそのまま流用して、色付けとか加えてあげただけです。フィルタリングしたい？グルーピングしたい？色々混ぜたい？そんなの全部Rxなんだから、ちょっとクエリ書けばいいだけなのです。最強の柔軟性がある。</p>
-<pre><code class="language-csharp">Observable.Merge(
-    ObservableEventListener.FromTraceEvent(&quot;LoggerEventSource&quot;),
-    ObservableEventListener.FromTraceEvent(&quot;MyCompanyEvent&quot;),
-    ObservableEventListener.FromTraceEvent(&quot;PhotonWire&quot;)
-)
-.DumpWithColor(withProviderName: true);
-</code></pre>
-<p>EventSourceの提供する構造化ログ(Structured Logging)に関しては<a href="http://www.buildinsider.net/column/kawai-yoshifumi/003">C#における構造化ログの手法、そしてデータ可視化のためのDomoの薦め</a>で書いたのでそっちを見てくださいな。そうしてEventSourceに移行した場合の最大の懸念であるビューアーがなさすぎ問題を、このEtwStreamが解決します。た。</p>
-<p>ちなみについでにTailっぽくファイルもIObservable[string]に変換するObservableEventListener.FromFileTailもオマケとして入れといたので、そっちもそっちでログビューアー的に使うならきっとベンリ。</p>
-<p>もしEventSourceを使ったロギングをやっていなくても、.NET標準組み込みの、例えばTplEventSourceあたりを眺めてみると、色々な挙動が見えて面白かったりします。あとFromClrTraceEventではGCやThraedPoolの挙動が見れたり、FromKernelTraceEventで普段絶対気にしないカーネルイベントが凄まじい勢いで流れて行ったりが簡単に観測できて、普通に勉強になります。オモチャとしてかなり良いと思いますねー。</p>
-<h2>最初のEventSource</h2>
-<p>EventSourceって何のことだかさっぱりわからん！という人におすすめなのが<a href="https://msdn.microsoft.com/en-us/library/dn440729.aspx">Logging What You Mean: Using the Semantic Logging Application Block</a>というMSDNに転がってるSLABのドキュメントです。これはさすがにひじょーによく書けてるしいいですね。あと、EtwStreamが提供してるのはObservableEventListenerだけで、ロガー的なファイル書き出しとかは一切ないので、そういうのやりたい人は普通にSLAB「も」使いましょう。という感じです。</p>
-<p>さて、EventSourceですが、いきなり構造化ログってのもかなりダルいので、まずは非構造化ログをEventSourceで実現するところから初めてみましょう。いや実際それに、こういういのがちょっとあるとそれはそれでベンリでもありますし。</p>
-<pre><code class="language-csharp">[EventSource(Name = &quot;LoggerEventSource&quot;)]
-public class LoggerEventSource : EventSource
-{
-    public static readonly LoggerEventSource Log = new LoggerEventSource();
-
-    public class Keywords
-    {
-        public const EventKeywords Logging = (EventKeywords)1;
-    }
-
-    string FormatPath(string filePath)
-    {
-        if (filePath == null) return &quot;&quot;;
-
-        var xs = filePath.Split('\\');
-        var len = xs.Length;
-        if (len &gt;= 3)
-        {
-            return xs[len - 3] + &quot;/&quot; + xs[len - 2] + &quot;/&quot; + xs[len - 1];
-        }
-        else if (len == 2)
-        {
-            return xs[len - 2] + &quot;/&quot; + xs[len - 1];
-        }
-        else if (len == 1)
-        {
-            return xs[len - 1];
-        }
-        else
-        {
-            return &quot;&quot;;
-        }
-    }
-
-    [Event(1, Level = EventLevel.LogAlways, Keywords = Keywords.Logging, Message = &quot;[{2}:{3}][{1}]{0}&quot;)]
-    public void LogAlways(string message, [CallerMemberName] string memberName = &quot;&quot;, [CallerFilePath] string filePath = &quot;&quot;, [CallerLineNumber] int line = 0)
-    {
-        WriteEvent(1, message ?? &quot;&quot;, memberName ?? &quot;&quot;, FormatPath(filePath) ?? &quot;&quot;, line);
-    }
-
-    [Event(2, Level = EventLevel.Critical, Keywords = Keywords.Logging, Message = &quot;[{2}:{3}][{1}]{0}&quot;)]
-    public void Critical(string message, [CallerMemberName] string memberName = &quot;&quot;, [CallerFilePath] string filePath = &quot;&quot;, [CallerLineNumber] int line = 0)
-    {
-        WriteEvent(2, message ?? &quot;&quot;, memberName ?? &quot;&quot;, FormatPath(filePath) ?? &quot;&quot;, line);
-    }
-
-    [Event(3, Level = EventLevel.Error, Keywords = Keywords.Logging, Message = &quot;[{2}:{3}][{1}]{0}&quot;)]
-    public void Error(string message, [CallerMemberName] string memberName = &quot;&quot;, [CallerFilePath] string filePath = &quot;&quot;, [CallerLineNumber] int line = 0)
-    {
-        WriteEvent(3, message ?? &quot;&quot;, memberName ?? &quot;&quot;, FormatPath(filePath) ?? &quot;&quot;, line);
-    }
-
-    [Event(4, Level = EventLevel.Warning, Keywords = Keywords.Logging, Message = &quot;[{2}:{3}][{1}]{0}&quot;)]
-    public void Warning(string message, [CallerMemberName] string memberName = &quot;&quot;, [CallerFilePath] string filePath = &quot;&quot;, [CallerLineNumber] int line = 0)
-    {
-        WriteEvent(4, message ?? &quot;&quot;, memberName ?? &quot;&quot;, FormatPath(filePath) ?? &quot;&quot;, line);
-    }
-
-    [Event(5, Level = EventLevel.Informational, Keywords = Keywords.Logging, Message = &quot;[{2}:{3}][{1}]{0}&quot;)]
-    public void Informational(string message, [CallerMemberName] string memberName = &quot;&quot;, [CallerFilePath] string filePath = &quot;&quot;, [CallerLineNumber] int line = 0)
-    {
-        WriteEvent(5, message ?? &quot;&quot;, memberName ?? &quot;&quot;, FormatPath(filePath) ?? &quot;&quot;, line);
-    }
-
-    [Event(6, Level = EventLevel.Verbose, Keywords = Keywords.Logging, Message = &quot;[{2}:{3}][{1}]{0}&quot;)]
-    public void Verbose(string message, [CallerMemberName] string memberName = &quot;&quot;, [CallerFilePath] string filePath = &quot;&quot;, [CallerLineNumber] int line = 0)
-    {
-        WriteEvent(6, message ?? &quot;&quot;, memberName ?? &quot;&quot;, FormatPath(filePath) ?? &quot;&quot;, line);
-    }
-
-    [Event(7, Level = EventLevel.Error, Keywords = Keywords.Logging, Version = 1)]
-    public void Exception(string type, string stackTrace, string message)
-    {
-        WriteEvent(7, type ?? &quot;&quot;, stackTrace ?? &quot;&quot;, message ?? &quot;&quot;);
-    }
-
-    [Conditional(&quot;DEBUG&quot;)]
-    [Event(8, Level = EventLevel.Verbose, Keywords = Keywords.Logging, Message = &quot;[{2}:{3}][{1}]{0}&quot;)]
-    public void Debug(string message, [CallerMemberName] string memberName = &quot;&quot;, [CallerFilePath] string filePath = &quot;&quot;, [CallerLineNumber] int line = 0)
-    {
-        WriteEvent(8, message ?? &quot;&quot;, memberName ?? &quot;&quot;, FormatPath(filePath) ?? &quot;&quot;, line);
-    }
-
-    [NonEvent]
-    public IDisposable MeasureExecution(string label, [CallerMemberName] string memberName = &quot;&quot;, [CallerFilePath] string filePath = &quot;&quot;, [CallerLineNumber] int line = 0)
-    {
-        return new StopwatchMonitor(this, label ?? &quot;&quot;, memberName ?? &quot;&quot;, FormatPath(filePath) ?? &quot;&quot;, line);
-    }
-
-    [Event(9, Level = EventLevel.Informational, Keywords = Keywords.Logging, Message = &quot;[{0}][{2}:{3}][{1}]{4}ms&quot;)]
-    void MeasureExecution(string label, string memberName, string filePath, int line, double duration)
-    {
-        WriteEvent(9, label ?? &quot;&quot;, memberName ?? &quot;&quot;, FormatPath(filePath) ?? &quot;&quot;, line, duration);
-    }
-
-    class StopwatchMonitor : IDisposable
-    {
-        readonly LoggerEventSource logger;
-        readonly string label;
-        readonly string memberName;
-        readonly string filePath;
-        readonly int line;
-        Stopwatch stopwatch;
-
-        public StopwatchMonitor(LoggerEventSource logger, string label, string memberName, string filePath, int line)
-        {
-            this.logger = logger;
-            this.label = label;
-            this.memberName = memberName;
-            this.filePath = filePath;
-            this.line = line;
-            stopwatch = Stopwatch.StartNew();
-        }
-
-        public void Dispose()
-        {
-            if (stopwatch != null)
-            {
-                stopwatch.Stop();
-                logger.MeasureExecution(label, memberName, filePath, line, stopwatch.Elapsed.TotalMilliseconds);
-                stopwatch = null;
-            }
-        }
-    }
-}
-</code></pre>
-<p>ちょっと長いですが、これで</p>
-<pre><code class="language-csharp">LoggerEventSource.Log.Debug(&quot;ほげほげ!&quot;);
-</code></pre>
-<p>とか書いていくだけです。それを書いたアプリを、LINQPadでは</p>
-<pre><code class="language-csharp">ObservableEventListener.FromTraceEvent(&quot;LoggerEventSource&quot;).DumpWithColor();
-</code></pre>
-<p>で、ファイルとかを通さずそのままストリームで外から観測できます。</p>
-<h2>Logs are event streams</h2>
-<p>脱ファイル。ちなみにETWで流したのは最終的にBigQueryに流すのが超おすすめですね！そして<a href="http://neue.cc/2015/10/25_519.html">LINQ to BigQuery + LINQPad</a>で解析する。完璧！これがC#の次世代ログのあるべき姿だ！と、オモイマス。というか逆にもう以前には戻れないかなあ、やっぱり世代が一つ変わった感あります、便利度が全然違うので。</p>
-</div>
 <a href="https://neue.cc/5">Prev |</a>
 <a href="https://neue.cc/7">| Next</a>
 </div>
@@ -1593,6 +1541,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2022/05/">2022-05</a>
 <li><a href="https://neue.cc/2022/04/">2022-04</a>
 <li><a href="https://neue.cc/2022/02/">2022-02</a>
 <li><a href="https://neue.cc/2022/01/">2022-01</a>

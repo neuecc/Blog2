@@ -23,7 +23,162 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2015/10/25_519.html">LINQPad Driver + LINQ to BigQueryによるBigQueryデスクトップGUIクライアント</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2015/11/03_520.html">EtwStream - ETW/EventSourceのRx化 + ビューアーとしてのLINQPad統合</a></h1>
+<ul class="date"><li>2015-11-03</li></ul>
+<div class="entry_body"><p><a href="https://github.com/neuecc/EtwStream">EtwStream</a>というのをリリースしました。<a href="https://msdn.microsoft.com/en-us/library/windows/desktop/bb968803.aspx">ETW(Event Tracing for Windows)</a> + <a href="https://msdn.microsoft.com/en-us/library/system.diagnostics.tracing.eventsource.aspx">EventSource</a>が.NETで構造化ログをやる際の決定版というか、ETWの最強度が高すぎてそれ以外考えられないレベルなんですが、しかし、がETWは最強な反面ビューアーがありませんでした。ETWというブラックホールにログを投げ込むのはいいんですが、それが自分自身ですら容易に見れないのは不便すぎる！PerfViewとか骨董品みたいなゴミUIを操ってなんとかして見るのは、無理ゲーなわけで、カジュアルにDumpしたいだけなんだよ！テキストのようなログビューアーが欲しいだけなんだよ！に対する答えです。いや、ほんと自分自身が死ぬほど欲しかったのが、これ。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/10905625/cae5a122-825e-11e5-8def-d53feedb879d.gif" alt="etwstreamgif" /></p>
+<p>インストールはLINQPadのNuGetで「EtwStream.LinqPad」。だけ。デフォルトにでも登録しとけばLINQPadを立ち上げるだけですぐにビューアーに！</p>
+<p>EtwStreamが提供するのは、ETWをIObsevable[TraceEvent]に変換することです。Logs are streamsですから、そしてストリームといったらRxですから。あとは、LINQPadのDumpをそのまま流用して、色付けとか加えてあげただけです。フィルタリングしたい？グルーピングしたい？色々混ぜたい？そんなの全部Rxなんだから、ちょっとクエリ書けばいいだけなのです。最強の柔軟性がある。</p>
+<pre><code class="language-csharp">Observable.Merge(
+    ObservableEventListener.FromTraceEvent(&quot;LoggerEventSource&quot;),
+    ObservableEventListener.FromTraceEvent(&quot;MyCompanyEvent&quot;),
+    ObservableEventListener.FromTraceEvent(&quot;PhotonWire&quot;)
+)
+.DumpWithColor(withProviderName: true);
+</code></pre>
+<p>EventSourceの提供する構造化ログ(Structured Logging)に関しては<a href="http://www.buildinsider.net/column/kawai-yoshifumi/003">C#における構造化ログの手法、そしてデータ可視化のためのDomoの薦め</a>で書いたのでそっちを見てくださいな。そうしてEventSourceに移行した場合の最大の懸念であるビューアーがなさすぎ問題を、このEtwStreamが解決します。た。</p>
+<p>ちなみについでにTailっぽくファイルもIObservable[string]に変換するObservableEventListener.FromFileTailもオマケとして入れといたので、そっちもそっちでログビューアー的に使うならきっとベンリ。</p>
+<p>もしEventSourceを使ったロギングをやっていなくても、.NET標準組み込みの、例えばTplEventSourceあたりを眺めてみると、色々な挙動が見えて面白かったりします。あとFromClrTraceEventではGCやThraedPoolの挙動が見れたり、FromKernelTraceEventで普段絶対気にしないカーネルイベントが凄まじい勢いで流れて行ったりが簡単に観測できて、普通に勉強になります。オモチャとしてかなり良いと思いますねー。</p>
+<h2>最初のEventSource</h2>
+<p>EventSourceって何のことだかさっぱりわからん！という人におすすめなのが<a href="https://msdn.microsoft.com/en-us/library/dn440729.aspx">Logging What You Mean: Using the Semantic Logging Application Block</a>というMSDNに転がってるSLABのドキュメントです。これはさすがにひじょーによく書けてるしいいですね。あと、EtwStreamが提供してるのはObservableEventListenerだけで、ロガー的なファイル書き出しとかは一切ないので、そういうのやりたい人は普通にSLAB「も」使いましょう。という感じです。</p>
+<p>さて、EventSourceですが、いきなり構造化ログってのもかなりダルいので、まずは非構造化ログをEventSourceで実現するところから初めてみましょう。いや実際それに、こういういのがちょっとあるとそれはそれでベンリでもありますし。</p>
+<pre><code class="language-csharp">[EventSource(Name = &quot;LoggerEventSource&quot;)]
+public class LoggerEventSource : EventSource
+{
+    public static readonly LoggerEventSource Log = new LoggerEventSource();
+
+    public class Keywords
+    {
+        public const EventKeywords Logging = (EventKeywords)1;
+    }
+
+    string FormatPath(string filePath)
+    {
+        if (filePath == null) return &quot;&quot;;
+
+        var xs = filePath.Split('\\');
+        var len = xs.Length;
+        if (len &gt;= 3)
+        {
+            return xs[len - 3] + &quot;/&quot; + xs[len - 2] + &quot;/&quot; + xs[len - 1];
+        }
+        else if (len == 2)
+        {
+            return xs[len - 2] + &quot;/&quot; + xs[len - 1];
+        }
+        else if (len == 1)
+        {
+            return xs[len - 1];
+        }
+        else
+        {
+            return &quot;&quot;;
+        }
+    }
+
+    [Event(1, Level = EventLevel.LogAlways, Keywords = Keywords.Logging, Message = &quot;[{2}:{3}][{1}]{0}&quot;)]
+    public void LogAlways(string message, [CallerMemberName] string memberName = &quot;&quot;, [CallerFilePath] string filePath = &quot;&quot;, [CallerLineNumber] int line = 0)
+    {
+        WriteEvent(1, message ?? &quot;&quot;, memberName ?? &quot;&quot;, FormatPath(filePath) ?? &quot;&quot;, line);
+    }
+
+    [Event(2, Level = EventLevel.Critical, Keywords = Keywords.Logging, Message = &quot;[{2}:{3}][{1}]{0}&quot;)]
+    public void Critical(string message, [CallerMemberName] string memberName = &quot;&quot;, [CallerFilePath] string filePath = &quot;&quot;, [CallerLineNumber] int line = 0)
+    {
+        WriteEvent(2, message ?? &quot;&quot;, memberName ?? &quot;&quot;, FormatPath(filePath) ?? &quot;&quot;, line);
+    }
+
+    [Event(3, Level = EventLevel.Error, Keywords = Keywords.Logging, Message = &quot;[{2}:{3}][{1}]{0}&quot;)]
+    public void Error(string message, [CallerMemberName] string memberName = &quot;&quot;, [CallerFilePath] string filePath = &quot;&quot;, [CallerLineNumber] int line = 0)
+    {
+        WriteEvent(3, message ?? &quot;&quot;, memberName ?? &quot;&quot;, FormatPath(filePath) ?? &quot;&quot;, line);
+    }
+
+    [Event(4, Level = EventLevel.Warning, Keywords = Keywords.Logging, Message = &quot;[{2}:{3}][{1}]{0}&quot;)]
+    public void Warning(string message, [CallerMemberName] string memberName = &quot;&quot;, [CallerFilePath] string filePath = &quot;&quot;, [CallerLineNumber] int line = 0)
+    {
+        WriteEvent(4, message ?? &quot;&quot;, memberName ?? &quot;&quot;, FormatPath(filePath) ?? &quot;&quot;, line);
+    }
+
+    [Event(5, Level = EventLevel.Informational, Keywords = Keywords.Logging, Message = &quot;[{2}:{3}][{1}]{0}&quot;)]
+    public void Informational(string message, [CallerMemberName] string memberName = &quot;&quot;, [CallerFilePath] string filePath = &quot;&quot;, [CallerLineNumber] int line = 0)
+    {
+        WriteEvent(5, message ?? &quot;&quot;, memberName ?? &quot;&quot;, FormatPath(filePath) ?? &quot;&quot;, line);
+    }
+
+    [Event(6, Level = EventLevel.Verbose, Keywords = Keywords.Logging, Message = &quot;[{2}:{3}][{1}]{0}&quot;)]
+    public void Verbose(string message, [CallerMemberName] string memberName = &quot;&quot;, [CallerFilePath] string filePath = &quot;&quot;, [CallerLineNumber] int line = 0)
+    {
+        WriteEvent(6, message ?? &quot;&quot;, memberName ?? &quot;&quot;, FormatPath(filePath) ?? &quot;&quot;, line);
+    }
+
+    [Event(7, Level = EventLevel.Error, Keywords = Keywords.Logging, Version = 1)]
+    public void Exception(string type, string stackTrace, string message)
+    {
+        WriteEvent(7, type ?? &quot;&quot;, stackTrace ?? &quot;&quot;, message ?? &quot;&quot;);
+    }
+
+    [Conditional(&quot;DEBUG&quot;)]
+    [Event(8, Level = EventLevel.Verbose, Keywords = Keywords.Logging, Message = &quot;[{2}:{3}][{1}]{0}&quot;)]
+    public void Debug(string message, [CallerMemberName] string memberName = &quot;&quot;, [CallerFilePath] string filePath = &quot;&quot;, [CallerLineNumber] int line = 0)
+    {
+        WriteEvent(8, message ?? &quot;&quot;, memberName ?? &quot;&quot;, FormatPath(filePath) ?? &quot;&quot;, line);
+    }
+
+    [NonEvent]
+    public IDisposable MeasureExecution(string label, [CallerMemberName] string memberName = &quot;&quot;, [CallerFilePath] string filePath = &quot;&quot;, [CallerLineNumber] int line = 0)
+    {
+        return new StopwatchMonitor(this, label ?? &quot;&quot;, memberName ?? &quot;&quot;, FormatPath(filePath) ?? &quot;&quot;, line);
+    }
+
+    [Event(9, Level = EventLevel.Informational, Keywords = Keywords.Logging, Message = &quot;[{0}][{2}:{3}][{1}]{4}ms&quot;)]
+    void MeasureExecution(string label, string memberName, string filePath, int line, double duration)
+    {
+        WriteEvent(9, label ?? &quot;&quot;, memberName ?? &quot;&quot;, FormatPath(filePath) ?? &quot;&quot;, line, duration);
+    }
+
+    class StopwatchMonitor : IDisposable
+    {
+        readonly LoggerEventSource logger;
+        readonly string label;
+        readonly string memberName;
+        readonly string filePath;
+        readonly int line;
+        Stopwatch stopwatch;
+
+        public StopwatchMonitor(LoggerEventSource logger, string label, string memberName, string filePath, int line)
+        {
+            this.logger = logger;
+            this.label = label;
+            this.memberName = memberName;
+            this.filePath = filePath;
+            this.line = line;
+            stopwatch = Stopwatch.StartNew();
+        }
+
+        public void Dispose()
+        {
+            if (stopwatch != null)
+            {
+                stopwatch.Stop();
+                logger.MeasureExecution(label, memberName, filePath, line, stopwatch.Elapsed.TotalMilliseconds);
+                stopwatch = null;
+            }
+        }
+    }
+}
+</code></pre>
+<p>ちょっと長いですが、これで</p>
+<pre><code class="language-csharp">LoggerEventSource.Log.Debug(&quot;ほげほげ!&quot;);
+</code></pre>
+<p>とか書いていくだけです。それを書いたアプリを、LINQPadでは</p>
+<pre><code class="language-csharp">ObservableEventListener.FromTraceEvent(&quot;LoggerEventSource&quot;).DumpWithColor();
+</code></pre>
+<p>で、ファイルとかを通さずそのままストリームで外から観測できます。</p>
+<h2>Logs are event streams</h2>
+<p>脱ファイル。ちなみにETWで流したのは最終的にBigQueryに流すのが超おすすめですね！そして<a href="http://neue.cc/2015/10/25_519.html">LINQ to BigQuery + LINQPad</a>で解析する。完璧！これがC#の次世代ログのあるべき姿だ！と、オモイマス。というか逆にもう以前には戻れないかなあ、やっぱり世代が一つ変わった感あります、便利度が全然違うので。</p>
+</div>
+<h1><a href="https://neue.cc/2015/10/25_519.html">LINQPad Driver + LINQ to BigQueryによるBigQueryデスクトップGUIクライアント</a></h1>
 <ul class="date"><li>2015-10-25</li></ul>
 <div class="entry_body"><p>Happy signed！何かというと、長らく署名の付いていなかった<a href="http://google-api-dotnet-client.blogspot.jp/2015/07/announcing-release-of-192.html">Google APIの.NET SDKに署名が付いた</a>のです！署名が付くと何ができるかというと、<a href="http://www.linqpad.net/">LINQPad</a>のDriver(プラグイン)が作れます。LINQPadのDriverは署名なしだと起動できないので……。正直、私ももはや署名とか全然重視してないし100億年前の化石概念の負の異物だろ、ぐらいに思ってなくもないのですが、さすがに、LINQPad Driverを作れない、という事態には随分と嘆いたものでした。が、やっと作ることが出来て感無量。そして、実際動かしてみると相当便利ですね。これがやりたかったんですよ、これがー。</p>
 <img src="https://cloud.githubusercontent.com/assets/46207/10714939/78e5bcb8-7b47-11e5-9262-c802040011f8.png" width=640 />
@@ -1527,33 +1682,6 @@ await list.LeftPush(10, expiry: DateTime.Now.AddDays(1));
 <h2>まとめ</h2>
 <p>ともあれOpen on GitHubはマジベンリ。うちの会社はGitHubでリポジトリ管理してるんですが、いっつも社内チャットに貼り付けるURLとか探してくるのひぢょーにダルくて、ずっと欲しかったのよね。やっと重い腰を上げて作りました。ほんとベンリ。もっと早くに作っておけば良かった。</p>
 </div>
-<h1><a href="https://neue.cc/2014/12/30_500.html">2014年を振り返る</a></h1>
-<ul class="date"><li>2014-12-30</li></ul>
-<div class="entry_body"><p>振り返るシリーズ第三弾。12/30日にやってるのは誕生日なので、まぁ今年もそれで、と。今年は<a href="http://grani.jp/">グラニ</a>設立2年目になったわけですが、去年のまとめでは</p>
-<blockquote>
-<p>ここ数年は、毎年ジェットコースター状態で目まぐるしく変化していて。けれど、大きな目標からはブレないで、年々近づけている気がします。一番最初に若くない人サイドに入ったとか、新陳代謝とか言いましたが、来年はそういうことが起こる状態を作っていきたいですね。C#が、若い人がこぞって使うような言語になってればいい、と。そのためにできること。人がすぐに思い浮かべられる、メジャーなアプリケーションの創出と、C#による圧倒的な成果、C#だからこその強さ、というのを現実に示していくこと。雇用の創出、の連鎖。</p>
-</blockquote>
-<p>なるほど。達成度でいうと、今年は残念ながら弱いかなぁ、うむむむ。そこに向けて突き進んでいるというのは変わらないのですが、来年に向けての準備といった感になってしまったかも。あとは、どちらかというと一年目の総まとめみたいな感じ。一番大きなセッションは<a href="http://www.awssummittokyo.com/">AWS Summit Tokyo 2014</a>での発表、<a href="http://www.slideshare.net/neuecc/aws-windowscnet">AWS + Windows(C#)で構築する.NET最先端技術によるハイパフォーマンスウェブアプリケーション開発実践</a>かな？一端の成果を示したうえで、次のステップへ、といったような。</p>
-<h2>C#</h2>
-<p>今年は大分記事数少なめになってしまってます！過去最小かも。かわりにライブラリは過去最多で作ったかもしれません。</p>
-<p>去年に引き続き、前半は<a href="https://github.com/neuecc/LightNode">LightNode</a>の作成続き。OWIN上に作られたMicro RPC/REST  フレームワーク。コンセプトはいいと思うし実装もかなりいいと思うし、既にプロダクションに突っ込んで稼働してるんで、ちゃんと使えるし作って良かったとは思ってます。ASP.NET MVC 6で<a href="http://blog.shibayan.jp/entry/20141123/1416746894">Action FilterがOWIN風デリゲートチェーンになってる</a>のなんかはLightNodeでは最初からそうしてるし、絶対そのほうがいいでしょﾄﾞﾔｧ、言ったとおりでしょ！といった先見の明もある！が、しかし、コミット止まって完全に息切れしてますね（笑）</p>
-<p>というのも、うーん、まぁ去年後半から今年前半にかけてはOWINへの傾倒もあったのですけれど、ASP.NET vNextがね……。アレによって完全にOWIN無価値になりましたから。思想的/コードのふいんき的な面では親しいところがあるので、今やるならOWINベースで書くのは良いと思ってます。そうすればvNextへの「移植」が容易になりますから。でも、移植なんですよね、そのまま持ってく（一応互換レイヤーで持ってけますが）わけではないところからして、萎える……かなりOne ASP.NET(笑)感があって、割と嫌な気分ですねー。誰かマジに<a href="http://r.jazug.jp/event/goazure/">来日するScott Hanselman</a>に突っ込んでくださいよ（私は行きません）。とはいえ良くなってる面も理解できるんで、来年は気持ちを切り替えてvNextやりますよ、はい。ちなみにLightNode自体は、vNextベースで、ちょっと違う形で生まれ変わるはずです、という計画があります、やるやる詐欺。</p>
-<p><a href="http://neue.cc/2014/03/11_447.html">RespClient</a>というPowerShell向けのRedisクライアント/コマンドレットも今年作りました。これはまぁ、たまに私自身も便利にツカッテマス。メンテは<a href="http://tech.guitarrapc.com/">guitarrapc先生</a>に譲りました。Redisは相変わらずモリモリ使ってまして、素晴らしいKVSだと思います。来年はやはりこれも放置気味な<a href="https://github.com/neuecc/CloudStructures">CloudStructures</a>をStackExchange.Redisに対応させないと、という……。</p>
-<p>そして今年最大の気合の入れ方でリリースしたのが<a href="https://github.com/neuecc/UniRx">UniRx - ReactiveExtensions for Unity</a>。絶対に必要になる、と、こそこそ作ってたんですが、実際良いもの、欠かせないものになったと思ってます。そして、成功した！と言ってもいいかなー。uFrameに同梱されるようになったとか、海外でも反響あったうえに、国内でもじわじわ話題になりだしていて、かなりいい感じです。来年もがんがん更新していきたい（ちなみに現在AssetStoreでアップデート申請中！）。また、UnityコミュニティとC#コミュニティには若干の断絶がありますが、そこも埋められたらな、といったところですね。</p>
-<p>ちなみにUnity関連では、他に<a href="http://neue.cc/2014/11/11_482.html">LINQ to GameObject</a>という小品もリリースしたりしたり。</p>
-<p><a href="http://neue.cc/2014/09/24_479.html">LINQ to BigQuery</a>というGoogle BigQuery用のライブラリも結構な大物でした、と作るの大変だった（というか面倒だった）度合い的に。BigQueryは、正直、凄い。.NETの人もAzureの人も、とりあえず使うべき。うちの会社も基本AWSですが、BigQueryだけはBigQuery。BigQueryに突っ込むためのロギング周りについても一家言できたのですが、その辺は<a href="https://github.com/neuecc/EtwStream/">EtwStream</a>という作りかけの謎プロジェクトがあるので、それが完成した時にでも、お話しましょう（実際作りきりたいとはオモッテマス）</p>
-<p>今年はUniRx(Rx), LINQ to BigQuery(Queryable), LINQ to GameObject(LINQ to XML)を通して、改めてLINQとは何ぞやか、というのを掲示できたのも良かったかと思います。口で説明するよりモノで黙らせたほうが早いというアレソレ。</p>
-<h2>会社</h2>
-<p>いいところは、今年も非常に強力なメンバーが多くJOINしてくれた！人は会社の原動力ですからね、うちを選んでくれたことに大変感謝です。「C#」では本当に、類を見ないほど力のある会社となっているのではないかな、と。より能力を発揮してもらうような環境を作りたいですね。</p>
-<p>さて、今年はやけにCTOの役割とは！みたいなテーマが盛り上がったところですが、私の場合どうかしらん。広告塔代わりであったり求人面であったりなんかは、十二分すぎるほど果たせたとは思います。技術選定なんかも適度に先駆的に、的確だった。少なくとも失敗はない。合間合間にガッと作ってるライブラリ郡も（会社でコソッと作る時間も少し持ってますが、基本的には家で仕上げてますよ）、戦略的に根幹をなすようにしたりで、よくやれたんじゃないかなー。</p>
-<p>とはいえ反省点は多かったり。割と勢いだけで突っ走れた1年目と違って2年目は中々むつかしく。特に時間が細切れになるのは避けられなくて、どうも集中しきれず成果としてはかなりイマイチ。この辺は受け入れつつ細切れでも効率的に作業できるよう自分を律するしかないですかね、といった感。そんなわけで自社のプログラムにがっつり関われたかというとかなりそうでもないのが、もにょもにょ。かなり良くない。総論するとどーも歯切れ悪い感じ。来年はドヤッ！といえるようにならないとかな。</p>
-<h2>ゲーム</h2>
-<p>PS4やXbox Oneも買ったのですが、うーん。結局やっぱりあんまプレイしてないのよねー。ただまぁPS4&gt;超えられない壁&gt;Xbox Oneというのは痛感しました、これはキビシイ……。Kinect2も割とガッカリ系。そんなわけで<a href="http://thelettervsixtim.es/">vvvvvv</a>のiOS移植が一番楽しんだのかも。</p>
-<h2>音楽</h2>
-<p>今年中頃からはずっと<a href="http://oomoriseiko.info/">大森靖子</a>聞いてましたね、ライブにも行ったし……。YouTube動画だと弾き語りの<a href="https://www.youtube.com/watch?v=Ww1H_BIOgGQ">大森靖子 LIVE @ TIF2013</a>とバンド編成の<a href="https://www.youtube.com/watch?v=a6DdaXvtW_0">大森靖子＆THEピンクトカレフ＠ZeppDiverCity</a>あたりがお薦め。エキセントリックな情報とかインターネット時代の戦略とか、うーん、まぁ、パンクですよ、パンク（適当）。</p>
-<h2>来年</h2>
-<p>テーマは「クライアントサイドとサーバーサイドをC#で統一することのメリットの実証」「さらにリアルタイムネットワークもC#で統一」「のためのヒットアプリケーションの創出」です。指向はあんま変わってないんですが、より具体的に。来年は動く年かな、といったところなので是非期待してください。</p>
-</div>
 <a href="https://neue.cc/6">Prev |</a>
 <a href="https://neue.cc/8">| Next</a>
 </div>
@@ -1577,6 +1705,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2022/05/">2022-05</a>
 <li><a href="https://neue.cc/2022/04/">2022-04</a>
 <li><a href="https://neue.cc/2022/02/">2022-02</a>
 <li><a href="https://neue.cc/2022/01/">2022-01</a>

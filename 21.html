@@ -23,7 +23,170 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2010/04/05_249.html">C#で原始的にSQLを扱うお話</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2010/04/07_250.html">DbExecutor - Linqで操作しやすいSQL実行ライブラリ</a></h1>
+<ul class="date"><li>2010-04-07</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://dbexecutor.codeplex.com/" title="DbExecutor - linq based database executor">CodePlex : DbExecutor - linq based database executor</a></li>
+</ul>
+<p><a href="http://neue.cc/2010/04/05_249.html" title="neue cc - C#で原始的にSQLを扱うお話">前回の記事</a>を書いたところ、ついったで素敵な突っ込みを頂けたので、それを元にもう少し練り直してライブラリ化し、CodePlexに公開しました。ライブラリといっても<a href="http://linqcomparer.codeplex.com/" title="AnonymousComparer - lambda compare selector for Linq">AnonymousComparer</a>と同じく単純なものですので、ソースコード一本のみ。ご自由にお使いください。例によってCodePlexでの英語がヤバい（小学生レベル、とりあえず何でもforつけておけばいいだろ、的な）ですね、世の中厳しい。</p>
+<p>Linq to Sqlと名乗りたいところなのですが、本物がありますから名乗れないー。以前はIQueryableじゃないものをLinq to Hogeって言うのはどうよ、なんて思っていたのですが、考えてみるとLinq to XmlもXMLをIEnumerableベースに処理しやすいような構造を持たせたクラス群にすぎず、別にIQueryableは関係ない。Rxもそうで、あれはIEnumerableでもIQueryableでもなく完全に独立している、けれど、Linq to Events。ようするにLinq的な操作が出来ればLinqなわけです。というわけで、これはSqlをIEnumerableベースで処理出来るようにしたLinq to DB。でも本当に超絶薄いラッパーにすぎないのであんまカッコつけた名前付けるのも恥ずかしくDbExecutorという極々普通の名前に落ち着きました。「Linqで操作しやすい」とかいう釣りタイトルをつけてますが、ただたんにIEnumerable返すというだけです。SQL周りは真剣に追いかけると無限泥沼になる気がする(Entity Framework、そして更にその次へと……？)。追いかけてみたいですが、まあ、まずは、一歩目から。</p>
+<p>何で作ったかと言うと、SQLを扱っていて嫌なusing地獄を殺したかったから。</p>
+<pre><code class="language-csharp">using (var conn = new SqlConnection(&quot;connectionString&quot;))
+using (var cmd = conn.CreateCommand())
+{
+    conn.Open();
+    cmd.CommandText = &quot;select ....&quot;;
+    using (var reader = cmd.ExecuteReader())
+    {
+        foreach (IDataRecord item in reader)
+        {
+</code></pre>
+<p>ちょっとクエリ呼びたいだけなのに、普通にこの量、このネスト。こんなんだからLLの人に馬鹿にされてしまうんだよ。で、ふと思ったのは、この図式ってもしかしてWebRequestと同じですか？</p>
+<pre><code class="language-csharp">string html;
+var req = (HttpWebRequest)WebRequest.Create(&quot;http://google.co.jp&quot;);
+using (var res = req.GetResponse())
+using (var stream = res.GetResponseStream())
+using (var sr = new StreamReader(stream))
+{
+    html = sr.ReadToEnd();
+}
+</code></pre>
+<p>ちょっとWebからデータを取得したいだけなのに狂ったようにusingを重ねなければならない！そしてもう一つ嫌なのが、変数に渡す際に、usingのスコープが絡むので場合によっては外で定義しなければならないこと。string html;だってさ。嫌だ嫌だ。別にvarが使えないから嫌だと言っているわけじゃなくて(半分はそうなのですが)、代入位置と宣言が離れるのは可読性が落ちます。あとは、単純に不恰好ですしね。そんなWebRequestですが、WebClientという簡単に使えるものが用意されているので、普段はこっちを使うわけです。</p>
+<pre><code class="language-csharp">var html = new WebClient().DownloadString(&quot;http://google.co.jp&quot;);
+</code></pre>
+<p>素晴らしい！ 私はWebClientが好きです。簡単なのは良いこと、を体現していますから。ネット上のサンプルがやたらとWebRequestを使うものばかりなことを嘆きます。<a href="http://neue.cc/2009/12/17_230.html">WebRequestとWebClientでCookie認証をする方法</a>とかいう記事を書いたりと、必死に普及に励んだりしていますが中々どうして焼け石に水、ていうか確かに少し凝ったことをやろうとすると面倒くさいのは否めませんね……。</p>
+<p>というわけかで、偉大なるWebClientを見習って、SqlConnectionの一連の流れを抹殺するラッパーを作ってみました。プリミティブなAPIなんて触りたくないっす。プリミティブなものは魅力どころか穢れたものに見えてしまうので、可能な限り隠蔽してやりたいのです。本当は生のSQLだって触りたくないんですけどね……。さて、目標は、簡単に使えることと、usingが極力表に出ないようにすること。とりあえず利用例から。PersonTableというAgeとFirstNameとLastNameが格納されてるテーブルからデータを引っ張ってきます。</p>
+<pre><code class="language-csharp">// ただの入れ物
+public class Person
+{
+    public string Name { get; set; }
+    public int Age { get; set; }
+}
+
+static class Program
+{
+    static void Main(string[] args)
+    {
+        // 実行→即Closeの場合静的メソッドを用いる(Regexと同じ感覚で)
+        var maxAge = DbExecutor.ExecuteScalar&lt;int&gt;(new SqlConnection(&quot;ConnectionString&quot;),
+            @&quot;select max(Age) from PersonTable&quot;);
+
+        // 接続を維持して複数回実行する場合はインスタンス生成で
+        using (var executor = new DbExecutor(new SqlConnection(&quot;ConnectionString&quot;)))
+        {
+            // 列名とプロパティ名を対比させてマッピング
+            // パラメータはstring.Format的に@p0, @p1などに対して適用される
+            var persons = executor.ExecuteQuery&lt;Person&gt;(@&quot;
+select
+    FirstName + ' ' + LastName as Name,
+    Age
+from PersonTable
+where Age &lt; @p0 and FirstName = @p1&quot;
+                , 20, &quot;Osakana&quot;).ToList(); // 遅延評価なのでusingを抜ける前にリスト化などどうぞ
+
+            // ExecuteReadはIEnumerable&lt;IDataRecord&gt;で一行ずつ取得できる
+            var persons2 = executor.ExecuteRead(@&quot;select * from PersonTable&quot;)
+                .Select(dr =&gt; new
+                {
+                    Age = dr.GetInt32(0),
+                    FirstName = dr.GetString(1),
+                    LastName = dr.GetString(2)
+                });
+        }
+    }
+}
+</code></pre>
+<p>といった感じに、処理用のラッパーにDB接続を渡して実行します。メソッドはExecuteScalar, ExecuteNonQuery, ExecuteRead, ExecuteQueryの4つ。ScalarとNonQueryは普通のと同じ、Readは一行毎に列挙、Queryはオブジェクトへのマッピングが出来ます。4つのメソッドの引数は全て同じで、string query, params object[] parametersになります。パラメータは@p0, @p1, といったように「@p順番」に対して適用されます。</p>
+<p>実行して即座にコネクションを閉じたい場合は静的メソッドを、接続を維持したまま複数実行した場合はインスタンスを生成してください。DbExecutor自体がIDisposableで、Dispose時に中のコネクションに対しDisposeを呼びます。なお、トランザクション関連のメソッドはありませんが、それはTransactionScopeを使ってくださいな。</p>
+<h2>スコープと遅延評価</h2>
+<p>同じ処理はメソッドに括り出す！Don't Repeat Yourself！コピペ禁止！ではあるものの、スコープが絡むと結構難しい。usingは難敵です。以下、実装の一部。</p>
+<pre><code class="language-csharp">// 実装(一部抜粋)
+public class DbExecutor : IDisposable
+{
+    // usingを共通化させたいんだけど、普通に値返すとスコープ抜けちゃう
+    // →IEnumerableで包んでしまえばいいぢゃない！
+    private IEnumerable&lt;DbCommand&gt; UsingCommand(string query, object[] parameters)
+    {
+        using (var cmd = dbConnection.CreateCommand())
+        {
+            if (dbConnection.State != ConnectionState.Open) dbConnection.Open();
+            cmd.CommandText = query;
+            foreach (var p in parameters.Select((v, i) =&gt; CreateParameter(cmd, &quot;@p&quot; + i, v)))
+            {
+                cmd.Parameters.Add(p);
+            }
+            yield return cmd;
+        }
+    }
+
+    // UsingCommand().First().ExecuteScalar()だとusingを抜けてから実行になるのでダメなのですよー
+    public T ExecuteScalar&lt;T&gt;(string query, params object[] parameters)
+    {
+        return UsingCommand(query, parameters).Select(c =&gt; (T)c.ExecuteScalar()).First();
+    }
+
+    public IEnumerable&lt;IDataRecord&gt; ExecuteRead(string query, params object[] parameters)
+    {
+        return UsingCommand(query, parameters).SelectMany(c =&gt; c.EnumerateAll());
+    }
+}
+
+public static class IDbCommandExtensions
+{
+    public static IEnumerable&lt;IDataRecord&gt; EnumerateAll(this IDbCommand command)
+    {
+        using (var reader = command.ExecuteReader())
+        {
+            while (reader.Read()) yield return reader;
+        }
+    }
+}
+</code></pre>
+<p>UsingCommandメソッドが苦心の跡です。ExecuteScalarとExecuteReadの処理(DbCommand取ってパラメータ足す)を共通化したかったのですが、usingが難敵で。ExecuteScalarはTを返すから即時実行、これをusingで一部括り出すのは簡単なのですが、問題はExecuteRead。IEnumerableを返すから遅延実行で、これに対してusing(cmd){return cmd}なんて関数を使ってしまうと、実行時に即座にusingのスコープを抜けてしまってusingが無効になってしまう(どころかDispose済みになってしまうので実効時エラー)。</p>
+<p>じゃあどうすればいいか、というと、usingに括り出した部分も遅延評価してしまえばいい。そこで要素一つのみでyield returnする。そして、即時評価のものはSelect-&gt;First、遅延評価のものはSelectManyを使うことで、無事Usingを共通化出来ました。おお、Linqは何と素晴らしいのでしょうか！何かと言うと、つまりは、Linq to Objectsの用途はリスト処理だけじゃないんですね。IEnumerableはインフラ。そして、Reactive Extensionsに入っているEnumerableEx.Return(これはEnumerable.Repeat(elem,1)に等しい)の意味合いがジワジワくる。Returnは明らかにHaskell由来の命名で、モナドが(以下略、もしくはナンダッテー)</p>
+<p>で、まあ、利用時は結局データベースとの接続やトランザクションとの兼ね合いもあるので、接続の状態自体は割と意識してないとダメですね。適当なところでToListとでもしておいてください。この辺も含有した上での解決策は課題ですね、今はうまいやり方が全然思いつかない。</p>
+<h2>SQLiteで使う</h2>
+<p>勿論、SqlServer以外でも使えます。<a href="http://sqlite.phxsoftware.com/">System.Data.SQLite</a>で試しましたが、問題なく動きました。というわけで、Hello, SQLite。SQLiteをインストールしたら参照設定にSystem.Data.SQLiteを加えて</p>
+<pre><code class="language-csharp">var builder = new SQLiteConnectionStringBuilder { DataSource = &quot;test.db&quot; };
+
+using (var executor = new DbExecutor(new SQLiteConnection(builder.ConnectionString)))
+{
+    var existsTable = executor.ExecuteRead(@&quot;select * from sqlite_master where type='table' and name = @p0&quot;, &quot;test&quot;)
+        .Any();
+    if (!existsTable)
+    {
+        executor.ExecuteNonQuery(@&quot;create table test (Age, Name)&quot;);
+        executor.ExecuteNonQuery(@&quot;insert into test values(10,'hoge')&quot;);
+        executor.ExecuteNonQuery(@&quot;insert into test values(20,'tako')&quot;);
+        executor.ExecuteNonQuery(@&quot;insert into test values(30,'ika')&quot;);
+    }
+
+    executor.ExecuteRead(@&quot;select * from test where Age &gt;= @p0&quot;, 20)
+        .Select(dr =&gt; new { Age = dr.GetInt32(0), Name = dr.GetString(1) })
+        .ToList()
+        .ForEach(a =&gt; Console.WriteLine(a.Name + &quot;:&quot; + a.Age));
+}
+</code></pre>
+<p>existsTableのクエリはテーブルがあるかないかを調べるもので、一行帰ってくるならテーブルが存在する、何も帰ってこない時はテーブルが存在しない。というわけで、それAny()で、ですね。IEnumerableベースで扱えると、こういうことが非常に楽です。</p>
+<p>それにしてもSystem.Data.SQLiteいいですね、初めて使ったんですが拍子抜けするぐらいに簡単に試せました。インストールしたら参照設定に加えるだけ、DataSourceに直にファイル名指定すれば、あれば読み込み、なければ生成してくれる。データベースは設定が面倒っちいですからねー、こう簡単に出来るのは嬉しいです。</p>
+<h2>おまけ</h2>
+<p>で、まあ、VS2008ならLinq to SQL/Entities使わないのー？って話であり、まあ、ねえ、確かに、ねえ。なので、ひっそりとVS2005バージョンも作ってみました(zipに同梱してあります)。内部的にも(当然)Linq未使用なので
+、VS2008で対象フレームワークが.NET 2.0の場合でも、こちらなら使えます。内部でSelectとかSelectManyを再定義して、拡張メソッドの呼出じゃなくて普通の呼び出しに書き換えただけです。あまりの型推論の効かなさにイライラしました。もうC#2.0に戻るとか無理すぎるだろ常識的に考えて。</p>
+<pre><code class="language-csharp">List&lt;Person&gt; persons = executor.ExecuteRead&lt;Person&gt;(@&quot;select * from PersonTable&quot;, null,
+    delegate(IDataRecord dr)
+    {
+        Person p = new Person();
+        p.Age = dr.GetInt32(0);
+        p.Name = dr.GetString(1) + &quot; &quot; + dr.GetString(2);
+        return p;
+    });
+</code></pre>
+<p>ExecuteReadとExecuteQueryは、IEnumerableを返されても困ると思うので、Listを返すようにしています。ExecuteReadはSelectがないので、第三引数でConverterデリゲートを受けるようにして、Selectの代わりにしました。
+使う分には、VS2008のものとさして変わらないと思います。</p>
+<h2>追記</h2>
+<p>初回リリース時の名前はDbExecuterだったんですが、DbExecutorに変更しました。stableとか言っておきながら4時間で撤回とか、殺されていいですね、ほんとすみませんすみません。あまりの恥ずかしさに穴掘って埋まりたいです……。まあ、executerでもよくね？と思わなくもなくもないのですが、実際問題ぐぐる先生の検索結果で大きな差があるので、むしろ変えるなら、たった4時間の今のうちしかない、と思ったので変更しちゃいました。しかし、ああ……。スペルは結構気をつけてるほうだと思ったんだけどなあー。</p>
+</div>
+<h1><a href="https://neue.cc/2010/04/05_249.html">C#で原始的にSQLを扱うお話</a></h1>
 <ul class="date"><li>2010-04-05</li></ul>
 <div class="entry_body"><p>世の中はLinq to SQLだのLinq to Entitiesだのを羨ましいなあ、と指を加えて眺めている昨今ですがこんばんわ。Linq好きーな私ですがこのサイトではObjectsとXmlしか扱っていないのは、単純に私が触った事ないから、です。あうあう。そんな私ですが、SQLを(大変嫌々ながら)触らなければならなかったりする場合もないわけじゃないのですが、アレですね、思うのはパラメータ。あれにadd。add。するのが大変美しくない。もっと格好良く、一発で決めようぜ。と思って色々悩んだんですが、どうにも上手く行きそうにない。やけくそになってビルダー＋コレクション初期化子を考えてみました。</p>
 <pre><code class="language-csharp">var cmd = new SqlCommand();
@@ -926,70 +1089,6 @@ Game Console:Xbox360 Elite</p>
 <h2>更新履歴</h2>
 <p>2010/01/22 CPU-Zによるベンチマークの画像を張り忘れていました(画像自体のアップロードは行っていたのですがHTMLに張り忘れていた)。申し訳ありませんでした。</p>
 </div>
-<h1><a href="https://neue.cc/2010/01/07_234.html">C#(.NET Framework)の文字列連結について</a></h1>
-<ul class="date"><li>2010-01-07</li></ul>
-<div class="entry_body"><p>一般に文字列を+=で連結するのは遅いと言われています。事実そのとおりで、多量の連結を+=で行うと死ぬほど時間がかかります。例えば、以下のようなコードで示されることが多いでしょう。</p>
-<pre><code class="language-csharp">// ベンチマーク用関数(10万回実行)
-Func&lt;Action, TimeSpan&gt; bench = action =&gt;
-{
-    var sw = Stopwatch.StartNew();
-    for (int i = 0; i &lt; 100000; i++)
-    {
-        action();
-    }
-    return sw.Elapsed;
-};
-
-// StringBuilderの計測(最後のToStringを入れてませんが、あまり変わらないのでスルー)
-var sb = new StringBuilder();
-var sbTime = bench(() =&gt; sb.Append(&quot;hoge&quot;));
-// stringの+=での計測
-var s = &quot;&quot;;
-var stringTime = bench(() =&gt; s += &quot;hoge&quot;);
-
-Console.WriteLine(sbTime); // 0.004sec
-Console.WriteLine(stringTime); // 14.97sec
-</code></pre>
-<p>0.004secと15secでは話になりません(正確には、StringBuilderでは最後に文字列に変換するToStringを入れるべきですが、それでも1secは超えなくて差は歴然なので省略します)。ならば、文字列を連結する場合は、どのような時でもパフォーマンスのためにStringBuilderを使うべきでしょうか？ 答えは違います。</p>
-<pre><code class="language-csharp">// ILではひとつにまとまる
-// IL_0001:  ldstr      &quot;abcde&quot;
-var s = &quot;a&quot; + &quot;b&quot; + &quot;c&quot; + &quot;d&quot; + &quot;e&quot;;
-</code></pre>
-<p>定数の連結はコンパイル時にひとまとめにされるので、StringBuilderを使うのは愚かな選択となります。この辺はILDASMで見ればわかるし、Reflectorでもひとまとめになって展開されているのが確認できます。では定数ではなく動的に値を返すものは？</p>
-<pre><code class="language-csharp">static string Get()
-{
-    return DateTime.Now.ToString();
-}
-
-static void Main(string[] args)
-{
-    // IL_0031:  call       string [mscorlib]System.String::Concat(string[])
-    var s = Get() + Get() + Get() + Get() + Get();
-}
-</code></pre>
-<p>ILを見ると、s += Get(); s += Get(); みたいな展開のされかたにはならず、String.Concat(string[])が呼ばれることになります。よって、速度を心配してStringBuilderを使う必要は全くありません。測定してみましょう。(ちなみにs+=Get()だとString.Concat(string,string)が大量に呼ばれることになるのが遅い理由)</p>
-<pre><code class="language-csharp">// benchとGetは上で使ったのと同じものを流用
-var sbTime = bench(() =&gt;
-{
-    var sb = new StringBuilder();
-    sb.Append(Get())
-      .Append(Get())
-      .Append(Get())
-      .Append(Get())
-      .Append(Get());
-    var s = sb.ToString();
-});
-
-var stringTime = bench(() =&gt;
-{
-    var s = Get() + Get() + Get() + Get() + Get();
-});
-
-Console.WriteLine(sbTime); // 0.65sec
-Console.WriteLine(stringTime); // 0.64sec
-</code></pre>
-<p>速度はほとんど変わりません。StringBuilderとString.Concatでは処理の中身は結構違いますが、速度変わらないのならどっちでもいいよね。なら、記述しやすいほうを選ぶのが良いでしょう。妄信的にパフォーマンスのためにStringBuilder！とか思っている人は、少し考え直してみてください。そんなの当たり前だろ常識的に考えて、と思っていた時期が私にもありました……。世の中は存外StringBuilder神話に溢れているかもですよ？ いやほんと。あとC#なら逐語的リテラル文字列もお忘れなく。</p>
-</div>
 <a href="https://neue.cc/20">Prev |</a>
 <a href="https://neue.cc/22">| Next</a>
 </div>
@@ -1013,6 +1112,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2022/05/">2022-05</a>
 <li><a href="https://neue.cc/2022/04/">2022-04</a>
 <li><a href="https://neue.cc/2022/02/">2022-02</a>
 <li><a href="https://neue.cc/2022/01/">2022-01</a>
