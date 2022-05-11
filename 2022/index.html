@@ -134,7 +134,9 @@ app.Run();
 <p>ところで、そして究極的な利点は、全てC#で組めるということです。どういうことかというと、MagicOnionもLogicLooperも汎用的なC#フレームワークです。特別なプラグインを差し込んで処理するというわけではなくて、ふつーのC#コードをふつーに書くことで、それぞれの箇所に、アプリケーション固有のコードを仕込んでいくことができる。これが、本当の大きな利点です。専用のC++ミドルウェアを作って挟んで最適化できるぞ！などといったシステムは、素晴らしいことですが、専門性が高く再現性が低い。MagicOnionとLogicLooper、そしてAlterNatsを活用したこの構成なら、C#エンジニアなら誰でも（容易に）できる構成です。<a href="https://cysharp.co.jp/">Cysharp</a>のメッセージは「C#の可能性を切り開いていく」ですが、誰もが実現できる世界を作っていくというのが目標でもあります。</p>
 <p>なお、ワーカーとしてのLogicLooperを作るに<a href="https://docs.microsoft.com/ja-jp/dotnet/core/extensions/workers">Worker Service</a>という.NET 6からのプロジェクトタイプが適切です。</p>
 <h2>ハイパフォーマンスSocketプログラミング</h2>
-<h3>Socket API</h3>
+<ul>
+<li>Socket API</li>
+</ul>
 <p>C#で最も低レベルにネットワーク処理を扱えるクラスは<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.net.sockets.socket">Socket</a>です。そして、非同期でハイパフォーマンスな処理を求めるなら<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.net.sockets.socketasynceventargs">SocketAsyncEventArgs</a>をうまく再利用しながらコールバックを仕込む必要があります。</p>
 <p>これは非常に厄介で些か難易度も高いのですが、現在はasync/awaitの時代、ちゃんとawaitできる***Asyncメソッド郡が用意されています。しかし、使ってはいけないAPI、使ってはいけないオーバーロードも並んでいるので、その選別が必要です。SocketのAPIは歴史的事情もあり混沌としてしまっているのです……。</p>
 <p>使うべきAPIを分かりやすく見分ける手段があります。それは戻り値が <code>ValueTask</code> のものを選ぶことです。</p>
@@ -149,7 +151,9 @@ public Task&lt;int&gt; ReceiveAsync(ArraySegment&lt;byte&gt; buffer, SocketFlags
 public Task&lt;int&gt; SendAsync(ArraySegment&lt;byte&gt; buffer, SocketFlags socketFlags)
 </code></pre>
 <p>ValueTask返しのAPIは内部的には <code>AwaitableSocketAsyncEventArgs</code> というものがValueTaskの中身になるようになっていて、これがいい感じに使いまわされる(awaitされると内部に戻るようになっている）ことで、Taskのアロケーションもなく効率的な非同期処理を実現しています。<code>SocketAsyncEventArgs</code>の使いにくさとは雲泥の差なので、これは非常にお薦めできます。</p>
-<h3>テキストプロトコルのバイナリコード判定</h3>
+<ul>
+<li>テキストプロトコルのバイナリコード判定</li>
+</ul>
 <p><a href="https://docs.nats.io/reference/reference-protocols/nats-protocol">NATSのプロトコル</a>はテキストプロトコルになっていて、文字列処理で簡単に切り出すことができます。実際これはStreamReaderを使うことで簡単にプロトコルの実装ができます。ReadLineするだけですから。しかし、ネットワークに流れるのは(UTF8)バイナリデータであり、文字列化は無駄なオーバーヘッドとなるため、パフォーマンスを求めるなら、バイナリデータのまま処理する必要があります。</p>
 <p>NATSでは先頭の文字列(<code>INFO</code>, <code>MSG</code>, <code>PING</code>, <code>+OK</code>, <code>-ERR</code>など)によって流れてくるメッセージの種類が判定できます。文字列処理で空白でSplitして if (msg == &quot;INFO&quot;) などとすればめちゃくちゃ簡単ですが、先にも言った通り文字列変換は意地でも通しません。INFOは[73, 78, 70, 79]なので、Slice(0, 4).SequenceEqual で判定するのは悪くないでしょう。<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.memoryextensions.sequenceequal"><code>ReadOnlySpan&lt;byte&gt;</code>のSequenceEqual</a>はめちゃくちゃ最適化されていて、長いものであれば必要であればSIMDとかも使って高速に同値判定します。LINQのSequenceEqualとは別物です！</p>
 <p>しかし、もっと欲張って見てみましょう、プロトコルの識別子はサーバーから送られてくるものは全て4文字以内に収まっています。つまり、これはIntに変換しやすい状態です！というわけで、AlterNatsのメッセージ種判定コードはこうなっています。</p>
@@ -170,13 +174,17 @@ if(Unsafe.ReadUnaligned&lt;int&gt;(ref MemoryMarshal.GetReference&lt;byte&gt;(ms
 }
 </code></pre>
 <p>バイナリプロトコルなら特に何のひねりも必要なく実装できるので、バイナリプロトコルのほうが実装者に優しくて好きです……。</p>
-<h3>自動パイプライニング</h3>
+<ul>
+<li>自動パイプライニング</li>
+</ul>
 <p>NATSプロトコルの書き込み、読み込みは全てパイプライン（バッチ）化されています。これは<a href="https://redis.io/docs/manual/pipelining/">RedisのPipelining</a>の解説が分かりやすいですが、例えばメッセージを3つ送るのに、一つずつ送って、都度応答を待っていると、送受信における多数の往復がボトルネックになります。</p>
 <p>メッセージの送信において、AlterNatsは自動でパイプライン化しています。<a href="https://devblogs.microsoft.com/dotnet/an-introduction-to-system-threading-channels/">System.Threading.Channels</a>を用いてメッセージは一度キューに詰め込まれ、書き込み用のループが一斉に取り出してバッチ化します。ネットワーク送信が完了したら、再び送信処理待ち中に溜め込まれたメッセージを一括処理していく、という書き込みループのアプローチを取ることで、最高速の書き込み処理を実現しました。</p>
 <p><img src="https://user-images.githubusercontent.com/46207/167585601-5634057e-812d-4b60-ab5b-61d9c8c37063.png" alt="image" /></p>
 <p>ラウンドトリップタイムの話だけではなく（そもそもNATSの場合はPublish側とSubscribe側が独立しているので応答待ちというのもないのですが）、システムコールの連続した呼び出し回数を削減できるという点でも効果が高いです。</p>
 <p>なお、.NET最高速ロガーである<a href="https://github.com/Cysharp/ZLogger/">ZLogger</a>でも同じアプローチを取っています。</p>
-<h3>一つのオブジェクトに機能を盛る</h3>
+<ul>
+<li>一つのオブジェクトに機能を盛る</li>
+</ul>
 <p>Channelに詰め込む都合上、データを書き込みメッセージオブジェクトに入れてヒープに保持しておく必要があります。また、書き込み完了まで待つ非同期メソッドのためのPromiseも必要です。</p>
 <pre><code class="language-csharp">await connection.PublishAsync(value);
 </code></pre>
@@ -259,7 +267,9 @@ internal interface IObjectPoolNode&lt;T&gt;
     }
 }
 </code></pre>
-<h3>Zero-copy Architecture</h3>
+<ul>
+<li>Zero-copy Architecture</li>
+</ul>
 <p>Publish/Subscribeするデータは通常、C#の型をJSONやMessagePackなどにシリアライズしたものを流します。この場合、どうしてもbyte[]でやり取りすることが多くなります、例えばStackExchange.Redisの<code>RedisValue</code>の中身は実質byte[]で、送信にせよ受信にせよ、byte[]を生成して保持することになります。</p>
 <p>これを避けるために、ArrayPoolから出し入れしてごまかしてゼロアロケーションにする、みたいなのはありがちではありますが、それでもコピーのコストが発生していることには代わりありません。ゼロアロケーションは当然目指すところですが、ゼロコピーに向けても頑張りましょう！</p>
 <p>AlterNatsのシリアライザーはWriteに<code>IBufferWriter&lt;byte&gt;</code>, Readに<code>ReadOnlySequence&lt;byte&gt;</code>を要求します。</p>
