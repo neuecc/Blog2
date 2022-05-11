@@ -185,6 +185,8 @@ public Task<int> SendAsync(ArraySegment<byte> buffer, SocketFlags socketFlags)
 
 ValueTask返しのAPIは内部的には `AwaitableSocketAsyncEventArgs` というものがValueTaskの中身になるようになっていて、これがいい感じに使いまわされる(awaitされると内部に戻るようになっている）ことで、Taskのアロケーションもなく効率的な非同期処理を実現しています。`SocketAsyncEventArgs`の使いにくさとは雲泥の差なので、これは非常にお薦めできます。
 
+また、同期APIはSpanを受け取れるのですが、非同期APIは（ステートをヒープに置く都合上）Memoryしか受け取れないことには注意してください。これはSocketプログラミングに限らず非同期系APIにおける一般的な話で、全体的に上手く組んでおかないと、Spanが使えないことが障壁になることがあります。必ず、Memoryで取り回せるようにしておきましょう。
+
 * テキストプロトコルのバイナリコード判定
 
 [NATSのプロトコル](https://docs.nats.io/reference/reference-protocols/nats-protocol)はテキストプロトコルになっていて、文字列処理で簡単に切り出すことができます。実際これはStreamReaderを使うことで簡単にプロトコルの実装ができます。ReadLineするだけですから。しかし、ネットワークに流れるのは(UTF8)バイナリデータであり、文字列化は無駄なオーバーヘッドとなるため、パフォーマンスを求めるなら、バイナリデータのまま処理する必要があります。
