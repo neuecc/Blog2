@@ -156,6 +156,8 @@ Cysharpでは[MagicOnion](https://github.com/Cysharp/MagicOnion)という .NET/U
 
 ところで、そして究極的な利点は、全てC#で組めるということです。どういうことかというと、MagicOnionもLogicLooperも汎用的なC#フレームワークです。特別なプラグインを差し込んで処理するというわけではなくて、ふつーのC#コードをふつーに書くことで、それぞれの箇所に、アプリケーション固有のコードを仕込んでいくことができる。これが、本当の大きな利点です。専用のC++ミドルウェアを作って挟んで最適化できるぞ！などといったシステムは、素晴らしいことですが、専門性が高く再現性が低い。MagicOnionとLogicLooper、そしてAlterNatsを活用したこの構成なら、C#エンジニアなら誰でも（容易に）できる構成です。[Cysharp](https://cysharp.co.jp/)のメッセージは「C#の可能性を切り開いていく」ですが、誰もが実現できる世界を作っていくというのが目標でもあります。
 
+なお、ワーカーとしてのLogicLooperを作るに[Worker Service](https://docs.microsoft.com/ja-jp/dotnet/core/extensions/workers)という.NET 6からのプロジェクトタイプが適切です。
+
 ## ハイパフォーマンスSocketプログラミング
 
 ### Socket API
