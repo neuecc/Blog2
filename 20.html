@@ -23,7 +23,151 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2010/07/05_265.html">Rx(Reactive Extensions)を自前簡易再実装する</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2010/07/07_266.html">IEnumerableのCastを抹殺するためのT4 Templateの使い方</a></h1>
+<ul class="date"><li>2010-07-07</li></ul>
+<div class="entry_body"><p>.NET Framework 1.0の負の遺産、HogeCollection。それらの大半はIEnumerable&lt;T&gt;を実装していない、つまるところ一々Cast&lt;T&gt;しなければLinqが使えない。ほんとどうしょうもない。大抵のHogeCollectionは実質Obsoleteみたいなもので、滅多に使わないのだけれど、ただ一つ、RegexのMatchCollectionだけは頻繁に使うわけで、Castにイラつかされるので殺害したい。RegexにはMatchCollection、GroupCollection、CaptureCollectionという恐怖の連鎖が待っているので余計に殺したい。(ところで全く本題とは関係ないのですが、Captureは今ひとつ使い道がわからな……)</p>
+<pre><code class="language-csharp">// わざとらしい例ですが
+var q = Regex.Matches(&quot;aag0 hag5 zag2&quot;, @&quot;(.)ag(\d)&quot;)
+    .Cast&lt;Match&gt;()
+    .SelectMany(m =&gt; m.Groups.Cast&lt;Group&gt;().Skip(1).Select(g =&gt; g.Value))
+    .ToArray(); // a0h5z2
+</code></pre>
+<p>おお、何というCast地獄！つーか.NET 4でBCL書き直したとか言うんなら、その辺も少し融通聞かせてIEnumerable&lt;T&gt;にしてくれてもさー。あ、要望出さないのが悪いとかなのでしょうか……。それなら自己責任ですね、ちゃんと出していかないと。なのはともかく、自己責任ならば自己責任なりに、文句だけ言っててもしょうがないので自前で何とかしましょう。</p>
+<p>ようするに.Cast&lt;Hoge&gt;()を自動で挟めばいいわけですよね。んー、ぴこーん！T4でジェネレートすればいいんじゃね？というわけで、T4 Templateを使ってみました。実際のところT4試してみたかったんだけどネタがなかったので、ネタが出てきて万歳！が本音だったりはします。</p>
+<p>何もないところからテンプレートじゃあ作りようもないので、ひとまず完成系を書いてみる。</p>
+<pre><code class="language-csharp">public static class MatchCollectionExtensions
+{
+    public static IEnumerable&lt;TResult&gt; Select&lt;TResult&gt;(this MatchCollection source, Func&lt;Match, TResult&gt; selector)
+    {
+        return source.Cast&lt;Match&gt;().Select(selector);
+    }
+    
+    // Where, Aggregate, ....
+}
+</code></pre>
+<p>こんな形。グッとイメージしやすくなります。型引数のTSourceを消して、Castを挟んで……。やるべき事が大体見えてきました。まずは、Enumerableの拡張メソッドの抽出を。</p>
+<pre><code class="language-csharp">var extMethods = typeof(Enumerable)
+    .GetMethods()
+    .Where(mi =&gt; Attribute.IsDefined(mi, typeof(ExtensionAttribute)));
+</code></pre>
+<p>特にBindingFlagsは設定しませんが、ExtensionAttributeが指定されているものがあれば拡張メソッド、という判定で問題なく取り出すことが出来ます。続いて戻り値を抽出。</p>
+<pre><code class="language-csharp">var returnType = extMethods
+    .Select(mi =&gt; mi.ReturnType)
+    .Select(mi =&gt; Regex.Replace(mi.Name, &quot;`.*$&quot;, &quot;&quot;)
+        + (mi.IsGenericType ? (&quot;&lt;&quot; + string.Join(&quot;, &quot;, mi.GetGenericArguments().Select(t =&gt; t.Name)) + &quot;&gt;&quot;) : &quot;&quot;));
+</code></pre>
+<p>IEnumerable&lt;T&gt;のNameはIEnumerable<code>1になっているので</code>1を正規表現で削除。そして引数を並べる。ただまあ、これだけだとジェネリック引数がネストしたものに対応出来ていなかったりTSourceが除去できてなかったりダメなのですが、それはそれ(最終的なコードは下記の実例のほうを見てください)。</p>
+<p>といったわけで、相変わらずリフレクション＋Linqは鉄板ですね。というかLinqなしのリフレクションとかやりたくない……。こんな感じにポチポチと素材集めをしたら、T4化します。</p>
+<pre><code class="language-csharp">&lt;#@ template language=&quot;C#&quot; #&gt;
+&lt;#@ output extension=&quot;cs&quot; #&gt;
+&lt;#@ assembly Name=&quot;System.Core.dll&quot; #&gt;
+&lt;#@ import namespace=&quot;System&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Collections.Generic&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Linq&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Text&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Runtime.CompilerServices&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Text.RegularExpressions&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Reflection&quot; #&gt;
+&lt;#
+    var target = new Dictionary&lt;string, string&gt;
+    {
+        {&quot;MatchCollection&quot;, &quot;Match&quot;},
+        {&quot;GroupCollection&quot;, &quot;Group&quot;},
+        {&quot;CaptureCollection&quot;, &quot;Capture&quot;}
+    };
+#&gt;
+&lt;#
+    var ignoreMethods = new HashSet&lt;string&gt;
+    {
+        &quot;Max&quot;, &quot;Min&quot;, &quot;Average&quot;, &quot;Sum&quot;, &quot;Zip&quot;, &quot;OfType&quot;, &quot;Cast&quot;,
+        &quot;Join&quot;, &quot;GroupJoin&quot;, &quot;ThenBy&quot;, &quot;ThenByDescending&quot;, &quot;LongCount&quot;
+    };
+#&gt;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace System.Text.RegularExpressions
+{
+&lt;#
+foreach (var kvp in target)
+{
+#&gt;
+    public static class &lt;#= kvp.Key.Replace(&quot;.&quot;,&quot;&quot;) #&gt;Extensions
+    {
+&lt;#
+foreach (var methodInfo in typeof(Enumerable).GetMethods().Where(mi =&gt; Attribute.IsDefined(mi, typeof(ExtensionAttribute))))
+{
+    if(ignoreMethods.Contains(methodInfo.Name)) continue;
+#&gt;
+        public static &lt;#= MakeReturnType(methodInfo, kvp.Value) #&gt; &lt;#= methodInfo.Name #&gt;&lt;#= MakeGenericArguments(methodInfo) #&gt;(this &lt;#= kvp.Key #&gt; source&lt;#= MakeParameters(methodInfo, kvp.Value) #&gt;)
+        {
+            return source.Cast&lt;&lt;#= kvp.Value #&gt;&gt;().&lt;#= MakeMethodBody(methodInfo) #&gt;;
+        }
+
+&lt;#}#&gt;
+    }
+&lt;#}#&gt;
+}
+&lt;#+
+    const string TSource = &quot;TSource&quot;;
+
+    static string ConstructTypeString(Type type, string castType)
+    {
+        var result = type.Name.Contains(TSource)
+            ? type.Name.Replace(TSource, castType)
+            : Regex.Replace(type.Name, &quot;`.*$&quot;, &quot;&quot;);
+        
+        if (type.IsGenericType)
+        {
+            result += string.Format(&quot;&lt;{0}&gt;&quot;, string.Join(&quot;, &quot;, type.GetGenericArguments().Select(t =&gt; ConstructTypeString(t, castType))));
+        }
+        return result;
+    }
+    
+    static string MakeReturnType(MethodInfo info, string castType)
+    {
+        return ConstructTypeString(info.ReturnType, castType);
+    }
+    
+    static string MakeGenericArguments(MethodInfo info)
+    {
+        var types = info.GetGenericArguments().Select(t =&gt; t.Name).Where(s =&gt; s != TSource);
+        return types.Any() ? string.Format(&quot;&lt;{0}&gt;&quot;, string.Join(&quot;, &quot;, types)) : &quot;&quot;;
+    }
+    
+    static string MakeParameters(MethodInfo info, string castType)
+    {
+        var param = info.GetParameters()
+            .Skip(1)
+            .Select(pi =&gt; new { pi.Name, ParameterType = ConstructTypeString(pi.ParameterType, castType) });
+        
+        return param.Any()
+            ? &quot;, &quot; + string.Join(&quot;, &quot;, param.Select(a =&gt; a.ParameterType + &quot; &quot; + a.Name))
+            : &quot;&quot;;
+    }
+    
+    static string MakeMethodBody(MethodInfo info)
+    {
+        var args = info.GetParameters().Skip(1).Select(pi =&gt; pi.Name);
+        return string.Format(&quot;{0}({1})&quot;, info.Name, args.Any() ? string.Join(&quot;, &quot;, args) : &quot;&quot;);
+    }
+#&gt;
+</code></pre>
+<p>上のほうの、ディクショナリ(target)の初期化子を弄ることで対象の型を増減できます。namespaceはテンプレートに埋め込みなので変える場合は適当に変えてください。ハッシュセット(ignoreMethods)はその名の通り、除外したい拡張メソッドを指定します。今回はMax,Minなどと、Zip,Join,GroupJoin(これらは若干弄らないと対応出来ないので見送り)を除外しています。あとLongCountも外してます、理由はRxのSystem.InteractiveがLongCountで競合するから（多分、Rxチームのミスだと思うのでそのうち直ると思います）。</p>
+<p>どんなクラスにも対応出来る（はず）ので、もしキャストが必要なウザいHogeCollectionがあったら、このテンプレートを使ってみると良いかもしれません。WinFormsのControl.ControlCollectionとかWPFのUIElementCollectionとか(そういうのは、元よりごった煮で詰め込むの前提なので、UIElementでSelect出来ても嬉しくはないかなー)。ともあれ、利用はご自由にどうぞ。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/regexgenerated.jpg">
+</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/regexgroupintellisense.jpg">
+</p>
+<p>こんな感じに、MatchCollection, GroupCollection, CaptureCollectionだと合計1100行ぐらいのコードが生成されます。これで、CastいらずにLinqが書けるようになりました。メデタシメデタシ。</p>
+<h2>T4 Template</h2>
+<p>T4 Templateはかなり良いですね。VisualStudioと密接に動作して、生成出来ないようならエラーですぐ知らせてくれるのが嬉しい。これ大事。超大事。それがないと書けません。C#もそうだけれど、とりあえず書く→コンパイラエラー→直す、をリアルタイムで繰り返せるのは素晴らしい。現代のプログラミング環境はこうでないと、な良さに溢れてます。アドインを入れれば入力補完やシンタックスハイライトも付いてくるので非常に快適。</p>
+<p>T4 Templateは標準搭載の機能だし実に強力なので、積極的に使っていきたいものです。MSDNだと<a href="http://msdn.microsoft.com/ja-jp/library/bb126445.aspx" title="コード生成とテキスト テンプレート">コード生成とテキスト テンプレート</a>辺りかな。例によって、読んでもさっぱり意味がわかりません(笑) 今のところオフィシャルだとこんなドキュメントしかないのかなあ、少し厳しめ。いやまあ、T4自体は構文がシンプルなので、ただ書くだけならサンプル改変で何とかなる、というか、私もサンプル改変以上の機能は知らないのですががが。</p>
+</div>
+<h1><a href="https://neue.cc/2010/07/05_265.html">Rx(Reactive Extensions)を自前簡易再実装する</a></h1>
 <ul class="date"><li>2010-07-05</li></ul>
 <div class="entry_body"><p>という表題でUstreamやりました。<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx">Reactive Extensions for .NET (Rx)</a>のSelect, Where, ToObservable, FromEventを実装することで、挙動を知ろうという企画。結果？酷いものです！</p>
 <p class="noindent">
@@ -2090,49 +2234,6 @@ E.Range(1,10).Where(&quot;$%2==0&quot;).Select(&quot;$*$&quot;) // linq.jsでは
 <p>微妙に更新止まってます、が、やる気はあります！まずはWSH対応から！と言いたいのですが、現在は何故か<a href="http://neue.cc/2010/02/18_242.html" title="neue cc - Re:Scheduled">Java移植の制作を進めています</a>。Javaにも素晴らしいLinq to Objectsの世界を、忠実移植で。というわけなのですが、これも先月ぐらいからやるやる詐欺中。中身は完全に出来上がっていて現在テストとJavaDoc書き中。今月中にはリリースしたい、ですね。先月も同じこと言ってましたが、まあ、着々と鈍足ながらも進んでいるので、近いうちにはお見せできるはずです。</p>
 <p>ともあれ、Linq to Objectsは大変素晴らしいので、C#な人はガンガン使って欲しいし、JavaScriptの人はlinq.jsを試して欲しいし、Javaな人はもう少し待ってください。私は、ええと、このサイトのC#カテゴリのほとんどがLinq絡みです、ひたすらに使い倒して、有用な使い方を紹介していけたらと思っています。</p>
 </div>
-<h1><a href="https://neue.cc/2010/04/09_251.html">ParseOrDefault</a></h1>
-<ul class="date"><li>2010-04-09</li></ul>
-<div class="entry_body"><p><a href="http://d.hatena.ne.jp/bleis-tift/20100408/1270735704" title="match があれば TryParse いらないんじゃないか - 予定は未定Blog版">match があれば TryParse いらないんじゃないか - 予定は未定Blog版</a>という記事を見て、outとかrefは確かにしょっぱい。そういえばF#はTryParseはTuple返しで、おまけに let success, value = int.TryParse &quot;123&quot; という自然な多値返しが出来てCOOLなんだよねー。などと思ってC#でTuple返しにしたものを書いたりしたのですが、どうもしっくりこなくて延々と弄っているうちに明後日の方向へ。</p>
-<p>さて、で、「数値に変換できるなら変換して返し、できないなら -1 を返す」というシチュエーションは大変多くて、それにoutを使って組み上げるのは、とてもかったるい、大変避けたい。かといってStringへの拡張メソッドを大量に生やすのも、IntelliSense的な観点からして抑えたい(それにしてもT4 Template使って生成ってのは面白いですね)。なので、汎用的に使えることは捨てて、上述のシチュエーション、変換出来るなら変換して、出来ないなら指定したデフォルト値を返すことにのみ絞って、拡張メソッドにしました。Stringに生やすのは抵抗感があるって場合はUtil.ParseOrDefaultとかにしてもいいと思います。</p>
-<pre><code class="language-csharp">using System;
-
-static class Program
-{
-    static void Main(string[] args)
-    {
-        // 例えばURLのクエリストリングのパースをしたい時とかありますよね！
-        // num=100にint.Parse(num)はnum=hugaが来たら死ぬのでデフォでは0にしたいとか
-
-        var r1 = &quot;100&quot;.ParseOrDefault(int.TryParse, -1); // 100
-        var r2 = &quot;huga&quot;.ParseOrDefault(int.TryParse, -1); // -1
-
-        // 勿論、int.Parse以外でも何でもいけます
-        var r3 = &quot;2000/12/12&quot;.ParseOrDefault(DateTime.TryParse, DateTime.Now);
-        // デフォルト値を省く時は型の明記が必要
-        var r4 = &quot;2000/12/12&quot;.ParseOrDefault&lt;DateTime&gt;(DateTime.TryParse);
-    }
-}
-
-public static class StringExtensions
-{
-    public delegate bool TryParse&lt;T&gt;(string input, out T value);
-
-    public static T ParseOrDefault&lt;T&gt;(this string input, TryParse&lt;T&gt; tryParse)
-    {
-        return input.ParseOrDefault(tryParse, default(T));
-    }
-
-    public static T ParseOrDefault&lt;T&gt;(this string input, TryParse&lt;T&gt; tryParse, T defaultValue)
-    {
-        T value;
-        return tryParse(input, out value) ? value : defaultValue;
-    }
-}
-</code></pre>
-<p>out付きの汎用Funcはデフォルトでは定義されていません。なので、自前で定義する必要があります。この辺の話は<a href="http://twitter.com/takeshik" title="Takeshi K. Jiro (残4) (takeshik) on Twitter">@takeshik</a>さんのスライド<a href="http://www.slideshare.net/takeshik/38-lt-funclt-ref-out" title="わんくま東京#38 LT 「Func&amp;lt;&gt; と ref / out 小咄」">わんくま東京#38 LT 「Func&lt;&gt; と ref / out 小咄」</a>が詳しいのでどうぞ。こんなデリゲートは単体では使うことは滅多にないでしょうから、static classの中に閉じ込めておくことで名前空間を汚しません(笑)</p>
-<p>引数にT defaultValueを要求することで、型推論が働いてTryParseを渡す際に明示的な型付けが不要になります。C#の型推論(と言っていいのかな？)がScalaやF#に比べて弱いのは事実なので、ここは、C#でも自然な形で扱えるような誘導、設計が大事です。型を書いたら負けだと思っている、みたいな。まあ、どんなに頑張っても負けるときは負けるので、その時は潔く書くことにします。</p>
-<p>ちなみに、ParseOrDefaultは最初は<a href="http://ideone.com/xJuBC" title="Ideone.com | xJuBC">こんな形</a>でした。酷過ぎる。私は骨の髄まで関数型言語脳ならぬLinq脳なので、とにかくまず無理矢理にでもLinqで処理する方法を考えて、出来上がってふと冷静に眺めると、普通に書けよ馬鹿、ということに気付いて普通に書き直すというサイクルを取ってます。馬鹿すぎる。<a href="http://neue.cc/2010/04/07_250.html" title="neue cc - DbExecutor - Linqで操作しやすいSQL実行ライブラリ">DbExecutor</a>で紹介したyield returnで一個のみの列挙を返すというのを、やたら使って見ちゃったりするところが麻疹。Repeat(value,1) と Repeat(value,int.MaxValue)があればLinqは何でも記述出来るんです病。</p>
-</div>
 <a href="https://neue.cc/19">Prev |</a>
 <a href="https://neue.cc/21">| Next</a>
 </div>
@@ -2156,6 +2257,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2022/07/">2022-07</a>
 <li><a href="https://neue.cc/2022/05/">2022-05</a>
 <li><a href="https://neue.cc/2022/04/">2022-04</a>
 <li><a href="https://neue.cc/2022/02/">2022-02</a>

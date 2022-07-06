@@ -23,7 +23,79 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2011/03/17_310.html">DynamicAccessor - Chaining Assertion ver.1.4.0.0</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2011/03/28_311.html">Widows Phone 7でアプリケーション名やバージョン番号をバインドする方法</a></h1>
+<ul class="date"><li>2011-03-28</li></ul>
+<div class="entry_body"><p>アプリケーション名の表示や、about画面に表示したいであろうバージョン番号、どうします？直書きのstringやリソースから？それもいいのですけれど、せっかくプロジェクトのプロパティ(AssemblyInfo.cs)で、アプリケーション名やバージョン番号を設定しているわけだから、そこから利用できたほうがいいですよね。</p>
+<p>というわけで、これらの情報はアセンブリから取得しましょう。</p>
+<pre><code class="language-csharp">public class AssemblyInfoData
+{
+    public static readonly AssemblyInfoData ExecutingAssembly = new AssemblyInfoData(Assembly.GetExecutingAssembly());
+
+    public string FileName { get; private set; }
+    public string Version { get; private set; }
+    public string FileVersion { get; private set; }
+    public string Title { get; private set; }
+    public string Description { get; private set; }
+    public string Configuration { get; private set; }
+    public string Company { get; private set; }
+    public string Product { get; private set; }
+    public string Copyright { get; private set; }
+    public string Trademark { get; private set; }
+    public string Culture { get; private set; }
+
+    public AssemblyInfoData(Assembly assembly)
+    {
+        var assemblyName = new AssemblyName(assembly.FullName);
+        FileName = assemblyName.Name;
+        Version = assemblyName.Version.ToString();
+
+        FileVersion = GetAttributeName&lt;AssemblyFileVersionAttribute&gt;(assembly, a =&gt; a.Version);
+        Title = GetAttributeName&lt;AssemblyTitleAttribute&gt;(assembly, a =&gt; a.Title);
+        Description = GetAttributeName&lt;AssemblyDescriptionAttribute&gt;(assembly, a =&gt; a.Description);
+        Configuration = GetAttributeName&lt;AssemblyConfigurationAttribute&gt;(assembly, a =&gt; a.Configuration);
+        Company = GetAttributeName&lt;AssemblyCompanyAttribute&gt;(assembly, a =&gt; a.Company);
+        Product = GetAttributeName&lt;AssemblyProductAttribute&gt;(assembly, a =&gt; a.Product);
+        Copyright = GetAttributeName&lt;AssemblyCopyrightAttribute&gt;(assembly, a =&gt; a.Copyright);
+        Trademark = GetAttributeName&lt;AssemblyTrademarkAttribute&gt;(assembly, a =&gt; a.Trademark);
+        Culture = GetAttributeName&lt;AssemblyCultureAttribute&gt;(assembly, a =&gt; a.Culture);
+    }
+
+    private string GetAttributeName&lt;T&gt;(Assembly assembly, Func&lt;T, string&gt; selector) where T : Attribute
+    {
+        var attr = assembly.GetCustomAttributes(typeof(T), true).Cast&lt;T&gt;().FirstOrDefault();
+        return (attr == null) ? &quot;&quot; : selector(attr);
+    }
+}
+</code></pre>
+<p>FileName, Versionはnew AssemblyNameに渡してから(WPFだとGetNameで直に取れるのですが、Silverlightだとセキュリティ違反で例外が飛ぶためこうする必要がある)、それ以外の値はカスタム属性から取得できます。また、任意のAssemblyの情報をコンストラクタに投げて取得出来るようになっていますが、どうせ必要なのは実行アセンブリの情報だけでしょ？ってことで、public staticなフィールドにExecutingAssemblyのデータを公開するようにしています。なので、コードからは、 AssemblyInfoData.ExecutingAssembly.Version とアクセスするだけで、簡単に取得できます。</p>
+<p>でも、コードから欲しいということはほとんどなくて、UIに表示するためだけに欲しいのですよね、こういう情報は。バインディングしましょう！まず、こんなクラスを用意します。</p>
+<pre><code class="language-csharp">public class AssemblyInfoDataBindingHelper
+{
+    public AssemblyInfoData Value { get { return AssemblyInfoData.ExecutingAssembly; } }
+}
+</code></pre>
+<p>何故これが必要かというと、WPFの場合は{x:static}でstatic変数もバインド出来るのですが、Silverlight/WP7ではバインド出来ないためです。いやあ、カッコ悪いですね、{x:static}欲しいですね、まあ、ないものはしょうがない。</p>
+<p>次にApp.xamlのApplication.Resourcesの中に</p>
+<pre><code class="language-xml">&lt;Application.Resources&gt;
+    &lt;!-- Applicationのところで xmlns:local=&quot;ネームスペース&quot; を宣言しておく--&gt;
+    &lt;local:AssemblyInfoDataBindingHelper x:Key=&quot;AssemblyInfoData&quot;/&gt;
+&lt;/Application.Resources&gt;
+</code></pre>
+<p>と書いてリソースを登録。準備はこれで完了で、あとはバインドするだけ。</p>
+<pre><code class="language-xml">&lt;TextBlock x:Name=&quot;ApplicationTitle&quot; Text=&quot;{Binding Value.Title, Source={StaticResource AssemblyInfoData}}&quot; Style=&quot;{StaticResource PhoneTextNormalStyle}&quot;/&gt;
+&lt;TextBlock x:Name=&quot;PageTitle&quot; Text=&quot;{Binding Value.Version, Source={StaticResource AssemblyInfoData}}&quot; Style=&quot;{StaticResource PhoneTextTitle1Style}&quot; /&gt;
+</code></pre>
+<p>と、以上です。これで下のような感じに</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/wp7asminfo.jpg">
+</p>
+<p>表示されました。ApplicationTitleにTitleは分かりますがPageTitleにVersionは丸っきりイミフ。ボタンは、何となく寂しいから置いただけで意味はないです気にしないで。</p>
+<p>AssemblyInfoDataクラスのコードは完全に独立して使い回しが効くので、コピペってどうぞご自由にお使いください。煮るなり焼くなり……、パブリックドメインで。</p>
+<h2>まとめ</h2>
+<p>といったのは、一応、今製作中のWP7アプリの一部です。順調に制作は遅れまくり。うむむ。今月中といきたかったのだけど、まーだずれ込みそう。その前は二月中のつもりだったのだけど、<a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>が思いの外引っ張りすぎて手を付けてる余裕がなかった。とにかく、4月中頃までには、マーケットプレイスで公開したいなあ。あとソースコードも公開します(というか既に製作中のがこっそり公開されてます)。Reactive Extensionsの実践例として、ただたんに非同期で使うというだけじゃなく、こういうケースで使える、コードはこうなる。というサンプルとして役立てればいいな、という思いで書いてますので、適当に待っていてください。</p>
+<p>人に見せるためのコード、というのを念頭に置きすぎていて、同じ場所のコードの修正ばかり繰り返していてアプリ全体としては一歩も製作が進まないという超鈍足状態に陥ってますが(コード書きの遅さに定評のある私です(ｷﾘｯ)、でも、書きなおす度に確実によくなっていく実感はあるので、最終的にそこそこ見せれるコードになるのではないかと思っています。少なくとも、部分的には面白い内容になるはずです。</p>
+</div>
+<h1><a href="https://neue.cc/2011/03/17_310.html">DynamicAccessor - Chaining Assertion ver.1.4.0.0</a></h1>
 <ul class="date"><li>2011-03-17</li></ul>
 <div class="entry_body"><ul>
 <li><a href="http://chainingassertion.codeplex.com/" title="Chaining Assertion">Chaining Assertion - CodePlex</a></li>
@@ -1264,95 +1336,6 @@ new ProcessStartInfo(
 <p>XboxInfoTwitはスクレイピングという、普通にブラウザで表示する際のページのHTMLを解析してデータを取り出しています。今回は、HTML側でほんのちょびっと変更があって、その影響をモロに被って暴走しました。Ouch！こういう、うまくデータが取れなかった場合を想定してちゃんとエラーにしないとダメなのですね。私は今回はその辺まったく対策取ってなかったので、……といった結果になってしまいました。ほんとすみません。</p>
 <p>一応、次からは今回のようなのが原因の暴走はなくなりました。別の原因がもとに、ってのは、うむむ……。</p>
 </div>
-<h1><a href="https://neue.cc/2011/01/17_296.html">l2o.js 世界最速分解解説</a></h1>
-<ul class="date"><li>2011-01-17</li></ul>
-<div class="entry_body"><p>l2o.js、でググっても何も出てきませんね！じゃあl2o.jsって何？って話なのですが、その前に、<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896" title="Reactive Extensions for .NET (Rx)">Reactive Extensions</a>が12/24にChristmas Releaseと称してリリースされたわけで、RxJSにも若干更新が入っていました。</p>
-<pre><code class="language-text">· Fix for scheduling in the Concat, Catch, and OnError operators.
-· If operator can now be used without supplying an “else” case.
-</code></pre>
-<p>特に大したこともないわけでしたが。しかし、インストールディレクトリである Microsoft Cloud Programmability\Reactive Extensions\v1.0.2838.0\RX_JS を見ると、l2o.jsという見慣れないものが……？</p>
-<p>l2o.js、つまり、Linq 2 Objects.js。ええ、ええ……。linq.jsとモロにガチにかちあいそうな匂いがします。RxJS全然更新しないなあ、やる気あんのかよお、JVGoghも辞めちゃったしー、とか思っていたのですが、その裏でこっそりとんでもないものを仕込んでいたようです。いざ出てみると、むしろやらなかったのが不思議なぐらいな。</p>
-<p>では、使ってみましょう。ついでに<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js</a>と比較しましょう。</p>
-<pre><code class="language-javascript">var array = [12, 21, 4, 5, 36, 3, 10];
-
-// l2o.js
-L2O.Enumerable.FromArray(array)
-    .Where(function (x) { return x % 2 == 0 })
-    .Select(function (x) { return x * x })
-    .ForEach(function (x) { alert(x) }); // 144, 16, 1296, 100
-
-// linq.js
-Enumerable.From(array)
-    .Where(function (x) { return x % 2 == 0 })
-    .Select(function (x) { return x * x })
-    .ForEach(function (x) { alert(x) }); // 144, 16, 1296, 100
-</code></pre>
-<p>名前空間はL2Oから。そこにRange, Repeat, FromArrayなどなどの生成子があり、あとはメソッドチェーンでクエリ演算子があり。linq.jsと完全に一致。……これはlinq.jsｵﾜﾀ。</p>
-<p>いや待て。私がlinq.jsを作ったときには既に3つぐらいLinq to Objectsライブラリはあったけれど、それのどれにも不満があったから、自分で作ったわけで、同じように書けるからといって内部のクオリティが保証されているわけではない。Rxチームが作ってるからといって生半可なものだったら許さんぞ、と、いうわけで中身を覗いてみました。</p>
-<p>Minifyされてますが、改行/インデント整形を施すだけで十分読めます。変数難読化が入っても、構造がシンプルなので全然読める。と、いうか、そうして普通に読めるのは、linq.jsと構造がまるっきり一緒だからですが。……。一緒ですが。一緒ですねこれ。そりゃC#の忠実移植を目指して作ったlinq.jsなわけなので、l2o.jsも同じ目標に向かってるだろうから一緒になるのは当然なのですが当然すぎてlinq.jsの存在意義ががが。</p>
-<p>中身をチラッと見てみましょう。Selectを、Minifyされていたので変数名は私の方で付け直しました。</p>
-<pre><code class="language-javascript">// l2o.js
-L2O.Enumerable.prototype.Select = function (selector)
-{
-    var source = this;
-
-    return L2O.Enumerable.Create(function ()
-    {
-        var current, count = 0, enumerator;
-
-        return L2O.Enumerator.Create(
-            function () // MoveNext
-            {
-                if (enumerator === void 0) // initialize
-                {
-                    enumerator = source.GetEnumerator()
-                }
-                if (!enumerator.MoveNext())
-                {
-                    return false
-                }
-                current = selector(enumerator.GetCurrent(), count++);
-                return true
-            },
-            function () { return current }, // GetCurrent
-            function () { enumerator.Dispose() }) // Dispose
-    })
-}
-
-// linq.js
-Enumerable.prototype.Select = function (selector)
-{
-    var source = this;
-    selector = Utils.CreateLambda(selector);
-
-    return new Enumerable(function ()
-    {
-        var enumerator;
-        var index = 0;
-
-        return new IEnumerator(
-            function () { enumerator = source.GetEnumerator(); }, // Initialize
-            function () // MoveNext &amp; Current
-            {
-                return (enumerator.MoveNext())
-                    ? this.Yield(selector(enumerator.Current(), index++))
-                    : false;
-            },
-            function () { Utils.Dispose(enumerator); }) // Dispose
-    });
-}
-</code></pre>
-<p>完全に一致。linq.jsのほうでは、MoveNextのほうに定型句のようにif(enumerator === undefined){初期化処理}を書くのが嫌だったので、そもそも別関数として隔離、Currentはどうせキャッシュを返すだけなのだから省略してMoveNextと統合させてしまえ(this.Yieldというメソッドがその辺を受け持ってる、yield returnっぽく)とか、細々としたのを入れていますが、実質的には一緒です。</p>
-<p>なお、この辺の<a href="http://neue.cc/2011/01/13_295.html" title="neue cc - LINQの仕組みと遅延評価の基礎知識">Linq to Objectsの仕組み</a>は、先日紹介しましたが、JSでも一緒です。Selectなど拡張メソッは、以前の物(this = source)を内包したうえで、新しいオブジェクト(new Enumerable)を返し、GetEnumeratorによりEnumeratorを生成し、最初のMoveNextが呼ばれた時に初めて動作が始まる。</p>
-<h2>アルファ</h2>
-<p>現在l2o.jsはアルファ版というか、それ以前の状態と思われるので、今実践に投げ込むのはダメです。メソッド全然足りないしバグいっぱいあるし。具体的に挙げると、Rangeはこれだとオーバーフローしない？とかReverseが即時評価ですよー、とかDisposeが不徹底で機能してない場合がある、とか、いっぱい。</p>
-<p>メソッドは基本的なのしかありません。OrderByや、それと集合系がごっそり抜けているので、普通に使う分にも困るぐらいなので。まあ、集合系は(Dictionaryがないので)ちょっと実装が面倒ではある……。そのために私はDictionaryを導入しています。<a href="http://neue.cc/2010/05/18_258.html">neue cc - linq.js ver 2.1.0.0 - ToDictionary, Share, Let, MemoizeAll</a> というのはver2.1と、つい最近からで、それまではDictionary導入してないが故にバグ持ちだったんですよね、恐ろしや……。</p>
-<p>まあ、Script#からの生成だろうから、Dictionaryを持ってくるぐらいはお茶の子さいさいかもしれません。</p>
-<h2>まとめ</h2>
-<p>l2o.jsは、今はまだこんな風にやるよ、という骨組みを見せているだけに過ぎませんが、すぐに標準クエリ演算子は実装されるでしょう。勿論、歓迎すべきことです！私の心中が穏やかでないのもしょうがない話です！linq.jsはJSでのLinqライブラリでは最後発ですが、現在CodePlex調べでは、同種のライブラリで月々のDL数が最も多いところまで行きました。地道に続けていれば良いものはいつか認められる、という甘い幻想を少しだけ見させてもらったのですが（3/dayとか微々たるものな世界なのですけどね、そう考えるとLinqでJSというものは、今は需要が……。でも、ASP.NET MVCの普及と共に.NETerにJSでのでのLINQは、まだまだ需要が発生する余地はありますな)、公式で十分なクオリティのものが出てしまった以上は、ただある俺々ライブラリの一つとなる。</p>
-<p>とはいっても、公式では出来ないこと、出来ない付加価値は、まだまだ幾らでも足せるはずです！現時点でも無名関数の文字列ショートカット、WSH対応、vsdoc、大量の拡張メソッド、jQueryプラグイン化とやってきたし、これらは公式では出せないはず。で、まだネタはあります。今思っているのはClosure CompilerのAdvanced Optimizations対応、任意で配列のprototype拡張の追加、ですねえ。特に後者は、ちょっとしたことには大分便利になるはずだと思っています。</p>
-<p>あとは、もしかしたらlinq.jsがRxJSやl2o.jsに影響を与えたのではないか？と考えると、嬉しい話ですかねー。ふむふむ。ま、その辺も含めて今年のRx周りは激しく加速しそうですね。</p>
-</div>
 <a href="https://neue.cc/16">Prev |</a>
 <a href="https://neue.cc/18">| Next</a>
 </div>
@@ -1376,6 +1359,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2022/07/">2022-07</a>
 <li><a href="https://neue.cc/2022/05/">2022-05</a>
 <li><a href="https://neue.cc/2022/04/">2022-04</a>
 <li><a href="https://neue.cc/2022/02/">2022-02</a>
