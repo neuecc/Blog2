@@ -6,7 +6,7 @@ async/awaitの鬼門の一つとして、適切なキャンセル処理が挙げ
 
 CreateLinkedTokenSourceを使ったパターン
 ---
-何かのClientを実装してみる、ということにしましょう。最も単純なパターンは引数の末尾にCancellationTokenを用意して、内部のメソッドにひたすら伝搬させていくことです。きちんと伝搬させていけば、最奥の処理が適切にCancellationTokenをハンドリングしてキャンセル検知時にOperationCanceledExceptionを投げてくれます。CancellationTokenをデフォルト引数にするか、必ず渡す必要があるよう強制するかは、アプリケーションの性質次第です。アプリケーションに近いコードでは強制させるようにしておくと、渡し忘れを避けれるので良いでしょう。
+何かのClientを実装してみる、ということにしましょう。キャンセル処理の最も単純なパターンは引数の末尾にCancellationTokenを用意して、内部のメソッドにひたすら伝搬させていくことです。きちんと伝搬させていけば、最奥の処理が適切にCancellationTokenをハンドリングしてキャンセル検知時にOperationCanceledExceptionを投げてくれます。CancellationTokenをデフォルト引数にするか、必ず渡す必要があるよう強制するかは、アプリケーションの性質次第です。アプリケーションに近いコードでは強制させるようにしておくと、渡し忘れを避けれるので良いでしょう。
 
 ```csharp
 class Client
@@ -388,6 +388,8 @@ public async Task SendAsync(CancellationToken cancellationToken = default)
     }
 }
 ```
+
+ということで、↑のものが最終形となりました。
 
 async/awaitを封印してIValueTaskSourceを使った実装をする場合は、これよりも複数のコールバックを手で処理する必要があるため、遥かに複雑性が増してしまう（async/awaitは偉大！）のですが、基本的な流れは一緒です。CancellationTokenRegistrationの挙動をしっかり把握して実装すれば、レースコンディション起因のバグも防げるはずです。
 
