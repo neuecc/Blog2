@@ -62,7 +62,9 @@ class Client
 }
 ```
 
-これで完成！なのですが、このままだと例外処理に問題があります。まず、OperationCanceledExceptionは `CancellationToken`というプロパティを持っていて、これを元に呼び出し側はキャンセルの原因を判別することができます。
+これで完成！なのですが、このままだと例外処理に問題があります。
+
+OperationCanceledExceptionは `CancellationToken`というプロパティを持っていて、これを元に呼び出し側はキャンセルの原因を判別することができます。一つ例を出しますが、以下のようにOperationCanceledExceptionをcatchしたうえで、更に判定を入れてコード分岐をかけることがあります。
 
 ```csharp
 try
@@ -392,3 +394,5 @@ async/awaitを封印してIValueTaskSourceを使った実装をする場合は�
 まとめ
 ---
 簡単かどうかでいうと、言われればなるほどそうですねーって感じですが、都度考えてやれって言われると結構難しいと思います。なので、こういうパターンなんですね、というのを頭に叩き込んでおくというのは重要だと思いますし、まぁとりあえず覚えてください。覚えれば、別にコード的に複雑というわけでもないので、易易と対処できるようになるはずです。
+
+[StackExchange.Redis](https://github.com/StackExchange/StackExchange.Redis/)も非同期メソッド、CancellationTokenを受け取ってなかったりしますし、パフォーマンスを追求しつつCancellationToken対応を入れるのは、かなり難しい問題だったりします。しかしこの .NET 6世代ではかなりメソッドも増えていて、やろうと思えばやりきれるだけの手札が揃っています。なので、パターン化して真正面から立ち向かいましょう……！
