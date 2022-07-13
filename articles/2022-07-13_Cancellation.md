@@ -55,7 +55,7 @@ class Client
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(Timeout);
 
-        await SendCoreAsync(cancellationToken);
+        await SendCoreAsync(cts.Token);
     }
 
     // snip...
@@ -95,7 +95,7 @@ public async Task SendAsync(CancellationToken cancellationToken = default)
 
     try
     {
-        await SendCoreAsync(cancellationToken);
+        await SendCoreAsync(cts.Token);
     }
     catch (OperationCanceledException ex) when (ex.CancellationToken == cts.Token)
     {
@@ -138,7 +138,7 @@ class Client : IDisposable
 
         try
         {
-            await SendCoreAsync(cancellationToken);
+            await SendCoreAsync(cts.Token);
         }
         catch (OperationCanceledException ex) when (ex.CancellationToken == cts.Token)
         {
