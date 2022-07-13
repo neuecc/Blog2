@@ -23,7 +23,45 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2009/04/16_150.html">linq.js to Linq to XML/DOM</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2009/04/17_151.html">そしてXPathに戻る</a></h1>
+<ul class="date"><li>2009-04-17</li></ul>
+<div class="entry_body"><p>Linq to Xmlのメソッド群はXPathにそれぞれ対応する。XPathを覚えることなく、メソッドを繋げていくことで対象ノードが絞りこめる。これによる利点は、IntelliSenseが効くので高速にタイプセーフに思考の流れのまま記述出来るということ。例えばrootというXElementから「h1要素のうちクラス名がhogeの親をリストアップする」ならば</p>
+<pre><code class="language-csharp">root.Descendants(&quot;h1&quot;)
+	.Where(e =&gt; e.Attribute(&quot;class&quot;) != null &amp;&amp; e.Attribute(&quot;class&quot;).Value == &quot;hoge&quot;)
+	.Select(e =&gt; e.Parent);
+</code></pre>
+<p>……あれ？ オカシイデスネ。簡潔とは程遠い勢いです。せめてWhereでのAttributeの参照をもう少し綺麗に書ければ……。nullが敵すぎて困る。そんな時のため、というわけではないのでしょうがSystem.Xml.XPath名前空間をインポートすることで、XElementにXPathSelectElementsという拡張メソッドが追加されます。これで、</p>
+<pre><code class="language-csharp">root.XPathSelectElements(&quot;//h1[@class='hoge']/..&quot;);
+</code></pre>
+<p>と、簡潔明快に記述できる。ふむ。まあ、そりゃXPathのほうが簡潔になるのは「当たり前」ですもの。この程度ならまだいいけど、複雑怪奇になったときは(正規表現と同じように)解読出来ねえよ、と。個人的には全然LINQのほうが好きですよ！nullに気を遣う必要がなくなれば。ていうか、XPath-&gt;IEnumerableは別に普通にLinqですけど。やー、何かもうDescendants使う機会が無くなってしまう気がするなあ。</p>
+<p>で、linq.jsではXPathの実装までやるつもりはありません。あー、解析してLinq形式に変換する程度ならやるかも。まあ、はっきしいって、愚直にイテレータ回してるので速度でいったら明らかに遅いんですけどね。翌々冷静に考えるとネタというか色物としかいえない仕上がりな気がしてきましたよ。みんな<a href="http://d.hatena.ne.jp/amachang/20071112/1194856493" title="JavaScript-XPath をリリースしました！さあ、あなたも XPath を使おう！（解説付き） - IT戦記">JavaScript-XPath</a>使えばいいさ……。</p>
+<p>そういえば、XAttributeのValueは代入可能で、当然代入すると即座に反映されるわけなんだけど、JavaScriptだとメソッドが擬態したプロパティって無理ですよね？Value()とSetValue()に分けるしかないのかなあ。XElementがその形なので違和感無いといえば無いんですけど微妙(そもそもXElementのほうもValueプロパティ一個でいいのに、何で分けたんだろう)。誰か良い案あればください。</p>
+<h2>今日のlinq.js</h2>
+<p>誰得状態になってもちゃんと書き進めてますので安心。あ、linq.jsダウンロード50到達ありがとうございます。次はLinq to Xml搭載で100ダウンロード到達を目指します。で、ええ、と、子ノードを全部削除するよくあるメソッドを作ろうと思ったのです。XElementにも当然あります、「RemoveNodes」です。</p>
+<pre><code class="language-javascript">this.Elements().ForEach(function(e) { e.Remove() });
+</code></pre>
+<p>thisはXElementで、Removeは自身を親ノードから削除するというもの。Elements()は子ノードを列挙するものなので、そのままForEachで削除していけば出来あがり。ではないというよくある話を普通にやりました。たはー。列挙しているものの長さ(childNodes.length)がRemoveで変わっていってしまうんですね。</p>
+<pre><code class="language-javascript">E.From(this.Elements().ToArray()).ForEach(function(e) { e.Remove() });
+</code></pre>
+<p>ToArray()でコピーを作って列挙。これなら問題なく動く。これがスナップショットって奴でしょうか？ コピーのロスがあるので逆順forとかwhile(firstChild)使えよって話ではありますけど、今更速度どうこう言ってもしょうがないので普通に無視。と言いつつ、書き直しましたけど。ただ、prototype.jsでも内部で同じようなことやってるようなので大丈夫(何が？)</p>
+<pre><code class="language-javascript">$A(element.childNodes).each(function(node) { element.removeChild(node) });
+</code></pre>
+<p>やっぱ、Arrayを直接拡張してeachが使えるとスッキリしていいですねえ。うーん、E.From(E.From(要素).ToArray())のショートカットメソッドが欲しいかもしれない。でも、名前が思いつかない。Cloneというのも変だし……。CopyDoとかどうでしょう、ダサいですかダサいですね。ていうか意味不明ですね。</p>
+<pre><code class="language-javascript">Elements: function(name)
+{
+    var elems = Linq.Enumerable.From(this.Source.childNodes)
+        .Where(function(elem) { return elem.nodeType === Linq.Xml.NodeType.Element });
+    if (name != null)
+    {
+        elems = elems.Where(function(elem) { return Linq.Xml.Utils.StringCaseCompare(elem.nodeName, name); });
+    }
+    return elems.Select(function(elem) { return new Linq.Xml.XElement(elem); })
+},
+</code></pre>
+<p>いやー、LINQは条件を好き勝手あとで継ぎ足していけるのがいいですよねー。で、再掲したのは前回のが間違っていたから。前回のElementsの例でpタグのものを取った時、TextNodeも取得しちゃってたのは完全に間違いです。TextNodeも含めたい時はNodes()メソッドを使い、Elements()ではNodeTypeがElementのものしか取れない。というように直しました。如何せんC#のLinq to Xmlの知識自体が欠けているので、Nodesメソッドを実装しようとしてから初めてこの事に気がついたという有様。Nodes()の戻り値はXNodeなんですね、XElementとXTextが混在するから……。</p>
+<p>そういえば、要素名を大文字小文字を区別すべきか、しないほうがいいか悩み中。C#のLinq to Xmlでは当然区別しているんですが、区別するとWhere使うときにタグの大文字小文字区別が面倒くさいとかあるので、区別なしにしちゃおうかなー、とは思ってます。</p>
+</div>
+<h1><a href="https://neue.cc/2009/04/16_150.html">linq.js to Linq to XML/DOM</a></h1>
 <ul class="date"><li>2009-04-16</li></ul>
 <div class="entry_body"><p>Linq to Xmlの移植を始めました。やはりJavaScript上で最も動かすことになるリストってDOMなので、欠かかせません←結論。これで大幅に使い道や表現の幅が広がりそうです。ただ、あまりやり過ぎるとjQueryでいいぢゃん、的な捉えられかたをされてしまいそう。個人的には全然用途が違う、共存できるものだと思っているのだけど。</p>
 <p class="noindent">
@@ -678,41 +716,6 @@ for (int i = 1; i &lt; array.Length; i++)
 } 
 </code></pre>
 <p>……でも結局、こんな例ならばList使った方が遥かにスッキリなのであった。意味ないねー。とても。少しはまともな例題が考え出せやしないものなのかしらん。</p>
-</div>
-<h1><a href="https://neue.cc/2009/03/03_137.html">リストの分割</a></h1>
-<ul class="date"><li>2009-03-03</li></ul>
-<div class="entry_body"><pre><code class="language-csharp">// リスト自体は何だっていいので適当に生成
-var list = Enumerable.Repeat(&quot;a&quot;, 50);
-// 25以下をtrue、それ以上をfalseとするkeyでグループ分け
-var result = list
-	.Select((value, index) =&gt; new { value, index })
-	.GroupBy(t =&gt; t.index &lt;= 25, t =&gt; t.value);
-// 多分、こんな感じに取り出す……？
-var first = result.Single(g =&gt; g.Key == true);
-var second = result.Single(g =&gt; g.Key == false);
-</code></pre>
-<p>2ch見てたら、要素数50のリストを0-25と26-50に分割するのどーするの、という質問が出てたのでごにゃごにゃ考えた。最初、list.GroupBy(i =&gt; i &lt; 25);なんて答えたのだけど、即座に値じゃなくて添え字で分けたいんでしょーがボケ、と突っ込みが入ったので書き換えたのが↑のもの。微妙な長さと無駄手間感が何とも言えない、ただのLINQ遊びでしかない状態になってしまった。うーん。これはこれで面白いと思うのだけど。ただ、もう少し短くできないかな……？グループ化が挟まると、その後がどうしても長ったらしく。ていうか、あと、trueとfalseしかないんだから、First()とLast()でいいよね、という話ではある。</p>
-<pre><code class="language-csharp">// 条件ばかりが無駄に多くて限りなく微妙
-var alphabet = Enumerable.Range('A', 'z' + 1 - 'A')
-	.Where(c =&gt; c &lt;= 'Z' || c &gt;= 'a')
-	.GroupBy(c =&gt; c &lt;= 'Z', c =&gt; (char)c);
-// ていうか、意味ないよね、これ、全く
-var upper = alphabet.First();
-var lower = alphabet.Last();
-</code></pre>
-<p>何だか悔しいので、もう少し考えてみた。例えばアルファベットの大文字と小文字とか！……意味ない。死ぬほど意味がない。少なくとも、これだけを考えるならEnumerable.Range('a', 26).Select(i =&gt; ((char)i).ToString());でいいし。ダメだこりゃ。</p>
-<h2>追記</h2>
-<p>あ、違う、こういう場合はGroupByじゃなくてToLookup使えばいいんだった。GroupByと違ってキーでアクセス出来るようになるから、SingleだのFirstだのといった微妙なアクセスじゃなく(しかも、これらを使うと毎回走査してるってことだよね！) result[true]とかalphabet[true]とかでアクセス出来る。これで遙かにスッキリ。Lookupは素晴らしい。けど、ついつい忘れてしまう。</p>
-<pre><code class="language-csharp">var result = list
-	.Select((value, index) =&gt; new { value, index })
-	.ToLookup(t =&gt; (t.index &lt;= 25) ? &quot;以下&quot; : &quot;より上&quot;, t =&gt; t.value);
-var ika = result[&quot;以下&quot;]; // こんな感じで
-var tako = result[&quot;より上&quot;]; // 取り出せるわけです！
-</code></pre>
-<p>これならすっきり。めでたしめでたし。キーは日本語でもboolでもenumでも好きなモノを使うといいさあー。</p>
-<h2>追追記</h2>
-<p><a href="http://d.hatena.ne.jp/NyaRuRu/20080602/p2" title="さっそく Enumerable.ToLookup が役立った - NyaRuRuの日記">さっそく Enumerable.ToLookup が役立った - NyaRuRuの日記</a><br />
-つまりこういうことなのであった。間違いなく昔読んだはずなのに、すっかり忘れていたという事実が何よりも悲しい。あと、<a href="http://www.google.com/search?q=ToLookup" title="ToLookup - Google 検索">ToLookupで検索</a>しても全然引っかからないというのが、限りなく人気無いメソッドのようで悲しい。私も忘れてたけどね！</p>
 </div>
 <a href="https://neue.cc/26">Prev |</a>
 <a href="https://neue.cc/28">| Next</a>

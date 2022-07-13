@@ -5,7 +5,366 @@
     <link>http://neue.cc/</link>
     <description>C# Technical Blog</description>
     <language>ja</language>
-    <lastBuildDate>Wed, 13 Jul 2022 04:23:08 +0900</lastBuildDate>
+    <lastBuildDate>Wed, 13 Jul 2022 14:04:55 +0900</lastBuildDate>
+    <item>
+      <guid isPermaLink="true">https://neue.cc/2022/07/13_Cancellation.html</guid>
+      <link>https://neue.cc/2022/07/13_Cancellation.html</link>
+      <title>async/awaitのキャンセル処理やタイムアウトを効率的に扱うためのパターン＆プラクティス</title>
+      <description>&lt;h1&gt;&lt;a href="https://neue.cc/2022/07/13_Cancellation.html"&gt;async/awaitのキャンセル処理やタイムアウトを効率的に扱うためのパターン＆プラクティス&lt;/a&gt;&lt;/h1&gt;
+&lt;ul class="date"&gt;&lt;li&gt;2022-07-13&lt;/li&gt;&lt;/ul&gt;
+&lt;div class="entry_body"&gt;&lt;p&gt;async/awaitの鬼門の一つとして、適切なキャンセル処理が挙げられます。別に基本的にはそんな難しいことではなく、CancellationTokenSourceを作る、CanellationTokenを渡す、OperationCanceledExceptionをハンドリングする。というだけの話です。けれど、Tokenに手動でコールバックをRegisterしたときとか、渡す口が空いてないものに無理やりなんとかするときとか、タイムアウトに使った場合の始末とか、ちょっと気の利いた処理をしたいような場面もあり、そうした時にどうすれば良いのか悩むこともあります。&lt;/p&gt;
+&lt;p&gt;こういうのはパターンと対応さえ覚えてしまえばいい話でもあるので、今回は&lt;a href="https://github.com/Cysharp/AlterNats"&gt;AlterNats&lt;/a&gt;の実装時に直面したパターンから、「外部キャンセル・タイムアウト・大元のDispose」が複合された状況での処理の記述方法と、適切な例外処理、そして最後にObjectPoolなども交えた効率的なゼロアロケーションでのCancellationTokenSourceのハンドリング手法を紹介します。&lt;/p&gt;
+&lt;h2&gt;CreateLinkedTokenSourceを使ったパターン&lt;/h2&gt;
+&lt;p&gt;何かのClientを実装してみる、ということにしましょう。キャンセル処理の最も単純なパターンは引数の末尾にCancellationTokenを用意して、内部のメソッドにひたすら伝搬させていくことです。きちんと伝搬させていけば、最奥の処理が適切にCancellationTokenをハンドリングしてキャンセル検知時にOperationCanceledExceptionを投げてくれます。CancellationTokenをデフォルト引数にするか、必ず渡す必要があるよう強制するかは、アプリケーションの性質次第です。アプリケーションに近いコードでは強制させるようにしておくと、渡し忘れを避けれるので良いでしょう。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;class Client
+{
+    public async Task SendAsync(CancellationToken cancellationToken = default)
+    {
+        await SendCoreAsync(cancellationToken);
+    }
+
+    async Task SendCoreAsync(CancellationToken cancellationToken)
+    {
+        // nanika...
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;非同期メソッドのキャンセルはCancellationTokenで処理するのが基本で、別途Cancelメソッドを用意する、といったことはやめておきましょう。実装が余計に複雑化するだけです。CancellationTokenを伝搬させるのが基本であり全てです。&lt;/p&gt;
+&lt;p&gt;任意のキャンセルの他に、タイムアウト処理を入れたい、というのは特に通信系ではよくあります。async/awaitでのタイムアウトの基本は、タイムアウトもキャンセル処理の一つである、ということです。CancellationTokenSourceにはCancelAfterという一定時間後にCancelを発火させるというメソッドが用意されているので、これを使ってCancellationTokenを渡せば、すなわちタイムアウトになります。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;// Disposeすると内部タイマーがストップされるのでリークしない
+using var cts = new CancellationTokenSource();
+cts.CancelAfter(TimeSpan.FromMinutes(1));
+
+await client.SendAsync(cts.Token);
+&lt;/code&gt;&lt;/pre&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;a href="https://github.com/Cysharp/UniTask"&gt;UniTask&lt;/a&gt;ではCancelAfterSlimというメソッドが用意されているため、そちらを使うことをお薦めします。Cancelはスレッドプールを使いますが、CancelAfterSlimはPlayerLoop上で動くため、Unityフレンドリーな実装になっています。ただし内部タイマーのストップ手法がCancelAfterSlimの戻り値をDisposeする必要があるというように、実装に若干差異があります。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;タイムアウト時間は大抵固定のため、ユーザーに都度CancelAfterを叩かせるというのは、だいぶ使いにくい設計です。そこで、CancelAfterの実行はSendAsyncメソッドの内部で行うことにしましょう。そうした内部のタイムアウト用CancellationTokenと、外部からくるCancellationTokenを合成して一つのCancellationTokenに変換するには、&lt;a href="https://docs.microsoft.com/en-us/dotnet/api/system.threading.cancellationtokensource.createlinkedtokensource"&gt;CancellationTokenSource.CreateLinkedTokenSource&lt;/a&gt;が使えます。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;class Client
+{
+    public TimeSpan Timeout { get; }
+
+    public Client(TimeSpan timeout)
+    {
+        this.Timeout = timeout;
+    }
+
+    public async Task SendAsync(CancellationToken cancellationToken = default)
+    {
+        // 連結された新しいCancellationTokenSourceを作る
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(Timeout);
+
+        await SendCoreAsync(cancellationToken);
+    }
+
+    // snip...
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;CreateLinkedTokenSourceで生成されたCancellationTourceは連結されたいずれかがCancelされると、生成されたCancellationTokenSource自体もCancelされます。また、それ自体からもCancelが発火できます。&lt;/p&gt;
+&lt;p&gt;これで完成！なのですが、このままだと例外処理に問題があります。&lt;/p&gt;
+&lt;p&gt;OperationCanceledExceptionは &lt;code&gt;CancellationToken&lt;/code&gt;というプロパティを持っていて、これを元に呼び出し側はキャンセルの原因を判別することができます。一つ例を出しますが、以下のようにOperationCanceledExceptionをcatchしたうえで、更に判定を入れてコード分岐をかけることがあります。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;try
+{
+    await client.SendAsync(token);
+}
+catch (OperationCanceledException ex) when (ex.CancellationToken == token)
+{
+    // Cancelの原因をTokenによって判定できる
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;例外を何も処理せずに全部おまかせでやると、投げられる OperationCanceledException.CancellationToken は CreateLinkedTokenSource で連結したTokenになってしまい、何の意味もない情報ですし、原因の判別に使うこともできません。&lt;/p&gt;
+&lt;p&gt;また、タイムアウトをOperationCanceledExceptionとして扱ってしまうことも問題です。OperationCanceledExceptionは特殊な例外で、既知の例外であるとしてロギングから抜いたりすることもままあります（例えばウェブサーバーでクライアントの強制切断(リクエスト中にブラウザ閉じたりとか)でキャンセルされることはよくあるけれど、それをいちいちエラーで記録していたらエラー祭りになってしまう）。タイムアウトは明らかな異常であり、そうしたキャンセルとは確実に区別して欲しいし、OperationCanceledExceptionではない例外になって欲しい。&lt;/p&gt;
+&lt;p&gt;これは .NET のHttpClientでも &lt;a href="https://github.com/dotnet/runtime/issues/21965"&gt;HttpClient throws TaskCanceledException on timeout #21965&lt;/a&gt; としてIssueがあがり(TaskCanceledExceptionはOperationCanceledExceptionとほぼ同義です)、大激論(121コメントもある！)を巻き起こしました。HttpClientはタイムアウトだろうが手動キャンセルだろうが区別なくTaskCanceledExceptionを投げるのですが、原因は、実装が上の例の通りCreateLinkedTokenSourceで繋げたもので処理していて、そして、特に何のハンドリングもしていなかったからです。&lt;/p&gt;
+&lt;p&gt;結論としてこれはHttpClientの設計ミスなのですが、一度世の中に出したクラスの例外の型を変更することは .NET の互換性維持のポリシーに反するということで（実際、これを変更してしまうと影響は相当大きくなるでしょう）、お茶を濁した対応(InnerExceptionにTimeoutExceptionを仕込んで、判定はそちら経由で一応できなくもないようにした)となってしまったのですが、今から実装する我々は同じ轍を踏んではいけない。ということで、ちゃんと正しく処理するようにしましょう。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;public async Task SendAsync(CancellationToken cancellationToken = default)
+{
+    using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+    cts.CancelAfter(Timeout);
+
+    try
+    {
+        await SendCoreAsync(cancellationToken);
+    }
+    catch (OperationCanceledException ex) when (ex.CancellationToken == cts.Token)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            // 引数のCancellationTokenが原因なので、それを保持したOperationCanceledExceptionとして投げる
+            throw new OperationCanceledException(ex.Message, ex, cancellationToken);
+        }
+        else
+        {
+            // タイムアウトが原因なので、TimeoutException(或いは独自の例外)として投げる
+            throw new TimeoutException($&amp;quot;The request was canceled due to the configured Timeout of {Timeout.TotalSeconds} seconds elapsing.&amp;quot;, ex);
+        }
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;やることは別に難しくはなく、OperationCanceledExceptionをcatchしたうえで、外から渡されたcancellationTokenがキャンセルされているならそれが原因、そうでないならタイムアウトが原因であるという判定をして、それに応じた例外を投げ直します。&lt;/p&gt;
+&lt;p&gt;最後に、Client自体がDisposeできるとして、それに反応するようなコードにしましょう。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;class Client : IDisposable
+{
+    // IDisposableと引っ掛けて、Client自体がDisposeされたら実行中のリクエストも終了させるようにする
+    readonly CancellationTokenSource clientLifetimeTokenSource;
+
+    public TimeSpan Timeout { get; }
+
+    public Client(TimeSpan timeout)
+    {
+        this.Timeout = timeout;
+        this.clientLifetimeTokenSource = new CancellationTokenSource();
+    }
+
+    public async Task SendAsync(CancellationToken cancellationToken = default)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(clientLifetimeTokenSource.Token, cancellationToken);
+        cts.CancelAfter(Timeout);
+
+        try
+        {
+            await SendCoreAsync(cancellationToken);
+        }
+        catch (OperationCanceledException ex) when (ex.CancellationToken == cts.Token)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                // 引数のCancellationTokenが原因なので、それを保持したOperationCanceledExceptionとして投げる
+                throw new OperationCanceledException(ex.Message, ex, cancellationToken);
+            }
+            else if (clientLifetimeTokenSource.IsCancellationRequested)
+            {
+                // クライアント自体がDisposeされたのでOperationCanceledException、或いは独自の例外を投げる
+                throw new OperationCanceledException(&amp;quot;Client is disposed.&amp;quot;, ex, clientLifetimeTokenSource.Token);
+            }
+            else
+            {
+                // タイムアウトが原因なので、TimeoutException(或いは独自の例外)として投げる
+                throw new TimeoutException($&amp;quot;The request was canceled due to the configured Timeout of {Timeout.TotalSeconds} seconds elapsing.&amp;quot;, ex);
+            }
+        }
+    }
+
+    async Task SendCoreAsync(CancellationToken cancellationToken)
+    {
+        // nanika...
+    }
+
+    public void Dispose()
+    {
+        clientLifetimeTokenSource.Cancel();
+        clientLifetimeTokenSource.Dispose();
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;差分はCreateLinkedTokenSourceで連結するトークンを増やすのと、例外処理時の分岐を増やすことだけです。&lt;/p&gt;
+&lt;h2&gt;ゼロアロケーション化する&lt;/h2&gt;
+&lt;p&gt;殆どの場合は上記のパターンで全く問題ないのですが、都度CreateLinkedTokenSourceで新しいCancellationTokenSourceを作るのが気になる、かもしれません。どちらにせよasyncメソッドが非同期で実行される場合には、非同期ステートマシン自体のアロケーションが発生するので実際のところ別に気にするほどのことではない。のですが、&lt;a href="https://docs.microsoft.com/en-us/dotnet/api/system.threading.tasks.sources.ivaluetasksource"&gt;IValueTaskSource&lt;/a&gt;や&lt;a href="https://docs.microsoft.com/en-us/dotnet/api/system.runtime.compilerservices.poolingasyncvaluetaskmethodbuilder-1"&gt;PoolingAsyncValueTaskMethodBuilder&lt;/a&gt;を使ったアロケーションを避ける非同期実装を行っていた場合には、相当気になる問題になってきます。また、HTTP/1のREST呼び出しのような頻度では大したことないですが、これが例えばサーバーで大量の並列実行をさばく、クライアントではリアルタイム通信で毎フレーム通信する、といった用途だと、この辺も気を配りたくなってくるかもしれません。&lt;/p&gt;
+&lt;p&gt;なお、ここでは説明の簡略化のために、SendAsyncメソッド自体はasync Taskのままにします。&lt;/p&gt;
+&lt;p&gt;まずは外部キャンセルのない、タイムアウトだけのケースを見ていきます。タイムアウトは正常系の場合は発火しない、つまり殆どの場合は発火しないため、非発火時にはCancellationTokenSourceを使い回すようにしましょう。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;class Client
+{
+    // SqlConnectionのようなメソッドを多重に呼ぶことを禁止しているクラスの場合はフィールドにCancellationTokenSourceを一つ
+    // HttpClientのようにあちこちから多重に呼ばれる場合があるものはObjectPoolで保持する
+
+    readonly ObjectPool&amp;lt;CancellationTokenSource&amp;gt; timeoutTokenSourcePool;
+
+    public TimeSpan Timeout { get; }
+
+    public Client(TimeSpan timeout)
+    {
+        this.Timeout = timeout;
+        this.timeoutTokenSourcePool = ObjectPool.Create&amp;lt;CancellationTokenSource&amp;gt;();
+    }
+
+    public async Task SendAsync()
+    {
+        var timeoutTokenSource = timeoutTokenSourcePool.Get();
+        timeoutTokenSource.CancelAfter(Timeout);
+
+        try
+        {
+            await SendCoreAsync(timeoutTokenSource.Token);
+        }
+        finally
+        {
+            // Timeout処理が発火していない場合はリセットして再利用できる
+            if (timeoutTokenSource.TryReset())
+            {
+                timeoutTokenSourcePool.Return(timeoutTokenSource);
+            }
+        }
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;ObjectPoolの実装は色々ありますが、今回は説明の簡略化のために&lt;a href="https://docs.microsoft.com/en-us/dotnet/api/microsoft.extensions.objectpool"&gt;Microsoft.Extensions.ObjectPool&lt;/a&gt;を使いました(NuGetからMicrosoft.Extensions.ObjectPoolを参照する必要あり)。タイムアウトが発動した場合は再利用不能なので、プールに戻してはいけません。なお、 &lt;a href="https://docs.microsoft.com/en-us/dotnet/api/system.threading.cancellationtokensource.tryreset"&gt;CancellationTokenSource.TryReset&lt;/a&gt;は .NET 6 からのメソッドになります。それ以前の場合は &lt;code&gt;CancelAfter(Timeout.InfiniteTimeSpan)&lt;/code&gt; を呼んでタイマー時間を無限大に引き伸ばす変更を入れる（内部的にはTimerがChangeされる）というハックがあります。&lt;/p&gt;
+&lt;p&gt;外部キャンセルが入る場合には、LinkedTokenを作らず、&lt;a href="https://docs.microsoft.com/en-us/dotnet/api/system.threading.cancellationtoken.unsaferegister"&gt;CancellationToken.UnsafeRegister&lt;/a&gt;でタイマー用のCancellationTokenSourceをキャンセルするようにします。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;public async Task SendAsync(CancellationToken cancellationToken = default)
+{
+    var timeoutTokenSource = timeoutTokenSourcePool.Get();
+
+    CancellationTokenRegistration externalCancellation = default;
+    if (cancellationToken.CanBeCanceled)
+    {
+        // 引数のCancellationTokenが発動した場合もTimeout用のCancellationTokenを発火させる
+        externalCancellation = cancellationToken.UnsafeRegister(static state =&amp;gt;
+        {
+            ((CancellationTokenSource)state!).Cancel();
+        }, timeoutTokenSource);
+    }
+
+    timeoutTokenSource.CancelAfter(Timeout);
+
+    try
+    {
+        await SendCoreAsync(timeoutTokenSource.Token);
+    }
+    finally
+    {
+        // Registerの解除(TryResetの前に「必ず」先に解除すること)
+        // CancellationTokenRegistration.Disposeは解除完了（コールバック実行中の場合は実行終了）までブロックして確実に待ちます
+        externalCancellation.Dispose();
+        if (timeoutTokenSource.TryReset())
+        {
+            timeoutTokenSourcePool.Return(timeoutTokenSource);
+        }
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;CancellationToken.UnsafeRegisterは .NET 6 からのメソッドでExecutionContextをCaptureしないため、より高効率です。それ以前の場合はRegisterを使うか、呼び出しの前後でExecutionContext.SuppressFlow/RestoreFlowするというハックが使えます(UniTaskのRegisterWithoutCaptureExecutionContextはこの実装を採用しています)。&lt;/p&gt;
+&lt;p&gt;CancellationTokenにコールバックを仕込む場合、レースコンディションが発生する可能性が出てきます。この場合だとTimeout用のCancellationTokenSourceをプールに戻した後にCancelが発生すると、最悪なことになります。それを防ぐために、CancellationTokenRegistration.DisposeをTryResetの前に必ず呼びましょう。CancellationTokenRegistration.Disposeの優れているところは、コールバックが実行中の場合は実行終了までブロックして確実に待ってくれます。これによりマルチスレッドのタイミング問題ですり抜けてしまうといったことを防いでくれます。&lt;/p&gt;
+&lt;p&gt;ブロックといいますが、コールバックに登録されたメソッドがすぐに完了する性質のものならば、lockみたいなものなので神経質になる必要はないでしょう。&lt;a href="https://docs.microsoft.com/en-us/dotnet/api/system.threading.cancellationtokenregistration"&gt;CancellationTokenRegistration&lt;/a&gt;にはDisposeAsyncも用意されていますが、むしろそちらを呼ぶほうがオーバーヘッドであるため、無理にDisposeAsyncのほうを優先する必要はないと考えています。CancellationTokenRegistrationには他にUnregisterメソッドもあり、これはfire-and-forget的に解除処理したい場合に有効です。使い分けですね。&lt;/p&gt;
+&lt;p&gt;なお、CancellationTokenへのコールバックのRegister(UnsafeRegister)は、初回はコールバック登録用のスロットを生成するといったアロケーションがありますが、Dispose/Registerを繰り返す二回目以降はスロットを再利用してくれます。このへんも新規に(Linked)CancellationTokenSourceを作るより有利な点となりますね。&lt;/p&gt;
+&lt;p&gt;引き続き、Client自体の寿命に引っ掛けるCancellationTokenを追加した実装を見ていきましょう。といっても、単純にRegisterを足すだけです。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;class Client : IDisposable
+{
+    readonly TimeSpan timeout;
+    readonly ObjectPool&amp;lt;CancellationTokenSource&amp;gt; timeoutTokenSourcePool;
+    readonly CancellationTokenSource clientLifetimeTokenSource;
+
+    public TimeSpan Timeout { get; }
+
+    public Client(TimeSpan timeout)
+    {
+        this.Timeout = timeout;
+        this.timeoutTokenSourcePool = ObjectPool.Create&amp;lt;CancellationTokenSource&amp;gt;();
+        this.clientLifetimeTokenSource = new CancellationTokenSource();
+    }
+
+    public async Task SendAsync(CancellationToken cancellationToken = default)
+    {
+        var timeoutTokenSource = timeoutTokenSourcePool.Get();
+
+        CancellationTokenRegistration externalCancellation = default;
+        if (cancellationToken.CanBeCanceled)
+        {
+            // 引数のCancellationTokenが発動した場合もTimeout用のCancellationTokenを発火させる
+            externalCancellation = cancellationToken.UnsafeRegister(static state =&amp;gt;
+            {
+                ((CancellationTokenSource)state!).Cancel();
+            }, timeoutTokenSource);
+        }
+
+        // Clientの寿命に合わせたものも同じように追加しておく
+        var clientLifetimeCancellation = clientLifetimeTokenSource.Token.UnsafeRegister(static state =&amp;gt;
+        {
+            ((CancellationTokenSource)state!).Cancel();
+        }, timeoutTokenSource);
+
+        timeoutTokenSource.CancelAfter(Timeout);
+
+        try
+        {
+            await SendCoreAsync(timeoutTokenSource.Token);
+        }
+        finally
+        {
+            // Registerの解除増量
+            externalCancellation.Dispose();
+            clientLifetimeCancellation.Dispose();
+            if (timeoutTokenSource.TryReset())
+            {
+                timeoutTokenSourcePool.Return(timeoutTokenSource);
+            }
+        }
+    }
+
+    async Task SendCoreAsync(CancellationToken cancellationToken)
+    {
+        // snip...
+    }
+
+    public void Dispose()
+    {
+        clientLifetimeTokenSource.Cancel();
+        clientLifetimeTokenSource.Dispose();
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;例外処理も当然必要です！が、ここは最初の例のLinkedTokenで作ったときと同じです。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;public async Task SendAsync(CancellationToken cancellationToken = default)
+{
+    var timeoutTokenSource = timeoutTokenSourcePool.Get();
+
+    CancellationTokenRegistration externalCancellation = default;
+    if (cancellationToken.CanBeCanceled)
+    {
+        externalCancellation = cancellationToken.UnsafeRegister(static state =&amp;gt;
+        {
+            ((CancellationTokenSource)state!).Cancel();
+        }, timeoutTokenSource);
+    }
+
+    var clientLifetimeCancellation = clientLifetimeTokenSource.Token.UnsafeRegister(static state =&amp;gt;
+    {
+        ((CancellationTokenSource)state!).Cancel();
+    }, timeoutTokenSource);
+
+    timeoutTokenSource.CancelAfter(Timeout);
+
+    try
+    {
+        await SendCoreAsync(timeoutTokenSource.Token);
+    }
+    catch (OperationCanceledException ex) when (ex.CancellationToken == timeoutTokenSource.Token)
+    {
+        // 例外発生時の対応はLinkedTokenで作ったときと特に別に変わらず
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(ex.Message, ex, cancellationToken);
+        }
+        else if (clientLifetimeTokenSource.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(&amp;quot;Client is disposed.&amp;quot;, ex, clientLifetimeTokenSource.Token);
+        }
+        else
+        {
+            throw new TimeoutException($&amp;quot;The request was canceled due to the configured Timeout of {Timeout.TotalSeconds} seconds elapsing.&amp;quot;, ex);
+        }
+    }
+    finally
+    {
+        externalCancellation.Dispose();
+        clientLifetimeCancellation.Dispose();
+        if (timeoutTokenSource.TryReset())
+        {
+            timeoutTokenSourcePool.Return(timeoutTokenSource);
+        }
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;ということで、↑のものが最終形となりました。&lt;/p&gt;
+&lt;p&gt;async/awaitで実装されている場合、Tokenのコールバックも一メソッド内で収まっているために挙動の見通しがだいぶ良くなります。async/awaitを封印してIValueTaskSourceを使った実装をする場合は、複数のコールバックを手で処理する必要があり、また登録、発火する箇所も複数箇所にちらばってしまうため、遥かに複雑性が増します。&lt;/p&gt;
+&lt;p&gt;AlterNatsでは&lt;a href="https://neue.cc/2022/05/11_AlterNats.html"&gt;ハイパフォーマンスSocketプログラミングとして実装を解説した記事&lt;/a&gt;で、IValueTaskSourceをChannel（キュー）に詰め込むとしていますが、キャンセル時には&lt;a href="https://docs.microsoft.com/en-us/dotnet/api/system.threading.tasks.sources.manualresetvaluetasksourcecore-1"&gt;ManualResetValueTaskSourceCore&lt;/a&gt;のSetExceptionを叩き、正常完了時にはSetResultの前でTryResetからのReturnするという、まぁ基本的な流れは一緒です。少し異なるのは、キャンセルで発火するのはawaitに紐付けられた継続処理だけで、実体はキューに残り続けていて、取り出し時にキャンセル状況をチェックして、何もしないようにする。といったことでしょうか。状況が複雑化する分、レースコンディション起因のバグが入り込みやすくなってしまうので、CancellationTokenRegistrationの挙動をしっかり把握して実装する必要があります。&lt;/p&gt;
+&lt;h2&gt;まとめ&lt;/h2&gt;
+&lt;p&gt;簡単かどうかでいうと、言われればなるほどそうですねーって感じですが、都度考えてやれって言われると結構難しいと思います。なので、こういうパターンなんですね、というのを頭に叩き込んでおくというのは重要だと思いますし、まぁとりあえず覚えてください。覚えれば、別にコード的に複雑というわけでもないので、易易と対処できるようになるはずです。&lt;/p&gt;
+&lt;p&gt;&lt;a href="https://github.com/StackExchange/StackExchange.Redis/"&gt;StackExchange.Redis&lt;/a&gt;も非同期メソッド、CancellationTokenを受け取ってなかったりしますし、パフォーマンスを追求しつつCancellationToken対応を入れるのは、かなり難しい問題だったりします。しかしこの .NET 6世代ではかなりメソッドも増えていて、やろうと思えばやりきれるだけの手札が揃っています。なので、パターン化して真正面から立ち向かいましょう……！&lt;/p&gt;
+&lt;/div&gt;</description>
+      <pubDate>Wed, 13 Jul 2022 00:00:00 +0900</pubDate>
+      <a10:updated>2022-07-13T00:00:00+09:00</a10:updated>
+    </item>
     <item>
       <guid isPermaLink="true">https://neue.cc/2022/07/06_mvp-renew.html</guid>
       <link>https://neue.cc/2022/07/06_mvp-renew.html</link>
@@ -1472,59 +1831,6 @@ public class NanikaOptions
 &lt;/div&gt;</description>
       <pubDate>Sat, 04 Dec 2021 00:00:00 +0900</pubDate>
       <a10:updated>2021-12-04T00:00:00+09:00</a10:updated>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://neue.cc/2021/11/21.html</guid>
-      <link>https://neue.cc/2021/11/21.html</link>
-      <title>C#による自家製静的サイトジェネレーターに移行した話</title>
-      <description>&lt;h1&gt;&lt;a href="https://neue.cc/2021/11/21.html"&gt;C#による自家製静的サイトジェネレーターに移行した話&lt;/a&gt;&lt;/h1&gt;
-&lt;ul class="date"&gt;&lt;li&gt;2021-11-21&lt;/li&gt;&lt;/ul&gt;
-&lt;div class="entry_body"&gt;&lt;p&gt;見た目はほとんど変わっていませんが(とはいえ横幅広くしたので印象は結構変わったかも)、このサイト、フルリニューアルしました。内部構造が。完全に。別物に。元々はWordPressだったのですが、今回から自作の静的サイトジェネレーターでhtmlを生成し、GitHub Pagesでホストするようにしました。元になるソース(&lt;code&gt;.md&lt;/code&gt;)もGitHub上に置き、GitHub ActionsでビルドしてGitHub Pagesでホスティングされるという、完全GitHub完結ソリューション。また、記事を書くエディタも&lt;a href="https://docs.github.com/ja/codespaces/the-githubdev-web-based-editor"&gt;GitHub web-based editor&lt;/a&gt;(リポジトリのトップで&lt;code&gt;.&lt;/code&gt;を打つと、VS Codeそのものが起動するやつ)を利用することで、非常に快適で、というかMarkdownエディタとしては最高品質のものが乗っかっていて、たかがブログ書くにしては面倒くさいPush/Pullもなくダイレクトコミットで反映出来てしまうというのがとても良い体験になっています。&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;a href="https://github.com/neuecc/Blog2/"&gt;neuecc/Blog2&lt;/a&gt;&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;&lt;code&gt;.&lt;/code&gt;でエディタを起動して、&lt;a href="https://github.com/neuecc/Blog2/tree/master/articles"&gt;articles&lt;/a&gt;配下に&lt;code&gt;YYYY-MM-DD.md&lt;/code&gt;ファイルを新規作成。&lt;/p&gt;
-&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/142737666-ec09db39-d517-4fb9-aa9f-b61bfb2cbfe7.png" alt="image" /&gt;&lt;/p&gt;
-&lt;p&gt;完全にVS Codeそのものでデスクトップアプリのものと全く区別が付かないレベルで、これを超える品質のエディタを普通のサイトに乗せることは不可能でしょう。当然もちろん画像のプレビューもできますし、なんだったら拡張すら入る。&lt;/p&gt;
-&lt;p&gt;GitHub管理だと画像置き場（アップロード）が面倒くさい問題があるのですが、これはIssueを画像アップローダーとして使うことで回避しています。Issueの入力フォームは、画像をCtrl+Vでそのままアップロードが可能です。そして嬉しいことに、マークダウンに変換してくれているのでコピペするだけでOK。&lt;/p&gt;
-&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/142736683-d2b2acac-8523-4f54-a325-c1dbb12aa959.png" alt="image" /&gt;&lt;/p&gt;
-&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/142736700-18928390-e53b-4014-a931-9cd974afcf56.png" alt="image" /&gt;&lt;/p&gt;
-&lt;p&gt;上がった先の&lt;code&gt;user-images.githubusercontent&lt;/code&gt;は別にIssueそのものと紐付いているわけではないので、 アップローダ用に使ったIssueはSubmitすることなくポイ、です。そうしてどこにも紐付いていない&lt;code&gt;user-images.githubusercontent&lt;/code&gt;ですが、別にだからといって削除されることもなく永続的に上がり続けているので、遠慮なく使わせてもらうことにします。まぁちゃんとGitHub上に上げてるコンテンツ用に使っているので、許されるでしょう、きっと。多分。&lt;/p&gt;
-&lt;p&gt;そうして出来上がった記事は、そのままエディタ上のgit UIからコミットすると、自身が作業している領域は直接サーバー上のmaster(main)なので、プッシュ不要で反映されます。&lt;/p&gt;
-&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/142736833-55f36246-cb7f-4b62-addf-0e18b3fa6d07.png" alt="image" /&gt;&lt;/p&gt;
-&lt;p&gt;こうなると、もうWordPressで投稿をポスト、するのと変わらないわけです。ブログ記事程度でcloneしてpullしてstagingしてpushしてというのは地味に重たいので、このぐらい身軽で行きたいですね。（実際、投稿後に編集ラッシュとかよくあるので、ちょっと手数が増えるだけで猛烈に嫌気がさす）&lt;/p&gt;
-&lt;p&gt;ジェネレートは&lt;a href="https://github.com/neuecc/Blog2/blob/master/.github/workflows/build.yml"&gt;workflows/buildy.yml&lt;/a&gt;で、このリポジトリ内に配置されてるC#プロジェクトを直接ビルド/実行することで生成処理をしています。&lt;code&gt;dotnet run&lt;/code&gt;便利。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-yaml"&gt;build-blog:
-runs-on: ubuntu-latest
-steps:
-    - uses: actions/checkout@v2
-    - uses: actions/setup-dotnet@v1
-      with:
-        dotnet-version: 6.0.x
-    - run: dotnet run --project ./src/Blog2/Blog2.csproj -c Release -- ./articles ./publish
-    - uses: peaceiris/actions-gh-pages@v3
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        publish_dir: ./publish
-        keep_files: true
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;生成されたファイルは&lt;a href="https://github.com/peaceiris/actions-gh-pages"&gt;peaceiris/actions-gh-pages&lt;/a&gt;を使って&lt;code&gt;gh-pages&lt;/code&gt;ブランチと同期します。その際、デフォルトでは既に上がってるファイルを全削除してしまうので、今回はstyleやassetを、同期とは別に置いてあるので削除されると困るので、&lt;code&gt;keep_files: true&lt;/code&gt;も指定しています。そうすると記事の削除がしづらくなるんですが、記事の削除はしない or どうしても削除しなかったら二重に(articlesとgh-pages)削除すればいいだけ、という運用で回避。&lt;/p&gt;
-&lt;p&gt;と、いうわけでシステム的には満足です。&lt;/p&gt;
-&lt;p&gt;C#でも&lt;a href="https://www.statiq.dev/"&gt;Statiq&lt;/a&gt;などといった静的サイトジェネレーターは存在するのですが、あえて自作した理由は、サイトのシステムをそっくり移行するという都合上、URLを前のものと完璧に合わせたかったというのがあります。&lt;a href="https://github.com/neuecc/Blog2/tree/gh-pages"&gt;生成結果のファイル一覧&lt;/a&gt;が若干変というかクドいというか、といったところがあるのですが、これは前のWordPressでやっていたルーティングをそのまんま再現するためということで。WordPressからのエクスポートも、DB直接見てC#でそのままテーブルダンプから作ったので、まぁ別に大したコードが必要なわけでもないので一気に作っちゃえという気になったというのもあります。&lt;/p&gt;
-&lt;p&gt;外部ライブラリとしてはMarkdownのHTML化に&lt;a href="https://github.com/xoofx/markdig"&gt;Markdig&lt;/a&gt;を採用しました。色々高機能ではあるのですが、今回は &lt;code&gt;Markdown.ToHtml(input)&lt;/code&gt; しか使っていませんけれど、感触的にはとても良かったです。&lt;/p&gt;
-&lt;p&gt;シンタックスハイライトには&lt;a href="https://prismjs.com/"&gt;Prism.js&lt;/a&gt;を用いました。Markdigの出力する```csharpの変換を、特に何も意識せずとも対象にしてくれるのが良かったですね。プラグインはautoloaderとnormalize-whitespaceを合わせて投下しています。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-html"&gt;&amp;lt;script src=&amp;quot;&amp;quot;https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js&amp;quot;&amp;quot;&amp;gt;&amp;lt;/script&amp;gt;
-&amp;lt;script src=&amp;quot;&amp;quot;https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js&amp;quot;&amp;quot;&amp;gt;&amp;lt;/script&amp;gt;
-&amp;lt;script src=&amp;quot;&amp;quot;https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js&amp;quot;&amp;quot;&amp;gt;&amp;lt;/script&amp;gt;
-&lt;/code&gt;&lt;/pre&gt;
-&lt;h2&gt;まとめ&lt;/h2&gt;
-&lt;p&gt;最近ブログ投稿がだいぶ減ってしまっていたのですが、システムも一新したことでやる気が出てきたのでいいことです。まぁ見た目は本当にあんま全然変わってないんですが……！&lt;/p&gt;
-&lt;p&gt;なお、反映に必要な所要時間は30秒弱。&lt;/p&gt;
-&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/142737556-eac40d7a-46c8-4534-96de-38895104d4cb.png" alt="image" /&gt;&lt;/p&gt;
-&lt;p&gt;遅いっちゃあ遅いですが、許容できるといえば許容できますね。サイトジェネレートプログラムの実行時間自体は1秒以下で、別に全然時間かかってないんで、CIセットアップとか、それ以外の時間が何かとかかっちゃってます。GitHub Actionsの仕組み的にしょうがないといえばしょうがないんですが、もう少しなんとかなってほしいかなあ。あとGitHub Pages自体が反映が若干遅い。遅い上に進捗が分からないのが地味にストレスフル。とはいえとはいえ、良いんじゃあないでしょうか。良さの殆どはGitHub web-based editorから来てますね、これは本当に革命的に良い。というわけで、このweb-based editorを活かすシステムを作っていくという手段と目的を逆転させた思考が最終的に実際良いんじゃないかと思ってます！&lt;/p&gt;
-&lt;/div&gt;</description>
-      <pubDate>Sun, 21 Nov 2021 00:00:00 +0900</pubDate>
-      <a10:updated>2021-11-21T00:00:00+09:00</a10:updated>
     </item>
   </channel>
 </rss>

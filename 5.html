@@ -23,7 +23,330 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2017/04/06_551.html">C# 7.0 custom task-like の正しいフレームワークでの利用法</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2017/06/30_552.html">MessagePack for C# 1.4.1 - JSONサポート強化, dynamic対応, Typelessシリアライズなど</a></h1>
+<ul class="date"><li>2017-06-30</li></ul>
+<div class="entry_body"><p>めちゃくちゃ久々ですが、この間、何も書いてないわけではなかったです！<a href="http://engineering.grani.jp/">会社ブログ</a>のほうに、<a href="http://engineering.grani.jp/entry/2017/05/10/223049">Unite 2017 Tokyo講演「「黒騎士と白の魔王」にみるC#で統一したサーバー/クライアント開発と現実的なUniRx使いこなし術」</a>、<a href="http://engineering.grani.jp/entry/2017/06/02/190012">リアルタイム通信におけるC# - async-awaitによるサーバーサイドゲームループ</a>、<a href="http://engineering.grani.jp/entry/2017/06/27/193823">MessagePack for C#に見るC#でのバイナリの読み方と最適化法</a>と三本書いてました。</p>
+<p>また、Unite 2017とAWS Summit 2017という大きめの会場での発表もしていました。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/key/SyArngADoKW25" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/UnityTechnologiesJapan/unite-2017-tokyocunirx" title="【Unite 2017 Tokyo】「黒騎士と白の魔王」にみるC#で統一したサーバー/クライアント開発と現実的なUniRx使いこなし術" target="_blank">【Unite 2017 Tokyo】「黒騎士と白の魔王」にみるC#で統一したサーバー/クライアント開発と現実的なUniRx使いこなし術</a> </strong> from <strong><a target="_blank" href="https://www.slideshare.net/UnityTechnologiesJapan">UnityTechnologiesJapan</a></strong> </div>
+<iframe src="//www.slideshare.net/slideshow/embed_code/key/LrPbFMPfMXWJKj" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/grpchttp2-api-streaming" title="「黒騎士と白の魔王」gRPCによるHTTP/2 - API, Streamingの実践" target="_blank">「黒騎士と白の魔王」gRPCによるHTTP/2 - API, Streamingの実践</a> </strong> from <strong><a target="_blank" href="https://www.slideshare.net/neuecc">Yoshifumi Kawai</a></strong> </div>
+<p>Uniteはクライアントサイド中心に、AWS Summitではサーバーサイド中心にという形で用意していたのですが、特にUniteのほうは幅広く扱いすぎて散漫になってしまって、割と反省しています。どちらのセッションもコード成分が少なめになってしまったのも如何ともし難いところで、どこかでもう少しコードコードしたものをしたい気は割としています。</p>
+<h2>MessagePack for C# 1.4.1</h2>
+<p>さて、本題。<a href="https://github.com/neuecc/MessagePack-CSharp">MessagePack for C#</a>の1.4.1をリリースしました。ちなみに表記する際 MessagePack-CSharp と呼ぶべきか MessagePack for C# と呼ぶべきかが悩ましいですね。1.0.0の時から、特に機能追加でのアナウンスをしていなかったので、一挙紹介したいと思います。かなり強化されています……！</p>
+<h2>JSONサポート</h2>
+<p>もともとToJsonだけだったのですが(MessagePackBinaryをJSON形式に変換、バイナリなので中身がわかりにくいmsgpackの中身を解析するのに便利)、FromJsonが追加されています。</p>
+<pre><code class="language-csharp">// JSON文字列をMessagePackバイナリ(byte[])に変換
+var msgpackBin = MessagePackSerializer.FromJson(@&quot;{&quot;&quot;hoge&quot;&quot;:&quot;&quot;foo&quot;&quot;,&quot;&quot;huga&quot;&quot;:2000}&quot;);
+
+// byte[]は送信するなり保存するなり、MessagePackとしてDeserializeするなりお好きなように。
+
+// {&quot;hoge&quot;:&quot;foo&quot;,&quot;huga&quot;:2000}
+Console.WriteLine(MessagePackSerializer.ToJson(msgpackBin));
+</code></pre>
+<p>FromJson、便利なの？というと、んー、まぁあんまり使うことはないかなー、とは思いますが、（互換的な意味/ブラウザからだから）JSONで受けて、内部的にはMsgPackで流す、みたいなシナリオもなくはないんですよね。そういうところではいいんじゃないでしょうか。また、後述するdynamicと組み合わせると以外と便利かもしれません。</p>
+<h2>Dynamicデシリアライズ</h2>
+<p>XMLだと、構造を見て、手でマップしていくということが割とあったのですが、JSONではXMLにおける属性など複雑な要素がないぶんだけ、そのままストレートにデシリアライズでマッピングするだけで事足りることがほとんどになった気がします。ましてやMessagePackはバイナリなので、手付けで対応つけるのもやりにくいでしょう。とはいえ、C#的な構造に1:1でマッピング出来ないような構造がこないとも限らず、簡単に、動的に弄れる機構があれば、かなり有意義なのは間違いないでしょう。MessagePack for C#は、標準でdynamicで受けることで、動的オブジェクトとして操作できるようになります。</p>
+<pre><code class="language-csharp">// こんなデータがあったとして
+var bin = MessagePackSerializer.Serialize(new Dictionary&lt;object, object&gt;
+{
+    { &quot;Name&quot; , &quot;foobar&quot; },
+    { &quot;Arguments&quot;, new object[]{ 1, 100.424, &quot;hugahuga&quot; } },
+});
+
+// dynamicでデシリアライズ！
+var d = MessagePackSerializer.Deserialize&lt;dynamic&gt;(bin);
+
+// インデクサを使って動的に辿って取り出せる
+Console.WriteLine(d[&quot;Name&quot;]); // foobar
+Console.WriteLine(d[&quot;Arguments&quot;][1]); // 100.424
+Console.WriteLine(d[&quot;Arguments&quot;][2]); // hugahuga
+
+// データ構造はToJsonで確認しておけばよろし
+// {&quot;Name&quot;:&quot;foobar&quot;,&quot;Arguments&quot;:[1,100.424,&quot;hugahuga&quot;]}
+Console.WriteLine(MessagePackSerializer.ToJson(bin));
+</code></pre>
+<p>ちなみにFromJsonとDeserialize&lt;dynamic&gt;を組み合わせれば、MessagePack for C#だけで簡易的なJSON解析・値の取得が可能になります。</p>
+<pre><code class="language-csharp">// FromJsonとDeserialize&lt;dynamic&gt;を組み合わせてDynamicJsonになる
+var d = MessagePackSerializer.Deserialize&lt;dynamic&gt;(MessagePackSerializer.FromJson(@&quot;{&quot;&quot;hoge&quot;&quot;:&quot;&quot;foo&quot;&quot;,&quot;&quot;huga&quot;&quot;:2000}&quot;));
+
+Console.WriteLine(d[&quot;hoge&quot;]); // foo
+Console.WriteLine(d[&quot;huga&quot;]); // 2000
+</code></pre>
+<p>性能的には、まぁわざわざmsgpackのbyte[]を介しているので、超速い！ってわけじゃないんですが、そもそもMessagePack for C#の速度が他の数倍速いということもあって、普通にかなりの速度が出ます。</p>
+<p>なお、dynamicデシリアライズの正確な実体は PrimitiveObjectResolver で、StandardResolverの最後のフォールバックとして組み込まれています。</p>
+<h2>Typelessシリアライズ</h2>
+<p>Typelessって何？ってことですが、BinaryFormatterみたいなものです。普通の（？）シリアライザは、デシリアライズ時に&lt;T&gt;だの引数にTypeだのと、とにかく型を要求します。何故かと言うと、どの型に変換すればいいのかわからないから。でもBinaryFormatterは違います、APIを見てください、Typeを要求していないのです！</p>
+<pre><code class="language-csharp">public object Deserialize(Stream serializationStream);
+</code></pre>
+<p>それなのにobjectで返されたほうには、ちゃんとシリアライズした時の型で帰ってくる。すごいね！便利だね！その理由は……、.NETの型がバイナリに埋まってるから。バイナリに埋まってるので、その情報を元にデシリアライズしているのです。というわけで、そんなTypelessで処理できるバージョンが実装されました。</p>
+<pre><code class="language-csharp">// .Typeless経由でトップレベルのTypelessSerializerが使える
+var bin = MessagePackSerializer.Typeless.Serialize(new MyClass() { Hoge = 100 });
+
+// ちゃんとMyClass.Hoge = 100 でデシリアライズされてる
+var mc = MessagePackSerializer.Typeless.Deserialize(bin);
+
+// こんな風に、型名が先頭にシリアライズされてる。
+// Dump結果はMapのように見えますが、実際はMsgPackの拡張領域(100)を使い、型を埋めている
+// {&quot;$type&quot;:&quot;ConsoleApp73.MyClass, ConsoleApp73&quot;,&quot;Hoge&quot;:100}
+Console.WriteLine(MessagePackSerializer.ToJson(bin));
+</code></pre>
+<p>実装的には TypelessContractlessStandardResolver 経由でシリアライズされているので、普通のシリアライズと混ぜることができます。どういうことかというと、object[]とかでも問答無用にきちんとシリアライズ/デシリアライズできます。</p>
+<pre><code class="language-csharp">// こんな型があったとして
+public class RpcInfo
+{
+    public string MethodName { get; set; }
+    public object[] Arguments { get; set; }
+}
+
+// ----
+
+var info = new RpcInfo
+{
+    MethodName = &quot;Hoge/Huga&quot;,
+    Arguments = new object[] { &quot;foo&quot;, 100, new MyClass() }
+};
+
+// RpcInfoとしてシリアライズ
+var bin = MessagePackSerializer.Serialize&lt;RpcInfo&gt;(info, TypelessContractlessStandardResolver.Instance);
+
+// (object[] Arguments)が正しく復元されている
+var info2 = MessagePackSerializer.Deserialize&lt;RpcInfo&gt;(bin, TypelessContractlessStandardResolver.Instance);
+</code></pre>
+<p>こういう、ふつーだと出来ないことが色々できる感じで夢広がりますね。前述のPrimitiveObjectResolverでも、まぁまぁ賄えるのですが、独自型とかを入れると扱いが厄介になってしまうので、そういう点でこちらの TypelessResolver のほうがイケテル度は高いです。</p>
+<p>ところで、型を埋め込み、任意の型でデシリアライズできる場合には脆弱性が出る可能性があります。詳しくは<a href="https://media.blackhat.com/bh-us-12/Briefings/Forshaw/BH_US_12_Forshaw_Are_You_My_Type_WP.pdf">Breaking .NET
+Through Serialization</a>という資料を読んでほしいのですが（この資料は大変素晴らしいのでC#書く人は絶対読んだほうがいいですよ）、中には酷いクラスがあって、例えば System.CodeDom.Compiler.TempFileCollection はデストラクタでFile.Delete が走ります。基本的にインターネットの外からやってくるものに絶対の安全はありません。MessagePackはバイナリだからといって、別に不正データが投げつけられないわけではないので、TempFileCollection を型情報として埋めて、File.Deleteの対象をデシリアライズさせるものを投げつければ、ファイルをボロボロに削除されちゃうでしょう。</p>
+<p>MessagePack for C#ではそれなりの安全性（最もキケンな[Serializable]のルールには従わない、↑で挙げられてるようなヤベークラスはそもそもデシリアライズできないようにしている）はありますが、絶対の保証がある、と言い切れるかというとなんともというところです。まぁ、シリアライザを作るってことは、表面上に見えるよりも、もっと色々なことを考えて作ってるんですよ、ということで。</p>
+<p>標準Resolverから外しているように、Typeless自体がオススメかどうかというと微妙なのですが（型を埋め込む都合上バイナリサイズも膨らむし、他言語との互換性も消滅する）、欲しいシチュエーションというのは間違いなく存在するので、そういう時に覚えていてもらえれば嬉しいです。</p>
+<h2>Stream API</h2>
+<p>基本的にMessagePack for C#はbyte[]レベルで動作します。byte[]を直接読み、byte[]に直接書く。それにより、あらゆるオーバーヘッドを削減しているんですが、既存フレームワークなどにシリアライザ拡張を仕込む場合、Streamを引数に取るケースが多いんですね、というか普通そうですよね。そんな場合、高レベルAPI(MessagePackSerializer.Serialize/Deserialize)にはStreamオーバーロードが用意されているのですが、プリミティブなAPI(MessagePackBinary)には、ありませんでした。</p>
+<p>さすがにそれはやりづらいねー、ってのはわかるー、ので、新しくMessagePackBinaryのWrite/ReadにStreamを受け取るオーバーロードが用意されました。最終的にbyte[]に読み取って/書き込んでから処理するのですが、そこのところを内部のメモリープールを通したりして、なるべくオーバーヘッドが少なくなるようにしています。</p>
+<p>また、新たに MessagePackSerializer.Deserialize(Straem stream, bool readStrict) というオーバーロードが高レベルAPIに登場しました。readStrictがtrueの場合、Streamから読み取る範囲が、きっちりMessagePackのブロック分だけになります。デフォルトはfalseです。falseの場合はStreamを最後まで呼んで、そのbyte[]ブロックを処理します。そのため、Streamに連続的にMessagePackのバイナリが詰まっていた場合に処理できなかったんですね、これがreadStrictなら、正しくDeserializeを連発するだけでも動作させられます。</p>
+<pre><code class="language-csharp">using (var ms = new MemoryStream())
+{
+    // Streamに連続的に書き込む
+    MessagePackSerializer.Serialize(ms, new[] { 1, 10, 100, 1000 });
+    MessagePackSerializer.Serialize(ms, new[] { 1000, 100, 10, 1 });
+
+    ms.Position = 0;
+
+    // readStrict: trueで正しく順番にデシリアライズできる
+    var a1 = MessagePackSerializer.Deserialize&lt;int[]&gt;(ms, readStrict: true); // [1, 10, 100, 1000]
+    var a2 = MessagePackSerializer.Deserialize&lt;int[]&gt;(ms, readStrict: true); // [1000, 100, 10, 1]
+}
+</code></pre>
+<p>じゃあtrueがデフォルトのほうがいいじゃん！ってことなんですが、パフォーマンス的にはfalseのほうがいいのです。というのも正確にMessagePackのブロック範囲を読み取るために、先にブロック範囲を解析する必要があるので……。これは、MessagePack for C#がbyte[]レベルで動作しているため、正しくストリーミングで読み書きできるわけじゃないからです。その辺のトレードオフは承知の上でbyte[]レベルを基本に敷いています。ストリーミングでやるから単純にロスなしでパフォーマンス良いんだぜ！じゃないところが世の中の現実的なところ、ということで。</p>
+<h2>Resolverによる拡張</h2>
+<p>MessagePack for C#の拡張ポイントは IFormatterResolver のみです。なんたらオプションとかなんたらセッティングスとかなく、どのリゾルバーを使うか。それだけの単純明快な仕様になっています。そして、それだけで十分すぎるほど機能するのです！なんでそうなのかというと、本質的にシリアライザって、ある型にたいしてどういうbyte[]を書く/読むか、ってことの連続にすぎないんですね。なので MessagePack for C# ではそこだけに注目して、ある型にたいしてどういうbyte[]を書く/読むか、を定義することがシリアライザの最小の実装としました。それがIMessagePackFormatter&lt;T&gt;で、Tに対してSerializeとDeserializeを定義します。組み込みで126個用意されてるようです、凄い、地道な作業です……。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/27689277-a93180b4-5d18-11e7-9fbc-58d6ab758864.png" alt="image" /></p>
+<p>スクロールバーの長さがものがたる。</p>
+<p>IFormatterResolver は何かというと、その IMessagePackFormatter を取り出す機構です。</p>
+<pre><code class="language-csharp">// IntFormatterが出てくる
+var intFormatter = resolver.GetFormatter&lt;int&gt;();
+</code></pre>
+<p>で、それがどこで使われているかというと、IMessagePackFormatterです。IMessagePackFormatterを取り出すIFormatterResolverはIMessagePackFormatterで使われる、というわけわからん感じですが、どういうことかというと、例えばオブジェクトをシリアライズする場合。</p>
+<pre><code class="language-csharp">[MessagePackObject]
+public class SampleModel
+{
+    [Key(0)]
+    public int Id{ get; set; }
+    [Key(1)]
+    public Person User { get; set; }
+    [Key(2)]
+    public DateTime CurrentTime { get; set; }
+}
+
+public sealed class SampleModelFormatter : IMessagePackFormatter&lt;SampleModel&gt;
+{
+    public int Serialize(ref byte[] bytes, int offset, SampleModel value, IFormatterResolver formatterResolver)
+    {
+        if (value == null)
+        {
+            return MessagePackBinary.WriteNil(ref bytes, offset);
+        }
+
+        var startOffset = offset;
+
+        offset += MessagePackBinary.WriteFixedArrayHeaderUnsafe(ref bytes, offset, 3);
+
+        // formatterResolver経由で各型のシリアライザを取得している
+        offset += formatterResolver.GetFormatter&lt;int&gt;().Serialize(ref bytes, offset, value.Id, formatterResolver);
+        offset += formatterResolver.GetFormatter&lt;Person&gt;().Serialize(ref bytes, offset, value.User, formatterResolver);
+        offset += formatterResolver.GetFormatter&lt;DateTime&gt;().Serialize(ref bytes, offset, value.CurrentTime, formatterResolver);
+
+        return offset - startOffset;
+    }
+}
+</code></pre>
+<p>オブジェクトのシリアライズが代表的ですが、型はネストするんですね、ネストした各プロパティの型の子シリアライザを取得するためにformatterResolverが使われます。このformatterResolverはシリアライズの際のトップレベルから渡され続けて、それにより挙動がカスタマイズできます。</p>
+<pre><code class="language-csharp">// デフォルト：Contract(属性付与)が必要なResolver
+MessagePackSerializer.Serialize(model, MessagePack.Resolvers.StandardResolver.Instance);
+
+// 無指定で全てのpublic型をシリアライズなJSON.NETライクにカジュアルに使えるResolver
+MessagePackSerializer.Serialize(model, MessagePack.Resolvers.ContractlessStandardResolver.Instance);
+</code></pre>
+<p>Resolverは大量に用意されているのですが、大きく分けて、他のと混ぜて使うためのものと、トップレベルで渡されることを想定した複合の二種があります。例えば単独だとDateTimeには組み込みで二種類あります。</p>
+<pre><code class="language-csharp">// DateTimeFormatter, MsgPackのTimestampの仕様でシリアライズ/デシリアライズする。UTCになる。
+var formatterA = BuiltinResolver.Instance.GetFormatter&lt;DateTime&gt;();
+
+// DateTime.ToBinaryで.NETに特化した仕様でシリアライズ/デシリアライズする。DateTimeKindが保持される。
+var formatterB = NativeDateTimeResolver.Instance.GetFormatter&lt;DateTime&gt;();
+</code></pre>
+<p>では、NativeDateTimeResolverを使いたい、という場合には、使いたいResolverを先に持ってけばいい、と。</p>
+<pre><code class="language-csharp">// StandardResolverによる解決の前にNativeDateTimeResolverで解決させる
+MessagePack.Resolvers.CompositeResolver.RegisterAndSetAsDefault(
+    NativeDateTimeResolver.Instance,
+    StandardResolver.Instance);
+</code></pre>
+<p>CompositeResolverは組み込みのお手軽にResolverのカスタムチェーンを作れる代物ですが、CompositeResolverにこだわらず、自分でResolverを作ってしまうのも良いです（むしろ割とそちらのほうがオススメ、ReadMeに書かれているものをコピペすれば、別に難しくはありません）。ちなみにStandardResolverは以下のような単発Resolverの混合品になっています。</p>
+<pre><code class="language-csharp">// StandardResolverの解決順序
+static readonly IFormatterResolver[] resolvers = new[]
+{
+    BuiltinResolver.Instance, // Try Builtin
+    AttributeFormatterResolver.Instance, // Try use [MessagePackFormatter]
+    DynamicEnumResolver.Instance, // Try Enum
+    DynamicGenericResolver.Instance, // Try Array, Tuple, Collection
+    DynamicUnionResolver.Instance, // Try Union(Interface)
+    DynamicObjectResolver.Instance, // Try Object
+    PrimitiveObjectResolver.Instance // finally, try primitive resolver
+};
+</code></pre>
+<p>ここから足したり引いたりして、オレオレStandardResolverを作っても良いわけです。それがMessagePack for C#のシリアライズ動作のカスタマイズになっています。なお、リゾルバーの解決チェーンはTの解決時に一回だけ走るようになっていて、そこで確定したら（ジェネリクスの利用法のハックにより）C#レベルでキャッシュされるので、超高速に取り出すような構造にしています。毎回、解決のチェーンを回したり、TypeをキーにしてDictionaryから引っ張る、とかやってたりしたら遅いですからね。</p>
+<p>こういった仕組みだけで、ここまで徹底的に過激にやってる例は他にないんですが、めちゃくちゃ機能するので、世の中は見習うといいでしょう。</p>
+<h2>MessagePackFormatterAttribute</h2>
+<p>基本的にオブジェクトのシリアライズは、IMessagePackFormatterにより提供される外部シリアライザ経由で実行されます。通常は、属性付与により動的にシリアライザが生成されますが、全く別個のカスタマイズされた挙動をさせたい場合もなくはないでしょう、その際にはカスタムResolverを作って、通常利用するResolverの先頭に差し込んで貰う、というのも面倒くさいので、クラスに対して1:1で固有のシリアライザを紐付けられる属性を追加しました。</p>
+<pre><code class="language-csharp">// この属性で渡したTypeがシリアライザとして使われる
+[MessagePackFormatter(typeof(CustomObjectFormatter))]
+public class CustomObject
+{
+    string internalId;
+
+    public CustomObject()
+    {
+        this.internalId = Guid.NewGuid().ToString();
+    }
+
+    // ネストしたクラスの中にシリアライザがあるので、プライベートフィールドのシリアライズも可能
+    // みたいな自由なカスタマイズができるようになる
+    class CustomObjectFormatter : IMessagePackFormatter&lt;CustomObject&gt;
+    {
+        public int Serialize(ref byte[] bytes, int offset, CustomObject value, IFormatterResolver formatterResolver)
+        {
+            return formatterResolver.GetFormatterWithVerify&lt;string&gt;().Serialize(ref bytes, offset, value.internalId, formatterResolver);
+        }
+
+        public CustomObject Deserialize(byte[] bytes, int offset, IFormatterResolver formatterResolver, out int readSize)
+        {
+            var id = formatterResolver.GetFormatterWithVerify&lt;string&gt;().Deserialize(bytes, offset, formatterResolver, out readSize);
+            return new CustomObject { internalId = id };
+        }
+    }
+}
+</code></pre>
+<p>このシリアライザの選択もResolverによって提供されていて、AttributeFormatterResolverがこの解決を行ってくれる代物になっています。なので、「MessagePackFormatterAttributeを無視したい」という場合はAttributeFormatterResolverを抜いたリゾルバーを渡せばいい、ということになります。また、それを無視した、更に別の挙動に変えたい場合は、「その前」にその型に適合するResolverを用意しておけばいいわけですね。シリアライザの挙動のカスタマイズは全てリゾルバーで解決可能、な問題になるように全体的なAPIを調整してあるのは、優れた点だと思っています。</p>
+<h2>DataContract対応</h2>
+<p>今まで独自属性(MessagePackObjectAttributeやKeyAttribute)のみだったのですが、DataContractAttributeにも対応しました。</p>
+<pre><code class="language-csharp">[DataContract]
+public class Sample1
+{
+    [DataMember(Order = 0)]
+    public int Foo { get; set; }
+    [DataMember(Order = 1)]
+    public int Bar { get; set; }
+}
+</code></pre>
+<p>Orderをint key, Nameをstring key代わりにできます。DataContractを使うことのメリットは、共有したい型のプロジェクトをMessagePack for C#の参照のないプレーンなプロジェクトにできることです。デメリットはAnalyzerの解析対象外になることと、mpc.exeによるコードジェネレート対象外になること。また、UnionやSerializationConstructorなどの、より強力なMessagePack for C#の機能は使えません。なので、できればMessagePack for C#を参照したほうがオススメです。</p>
+<h2>強い署名</h2>
+<p>すとぅろんぐねーむさいんど、好きですか？私は嫌いです。今の世の中に全く見合ってないレガシーなシステムだと思っています。しかし、.NETの世界は残念ながら強い署名と共に生きていくしかないのです。それは.NET Core時代であっても。Corefxの<a href="https://github.com/dotnet/corefx/blob/master/Documentation/project-docs/strong-name-signing.md">Strong Name Signing</a>というドキュメントが最新の見解になりますが、もうこれが存在する理由は、互換性のためしょうがなく維持する必要があり、そして、署名されたものが存在すれば、そこからは署名の負の連鎖が繋がっているという、そういう荒涼とした世界だけです。</p>
+<p>というわけで現状、NuGetでは署名したのが配られています。</p>
+<h2>性能改善</h2>
+<p>地道に出来るとこはやってますねん。特にオブジェクトをMapでシリアライズする場合(ContractlessResolverやKey(string)など)の性能を向上してます。これはJSONリプレイス的な意味で、かなり使われる形式なので、ちゃんと手を打ちたかったので。具体的にどんな形になったかというと</p>
+<pre><code class="language-csharp">// こんなよくあるものがあるとして
+[MessagePackObject(keyAsPropertyName: true)]
+public class SampleModel
+{
+    public int Age { get; set; }
+    public string FirstName { get; set; }
+    public string LastName { get; set; }
+}
+
+// Beforeのサンプル
+public sealed class SampleModelFormatter : IMessagePackFormatter&lt;SampleModel&gt;
+{
+    public int Serialize(ref byte[] bytes, int offset, SampleModel value, IFormatterResolver formatterResolver)
+    {
+        if (value == null)
+        {
+            return MessagePackBinary.WriteNil(ref bytes, offset);
+        }
+
+        var startOffset = offset;
+
+        // 個数3が固定なので、コード生成時に15以下は判定なし(FixedMapHeaderUnsafe)で書き込み
+        offset += MessagePackBinary.WriteFixedMapHeaderUnsafe(ref bytes, offset, 3);
+
+        // {&quot;プロパティ名&quot;:値} を書き込んでいく
+        offset += MessagePackBinary.WriteString(ref bytes, offset, &quot;Age&quot;);
+        offset += MessagePackBinary.WriteInt32(ref bytes, offset, value.Age);
+
+        offset += MessagePackBinary.WriteString(ref bytes, offset, &quot;FirstName&quot;);
+        offset += MessagePackBinary.WriteString(ref bytes, offset, value.FirstName);
+
+        offset += MessagePackBinary.WriteString(ref bytes, offset, &quot;LastName&quot;);
+        offset += MessagePackBinary.WriteString(ref bytes, offset, value.LastName);
+
+        return offset - startOffset;
+    }
+}
+</code></pre>
+<p>Beforeはせやな、って感じの、わりとストレートな実装でした。しいていえば、Mapのヘッダーサイズだけは最適化しています（コード生成時に判定できるので15以下ならFixed、それ以上なら内部で個数判定してフォーマットを決めるWriteMapHeaderを使ったコードを生成する）。</p>
+<p>Afterは、というと</p>
+<pre><code class="language-csharp">// Afterのサンプル
+public sealed class SampleModelFormatter : IMessagePackFormatter&lt;SampleModel&gt;
+{
+    // プロパティ名のバイト列は固定なので、事前に変換しておく
+    readonly byte[][] stringByteKeys = new byte[][]
+    {
+        global::System.Text.Encoding.UTF8.GetBytes(&quot;Age&quot;),
+        global::System.Text.Encoding.UTF8.GetBytes(&quot;FirstName&quot;),
+        global::System.Text.Encoding.UTF8.GetBytes(&quot;LastName&quot;),
+    };
+
+    public int Serialize(ref byte[] bytes, int offset, SampleModel value, IFormatterResolver formatterResolver)
+    {
+        if (value == null)
+        {
+            return MessagePackBinary.WriteNil(ref bytes, offset);
+        }
+
+        var startOffset = offset;
+
+        offset += MessagePackBinary.WriteFixedMapHeaderUnsafe(ref bytes, offset, 3);
+
+        // 文字列のバイナリです、ということでそのままシーケンシャルに書いていく
+        // コード生成なら、生成時点で順番を固定で確定できるので、Dictionary&lt;string, byte[]&gt;みたいな辞書参照コストがかかるようなこともしない
+        offset += MessagePackBinary.WriteStringBytes(ref bytes, offset, stringByteKeys[0]);
+        offset += MessagePackBinary.WriteInt32(ref bytes, offset, value.Age);
+
+        offset += MessagePackBinary.WriteStringBytes(ref bytes, offset, stringByteKeys[1]);
+        offset += MessagePackBinary.WriteString(ref bytes, offset, value.FirstName);
+
+        offset += MessagePackBinary.WriteStringBytes(ref bytes, offset, stringByteKeys[2]);
+        offset += MessagePackBinary.WriteString(ref bytes, offset, value.LastName);
+
+        return offset - startOffset;
+    }
+
+    // deserialize...
+}
+</code></pre>
+<p>プロパティ名は常に固定なのだから、事前に変換して持っておけばいいでしょ、という単純なお話でした。Beforeは毎回UTF8.GetBytesしていたわけですが、Afterではそのコストがゼロになっています。これはさすがに誰がどう見ても明らかにafterのほうが速い。実際に実装する時は、こういうようなコンセプトコードを書いた上で、動的生成のためILを打ち込みます。今回は変更量も大したことなかったので、割とサクッと書けました。よかったですね。</p>
+<p>こういうのって、言われるとそりゃそーだってところだし難しい話でもなんでもない単純なことなんですが、割と見逃しちゃうところだったりします。コロンブスの卵的な。実装的にも（特にIL書く量が増えて）面倒くさいし。そういう部分を徹底的に精査して最適化を埋め込みまくってるのが、MessagePack for C#の速さの秘訣です。地道で、徹底的な改善こそが全て。近道なんてないのです。</p>
+<p>Mapの場合、デシリアライズ速度も改善可能なんですが、アイディアはありつつちょっと具体的な実装がないのでまだ保留中。理屈的にはロスを減らせるんですが、せっかく実装しても、それが実際速いかどうかが別問題だったりで難しいんですよねえ。</p>
+<h2>まとめ</h2>
+<p>MessagePack for C#は既に<a href="https://kuro-kishi.jp/">黒騎士と白の魔王</a>で全面的(Unityクライアント-gRPCサーバー間の通信と、サーバーサイドでのRedisへのシリアライズデータ格納）に使われているため、バグも概ね取り除かれていて、プロダクション環境で安心して使わえるレベルになっています。機能面でも、シリアライザに要求される幅広いシナリオに、ほとんど対応できるレベルになっています。というか、むしろ機能面でここまで揃ってるシリアライザも実際ないですね。JSON, Typeless, dynamic、そして拡張性。最強っぽい。細かいできることはまだ色々残っていますが(循環参照のサポートが一番大きいかな)、普通に使う限りは全く不便しないはずです。Unity向けにはコードジェネレータの利便性を高める（Macサポートとか）ってのがだいぶ優先度高めで未だに抜本的には手が出てません……。</p>
+<p>ASP.NET Core MVCサポートも、私が適当に書いたものよりも、<a href="https://www.strathweb.com/2017/06/using-messagepack-with-asp-net-core-mvc/">Using MessagePack with ASP.NET Core MVC</a>といったちゃんとした（ちゃんとした！）実装を用意してもらったりなど、採用してもらっていってるかなー、と思います。それ以外に<a href="https://github.com/neuecc/DatadogSharp">DatadogSharp</a>という私が現在書いているDatadog APM用のクライアントの通信もMessagePack for C#を用いています。<a href="https://github.com/aspnet/SignalR/issues/543">SignalRにMsgPack Protocolを採用する</a>という話もあるんですが、それは<a href="https://github.com/aspnet/SignalR/pull/587">強い署名がなかった</a>ので敗退したんですが、署名もしたしStream APIも入れたんで、機会あればもう少し粘りたいかな、といったところですね。</p>
+<p>ところで、今日（今日！）の<a href="http://gtmf.jp/2017/osaka/index.html">GTMF 2017 OSAKA</a>にて<a href="https://www.cri-mw.co.jp/">株式会社ＣＲＩ・ミドルウェア</a>さんと共に「「黒騎士と白の魔王」の CRIWARE 活用事例」というセッションを行います。大阪です。実はこの記事、東京-大阪の新幹線の中で書いてるんですねー。また、同じ内容を7/14の<a href="http://gtmf.jp/2017/tokyo/index.html">GTMF 2017 TOKYO</a>でも行いますので是非是非よろよろしくお願いします。懇親会などでもふらついていますので、よければ捕まえてやってください。</p>
+</div>
+<h1><a href="https://neue.cc/2017/04/06_551.html">C# 7.0 custom task-like の正しいフレームワークでの利用法</a></h1>
 <ul class="date"><li>2017-04-06</li></ul>
 <div class="entry_body"><p>例年、この頃はMVP更新が云々とかなのですが、今年からシステムが変わって更新時期に変動があるんで何もありませんが、一応まだ継続しています。それはともかくとして<a href="https://www.visualstudio.com/ja-jp/news/releasenotes/vs2017-relnotes">Visual Studio 2017</a>が出ました。会社でも全プロジェクトがVS2017に移行完了を果たして、代わり映えしないようで、タプル記法のデコンストラクションとか工夫すると結構便利だな、とか使い始めると色々発見があります。タプル記法やデコンストラクションの工夫に関しては、弊社エンジニアリングブログの<a href="http://engineering.grani.jp/entry/2017/04/06/163904">C# 7.0 が使えるようになったので ValueTuple を活用してみた</a>をどうぞ。</p>
 <p>そんな中で、私がはよ来てくれ……と願っていたC# 7.0の新機能は、task-likeです。<a href="https://github.com/dotnet/roslyn/issues/7169">Proposal: arbitrary task-like types returned from async methods</a>で延々と議論されていたようですが、これは何かというと、asyncでTask以外の型が返せるようになります。もともとC# 7.0からValueTaskが入って、async ValueTask&lt;T&gt; を返せるようになる必要があったついでに搭載されたみたいなものですが、色々何か出来そうですよね！？</p>
@@ -1532,231 +1855,6 @@ void Update()
 <p>LINQ to GameObjectのオリジナルのデザインは2014/10/28だったんですが、その頃は今よりは全然遥かにUnityへの習熟度、知識が欠けていたなぁ、というのを改めて痛感しました。思い上がる、ということはないですが、環境への理解力が足らないとどこかイマイチなものになってしまうわけで、C#云々抜きに、常にUnityに真摯に向き合ってかないとダメですね。実際問題、愛情を持って突き詰めて考えられないと、本当の理想のところまでは行けない。小手先の知識だけで処理したようなライブラリは、まぁ使いたくないですねえ、そういうの実際どうしてもどこか独りよがりのしょうもないものになってしまうので。</p>
 <p>LINQは遅い/GCキツくなるというのは絶対的な事実ではあるのですけれど、極力書き味を失わないようにしつつ、6, 7割ぐらいのシチュエーションには特化した最適化を施し、何も考えずともむしろ普通に書くよりも速くなる。それ以外のシチュエーションでも、速さを意識した使い方をすれば、やはり普通に書くよりも速くなる。という、私的には理想的かな、というところで表現できたので、是非是非、機能を気にする人も、性能を気にする人も使ってみてください。どちらも満たせるものになっているはずです。</p>
 <p>ところでしつこいですが、9/13に<a href="https://atnd.org/events/80089">Photon勉強会</a>で「Photon Server Deep Dive - PhotonWireの実装から見つめるPhoton Serverの基礎と応用」というタイトルで話しますので、Photon興味ある人も、そうでなくてもUniRx興味ある人もどうぞ。LINQ to GameObject、或いはUnityとLINQについての話は、さすがにあんま関係ないのでセッション内容には含まれませんが懇親会ででも掴まえてもらえば何でも答えます。</p>
-</div>
-<h1><a href="https://neue.cc/2016/08/05_537.html">C#のGCゴミとUnity(5.5)のコンパイラアップデートによるListのforeach問題解決について</a></h1>
-<ul class="date"><li>2016-08-05</li></ul>
-<div class="entry_body"><p>UnityにおいてList&lt;T&gt;のforeachは厳禁という定説から幾数年。しかしなんと現在Unityが取組中のコンパイラアップデートによって解決されるのだ！ついに！というわけで、実際どういう問題があって、どのように解決されるのかを詳しく見ていきます。</p>
-<h2>現状でのArrayのforeachとListのforeach</h2>
-<p>まずは現状確認。を、Unityのプロファイラで見てみます。以下の様なコードを書いて計測すると……。</p>
-<pre><code class="language-csharp">var array = new int[] { 1, 2, 3, 4, 5 };
-var list = new List&lt;int&gt; { 1, 2, 3, 4, 5 };
-
-// ボタンを叩いて計測開始
-button.OnClickAsObservable().Subscribe(_ =&gt;
-{
-    Profiler.BeginSample(&quot;GCAllocCheck:Array&quot;);
-    foreach (var item in array) { }
-    Profiler.EndSample();
-
-    Profiler.BeginSample(&quot;GCAllocCheck:List&quot;);
-    foreach (var item in list) { }
-    Profiler.EndSample();
-
-    // プロファイラでそこ見たいのでサッと止める。
-    Observable.NextFrame(FrameCountType.EndOfFrame).Subscribe(__ =&gt;
-    {
-        EditorApplication.isPaused = true;
-    });
-});
-</code></pre>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/17413233/5cca8302-5abb-11e6-820c-50b05ea98df4.png" alt="image" /></p>
-<p>Unityのプロファイラは使いやすくて便利。というのはともかく、なるほどListは40B消費している（注：Unity上でコンパイラした時のみの話で、普通のC#アプリなどでは0Bになります。詳しくは後述）。おうふ……。ともあれ、なぜListのforeachでは40Bの消費があるのか。ってところですよね。foreach、つまりGetEnumeratorのせいに違いない！というのは、半分合ってて半分間違ってます。つまり100%間違ってます。</p>
-<h2>GetEnumeratorとforeach</h2>
-<p>foreachはコンパイラによってGetEnumerator経由のコードに展開されます。</p>
-<pre><code class="language-csharp">// このコードは
-foreach(var item in list)
-{
-}
-
-// こう展開される
-using (var e = list.GetEnumerator())
-{
-    while (e.MoveNext())
-    {
-        var item = e.Current;
-    }
-}
-</code></pre>
-<p>GetEnumerator、つまり IEnumerator&lt;T&gt; はクラスなので、ヒープに突っ込まれてるに違いない。はい。いえ。だったらArrayだって突っ込まれてるはずじゃないですかー？</p>
-<pre><code class="language-csharp">// こんなコードを動かしてみると
-
-Profiler.BeginSample(&quot;GCAllocCheck:Array.GetEnumerator&quot;);
-array.GetEnumerator();
-Profiler.EndSample();
-
-Profiler.BeginSample(&quot;GCAllocCheck:List.GetEnumerator&quot;);
-list.GetEnumerator();
-Profiler.EndSample();
-</code></pre>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/17413202/34d11a0a-5abb-11e6-8932-7ed0704ae72c.png" alt="image" /></p>
-<p>そう、むしろArrayは32B確保していてListはむしろ0なのだ。どっちも直感的には変てこ。</p>
-<h2>配列とforeachの最適化</h2>
-<p>配列をforeachで回すとコンパイラが、forループに展開します。</p>
-<pre><code class="language-csharp">// このコードは
-foreach (var item in array)
-{
-
-}
-
-// こうなる
-for (int i = 0; i &lt; array.Length; i++)
-{
-    var item = array[i];
-}
-</code></pre>
-<p>ちなみに配列のループを回すときは明確にLengthを使うと良いです。というのも、配列の境界チェック（自動で入る）が実行時に消せます。</p>
-<pre><code class="language-csharp">// こっちよりも
-var len = array.Length;
-for (int i = 0; i &lt; len; i++)
-{
-    var item = array[i];
-}
-
-//  こっちのほうが速い
-for (int i = 0; i &lt; array.Length; i++)
-{
-    var item = array[i];
-}
-</code></pre>
-<p>詳しくは<a href="https://blogs.msdn.microsoft.com/clrcodegeneration/2009/08/13/array-bounds-check-elimination-in-the-clr/">Array Bounds Check Elimination in the CLR</a>をどうぞ。ようするに基本的には配列はforeachで回しておけばおｋ、indexを別途使う場合があるなら、Lengthで回すことを心がけるとベター。というところでしょうか。（もっというと配列の要素は構造体であると、更にベターなパフォーマンスになります。また、配列は色々特別なので、配列 vs Listで回す速度を比較すれば配列のほうがベタベターです）</p>
-<h2>List&lt;T&gt;のGetEnumeratorへの最適化</h2>
-<p>list.GetEnumeratorが0Bの理由は、ここにクラスライブラリ側で最適化が入っているからです。と、いうのも、List&lt;T&gt;.GetEnumeratorの戻り値はIEnumerator&lt;T&gt;ではなくて、<a href="https://msdn.microsoft.com/ja-jp/library/x854yt9s.aspx">List&lt;T&gt;.Enumerator</a>という構造体になっています。そう、特化して用意された素敵構造体なのでGCゴミ行きしないのだ。なので、これをわざとらしくtry-finallyを使ったコードで回してみると</p>
-<pre><code class="language-csharp">Profiler.BeginSample(&quot;GCAllocCheck:HandConsumeEnumerator&quot;);
-
-var e = list.GetEnumerator();
-try
-{
-    while (e.MoveNext())
-    {
-        var item = e.Current;
-    }
-}
-finally
-{
-    e.Dispose();
-}
-
-Profiler.EndSample();
-</code></pre>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/17413965/68a816f0-5abe-11e6-9720-ee68fdf6bdc8.png" alt="image" /></p>
-<p>0Bです。そう、理屈的にはforeachでも問題ないはずなんですが……。ここでちゃんと正しくforeachで「展開された」後のコードを書いてみると</p>
-<pre><code class="language-csharp">using (var e = list.GetEnumerator())
-{
-    while (e.MoveNext())
-    {
-        var item = e.Current;
-    }
-}
-</code></pre>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/17414045/c793eb76-5abe-11e6-88f1-e7964fb03180.png" alt="image" /></p>
-<p>40B。なんとなくわかってきました！？</p>
-<h2>using展開のコンパイラバグ</h2>
-<p>「List&lt;T&gt;をforeachで回すとGCゴミが出るのはUnityのコンパイラが古いせいでバグッてるから」というのが良く知られている話ですが、より正しい理解に変えると、「構造体のIDisposableに対するusingの展開結果が最適化されていない（仕様に基づいていない）」ということになります。この辺の話は<a href="http://www.ecma-international.org/publications/standards/Ecma-334.htm">ECMA-334 C# Language Specification</a>にも乗っているので、C#コンパイラの仕様に対するバグと言ってしまうのは全然良いのかな？</p>
-<p>どういうことかというと、現状のUnityのコンパイラはこういうコードになります。</p>
-<pre><code class="language-csharp">var e = list.GetEnumerator();
-try
-{
-    while (e.MoveNext())
-    {
-        var item = e.Current;
-    }
-}
-finally
-{
-    var d = (IDisposable)e; // ここでBoxing
-    d.Dispose(); // 本来は直接 e.Dispose() というコードでなければならない
-}
-</code></pre>
-<p>そう、全体的に良い感じなのに、最後の最後、Disposeする時にIDisposableに<a href="https://msdn.microsoft.com/ja-jp/library/yz2be5wk.aspx">ボックス化</a>してしまうので、そこでGCゴミが発生するというのが結論です。そして、これは最新のmonoコンパイラなどでは直っています、というか<a href="https://bugzilla.novell.com/show_bug.cgi?id=571010">2010年の時点で直ってます</a>。どんだけ古いねん、Unityのコンパイラ……。</p>
-<h2>40Bの出処</h2>
-<p>ゴミ発生箇所は分かったけれど、せっかくなのでもう少し。サイズが40Bの根拠はなんなの？というところについて。まずは色々なもののサイズを見ていきましょうー。</p>
-<pre><code class="language-csharp">// こんなのも用意した上で
-struct EmptyStruct
-{
-}
-
-struct RefStruct
-{
-    public object o;
-}
-
-class BigClass
-{
-    public long X;
-    public long Y;
-    public long Z;
-}
----
-
-// 色々チェックしてみる
-Profiler.BeginSample(&quot;GCAllocCheck:object&quot;);
-var _0 = new object();
-Profiler.EndSample();
-
-Profiler.BeginSample(&quot;GCAllocCheck:class&quot;);
-var _1 = new BigClass();
-Profiler.EndSample();
-
-Profiler.BeginSample(&quot;GCAllocCheck:int&quot;);
-var _2 = 99;
-Profiler.EndSample();
-
-Profiler.BeginSample(&quot;GCAllocCheck:int.boxing&quot;);
-object _3 = 99;
-Profiler.EndSample();
-
-Profiler.BeginSample(&quot;GCAllocCheck:emptyStruct&quot;);
-var _4 = new EmptyStruct();
-Profiler.EndSample();
-
-Profiler.BeginSample(&quot;GCAllocCheck:emptyStruct.boxing&quot;);
-object _5 = new EmptyStruct();
-Profiler.EndSample();
-
-Profiler.BeginSample(&quot;GCAllocCheck:bool.boxing&quot;);
-object _6 = true;
-Profiler.EndSample();
-
-Profiler.BeginSample(&quot;GCAllocCheck:float.boxing&quot;);
-object _7 = 0.1f;
-Profiler.EndSample();
-
-Profiler.BeginSample(&quot;GCAllocCheck:double.boxing&quot;);
-object _8 = 0.1;
-Profiler.EndSample();
-
-Profiler.BeginSample(&quot;GCAllocCheck:refStruct.boxing&quot;);
-object _9 = new RefStruct();
-Profiler.EndSample();
-</code></pre>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/17415884/9e004e78-5ac6-11e6-8709-8b1ed441fddf.png" alt="image" /></p>
-<p>なるほどなるほど。当たり前ですがstructのままのは0B。EmptyStructやboolなど最小1バイトのboxingは17B(ほえ？）、int(4バイト)が20Bでdouble(8バイト)や参照を一個持たせた(IntPtr - 64bit環境において8バイト)構造体が24B。classにlongを3つめたのが40B。そしてobjectが16B。つまり。つまり、最小が16Bで、そこからフィールドのそれぞれの要素のサイズが加算されるということです。</p>
-<p>この16 bytesがどこから来ているかというと、<a href="https://www.simple-talk.com/dotnet/net-framework/object-overhead-the-hidden-net-memory-allocation-cost/">オブジェクトのヘッダ</a>です。ああ、なるほどそういう……。</p>
-<p>さて、これを踏まえてListのEnumeratorのフィールドを見てみると</p>
-<pre><code class="language-csharp">public struct Enumerator : IEnumerator, IDisposable, IEnumerator&lt;T&gt;
-{
-	private List&lt;T&gt; l;
-	private int next;
-	private int ver;
-	private T current;
-</code></pre>
-<p>ヘッダ16B + IntPtrの8B + intの4B + intの4B + Tがintの場合は4B = 36B。40じゃないじゃん、ってところは、32以降は8Bずつ埋まってくっぽ、実質33Bだと40B, 41Bだと48Bという感じ。といったところから40Bの消費になっていたということですね！</p>
-<h2>Experimental Scripting Previews</h2>
-<p>ついにコンパイラアップデートのPreviewがやってきた！<a href="http://forum.unity3d.com/forums/experimental-scripting-previews.107/">Experimental Scripting Previews</a>にて、コンパイラのアップデートプロジェクトも始まっています。そして今のところ5.3.5p8-csharp-compiler-upgradeが配られています。</p>
-<p>というわけで早速、冒頭の配列とListのforeachをかけてみると……</p>
-<pre><code class="language-csharp">Profiler.BeginSample(&quot;GCAllocCheck:Array&quot;);
-foreach (var item in array) { }
-Profiler.EndSample();
-
-Profiler.BeginSample(&quot;GCAllocCheck:List&quot;);
-foreach (var item in list) { }
-Profiler.EndSample();
-</code></pre>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/17416914/62c1d0d4-5acb-11e6-9008-d1410e996e7a.png" alt="image" /></p>
-<p>やった！これで問題nothingですね！（実際は計測時は初回にListのほうに32B取られててあれれ？となったんですが、コンパイル後のIL見ても正常だし、まぁ二回以降叩いたのは↑画像の通りになったので、よしとしておこ……）</p>
-<h2>まとめ</h2>
-<p>で、現状はList&lt;T&gt;の列挙はどうすればいいのか、というと、まぁforでindexerでアクセスが安心の鉄板ではある。ForEachが内部配列に直接アクセスされるので速い説はなくはないですが、ForEachだとラムダ式のキャプチャに気を使わないと逆効果なので(詳しくは<a href="http://neue.cc/2016/01/06_525.html">Unityでのボクシングの殺し方、或いはラムダ式における見えないnewの見極め方</a>)、基本的には普通にforがいいと思います（なお、キャプチャのないように気を使えば、ForEachのほうが速度を稼げる余地はあります。理論上、正常になったforeachよりも良い場合があるため）</p>
-<p>理想的にはforeachであるべきだし、改革の時はまもなく！（5.5に↑のコンパイラアップグレードは入るっぽいですよ）。ちなみに、あくまでコンパイラのアップグレードなだけで、フレームワークのアップデートや言語バージョンのアップデートは今は含まれてはいない。段階的にやっていく話だと思うので、とりあえずはコンパイラがより良くなる、というだけでも良いと思ってます。というか全然良いです。素晴らしい。</p>
 </div>
 <a href="https://neue.cc/4">Prev |</a>
 <a href="https://neue.cc/6">| Next</a>

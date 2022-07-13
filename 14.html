@@ -23,7 +23,105 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2011/12/10_357.html">.NETの標準シリアライザ(XML/JSON)の使い分けまとめ</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2011/12/13_358.html">Voidインスタンスの作り方、或いはシリアライザとコンストラクタについて</a></h1>
+<ul class="date"><li>2011-12-13</li></ul>
+<div class="entry_body"><p>voidといったら、特別扱いされる構造体です。default(void)なんてない。インスタンスは絶対作れない。作れない。本当に？</p>
+<pre><code class="language-csharp">var v = System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(void));
+
+Console.WriteLine(v); // System.Void
+</code></pre>
+<p>作れました。というわけで、GetUninitializedObjectはその名前のとおり、コンストラクタをスルーしてオブジェクトを生成します。そのため、voidですら生成できてしまうわけです、恐ろしい。こないだ<a href="http://neue.cc/2011/12/10_357.html">.NETの標準シリアライザ(XML/JSON)の使い分けまとめ</a>という記事でシリアライザ特集をして少し触れましたが、DataContractSerializerで激しく使われています。よって、シリアライズ対象のクラスがコンストラクタ内で激しく色々なところで作用しているようならば、それが呼び出されることはないので注意が必要です。</p>
+<p>ただし、DataContractSerializerを使ったからって、必ずしも呼ばれるわけではないです。DataContract属性がついていなければ普通にコンストラクタを呼ぶ。DataContract属性がついていれば、引数のないコンストラクタがあったとしても、コンストラクタを無視する。という挙動になっているようです。ちょっと紛らわしいので、以下のコードは（参照設定があれば）そのままペーストして動くので、是非試してみてください。</p>
+<pre><code class="language-csharp">using System;
+using System.IO;
+using System.Linq.Expressions;
+using System.Runtime.Serialization;
+using System.Runtime.Serialization.Json;
+using System.Text;
+using System.Xml.Serialization;
+
+public class EmptyClass
+{
+    public EmptyClass()
+    {
+        Console.WriteLine(&quot;BANG!&quot;);
+    }
+}
+
+[DataContract]
+public class ContractEmptyClass
+{
+    public ContractEmptyClass()
+    {
+        Console.WriteLine(&quot;BANG!BANG!&quot;);
+    }
+}
+
+[DataContract]
+public class NoEmptyConstructorClass
+{
+    public NoEmptyConstructorClass(int dummy)
+    {
+        Console.WriteLine(&quot;BANG!BANG!BANG!&quot;);
+    }
+}
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        // 普通にnewするとBANG!
+        Console.WriteLine(&quot;New:&quot;);
+        var e1 = new EmptyClass();
+
+        // Activator.CreateInstanceでnewするのもBANG!
+        Console.WriteLine(&quot;Activator.CreateInstance:&quot;);
+        var e2 = Activator.CreateInstance&lt;EmptyClass&gt;();
+
+        // ExpressionTreeでCompileしてもBANG!
+        Console.WriteLine(&quot;Expression.New&quot;);
+        var e3 = Expression.Lambda&lt;Func&lt;EmptyClass&gt;&gt;(Expression.New(typeof(EmptyClass))).Compile().Invoke();
+
+        // 何も起こらない（コンストラクタを無視するのでね）
+        Console.WriteLine(&quot;GetUninitializedObject:&quot;);
+        var e4 = System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(EmptyClass));
+
+        // XmlSerializerでのデシリアライズはBANG!
+        Console.WriteLine(&quot;XmlSerializer:&quot;);
+        var e5 = new XmlSerializer(typeof(EmptyClass)).Deserialize(new MemoryStream(Encoding.UTF8.GetBytes(&quot;&lt;EmptyClass /&gt;&quot;)));
+
+        // DataContractSerializerでもBANGって起こるよ！
+        Console.WriteLine(&quot;DataContractSerializer:&quot;);
+        var e6 = new DataContractSerializer(typeof(EmptyClass)).ReadObject(new MemoryStream(Encoding.UTF8.GetBytes(&quot;&lt;EmptyClass xmlns=\&quot;http://schemas.datacontract.org/2004/07/\&quot; /&gt;&quot;)));
+
+        // DataContractJsonSerializerでも起こるんだ！
+        Console.WriteLine(&quot;DataContractJsonSerializer:&quot;);
+        var e7 = new DataContractJsonSerializer(typeof(EmptyClass)).ReadObject(new MemoryStream(Encoding.UTF8.GetBytes(&quot;{}&quot;)));
+
+        // DataContract属性をつけたクラスだと何も起こらない
+        Console.WriteLine(&quot;DataContract + DataContractSerializer:&quot;);
+        var e8 = new DataContractSerializer(typeof(ContractEmptyClass)).ReadObject(new MemoryStream(Encoding.UTF8.GetBytes(&quot;&lt;ContractEmptyClass xmlns=\&quot;http://schemas.datacontract.org/2004/07/\&quot; /&gt;&quot;)));
+
+        // DataContract属性をつけたクラスだとJsonSerializerのほうも当然何も起こらない
+        Console.WriteLine(&quot;DataContract + DataContractJsonSerializer:&quot;);
+        var e9 = new DataContractJsonSerializer(typeof(ContractEmptyClass)).ReadObject(new MemoryStream(Encoding.UTF8.GetBytes(&quot;{}&quot;)));
+
+        // 空コンストラクタのないもの+DataContractSerializerだと何も起こらない
+        Console.WriteLine(&quot;NoEmptyConstructor + DataContractSerializer:&quot;);
+        var e10 = new DataContractSerializer(typeof(NoEmptyConstructorClass)).ReadObject(new MemoryStream(Encoding.UTF8.GetBytes(&quot;&lt;NoEmptyConstructorClass xmlns=\&quot;http://schemas.datacontract.org/2004/07/\&quot; /&gt;&quot;)));
+
+        // 空コンストラクタのないもの+DataContractJsonSerializerでも何も起こらない
+        Console.WriteLine(&quot;NoEmptyConstructor + DataContractJsonSerializer:&quot;);
+        var e11 = new DataContractJsonSerializer(typeof(NoEmptyConstructorClass)).ReadObject(new MemoryStream(Encoding.UTF8.GetBytes(&quot;{}&quot;)));
+    }
+}
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/constuctorvoid.jpg">
+</p>
+<p>.NET 4でもSilverlightでも共通です。この挙動は妥当だと思います。DataContract属性を付けた時点で、そのクラスはシリアライズに関して特別な意識を持つ必要がある。コンストラクタ内でシリアライズで復元できない副作用のある処理をすべきではない。逆に、何も付いていない場合は特に意識しなくても大丈夫。</p>
+</div>
+<h1><a href="https://neue.cc/2011/12/10_357.html">.NETの標準シリアライザ(XML/JSON)の使い分けまとめ</a></h1>
 <ul class="date"><li>2011-12-10</li></ul>
 <div class="entry_body"><p>今年もAdvent Calendarの季節がやってきましたね。去年は私はC#とJavaScriptで書きましたが、今年はC#とSilverlightでやります。というわけで、この記事は<a href="http://atnd.org/events/22001">Silverlight Advent Calendar 2011</a>用のエントリです。前日は<a href="https://twitter.com/#!/Posaune">@posaune</a>さんの<a href="http://d.hatena.ne.jp/posaunehm/20111209/1323443047">SilverlightのListBoxでつくるいんちきHorizontalTextBlock </a>でした。</p>
 <p>今回の記事中のサンプルはSilverlight 4で書いています。が、Silverlight用という体裁を持つためにDebug.WriteLineで書いているというだけで、Silverlightらしさは皆無です！えー。.NET 4でもWindows Phone 7でも関係なく通じる話ですねん。</p>
@@ -1839,262 +1937,6 @@ public void PersonTest()
 <p>MSでSilverlight周りのチームにいるJafar Husain氏（Silverlight Toolkitに入ってるという話で最初にRxを世界に紹介した人ですね！）は、<a href="http://themechanicalbride.blogspot.com/2009/06/better-unit-tests-with-testassert-for.html" title="unfold: Better Unit Tests with Test.Assert() for NUnit/VSTT/SUTF">unfold: Better Unit Tests with Test.Assert() for NUnit/VSTT/SUTF</a>という記事で.NETはずっとパワフルなのに、いつまでJUnitスタイルの古いAPIを引きずってるんだ？と問題提起し、Expressionを解析して適切なAssertに差し替えるという、Queryable的な実装を示しました。Chaining Assertionでは、もっと野蛮に、拡張メソッドとラムダ式により、C#らしいスタイルで軽快に記述することを可能にしました。</p>
 <p>最近少し刺され気味なので若干弁解しておきますが、別にスタイルは自由ですよ。でも他人に使わせるものは、より良いものであるべきだし、そうして他人が使ったりリファレンスとして参照されるものが、あんまりな出来だったら、そりゃ一言あって然りでしょう。本当に多くの人が参照するものだったら、なおのことです。いやまあ、度を超えた発言は刺されてもしょうがないですが。</p>
 <p>NuGetからも入れられるのと、MSTestの他にNUnit, MbUnit, xUnit.NETにも対応しているので、試してもらえると嬉しいです。</p>
-</div>
-<h1><a href="https://neue.cc/2011/09/17_343.html">Rxにおける並行非同期実行とリソース処理の問題</a></h1>
-<ul class="date"><li>2011-09-17</li></ul>
-<div class="entry_body"><p>非同期(Asynchronous)だの並列(Parallel)だの並行(Concurerrent)だの、よくわからない単語が並びます。ParallelがやりたければPLINQ使うべし、と思うわけですがそれはさておき、Rxを使うと、意図しても意図しなくても、並行な状態にはなります。そして、その意図していないという状態は危うい線を踏んでいるので、きちんと認識しておく必要があります。また、危ういと同時に、Rxはその並行をうまくコントロールするメソッドが揃っているので、覚えておくと世界が一気に広がります。</p>
-<p>例えば、こういう非同期メソッドがあるとして。</p>
-<pre><code class="language-csharp">IObservable&lt;T&gt; AsyncModoki&lt;T&gt;(T value, int second)
-{
-    // second秒後にvalueを返す非同期処理をシミュレート
-    return Observable.Return(value)
-        .Delay(TimeSpan.FromSeconds(second));
-}
-
-static void Main(string[] args)
-{
-    // 1,2,3,4という入力をすぐに送り込む
-    new[] { 1, 2, 3, 4 }
-        .ToObservable()
-        .SelectMany(x =&gt; AsyncModoki(x, 3))
-        .Subscribe(x =&gt; Console.Write(x + &quot;-&gt;&quot;));
-
-    Console.ReadLine();
-}
-</code></pre>
-<p class="noindent">
-<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="50px">
-  <param name="source" value="http://neue.cc/wp-content/uploads/silverlight/rxasynchronous.xap"/>
-  <param name="background" value="white" />
-  <param name="minRuntimeVersion" value="3.0.40624.0" />
-  <param name="autoUpgrade" value="true" />
-  <param name="initparams" value="Start=0" />
-  <a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=3.0.40624.0" style="text-decoration:none">
-      <img src="http://go.microsoft.com/fwlink/?LinkId=108181" alt="Microsoft Silverlight を入手" style="border-style:none"/>
-  </a>
-</object>
-</p>
-<p>1~4は、全て同時にリクエストが開始されます。だから、3秒後に同時に結果が表示されます。</p>
-<p>同時に実行が開始されているということは、非同期の結果が完了する時間にズレがある場合、結果が前後することがあります。実際、上のものも何度か実行すると毎回結果が変わると思います(Delayは（デフォルトだと）値をThreadPoolに投げて遅延させます。ThreadPoolに入った時点で、順序の保証が消滅する)。というわけで、基本的にSelectManyを使った場合1:1で渡していくわけではなければ、順序は壊れると考えてください。さて、それだと困る場合もあるのではと思いますので、結果の順序を制御する方法が幾つかあります。</p>
-<h2>Switch</h2>
-<p>Switchは実に有意義なメソッドで、分かると、SelectMany以上に多用することが多くなるのではと思います。</p>
-<pre><code class="language-csharp">clickEventObservable // クリック毎に
-    .Select(x =&gt; AsyncModoki(x, 1)) // 何らかの非同期処理をするとする
-    .Switch() // IObservable&lt;IObservable&lt;T&gt;&gt;の状態なので、Switch
-    .Subscribe(Console.WriteLine);
-</code></pre>
-<p class="noindent">
-<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="50px">
-  <param name="source" value="http://neue.cc/wp-content/uploads/silverlight/rxasynchronous.xap"/>
-  <param name="background" value="white" />
-  <param name="minRuntimeVersion" value="3.0.40624.0" />
-  <param name="autoUpgrade" value="true" />
-  <param name="initparams" value="Start=1" />
-  <a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=3.0.40624.0" style="text-decoration:none">
-      <img src="http://go.microsoft.com/fwlink/?LinkId=108181" alt="Microsoft Silverlight を入手" style="border-style:none"/>
-  </a>
-</object>
-</p>
-<p>クリックすると1秒遅延（非同期処理でもしていると考えてください）して、値が表示されます。しかし、1秒以内に次の値がクリックされた場合はキャンセルされ、表示しません。</p>
-<p>つまり、最新の値だけを返すことを保証します。それ以前のものはキャンセル(Disposeが呼ばれる)されます。どういう時に使うかというと、例えばインクリメンタルサーチ。L, LI, LIN, LINQと入力が変わる度に非同期リクエストを発生させますが、欲しい結果は最後の一件のみで、次のキー入力があった場合は以前のものはキャンセルして欲しい。キャンセルはともかく、非同期実行だと結果が前後してしまうことだってあります。LINQと入力したのにLIの結果一覧が表示されてしまったら困る。そんな場合に、まさに、うってつけです。そして存外、こういったシチュエーションは多いのではないかと思われます。例えば私の以前作った<a href="http://utakotoha.codeplex.com/">Utakotoha</a>というWP7用歌詞表示アプリケーションも、曲のスキップに応じて最新のものだけを表示するために、Switchを利用しました。（コードが激しく酷いのと機能貧弱っぷりなので、そろそろ書き直したい）</p>
-<h2>Merge/Concat</h2>
-<p>Switch以外にも色々あります。</p>
-<pre><code class="language-csharp">new[] { 1, 2, 3, 4 }
-    .ToObservable()
-    .SelectMany(x =&gt; AsyncModoki(x, 1)) // 全て並行実行(最初の例です)
-    .Subscribe(x =&gt; Console.Write(x + &quot;-&gt;&quot;));
-
-new[] { 1, 2, 3, 4 }
-    .ToObservable()
-    .Select(x =&gt; AsyncModoki(x, 1)) // IO&lt;IO&lt;T&gt;&gt;
-    .Merge() // こちらも全て並行実行、SelectMany(xs =&gt; xs)と同じ
-    .Subscribe(x =&gt; Console.Write(x + &quot;-&gt;&quot;));
-
-new[] { 1, 2, 3, 4 }
-    .ToObservable()
-    .Select(x =&gt; AsyncModoki(x, 1))
-    .Merge(2) // 2件ずつ並行実行する(並行実行数の指定が可能)
-    .Subscribe(x =&gt; Console.Write(x + &quot;-&gt;&quot;));
-
-
-new[] { 1, 2, 3, 4 }
-    .ToObservable()
-    .Select(x =&gt; AsyncModoki(x, 1))
-    .Concat() // 1件ずつ実行する(Merge(1)と同じ)
-    .Subscribe(x =&gt; Console.Write(x + &quot;-&gt;&quot;));
-</code></pre>
-<p class="noindent">
-<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="200px">
-  <param name="source" value="http://neue.cc/wp-content/uploads/silverlight/rxasynchronous.xap"/>
-  <param name="background" value="white" />
-  <param name="minRuntimeVersion" value="3.0.40624.0" />
-  <param name="autoUpgrade" value="true" />
-  <param name="initparams" value="Start=2" />
-  <a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=3.0.40624.0" style="text-decoration:none">
-      <img src="http://go.microsoft.com/fwlink/?LinkId=108181" alt="Microsoft Silverlight を入手" style="border-style:none"/>
-  </a>
-</object>
-</p>
-<p>ネストはSelectManyで一気に崩してしまうケースが一般的でしょうけれど、IObservable&lt;IObservable&lt;T&gt;&gt;といったネストした状態にすると、選択肢がSwitchもそうですが、更に、MergeとConcatを選択することができます。ちなみに、このintで並行実行数が指定可能なMergeはWP7同梱版のRxには存在しません。残念。(もう一つ余談ですが、SelectManyはRx内部ではSelect(selector).Merge()という実装になっていたりします)</p>
-<h2>実行タイミングの問題</h2>
-<p>上のSilverlight、Merge2とMerge2Exの二つを用意しましたが、Merge2Exのほうは4つ同時に表示されるのが確認出来るはずです。コードはほぼ同一なのですが、AsyncModokiを似たようで別なものに差し替えました。</p>
-<pre><code class="language-csharp">// Merge(2):Ex
-new[] { 1, 2, 3, 4 }
-    .ToObservable()
-    .Select(x =&gt; AsyncModoki2(x, 1)) // これが差分
-    .Merge(2)
-    .Subscribe(x =&gt; Console.Write(x + &quot;-&gt;&quot;));
-
-// スレッドプール上で非同期実行(結果は指定秒数後に返る)のシミュレート
-// second秒後にネットワーク問い合わせが返る、的なものをイメージしてみてください
-static IObservable&lt;T&gt; AsyncModoki2&lt;T&gt;(T value, int second)
-{
-    var subject = new AsyncSubject&lt;T&gt;();
-
-    ThreadPool.QueueUserWorkItem(_ =&gt;
-    {
-        Thread.Sleep(TimeSpan.FromSeconds(second)); // 指定秒数待機
-        subject.OnNext(value);
-        subject.OnCompleted(); // 完了（2つでワンセット）
-    });
-
-    return subject; // これ自体はすぐに返す(FromAsyncPatternの中身はこんな感じ)
-}
-</code></pre>
-<p>このAsyncModoki2は、このメソッドを通ると即座にThreadPoolに送り込んで「実行」しています。Subscribeされるかどうかとは関係なく、Subscribeの「前に」。対してAsyncModokiはSubscribeされないと実行が開始されません。同じようで違う、この二つの状態をRxでは「Hot」と「Cold」と呼んで区別しています。HotはSubscribeとは関係なく動いているもの、イベントなんかはそうですね。ColdはSubscribeされて初めて動き出すもの、Observable.ReturnであったりRangeであったりと、Rxからの生成子の場合は、こちらのパターンが多いです。</p>
-<p>実はFromAsyncPatternはHotなので、Subscribeとは関係なく即座に(といっても戻り値はFuncなのでInvokeしたら、ですが)非同期実行が開始されたりします。これは、あまり都合が良くなく（例えば上の例で見たように、MergeはSubscribeのタイミングによって実行数をコントロールしている）、Coldに変換したほうが扱いやすいです。そのためのメソッドがDefer。</p>
-<pre><code class="language-csharp">static IObservable&lt;WebResponse&gt; AsyncModoki3&lt;T&gt;(WebRequest req)
-{
-    return Observable.Defer(()=&gt;
-        Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse,req.EndGetResponse)());
-}
-</code></pre>
-<p>こちらのほうが、大抵の利用シーンにはマッチするかと思われます。</p>
-<h2>キャンセル時のリソース処理の問題</h2>
-<p>Switchは実に有意義なのですが、それの行っていることは、次の値を検知すると前の値をキャンセルする、ということです。普段はあまりキャンセルはしないと思うのですが、Switch内部では大量のキャンセルが発生しています。さて、どのような問題が発生するか、というと、例えば……。</p>
-<pre><code class="language-csharp">using System;
-using System.Net;
-using System.Reactive.Linq;
-
-class Program
-{
-    static void Main(string[] args)
-    {
-        // ネットワークの最大接続数。通常、デフォルトは2になっているはず。
-        ServicePointManager.DefaultConnectionLimit = 2;
-
-        // テキストボックスのTextChangedイベントをイメージした、インクリメンタルサーチで来る文字列群
-        new[] { &quot;w&quot;, &quot;wi&quot;, &quot;wik&quot;, &quot;wiki&quot;, &quot;wikip&quot;, &quot;wikipe&quot;, &quot;wikiped&quot;, &quot;wikipedi&quot;, &quot;wikipedia&quot; }
-            .ToObservable()
-            .Select((word, id) =&gt;
-            {
-                // wikipediaのAPIにリクエスト飛ばす
-                var url = &quot;http://en.wikipedia.org/w/api.php?action=opensearch&amp;search=&quot; + word + &quot;&amp;format=xml&quot;;
-                var req = (HttpWebRequest)WebRequest.Create(url);
-                req.UserAgent = &quot;test&quot;;
-
-                return Observable.FromAsyncPattern&lt;WebResponse&gt;((ac, state) =&gt;
-                    {
-                        Console.WriteLine(&quot;ASYNC START:&quot; + id);
-                        return req.BeginGetResponse(ac, state);
-                    }, ar =&gt;
-                    {
-                        Console.WriteLine(&quot;ASYNC END:&quot; + id);
-                        return req.EndGetResponse(ar);
-                    })()
-                    .Select(res =&gt;
-                    {
-                        using (res) // ここのセクションが呼ばれることはない
-                        {
-                            Console.WriteLine(&quot;CALLED NEXT:&quot; + id);
-                            return &quot;response string:&quot; + id;
-                        }
-                    });
-            })
-            .Switch()
-            .ForEach(Console.WriteLine); // 終了を待機する形でのSubscribe
-    }
-}
-
-// ConsoleApplication用のコードですが、是非実行してみてください。結果は以下のようになります。
-
-ASYNC START:0
-ASYNC START:1
-ASYNC START:2
-ASYNC START:3
-ASYNC START:4
-ASYNC START:5
-ASYNC START:6
-ASYNC START:7
-ASYNC START:8
-ASYNC END:0
-ASYNC END:1
-// そしてフリーズ...
-</code></pre>
-<p>これは、フリーズします。何故かというと、まず8件の非同期処理が一斉に開始されます(ASYNC STARTの表示)。一斉に開始はされますが、ネットワークの最大接続数は2なので、それ以外のものは内部的には待機されています。そして、Switchによる切り替えは最新のものだけを通すようにするため、7件はキャンセルされます。その後、最初の二件分のネットワークリクエストが終了し(ASYNC ENDの表示)、キャンセルされているためメソッドチェーンの続きであるSelectは呼ばれません。そして、フリーズ。</p>
-<p>何故フリーズしてしまうかというと、EndGetResponseで取得した最初の二件のWebResponseが解放されていないためです。キャンセルが呼ばれなければ、Selectを通り、そこでusingにより利用+解放されるのですが、そのセクションを通らなければ何の意味がありません。使われることなく虚空に放り出されたWebResponseが、永遠にネットワーク接続を握ったままになってしまっています。</p>
-<p>当然、大問題。</p>
-<p>Switchを諦めてSelectMany(全件キャンセルせずに並行実行、どうせネットワーク自体の最大接続数で制限かかっているし)というのも手ではあります。大体の場合は結果は問題ないでしょう。けれど、Switchの利点は何でしたっけ、と。結果が前後しないことです。LINQを検索しようとしていたのに、検索結果が前後したせいでLINQ→LINの順番に結果が得られた結果、表示されるのがLINの結果では困ってしまいます。Switchなら、後に実行したものが必ず最後に来ると保証されるので、そのようなことにはなりません。反面、SelectManyは並行実行のため、前後する可能性が出てきます。Switchはこの例で挙げたような、インクリメンタルサーチのようなものと相性がとても良いんですね。</p>
-<h2>ではどうするか？</h2>
-<p>WebResponseのDispose(Close)を呼べれば解決するので、FromAsyncPatternのEnd部分に少し細工を加えてやる、ということが考えられます。</p>
-<pre><code class="language-csharp">// こんなFromAsyncPatternを用意して
-public static IObservable&lt;TResult&gt; SafeFromAsyncPattern&lt;TResult&gt;(Func&lt;AsyncCallback, object, IAsyncResult&gt; begin, Func&lt;IAsyncResult, TResult&gt; end)
-    where TResult : IDisposable
-{
-    // WP7版ではCreateWithDisposableで(この辺の細かな差異が割とウザい)
-    return Observable.Create&lt;TResult&gt;(observer =&gt;
-    {
-        var disposable = new BooleanDisposable();
-
-        Observable.FromAsyncPattern&lt;TResult&gt;(begin, ar =&gt;
-        {
-            var result = end(ar);
-            if (disposable.IsDisposed) result.Dispose(); // キャンセルされてたらDispose
-            return result;
-        })().Subscribe(observer);
-
-        return disposable; // Disposeが呼ばれるとIsDisposedがtrueになる
-    });
-}
-
-// こんな風に使うとか
-public static IObservable&lt;WebResponse&gt; GetResponseAsObservable(this WebRequest req)
-{
-    return ObservableEx.SafeFromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse);
-}
-</code></pre>
-<p>これにより、キャンセルされたかどうかをEnd部分で判定することが出来ます。よってEnd時にキャンセルされていたらリソースをDisposeしてしまう(ここでreturnしたオブジェクトは、チェーンは切れているので別に使われることなく虚空を彷徨うだけ)。これにより、FromAsyncPatternがリソースを返し、かつ、いつキャンセルされても問題なくなります。</p>
-<p>他にも色々なアプローチが考えられます。CompositeDisposable/MutableDisposable/SingleAssignDisposableなどを使い、Disposeが呼ばれたら同時に管理下のリソースをDisposeしてしまう、といった手法。これは、リソースのDisposeされる瞬間が逆にコントロールしにくくなって、例えばWebResponseですと、その後のStreamを呼んでる最中にWebResponseがDisposeされてしまうなどの自体も起こりうるので、少し厄介に思えました。。リソースを後続に渡すまでは責任を持つ。それ以降はノータッチなので好きにやらせる、利用も解放も後続側が責任を。その方が自然だし、素直な動きになるので、いいかな。</p>
-<p>他には、キャンセルを伝搬しないようなメソッドを作り、Disposeが呼ばれてもリソースを受け取れるようにし、後続でリソースをDisposeする、などの手段も考えられます。そうすればSafeFromAsyncPatternなどといった、独自のFromAsyncPatternを作る必要はなく、全てに適用できて汎用性は高いのですが、チェーンでの保証が途切れてしまうのが若干微妙かな、と……。この辺は悩ましいところです。</p>
-<p>そもそもWebRequestなら、DisposeでAbortしてしまったほうが、キャンセルらしくていいかもしれない。</p>
-<pre><code class="language-csharp">public static IObservable&lt;WebResponse&gt; GetResponseAsObservable(this WebRequest request)
-{
-    return Observable.Create&lt;WebResponse&gt;(observer =&gt;
-    {
-        Observable.FromAsyncPattern&lt;WebResponse&gt;(request.BeginGetResponse,
-            ar =&gt;
-            {
-                try
-                {
-                    return request.EndGetResponse(ar); // Abort後の場合は例外発生
-                }
-                catch (WebException ex)
-                {
-                    if (ex.Status == WebExceptionStatus.RequestCanceled) return null;
-                    throw; // キャンセル時以外は再スロー
-                }
-            })()
-            .Subscribe(observer);
-        return () =&gt; request.Abort(); // Dispose時にこのActionが呼ばれる
-    });
-}
-</code></pre>
-<p>Disposeが呼ばれるとwebRequest.Abortが呼ばれます。その後にEndGetResponseを呼ぶとRequestCanceledなWebExceptionが発生するので、キャンセルされていたならnullを(どちらにせよ、Dispose済みなので、ここでreturnしたものは次のメソッドチェーンで使われることはない)、そうでない例外ならば再スローを、という方針です。悪くなさそうですが、どうでしょうか。私的にはこれを採用するのがベストかなー、と考え中です。</p>
-<h2>まとめ</h2>
-<p>SwitchやMergeなどで、従来扱いにくかった並行処理時の非同期のコントロールが簡単になりました。単純に一本の非同期をSelectManyで摩り替えるだけもアリですけれど、せっかくの多機能なのだから、並行にリクエストなどを飛ばして、より速いアプリケーション作りを目指してもいいかもしれません。同期リクエストをTask.Factory.StartNewで包んで振り回すよりかは、ずっと楽です。また、現在行われているMSのイベントBUILDで発表されたWinRTなどは、完全に非同期主体です。C#5.0でasync/awaitが入り、非同期がより扱いやすくなることで、それに併せてModelの有り様も、同期から非同期へと変わっていき、それにあわせてVMなどの書き方も変わってくるのではかと思われます。</p>
-<p>ただ、リソースの問題にだけは気をつけて！上で挙げた問題は、本質的にはFromAsyncPatternに限らず、リソース処理が引き離されている場合の全てで該当します。リソースを扱うのは難しい。とはいえ、全面的に問題になるのは、このFromAsyncPatternぐらいな気はします。Observable.Usingなども用意されているので、不用意にリソースをチェーン間で渡したりしなければ原則的には起こらない。けれど、そのFromAsyncPatternこそがリソースを扱うシチュエーションで最も使われるものなんですよね、とほほほ。</p>
-<p>キャンセル(Dispose)を不用意に呼ばなければ問題は起こらないといえば起こらないんですが(そのため、不適切に書いてしまっていても、多くのケースで問題が表面化することはないでしょう)、Switchのようなアプローチが取れなくなるのがどうにも。現状だと、とりあえず気をつけましょう、としか言いようがないので、気をつけましょう。もし何かうまい具合に動かないなあ、と思ったら、この辺を疑ってみると良いかもしれません。</p>
-<p>その辺難しいなあ、という場合は、近いうちに私の出すRx拡張ライブラリを使いましょう。特に考えなくても済むよう、色々配慮してあります。いつ出るの？というと、はい、最近ゴリゴリと書いてますんで(ブログがちょっと放置気味だった程度には)、必ず近いうちに出します。</p>
 </div>
 <a href="https://neue.cc/13">Prev |</a>
 <a href="https://neue.cc/15">| Next</a>
