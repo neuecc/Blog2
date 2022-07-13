@@ -1,6 +1,6 @@
 # async/awaitのキャンセル処理やタイムアウトを効率的に扱うためのパターン＆プラクティス
 
-async/awaitの鬼門の一つとして、適切なキャンセル処理が挙げられます。しかし別に基本的にはそんな難しいことではなく、CancellationTokneSourceを作る、CanellationTokenを渡す、OperationCanceledExceptionをハンドリングする。というだけの話です。けれど、Tokenに手動でコールバックをRegisterしたときとか、渡す口が空いてないものに無理やりなんとかするときとか、タイムアウトに使った場合の始末とか、ちょっと気の利いた処理をしたいような場面もあり、そうした時にどうすれば良いのか悩むこともあります。
+async/awaitの鬼門の一つとして、適切なキャンセル処理が挙げられます。別に基本的にはそんな難しいことではなく、CancellationTokenSourceを作る、CanellationTokenを渡す、OperationCanceledExceptionをハンドリングする。というだけの話です。けれど、Tokenに手動でコールバックをRegisterしたときとか、渡す口が空いてないものに無理やりなんとかするときとか、タイムアウトに使った場合の始末とか、ちょっと気の利いた処理をしたいような場面もあり、そうした時にどうすれば良いのか悩むこともあります。
 
 こういうのはパターンと対応さえ覚えてしまえばいい話でもあるので、今回は[AlterNats](https://github.com/Cysharp/AlterNats)の実装時に直面したパターンから、「外部キャンセル・タイムアウト・大元のDispose」が複合された状況での処理の記述方法と、適切な例外処理、そして最後にObjectPoolなども交えた効率的なゼロアロケーションでのCancellationTokenSourceのハンドリング手法を紹介します。
 
@@ -61,6 +61,8 @@ class Client
     // snip...
 }
 ```
+
+CreateLinkedTokenSourceで生成されたCancellationTourceは連結されたいずれかがCancelされると、生成されたCancellationTokenSource自体もCancelされます。また、それ自体からもCancelが発火できます。
 
 これで完成！なのですが、このままだと例外処理に問題があります。
 
@@ -391,7 +393,9 @@ public async Task SendAsync(CancellationToken cancellationToken = default)
 
 ということで、↑のものが最終形となりました。
 
-async/awaitを封印してIValueTaskSourceを使った実装をする場合は、これよりも複数のコールバックを手で処理する必要があるため、遥かに複雑性が増してしまう（async/awaitは偉大！）のですが、基本的な流れは一緒です。CancellationTokenRegistrationの挙動をしっかり把握して実装すれば、レースコンディション起因のバグも防げるはずです。
+async/awaitで実装されている場合、Tokenのコールバックも一メソッド内で収まっているために挙動の見通しがだいぶ良くなります。async/awaitを封印してIValueTaskSourceを使った実装をする場合は、複数のコールバックを手で処理する必要があり、また登録、発火する箇所も複数箇所にちらばってしまうため、遥かに複雑性が増します。
+
+AlterNatsでは[ハイパフォーマンスSocketプログラミングとして実装を解説した記事](https://neue.cc/2022/05/11_AlterNats.html)で、IValueTaskSourceをChannel（キュー）に詰め込むとしていますが、キャンセル時には[ManualResetValueTaskSourceCore](https://docs.microsoft.com/en-us/dotnet/api/system.threading.tasks.sources.manualresetvaluetasksourcecore-1)のSetExceptionを叩き、正常完了時にはSetResultの前でTryResetからのReturnするという、まぁ基本的な流れは一緒です。少し異なるのは、キャンセルで発火するのはawaitに紐付けられた継続処理だけで、実体はキューに残り続けていて、取り出し時にキャンセル状況をチェックして、何もしないようにする。といったことでしょうか。状況が複雑化する分、レースコンディション起因のバグが入り込みやすくなってしまうので、CancellationTokenRegistrationの挙動をしっかり把握して実装する必要があります。
 
 まとめ
 ---
