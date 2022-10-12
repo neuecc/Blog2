@@ -91,6 +91,13 @@ UTF8/UTF16
 // decode
 
 
+現在のC#では `ReadOnlySpan<byte>` がUTF8の
+
+memberにならない
+
+Utf8Stringが欲しい。
+
+
 ハイパフォーマンスシリアライザーのための実装
 ---
 
