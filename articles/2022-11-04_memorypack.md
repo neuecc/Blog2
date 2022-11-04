@@ -88,7 +88,7 @@ Inspect.Heap(new int[]{ 1, 2, 3, 4, 5 });
 
 ![image](https://user-images.githubusercontent.com/46207/199924027-492a163c-9bd9-41e7-8489-4f5aa61cac52.png)
 
-C#のstructの配列は、データが直列に並びます。この時、[structが参照型を持っていない場合(unamanged type)](https://learn.microsoft.com/ja-jp/dotnet/csharp/language-reference/builtin-types/unmanaged-types)は、データが完全にメモリ上に並んでいることになります。MessagePackとMemoryPackでコードでシリアライズ処理を比較してみましょう。
+C#のstructの配列は、データが直列に並びます。この時、[structが参照型を持っていない場合(unmanaged type)](https://learn.microsoft.com/ja-jp/dotnet/csharp/language-reference/builtin-types/unmanaged-types)は、データが完全にメモリ上に並んでいることになります。MessagePackとMemoryPackでコードでシリアライズ処理を比較してみましょう。
 
 ```csharp
 // 固定長の場合(実際には長さも書き込みます)
