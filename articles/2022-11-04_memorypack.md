@@ -579,4 +579,6 @@ public void ReadSpanWithoutReadLengthHeader<T>(int length, scoped ref Span<T?> v
 
 欠点としては、バージョニング耐性が、仕様上やや貧弱です。詳しくは[ドキュメントを参照してください](https://github.com/Cysharp/MemoryPack#version-tolerant)。パフォーマンスをやや落としてバージョニング耐性を上げるオプションを追加することは検討しています。また、メモリコピーを多用するので、実行環境が little-endian であることを前提にしています。ただし現代のコンピューターはほぼすべて little-endian であるため、問題にはならないはずです。
 
+パフォーマンスのために特化したstructを作ってメモリコピーする、といったことはC#の最適化のための手段として、そこまで珍しいわけではなく、やったことある人もいるのではないかと思います。そこからすると、あるいはこの記事を読んで、MemoryPackは一見ただのメモリコピーの塊じゃん、みたいな感じがあるかもしれませんが、汎用シリアライザーとして成立させるのはかなり大変で、そこをやりきっているのが新しいところです。
+
 当初実現していなかった .NET 5/6(Standard 2.1)対応やUnity対応は完了したので、今後は[MasterMemory](https://github.com/Cysharp/MasterMemory)のSource Generator/MemoryPack対応や、[MagicOnion](https://github.com/Cysharp/MagicOnion/)のシリアライザ変更対応など、利用できる範囲をより広げることを考えています。Cysharpの C#ライブラリ のエコシステムの中心になると位置づけているので、今後もかなり力入れて成長させていこうと思っていますので、まずは、是非是非試してみてください！
