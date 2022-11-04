@@ -23,7 +23,487 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2022/07/13_Cancellation.html">async/awaitのキャンセル処理やタイムアウトを効率的に扱うためのパターン＆プラクティス</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2022/11/04_memorypack.html">MemoryPackにみる .NET 7/C# 11世代のシリアライザー最適化技法</a></h1>
+<ul class="date"><li>2022-11-04</li></ul>
+<div class="entry_body"><p><a href="https://github.com/Cysharp/MemoryPack">MemoryPack</a>という、C#に特化することで従来のシリアライザーとは比較にならないほどのパフォーマンスを発揮する新しいシリアライザーを新しく開発しました。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/192748136-262ac2e7-4646-46e1-afb8-528a51a4a987.png" alt="" /></p>
+<p>高速なバイナリシリアライザーである <a href="https://github.com/neuecc/MessagePack-CSharp">MessagePack for C#</a> と比較しても、通常のオブジェクトでも数倍、データが最適な場合は50~100倍ほどのパフォーマンスにもなります。System.Text.Jsonとでは全く比較になりません。当初は .NET 7 限定としてリリースしましたが、現在は .NET Standard 2.1(.NET 5, 6)やUnity、そしてTypeScriptにも対応しています。</p>
+<p>シリアライザーのパフォーマンスは「データフォーマットの仕様」と「各言語における実装」の両輪で成り立っています。例えば、一般的にはバイナリフォーマットのほうがテキストフォーマット（JSONとか）よりも有利ですが、バイナリシリアライザーより速いJSONシリアライザといったものは有り得ます(Utf8Jsonでそれを実証しました)。では最速のシリアライザーとは何なのか？というと、仕様と実装を突き詰めれば、真の最速のシリアライザーが誕生します。</p>
+<p>私は、今もですが、長年<a href="https://github.com/neuecc/MessagePack-CSharp">MessagePack for C#</a>の開発とメンテナンスをしてきました。MessagePack for C#は .NET の世界で非常に成功したシリアライザーで、4000以上のGitHub Starと、Visual Studio内部や、SignalR, Blazor Serverのバイナリプロトコルなど、Microsoftの標準プロダクトにも採用されています。また、この5年間で1000近くのIssueをさばいてきました。そのため、シリアライザーの実装の詳細からユーザーのリアルなユースケース、要望、問題などを把握しています。Roslynを使用したコードジェネレーターによるAOT対応にも当初から取り組み、特にAOT環境(IL2CPP)であるUnityで実証してきました。更にMessagePack for C#以外にも ZeroFormatter(独自フォーマット)、Utf8Json(JSON) といった、これも多くのGitHub Starを獲得したシリアライザーを作成してきているため、異なるフォーマットの性能特性についても深く理解しています。シリアライザーを活用するシチュエーションにおいても、RPCフレームワーク<a href="https://github.com/Cysharp/MagicOnion/">MagicOnion</a>の作成、インメモリデータベース<a href="https://github.com/Cysharp/MasterMemory">MasterMemory</a>、そして複数のゲームタイトルにおけるクライアント(Unity)/サーバー、両方の実装に関わってきました。</p>
+<p>ようするところ私は .NET のシリアライザー実装について最も詳しい人間の一人であり、MemoryPackはその知見がフルに詰め込まれた、なおかつ、 .NET 7 / C# 11という最新のランタイム/言語機能を使い倒したライブラリになっています。そりゃ速くて当然で異論はないですよね？</p>
+<p>というだけではアレなので、実際なんで速いのかというのを理屈で説明していきます……！きっと納得してもらえるはず！ C#の最適化のTipsとしてもどうぞ。</p>
+<h2>Incremental Source Generator</h2>
+<p>MemoryPackでは .NET 5/C# 9.0 から追加された <a href="https://learn.microsoft.com/en-us/dotnet/csharp/roslyn-sdk/source-generators-overview">Source Generator</a>、それも .NET 6 で強化された <a href="https://github.com/dotnet/roslyn/blob/main/docs/features/incremental-generators.md">Incremental Source Generator</a>を全面的に採用しています。使い方的には、対象型をpartialに変更する程度で、MessagePack for C#とあまり変わりません（というか極力同じAPIになるように揃えました）。</p>
+<pre><code class="language-csharp">using MemoryPack;
+
+[MemoryPackable]
+public partial class Person
+{
+    public int Age { get; set; }
+    public string Name { get; set; }
+}
+
+// usage
+var v = new Person { Age = 40, Name = &quot;John&quot; };
+
+var bin = MemoryPackSerializer.Serialize(v);
+var val = MemoryPackSerializer.Deserialize&lt;Person&gt;(bin);
+</code></pre>
+<p>Source Generatorの最大の利点はAOTフレンドリーであることで、従来行っていたIL.Emitによる動的コード生成をせずとも、リフレクションを使用しない、各型に最適化されたシリアライザーコードを自動生成しています。それによりUnityのIL2CPPなどでも安全に動作させることが可能です。</p>
+<p>MessagePack for C#では外部ツール(mpc.exe)経由でコード生成することでAOTセーフなシリアライズ処理を実現していましたが、言語機能と統合されたことによって、煩わしい生成プロセス不要で、自然な書き心地のまま高速なシリアライズ処理を可能にしました。</p>
+<p>なお、Unity版の場合は言語/コンパイラバージョンの都合上、Incremental Source Generatorではなくて、古いSource Generatorを採用しています。</p>
+<h2>C#のためのバイナリ仕様</h2>
+<p>キャッチコピーは「Zero encoding」ということで、エンコードしないから速いんだ！という理論を打ち出しています。奇妙に思えて、実のところ別に特殊な話をしているわけではなくて、例えばRustのメジャーなバイナリシリアライザーである<a href="https://github.com/bincode-org/bincode">bincode</a>なども似通った仕様を持っています。<a href="https://github.com/google/flatbuffers">FlatBuffers</a>も、without parsingな実装のために、メモリデータに近い内容を読み書きします。ただしMemoryPackはFlatBuffersなどと違い、特別な型を必要としない汎用的なシリアライザーであり、POCOに対してのシリアライズ/デシリアライズを行うものです。また、スキーマのメンバー追加へのバージョニング耐性やポリモーフィズムサポート(Union)も持ちます。さすがにメモリダンプしてるだけ、では全く実用にならないわけで、一般的なシリアライザーとして使えるための仕様として整えてあります。</p>
+<h2>varint encoding</h2>
+<p>Int32は4バイトですが、例えばJSONでは数値を文字列として、1バイト~11バイト(例えば <code>1</code> であったり <code>-2147483648</code> であったり)の可変長なエンコーディングが施されます。バイナリフォーマットでも、サイズの節約のために1~5バイトの可変長にエンコードされる仕様を持つものが多くあります。例えば<a href="https://developers.google.com/protocol-buffers/docs/encoding#int-types">Protocol Buffersの数値型</a>はZigZagエンコーディングという、値を7ビットに、後続があるかないかのフラグを1ビットに格納する可変長整数エンコーディングになっています。これにより数値が小さければ小さいほど、バイト数が少なくなります。逆にワーストケースでは本来の4バイトより大きい5バイトに膨れることになります。とはいえ現実的には小さい数値のほうが圧倒的に頻出するはずなので、とても理にかなった方式です。<a href="https://github.com/msgpack/msgpack/blob/master/spec.md">MessagePack</a>や<a href="https://cbor.io/">CBOR</a>も同じように、小さい数値では最小で1バイト、大きい場合は最大5バイトになる可変長エンコーディングで処理されます。</p>
+<p>つまり、固定長の場合よりも余計な処理が走ることになります。具体的なコードで比較してみましょう。可変長はprotobufで使われるZigZagエンコーディングです。</p>
+<pre><code class="language-csharp">// 固定長の場合
+static void WriteFixedInt32(Span&lt;byte&gt; buffer, int value)
+{
+    ref byte p = ref MemoryMarshal.GetReference(buffer);
+    Unsafe.WriteUnaligned(ref p, value);
+}
+
+// 可変長の場合
+static void WriteVarInt32(Span&lt;byte&gt; buffer, int value) =&gt; WriteVarInt64(buffer, (long)value);
+
+static void WriteVarInt64(Span&lt;byte&gt; buffer, long value)
+{
+    ref byte p = ref MemoryMarshal.GetReference(buffer);
+
+    ulong n = (ulong)((value &lt;&lt; 1) ^ (value &gt;&gt; 63));
+    while ((n &amp; ~0x7FUL) != 0)
+    {
+        Unsafe.WriteUnaligned(ref p, (byte)((n &amp; 0x7f) | 0x80));
+        p = ref Unsafe.Add(ref p, 1);
+        n &gt;&gt;= 7;
+    }
+    Unsafe.WriteUnaligned(ref p, (byte)n);
+}
+</code></pre>
+<p>固定長は、つまりC#のメモリをそのまま書き出している(Zero encoding)わけで、さすがにどう見ても固定長のほうが速いでしょう。</p>
+<p>このことは配列に適用した場合、より顕著になります。</p>
+<pre><code class="language-csharp">// https://sharplab.io/
+Inspect.Heap(new int[]{ 1, 2, 3, 4, 5 });
+</code></pre>
+<p><img src="https://user-images.githubusercontent.com/46207/199924027-492a163c-9bd9-41e7-8489-4f5aa61cac52.png" alt="image" /></p>
+<p>C#のstructの配列は、データが直列に並びます。この時、<a href="https://learn.microsoft.com/ja-jp/dotnet/csharp/language-reference/builtin-types/unmanaged-types">structが参照型を持っていない場合(unamanged type)</a>は、データが完全にメモリ上に並んでいることになります。MessagePackとMemoryPackでコードでシリアライズ処理を比較してみましょう。</p>
+<pre><code class="language-csharp">// 固定長の場合(実際には長さも書き込みます)
+void Serialize(int[] value)
+{
+    // サイズが算出可能なので事前に一発で確保
+    var size = (sizeof(int) * value.Length) + 4;
+    EnsureCapacity(size);
+
+    // 一気にメモリコピー
+    MemoryMarshal.AsBytes(value.AsSpan()).CopyTo(buffer);
+}
+
+// 可変長の場合
+void Serialize(int[] value)
+{
+    foreach (var item in value)
+    {
+        // サイズが不明なので都度バッファサイズのチェック
+        EnsureCapacity(); // if (buffer.Length &lt; writeLength) Resize();
+        // 1要素毎に可変長エンコード
+        WriteVarInt32(item);
+    }
+}
+</code></pre>
+<p>固定長の場合は、多くのメソッド呼び出しを省いて、メモリコピー一発だけで済ませることが可能です。</p>
+<p>C#の配列はintのようなプリミティブ型だけではなく、これは複数のプリミティブを持ったstructでも同様の話で、例えば(float x, float y, float z)を持つVector3の配列の場合は、以下のようなメモリレイアウトになります。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/199926307-bad558f9-b912-4b96-90fc-5c2d1a2837ea.png" alt="image" /></p>
+<p>float(4バイト)はMessagePackにおいて、固定長で5バイトです。追加の1バイトは、その値が何の型(IntなのかFloatなのかStringなのか...)を示す識別子が先頭に入ります。具体的には[0xca, x, x, x, x]といったように。いわばタグ付与エンコーディングを行っているわけです。MemoryPackのフォーマットは識別子を持たないため、4バイトをそのまま書き込みます。</p>
+<p>ベンチマークで50倍の差だった、Vector[10000]で考えてみましょう。</p>
+<pre><code class="language-csharp">// 以下の型がフィールドにあるとする
+// byte[] buffer
+// int offset
+
+void SerializeMemoryPack(Vector3[] value)
+{
+    // どれだけ複雑だろうとコピー一発で済ませられる
+    var size = Unsafe.SizeOf&lt;Vector3&gt;() * value.Length;   
+    if ((buffer.Length - offset) &lt; size)
+    {
+        Array.Resize(ref buffer, buffer.Length * 2);
+    }
+    MemoryMarshal.AsBytes(value.AsSpan()).CopyTo(buffer.AsSpan(0, offset))
+}
+
+void SerializeMessagePack(Vector3[] value)
+{
+    // 配列の長さ x フィールドの数だけ繰り返す
+    foreach (var item in value)
+    {
+        // X
+        {
+            // EnsureCapacity
+            if ((buffer.Length - offset) &lt; 5)
+            {
+                // 実際にはResizeではなくてbufferWriter.Advance()です
+                Array.Resize(ref buffer, buffer.Length * 2);
+            }
+            var p = MemoryMarshal.GetArrayDataReference(buffer);
+            Unsafe.WriteUnaligned(ref Unsafe.Add(ref p, offset), (byte)0xca);
+            Unsafe.WriteUnaligned(ref Unsafe.Add(ref p, offset + 1), item.X);
+            offset += 5;
+        }
+        // Y
+        {
+            if ((buffer.Length - offset) &lt; 5)
+            {
+                Array.Resize(ref buffer, buffer.Length * 2);
+            }
+            var p = MemoryMarshal.GetArrayDataReference(buffer);
+            Unsafe.WriteUnaligned(ref Unsafe.Add(ref p, offset), (byte)0xca);
+            Unsafe.WriteUnaligned(ref Unsafe.Add(ref p, offset + 1), item.Y);
+            offset += 5;
+        }
+        // Z
+        {
+            if ((buffer.Length - offset) &lt; 5)
+            {
+                Array.Resize(ref buffer, buffer.Length * 2);
+            }
+            var p = MemoryMarshal.GetArrayDataReference(buffer);
+            Unsafe.WriteUnaligned(ref Unsafe.Add(ref p, offset), (byte)0xca);
+            Unsafe.WriteUnaligned(ref Unsafe.Add(ref p, offset + 1), item.Z);
+            offset += 5;
+        }
+    }
+}
+</code></pre>
+<p>MessagePackだと30000回のメソッド呼び出しが必要なところが(そしてそのメソッド内では、書き込みメモリが足りているかのチェックと、書き終わった後のオフセットの追加が(愚直に処理する場合)都度必要になる)、一回のメモリコピーだけになります。こうなると、処理時間が文字通り桁違いに変わってきて、冒頭のグラフの50倍~100倍の高速化の理由はここにあります。</p>
+<p>もちろん、デシリアライズ処理もコピー一発になります。</p>
+<pre><code class="language-csharp">// MemoryPackのデシリアライズ、コピーするだけ。
+Vector3[] DeserializeMemoryPack(ReadOnlySpan&lt;byte&gt; buffer, int size)
+{
+    var dest = new Vector3[size];
+    MemoryMarshal.Cast&lt;byte, Vector3&gt;(buffer).CopyTo(dest);
+    return dest;
+}
+
+// ループで都度floatの読み取りが必要
+Vector3[] DeserializeMessagePack(ReadOnlySpan&lt;byte&gt; buffer, int size)
+{
+    var dest = new Vector3[size];
+    for (int i = 0; i &lt; size; i++)
+    {
+        var x = ReadSingle(buffer);
+        buffer = buffer.Slice(5);
+        var y = ReadSingle(buffer);
+        buffer = buffer.Slice(5);
+        var z = ReadSingle(buffer);
+        buffer = buffer.Slice(5);
+        dest[i] = new Vector3(x, y, z);
+    }
+    return dest;
+}
+</code></pre>
+<p>この辺は、MessagePackのフォーマットそのものの限界のため、仕様に従う限りは、圧倒的な速度差はどうやっても覆せません。ただしMessagePackの場合はext format familyという仕様があり、独自仕様としてこれらの配列だけ特別扱いして処理する（MessagePackとしての互換性はなくなりますが）ことも許されています。実際、MessagePack for C#ではUnity向けに <code>UnsafeBlitResolver</code> という、上記のような処理をする特別な拡張オプションを用意していました。</p>
+<p>しかし恐らく、ほとんどの人が使っていないでしょう。別に普通にシリアライズできるものを、言語間運用製を壊す、C#だけの独自拡張オプションをわざわざ使おうとは、中々思わない、というのは分かります。そこがまた歯痒かったんですよね、明らかに遅いのに、明らかに速くできるのに、だからせっかく用意したのに、デフォルトではない限り使われない、しかしデフォルトは絶対に仕様に従うべきであり……。</p>
+<h2>string処理の最適化</h2>
+<p>MemoryPackではStringに関して、2つの仕様を持っています。UTF8か、UTF16か、です。C#のstringはUTF16のため、UTF16のままシリアライズすると、UTF8へのエンコード/デコードコストを省くことができます。</p>
+<pre><code class="language-csharp">void EncodeUtf16(string value)
+{
+    var size = value.Length * 2;
+    EnsureCapacity(size);
+
+    // char[] -&gt; byte[] -&gt; Copy
+    MemoryMarshal.AsBytes(value.AsSpan()).CopyTo(buffer);
+}
+
+string DecodeUtf16(ReadOnlySpan&lt;byte&gt; buffer, int length)
+{
+    ReadOnlySpan&lt;char&gt; src = MemoryMarshal.Cast&lt;byte, char&gt;(buffer).Slice(0, length);
+    return new string(src);
+}
+</code></pre>
+<p>ただし、MemoryPackのデフォルトはUTF8です。これは単純にペイロードのサイズの問題で、UTF16だとASCII文字が2倍のサイズになってしまうため、UTF8にしました（なお、日本語の場合はUTF16のほうがむしろ縮まる可能性が高いです）。</p>
+<p>UTF8の場合でも、他のシリアライザにはない最適化をしています。</p>
+<pre><code class="language-csharp">void WriteUtf8MemoryPack(string value)
+{
+    var source = value.AsSpan();
+    var maxByteCount = (source.Length + 1) * 3;
+    EnsureCapacity(maxByteCount);
+    Utf8.FromUtf16(source, dest, out var _, out var bytesWritten, replaceInvalidSequences: false);
+}
+
+void WriteUtf8StandardSerializer(string value)
+{
+    var maxByteCount = Encoding.UTF8.GetByteCount(value);
+    EnsureCapacity(maxByteCount);
+    Encoding.UTF8.GetBytes(value, dest);
+}
+</code></pre>
+<p><code>var bytes = Encoding.UTF8.GetBytes(value);</code> は論外です、stringの書き込みで <code>byte[]</code> のアロケーションは許されません。しかし、多くのシリアライザはで使われている <code>Encoding.UTF8.GetByteCount</code> も避けるべきです、UTF8は可変長のエンコーディングであり、 GetByteCount は正確なエンコード後のサイズを算出するために、文字列を完全に走査します。つまり GetByteCount -&gt; GetBytes は文字列を二度も走査することになります。</p>
+<p>通常シリアライザーは余裕を持ったバッファの確保が許されています。そこでMemoryPackではUTF8エンコードした場合のワーストケースである文字列長の3倍の確保にすることで、二度の走査を避けています。</p>
+<p>デコードの場合は、更に特殊な最適化を施しています。</p>
+<pre><code class="language-csharp">string ReadUtf8MemoryPack(int utf16Length, int utf8Length)
+{
+    unsafe
+    {
+        fixed (byte* p = &amp;buffer)
+        {
+            return string.Create(utf16Length, ((IntPtr)p, utf8Length), static (dest, state) =&gt;
+            {
+                var src = MemoryMarshal.CreateSpan(ref Unsafe.AsRef&lt;byte&gt;((byte*)state.Item1), state.Item2);
+                Utf8.ToUtf16(src, dest, out var bytesRead, out var charsWritten, replaceInvalidSequences: false);
+            });
+        }
+    }
+}
+
+string ReadStandardSerialzier(int utf8Length)
+{
+    return Encoding.UTF8.GetString(buffer.AsSpan(0, utf8Length));
+}
+</code></pre>
+<p>通常、byte[]からstringを取り出すには Encoding.UTF8.GetString(buffer) を使います。MessagePack for C#でもそうです。しかし、改めて、UTF8は可変長のエンコーディングであり、そこからUTF16としての長さは分かりません。そのためUTF8.GetStringだと、stringに変換するためのUTF16としての長さ算出が必要なので、中では文字列を二度走査しています。擬似コードでいうと</p>
+<pre><code class="language-csharp">var length = CalcUtf16Length(utf8data);
+var str = String.Create(length);
+Encoding.Utf8.DecodeToString(utf8data, str);
+</code></pre>
+<p>といったことになっています。一般的なシリアライザの文字列フォーマットはUTF8であり、当たり前ですがUTF16へのデコードなどといったことは考慮されていないため、C#の文字列としての効率的なデコードのためにUTF16の長さが欲しくても、データの中にはありません。</p>
+<p>しかしMemoryPackの場合はC#を前提においた独自フォーマットのため、文字列はUTF16-LengthとUTF8-Lengthの両方(8バイト)をヘッダに記録しています。そのため、<code>String.Create&lt;TState&gt;(Int32, TState, SpanAction&lt;Char,TState&gt;)</code> と<a href="https://learn.microsoft.com/en-us/dotnet/api/system.text.unicode.utf8.toutf16">Utf8.ToUtf16</a>の組み合わせにより、最も効率的なC# Stringへのデコードを実現しました。</p>
+<h2>ペイロードサイズについて</h2>
+<p>MemoryPackは固定長エンコーディングのため可変長エンコーディングに比べてどうしてもサイズが膨らむ場合があります。特にlongを可変長エンコードすると最小1バイトになるので、固定長8バイトに比べると大きな差となり得ます。しかし、MemoryPackはフィールド名を持たない(JSONやMessagePackのMap)ことやTagがないことなどから、JSONよりも小さいのはもちろん、可変長エンコーディングを持つprotobufやMsgPackと比較しても大きな差となることは滅多にないと考えています。</p>
+<p>データは別に整数だけじゃないので、真にサイズを小さくしたければ、圧縮(LZ4やZStandardなど)を考えるべきですし、圧縮してしまえばあえて可変長エンコーディングする意味はほぼなくなります。より特化して小さくしたい場合は、列指向圧縮にしたほうがより大きな成果を得られる(Apache Parquetなど)ので、現代的には可変長エンコーディングを採用するほうがデメリットは大きいのではないか？と私は考えています。冒頭でも少し紹介しましたが、実際Rustのシリアライザー<a href="https://github.com/bincode-org/bincode">bincode</a>のデフォルトは固定長だったりします。</p>
+<p>MemoryPackの実装と統合された効率的な圧縮については、現在BrotliEncode/Decodeのための補助クラスを標準で用意しています。しかし、性能を考えるとLZ4やZStandardを使えたほうが良いため、将来的にはそれらの実装も提供する予定です。</p>
+<h2>.NET 7 / C#11を活用したハイパフォーマンスシリアライザーのための実装</h2>
+<p>MemoryPackは .NET Standard 2.1向けの実装と .NET 7向けの実装で、メソッドシグネチャが若干異なります。.NET 7向けには、最新の言語機能を活用した、より性能を追求したアグレッシブな実装になっています。</p>
+<p>まずシリアライザのインターフェイスは以下のような static abstract membersが活用されています。</p>
+<pre><code class="language-csharp">public interface IMemoryPackable&lt;T&gt;
+{
+    // note: serialize parameter should be `ref readonly` but current lang spec can not.
+    // see proposal https://github.com/dotnet/csharplang/issues/6010
+    static abstract void Serialize&lt;TBufferWriter&gt;(ref MemoryPackWriter&lt;TBufferWriter&gt; writer, scoped ref T? value)
+        where TBufferWriter : IBufferWriter&lt;byte&gt;;
+    static abstract void Deserialize(ref MemoryPackReader reader, scoped ref T? value);
+}
+</code></pre>
+<p>MemoryPackはSource Generatorを採用し、対象型が <code>[MemortyPackable]public partial class Foo</code> であることを要求するため、最終的に対象型は</p>
+<pre><code class="language-csharp">[MemortyPackable]
+partial class Foo : IMemoryPackable
+{
+    static void IMemoryPackable&lt;Foo&gt;.Serialize&lt;TBufferWriter&gt;(ref MemoryPackWriter&lt;TBufferWriter&gt; writer, scoped ref Foo? value) 
+    {
+    }
+        
+    static void IMemoryPackable&lt;Foo&gt;.Deserialize(ref MemoryPackReader reader, scoped ref Foo? value)
+    {
+    }
+}
+</code></pre>
+<p>といったものを生成します。これにより、仮想メソッド経由呼び出しのコストを避けています。</p>
+<pre><code class="language-csharp">public void WritePackable&lt;T&gt;(scoped in T? value)
+    where T : IMemoryPackable&lt;T&gt;
+{
+    // IMemoryPackableが対象の場合、静的メソッドを直接呼び出しに行く
+    T.Serialize(ref this, ref Unsafe.AsRef(value));
+}
+
+// 
+public void WriteValue&lt;T&gt;(scoped in T? value)
+{
+    // IMemoryPackFormatter&lt;T&gt; を取得し、仮想メソッド経由で Serialize を呼び出す
+    var formatter = MemoryPackFormatterProvider.GetFormatter&lt;T&gt;();
+    formatter.Serialize(ref this, ref Unsafe.AsRef(value));
+}
+</code></pre>
+<p>また、<code>MemoryPackWriter</code>/<code>MemoryPackReader</code> では <code>ref field</code> を活用しています。</p>
+<pre><code class="language-csharp">public ref struct MemoryPackWriter&lt;TBufferWriter&gt;
+    where TBufferWriter : IBufferWriter&lt;byte&gt;
+{
+    ref TBufferWriter bufferWriter;
+    ref byte bufferReference;
+    int bufferLength;
+</code></pre>
+<p><code>ref byte bufferReference</code>, <code>int bufferLength</code> の組み合わせは、つまり<code>Span&lt;byte&gt;</code>のインライン化です。また、<code>TBufferWriter</code>を<code>ref TBufferWriter</code>として受け取ることにより、ミュータブルな<code>struct TBufferWriter : IBufferWrite&lt;byte&gt;</code>を安全に受け入れて呼び出すことができるようになりました。</p>
+<h2>全ての型への最適化</h2>
+<p>例えばコレクションは <code>IEnumerable&lt;T&gt;</code> としてシリアライズ/デシリアライズすることで実装の共通化が可能ですが、MemoryPackでは全ての型に対して個別の実装をするようにしています。単純なところでは <code>List&lt;T&gt;</code>を処理するのに</p>
+<pre><code class="language-csharp">public void Serialize(ref MemoryPackWriter writer, IEnumerable&lt;T&gt; value)
+{
+    foreach(var item in source)
+    {
+        writer.WriteValue(item);
+    }
+}
+
+public void Serialize(ref MemoryPackWriter writer, List&lt;T&gt; value)
+{
+    foreach(var item in source)
+    {
+        writer.WriteValue(item);
+    }
+}
+</code></pre>
+<p>この2つでは全然性能が違います。<code>IEnumerable&lt;T&gt;</code>へのforeachは <code>IEnumerator&lt;T&gt;</code> を取得しますが、<code>List&lt;T&gt;</code>へのforeachは <code>struct List&lt;T&gt;.Enumerator</code> という最適化された専用の構造体のEnumeratorを取得するからです。</p>
+<p>しかし、もっと最適化する余地があります。</p>
+<pre><code class="language-csharp">public sealed class ListFormatter&lt;T&gt; : MemoryPackFormatter&lt;List&lt;T?&gt;&gt;
+{
+    public override void Serialize&lt;TBufferWriter&gt;(ref MemoryPackWriter&lt;TBufferWriter&gt; writer, scoped ref List&lt;T?&gt;? value)
+    {
+        if (value == null)
+        {
+            writer.WriteNullCollectionHeader();
+            return;
+        }
+
+        writer.WriteSpan(CollectionsMarshal.AsSpan(value));
+    }
+}
+
+// MemoryPackWriter.WriteSpan
+[MethodImpl(MethodImplOptions.AggressiveInlining)]
+public void WriteSpan&lt;T&gt;(scoped Span&lt;T?&gt; value)
+{
+    if (!RuntimeHelpers.IsReferenceOrContainsReferences&lt;T&gt;())
+    {
+        DangerousWriteUnmanagedSpan(value);
+        return;
+    }
+
+    var formatter = GetFormatter&lt;T&gt;();
+    WriteCollectionHeader(value.Length);
+    for (int i = 0; i &lt; value.Length; i++)
+    {
+        formatter.Serialize(ref this, ref value[i]);
+    }
+}
+
+// MemoryPackWriter.DangerousWriteUnmanagedSpan
+[MethodImpl(MethodImplOptions.AggressiveInlining)]
+public void DangerousWriteUnmanagedSpan&lt;T&gt;(scoped Span&lt;T&gt; value)
+{
+    if (value.Length == 0)
+    {
+        WriteCollectionHeader(0);
+        return;
+    }
+
+    var srcLength = Unsafe.SizeOf&lt;T&gt;() * value.Length;
+    var allocSize = srcLength + 4;
+
+    ref var dest = ref GetSpanReference(allocSize);
+    ref var src = ref Unsafe.As&lt;T, byte&gt;(ref MemoryMarshal.GetReference(value));
+
+    Unsafe.WriteUnaligned(ref dest, value.Length);
+    Unsafe.CopyBlockUnaligned(ref Unsafe.Add(ref dest, 4), ref src, (uint)srcLength);
+
+    Advance(allocSize);
+}
+</code></pre>
+<p>まず、そもそも現代では <code>List&lt;T&gt;</code> の列挙は <code>CollectionsMarshal.AsSpan(value)</code> 経由で、<code>Span&lt;T&gt;</code>を取得して、それを列挙するのが最適です。それによってEnumerator経由というコストすら省くことが可能です。更に、<code>Span&lt;T&gt;</code>が取得できているなら、<code>List&lt;int&gt;</code>や<code>List&lt;Vector3&gt;</code>の場合にコピーのみで処理することもできます。</p>
+<p>Deserializeの場合にも、興味深い最適化があります。まず、MemoryPackのDeserializeは <code>ref T? value</code> を受け取るようになっていて、valueがnullの場合は内部で生成したオブジェクトを（普通のシリアライザと同様）、valueが渡されている場合は上書きするようになっています。これによってDeserialize時の新規オブジェクト生成というアロケーションをゼロにすることが可能です。コレクションの場合も、<code>List&lt;T&gt;</code>の場合は<code>Clear()</code>を呼び出すことで再利用します。</p>
+<p>その上で、特殊なSpanの呼び出しをすることにより、 <code>List&lt;T&gt;&gt;.Add</code> すら避けることに成功しました。</p>
+<pre><code class="language-csharp">public sealed class ListFormatter&lt;T&gt; : MemoryPackFormatter&lt;List&lt;T?&gt;&gt;
+{
+    public override void Deserialize(ref MemoryPackReader reader, scoped ref List&lt;T?&gt;? value)
+    {
+        if (!reader.TryReadCollectionHeader(out var length))
+        {
+            value = null;
+            return;
+        }
+
+        if (value == null)
+        {
+            value = new List&lt;T?&gt;(length);
+        }
+        else if (value.Count == length)
+        {
+            value.Clear();
+        }
+
+        var span = CollectionsMarshalEx.CreateSpan(value, length);
+        reader.ReadSpanWithoutReadLengthHeader(length, ref span);
+    }
+}
+
+internal static class CollectionsMarshalEx
+{
+    /// &lt;summary&gt;
+    /// similar as AsSpan but modify size to create fixed-size span.
+    /// &lt;/summary&gt;
+    public static Span&lt;T?&gt; CreateSpan&lt;T&gt;(List&lt;T?&gt; list, int length)
+    {
+        list.EnsureCapacity(length);
+
+        ref var view = ref Unsafe.As&lt;List&lt;T?&gt;, ListView&lt;T?&gt;&gt;(ref list);
+        view._size = length;
+        return view._items.AsSpan(0, length);
+    }
+
+    // NOTE: These structure depndent on .NET 7, if changed, require to keep same structure.
+
+    internal sealed class ListView&lt;T&gt;
+    {
+        public T[] _items;
+        public int _size;
+        public int _version;
+    }
+}
+
+// MemoryPackReader.ReadSpanWithoutReadLengthHeader
+public void ReadSpanWithoutReadLengthHeader&lt;T&gt;(int length, scoped ref Span&lt;T?&gt; value)
+{
+    if (length == 0)
+    {
+        value = Array.Empty&lt;T&gt;();
+        return;
+    }
+
+    if (!RuntimeHelpers.IsReferenceOrContainsReferences&lt;T&gt;())
+    {
+        if (value.Length != length)
+        {
+            value = AllocateUninitializedArray&lt;T&gt;(length);
+        }
+
+        var byteCount = length * Unsafe.SizeOf&lt;T&gt;();
+        ref var src = ref GetSpanReference(byteCount);
+        ref var dest = ref Unsafe.As&lt;T, byte&gt;(ref MemoryMarshal.GetReference(value)!);
+        Unsafe.CopyBlockUnaligned(ref dest, ref src, (uint)byteCount);
+
+        Advance(byteCount);
+    }
+    else
+    {
+        if (value.Length != length)
+        {
+            value = new T[length];
+        }
+
+        var formatter = GetFormatter&lt;T&gt;();
+        for (int i = 0; i &lt; length; i++)
+        {
+            formatter.Deserialize(ref this, ref value[i]);
+        }
+    }
+}
+</code></pre>
+<p><code>new List&lt;T&gt;(capacity)</code> や <code>List&lt;T&gt;.EnsurceCapacity(capacity)</code> によって、<code>List&lt;T&gt;</code>の抱える内部の配列のサイズを事前に拡大しておくことが可能です。これにより、都度拡大/コピーが内部で発生することを避けることができます。</p>
+<p>その状態で <code>CollectionsMarshal.CreateSpan</code> を使うと、取得できるSpanは、長さ0のものです。なぜなら内部のsizeは変更されていないため、です。もし <code>CollectionMarshals.AsMemory</code>があれば、そこから<code>MemoryMarshal.TryGetArray</code>のコンボで生配列を取得できて良いのですが、残念ながら Span からは元になっている配列を取得する手段がありません。そこで、<code>Unsafe.As</code>で強引に型の構造を合わせて、<code>List&lt;T&gt;._size</code>を弄ることによって、拡大済みの内部配列を取得することができました。</p>
+<p>そうすればunamanged型の場合はコピーだけで済ませてしまう最適化や、<code>List&lt;T&gt;.Add</code>(これは都度、配列のサイズチェックが入る)を避けた、<code>Span&lt;T&gt;[index]</code>経由での値の詰め込みが可能になり、従来のシリアライザのデシリアライズよりも遥かに高いパフォーマンスを実現しました。</p>
+<p><code>List&lt;T&gt;</code>への最適化が代表的ではありますが、他にも紹介しきれないほど、全ての型を精査し、可能な限りの最適化をそれぞれに施してあります。</p>
+<h2>まとめ</h2>
+<p>なんで開発しようかと思ったかというと、MessagePack for C#に不満がでてきたから、です。残念ながら .NET「最速」とはいえないような状況があり、その理由としてバイナリ仕様が足を引っ張っているため、改善するのにも限界があることには随分前から気づいていました。また、実装面でもIL生成とRoslynを使った外部ツールとしてのコードジェネレーター(mpc)の、二種のメンテナンスがかなり厳しくなってきているということもありました。外部ツールとしてのコードジェネレーターはトラブルの種で、何かと環境によって動かないということが多発していて、Source Generatorにフル対応できるのなら、もはや廃止したいぐらいにも思っていました。</p>
+<p>そこに .NET 7/C# 11 の ref fieldやstatic abstract methodを見た時、これをシリアライザー開発に応用したらパフォーマンスの底上げが可能になる、ついでにSource Generator化すれば、いっそIL生成も廃止してSource Generatorに一本化できるのではないか？それならもう、それをMessagPack for C#に適用する前に、パフォーマンス向上に問題のあるバイナリ仕様の限界も無視した、C#のためだけに究極の性能を実現するシリアライザーを作って、本当の最速を実証してしまえばいいのでは？と。</p>
+<p>性能特化の実験的シリアライザーではなくて、実用性も重視したシリアライザーであるために、MessagePack for C#での経験も元にして、多くの機能も備えるようにしました。</p>
+<pre><code>* .NETのモダンI/O API対応(IBufferWriter&lt;byte&gt;, ReadOnlySpan&lt;byte&gt;, ReadOnlySequence&lt;byte&gt;)
+* 既存オブジェクトへの上書きデシリアライズ
+* ポリモーフィズムなシリアライズ(Union)
+* PipeWriter/Readerを活用したストリーミングシリアライズ/デシリアライズ
+* (やや限定的ながらも)バージョニング耐性
+* TypeScriptコード生成
+* Unity(2021.3)サポート
+</code></pre>
+<p>欠点としては、バージョニング耐性が、仕様上やや貧弱です。詳しくは<a href="https://github.com/Cysharp/MemoryPack#version-tolerant">ドキュメントを参照してください</a>。パフォーマンスをやや落としてバージョニング耐性を上げるオプションを追加することは検討しています。</p>
+<p>当初実現していなかった .NET 5/6(Standard 2.1)対応やUnity対応は完了したので、今後は<a href="https://github.com/Cysharp/MasterMemory">MasterMemory</a>のSource Generator/MemoryPack対応や、<a href="https://github.com/Cysharp/MagicOnion/">MagicOnion</a>のシリアライザ変更対応など、利用できる範囲をより広げることを考えています。Cysharpの C#ライブラリ のエコシステムの中心になると位置づけているので、今後もかなり力入れて成長させていこうと思っていますので、まずは、是非是非試してみてください！</p>
+</div>
+<h1><a href="https://neue.cc/2022/07/13_Cancellation.html">async/awaitのキャンセル処理やタイムアウトを効率的に扱うためのパターン＆プラクティス</a></h1>
 <ul class="date"><li>2022-07-13</li></ul>
 <div class="entry_body"><p>async/awaitの鬼門の一つとして、適切なキャンセル処理が挙げられます。別に基本的にはそんな難しいことではなく、CancellationTokenSourceを作る、CanellationTokenを渡す、OperationCanceledExceptionをハンドリングする。というだけの話です。けれど、Tokenに手動でコールバックをRegisterしたときとか、渡す口が空いてないものに無理やりなんとかするときとか、タイムアウトに使った場合の始末とか、ちょっと気の利いた処理をしたいような場面もあり、そうした時にどうすれば良いのか悩むこともあります。</p>
 <p>こういうのはパターンと対応さえ覚えてしまえばいい話でもあるので、今回は<a href="https://github.com/Cysharp/AlterNats">AlterNats</a>の実装時に直面したパターンから、「外部キャンセル・タイムアウト・大元のDispose」が複合された状況での処理の記述方法と、適切な例外処理、そして最後にObjectPoolなども交えた効率的なゼロアロケーションでのCancellationTokenSourceのハンドリング手法を紹介します。</p>
@@ -1063,6 +1543,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2022/11/">2022-11</a>
 <li><a href="https://neue.cc/2022/07/">2022-07</a>
 <li><a href="https://neue.cc/2022/05/">2022-05</a>
 <li><a href="https://neue.cc/2022/04/">2022-04</a>

@@ -23,7 +23,74 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2016/08/05_537.html">C#のGCゴミとUnity(5.5)のコンパイラアップデートによるListのforeach問題解決について</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2016/08/11_538.html">LINQ to GameObject 2.1 - 手書き列挙子による性能向上と追加系をより使いやすく</a></h1>
+<ul class="date"><li>2016-08-11</li></ul>
+<div class="entry_body"><p>（前回の1.3から)1年ぶりの更新です！2.0は諸事情でスキップされました。アセットストアには出したんですが内容的にもう少しやりたかったのでなかったこと扱いで。LINQ to GameObject自体の説明はVer 1.0リリース時のブログ<a href="http://neue.cc/2014/11/11_482.html">LINQ to GameObjectによるUnityでのLINQの活用</a>を参照ください。</p>
+<ul>
+<li><a href="https://github.com/neuecc/LINQ-to-GameObject-for-Unity">GitHub/LINQ to GameObject</a></li>
+<li><a href="https://www.assetstore.unity3d.com/jp/#!/content/24256">AssetStore/LINQ to GameObject</a></li>
+</ul>
+<p>今回はパフォーマンスチューニングを徹底的にやりました。というのも以前の素朴な実装は、素朴な通りの性能で、いいとか悪いとかじゃなく素朴なので、やるのならいっそギチギチにやってみたらどうかな、と。性能面でここまでやってるものは絶対にないはず。</p>
+<p>もう一つは追加系をより使いやすく。のためにガッツリと破壊的変更を入れています。破壊的変更が入った理由は、使いにくかったからです。うぇぇ……。使いにくいポイントは概ね分かっていたし、プルリク等も貰っていたのですが、API的にイマイチなもので乗り気になれず、かといってAPIを維持しているとオーバーロードの解決などの問題でうまく処理できなくて、モニョモニョしている間に一年が経ってしまった。互換性は残したくはあったんですが、使いにくいままであったり、微妙なオーバーロードの追加とかで解決するよりは良いかな、と。いう決断です。</p>
+<h2>Traverse系</h2>
+<p>APIはほとんど変わってないです（但しnameでフィルターかけるオーバーロードは消しました、HTMLやXMLと違って名前でのフィルタの重要性がかなり低いので、むしろないほうがいいかな、と）。</p>
+<p><img src="https://raw.githubusercontent.com/neuecc/LINQ-to-GameObject-for-Unity/master/Images/axis.jpg" alt="" /></p>
+<p>ヒエラルキーをツリーに見立てて、「軸」の概念を元にして、必要となる全方向での列挙を満たしています。今回、コードを劇的に書き換えたパフォーマンスチューニングを施しました。一点目は、yield returnによるコードを、全部手書きの構造体の列挙子に書き換えてます。これにより列挙に伴うゴミ発生が理想的にはなくなっています、理想的には:)</p>
+<p>残念ながら、そのままforeachに流すと <a href="http://neue.cc/2016/08/05_537.html">C#のGCゴミとUnity(5.5)のコンパイラアップデートによるListのforeach問題解決について</a> によりboxingが発生しますが（ゴミ化）、それでも構造体のサイズや再帰的に処理される場合での内部処理は気を配っているので（特にDescendantsはエクストリームにチューニングしたコードに変えた（再帰を特化Stackで置き換えたり……））、以前よりも良くなっているのは間違いないです。</p>
+<blockquote>
+<p>ちなみに、基本的にはmutableなstructは避けたほうがいいです。Enumeratorはまさにそれで、実装にも注意が必要なら、利用にも注意を要するため（これはList&lt;T&gt;.Enumeratorも同様で、直接触ろうとすると罠にはまるケースが出てくる）なんでもかんでもstructで、というのは止めたほうがいいでしょう、どうしてもということでなければ原則やらないほうがいい事案です。struct enumeratorを返すテクニック自体は今は亡きXNAでも使われていたので(EffectPassCollectionやModelMeshCollectionなど各種コレクションがstruct Enumeratorを返す)、まぁ最終テクニックとしては有効（但し現状Unityではどうせforeachではボックス化されるのでそこまで有効ではないので、基本やらなくていいでしょう）</p>
+</blockquote>
+<p>LINQで繋げたら、当然普通にLINQの消費フローに入るので、そんな意味ないんですけどね！というだけなのもアレなので、改善二点目、頻出パターンについて特化した最適化を入れてます。(+ OfComponent) + First, FirstOrDefault, ToArray に関しては通常のLINQではなく、この構造体Enumeratorに特化した呼び出しをするため、所謂LINQで想像する性能劣化を受けません。社内調べによると、割と FirstOrDefault や ToArray が直接接続されてる場合が多いので、それだけでも6~7割はカバーできているのではないかな、と。</p>
+<p>更に三点目、ToArrayNonAllocというメモリ節約/GC防止メソッドが追加されています(IEnumerable&lt;T&gt;にも生やしてあるのでLINQ to GameObject関係ないシーンでも使えないこともない)</p>
+<pre><code class="language-csharp">GameObject[] array = new GameObject[0];
+
+// 毎フレーム走査していても余計なメモリ確保はしない！
+void Update()
+{
+    var size = origin.Children().ToArrayNonAlloc(ref array);
+    for (int i = 0; i &lt; size; i++)
+    {
+        var element = array[i];
+    }
+}
+</code></pre>
+<p>Physics.RaycastNonAllocやGetComponentsInChildren[T](List[T] results) のようなものですね。どうしても走査頻度が高くて、という場合には使えるんじゃないかと思います。まぁ、Find系は極力使わないように、というのと同じ話で、走査系を頻繁にやること自体が全然よくはないのですけれど。</p>
+<p>また、ToArray/ToArrayNonAlloc/Destroyには(Func&lt;GameObject, T&gt; selector), (Func&lt;GameObject, bool&gt; filter), (Func&lt;GameObject, bool&gt; filter, Func&lt;GameObject, T&gt; selector), (Func&lt;GameObject, TState&gt; let, Func&lt;TState, bool&gt; filter, Func&lt;TState, T&gt; selector) といった、Where().Select().ToArray() のような割とよくある状況に対する最適化オーバーロードを入れてます。</p>
+<p>この辺を活用してもらえば、単純にインラインで自前実装するよりも、むしろ速い/効率的なことのほうが多いでしょう。</p>
+<p>特化したものを速くなるのはある種当たり前で、しかしそうするとメソッドが雪だるま式に増えるのが良くなくて、そしてLINQのいいところは合成可能なことにより特化させずとも無限の組み合わせで機能を実現できるところにある。しかし、まぁ勿論、柔軟性とパフォーマンスが幾ばくかトレードオフなのは当然の話なわけで、LINQの雰囲気を保ったまま、裏側だけ特化実装にこっそり差し替わってる。というあたりが落とし所としては良いのかな、と思ってますし、なのでそういう風に実装しました。</p>
+<h2>再帰的なイテレータの罠</h2>
+<p>Children（子要素列挙）なんかは数が大したことないので問題はそんなないんですが、Descendants（子孫要素列挙）は性能差が大きく出てきます。そして、利用頻度で言ってもDescendants系が基本多い。これのパフォーマンスを改善することは、非常に意味のあることです。さて、これはシンプルなDescendantsの実装です。</p>
+<pre><code class="language-csharp">static IEnumerable&lt;GameObject&gt; Descendants(GameObject root)
+{
+    yield return root;
+    foreach (Transform item in root.transform)
+    {
+        foreach (var child in Descendants(item.gameObject))
+        {
+            yield return child.gameObject;
+        }
+    }
+}
+</code></pre>
+<p>このコードには大きな問題があります！再帰的なイテレータ、つまり foreach (var child in Descendants(item.gameObject)) は危険です。Baaaaad Practice、デス。要警戒です。これ、子孫にあるGameObjectの数だけ、イテレータ作ってます。GetEnumerator祭り！これは、LINQがどうのとかそういう次元を超えています。LINQのコストというのはメソッドチェーン分のGetEnumeratorの加算とMoveNextの連鎖による一回の呼び出しコストの増加が基本的な話で、ようするに2~3増えるという話で大したことあるといえば大したことあるし、大したことないといえば大したことない。が、さすがに要素数分だけ無駄にEnumerator作るとなったら話は別だ。ちょっとね、かなり気になるよね。</p>
+<p>解決策は２つあります。一つはstruct enumeratorで、struct生成コストはあるもののゴミにはなりません。↑で書いたように実装済みです。</p>
+<p>もう一点は、内部イテレーター化。イテレーターには概ね二種類、内部イテレーターと外部イテレーターがあります。外部イテレーターはforeachで使える、つまりGetEnumerator経由のもので、内部イテレーターはListのForEachなどクラスに直接生えてるもの。それぞれ利点と欠点があります。外部イテレーターの利点は柔軟性(LINQ)と言語サポート(foreach/generator)、よって基本的にはこちらを選べばOKです。欠点はパフォーマンスが内部イテレーターほど稼げない。どうしても一つシーケンスを進めるのにMoveNextとCurrentの2つのメソッド呼び出しが必要になるので。内部イテレーターの利点はパフォーマンスで、内部構造に最適化したループを回せるので、基本最速です。欠点は柔軟性がないのと、それぞれのコレクションで独自実装になること。</p>
+<p>LINQ to GameObjectでは両方実装しています。外部イテレーターは手書きで最適化したstruct enumerator（とStackPoolと、その他諸々の仕掛け）によって、遅延実行やLINQサポートなどの柔軟性を維持したまま、パフォーマンスとGC行きのゴミを全く出さないようにしています。内部イテレーターに関してはForEachとToArray(NonAlloc)に関しては、外部イテレーター版と全く異なる実行パスを通ることにより、最速を維持します。</p>
+<p>ところで、Unityネイティブに用意されているものがある場合は、それを使ったほうが速くなります。例えば DescendantsAndSelf().OfComponent().ToArray() は GetComponentsInChildren(includeInactive:true) に概ね等しく（一つのオブジェクトに複数コンポーネントが貼り付けてある場合、LINQ to GameObjectではそれぞれのGameObjectに一つのみ、GetComponentsInChildrenは複数と、正確には挙動が異なります）、後者を使ったほうが断然速い。一応ですが、ネイティブだから常に速いとか、そういうことはなくて、ネイティブ-マネージド間の変換コストのほうが勝る場合もあります（たとえば<a href="http://neue.cc/2016/05/14_529.html">Unityにおけるコルーチンの省メモリと高速化について、或いはUniRx 5.3.0でのその反映</a>のような話）。けれど、この場合は、C#だけで走査すると、GameObject毎でのGetComponentが避けられません(GetComponentのコストはタダではないのだ)。なので、一発でネイティブ内でかき集めてきたほうが絶対的に速くなります。子孫を辿るだけならほとんど遜色ない、むしろ速いといっていいぐらいなので、本当にこれはGetComponentに対する処理効率の差だけですね。これだけはどうにもできませんでした。</p>
+<h2>追加系</h2>
+<p>変わってます。使い勝手的にはこっちの対応がメインです。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/17275579/e5f4d4ba-5747-11e6-900f-30193a4ef7b4.png" alt="" /></p>
+<p>以前のAPIの何が不便かって、引数にGameObjectしか受け付けなかった！そして戻り値がGameObject！大抵の場合はComponentを入れてComponentを受け取りたいのに！これは酷い！いやほんと酷すぎでした……。なんでそうなってたかというと言い訳はそれなりにあって、まずGameObjectとComponentって継承階層が別のとこにいるんですよねー、のが困る。それをオーバーロードとして分けると、IEnumerableを受け取るオーバーロードが存在していたため、どうやってもうまく型が解決できなかったのだ……。</p>
+<p>もうどうにもならなかったので、API変えてます。IEnumerableを受け取るオーバーロードはXxxRangeという名前に分離。また、基本的には&lt;T&gt;を返すように、そして T:UnityEngine.Object を受け取れるようにしたので、引数としてやっとMonoBehaviourなComponentを素直に流し込めるようになりましたー。万歳。継承階層が別のとこにいて困ります問題は、UnityEngine.Objectを受け取った上で、動的にGameObjectとComponentに仕分けすることで解決。</p>
+<p>というわけで、やっと自信持って普通に使えるようになりました。単純な話なんですが、まず破壊的変更にする、ということに腰が重かったことと、それを踏まえても、うまいAPIを構築するのに手間取った。のせいでこんなに遅れてしまって、いやはや……。</p>
+<p>その他、あとDestroyでデフォルトでヒエラルキから外さなくしました。このヒエラルキから外すというのは最低のアイディアで、配列ではなく列挙しながら(LINQ to GameObjectでやるような！）Destroyする場合に、ヒエラルキから外すせいで位置がずれて死ぬ。というのを防ぐためにToArrayでキャッシュしなければならない（無駄なオーバーヘッド！）。というしょうもない自体に陥りがちなので、やめました。わざわざ外すコストだってゼロじゃないので、二重に悪い。</p>
+<h2>まとめ</h2>
+<p>GameObjectBuilderというものがあったのですが、イラナイ子なので消しました。LINQ to XMLのFunctional Constructionを模した――ものなのですが、そういう、コピーに一生懸命なだけなのって悪趣味なんですよね。大事なのは、概念(LINQ to Tree)を対象環境(Unity)に最適化することであって、コピーすることではない。そういうの、分かっているつもりではいたのですが、やり始めるとついついやってしまうところがある。随時見切って、バッサリ切り落とせるようにならないとですね。</p>
+<p>LINQ to GameObjectのオリジナルのデザインは2014/10/28だったんですが、その頃は今よりは全然遥かにUnityへの習熟度、知識が欠けていたなぁ、というのを改めて痛感しました。思い上がる、ということはないですが、環境への理解力が足らないとどこかイマイチなものになってしまうわけで、C#云々抜きに、常にUnityに真摯に向き合ってかないとダメですね。実際問題、愛情を持って突き詰めて考えられないと、本当の理想のところまでは行けない。小手先の知識だけで処理したようなライブラリは、まぁ使いたくないですねえ、そういうの実際どうしてもどこか独りよがりのしょうもないものになってしまうので。</p>
+<p>LINQは遅い/GCキツくなるというのは絶対的な事実ではあるのですけれど、極力書き味を失わないようにしつつ、6, 7割ぐらいのシチュエーションには特化した最適化を施し、何も考えずともむしろ普通に書くよりも速くなる。それ以外のシチュエーションでも、速さを意識した使い方をすれば、やはり普通に書くよりも速くなる。という、私的には理想的かな、というところで表現できたので、是非是非、機能を気にする人も、性能を気にする人も使ってみてください。どちらも満たせるものになっているはずです。</p>
+<p>ところでしつこいですが、9/13に<a href="https://atnd.org/events/80089">Photon勉強会</a>で「Photon Server Deep Dive - PhotonWireの実装から見つめるPhoton Serverの基礎と応用」というタイトルで話しますので、Photon興味ある人も、そうでなくてもUniRx興味ある人もどうぞ。LINQ to GameObject、或いはUnityとLINQについての話は、さすがにあんま関係ないのでセッション内容には含まれませんが懇親会ででも掴まえてもらえば何でも答えます。</p>
+</div>
+<h1><a href="https://neue.cc/2016/08/05_537.html">C#のGCゴミとUnity(5.5)のコンパイラアップデートによるListのforeach問題解決について</a></h1>
 <ul class="date"><li>2016-08-05</li></ul>
 <div class="entry_body"><p>UnityにおいてList&lt;T&gt;のforeachは厳禁という定説から幾数年。しかしなんと現在Unityが取組中のコンパイラアップデートによって解決されるのだ！ついに！というわけで、実際どういう問題があって、どのように解決されるのかを詳しく見ていきます。</p>
 <h2>現状でのArrayのforeachとListのforeach</h2>
@@ -1530,133 +1597,6 @@ void Run()
 <p>シンプルに、全力で仕事してゲーム出す。ですね。それ以外なし。もちろん、それはC#を全方面で活かした実証結果として成り得るものです。絶対。これは絶対。</p>
 <p>私個人としてはヌルヌルとC#でのスクリプティングにだけ篭もりすぎた感あるので、UniRxも一段落したことだし（ちなみに、もう少し性能向上のためのアップデートが控えていてというか現在審査中なので年明け早々にそれはリリースされるでしょう）、シェーダーをそれなりにすらすら書ける程度にはグラフィック処理もできるようにってのは年頭の宿題にしておきます。</p>
 </div>
-<h1><a href="https://neue.cc/2015/12/21_523.html">UniRx 5.0 - 完全書き直しによるパフォーマンス向上とヒューマンリーダブルなスタックトレース生成</a></h1>
-<ul class="date"><li>2015-12-21</li></ul>
-<div class="entry_body"><p><a href="https://github.com/neuecc/UniRx">UniRx(Reactive Extensions for Unity)</a>のVer 5.0が昨日、AssetStoreにリリースされました。前回が4.8.2で6月なので、半年ぶりで、今回はメジャーアップデートとなります。現在の最新であるUnity 5.3（の新機能）に対応というのもあります、が、今回の目玉は書き直しです。半年間なにやっていたかというと、書き直そう！いよいよやっと重い腰を上げてスタックトレースに優しいコードにしよう！と思い立って始めてみたもののメンドウくささが極まって挫折して放置。してたんですが、先月ぐらいに、いい加減に手を付けたくて、ちょっと<a href="http://grani.jp/">うちの会社</a>の仕事時間を貰ってゴリゴリ進めてやっと終わりました。</p>
-<ul>
-<li><a href="https://github.com/neuecc/UniRx">GitHub - UniRx</a></li>
-<li><a href="http://u3d.as/7tT">UnityAssetStore - UniRx</a></li>
-</ul>
-<p>とりあえず分かりやすい成果としては、スタックトレースです。</p>
-<pre><code class="language-csharp">var rp = new ReactiveProperty&lt;int&gt;();
-
-rp.Where(x =&gt; x % 2 == 0)
-  .Select(x =&gt; x * x)
-  .Take(10)
-  .Subscribe(x =&gt; Debug.Log(x));
-
-rp.Value = 100;
-</code></pre>
-<p>という人畜無害なコードがあるとして、以前のスタックトレースはこうです。</p>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/11917884/404287a0-a75d-11e5-9aee-ebe8d5bb28e3.png" alt="image" /></p>
-<p>言ってることはわからんでもないコンパイラ生成の何かと、多量の中間物で埋まっていて、実に読み取りにくい。この程度のメソッドチェーンならまだマシで、もっと長大で、複雑なオペレータが絡んでる場合は困難極まってました。私も何度文句を言われて平謝りしたか分からないぐらいです。しかし、今回のバージョンからはこうです。</p>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/11917889/765ebcf0-a75d-11e5-8117-f2b85a4113af.png" alt="image" /></p>
-<p>自動生成コードなし、中間物ナシ。圧倒的な読みやすさ！また、これはそのまま、書いたとおりに動いているということの証左でもあります。実行パイプラインの無駄がスタックトレースに出ているままに皆無になったので、パフォーマンスにも寄与しています（書き換えた今では、もはや前のが厚すぎた説はありますけれど、それはまぁ言わんといてください……）</p>
-<p>実装はかなりメンドウで、ラムダ式を使うと問答無用でコンパイラ生成のクラスが吐かれてしまうので、ひたすら名前付きのクラスを作っていくお仕事をしました（一個のオペレーターにつき2~3のクラスを要求する、オーバーロードがあればその分だけ……）。また、Unityのコンソールの出力に合わせた細かい調整を施すことによって（＋通常のスタックトレースへの吐かれ方に対しても調整して）作りました。すっかりスタックトレースのことを考えたプログラミングができる脳みそが出来上がったんですが、基本的に面倒くさ度100なので、ふつーのゲーム側のコードでは考えたくないしやりたくもないしやらなくていいと思ふ。</p>
-<h2>性能改善</h2>
-<p>じゃあ前のは遅かったのかよ、と言われると、うーん、そんなでもないですよ？、とは言いたいのですけれど、まぁカタログスペック的には実際3~10倍ぐらい速くなってます。これはねぇ、例えばMySQL 5.7が5.6の3倍速い！なるほど、じゃあ5.6はゲロ遅なのか？そうじゃあないっしょー、みたいな話なのですが、実際速くなったのは誰にとっても私にとっても嬉しい話です。</p>
-<p>しかし、パフォーマンス低いとか気になるとか、漠然とした話で、何も言ってないに等しいんです。もちろん、3~10倍速くなったというのも何も言っちゃあいないです。プログラムの抱えている範囲に対して広すぎる、漠然としすぎていて何ら指標になっちゃいません。というのは気をつけてください。Rxのパフォーマンスを測るにあたって、フェーズ的に3つあって、</p>
-<ul>
-<li>Observableを構築するフェーズ(さすがにこれはほとんど無視していい)</li>
-<li>Subscribe = Observerを構築するフェーズ</li>
-<li>OnNext</li>
-</ul>
-<p>それぞれは独立して考える必要があります。また、ReactivePropertyはSubscribeと同時にOnNextも一回入るのでSubscribe + OnNextである、などなどがあるので、どこをどう測りたいかを明確にし、どう測るかを考えないとザルな結果になります。</p>
-<p>基本的に、Rxのチェーンの寿命は長いのでOnNextの性能を最重要視して見るべきです。ここの区別は非常に大事です、長ければチェーン構築コストは相対的に無視できる範囲に収まるのでマイクロな結果で想像するのは違うってものです。が、初回に大量にSubscribeが発生するといった、ローディング的な意味合いでは、Subscribeのフェーズも鑑みる必要があります。</p>
-<p>んで、これもザックリとしすぎでアレなんですが、OnNextは3~5倍ぐらい、Subscribeに関しては10~20倍速くなりました。OnNextは全体的なパイプラインの最適化のオペレーターの実装調整が効いてるんですが、Subscribeは抜本的に最適化/単純化したので、以前と全然違う結果になってます。これは、社内で大量のSubscribeがシーンロード初回に発生するという事案がありまして、Subscribeを改善しない限りロード長過ぎで終わぽ、だったのでなんとかしました、はい、すびばせん今まで手付かずで……（ちなみに本家Rx.NETとやり方変えてるので本家Rx.NETよりも速い）</p>
-<p>あとのところはオペレーター次第です。WhereとかSelectとか、単純な奴は実装変わってないんで大差ないんですが、一部のメソッドの実装が素朴でしょっぱかったので、そういうのはきっちり直してるので以前のと全然性能変わってきてます。特にObserveOnが顕著かな。また、Observable.IntervalやTimerなどの一部の時間系メソッドも構造がガラッと変わってるので(MainThreadScheduler/ThreadPoolSchedulerが使われる場合には最適化パスを通るようにしてる)、かなり良好な結果が得られるのではないかと。</p>
-<p>全体的にGCゴミも減ってます。まだもう少し減らせるポイントが残ってるので、次のマイナーアップデートではその辺の処理をする予定デス。</p>
-<h2>リリースノート</h2>
-<p>今回の。</p>
-<pre><code class="language-txt">破壊的変更:
-iOS/AOTサポートは切りました。IL2CPPしかサポートしません。
-Unit/Tuple/CancellationToken/TimeInterval/Timestampedをclassからstructに変えました。
-MainThreadDispatcher.Postのメソッドシグネチャが変わり、T stateを要求します。
-ObservableMonoBehaviour/TypedMonoBehaviourがObsoleteになりました。
-AotSafe Extensions(WrapValueToClass)を消しました。
-InputField.OnValueChangeAsObservableをOnValueChangedAsObservableにリネームしています(Unity 5.3の場合。Unity 5.3でInputField側で同様の変更が入っているため)
-Subscribe in SubscribeでのException Durabilityを保証します。
-
-追加メソッド/クラス:
-Observable.ForEachAsync
-Observable.Take(duration)
-Observable.Aggregate
-Observable.Zip(T3~T7)
-Observable.CombineLatest(T3~T7)
-Observable.Start(function, timeSpan)
-Observable.ToYieldInstruction in Unity 5.3
-Observable.DoOnError
-Observable.DoOnCompleted
-Observable.DoOnTerminate
-Observable.DoOnSubscribe
-Observable.DoOnCancel
-Observable.CreateSafe
-Progress
-StableCompositeDisposable
-MultilineReactivePropertyAttribute
-
-その他色々修正:
-色々色々(詳しくはGitHubのとこの正式なリリースノート見てくだしあ)
-</code></pre>
-<p>破壊的変更といっても、直撃することはないんじゃないかなあ、と思ってます。ただ社内ではUnit/Tupleのstructへの変更で引っかかったりはしました(想定外にもnullが代入されている場合があった！)。それは適切にdefault使うのと、Tupleに関してはTuple?にするなりする程度で対応はできます。struct化はAOTサポートを切ることで躊躇いなくできるようになって、ヨイことだなー、と。コードも全体的にAOTサポートのための余計なコードを順次切り落としています（パフォーマンスロスに繋がっていたので）。その辺はIL2CPPバンザイ、ですかねえ。</p>
-<h2>vs IL2CPP - Runtime UnitTest Runnner</h2>
-<p>IL2CPP万歳と言ったそばから言うのもアレですが、IL2CPP苦しい……。コンパイル死ぬほど遅いし、というのはおいておいても、まだ地雷は埋まっていて、たまに踏んで死ぬんですよね。その場合IL2CPPのバグなんで報告して直してもらうってことになるんですが、それはそれとして、なんで死ぬのかがAOTの場合は想像ついたし対処も比較的容易だったんですが、IL2CPPは踏むまで地雷かどうかを察知することが不能な上に、踏んだら踏んだで、何を踏んだからこうなったかがイマイチ分からなくて最小ケース作ってバグレポも辛いケースもちらほら。</p>
-<p>とはいえ、それなりに安定してきてるのは確かだと思います。偉い。そこは賞賛されるべき。</p>
-<p>のはいいんですが、実行するまで分からないじゃ（特にライブラリ側としては）困るので、iOS実機でユニットテストを動かしたいと思いました。Unity 5.3から<a href="http://docs.unity3d.com/Manual/testing-editortestsrunner.html">Editor Test Runner</a>なども標準で入ってきましたが、端的に言えば、欲しいのはそれじゃない。実機で動かしたいの！エディターでの実行はどうでもいいの！</p>
-<p>エディター上での実行も大事なんですが、元々UniRxは.NET用ライブラリとしても動くように設計されていて、ユニットテストも.NET用ライブラリとしてMSTestで書かれている（！）という特殊な環境なので、エディターでのテストサポートは完全に不要なのです。いや、だってVSのテストランナー使ったほうがやりやすいじゃん？</p>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/11919089/a1042f8e-a78b-11e5-9b65-fbca28a5da13.png" alt="image" /></p>
-<p>そうやってユニットテスト自体は書かれてるし、さすがに実機用に別のを書きなおすのは不可能なので、このユニットテストを実機で動かせるように持ってければそれでいいんだよねー。</p>
-<p>ここで出てくるのが<a href="https://github.com/dotnet/roslyn">Roslyn</a>。Roslynを使ってユニットテストプロジェクト内のユニットテストを、ソースコードのファイル単位ではなく、解析可能な構文木単位で取得し、<a href="https://msdn.microsoft.com/ja-jp/library/bb126445.aspx">T4 Text Template</a>で整形して吐き出せちゃえばいいんだ、という合わせ技で運搬することに成功しました。VS2015だから出来るハック、VS2015最高……。さすがにコード持ってくだけではMSTestの実体がなくて動かないんですが、そこは適当にモック(Shim)を用意して回避しました。</p>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/11919143/db2b7fae-a78c-11e5-8dea-6e7e99598bd2.png" alt="image" /></p>
-<p>エクストリーム雑なUI。エラーが出た場合は赤くなってExceptionを表示します。これで、ちゃんとiOS/IL2CPPで全部パスしてるのを確認済みです。</p>
-<p>ちなみにこのRoslyn + T4でコード生成するテクニック、今回のように別プロジェクトをターゲットにして運搬するというのもいいんですが、自プロジェクトを対象にすることもできます。T4で生成するためのコードのタネって、今まではT4側に書くしかなくて面倒だったんですが、もうその制限はありません。ありとあらゆるソースコードがコード生成のためのタネとして使えます。メタプログラミングの扉をまた一つ開いてしまった。</p>
-<p>このテクニックは私の発明じゃなくて<a href="http://www.misuzilla.org/Blog/2015/12/04/UsingRoslynInT4Template">RoslynをT4テンプレート内で使う - ぷろじぇくと、みすじら。</a>から拝借してますので、気になる人はそちらの記事をどうぞ。ｌ</p>
-<h2>Unhandled Exception Durability</h2>
-<p>UniRx 5.0の変更のうち、ちょっとだけ重要なのがUnhandled Exception Durabilityというコンセプト。です。これは、Rxでイベントハンドリングするのはいいんだけどエラーでるとイベント購読が吹っ飛ぶの困るんだよねー、に対するUniRxからの回答ということで。内容ですが、Subscribe in Subscribe時の例外を外側に伝搬「しない」ことを保証しています（逆に言えば実は4.8では保証されてなくて解除されたりしてました。ちなみにRx.NETでも保証されてなくて解除されたりされなかったりします、ここはUniRx独自で挙動を明言する形に倒しています)。伝搬しない、というのは握りつぶすという意味ではなくて、ObservableのDispose処理を行わない、という意味です（例外自体はグローバルに飛ぶのでUnityのConsoleにExceptionが表示されるし、ログイベントでちゃんと捉えられます）</p>
-<pre><code class="language-csharp">button.OnClickAsObservable().Subscribe(_ =&gt;
-{
-    // もし内側でエラーが発生しても、外側のOnClickがデタッチされることはない
-    ObservableWWW.Get(&quot;htttp://error/&quot;).Subscribe(x =&gt;
-    {
-        Debug.Log(x);
-    });
-});
-</code></pre>
-<p>エラーハンドリングは難しい問題で、<a href="https://github.com/ReactiveX/RxJava/wiki/Error-Handling">RxJavaのErrorHandlingの章</a>を読んでも別にそんなワカラナイよね、とかって感じではある。UniRxでは Retry/OnErrorRetry でハンドルできなくはなく、まぁそれがスタンダードなRx Wayではあるんですが<a href="http://qiita.com/bouzuya/items/5e068659d63d9961a260">RxJS の Operators (6) - Observable のエラーハンドリング</a>のまとめコメント「これで本当にエラーハンドリングに十分なのか不安です。」とあるように、実に不安です。</p>
-<p>で、入力用のハンドラーが吹っ飛ぶのは致命傷なので、どうしても救いたいその辺のとこに関してはSubscribe in Subscribeで処理するのがいいんじゃないかなー、というのを提唱します。入力イベントを合成したいって局面も多いと思うので、それはそれで合成してもらったうえで（そして、その合成パイプラインに関してはエラーが出ないよう厳重に作る！）、それを入力ストリームだと考えて、そこから先はSubscribe in Subscribe。あまり格好の良いものではないのも事実ですが、現実的っちゃあ現実的かなー、と。ちなみにこの挙動を保証するのはUniRxだけだと思うので他のRx系に持ってっても動きません（多分）</p>
-<p>なお、Subscribe in Subscribeでの例外で解除されないのは最上流がHot Observableのものだけです。HotとColdに関しては<a href="http://qiita.com/toRisouP/items/f6088963037bfda658d3">RxのHotとColdについて</a>などを参照するといいと思いますが、とりあえず具体的にHotなのはUniRxデフォルトでは FromEvent/Subject/ReactiveProperty/ObservableTriggers/UnityUI.AsObservable です。ようはイベント的なやつです。Coldなのは Return/Interval/Timer/FromCoroutine などで、これらは例外で解除されます（そうじゃないとTimerとか無限に動き続けられても危なくて困るでしょ？FromCoroutineだって途中でエラーが出てる状態なのに回られても困るでしょ？）</p>
-<h2>CustomYieldInstuction</h2>
-<p>書き直しはいいんだけど、何か新機能ないと寂しいよなー、ということで、Unity 5.3用に一つ入れました。Unityブログでも<a href="http://blogs.unity3d.com/jp/2015/12/01/custom-coroutines/">カスタムコルーチン</a>として紹介されていますが、Unity 5.3からCustomYieldInstructionが搭載されました。というわけでUniRxもUnity 5.3以上ならToYieldInsturctionメソッドが使えるようになっています。</p>
-<pre><code class="language-csharp">IEnumerator TestNewCustomYieldInstruction()
-{
-    // Rx Observableをyield returnで待ちます.
-    yield return Observable.Timer(TimeSpan.FromSeconds(1)).ToYieldInstruction();
-
-    // スケジューラを変える(Time.scaleを無視する)とかも当然可能
-    yield return Observable.Timer(TimeSpan.FromSeconds(1), Scheduler.MainThreadIgnoreTimeScale).ToYieldInstruction();
-
-    // 戻り値を得る場合はObservableYieldInstructionを変数に取れば、Result/Errorで受け取れます
-    var o = ObservableWWW.Get(&quot;http://unity3d.com/&quot;).ToYieldInstruction(throwOnError: false);
-    yield return o;
-
-    if (o.HasError) { Debug.Log(o.Error.ToString()); }
-    if (o.HasResult) { Debug.Log(o.Result); }
-
-    // 当然こういう長めのものだって自由に書けます 
-    yield return this.transform.ObserveEveryValueChanged(x =&gt; x.position)
-        .FirstOrDefault(p =&gt; p.y &gt;= 100)
-        .ToYieldInstruction();
-}
-</code></pre>
-<p>今までもToAwaitableEnumerator/StartAsCoroutineというメソッドで同様なことを出来るようにしていたのですが、ToYieldInsturctionのほうが効率的だし、使いやすいです。ToYieldInsturctionによるObservable-&gt;Coroutine変換のオーバーヘッドはないといっても過言ではない！Unity 5.3最高！</p>
-<p>ちなみに、このToYieldInsturctionはCustomYieldInstructionクラスを実装してません。Unity 5.3のカスタムコルーチン対応というのは、yield returnでIEnumeratorを受け取ると毎フレームMoveNextを呼び出して待機する、というのが正しい話です。CustomYieldInstructionはあくまでIEnumerator実装のためのちょっとしたヘルパーなので、別にそれにこだわる必要はありません、ということで普通に独自の軽量なIEnumerator実装を刺しています。</p>
-<p>ちなみに実行されるタイミングは<a href="http://docs.unity3d.com/530/Documentation/ScriptReference/CustomYieldInstruction.html">CustomYieldInstructionの説明</a>によると after MonoBehaviour.Update and before MonoBehaviour.LateUpdate だそうなので、実行タイミング調整のネタに使えるかもしれません。</p>
-<h2>まとめ</h2>
-<p>実際のトコver 2.0なんですが、諸事情で4始まりなのでver 5.0です！Unityのメジャーバージョンと偶然揃ったしいっか、という気がしますね！今回のコードはかなり自信あって、パフォーマンスがー、な局面であってもお薦めできます。どうせ、ライトウェイトを冠した超機能限定版の同じようなものを実装するなら、性能面であっても素直にUniRxを使ったほうがいいでしょう。と、言えます。言えます。</p>
-<p>今月頭に書いた<a href="http://neue.cc/2015/12/03_521.html">Unity 5.3のMulti Scene EditingをUniRxによるシーンナビゲーションで統合する</a>などのように、UniRxを前提に置くことで、やれることが大幅に広がります。根底から入れれば全体のプログラミングの世界観が（良くも悪くも）大きく変わります。が、まぁそれはエキセントリックすぎるということであれば、触りは単純なところからでも全然アリかな、とは。思います。特に非同期/マルチスレッド関連は、変なライブラリ入れるよりもずっと良いでしょう。</p>
-<p>ところで半年前、今年6月に<a href="http://neue.cc/2015/06/20_514.html">第一回UniRx勉強会を開催しました</a>が、第二回の需要ってありますか？もしありましたら、その前に発表者が必要！なので、是非話したい！人は、私のTwitterかメールかに連絡ください。開催するにも発表者いなければ開催もなにもないですからね……！</p>
-<p>ついでにもはや触れちゃいけない扱いの気がしなくもない<a href="http://asecon.unity3d.jp/">Unity アセットコンテスト</a>というのに応募していたのですが結果発表……。</p>
-</div>
 <a href="https://neue.cc/5">Prev |</a>
 <a href="https://neue.cc/7">| Next</a>
 </div>
@@ -1680,6 +1620,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2022/11/">2022-11</a>
 <li><a href="https://neue.cc/2022/07/">2022-07</a>
 <li><a href="https://neue.cc/2022/05/">2022-05</a>
 <li><a href="https://neue.cc/2022/04/">2022-04</a>

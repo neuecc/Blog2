@@ -23,7 +23,124 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2013/04/05_403.html">CloudStructures - ローカルとクラウドのデータ構造を透過的に表現するC# + Redisライブラリ</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2013/04/24_404.html">RxとRedisを用いたリモートPub/Sub通信</a></h1>
+<ul class="date"><li>2013-04-24</li></ul>
+<div class="entry_body"><p>今日から始まった<a href="http://www.buildinsider.net/">Build Insider</a>で、RedisとBookSleeveの記事を書きました - <a href="http://www.buildinsider.net/small/rediscshap/01">C#のRedisライブラリ「BookSleeve」の利用法</a>。Redis、面白いし、Windowsで試すのも想像以上に簡単なので、是非是非試してみて欲しいです。そして何よりもBookSleeve！使うと、強制的に全てがasyncになるので、C# 5.0でのコーディングの仕方のトレーニングになる（笑）。にちじょー的にasync/awaitを使い倒すと、そこから色々アイディアが沸き上がっきます。ただたんにsyncがasyncになった、などというだけじゃなく、アプリケーションの造りが変わります。そういう意味では、Taskは結構過小評価されてるのかもしれないな、なんて最近は思っています。</p>
+<p>さて、RedisにはPub/Sub機能がついているわけですが、Pub/Sub→オブザーバーパターン→Rx！これはティンと来た！と、いうわけで、これ、Rxに乗せられました、とても自然に。というわけで、□□を○○と見做すシリーズ、なCloudStructuresにRx対応を載せました。</p>
+<ul>
+<li><a href="https://github.com/neuecc/CloudStructures">GitHub - CloudStructures</a></li>
+<li><a href="https://nuget.org/packages/CloudStructures/">PM&gt; Install-Package CloudStructures -Pre</a></li>
+</ul>
+<p>追加したクラスはRedisSubject&lt;T&gt;。これはSubjectやAsyncSubjectなどと同じく、ISubject&lt;T&gt;になっています。IObservableであり、IObserverでもある代物。とりあえず、コード例を見てください。</p>
+<pre><code class="language-csharp">var settings = new RedisSettings(&quot;127.0.0.1&quot;);
+
+var subject = new RedisSubject&lt;string&gt;(settings, &quot;PubSubTest&quot;);
+
+// SubscribeはIObservable&lt;T&gt;なのでRxなLINQで書ける
+var a = subject
+    .Select(x =&gt; DateTime.Now.Ticks + &quot; &quot; + x)
+    .Subscribe(x =&gt; Console.WriteLine(x));
+
+var b = subject
+    .Where(x =&gt; !x.StartsWith(&quot;A&quot;))
+    .Subscribe(x =&gt; Console.WriteLine(x), () =&gt; Console.WriteLine(&quot;completed!&quot;));
+
+// IObserverなのでOnNext/OnError/OnCompletedでメッセージ配信
+subject.OnNext(&quot;ABCDEFGHIJKLM&quot;);
+subject.OnNext(&quot;あいうえお&quot;);
+subject.OnNext(&quot;なにぬねの&quot;);
+
+Thread.Sleep(200); // 結果表示を待つ...
+
+a.Dispose(); // UnsubscribeはDisposeで
+subject.OnCompleted(); // OnCompletedを受信したSubscriberもUnsubscribeされる
+</code></pre>
+<p>はい、別になんてこともない極々フツーのRxのSubjectです。が、しかし、これはネットワークを通って、Redisを通して、全てのSubscriberへとメッセージを配信しています。おお～。いやまあ、コードの見た目からじゃあそういうの分からないので何も感動するところもないのですが、とにかく、本当に極々自然に普通に、しかし、ネットワークを超えます。この、見た目何も変わらずに、というところがいいところなわけです。</p>
+<p>Subscribeする側はIObservableなので別にフツーに合成していけますし、Publishする側もIObserverなので、Subscribeにしれっと潜り込ませたりしても構わない。もう、全然、普通にインメモリなRxでやる時と同じことが、できます。</p>
+<p>オワリ。地味だ。</p>
+<p>う、うーん。ほ、ほらほら！！</p>
+<pre><code class="language-csharp">// ネットワーク経由
+var settings = new RedisSettings(&quot;xx.xxx.xxx.xxx&quot;);
+
+var subject = new RedisSubject&lt;DateTime&gt;(settings, &quot;PubSubTest&quot;);
+
+// publisherはこちらのコード
+while (true)
+{
+    Console.ReadLine();
+    var now = DateTime.Now;
+    Console.WriteLine(now.Ticks);
+    subject.OnNext(now);
+}
+
+// subscriberはこちらのコードを動かす
+subject.Subscribe(x =&gt;
+{
+    var now = DateTime.Now;
+    Console.Write(x.Ticks + &quot; =&gt; &quot; + now.Ticks);
+    Console.WriteLine(&quot; | &quot; + (now - x));
+});
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/redis_network_pubsub.jpg">
+</p>
+<p>というわけで、実際にネットワーク経由(AWS上に立てたRedisサーバーを通してる)で動かしてみた結果がこんな感じです。ネットワークを超えたことで用法は幾らでもある！夢膨らみまくり！</p>
+<p>で、↑のコードは遅延時間のチェックを兼ねてるのですが、概ね、0.03秒ぐらい。たまにひっかかって0.5秒超えてるのがあって、ぐぬぬですが。実際のとこRedis/Linuxの設定で結構変わってくるところがあるので、その辺は煮詰めてくださいといったところでしょうか。</p>
+<p>ともあれチャットとかなら全然問題なし、ゲームでもアクションとかタイミングにシビアじゃないものなら余裕ですね、ボードゲームぐらいなら全く問題ない。ちょっとしたMMOぐらいならいけるかも。これからはネットワーク対戦はRedisで、Rxで！！！</p>
+<h2>余談</h2>
+<p>CloudStructuresですが、.configからの設定読み込み機能も地味につけました。</p>
+<pre><code class="language-xml">&lt;configSections&gt;
+    &lt;section name=&quot;cloudStructures&quot; type=&quot;CloudStructures.Redis.CloudStructuresConfigurationSection, CloudStructures&quot; /&gt;
+&lt;/configSections&gt;
+
+&lt;cloudStructures&gt;
+    &lt;redis&gt;
+        &lt;group name=&quot;cache&quot;&gt;
+            &lt;add host=&quot;127.0.0.1&quot; /&gt;
+            &lt;add host=&quot;127.0.0.2&quot; port=&quot;1000&quot; /&gt;
+        &lt;/group&gt;
+        &lt;group name=&quot;session&quot;&gt;
+            &lt;add host=&quot;127.0.0.1&quot; db=&quot;2&quot; valueConverter=&quot;CloudStructures.Redis.ProtoBufRedisValueConverter, CloudStructures&quot; /&gt;
+        &lt;/group&gt;
+    &lt;/redis&gt;
+&lt;/cloudStructures&gt;
+</code></pre>
+<pre><code class="language-csharp">// これで設定を読み込める
+var groups = CloudStructuresConfigurationSection.GetSection().ToRedisGroups();
+</code></pre>
+<p>色々使いやすくなってきて良い感じじゃあないでしょーか。</p>
+<h2>コールバック撲滅</h2>
+<p>そうそう、最後に実装の話を。元々BookSleeveのPub/Sub購読はコールバック形式です。「public Task Subscribe(string key, Action&lt;string, byte[]&gt; handler)」handlerはstringがキー, byte[]が送られてくるオブジェクトを指します。コールバック is ダサい。コールバック is 扱いにくい。ので、コールバックを見かけたらObservableかTaskに変換することを考えましょう！それがC# 5.0世代の常識です！</p>
+<p>というわけで、以下のようにして変換しました。</p>
+<pre><code class="language-csharp">public IDisposable Subscribe(IObserver&lt;T&gt; observer)
+{
+    var channel = Connection.GetOpenSubscriberChannel();
+
+    var disposable = System.Reactive.Disposables.Disposable.Create(() =&gt;
+    {
+        channel.Unsubscribe(Key).Wait();
+    });
+
+    // ここが元からあるコールバック
+    channel.Subscribe(Key, (_, xs) =&gt;
+    {
+        using (var ms = new MemoryStream(xs))
+        {
+            var value = RemotableNotification&lt;T&gt;.ReadFrom(ms, valueConverter);
+            value.Accept(observer); // この中でobserverのOnNext/OnError/OnCompletedが叩かれる
+            if (value.Kind == NotificationKind.OnError || value.Kind == NotificationKind.OnCompleted)
+            {
+                disposable.Dispose(); // ErrorかCompletedでもUnsubscribeしますん
+            }
+        }
+    }).Wait();
+
+    return disposable; // もしDisposableが呼ばれたらUnsubscribeしますん
+}
+</code></pre>
+<p>こんなふぅーにRxで包むことで、相当使いやすさがアップします。感動した。</p>
+</div>
+<h1><a href="https://neue.cc/2013/04/05_403.html">CloudStructures - ローカルとクラウドのデータ構造を透過的に表現するC# + Redisライブラリ</a></h1>
 <ul class="date"><li>2013-04-05</li></ul>
 <div class="entry_body"><p>というものを作りました。インストールはNuGetから。</p>
 <ul>
@@ -1721,240 +1838,6 @@ static void Main(string[] args)
 <p>あんましFull ORM使わなきゃー、とか悩む必要はないです。XXが便利で使いたいんだ！というなら使えばいいですし、逆にXXがあってちょっと嫌なんだよなー、というならば、使わない、が選択肢に入っていいです。.NETだって選択の自由はあるんですよ？そこ勘違いしちゃダメですよ？自由度を決めるのは、Microsoftでもコミュニティーの空気でもなく、自分達ですから。</p>
 <p>さて、<a href="http://atnd.org/events/33667">ASP.NET Advent Calendar 2012</a>、次はMicrosoft MVP for Windows Azureの<a href="http://d.hatena.ne.jp/waritohutsu/">割と普通さん</a>です。AzureとWeb Sitesについて聞けるようですよ！ｗｋｔｋ！</p>
 </div>
-<h1><a href="https://neue.cc/2012/12/03_389.html">MemcachedTranscoder - C#のMemcached用シリアライザライブラリ</a></h1>
-<ul class="date"><li>2012-12-03</li></ul>
-<div class="entry_body"><p>今年もAdvent Calendarの季節がやってきました。というわけで、この記事は<a href="http://atnd.org/events/33905">C# Advent Calendar 2012</a>用の話となります。去年は<a href="http://neue.cc/2011/12/16_359.html">Modern C# Programming Style Guide</a>という記事を書きまして、結構好評でした。また、去年は他Silverlight Advent Calendar 2011で<a href="http://neue.cc/2011/12/10_357.html">.NETの標準シリアライザ(XML/JSON)の使い分けまとめ</a>というシリアライザの話をしました。今年も路線は引き続きで、モダンなシリアライザの話をしましょう。</p>
-<h2>MemcachedTranscoder</h2>
-<p>そんなわけで、表題のものを作りました。dllのインストールはNuGet経由でお願いします。</p>
-<ul>
-<li><a href="https://github.com/neuecc/MemcachedTranscoder">MemcachedTranscoder - GitHub</a></li>
-</ul>
-<p>Memcachedは言わずと知れた分散キャッシュ。C#で最もメジャーなMemcachedのライブラリは<a href="https://github.com/enyim/EnyimMemcached">Enyim.Memcached</a>です。これを使って、オブジェクトをGet、Setするわけだー。さて、オブジェクトをSetするというのは、最終的にbyte[]に落とす必要があります。ただたんにポーンとオブジェクト投げたらSetできたー、にはなりませんですのよ。では、どうやってbyte[]に変換しているの？というと、シリアライザが内部で動いてます。</p>
-<p>シリアライザについては以前に<a href="http://neue.cc/2010/05/29_261.html">.NET(C#)におけるシリアライザのパフォーマンス比較</a>という記事も書いたりしていて、結構うるさいんで割と気にするほうです。さて、そんなEnyim.Memcachedのシリアライザは、デフォルトではBinaryFormatterです。はい、これは、あまり速くないしファイルサイズも結構かさんでゲンニョリ系シリアライザ。</p>
-<p>ただしEnyim.MemcachedはそれらをTranscoderと呼んでいて、自由に差し替えが可能になっています。つまりBinaryFormatterがゲンニョリならば自分で差し替えればいいじゃない！ちなみに純正オプションとしてNetDataContractSerializerも用意されているのですが、これは……話にならないぐらいサイズがデカくなるので、ないわー。</p>
-<p>そんなわけで.NET最速シリアライザの<a href="http://code.google.com/p/protobuf-net/">Protobuf-net</a>と、やっぱ時代はJSONよねということで、.NETで最もスタンダードなJSONライブラリである<a href="http://json.codeplex.com/">JSON.NET</a>と、新進気鋭の<a href="https://github.com/msgpack/msgpack-cli">MsgPack-Cli</a>の3種のTranscoderを作りました。</p>
-<h2>使い方</h2>
-<p>app.configかweb.configのMemcachedのTranscoderの設定行に、それぞれ使いたいTranscoderのものを指定して、dllを実行ファイルと同ディレクトリにでも置いてください。</p>
-<pre><code class="language-xml">&lt;?xml version=&quot;1.0&quot; encoding=&quot;utf-8&quot; ?&gt;
-&lt;configuration&gt;
-    &lt;configSections&gt;
-        &lt;sectionGroup name=&quot;enyim.com&quot;&gt;
-            &lt;section name=&quot;memcached&quot; type=&quot;Enyim.Caching.Configuration.MemcachedClientSection, Enyim.Caching&quot; /&gt;
-        &lt;/sectionGroup&gt;
-    &lt;/configSections&gt;
-    &lt;enyim.com&gt;
-        &lt;memcached protocol=&quot;Binary&quot;&gt;
-            &lt;servers&gt;
-                &lt;add address=&quot;127.0.0.1&quot; port=&quot;11211&quot;/&gt;
-            &lt;/servers&gt;
-            &lt;transcoder type=&quot;MemcachedTranscoder.ProtoTranscoder, ProtoTranscoder&quot; /&gt;
-        &lt;/memcached&gt;
-    &lt;/enyim.com&gt;
-&lt;/configuration&gt;
-</code></pre>
-<p>Transcoderのバリエーションは以下の感じ。</p>
-<pre><code class="language-xml">&lt;transcoder type=&quot;MemcachedTranscoder.ProtoTranscoder, ProtoTranscoder&quot; /&gt;
-&lt;transcoder type=&quot;MemcachedTranscoder.JsonTranscoder, JsonTranscoder&quot; /&gt;
-&lt;transcoder type=&quot;MemcachedTranscoder.MessagePackTranscoder, MessagePackTranscoder&quot; /&gt;
-&lt;transcoder type=&quot;MemcachedTranscoder.MessagePackMapTranscoder, MessagePackMapTranscoder&quot; /&gt;
-</code></pre>
-<p>ProtoTranscoderはProtocol Buffers、JsonTranscoderはJSON、MessagePackTranscoderはMsgPackをArrayモードで、MessagePackMapTranscoderはMsgPackをMapモードでオブジェクトを変換します。</p>
-<h2>型とデシリアライズ</h2>
-<p>使い方を説明して終わり、というのもつまらないので、もっと深く見ていきましょう。Enyim.MemcachedはGetもSetもobjectでしかできません。ジェネリックなのもあるように見せかけて、最終的にはobjectに落ちます。ITranscoderのところには型が伝達されないのです。以下のがITranscoderインターフェイスね。</p>
-<pre><code class="language-csharp">public interface ITranscoder
-{
-    object Deserialize(CacheItem item);
-    CacheItem Serialize(object value);
-}
-</code></pre>
-<p>何が困るって？シリアライザは型が必要なんですよ！デシリアライズの時に！DataContractSerialize作るのにtypeofで型を渡しているでしょう？Protobuf.Serialize&lt;T&gt;でしょう？MessagePackSerializer.Create&lt;T&gt;でしょう？(JsonConvert.DeserializeObjectは、一見デシリアライズ可能にみえて、それJObjectが帰ってくるから意味ないです)</p>
-<p>例えばMyClassクラスというint MyProperty{get;set;}だけがある、なんてことのないクラスがあるとして、ふつーにJSONにシリアライズした結果は</p>
-<pre><code class="language-javascript">{&quot;MyProperty&quot;:100}
-</code></pre>
-<p>こんな感じになります。が、これだとこれがMyClassという情報は一切ありません。HogeClassかもしれないしHugaClassかもしれない。つまりデシリアライズ不能です。よって、外から型を与える必要があります。Deserialize&lt;MyClass&gt;、といったように。これがもし</p>
-<pre><code class="language-javascript">{
-    &quot;Type&quot; : &quot;MyClass&quot;,
-    &quot;Properties&quot; : [
-        {&quot;MyProperty&quot;:100}
-    ]
-}
-</code></pre>
-<p>このように、値が型情報も持っていれば、型がMyClassだと分かるので、型を渡すのは不要になります。BinaryFormatterやNetDataContractSeiralizerが型不要でSerialize/Deserializeできているのは何故か、というと、シリアライズした後の形に型が付与されているからなのです。そして、なぜEnyim.Memcachedが標準でBinaryFormatterとNetDataContractSerializerを用意しているのか、あるいは何故他のものが用意できないのか、というと、型情報が必要だからです。</p>
-<p>じゃあ型入れとけばいいじゃーん、といったところですが、こうすると型情報の分だけファイルサイズが嵩んでしまいます。また、.NET固有の型を埋め込むというのは、他の言語と通信するのにあたっては、かなりビミョウです。</p>
-<p>だから、理想的には型は外から与えられるといいな、って思うのです。とはいえ、実際問題、Transcoderは型の渡せないインターフェイスなので、どうにかしなきゃあいけません。</p>
-<h2>型を埋める</h2>
-<p>そんなわけで、解法は、手動で型を埋める、になります。(他には全てのAPIを型付きにラップしてそれ経由でしかアクセスさせないで、Serializeを呼ぶときはbyte[]に崩してから呼ぶとかいう方法もあるですかしらん)。どういうこっちゃ、というと、伝わりやすいであろうJSON版のTranscoderで見てみましょうか。</p>
-<pre><code class="language-csharp">protected override ArraySegment&lt;byte&gt; SerializeObject(object value)
-{
-    var type = value.GetType();
-    var typeName = writeCache.GetOrAdd(type, TypeHelper.BuildTypeName); // Get type or Register type
-
-    using (var ms = new MemoryStream())
-    using (var tw = new StreamWriter(ms))
-    using (var jw = new Newtonsoft.Json.JsonTextWriter(tw))
-    {
-        jw.WriteStartArray(); // [
-        jw.WriteValue(typeName); // &quot;type&quot;,
-        jsonSerializer.Serialize(jw, value); // obj
-
-        jw.WriteEndArray(); // ]
-
-        jw.Flush();
-
-        return new ArraySegment&lt;byte&gt;(ms.ToArray(), 0, (int)ms.Length);
-    }
-}
-</code></pre>
-<p>[&quot;型名&quot;, {objectのシリアライズ結果}]といった風に埋めてます。長さ2の配列で決め打ち！0番目は型名の文字列！1番目が実態！これなら、まあ他の言語で触るのも問題ないし(多少は不恰好ですけどね)、ファイルサイズ増大もほぼほぼ型名だけで抑えられています。MessagePack用のTranscoderも同じような実装です。このアイディアはMsgPack-Cli作者の
-<a href="http://yfakariya.blogspot.jp/">@yfakariya</a>さんから頂きました。</p>
-<p>JSON, MsgPackはそうなのですけれど、Protocol Buffers版は……違います。</p>
-<h2>ProtoTranscoder</h2>
-<p>Enyim.Memcached用のProtocol BuffersなTranscoderは、もともとprotobuf-net作者のMarc Gravell氏が作成し公開しています。<a href="http://marcgravell.blogspot.jp/2010/01/distributed-caching-with-protobuf-net.html">Distributed caching with protobuf-net</a>。</p>
-<p>しかし、幾つかの理由により、このコードを使用することはお薦めしません、というかやめたほうがいいです。</p>
-<ul>
-<li>1.対応しているProtobufやEnyim.Memcachedが古いので若干手直しが必要</li>
-<li>2.配列や辞書など、効果の高いコレクション系に対してシリアライズしてくれない(BinaryFormatterが使われる)</li>
-<li>3.そもそもバグっていて、ジェネリックなクラスを突っ込むと壊れる</li>
-</ul>
-<p>1はそのまま。2は、そういうif文が入っているからです。別にコレクションだけ避けるようになっている、というわけじゃなくて、ある種の保険でそういう条件分岐があるのですが、結果としてコレクションが避けられることになってしまっていて、効果が薄くなってしまうな、と。そして3ですが、これは致命的です。どこがバグってるかというと、以下のところ。</p>
-<pre><code class="language-csharp">string typeName = type.AssemblyQualifiedName;
-int i = typeName.IndexOf(','); // first split
-if (i &gt;= 0) { i = typeName.IndexOf(',', i + 1); } // second split
-if (i &gt;= 0) { typeName = typeName.Substring(0, i); } // extract type/assembly only
-</code></pre>
-<p>型情報を埋め込む、つまりは型から型情報の文字列を取ってこなければなりません。それ自体は<a href="http://msdn.microsoft.com/ja-jp/library/system.type.assemblyqualifiedname.aspx">AssemblyQualifiedName</a>を呼ぶだけの、造作もないことなのですけれど</p>
-<pre><code class="language-csharp">// System.Int32, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089
-Console.WriteLine(typeof(int).AssemblyQualifiedName);
-</code></pre>
-<p>Versionとか、Cultureとか、PublicKeyTokenとか、いらないね。型名とアセンブリ名、それだけ分かればそれでいい、それがいい。なので、それら無駄な情報を除去しようとしているのが↑↑のコードです。</p>
-<p>実際うまくいきます。ジェネリックを含まなければ。</p>
-<pre><code class="language-csharp">var type = typeof(List&lt;int&gt;);
-
-string typeName = type.AssemblyQualifiedName;
-int i = typeName.IndexOf(','); // first split
-if (i &gt;= 0) { i = typeName.IndexOf(',', i + 1); } // second split
-if (i &gt;= 0) { typeName = typeName.Substring(0, i); } // extract type/assembly only
-
-// ↓のtypeNameは壊れてる
-// System.Collections.Generic.List`1[[System.Int32, mscorlib
-Console.WriteLine(typeName);
-</code></pre>
-<p>見事に欠落してしまいます。AssemblyQualifiedNameが、ジェネリックを含むクラスだと形が若干変わるので、この決め打ちSubstringでは対応しきれてません。</p>
-<p>でもバグってるから使えない、というだけじゃ勿体ない！.NET最速シリアライザが使えないとか！というわけかで、私の作成したProtoTranscoder半分は氏のコードをベースにしています。また、型情報を埋め込むといったことの元ネタもこのコードからです。</p>
-<p>んで、このバグッてた型情報を削るところですが、AssemblyQualifiedNameが実際どういう形を取るのか、もしくはどういう形が読み込めるものなのか、というのは<a href="http://msdn.microsoft.com/ja-jp/library/w3f99sx1.aspx">MSDNのType.GetTypeメソッド解説</a>に例付きで詳しく書いてあります。非常に複雑で正面からきっちりパースしようとすると苦戦します。なので、正規表現でサクッと削ることにしました。</p>
-<pre><code class="language-csharp">internal static class TypeHelper
-{
-    static readonly Regex SubtractFullNameRegex = new Regex(@&quot;, Version=\d+.\d+.\d+.\d+, Culture=\w+, PublicKeyToken=\w+&quot;, RegexOptions.Compiled);
-
-    internal static string BuildTypeName(Type type)
-    {
-        return SubtractFullNameRegex.Replace(type.AssemblyQualifiedName, &quot;&quot;);
-    }
-}
-</code></pre>
-<p>一応テストは書いてありまして、<a href="https://github.com/neuecc/MemcachedTranscoder/blob/master/MemcachedTranscoder.Tests/TypeHelperTest.cs">TypeHelperTest.cs</a>、色々並べたてた限り問題ないようなので、問題ないと思われます。</p>
-<p>あと、型情報の埋め込みですが、JsonTranscoderは配列にして型情報を入れていましたが、ProtoTranscoderはbyte[]の先頭に直接埋め込んでいます。先頭4バイトが型情報の長さを表し(int)、その後に続く長さの分だけ型情報の文字列(UTF8)があり、その後ろが実体。配列がどうこうとかないので、サイズ的にも処理的にも有利です。ただ、Memcachedに格納された値自体は不正なProtocol Buffersの値となるわけで、相互運用性には難ありといったところ（他のデシリアライズするもの側でもストリーム先頭の型情報部分をスキップするようにすれば、回避できるといえばできます）。最初から相互運用性ゼロのBinaryFormatter(他の言語ではこれでシリアライズされた後の形を解釈できない)よりは遥かにマシ、ではありますね。</p>
-<h2>Memcached is dead. Long live Redis!</h2>
-<p>バグってるとか、いーのかよー、という感じですが、そもそも、使われてないんですよね。Stackoverflowのキャッシュ層は<a href="http://redis.io/">Redis</a>ですので。完全にノーメンテ。(Stackoverflowのアーキテクチャは<a href="http://highscalability.com/blog/2011/3/3/stack-overflow-architecture-update-now-at-95-million-page-vi.html">Stack Overflow Architecture Update - Now At 95 Million Page Views A Month</a>で。これも2011/3のものなので、今は更に進化してるんだろうねえ。StackoverflowはかなりRedis好きみたいで、Memcached is dead. Long live Redis!ってStackoverflowのエンジニア(Marc氏ではない)が言ってた。</p>
-<p>私もRedis好きですね。超好き。アレは超良いものだ……。ちなみにRedisのライブラリは<a href="http://code.google.com/p/booksleeve/">BookSleeve</a>と<a href="https://github.com/ServiceStack/ServiceStack.Redis">ServiceStack.Redis</a>がありまして、この辺に関して詳しくは、そのうち書きましょう。いや、ほんとRedis良いしC#との相性もいいし、たまらんです。</p>
-<p>そんなわけで放置されていたんですが、昨日の今日で、新しいのがリリースされました。<a href="http://nuget.org/packages/protobuf-net.Enyim">protobuf-net.Enyim</a>。そして、バグはそのままでした……。というわけで、そのことは<a href="https://twitter.com/marcgravell/status/275036496065613824">Twitterで伝えた</a>ので、そのうち直るでしょう(Twitterは連絡手段として非常に気楽でいいですなあ)。でも、プリミティブ型の配列などにProtobufが使われない、とかTypeCacheからのTypeの取得部分がforeachぐるぐるるーぷ、などはそのままなので、私の作ったもののほうが良いです。多分ね。</p>
-<h2>パフォーマンス</h2>
-<p>性能ですが、まず、シリアライザはシリアライズする対象によって速度は変わります。だから、一概にどれが速いとか遅いとか言いにくいところはあります。そのうえで、以下のクラスと、それの配列（長さ10）を用意しました。</p>
-<pre><code class="language-csharp">[ProtoContract]
-[Serializable]
-public class TestClass
-{
-    [ProtoMember(1)]
-    [MessagePackMember(0)]
-    public string MyProperty1 { get; set; }
-    [ProtoMember(2)]
-    [MessagePackMember(1)]
-    public int MyProperty2 { get; set; }
-    [ProtoMember(3)]
-    [MessagePackMember(2)]
-    public DateTime MyProperty3 { get; set; }
-    [ProtoMember(4)]
-    [MessagePackMember(3)]
-    public bool MyProperty4 { get; set; }
-}
-
-// シンプルなPOCOとしての対象
-var obj = new TestClass
-{
-    MyProperty1 = &quot;hoge&quot;,
-    MyProperty2 = 1,
-    MyProperty3 = new DateTime(1999, 12, 11),
-    MyProperty4 = true
-};
-
-// オブジェクト配列としての対象
-var array = Enumerable.Range(1, 10)
-    .Select(i =&gt; new TestClass
-    {
-        MyProperty1 = &quot;hoge&quot; + i,
-        MyProperty2 = i,
-        MyProperty3 = new DateTime(1999, 12, 11).AddDays(i),
-        MyProperty4 = i % 2 == 0
-    })
-    .ToArray();
-</code></pre>
-<p>これを100000回シリアライズ/デシリアライズした速度と、一個のファイルサイズの検証結果が以下になります。あと、これはTranscoderを介した速度検証であって、決してシリアライザ単体での速度測定ではないことには留意してください。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/mem_poco.jpg">
-</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/mem_array.jpg">
-</p>
-<pre><code class="language-text">Simple POCO************************
-S DefaultTranscoder:735
-D DefaultTranscoder:750
-Size:305
-S DataContractTranscoder:775
-D DataContractTranscoder:1642
-Size:746
-S ProtoTranscoder:99
-D ProtoTranscoder:142
-Size:88
-S JsonTranscoder:772
-D JsonTranscoder:892
-Size:167
-S MessagePackTranscoder:256
-D MessagePackTranscoder:535
-Size:89
-S MessagePackMapTranscoder:327
-D MessagePackMapTranscoder:783
-Size:137
-
-Array******************************
-S DefaultTranscoder:4234
-D DefaultTranscoder:4186
-Size:712
-S DataContractTranscoder:3874
-D DataContractTranscoder:9532
-Size:4525
-S ProtoTranscoder:2189
-D ProtoTranscoder:3040
-Size:255
-S JsonTranscoder:5618
-D JsonTranscoder:6275
-Size:1043
-S MessagePackTranscoder:752
-D MessagePackTranscoder:2696
-Size:256
-S MessagePackMapTranscoder:1453
-D MessagePackMapTranscoder:5088
-Size:736
-</code></pre>
-<p>単体ではProtobufが最速。これは予想通り。配列にすると、MsgPack-Cliが爆速。ほええー。理由は分かりません！また、BinaryFormatterが決して悪くないのね。速度もそうだし、サイズも、特に配列にしたときにそんなにサイズが膨れないのは偉い、結果的にJSONより小さくなってるしね。これは、JSONは律儀に全部の配列の値に対してプロパティ名を入れますが、BinaryFormatterは先頭に型情報を一つ定義し、あとはその定義への参照という形で廻しているから、でしょうね。BinaryFormatterのデータ構造の仕様は<a href="http://msdn.microsoft.com/en-us/library/cc236844.aspx">.NET Remoting: Binary Format Data Structure</a>にありますが、別に読まなくてもいいと思いますん。</p>
-<p>私はバイナリアンじゃないのでバイナリと睨めっこはあんましたくないですね、<a href="http://www.est.co.jp/">前々職</a>で<a href="http://www.microsoft.com/typography/SpecificationsOverview.mspx">TrueType Fontの仕様</a>と睨めっこしてバイナリほじほじした時は、それはそれで楽しくはあったけれど、好んでやりたくない感はあったり。ゆるふわゆとり世代ですものー。</p>
-<h2>Azure Caching</h2>
-<p><a href="http://blogs.msdn.com/b/tsmatsuz/archive/2012/07/09/what-s-new-in-windows-azure-caching-preview-role-based-caching-june-2012.aspx">Windows Azure CachingもMemcachedプロトコルをサポート</a>ということなので、今回の話はまんま使えますね！まあ、既存のものの移し替え、とかでなければ、Enyim... よりもAzure Cachingのライブラリ使ったほうがいいとは思いますが。「Enyim cache client API で入れたデータを Windows Azure caching API (Client Api) で取得すると、例外が発生します。(その逆も同様です。)」というのは、書いてある通りにシリアライザが違うからですねー。<a href="http://msdn.microsoft.com/en-us/library/windowsazure/jj663548.aspx">デフォルトはNetDataContractSerializer</a>ということで、まあ、アレですね、悲しいですね、Azure Caching使うなら<a href="http://msdn.microsoft.com/en-us/library/windowsazure/hh552969.aspx">Custom Serializer</a>作ったほうがいいんじゃないですかね(これがEnyim...のTranscoderにあたる)。まあ、Memcached ProtocolにしてEnyim... を使ってもいいでしょうけれど、Enyim...もビミョいといえばビミョいので、その辺は何とも。</p>
-<p>まあ、私はAzureは知らないので、きっとAzureの誰かが言ってくれるでせう。あ、 Azure Cachingのシリアライズコストが発生しない云々は ローカルキャッシュのみの話で、外側に行くなら原理的にシリアライズ/デシリアライズが発生するのは当たり前です、というのは一応。</p>
-<h2>まとめ</h2>
-<p>NetDataContractSerializerは論外として、BinaryFormatterは決して悪くはないので、エクストリームなパフォーマンスを求めないなら、そのまんまでいい気がしました。求めるんなら、やっぱProtobufに安定感ありますねえ。しかしMsgPackも良いんですね。可搬性ならJSONにしちゃうのも良いかなー。結局、アレだ、好きなもの選ぶのがいいと思いますですよ、と。</p>
-<p>ところで、これはもともと、前職の<a href="http://gloops.com/">gloops</a>で使うつもりで用意していたのですが、辞めちゃったとかあったので、投入するところまでは行きませんでした。というわけで今のところ利用実績はないです！まあ、多分大丈夫だと思うんですがその辺は投下してみてもらわないと何とも言えません。要は勇気が自己責任。ともあれ、コードの公開を許可してくれたgloopsに感謝します。</p>
-<p>そんなこんなで、謎社でもC#でエクストリームな性能を求めたい方を求めております。パブリックに詳しく言えるのは予定は未定なので、そういったことをやりたいという方は、こっそり私のほうに聞いてくれると嬉しいですね。あ、これは割とマジな話ですよ。それとAzureの営業かけるなら今のうちなのでそれも私のほうまで（謎）</p>
-</div>
 <a href="https://neue.cc/10">Prev |</a>
 <a href="https://neue.cc/12">| Next</a>
 </div>
@@ -1978,6 +1861,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2022/11/">2022-11</a>
 <li><a href="https://neue.cc/2022/07/">2022-07</a>
 <li><a href="https://neue.cc/2022/05/">2022-05</a>
 <li><a href="https://neue.cc/2022/04/">2022-04</a>
