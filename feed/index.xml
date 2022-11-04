@@ -5,7 +5,7 @@
     <link>http://neue.cc/</link>
     <description>C# Technical Blog</description>
     <language>ja</language>
-    <lastBuildDate>Fri, 04 Nov 2022 19:50:17 +0900</lastBuildDate>
+    <lastBuildDate>Fri, 04 Nov 2022 20:09:31 +0900</lastBuildDate>
     <item>
       <guid isPermaLink="true">https://neue.cc/2022/11/04_memorypack.html</guid>
       <link>https://neue.cc/2022/11/04_memorypack.html</link>
@@ -102,7 +102,7 @@ void Serialize(int[] value)
 &lt;p&gt;C#の配列はintのようなプリミティブ型だけではなく、これは複数のプリミティブを持ったstructでも同様の話で、例えば(float x, float y, float z)を持つVector3の配列の場合は、以下のようなメモリレイアウトになります。&lt;/p&gt;
 &lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/199926307-bad558f9-b912-4b96-90fc-5c2d1a2837ea.png" alt="image" /&gt;&lt;/p&gt;
 &lt;p&gt;float(4バイト)はMessagePackにおいて、固定長で5バイトです。追加の1バイトは、その値が何の型(IntなのかFloatなのかStringなのか...)を示す識別子が先頭に入ります。具体的には[0xca, x, x, x, x]といったように。いわばタグ付与エンコーディングを行っているわけです。MemoryPackのフォーマットは識別子を持たないため、4バイトをそのまま書き込みます。&lt;/p&gt;
-&lt;p&gt;ベンチマークで50倍の差だった、Vector[10000]で考えてみましょう。&lt;/p&gt;
+&lt;p&gt;ベンチマークで50倍の差だった、Vector3[10000]で考えてみましょう。&lt;/p&gt;
 &lt;pre&gt;&lt;code class="language-csharp"&gt;// 以下の型がフィールドにあるとする
 // byte[] buffer
 // int offset
@@ -384,7 +384,7 @@ public void DangerousWriteUnmanagedSpan&amp;lt;T&amp;gt;(scoped Span&amp;lt;T&am
 &lt;/code&gt;&lt;/pre&gt;
 &lt;p&gt;まず、そもそも現代では &lt;code&gt;List&amp;lt;T&amp;gt;&lt;/code&gt; の列挙は &lt;code&gt;CollectionsMarshal.AsSpan(value)&lt;/code&gt; 経由で、&lt;code&gt;Span&amp;lt;T&amp;gt;&lt;/code&gt;を取得して、それを列挙するのが最適です。それによってEnumerator経由というコストすら省くことが可能です。更に、&lt;code&gt;Span&amp;lt;T&amp;gt;&lt;/code&gt;が取得できているなら、&lt;code&gt;List&amp;lt;int&amp;gt;&lt;/code&gt;や&lt;code&gt;List&amp;lt;Vector3&amp;gt;&lt;/code&gt;の場合にコピーのみで処理することもできます。&lt;/p&gt;
 &lt;p&gt;Deserializeの場合にも、興味深い最適化があります。まず、MemoryPackのDeserializeは &lt;code&gt;ref T? value&lt;/code&gt; を受け取るようになっていて、valueがnullの場合は内部で生成したオブジェクトを（普通のシリアライザと同様）、valueが渡されている場合は上書きするようになっています。これによってDeserialize時の新規オブジェクト生成というアロケーションをゼロにすることが可能です。コレクションの場合も、&lt;code&gt;List&amp;lt;T&amp;gt;&lt;/code&gt;の場合は&lt;code&gt;Clear()&lt;/code&gt;を呼び出すことで再利用します。&lt;/p&gt;
-&lt;p&gt;その上で、特殊なSpanの呼び出しをすることにより、 &lt;code&gt;List&amp;lt;T&amp;gt;&amp;gt;.Add&lt;/code&gt; すら避けることに成功しました。&lt;/p&gt;
+&lt;p&gt;その上で、特殊なSpanの呼び出しをすることにより、 &lt;code&gt;List&amp;lt;T&amp;gt;.Add&lt;/code&gt; すら避けることに成功しました。&lt;/p&gt;
 &lt;pre&gt;&lt;code class="language-csharp"&gt;public sealed class ListFormatter&amp;lt;T&amp;gt; : MemoryPackFormatter&amp;lt;List&amp;lt;T?&amp;gt;&amp;gt;
 {
     public override void Deserialize(ref MemoryPackReader reader, scoped ref List&amp;lt;T?&amp;gt;? value)
@@ -476,7 +476,7 @@ public void ReadSpanWithoutReadLengthHeader&amp;lt;T&amp;gt;(int length, scoped 
 &lt;p&gt;そうすればunamanged型の場合はコピーだけで済ませてしまう最適化や、&lt;code&gt;List&amp;lt;T&amp;gt;.Add&lt;/code&gt;(これは都度、配列のサイズチェックが入る)を避けた、&lt;code&gt;Span&amp;lt;T&amp;gt;[index]&lt;/code&gt;経由での値の詰め込みが可能になり、従来のシリアライザのデシリアライズよりも遥かに高いパフォーマンスを実現しました。&lt;/p&gt;
 &lt;p&gt;&lt;code&gt;List&amp;lt;T&amp;gt;&lt;/code&gt;への最適化が代表的ではありますが、他にも紹介しきれないほど、全ての型を精査し、可能な限りの最適化をそれぞれに施してあります。&lt;/p&gt;
 &lt;h2&gt;まとめ&lt;/h2&gt;
-&lt;p&gt;なんで開発しようかと思ったかというと、MessagePack for C#に不満がでてきたから、です。残念ながら .NET「最速」とはいえないような状況があり、その理由としてバイナリ仕様が足を引っ張っているため、改善するのにも限界があることには随分前から気づいていました。また、実装面でもIL生成とRoslynを使った外部ツールとしてのコードジェネレーター(mpc)の、二種のメンテナンスがかなり厳しくなってきているということもありました。外部ツールとしてのコードジェネレーターはトラブルの種で、何かと環境によって動かないということが多発していて、Source Generatorにフル対応できるのなら、もはや廃止したいぐらいにも思っていました。&lt;/p&gt;
+&lt;p&gt;なぜ開発しようかと思ったかというと、MessagePack for C#に不満がでてきたから、です。残念ながら .NET「最速」とはいえないような状況があり、その理由としてバイナリ仕様が足を引っ張っているため、改善するのにも限界があることには随分前から気づいていました。また、実装面でもIL生成とRoslynを使った外部ツールとしてのコードジェネレーター(mpc)の、二種のメンテナンスがかなり厳しくなってきているということもありました。外部ツールとしてのコードジェネレーターはトラブルの種で、何かと環境によって動かないということが多発していて、Source Generatorにフル対応できるのなら、もはや廃止したいぐらいにも思っていました。&lt;/p&gt;
 &lt;p&gt;そこに .NET 7/C# 11 の ref fieldやstatic abstract methodを見た時、これをシリアライザー開発に応用したらパフォーマンスの底上げが可能になる、ついでにSource Generator化すれば、いっそIL生成も廃止してSource Generatorに一本化できるのではないか？それならもう、それをMessagPack for C#に適用する前に、パフォーマンス向上に問題のあるバイナリ仕様の限界も無視した、C#のためだけに究極の性能を実現するシリアライザーを作って、本当の最速を実証してしまえばいいのでは？と。&lt;/p&gt;
 &lt;p&gt;性能特化の実験的シリアライザーではなくて、実用性も重視したシリアライザーであるために、MessagePack for C#での経験も元にして、多くの機能も備えるようにしました。&lt;/p&gt;
 &lt;pre&gt;&lt;code&gt;* .NETのモダンI/O API対応(IBufferWriter&amp;lt;byte&amp;gt;, ReadOnlySpan&amp;lt;byte&amp;gt;, ReadOnlySequence&amp;lt;byte&amp;gt;)
@@ -487,7 +487,7 @@ public void ReadSpanWithoutReadLengthHeader&amp;lt;T&amp;gt;(int length, scoped 
 * TypeScriptコード生成
 * Unity(2021.3)サポート
 &lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;欠点としては、バージョニング耐性が、仕様上やや貧弱です。詳しくは&lt;a href="https://github.com/Cysharp/MemoryPack#version-tolerant"&gt;ドキュメントを参照してください&lt;/a&gt;。パフォーマンスをやや落としてバージョニング耐性を上げるオプションを追加することは検討しています。&lt;/p&gt;
+&lt;p&gt;欠点としては、バージョニング耐性が、仕様上やや貧弱です。詳しくは&lt;a href="https://github.com/Cysharp/MemoryPack#version-tolerant"&gt;ドキュメントを参照してください&lt;/a&gt;。パフォーマンスをやや落としてバージョニング耐性を上げるオプションを追加することは検討しています。また、メモリコピーを多用するので、実行環境が little-endian であることを前提にしています。ただし現代のコンピューターはほぼすべて little-endian であるため、問題にはならないはずです。&lt;/p&gt;
 &lt;p&gt;当初実現していなかった .NET 5/6(Standard 2.1)対応やUnity対応は完了したので、今後は&lt;a href="https://github.com/Cysharp/MasterMemory"&gt;MasterMemory&lt;/a&gt;のSource Generator/MemoryPack対応や、&lt;a href="https://github.com/Cysharp/MagicOnion/"&gt;MagicOnion&lt;/a&gt;のシリアライザ変更対応など、利用できる範囲をより広げることを考えています。Cysharpの C#ライブラリ のエコシステムの中心になると位置づけているので、今後もかなり力入れて成長させていこうと思っていますので、まずは、是非是非試してみてください！&lt;/p&gt;
 &lt;/div&gt;</description>
       <pubDate>Fri, 04 Nov 2022 00:00:00 +0900</pubDate>
