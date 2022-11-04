@@ -123,7 +123,7 @@ C#の配列はintのようなプリミティブ型だけではなく、これは
 
 float(4バイト)はMessagePackにおいて、固定長で5バイトです。追加の1バイトは、その値が何の型(IntなのかFloatなのかStringなのか...)を示す識別子が先頭に入ります。具体的には[0xca, x, x, x, x]といったように。いわばタグ付与エンコーディングを行っているわけです。MemoryPackのフォーマットは識別子を持たないため、4バイトをそのまま書き込みます。
 
-ベンチマークで50倍の差だった、Vector[10000]で考えてみましょう。
+ベンチマークで50倍の差だった、Vector3[10000]で考えてみましょう。
 
 ```csharp
 // 以下の型がフィールドにあるとする
@@ -461,7 +461,7 @@ public void DangerousWriteUnmanagedSpan<T>(scoped Span<T> value)
 
 Deserializeの場合にも、興味深い最適化があります。まず、MemoryPackのDeserializeは `ref T? value` を受け取るようになっていて、valueがnullの場合は内部で生成したオブジェクトを（普通のシリアライザと同様）、valueが渡されている場合は上書きするようになっています。これによってDeserialize時の新規オブジェクト生成というアロケーションをゼロにすることが可能です。コレクションの場合も、`List<T>`の場合は`Clear()`を呼び出すことで再利用します。
 
-その上で、特殊なSpanの呼び出しをすることにより、 `List<T>>.Add` すら避けることに成功しました。
+その上で、特殊なSpanの呼び出しをすることにより、 `List<T>.Add` すら避けることに成功しました。
 
 ```csharp
 public sealed class ListFormatter<T> : MemoryPackFormatter<List<T?>>
@@ -561,7 +561,7 @@ public void ReadSpanWithoutReadLengthHeader<T>(int length, scoped ref Span<T?> v
 
 まとめ
 ---
-なんで開発しようかと思ったかというと、MessagePack for C#に不満がでてきたから、です。残念ながら .NET「最速」とはいえないような状況があり、その理由としてバイナリ仕様が足を引っ張っているため、改善するのにも限界があることには随分前から気づいていました。また、実装面でもIL生成とRoslynを使った外部ツールとしてのコードジェネレーター(mpc)の、二種のメンテナンスがかなり厳しくなってきているということもありました。外部ツールとしてのコードジェネレーターはトラブルの種で、何かと環境によって動かないということが多発していて、Source Generatorにフル対応できるのなら、もはや廃止したいぐらいにも思っていました。
+なぜ開発しようかと思ったかというと、MessagePack for C#に不満がでてきたから、です。残念ながら .NET「最速」とはいえないような状況があり、その理由としてバイナリ仕様が足を引っ張っているため、改善するのにも限界があることには随分前から気づいていました。また、実装面でもIL生成とRoslynを使った外部ツールとしてのコードジェネレーター(mpc)の、二種のメンテナンスがかなり厳しくなってきているということもありました。外部ツールとしてのコードジェネレーターはトラブルの種で、何かと環境によって動かないということが多発していて、Source Generatorにフル対応できるのなら、もはや廃止したいぐらいにも思っていました。
 
 そこに .NET 7/C# 11 の ref fieldやstatic abstract methodを見た時、これをシリアライザー開発に応用したらパフォーマンスの底上げが可能になる、ついでにSource Generator化すれば、いっそIL生成も廃止してSource Generatorに一本化できるのではないか？それならもう、それをMessagPack for C#に適用する前に、パフォーマンス向上に問題のあるバイナリ仕様の限界も無視した、C#のためだけに究極の性能を実現するシリアライザーを作って、本当の最速を実証してしまえばいいのでは？と。
 
@@ -577,6 +577,6 @@ public void ReadSpanWithoutReadLengthHeader<T>(int length, scoped ref Span<T?> v
 * Unity(2021.3)サポート
 ```
 
-欠点としては、バージョニング耐性が、仕様上やや貧弱です。詳しくは[ドキュメントを参照してください](https://github.com/Cysharp/MemoryPack#version-tolerant)。パフォーマンスをやや落としてバージョニング耐性を上げるオプションを追加することは検討しています。
+欠点としては、バージョニング耐性が、仕様上やや貧弱です。詳しくは[ドキュメントを参照してください](https://github.com/Cysharp/MemoryPack#version-tolerant)。パフォーマンスをやや落としてバージョニング耐性を上げるオプションを追加することは検討しています。また、メモリコピーを多用するので、実行環境が little-endian であることを前提にしています。ただし現代のコンピューターはほぼすべて little-endian であるため、問題にはならないはずです。
 
 当初実現していなかった .NET 5/6(Standard 2.1)対応やUnity対応は完了したので、今後は[MasterMemory](https://github.com/Cysharp/MasterMemory)のSource Generator/MemoryPack対応や、[MagicOnion](https://github.com/Cysharp/MagicOnion/)のシリアライザ変更対応など、利用できる範囲をより広げることを考えています。Cysharpの C#ライブラリ のエコシステムの中心になると位置づけているので、今後もかなり力入れて成長させていこうと思っていますので、まずは、是非是非試してみてください！
