@@ -23,7 +23,58 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2009/04/19_152.html">linq.js ver 1.1.0.0 - Linq to Xml for JavaScript</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2009/04/26_153.html">linq.js ver 1.2.0.0 - バグフィックスとEqualityComparer</a></h1>
+<ul class="date"><li>2009-04-26</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://linqjs.codeplex.com/">linq.js - LINQ for JavaScript Library - Home</a></li>
+<li><a href="http://neue.cc/2009/04/04_145.html" title="neue cc - linq.js - JavaScript用LINQライブラリ">紹介と日本語チュートリアル</a></li>
+</ul>
+<h2>バグフィックス</h2>
+<p>JavaScriptのオブジェクトはハッシュ。というから、ああ、はいはい、つまりDictionaryなんですね、と素で何の疑問も持たず、思っていました。キーには別に数字でもオブジェクトでもなんでも、そう、オブジェクトでも入れられると思っていて、平然とそれを大前提にしたコードをlinq.jsにも混ぜ込んでいました。集合演算系のものに。ありえないです。C#脳すぎる。</p>
+<pre><code class="language-javascript">var hashTest = {};
+var obj = { hoge: &quot;fuga&quot; }
+var obj2 = { tako: &quot;ika&quot; }
+hashTest[obj] = &quot;tettette&quot;;
+hashTest[obj2] = &quot;totetotetote&quot;;
+hashTest[&quot;[object Object]&quot;] = &quot;12345&quot;;
+for (var key in hashTest)
+    alert(hashTest[key]);
+</code></pre>
+<p>これは当然のようにアラートで出てくる値は&quot;12345&quot;だけです。JavaScriptのオブジェクトはキーが文字列限定のDictionary(C#脳ですみません)で、キーに文字列以外のものを突っ込んだ場合、自動的に文字列に変換される。だからオブジェクトは文字列に変換され、オブジェクトが文字列化される際は全て&quot;[object Object]&quot;になるから上書きされる、というお話。そんなわけで、今までのlinq.jsでは……</p>
+<pre><code class="language-javascript">var seq = E.Range(1, 10).Select(&quot;{test:$}&quot;); // {test:1},{test:2}...
+var count = seq.Distinct().Count(); // 重複を除いたものの合計、当然10なのに？
+alert(count); // 結果は1です、ごめんなさい
+</code></pre>
+<p>となっていました。これは酷い。ちなみに、何故かFirefoxでは10になります。IEやChromeは1なんですけどね。linq.jsの内部の動きから考えるに、Firefoxのほうが変な挙動なのは確かなのですが良くわかりません。ただ、ブラウザ間で互換の取れてない動きが出てしまう、というのもまた良くない話です。そんなわけで直しました。めでたしめでたし、のようでいて複雑な気分。というのも内部コードの実行効率が酷いことになってしまったからです。下のコードはkeyが含まれているかどうかを調べる関数の一部なのですが</p>
+<pre><code class="language-javascript">if (Linq.HashSet.IsPrimitive(key))
+{
+    return this.PrimitiveContainer.hasOwnProperty(key);
+}
+else
+{
+    for (var i = 0; i &lt; this.ObjectContainer.length; i++)
+    {
+        if (key === this.ObjectContainer[i]) return true;
+    }
+    return false;
+}
+</code></pre>
+<p>最初にPrimitive、つまり数字や文字列であるかを判断し、プリミティブであればhasOwnPropertyでキーがあるかないかを判断。こっちは今まで通り。そしてそのままではキーとして使えないオブジェクトに対しては、線形探索で全部舐めて探してるんですね―。うはー、大量の配列に使った場合の遅さが怖すぎる。ただ、この辺のやり方は<a href="http://www.timdown.co.uk/jshashtable/" title="JavaScript Hashtable">JavaScript Hashtable</a>なんかも同じような内容なので、しょうがないみたいです、素のJavaScriptでは。ハッシュコードを算出するために重たい計算を挟めば、それはそれで本末転倒ですし。</p>
+<h2>EqualityComparer</h2>
+<p>JavaScriptのObjectは参照型、なので全ての値が同一であろうとも、別のオブジェクトであるのなら別だと判断される。しかし、さすがにそれでは実用性に乏しい。</p>
+<pre><code class="language-javascript">// Before
+var a1 = E.Repeat(&quot;dummy&quot;, 10).Select(&quot;{test:$}&quot;).Distinct().Count();  // 10
+// After
+var a2 = E.Repeat(&quot;dummy&quot;, 10).Select(&quot;{test:$}&quot;).Distinct(&quot;$.test&quot;).Count(); // 1
+</code></pre>
+<p>{test:&quot;dummy&quot;}を10個生成し、それを重複除去するとしたら、望む値は当然、1。そういった動作が出来るようにDistinctなどの集合演算系にキー指定が出来るようになりました。そういえばC#の匿名型はクラスなのに重複除去されるのは何でだろう、と思ったらちゃんと<a href="http://msdn.microsoft.com/ja-jp/library/bb397696.aspx" title="匿名型 (C# プログラミング ガイド)">「すべてのプロパティが等しい場合のみ、等しい」</a>ように作られているようです。さすが、ユーザーがどういう動作を望んでいるのか分かってる。</p>
+<p>Contains, Distinct, Except, Intersect, SequenceEqual, UnionにcompareSelectorを追加、という形になります。比較関数にするかキーセレクターにするかで悩んだのですが、比較関数だと使用時の定義が面倒くさいので、実用性を考えて簡易的なもののほうが良いかな、と思いキーセレクターにしました。9割以上は同じものの比較ですよねー、という決めつけです。複数の値で比較したい時は適当に連結する、しかないです。塩でも振りながら文字列にして結合してください。お手軽でそこそこ確実な手を言えば、ToJSONメソッドを使ってJSONに変換するのも手です。</p>
+<pre><code class="language-javascript">var seq = E.Range(1, 10).Select(&quot;{key:$&lt;5,evenodd:$%2==0}&quot;);
+seq.Distinct(&quot;E.Repeat($,1).ToJSON()&quot;).Count(); // 4
+</code></pre>
+<p>true:false,true:true,false:true,false:falseの4通りのどれかが10個なので、重複除去すると合計数は4つ。ところでそうそう、集合演算で線形探索とかフザけるなタコ、と思った場合はこのようにJSON化することで(値参照になりますが)回避できます。何かバッドノウハウみたいで素敵。ただ、そもそもオブジェクトにたいしてキー指定無しの集合演算自体が使う機会なんてほとんどないとは思いますが。</p>
+</div>
+<h1><a href="https://neue.cc/2009/04/19_152.html">linq.js ver 1.1.0.0 - Linq to Xml for JavaScript</a></h1>
 <ul class="date"><li>2009-04-19</li></ul>
 <div class="entry_body"><h2><a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript Library - Home">linq.js - LINQ for JavaScript Library - Home</a></h2>
 <p>linq.xml.jsとしてver 0.0.0.1を同梱しました。更新系はほとんど未実装ですが、抽出系のメソッドで主要なものは動いているので、お試しぐらいには使えると思います。linq.xml.jsなしで書くとしたら、ああ、ここでfor回して、ああ、ここで再帰書いて、もう！ 面倒くさい面倒くさい、と思ってしまうわけなので素の状態と比べたらとっても役立ちです。</p>
@@ -722,49 +773,6 @@ var result = array.Select((value, index) =&gt; new
 <p>できたー。最初のSelect時にバラしているので行数がSkip().First()より増えているのは突っ込みどころだけど、満足。あと、元の配列がきっかり3で割りきれないと、Dictionaryなので存在しないキーにアクセスしました例外が出て死んでしまいます。対策としてはToLookupにして[Key.Name].FirstOrDefault()を使う、というのがすぐに浮かんだけど、スッキリしないのは否めない。ていうかその辺も踏まえてもSkip().FirstOrDefault()のほうが賢いやり方な気がする……。</p>
 <p>で、冒頭の匿名Enum云々は、匿名型を使って実現？してみました。値は、絶対に被らないもの、ということでGUIDを使ってみた。ただ、定義時に全部にGuid.NewGuid()というのがダルい。というか若干ヤケくそ気味なのは否めない。こちらも上手いやり方が思い浮かばず、ってそればっか。そもそもEnumモドキなら、intでいいし、もしくは&quot;商品名&quot;とか文字列を使えば普通に便利なので、GUIDは全く意味ないですね。しょうもな。というわけで、実際に使う場合(あるかなあ？)はGUIDじゃなくて文字列でやります……。</p>
 </div>
-<h1><a href="https://neue.cc/2009/03/07_139.html">回数サンドイッチ</a></h1>
-<ul class="date"><li>2009-03-07</li></ul>
-<div class="entry_body"><pre><code class="language-csharp">class Program
-{
-    static void Main()
-    {
-        // 何でもいい配列
-        var array = Enumerable.Repeat(&quot;a&quot;, 10);
-
-        // foreachで素直っぽくindexを付ける
-        foreach (var item in array.Select((value, index) =&gt; new { value, index }))
-        {
-            Console.WriteLine(&quot;{0}:{1}&quot;, item.index, item.value);
-        }
-
-        // 拡張メソッドにしちゃう
-        foreach (var item in array.WithIndex())
-        {
-            Console.WriteLine(&quot;{0}:{1}&quot;, item.Key, item.Value);
-        }
-
-        // foreachで使う場合は普通に外側にcount用の変数置いた方が……
-        // indexの取れない拡張メソッド(ToLookupとか)へのチェイン時には便利に使えるかも
-        var splittedArray = array.WithIndex().ToLookup(kvp =&gt; kvp.Key &lt; 5, kvp =&gt; kvp.Value);
-    }
-}
-
-public static class ExtMethods
-{
-    public static IEnumerable&lt;KeyValuePair&lt;int, T&gt;&gt; WithIndex&lt;T&gt;(this IEnumerable&lt;T&gt; source)
-    {
-        int index = 0;
-        foreach (var item in source)
-        {
-            yield return new KeyValuePair&lt;int, T&gt;(index++, item);
-        }
-    }
-}
-</code></pre>
-<p>最近は、どこにでもあるゲーム雑感サイト→どこにでもあるプログラミング雑感サイト、に無理矢理シフトしようとして浮ついた無理無理感が漂っていますが、別に特にシフトしたいわけでもなく、せっかくなので3月は集中的に書いてみようかな、と思っただけですが空気的に不評な雰囲気を感じちゃってたりしなかったりは、とりあえず無視黙殺で進めようかと思うこの頃ですがいかがお過ごしでしょうか。</p>
-<p>前々回、前回からまだ続いて、Selectでindexを取る話。<a href="http://blogs.wankuma.com/izmktr/archive/2009/02/17/168255.aspx" title="[C#]何度目の動き">[C#]何度目の動き</a>を見て、便利便利と思ったので簡単に使えるように拡張メソッドに放り込んでみた。KeyValuePairなんて名前じゃなくてIndexValuePairが良いんですが(笑) あるものは、そのまんま使うということで。</p>
-<p>それ自体は別にforeachの外側にカウント用の変数置けばいいぢゃーん、という気がしなくもなくて困ったので、言い訳として、幾つかのメソッドがインデックス取れないから中間に挟む用として便利！と思うことにした。SelectとかWhereとか、大抵のものはFunc&lt;T,int,TResult&gt;も用意されているんだけどね。ToLookupとか、一部のものには無いんだね。</p>
-</div>
 <a href="https://neue.cc/26">Prev |</a>
 <a href="https://neue.cc/28">| Next</a>
 </div>
@@ -788,6 +796,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2022/12/">2022-12</a>
 <li><a href="https://neue.cc/2022/11/">2022-11</a>
 <li><a href="https://neue.cc/2022/07/">2022-07</a>
 <li><a href="https://neue.cc/2022/05/">2022-05</a>

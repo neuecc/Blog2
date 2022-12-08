@@ -23,7 +23,283 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2012/05/29_374.html">配列とGetEnumetorのお話</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2012/06/02_375.html">控えめなViewStateによるハイパフォーマンスASP.NET Web Forms開発</a></h1>
+<ul class="date"><li>2012-06-02</li></ul>
+<div class="entry_body"><p>今どきのウェブ開発はMVCだよねー、な昨今を皆様どうお過ごしでしょうか。そんな中であっても、Web Formsでモバイル向けにハイパフォーマンスサイトを作らなきゃいけない時だってあるんです。さて、そんなWeb Fromsですが、とりあえずの敵はViewStateです。ViewStateをどのように活かし、どのように殺害するか、そこに全てがかかっています。幾つかの典型的なシチュエーションを取り出して、ViewStateを抹消していきましょう。</p>
+<h2>ViewStateMode = &quot;Disabled&quot;</h2>
+<p>下準備として、ViewStateModeをDisabledにします。ViewStateModeは.NET Framework 4から入った新機能で、「ようやく」ViewStateのオン・オフをルート階層から切り替えることが出来るようになりました。それまではEnableViewStateのみで、falseにすると、その階層の下のViewStateが全てオフになってしまうという使いにくいものでした。全部OFFで済ませられるほど世の中は甘くなく、Web Formsでは部分的にONにする必要性があります。ViewStateModeとEnableViewStateの両方が記述されているとEnableViewStateのほうが優先されて害悪となります。というわけで、.NET Framework 4以降ならばViewStateModeのみを使いましょう。</p>
+<pre><code class="language-xml">&lt;%@ Master Language=&quot;C#&quot; AutoEventWireup=&quot;true&quot; CodeBehind=&quot;Site1.master.cs&quot; Inherits=&quot;WebApplication3.Site1&quot; %&gt;
+
+&lt;!DOCTYPE html&gt;
+&lt;html xmlns=&quot;http://www.w3.org/1999/xhtml&quot;&gt;
+&lt;head runat=&quot;server&quot;&gt;
+    &lt;title&gt;ViewState殺害教&lt;/title&gt;
+&lt;/head&gt;
+&lt;body&gt;
+    &lt;asp:ContentPlaceHolder ID=&quot;BodyPlaceHolder&quot; runat=&quot;server&quot; ViewStateMode=&quot;Disabled&quot;&gt;
+    &lt;/asp:ContentPlaceHolder&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+</code></pre>
+<p>まずは、マスターページのContentPlaceHolderに対して、ViewStateModeをDisabledにしましょう。こうすることで全ページが強制的にデフォでViewStateオフが働きます。また、ページ単位でDisabledにしてしまうと、各Pageの this.ViewState[&quot;hogehoge&quot;] も無効になってしまって不便なので(PageのViewStateは便利なinput hiddenみたいなものですし、闇雲にすべてをオフにせず、便利なものは便利に使うのが大事です)、マスターページのContentPlaceHolderに仕込むのが最良だと私は考えています。</p>
+<h2>テキストボックスやドロップダウンリストから値を取り出す</h2>
+<p>そんなわけで、ViewStateを丸ごとオフにした状態からデータを取り出してみませう。</p>
+<pre><code class="language-xml">&lt;%@ Page Title=&quot;&quot; Language=&quot;C#&quot; MasterPageFile=&quot;~/Site1.Master&quot; AutoEventWireup=&quot;true&quot;
+    CodeBehind=&quot;WebForm1.aspx.cs&quot; Inherits=&quot;WebApplication3.WebForm1&quot; %&gt;
+
+&lt;asp:Content ContentPlaceHolderID=&quot;BodyPlaceHolder&quot; runat=&quot;server&quot;&gt;
+    &lt;form runat=&quot;server&quot;&gt;
+        &lt;asp:TextBox runat=&quot;server&quot; ID=&quot;ToaruTextBox&quot; /&gt;
+        &lt;asp:DropDownList runat=&quot;server&quot; ID=&quot;ToaruDropDownList&quot; /&gt;
+        &lt;asp:Button runat=&quot;server&quot; Text=&quot;ただのボタン&quot; OnClick=&quot;Button_Click&quot; /&gt;
+    &lt;/form&gt;
+&lt;/asp:Content&gt;
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/webforms_aiueo.jpg">
+</p>
+<p>こんなどうでもいい画面があるとして、コードビハインド側は</p>
+<pre><code class="language-csharp">public partial class WebForm1 : System.Web.UI.Page
+{
+    protected void Page_Load(object sender, EventArgs e)
+    {
+        if (IsPostBack) return;
+
+        ToaruTextBox.ToolTip = &quot;ほげほげ&quot;;
+        var items = Enumerable.Range(1, 10)
+            .Select(x =&gt; new ListItem
+            {
+                Text = x + &quot;点&quot;,
+                Value = x.ToString(),
+                Selected = x == 5
+            })
+            .ToArray();
+        ToaruDropDownList.Items.AddRange(items);
+    }
+
+    protected void Button_Click(object sender, EventArgs e)
+    {
+        try
+        {
+            Response.Write(&quot;TextBox.Text:&quot; + ToaruTextBox.Text + &quot;&lt;br /&gt;&quot;);
+            Response.Write(&quot;TextBox.ToolTip:&quot; + ToaruTextBox.ToolTip + &quot;&lt;br /&gt;&quot;);
+            Response.Write(&quot;DropDownList:&quot; + ToaruDropDownList.SelectedValue);
+            Response.End();
+        }
+        catch (System.Threading.ThreadAbortException) { }
+    }
+}
+</code></pre>
+<p>こんな感じとします。ところでどーでもいーんですが、DropDownListに値を突っ込むときはLINQでListItemの配列を作って、それをAddRangeで流し込むほうがDataSourceに入れてDataBindするよりも楽です。というのも、DataBindだとSelectedを指定するのが非常に難しいというか不可能に近いようなので。こういう色々と中途半端なとこがWeb Formsは嫌ですね。</p>
+<p>さて、このボタンを押した実行結果は、「TextBox.Text:あいうえお」「TextBox.ToolTip:」「DropDownList:」になります。TextBox.Textは取り出せてるけど、ToolTipは取り出せてない。DropDownListも全滅。つまるところ、ViewStateをオフにしていると、復元できる（イベントで取り出せる）プロパティと、そうでないプロパティがあります。挙動としては、Web Formsが復元出来るものは自動で復元してくれて、復元できないものは復元してくれない、といった感じです。そして、それだと困るわけです。ToolTipはどうでもいいのですが、DropDownListの値とか取れないと困る。ViewStateがオンなら、全部取得できているのに！やっぱりViewStateはオンにしよう！ではなくて、何とかしましょう。</p>
+<p>「復元出来るものは自動で復元してくれる」というけれど、その情報はどこにあるのでしょう。これは、別にWeb Formsだからって特殊なわけでもなんでもなく、Request.Formにあります。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/webforms_formasenum.jpg">
+</p>
+<pre><code class="language-csharp">public static class NameValueCollectionExtensions
+{
+    public static IEnumerable&lt;KeyValuePair&lt;string, string&gt;&gt; AsEnumerable(this NameValueCollection collection)
+    {
+        return collection.Keys.Cast&lt;string&gt;().Select(x =&gt; new KeyValuePair&lt;string, string&gt;(x, collection[x]));
+    }
+}
+</code></pre>
+<p>Button_Clickのところでブレークポイント張って、Request.Formの中身を覗きましょう。AsEnumerableは独自拡張メソッドです。Request.FormはNameValueCollectionというゴミに格納されていて、Keysは見れるけどValuesが見れないというクソ仕様なので、そこはLINQで何とかしましょうというか、これは多用するのでNameValueCollectionへの拡張メソッドとして定義しておくと捗りますというか、ないと死ぬレベル。</p>
+<p>そんなわけで、Formに普通に格納されていることが分かりました。そうそう、ViewStateをオフにしてるはずなのに__VIEWSTATEに値が入ってるぞ！とお怒りかもですが、ほんの少し入ってくるのは仕様なので、そこは我慢しましょう。大した量じゃないので。</p>
+<p>では、どうすれば値を取得できるのか、というと</p>
+<pre><code class="language-csharp">protected void Button_Click(object sender, EventArgs e)
+{
+    try
+    {
+        Response.Write(&quot;TextBox.Text:&quot; + Request.Form[ToaruTextBox.UniqueID] + &quot;&lt;br /&gt;&quot;);
+        Response.Write(&quot;DropDownList:&quot; + Request.Form[ToaruDropDownList.UniqueID]);
+        Response.End();
+    }
+    catch (System.Threading.ThreadAbortException) { }
+}
+</code></pre>
+<p>こうです。コントロールのUniqueIDをFormに渡せば良いわけですね。ToolTipとかいうどうでもいいものは取れないので、そういう、HTMLのinputに存在しないものに関しては、PageのViewStateに保存しておけば良いでしょう。私としては、Web Forms使うならinput hiddenよりもthis.ViewState[&quot;hoge&quot;]を使うべきだと思います。せっかくある道具ならば、嫌々ながらも有効活用したほうが良いでしょう。</p>
+<h2>リピーターとチェックボックス</h2>
+<p>お次は、繰り返しなシチュエーションを考えてみましょう。繰り返しといったらRepeater一択です。それ以外は存在しません。BulletedListすら存在しません。書き出すHTMLを完全にコントロールできるものはRepeater以外存在しません。Web Formsとはなんだったのか。ともかく、Repeaterです。</p>
+<pre><code class="language-xml">&lt;asp:Content ContentPlaceHolderID=&quot;BodyPlaceHolder&quot; runat=&quot;server&quot;&gt;
+    &lt;form runat=&quot;server&quot;&gt;
+        &lt;asp:Repeater runat=&quot;server&quot; ID=&quot;ToaruRepeater&quot;&gt;
+            &lt;ItemTemplate&gt;
+                &lt;input runat=&quot;server&quot; id=&quot;ToaruCheckBox&quot; type=&quot;checkbox&quot; value=&quot;&lt;%# Container.DataItem %&gt;&quot; /&gt;
+                チェック 値:&lt;%# Container.DataItem %&gt;
+                &lt;br /&gt;
+            &lt;/ItemTemplate&gt;
+        &lt;/asp:Repeater&gt;
+        &lt;asp:Button runat=&quot;server&quot; OnClick=&quot;Button_Click&quot; Text=&quot;ぼたん&quot; /&gt;
+    &lt;/form&gt;
+&lt;/asp:Content&gt;
+</code></pre>
+<pre><code class="language-csharp">public partial class WebForm1 : System.Web.UI.Page
+{
+    protected void Page_Load(object sender, EventArgs e)
+    {
+        if (IsPostBack) return;
+
+        ToaruRepeater.DataSource = Enumerable.Range(1, 10);
+        DataBind();
+    }
+
+    protected void Button_Click(object sender, EventArgs e)
+    {
+        try
+        {
+            // CheckされたCheckBoxの値をどう取り出す？
+            Response.End();
+        }
+        catch (System.Threading.ThreadAbortException) { }
+    }
+}
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/webforms_repeater.jpg">
+</p>
+<p>こんな、まあ簡単な画面があるとします。チェックされたCheckBoxの値をどうやって取り出しましょうか？そうそう、ちなみにですがasp:CheckBoxはvalueが指定できないというゴミ仕様なのでやめておきましょう（Web Formsってそんなのばっか、もうやだよ……。ちなみにコード側のInputAttributesで渡すことは一応できます、一応）。</p>
+<p>例によってRequest.Formから取り出すことになるので、まずはデバッガで値を見てやります。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/webforms_check.jpg">
+</p>
+<p>チェックしたチェックボックスの値、ToaruCheckBox,3とToaruCheckBox,8が確認できます。では、どうやって取り出してやろうか。Repeaterの中のコントロールなのでUniqueIDを使うことはできません。ただ、コントロール階層順に$で連結されてる、という法則は見えるわけなので、単純に$でSplitして文字列一致で見てやりましょうか。</p>
+<pre><code class="language-csharp">protected void Button_Click(object sender, EventArgs e)
+{
+    try
+    {
+        var checkedValues = Request.Form.AsEnumerable()
+            .Where(x =&gt; x.Key.Split('$').Last() == &quot;ToaruCheckBox&quot;)
+            .Select(x =&gt; x.Value);
+
+        // Checked:3, Checked:8
+        foreach (var item in checkedValues)
+        {
+            Response.Write(&quot;Checked:&quot; + item + &quot;&lt;br /&gt;&quot;);
+        }
+        Response.End();
+    }
+    catch (System.Threading.ThreadAbortException) { }
+}
+</code></pre>
+<p>はい、これで完璧です！なお、ASP.NETのID生成ルールはそれなりに変更が聞くので、詳しくは<a href="http://www.amazon.co.jp/gp/product/4822294544/ref=as_li_ss_tl?ie=UTF8&tag=ilsgeometrati-22&linkCode=as2&camp=247&creative=7399&creativeASIN=4822294544">プログラミングMicrosoft ASP.NET 4 (マイクロソフト公式解説書)</a><img src="http://www.assoc-amazon.jp/e/ir?t=ilsgeometrati-22&l=as2&o=9&a=4822294544" width="1" height="1" border="0" alt="" style="border:none !important; margin:0px !important;" />でも読めばいいでしょう。</p>
+<h2>ボタンとCommandArgument</h2>
+<p>ボタンはOnClickではなくOnCommandを使うと、CommandArgument(とCommandName)を渡せて便利です。簡単な例としては</p>
+<pre><code class="language-xml">&lt;asp:Content ContentPlaceHolderID=&quot;BodyPlaceHolder&quot; runat=&quot;server&quot;&gt;
+    &lt;form runat=&quot;server&quot;&gt;
+        &lt;asp:Button runat=&quot;server&quot; OnCommand=&quot;Button_Command&quot; CommandArgument=&quot;&lt;%# (int)Fruit.Grape %&gt;&quot; Text=&quot;ぶどう!&quot; /&gt;
+        &lt;asp:Button runat=&quot;server&quot; OnCommand=&quot;Button_Command&quot; CommandArgument=&quot;&lt;%# (int)Fruit.Apple %&gt;&quot; Text=&quot;りんご!&quot; /&gt;
+        &lt;asp:Button runat=&quot;server&quot; OnCommand=&quot;Button_Command&quot; CommandArgument=&quot;&lt;%# (int)Fruit.Orange %&gt;&quot; Text=&quot;みかん!&quot; /&gt;
+    &lt;/form&gt;
+&lt;/asp:Content&gt;
+</code></pre>
+<pre><code class="language-csharp">public partial class WebForm1 : System.Web.UI.Page
+{
+    public enum Fruit
+    {
+        Grape,
+        Apple,
+        Orange
+    }
+    protected void Page_Load(object sender, EventArgs e)
+    {
+        if (IsPostBack) return;
+
+        DataBind();
+    }
+
+    protected void Button_Command(object sender, CommandEventArgs e)
+    {
+        Response.Write(&quot;Clicked:&quot; + (Fruit)int.Parse((string)e.CommandArgument));
+    }
+}
+</code></pre>
+<p>注意しなければならないのは、aspx上でCommandArgumentに渡すと文字列になるので、enumを渡すときはintにキャストしておくことと、イベント側のCommandEventArgsに渡ってくるときは文字列なのでintにParseしなければならないこと、です。クソ面倒くさいですね、もう少し気が利いてもいいと思うんですが、まあWeb Formsなのでしょうがないと思っておきましょう。</p>
+<p>さて、ViewStateがオンならばこれでいいのですが、オフの場合はe.CommandArgumentは常に空文字列になってしまいます。何故か、というと、CommandArgumentはViewStateに乗ってやってくるからです。さて、どうしましょう、というと、解決策は部分的にオンにすることです。</p>
+<pre><code class="language-xml">&lt;asp:Content ContentPlaceHolderID=&quot;BodyPlaceHolder&quot; runat=&quot;server&quot;&gt;
+    &lt;form runat=&quot;server&quot;&gt;
+        &lt;asp:Button runat=&quot;server&quot; ViewStateMode=&quot;Enabled&quot; OnCommand=&quot;Button_Command&quot; CommandArgument=&quot;&lt;%# (int)Fruit.Grape %&gt;&quot; Text=&quot;ぶどう!&quot; /&gt;
+        &lt;asp:Button runat=&quot;server&quot; ViewStateMode=&quot;Enabled&quot; OnCommand=&quot;Button_Command&quot; CommandArgument=&quot;&lt;%# (int)Fruit.Apple %&gt;&quot; Text=&quot;りんご!&quot; /&gt;
+        &lt;asp:Button runat=&quot;server&quot; ViewStateMode=&quot;Enabled&quot; OnCommand=&quot;Button_Command&quot; CommandArgument=&quot;&lt;%# (int)Fruit.Orange %&gt;&quot; Text=&quot;みかん!&quot; /&gt;
+    &lt;/form&gt;
+&lt;/asp:Content&gt;
+</code></pre>
+<p>ButtonのViewStateModeだけを&quot;Enabled&quot;にすることで、最小限のViewStateで最大限の成果を発揮することができます。ViewStateを嫌うならば、そもそもCommandなんて使わない！になるでしょうけれど、そこまでやってしまうと勿体ない。縁あってWeb Formsを使うわけなのですから、「控えめに」「隠し味」として、ViewStateを有効活用していきましょう。</p>
+<h2>リピーターとボタン</h2>
+<p>最後に、リピーターの中にボタンが仕込まれているパターンを見てみましょう。</p>
+<pre><code class="language-xml">&lt;asp:Content ContentPlaceHolderID=&quot;BodyPlaceHolder&quot; runat=&quot;server&quot;&gt;
+    &lt;form runat=&quot;server&quot;&gt;
+        &lt;asp:Repeater runat=&quot;server&quot; ID=&quot;ToaruRepeater&quot; ViewStateMode=&quot;Enabled&quot;&gt;
+            &lt;ItemTemplate&gt;
+                &lt;%# Container.DataItem %&gt;:&lt;asp:Button runat=&quot;server&quot; OnClick=&quot;Button_Click&quot; Text=&quot;ぼたん！&quot; /&gt;&lt;br /&gt;
+            &lt;/ItemTemplate&gt;
+        &lt;/asp:Repeater&gt;
+    &lt;/form&gt;
+&lt;/asp:Content&gt;
+</code></pre>
+<pre><code class="language-csharp">public partial class WebForm1 : System.Web.UI.Page
+{
+    protected void Page_Load(object sender, EventArgs e)
+    {
+        if (IsPostBack) return;
+
+        ToaruRepeater.DataSource = Enumerable.Range(1, 10).Select(x =&gt; new string(Enumerable.Repeat('a', 10000).ToArray()));
+        DataBind();
+    }
+
+    protected void Button_Click(object sender, EventArgs e)
+    {
+        try
+        {
+            Response.Write(&quot;Clicked!&quot;);
+            Response.End();
+        }
+        catch (System.Threading.ThreadAbortException) { }
+    }
+}
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/webforms_aaa.jpg">
+</p>
+<p>a(x100000):ボタン という表示結果が得られます。ボタンをクリックするとClicked!と実行されて欲しいわけですが、ViewStateがオフだとうんともすんとも言いません。何故か、というと、イベントの選択もまたViewStateに乗ってくるからです。解決策はRepeaterのViewStateModeをEnabledにすること、です。</p>
+<p>しかし、単純にRepeaterのViewStateModeをEnabledにしただけだと、それ以下の全てのViewStateがオンになってしまいます。どういうことかというと、ViewStateを見てみると、この場合の結果は「133656文字」もあります！どれだけデカいんだよ！なぜかというとaaaaaa...(x10000) x 10がViewStateに乗っかってしまったからです。ただたんにボタンクリックできればいいだけなのに！じゃあ、どうするか、というと、ViewStateのオンオフを入れ子にしてRepeaterだけをオンにします。</p>
+<pre><code class="language-xml">&lt;asp:Content ContentPlaceHolderID=&quot;BodyPlaceHolder&quot; runat=&quot;server&quot;&gt;
+    &lt;form runat=&quot;server&quot;&gt;
+    &lt;asp:Repeater runat=&quot;server&quot; ID=&quot;ToaruRepeater&quot; ViewStateMode=&quot;Enabled&quot;&gt;
+        &lt;ItemTemplate&gt;
+            &lt;asp:PlaceHolder runat=&quot;server&quot; ViewStateMode=&quot;Disabled&quot;&gt;
+                &lt;%# Container.DataItem %&gt;:&lt;asp:Button runat=&quot;server&quot; OnClick=&quot;Button_Click&quot; Text=&quot;ぼたん！&quot; /&gt;&lt;br /&gt;
+            &lt;/asp:PlaceHolder&gt;
+        &lt;/ItemTemplate&gt;
+    &lt;/asp:Repeater&gt;
+    &lt;/form&gt;
+&lt;/asp:Content&gt;
+</code></pre>
+<p>これで解決。クソ面倒くさくて回りっくどくてイライラしますが、&quot;そういうもの&quot;だと思うしかないです。</p>
+<h2>Web Formsの良さをスポイルしてまでWeb Forms使いたい？</h2>
+<p>使いたくないです。それでもやらなきゃいけない時はあるんですDataSet死ね。</p>
+<h2>(ところで関係なく)async event</h2>
+<p><a href="http://www.microsoft.com/visualstudio/11/ja-jp">Visual Studio 2012 RC</a>出ました！<a href="http://neue.cc/2012/03/18_368.html">neue cc - Visual Studio 11の非同期(”C#, ASP.NET, Web Forms, MVC”)</a>で非同期系について特集しましたが、Web FormsではRegisterAsyncTask(new PageAsyncTask)しなきゃならなくて面倒くさい死ねという感じでしたが、ようやくイベントにasyncをつけるだけでよくなりました！</p>
+<pre><code class="language-csharp">protected async void Button_Click(object sender, EventArgs e)
+{
+    await Task.Delay(TimeSpan.FromSeconds(3));
+    try
+    {
+        Response.Write(&quot;hoge&quot;);
+        Response.End();
+    }
+    catch (System.Threading.ThreadAbortException) { }
+}
+</code></pre>
+<p>正式リリース前に対応してくれて本当に良かった。これでWeb Formsでももう少し戦える……、戦いたくないけど。</p>
+<h2>まとめ</h2>
+<p>世の中には<a href="http://en.wikipedia.org/wiki/Unobtrusive_JavaScript">Unobtrusive JavaScript</a>という言葉がありますが、そのように、私としてもUnobtrusive ViewStateを唱えたい。控えめに。とにかく控えめに。ほとんどないも同然なぐらいに。隠し味として使うのが、一番良いわけです。今までのWeb Formsはデフォルトオンで化学調味料をドバドバと投げ込んでいました。そんなものは食えたものじゃあありません。化学調味料を使うなら、超絶控えめに、ほんの少しでいいんです。そうすれば、革命的に美味しくなるのですから。それが正しい化学調味料の使い方。</p>
+<p>そして、理想を言えば化学調味料はゼロがいいんですけれどね。ゼロにしたければWeb Formsはやめましょう。それ以外の答えはない。Web Formsを使う以上は正しく向き合うことが大事。</p>
+<p>ViewStateをドバドバ使うことがWeb Formsの良さだというのも半分は事実ですが、半分はNOですね。ていうか馬鹿でしょ。そういう発想に未来はないし脳みそイカれてると思いますよ。DataSetを褒め称えていた狂った時代の発想なので、腐った部位はとっとと切り落としましょう。</p>
+<p>さて、そうして控えめにしたWeb Formsですけれど、これはこれでそれなりに良いとは思います。最小限にしたとしても、依然としてパーツ配置してOnClickでほいほい、という楽ちんさは健在ですし、カスタムコントロールによるモジュール化というのは悪くない。絶賛はしませんが、悪くないとは思います、そこまで悪しざまにいうものでもない。でも、まあ、もはや時代じゃあないでしょうね。もう、さようなら。</p>
+<p>と、まあ割とキツめにWeb Forms(やDataSet)にあたるのは日々苦しめられているからなので、罵詈雑言多いのは勘弁してね！別に現状がダメでも未来に良くなるとかならいいんですが、明らかに未来がないので、なんというかもうねえ、という。Web Formsも、これはこれで面白い仕組みだし、まっとうに進む道もあったとは思うんですが、舵取りにしくったと思います。結果的にこの閉塞感漂う現状と、明らかにリソース割かれてない感があるので、未来はないですね、残念ながら。しかし、最後の徒花としてやれるだけはやるのさぁ。</p>
+</div>
+<h1><a href="https://neue.cc/2012/05/29_374.html">配列とGetEnumetorのお話</a></h1>
 <ul class="date"><li>2012-05-29</li></ul>
 <div class="entry_body"><p>LINQ書いていますか？<a href="http://rikunabi-next.yahoo.co.jp/tech/docs/ct_s03600.jsp?p=002219">LINQでデータベース活用</a>とか見出しにありますが、データベース活用といいつつ、その内実は100% LINQ to Objectsです。じゃあデータベースに何で問い合わせやってるの？というと（禁則事項です）。さて、そんなわけで毎日LINQ書いているわけですが、それとは全く関係なく、配列が結構困ったちゃん。例えば以下のような、配列を包んだコレクションを提供したいとします。</p>
 <pre><code class="language-csharp">public class WrappedCollection&lt;T&gt;
@@ -986,206 +1262,6 @@ SubSonic ActiveRecord.SingleOrDefault took 3736ms</p>
 <p>来年は、MVP絡みで米MS本社でのMVP Global Summitもあり、新しい会社で働く（初めての転職です）ことにもなるしで、私としてもかなり転機な年になるのではという予感がしています。不安もありますが、同時に楽しみでもあります。<a href="http://neue.cc/2010/12/31_294.html">2010年を振り返る</a>で、来年には更なる成長のために動き出したい、などと言っていましたが、一応はしっかりとスタートを踏み出せたようです。</p>
 <p>そんな感じですが、来年もよろしくお願いします。</p>
 </div>
-<h1><a href="https://neue.cc/2011/12/21_360.html">RxとパフォーマンスとユニットテストとMoles再び</a></h1>
-<ul class="date"><li>2011-12-21</li></ul>
-<div class="entry_body"><p><a href="http://atnd.org/events/21988">C# Advent Calendar 2011</a>、順調に進んでいますね。どのエントリも力作で大変素晴らしいです。私はこないだ<a href="http://neue.cc/2011/12/16_359.html">Modern C# Programming Style Guide</a>というものを書きました。はてブ数は現段階で45、うーん、あまり振るわない……。私の力不足はともかくとしても、他の言語だったらもっと伸びてるだろうに、と思うと、日本のC#の現状はそんなものかなあ、はぁ、という感じではあります。はてブが全てではない（むしろ斜陽？）とはいえ、Twitterでの言及数などを見ても、やっぱまだまだまだまだまだまだ厳しいかなあ、といったところ。Unityなどもあって、見ている限りだと人口自体は着実に増えている感じではありますけれど、もっともっと、関心持ってくれる人が増えるといいな。私も微力ながら尽力したいところです。</p>
-<p>ところで、<a href="http://d.hatena.ne.jp/ZOETROPE/">id:ZOETROPE</a>さんのAdvent Calendarの記事、<a href="http://d.hatena.ne.jp/ZOETROPE/20111220#1324392149">Reactive Extensionsでセンサプログラミング</a>が大変素晴らしい！センサー、というと私だとWindows Phone 7から引っ張ってくるぐらいしか浮かばないのですが（最近だとKinectもHotですか、私は全然触れてませんが……）おお、USB接続のレンジセンサ！完全に門外漢な私としては、そういうのもあるのか！といったぐらいなわけですが、こうしてコード見させていただくと、実践的に使うRxといった感じでとてもいいです。</p>
-<p>記事中で扱われているトピックも幅広いわけですが、まず、パフォーマンスに関しては少し補足を。@okazukiさんの<a href="http://d.hatena.ne.jp/okazuki/20111214/1323828027">見せてもらおうじゃないかReactive Extensionsの性能とやらを！ その２</a>のコメント欄でもちょっと言及したのですが、この測り方の場合、Observable.Rangeに引っ張られているので、ベンチマークの値はちょっと不正確かな、と思います。</p>
-<pre><code class="language-csharp">// 1000回イベントが発火(発火の度に長さ3000のbyte配列が得られる)を模写
-static IObservable&lt;byte[]&gt; DummyEventsRaised()
-{
-    return Observable.Repeat(new byte[3000], 1000, Scheduler.Immediate);
-}
-
-// 配列をバラす処理にObservable.Rangeを用いた場合
-static IObservable&lt;byte&gt; TestObservableRange()
-{
-    return Observable.Create&lt;byte&gt;(observer =&gt;
-    {
-        return DummyEventsRaised()
-            .Subscribe(xs =&gt;
-            {
-                Observable.Range(0, xs.Length, Scheduler.Immediate).ForEach(x =&gt; observer.OnNext(xs[x]));
-            });
-    });
-}
-
-// 配列をバラす処理にEnumerable.Rangeを用いた場合(ForEachはIxのもの)
-static IObservable&lt;byte&gt; TestEnumerableRange()
-{
-    return Observable.Create&lt;byte&gt;(observer =&gt;
-    {
-        return DummyEventsRaised()
-            .Subscribe(xs =&gt;
-            {
-                Enumerable.Range(0, xs.Length).ForEach(x =&gt; observer.OnNext(xs[x]));
-            });
-    });
-}
-
-// SelectManyでバラす場合
-static IObservable&lt;byte&gt; TestSelectMany()
-{
-    return DummyEventsRaised().SelectMany(xs =&gt; xs);
-}
-
-static void Main(string[] args)
-{
-    // ベンチマーク補助関数
-    Action&lt;Action, string&gt; bench = (action, label) =&gt;
-    {
-        var sw = Stopwatch.StartNew();
-        action();
-        Console.WriteLine(&quot;{0,-12}{1}&quot;, label, sw.Elapsed);
-    };
-
-    // 配列をばらすケースは再度連結する(ToList)
-    bench(() =&gt; TestObservableRange().ToList().Subscribe(), &quot;Ob.Range&quot;);
-    bench(() =&gt; TestEnumerableRange().ToList().Subscribe(), &quot;En.Range&quot;);
-    bench(() =&gt; TestSelectMany().ToList().Subscribe(), &quot;SelectMany&quot;);
-    // 配列をばらして連結せず直接処理する場合
-    bench(() =&gt; TestSelectMany().Subscribe(), &quot;DirectRx&quot;);
-    // byte[]をばらさず直接処理する場合
-    bench(() =&gt; DummyEventsRaised().Subscribe(xs =&gt; { foreach (var x in xs);}), &quot;DirectLoop&quot;);
-
-    // 実行結果
-    // Ob.Range    00:00:02.2619670
-    // En.Range    00:00:00.2600460
-    // SelectMany  00:00:00.2701137
-    // DirectRx    00:00:00.0852836
-    // DirectLoop  00:00:00.0152816
-}
-</code></pre>
-<p>得られる配列をダイレクトに処理するとして、Observable.Rangeで配列のループを回すと論外なほど遅い。のですが、しかし、この場合ですとEnumerable.Rangeで十分なわけで、そうすれば速度は全然変わってきます（もっと言えば、ここではEnumerable.Rangeではなくforeachを使えば更に若干速くなります）。更に、これは配列を平坦化している処理とみなすことができるので、observerを直に触らず、SelectManyを使うこともできますね。そうすれば速度はほとんど変わらず、コードはよりすっきり仕上がります。</p>
-<p>と、いうわけで、遅さの原因はObservable.Rangeです。Rangeが遅いということはRepeatやGenerateなども同様に遅いです。遅い理由は、値の一つ一つをISchedulerを通して流しているから。スケジューラ経由であることは大きな柔軟性をもたらしていますが、直にforeachするよりもずっとずっと遅くなる。なので、Enumerableで処理出来る局面ならば、Enumerableを使わなければなりません。これは、使うほうがいい、とかではなくて、圧倒的な速度差となるので、絶対に、Enumerableのほうを使いましょう。</p>
-<p>また、一旦配列をバラして、再度連結というのは、無駄極まりなく、大きな速度差にも現れてきます。もし再度連結しないでそのまま利用(ベンチ結果：DirectRx)すれば直接ループを回す(ベンチ結果：DirectLoop)よりも5倍程度の遅さで済んでいます。このぐらいなら許容範囲と言えないでしょうか？とはいえ、それでも、遅さには違いないわけで、避けれるのならば避けたほうがよいでしょう。</p>
-<p>ZOETROPEさんの記事にあるように、ここはばらさないほうが良い、というのが結論かなあ、と思います。正しくは上流ではばらさない。一旦バラしたものは復元不可能です。LINQで、パイプラインで処理を接続することが可能という性質を活かすのならば、なるべく後続で自由の効く形で流してあげたほうがいい。アプリケーション側でバラす必要があるなら、それこそSelectMany一発でばらせるのだから。</p>
-<p>例えばWebRequestで配列状態のXMLを取ってくるとします。要素は20個あるとしましょう。最初の文字列状態だけを送られてもあまり意味はないので、XElement.Parseして、実際のクラスへのマッピングまではやります。例えばここではPersonにマッピングするとして、長さ1のIObservable&lt;Person[]&gt;です。しかし、それをSelectManyして長さ20のIObservable&lt;Person&gt;にはしないほうがいい。ここでバラしてしまうと長さという情報は消滅してしまうし、一回のリクエスト単位ではなくなるのも不都合が生じやすい。もしアプリケーション的にフラットになっていたほうが都合が良いのなら、それはまたそれで別のメソッドとして切り分けましょう。</p>
-<h2>成功と失敗の一本化</h2>
-<p>ZOETROPEさんの記事の素晴らしいのは、通常のルート(DataReceived)と失敗のルート(ErrorReceived)を混ぜあわせているところ！これもまたイベントの合成の一つの形なわけなんですねー。こういう事例はWebClientのDownloadStringAsyncのような、EAP(Eventbased Asynchronous Programming)をTaskCompletionSourceでラップしてTaskに変換する <a href="http://msdn.microsoft.com/ja-jp/library/ee622454.aspx">方法: タスクに EAP パターンをラップする</a>←なんかゴチャゴチャしていますが、TrySetCanceled, TrySetException, TrySetResultで結果を包んでいます、というのと似た話だと見なせます。</p>
-<p>WebClientではEventArgsがCancelledやErrorといったステータスを持っているのでずっと単純ですが、SerialPortではエラーは別のイベントでやってくるのですね。というわけで、私もラップしてみました。</p>
-<pre><code class="language-csharp">public static class SerialPortExtensions
-{
-    // 面倒くさいけれど単純なFromEventでのイベントのRx化
-    public static IObservable&lt;SerialDataReceivedEventArgs&gt; DataReceivedAsObservable(this SerialPort serialPort)
-    {
-        return Observable.FromEvent&lt;SerialDataReceivedEventHandler, SerialDataReceivedEventArgs&gt;(
-            h =&gt; (sender, e) =&gt; h(e), h =&gt; serialPort.DataReceived += h, h =&gt; serialPort.DataReceived -= h);
-    }
-
-    public static IObservable&lt;SerialErrorReceivedEventArgs&gt; ErrorReceivedAsObservable(this SerialPort serialPort)
-    {
-        return Observable.FromEvent&lt;SerialErrorReceivedEventHandler, SerialErrorReceivedEventArgs&gt;(
-            h =&gt; (sender, e) =&gt; h(e), h =&gt; serialPort.ErrorReceived += h, h =&gt; serialPort.ErrorReceived -= h);
-    }
-
-    // DataReceived(プラスbyte[]化)とErrorReceivedを合成する
-    public static IObservable&lt;byte[]&gt; ObserveReceiveBytes(this SerialPort serialPort)
-    {
-        var received = serialPort.DataReceivedAsObservable()
-            .TakeWhile(e =&gt; e.EventType != SerialData.Eof) // これでOnCompletedを出す
-            .Select(e =&gt;
-            {
-                var buf = new byte[serialPort.BytesToRead];
-                serialPort.Read(buf, 0, buf.Length);
-                return buf;
-            });
-
-        var error = serialPort.ErrorReceivedAsObservable()
-            .Take(1) // 届いたらすぐに例外だすので長さ1として扱う（どうせthrowするなら関係ないけど一応）
-            .Do(x =&gt; { throw new Exception(x.EventType.ToString()); });
-
-        return received.TakeUntil(error); // receivedが完了した時に同時にerrorをデタッチする必要があるのでMergeではダメ
-    }
-}
-</code></pre>
-<p>成功例と失敗例を合成して一本のストリーム化。また、DataReceivedはそのままじゃデータすっからかんなので、Selectでbyte[]に変換してあげています。これで、ObserveReceiveBytes拡張メソッドを呼び出すだけで、かなり扱いやすい形になっている、と言えるでしょう。パフォーマンスも、これなら全く問題ありません。</p>
-<h2>MolesとRx</h2>
-<p>と、ドヤ顔しながら書いていたのですが、とーぜんセンサーの実物なんて持ってませんので動作確認しようにもできないし。ま、まあ、そういう時はモックとか用意して、ってSerialDataReceivedEventArgsはパブリックなコンストラクタないし、ああもうどうすればー。と、そこで出てくるのが<a href="http://research.microsoft.com/en-us/projects/moles/">Moles - Isolation framework</a>。以前に<a href="http://neue.cc/2011/03/10_309.html">Rx + MolesによるC#での次世代非同期モックテスト考察</a>という記事で紹介したのですが、めちゃくちゃ強力なモックライブラリです。パブリックなコンストラクタがないとか関係なくダミーのインスタンスを生成可能だし、センサーのイベントだから作り出せないし、なんてこともなく自由にダミーのイベントを発行しまくれます。</p>
-<pre><code class="language-csharp">[TestClass]
-public class SerialPortExtensionsTest : ReactiveTest
-{
-    [TestMethod, HostType(&quot;Moles&quot;)]
-    public void ObserveReceiveBytesOnCompleted()
-    {
-        // EventArgsを捏造！
-        var chars = new MSerialDataReceivedEventArgs() { EventTypeGet = () =&gt; SerialData.Chars };
-        var eof = new MSerialDataReceivedEventArgs() { EventTypeGet = () =&gt; SerialData.Eof };
-        // SerialPort::BytesToRead/SerialPort::Readで何もしない
-        MSerialPort.AllInstances.BytesToReadGet = (self) =&gt; 0;
-        MSerialPort.AllInstances.ReadByteArrayInt32Int32 = (self, buffer, offset, count) =&gt; 0;
-
-        var scheduler = new TestScheduler();
-
-        // 時間10, 20, 30, 40でSerialData.Charsのイベントを、時間50でEofのイベントを発行
-        MSerialPortExtensions.DataReceivedAsObservableSerialPort = _ =&gt; scheduler.CreateHotObservable(
-                OnNext(10, chars),
-                OnNext(20, chars),
-                OnNext(30, chars),
-                OnNext(40, chars),
-                OnNext(50, eof))
-            .Select(x =&gt; (SerialDataReceivedEventArgs)x);
-
-        // 走らせる(戻り値のbyte[]はどうでもいいので無視するためUnitに変換)
-        var result = scheduler.Start(() =&gt; new SerialPort().ObserveReceiveBytes().Select(_ =&gt; Unit.Default), 0, 0, 100);
-
-        result.Messages.Is(
-            OnNext(10, Unit.Default),
-            OnNext(20, Unit.Default),
-            OnNext(30, Unit.Default),
-            OnNext(40, Unit.Default),
-            OnCompleted&lt;Unit&gt;(50));
-    }
-
-    [TestMethod, HostType(&quot;Moles&quot;)]
-    public void ObserveReceiveBytesOnError()
-    {
-        // EventArgsを捏造！
-        var chars = new MSerialDataReceivedEventArgs() { EventTypeGet = () =&gt; SerialData.Chars };
-        var eof = new MSerialDataReceivedEventArgs() { EventTypeGet = () =&gt; SerialData.Eof };
-        // SerialPort::BytesToRead/SerialPort::Readで何もしない
-        MSerialPort.AllInstances.BytesToReadGet = (self) =&gt; 0;
-        MSerialPort.AllInstances.ReadByteArrayInt32Int32 = (self, buffer, offset, count) =&gt; 0;
-
-        var scheduler = new TestScheduler();
-
-        // 時間10, 20, 30, 40でSerialData.Charsのイベントを、時間50でEofのイベントを発行
-        MSerialPortExtensions.DataReceivedAsObservableSerialPort = _ =&gt; scheduler.CreateHotObservable(
-                OnNext(10, chars),
-                OnNext(20, chars),
-                OnNext(30, chars),
-                OnNext(40, chars),
-                OnNext(50, eof))
-            .Select(x =&gt; (SerialDataReceivedEventArgs)x);
-
-        /* ↑までOnCompletedのものと共通 */
-
-        // 時間35でErrorのイベントを発行
-        MSerialPortExtensions.ErrorReceivedAsObservableSerialPort = _ =&gt; scheduler.CreateHotObservable(
-            OnNext&lt;SerialErrorReceivedEventArgs&gt;(35, new MSerialErrorReceivedEventArgs()));
-
-        // 走らせる(戻り値のbyte[]はどうでもいいので無視するためUnitに変換)
-        var result = scheduler.Start(() =&gt; new SerialPort().ObserveReceiveBytes().Select(_ =&gt; Unit.Default), 0, 0, 100);
-
-        // Exceptionの等値比較ができないので、バラしてAssertする
-        result.Messages.Count.Is(4);
-
-        result.Messages[0].Is(OnNext(10, Unit.Default));
-        result.Messages[1].Is(OnNext(20, Unit.Default));
-        result.Messages[2].Is(OnNext(30, Unit.Default));
-
-        result.Messages[3].Value.Kind.Is(NotificationKind.OnError);
-        result.Messages[3].Time.Is(35);
-    }
-}
-</code></pre>
-<p>アサーションに使っているIsメソッドは、いつも通り<a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>です。</p>
-<p>Molesがいくら強力だとは言っても、イベントをそのまま乗っ取るのはデリゲートの差し替えなどで、割と面倒だったりします。しかし、FromEventでラップしただけのIObservable&lt;T&gt;を用意しておくと…… それを差し替えるだけで済むので超簡単になります。イベント発行については、TestScheduler(Rx-Testingを参照しておく)で、仮想時間で発行する値を作ってしまうと楽です。こういう、任意の時間で任意の値、というダミーの用意もFromEventでラップしただけのIObservable&lt;T&gt;があると、非常に簡単になります。</p>
-<p>あとは、scheduler.Startで走らせると(3つの引数はそれぞれcreated, subscribed, disposedの仮想時間、何も指定しないと…… 実は0始まり「ではない」ことに注意。100,200,1000がデフォなので、0はすっ飛ばされています)、その戻り値で結果を受け取って、Messagesに記録されているので、それにたいしてアサートメソッドをしかける。</p>
-<p>実に簡単ですね！Molesの力とRxの力が組み合わさると、イベントのテストが恐ろしく簡単になります。素敵じゃないでしょうか？</p>
-<h2>まとめ</h2>
-<p>テストなしで書いてたコードは、Molesでテスト走らせたら間違ってました。TakeWhileの条件が==だったのと、Mergeで結合していたり……。はっはっは、ちゃんとユニットテストは書かないとダメですね！そして、Molesのお陰でちゃんと動作するコードが書けたので恥を欠かなくてすみました、やったね。</p>
-</div>
 <a href="https://neue.cc/12">Prev |</a>
 <a href="https://neue.cc/14">| Next</a>
 </div>
@@ -1209,6 +1285,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2022/12/">2022-12</a>
 <li><a href="https://neue.cc/2022/11/">2022-11</a>
 <li><a href="https://neue.cc/2022/07/">2022-07</a>
 <li><a href="https://neue.cc/2022/05/">2022-05</a>
