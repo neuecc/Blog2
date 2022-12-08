@@ -2,7 +2,7 @@
 
 と題して、.NET Conf 2022 Recap Event Tokyo というイベントで話してきました。
 
-<iframe class="speakerdeck-iframe" frameborder="0" src="https://speakerdeck.com/player/7b71dc84ae4a4241aa241340fa890f65" title="C#11 による世界最速バイナリシリアライザー「MemoryPack」の作り方" allowfullscreen="true" mozallowfullscreen="true" webkitallowfullscreen="true" style="border: 0px; background: padding-box padding-box rgba(0, 0, 0, 0.1); margin: 0px; padding: 0px; border-radius: 6px; box-shadow: rgba(0, 0, 0, 0.2) 0px 5px 40px; width: 560px; height: 314px;" data-ratio="1.78343949044586"></iframe>
+<iframe class="speakerdeck-iframe" frameborder="0" src="https://speakerdeck.com/player/7b71dc84ae4a4241aa241340fa890f65" title="C#11 による世界最速バイナリシリアライザー「MemoryPack」の作り方" allowfullscreen="true" mozallowfullscreen="true" webkitallowfullscreen="true" style="border: 0px; background: padding-box padding-box rgba(0, 0, 0, 0.1); margin: 0px; padding: 0px; border-radius: 6px; box-shadow: rgba(0, 0, 0, 0.2) 0px 5px 40px; width: 840px; height: 471px;" data-ratio="1.78343949044586"></iframe>
 
 今回は久々の（数年ぶりの！）オフライン登壇イベントということで、なんだか新鮮な気分で、そして実際、オンライン登壇よりも目の前にオーディエンスがいたほうがいいなぁという思いを新たに。事前レコーディングやオンライン登壇だと、どうしてもライブ感のない、冷めた感じになっちゃうな、と。セッション単体の完成度で言ったら何度も取り直して完璧に仕上げた事前録画のほうがいい、かもしれませんが、でもそういうもんじゃあないかなあ、と。スタジオアルバムとライブアルバムみたいなもんですね。そしてスタジオアルバムに相当するのは念入りに書かれたブログ記事とかだったりするので、事前録画のセッションって、なんか中途半端に感じてしまったりはしますね。スタジオライブみたいな。あれってなんかいまいちじゃないですか、そういうことで。
 
