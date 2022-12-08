@@ -13,3 +13,7 @@ Formatterという名前付けについて
 特に誰にも聞かれていないのですが説明しておきたいのが `MemoryPackFormatter` という名前を。Formatterって正直馴染みがないし(`BinaryFormatter`かよ？)、 `IMemoryPackSerializer` にしようかな、と当初は考えていたのですが最終的には(MessagePack for C#と同じの)Formatterに落ち着きました。理由は、エントリーポイントである `MemoryPackSerializer` と紛らわしいんですよね。 `MemoryPackFormatter`は自作でもしない限りは表に出て来ないし、上級向けのオプションなので、すっきりと名前で区別がついたほうが良いかな、という感じでつけてます。System.Text.Jsonの場合は `JsonSerializer` と `JsonConverter`という分類で、同じような感じです。
 
 候補になる名前としては`Serializer`か`Formatter`か`Converter`か`Encoder`か`Codec`という感じでしょうか。単純で当たり前のチョイスのようでいて、ユーザーがなるべく悩まず直感的に理解できるように、しっかり考えて悩みながらつけてるんですよということで。それで出来上がった名前が、単純で当たり前のように思ってもらえれば正解なわけです。
+
+イベント2
+---
+久々のオンフライン登壇！だったのですが、こういうのは始まると続くもので、今月は12/14に [bitFlyer.C#/Azure 01](https://bitflyer.connpass.com/event/266685/)というイベントに、Azureじゃないほうの枠として登壇する予定です。「AlterNatsにみる .NET 7世代のハイパフォーマンスSocketプログラミング技法」という内容ですが[AlterNats](https://github.com/Cysharp/AlterNats)というよりかは、最新のC#でハイパフォーマンスなSocketプログラミングをどうすればいいか、ということに重点を置いた内容になってますので、C#の最適化に興味ある方は是非是非来てください。まだ席空いてますので……！
