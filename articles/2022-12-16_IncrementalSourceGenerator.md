@@ -284,7 +284,7 @@ Incremental Generatorの強みは複数のProviderを繋げてパイプライン
 
 ではあるんですが、細かい処理をしたい場合にはいくつか必要になりますので、Provider見ていきましょう。
 
-### AdditionalTextsProvider
+* AdditionalTextsProvider
 
 AdditionalTextsProviderは、AdditionalFilesを読み取るのに使います。[BannedApiAnalyzers](https://github.com/dotnet/roslyn-analyzers/blob/main/src/Microsoft.CodeAnalysis.BannedApiAnalyzers/BannedApiAnalyzers.Help.md)などでも活用されていますが、例えばコンフィグを渡したいケースなどに有用です。
 
@@ -335,7 +335,7 @@ context.RegisterSourceOutput(source, static (context, source) =>
 
 というわけで、こんな感じで次のProvider行きましょう。
 
-### AnalyzerConfigOptionsProvider
+* AnalyzerConfigOptionsProvider
 
 GlobalOptionsと、AdditionalTextやSyntaxTreeに紐付けられたオプションを引っ張るGetOptionsがあります。例えばMemoryPackではcsprojのオプションから取り出すために使いました。
 
@@ -367,11 +367,11 @@ var outputDirProvider = context.AnalyzerConfigOptionsProvider
 
 csproj側があんま書きやすい感じじゃないので、AdditionalFilesでjsonを渡すのとどちらがいいのか、みたいなのは考えどころですね。こちらだとcsproj内のマクロが使える（出力パスとか）のはいいところかもしれません。
 
-### CompilationProvider
+* CompilationProvider
 
 Compilationが拾える最重要Provider、のはずが `ForAttributeWithMetadataName` がくっつけてくれるので用無し。
 
-### MetadataReferencesProvider
+* MetadataReferencesProvider
 
 読み込んでるDLLの情報が拾えます。
 
@@ -379,7 +379,7 @@ Compilationが拾える最重要Provider、のはずが `ForAttributeWithMetadat
 
 そんな使わないかも。
 
-### ParseOptionsProvider
+* ParseOptionsProvider
 
 csprojを解析した情報が取れます。例えば言語バージョンやプリプロセッサシンボルから、.NETのバージョンを取り出したりできます。
 
@@ -395,19 +395,19 @@ var parseOptions = context.ParseOptionsProvider.Select((parseOptions, token) =>
 
 つまり、言語バージョンや.NETのバージョン別の出し分けに使える、ということですね。細かくやると面倒くさいのであんまギチギチにやらないほうがいいとは思いますが、どうしてもそういう処理が必要なシチュエーションでは使えます。というか実際MemoryPackではこれで出し分けしています。scoped ref(C# 11)やfile scoped namespace(C# 10)、static abstract method(.NET 7)という切り分けですねー。
 
-### SyntaxProvider
+* SyntaxProvider
 
 `ForAttributeWithMetadataName` を叩くためのやつ。
 
-### RegisterPostInitializationOutput
+* RegisterPostInitializationOutput
 
 ここからはRegisterシリーズですが、PostInitializeationOutputは、Source Generatorのためのマーカーとしてしか使わない属性をinternal classとして解析走らせる前に出力しておきたい、というやつですね。[UnitGenerator](https://github.com/Cysharp/UnitGenerator/)では `UnitOfAttribute` をそういった形で吐き出しています（なので結果としてUnitGeneratorを使ったプロジェクトはUnitGeneratorへの依存DLLはなし、ということになる）。一方でMemoryPackで使ってる属性 `MemoryPackableAttribute` は、`MemoryPack.Core.dll`に含めているので、RegisterPostInitializationOutputは使っていません。どうせReader/Writerとかの他の依存が必要になるので、属性だけ依存なしにしてもしょーがないですからね。
 
-### RegisterSourceOutput
+* RegisterSourceOutput
 
 Providerを繋げて、実際にSource Generateさせるやつ。大事というか必須。
 
-### RegisterImplementationSourceOutput
+* RegisterImplementationSourceOutput
 
 ドキュメントが一切ない上に、なんか想定通りの動きをしていないような私の想定が悪いのか、まぁよくわからないけどよくわからないのでよくわからないです。ドキュメントも無なので、とりあえず無視しておきましょう。
 
