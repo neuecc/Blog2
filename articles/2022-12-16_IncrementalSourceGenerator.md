@@ -270,7 +270,7 @@ Source Generator側でデバッグ実行です。いったんの出力の確認�
 
 ![image](https://user-images.githubusercontent.com/46207/208027544-81eb7279-aef7-48ff-8241-fa6fa2b4efa3.png)
 
-以上、基本的な流れでした！
+以上、基本的な流れでした！C# 11のRaw String Literalsのお陰で別途テンプレートエンジンを用いなくても、テンプレート的な処理をC#のコード中に埋め込めるようになったのが、かなり楽になりました。（ただしif や for が埋め込めるわけではないので、複雑なものを書く場合はそれなりの工夫は必要）。
 
 Source Generatorの良いところはAnalyzerも兼ねているところで、今回はToStringが既に定義されている場合はエラーにするという処理を入れているのですが
 
