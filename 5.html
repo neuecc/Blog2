@@ -23,7 +23,127 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2017/07/09_554.html">MicroResolver - C#最速のDIコンテナライブラリと、最速を支えるメタプログラミングテクニック</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2017/07/11_555.html">C#におけるTypeをキーにした非ジェネリック関数の最適化法</a></h1>
+<ul class="date"><li>2017-07-11</li></ul>
+<div class="entry_body"><p><a href="https://github.com/neuecc/MicroResolver/">MicroResolver</a> 2.3.3！というわけで、例によってバージョンがデタラメになるんですが、アップデートしてました。MicroResolverとその解説については以前のブログ記事 <a href="http://neue.cc/2017/07/09_554.html">MicroResolver - C#最速のDIコンテナライブラリと、最速を支えるメタプログラミングテクニック</a> をどうぞ。そして、<a href="https://github.com/danielpalme/IocPerformance">オフィシャルな(?)ベンチマーク結果</a>でも、それなりに勝利を収めています。</p>
+<p>|<strong>Container</strong>|<strong>Singleton</strong>|<strong>Transient</strong>|<strong>Combined</strong>|<strong>Complex</strong>|<strong>Property</strong>|<strong>Generics</strong>|<strong>IEnumerable</strong>|
+|:------------|------------:|------------:|-----------:|----------:|:------------|----------:|--------------:|
+|<strong>No</strong>|61<br/>53|68<br/>62|83<br/>103|90<br/>82|119<br/>99|73<br/>79|177<br/>139|
+|<strong><a href="https://github.com/JSkimming/abioc">abioc 0.6.0</a></strong>|<strong>27</strong><br/><strong>37</strong>|<strong>31</strong><br/><strong>57</strong>|<strong>48</strong><br/>84|63<br/>72|<br/>|<br/>|741<br/>506<br/>|
+|<strong><a href="https://github.com/autofac/Autofac">Autofac 4.6.0</a></strong>|749<br/>623|707<br/>554|1950<br/>1832|6510<br/>6472|6527<br/>6417|1949<br/>1563|7715<br/>5635|
+|<strong><a href="https://bitbucket.org/dadhi/dryioc">DryIoc 2.10.4</a></strong>|29<br/>42|38<br/>63|55<br/>80|<strong>62</strong><br/><strong>70</strong>|82<br/>92|50<br/>84|<strong>259</strong><br/><strong>184</strong>|
+|<strong><a href="https://github.com/ipjohnson/Grace">Grace 6.2.1</a></strong>|<strong>27</strong><br/>38|35<br/>58|49<br/>82|67<br/>75|87<br/>94|<strong>46</strong><br/>77|265<br/>194|
+|<strong><a href="https://blogs.msdn.com/b/bclteam/p/composition.aspx">Mef2 1.0.30.0</a></strong>|239<br/>167|254<br/>174|332<br/>256|528<br/>317|1188<br/>680|261<br/>429|1345<br/>758|
+|<strong><a href="https://github.com/neuecc/MicroResolver">MicroResolver 2.3.3</a></strong>|31<br/><strong>37</strong>|35<br/>59|58<br/><strong>77</strong>|92<br/>86|<strong>43</strong><br/><strong>66</strong>|<br/>|285<br/>203|
+|<strong><a href="http://ninject.org">Ninject 3.2.2.0</a></strong>|5192<br/>3216|16735<br/>11856|44930<br/>30318|131301*<br/>84559*|112654*<br/>76631*|48775<br/>27198|102856*<br/>68908*|
+|<strong><a href="https://simpleinjector.org">SimpleInjector 4.0.8</a></strong>|66<br/>68|77<br/>70|103<br/>103|129<br/>105|212<br/>146|75<br/>82|795<br/>451|
+|<strong><a href="http://msdn.microsoft.com/unity">Unity 4.0.1</a></strong>|2517<br/>1375|3761<br/>1962|10161<br/>5372|27963<br/>16013|29064<br/>16150|<br/>|43685<br/>23347|</p>
+<p>前回の結果はジェネリック版だったのですが、やっぱ物言いがつきまして、非ジェネリック版でやれよ、という話になりました。で、2.0.0は非ジェネリック版で負けちゃってたのです。うーん、そこそこ気を使ってたはずなんですが、負けちゃった。ジェネリック版なら勝ってるんだぜ！とか主張するのは激ダサなので、なんとかして、非ジェネリック版の最適化を進めました。そして、なんとか幾つかのものは勝利を収めました。いや、普通に幾つかのでは負けてるじゃん、って話もありますが、概ね高水準だし、そこは許してください（？）、ジェネリック版なら勝ってるし（ダサい）。理論上、何やればこれ以上に縮められるかは分かってはいるんですけどねー。</p>
+<p>というわけで今回は非ジェネリック関数の最適化法について、です。まず、MicroResolverは(ZeroFormtterやMessagePack for C#もそうですが）ジェネリック版を全てのベースにしています。</p>
+<pre><code class="language-csharp">// というクラスが生成される
+public class ObjectResolver_Generated1
+{
+    // というコードが生成される
+    public override T Resolve&lt;T&gt;()
+    {
+        return Cache&lt;T&gt;.factory(); // Func&lt;T&gt;.Invoke()
+    }
+}
+</code></pre>
+<p>Tを元にしてデリゲートを探して、それをInvokeする。その最速系がジェネリックタイプキャッシングだという話でした。非ジェネリックの場合は、Typeをハッシュキーにして、デリゲートを探さなければなりません。ここでMicroResolverの初期の実装ではオレオレハッシュテーブルを作って対処しました。</p>
+<pre><code class="language-csharp">// こんな構造体を定義しておいて
+struct HashTuple
+{
+    public Type type;
+    public Func&lt;object&gt; factory;
+}
+ 
+// これがハッシュテーブルの中身、基本的に固定配列が最強です
+private HashTuple[][] table;
+ 
+// Resolve&lt;T&gt; は、つまりFunc&lt;T&gt; なわけですが、これはFuncの共変を使って直接 Func&lt;object&gt; に変換できます
+// ExpressionTree経由で上からデリゲートを生成して変換する、という手が一般に使われますが、
+// それは関数呼び出しが一つ増えるオーバーヘッドですからね！
+// というわけで、MicroResolverのRegister&lt;T&gt;のTにはclass制約がかかってます
+table[hash][index] = new Func&lt;object&gt;(Resolve&lt;T&gt;);
+ 
+// で実際に呼び出すばやい
+public object Resolve(Type type)
+{
+    var hashCode = type.GetHashCode();
+    var buckets = table[hashCode % table.Length];
+ 
+    // チェイン法によるハッシュテーブルの配列は、拡縮を考えなくていいので連結リストではなく固定サイズの配列
+    // 当然これがループ的には最速だし、ついでに.Lengthで回せるので配列の境界チェックも削れる
+    for (int i = 0; i &lt; buckets.Length; i++)
+    {
+        if (buckets[i].type == type)
+        {
+            return buckets[i].factory();
+        }
+    }
+ 
+    throw new MicroResolverException(&quot;Type was not dound, Type: &quot; + type.FullName);
+}
+</code></pre>
+<p>理屈的には全く良さそうです！しかし、この実装では「遅くて」他のDIライブラリに対してベンチマークで敗北したのです。敗北！許せない！というわけで、ここから更に改善していきましょう。限界まで最適化されているように見えて、まだまだ余地があるのです。目を皿のようにして改善ポイントを探してみましょう！</p>
+<h2>非ジェネリック関数はジェネリック関数のラップではない</h2>
+<p>当たり前ですが、ラップにしたらラップしているという点でのオーバーヘッドがかかり、遅くなります。↑のコードはラップではないように見えて、ラップだったのです。どーいうことかというと</p>
+<pre><code class="language-csharp">// new Func&lt;object&gt;(Resolve&lt;T&gt;) で生成したデリゲートは、こういう呼ばれ順序になる
+object Resolve(Type type) =&gt; T Resolve() =&gt; Cache&lt;T&gt;.factory()
+
+// そう、短縮できますよね、こういう風に
+object Resolve(Type type) =&gt; Cache&lt;T&gt;.factory()
+
+// つまりこういう風に、生のデリゲートを直接登録しちゃえばよかったのです
+table[hash][index] = (Func&lt;object&gt;)Cache&lt;T&gt;.factory();
+
+// ちなみにExpressionTreeで生成する場合は、もっと呼ばれる段数が多くなるので、理屈として一番遅いですね
+object Resolve(Type type) =&gt; (object)Resolve() =&gt; T Resolve() =&gt; Cache&lt;T&gt;.factory()
+</code></pre>
+<p>これはもう先入観として非ジェネリックはジェネリックのラップで作らなきゃいけない、と思いこんでいたせいで、全体のコード生成のパスを見渡してみれば、直接渡してあげても良かったんですね。これで、ジェネリック版も非ジェネリック版も、どちらもどちらかのラップではない、ネイティブなスピードを手に入れることができました。</p>
+<p>ちなみにジェネリック版が非ジェネリック版のラップの場合は、Typeのルックアップのコストがどちらも必ずかかってしまうので（ジェネリック版がネイティブなスピードにならない）、とても良くないパターンです。</p>
+<h2>ハッシュテーブルを最適化する</h2>
+<p>一件、このケースに特化した最速なハッシュテーブルに見えて、既にアルゴリズム的に遅かったのです。剰余が。modulo is too slow。</p>
+<pre><code class="language-csharp">// これがゲロ遅い
+var buckets = table[hashCode % table.Length];
+
+// こうすれば良い(ただしテーブルサイズは2のべき乗である必要があります！)
+var buckets = table[hashCode &amp; (table.Length - 1)];
+
+// もちろんテーブルサイズは固定なので、予め -1 したのは変数に持っておきましょう
+var buckets = table[hashCode &amp; tableLengthMinusOne];
+</code></pre>
+<p>割と純粋なデータ構造とアルゴリズムのお話ですが、ハッシュテーブルのサイズはどうするのが高速なのか問題、で、テーブルサイズが2のべき乗の場合にはビット演算を使って、低速な剰余を避けることが可能です。ハッシュテーブルに関しては「英語版の」ほうのWikipediaが例によって詳しいです - <a href="https://en.wikipedia.org/wiki/Hash_table">Hash table - Wikipedia</a>。</p>
+<p>.NETのDictionaryはテーブルサイズとして素数を使っています、そのため剰余が避けられません。今回の最初の実装も.NETのものを参考に作っていたので剰余をそのまんま剰余で残してしまったんですねえ。ただし2のべき乗のほうも弱点はあって、ハッシュ関数が悪い場合に、偏りが生じやすくなるとのこと。素数のほうがそれを避けやすい。ので、一般の実装としてやるなら.NETのDictionaryが素数を使うのは最適なチョイスとも思えます。ただ、今回はTypeのGetHashCode、はそれなりにしっかり分散されてるもの（だと思われる）なので、2のべき乗をチョイスするのが効果的といえるでしょう。この辺を弄れるのも、汎用コレクションを使わない利点ですね。まぁ、エクストリームなパフォーマンスを求めるなら、という話ですが。</p>
+<p>あとは衝突しなければしないほど高速（衝突したらforループ回る回数が多くなる)なので、テーブルに対するload factorは相当余裕のある感じの設定にしました。かなりスカスカ。まぁ、別にちょっと余計なぐらいでもいいでしょう。</p>
+<p>TypeがKeyで、Value側がジェネリックで自由に変更可能な、汎用な固定サイズハッシュテーブルの実装は<a href="https://github.com/neuecc/MicroResolver/blob/master/src/MicroResolver/Internal/FixedTypeKeyHashtable.cs">FixedTypeKeyHashtable.cs</a>に置いておきますんで、使えるケースがありそうな人は是非どうぞ。ハヤイデス。Keyは別にType以外にしてもいいんですが、汎用にするとIEqualityComaprer経由で呼ばなきゃいけなくてオーバーヘッドがあるので、もしKeyを他のに変えたければ、そこだけ変えた特化実装を別途用意するのが良いでしょう。Value側は気にする必要はないんですけどね。あと、KeyのGetHashCodeの性質には注意したほうがいいかもです（上述の通り、素数ではないので性質に影響されやすい）</p>
+<h2>まとめ</h2>
+<p>どちらの対策も同じように効果絶大でした。どっちも普通だったらそこまで大したことないようなことなんですけどね、マイクロベンチマークで超極小の差を競い合ってる状況では、この差が死ぬほどでかい。というわけで、もう完全に限界の領域。とはいえ、まだまだIoC Performance的には、Singletonには明確に改善の余地があって、事前に生成済みインスタンスを渡してあげるオーバーロードを用意して、その場合は直接埋め込んじゃえばいいとか、そういうこともできます。これは幾つかのDIライブラリがやってますね。役に立たないとは言わないけれど、基本的にはベンチマークハックっぽくて好きくないですが、まぁ、まぁ。</p>
+<p>非ジェネリックに関しては type == type を削る余地が残ってます（信頼性は若干犠牲にしますが、事実上問題にならない）。どうやって、というと、登録すべきTypeが全部既知なんですよね、コード生成時に。つまり、非ジェネリック版ももっとアグレッシブにコード生成する余地があり、ハッシュテーブルのルックアップ部分まで含めてコード生成すれば、より改善され（る余地があ）るということです。擬似コードでいえば</p>
+<pre><code class="language-csharp">// こういうコードを生成する
+object Resolve(Type type)
+{
+    var hashCode = type.GetHashCode();
+    switch(hashCode)
+    {
+        case 341414141:
+            // もしハッシュコードが同一のものがあった場合は、生成時に追加でifを入れる
+            // ただし通常そんなことは起こらない + 同一ハッシュコードの別タイプが来るケースはほぼない、のでtypeの真の同一値比較を省く
+            return new Transient1(); // この中でインライン生成する
+        case 643634533:
+            return HogeSingleton.Value; // シングルトンは値をそのままルックアップするだけ
+        // 以下、型は全て既知でハッシュコードも全部知っているので、羅列する
+    }
+}
+</code></pre>
+<p>ってコードを作ればいいわけです。こういうのは、まさに動的コード生成の強みを120%活かすって感じで面白くはあります。</p>
+<p>ただしintの数値がバラバラの場合は「C#コンパイラが」二分探索コードを作るので - <a href="http://engineering.grani.jp/entry/2017/02/20/175816">C#のswitch文のコンパイラ最適化について - Grani Engineering Blog</a>、IL生成でこれやるのはかなり骨の折れる仕事です。しかも、二分探索と高速化したハッシュテーブルでは、かなりいい勝負が出来ている状態なので、あえてここまでやるのはちょっと、ってとこもあります。でも、生成部分まで完全にインライン化するのは効果大なので、やればきっと速くなりそうです（でも生成コードサイズはクソデカくなりそうだ）。このアプローチはabiocというIoCライブラリが取っていて、なので実際に最速のパフォーマンスを出せているわけですね。abiocのコード生成はIL EmitではなくRoslynを使っているので、こういった「C#コンパイラ」がやる仕事を簡単に記述できます。アプローチとして面白いやりかたです。</p>
+<p>というわけで（？）理論値に挑んだわけですが、どうでしょう。速いコードって実は難しいコードではなくて、コードパスが短いコードが速くなるわけです、どうしても、そりゃそうだ、と。複雑なことをどうやって短い命令数のコード（短いコードという意味ではない）で表現するか。実行時にのみ知りうる情報を使ったコード生成技術を駆使することで、最短のパスを作り込んでいく。そういうことなんですね。</p>
+<p>そのうえで、超基本的なアルゴリズムの話が残ってたりするところがあったりで、コンピューターの世界はモダンになったようで、実はあまり変わってないね、という側面もあったりで面白い感じです。</p>
+<p>C#は簡単に遅いコードが書ける言語だし、正直割と痛感しているところもあるのですが、とはいえかなりの部分で高速に仕上げる余地が残っている言語でもあります（テンプレートメタプログラミングはできませんが！）。ILを自由に弄れる技術が身につくと「理論上存在する想像する最高のコード」に到れる道のりがグッと広がるので、ぜひぜひ習得してみるのも面白いかと思います。</p>
+</div>
+<h1><a href="https://neue.cc/2017/07/09_554.html">MicroResolver - C#最速のDIコンテナライブラリと、最速を支えるメタプログラミングテクニック</a></h1>
 <ul class="date"><li>2017-07-09</li></ul>
 <div class="entry_body"><p>MicroResolver、というDIコンテナを作りました。Microといいつつ、フルフルではないですがそれなりにフルセットな機能もあります。DIの意義とか使い方とかは割とどうでもいい話なので、何をやったら最速にできるのかってところを中心に説明しますので、DIに興味ない人もどうぞ。</p>
 <ul>
@@ -1995,43 +2115,6 @@ IEnumerator CustomCoroutine()
 <p>UniRxがAssetStore STAFFPICKに選ばれましたー。</p>
 <img src="https://pbs.twimg.com/media/Ct57c5SVIAAzSAJ.jpg:large" width=620 />
 <p>うーん、嬉しい。</p>
-</div>
-<h1><a href="https://neue.cc/2016/10/02_540.html">過去に制作した30のライブラリから見るC#コーディングテクニックと個人OSSの原理原則</a></h1>
-<ul class="date"><li>2016-10-02</li></ul>
-<div class="entry_body"><p>という（サブ）タイトルで、<a href="http://dotnetfringe-japan.connpass.com/event/35659/">.NET Fringe Japan 2016</a>で発表してきました。<a href="http://live.nicovideo.jp/watch/lv277167391">ニコ生</a>では7時間目ぐらいから。</p>
-<iframe src="//www.slideshare.net/slideshow/embed_code/key/5aYQa7asGPlktr" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/what-why-how-create-oss-libraries-30coss" title="What, Why, How Create OSS Libraries - 過去に制作した30のライブラリから見るC#コーディングテクニックと個人OSSの原理原則" target="_blank">What, Why, How Create OSS Libraries - 過去に制作した30のライブラリから見るC#コーディングテクニックと個人OSSの原理原則</a> </strong> from <strong><a href="//www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
-<p>リンク集はこちら。</p>
-<ul>
-<li>#01 2009-04-04 <a href="http://linqjs.codeplex.com/">linq.js</a></li>
-<li>#02 2009-10-29 <a href="http://linqcomparer.codeplex.com/">AnonymousComparer</a></li>
-<li>#03 2010-04-07 <a href="http://dbexecutor.codeplex.com/">DbExecutor</a></li>
-<li>#04 2010-04-30 <a href="http://dynamicjson.codeplex.com/">DynamicJson</a></li>
-<li>#05 2010-07-15 <a href="http://xstreamingreader.codeplex.com/">XStreamingReader</a></li>
-<li>#06 2010-09-12 <a href="http://reactiveoauth.codeplex.com/">ReactiveOAuth</a></li>
-<li>#07 2011-02-22 <a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a></li>
-<li>#08 2011-10-17 <a href="http://reactiveproperty.codeplex.com/">ReactiveProperty</a></li>
-<li>#09 2012-02-18 <a href="http://implicitquerystring.codeplex.com/">ImplicitQueryString</a></li>
-<li>#10 2012-04-02 <a href="http://hashmapper.codeplex.com/">HashMapper</a></li>
-<li>#11 2012-12-03 <a href="https://github.com/neuecc/MemcachedTranscoder">MemcachedTranscoder</a></li>
-<li>#12 2013-02-27 <a href="https://github.com/neuecc/AsyncOAuth">AsyncOAuth</a></li>
-<li>#13 2013-04-05 <a href="https://github.com/neuecc/CloudStructures">CloudStructures</a></li>
-<li>#14 2013-12-06 <a href="https://github.com/neuecc/OwinRequestScopeContext">OwinRequestScopeContext</a></li>
-<li>#15 2013-12-08 <a href="https://github.com/neuecc/Owin.RedisSession">Owin.RedisSession</a></li>
-<li>#16 2013-12-23 <a href="https://github.com/neuecc/LightNode">LightNode</a></li>
-<li>#17 2014-03-11 <a href="https://github.com/neuecc/RespClient">RespClient</a></li>
-<li>#18 2014-05-28 <a href="https://github.com/neuecc/UniRx">UniRx</a></li>
-<li>#19 2014-09-24 <a href="https://github.com/neuecc/LINQ-to-BigQuery">LINQ to BigQuery</a></li>
-<li>#20 2014-10-28 <a href="https://github.com/neuecc/LINQ-to-GameObject-for-Unity">LINQ to GameObject</a></li>
-<li>#21 2015-01-14 <a href="https://github.com/neuecc/Open-on-GitHub">Open on GitHub</a></li>
-<li>#22 2015-03-30 <a href="https://github.com/neuecc/NotifyPropertyChangedGenerator">NotifyPropertyChangedGenerator</a></li>
-<li>#23 2015-11-03 <a href="https://github.com/neuecc/EtwStream">EtwStream</a></li>
-<li>#24 2016-03-18 <a href="https://github.com/neuecc/SerializableDictionary">SerializableDictionary</a></li>
-<li>#25 2016-05-23 <a href="https://github.com/neuecc/MarkdownGenerator">MarkdownGenerator</a></li>
-<li>#26 2016-05-31 <a href="https://github.com/neuecc/PhotonWire">PhotonWire</a></li>
-<li>#27 2016-06-07 <a href="https://github.com/neuecc/ObserveEveryValueChanged">ObserveEveryValueChanged</a></li>
-</ul>
-<p>作り続けることで確実にイディオムが身についていくことと、それの発展や組み合わせによって、より大きなことが出来るようになっていくんじゃないかと思います。発想も、手札が多ければ多いほど、よりよくやれるということが分かるということになりますしね。とはいえ、どうしても発想のベースは自分の手札からになっていくので、時々は異なるものへのチャレンジを意識して行わないとなー、ってとこですね。今回のスライドでも、幾つかはやったことないことを勉強のため、みたいなのがありました。Unity周りは仕事で始めたことですけれど、今は自分の中でも重要な柱です。</p>
-<p>C#以外をやりたい、ってのは全然思わないんですが（言語の学習も悪くはないですが、それよりなにか作ったほうが100億倍良いのでは)、今猛烈に足りない/かつやりたい、のはグラフィック関係ですねー。自分で一本<a href="https://ja.wikipedia.org/wiki/%E3%83%87%E3%83%A2%E3%82%B7%E3%83%BC%E3%83%B3">メガデモ</a>を作れるようになりたいってのは、ずっと昔から思っていることで、かつ、今もできていないことなので近いどこかでチャレンジしたいです。</p>
 </div>
 <a href="https://neue.cc/4">Prev |</a>
 <a href="https://neue.cc/6">| Next</a>

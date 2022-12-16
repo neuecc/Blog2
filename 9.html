@@ -23,7 +23,146 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2014/08/23_476.html">A Beginners Guide to Reactive Extensions with UniRx</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2014/09/08_477.html">Immutable CollectionsとSubject(Rx)の高速化について</a></h1>
+<ul class="date"><li>2014-09-08</li></ul>
+<div class="entry_body"><p>最近は<a href="https://github.com/neuecc/UniRx">UniRx</a>というUnity向けのReactive Extensionsの実装を書いているので、そこにImmutableなCollectionのちょーどよく分かりやすい使い道の実例があるので紹介しようかと思います。Rx自体はImmutable Collections使ってるわけではありませんが、同様の（簡易的）実装を内部で持っています。UniRxも同様に簡易実装を中で持つ形です。</p>
+<p>Immutable Collectionsを知らにゃい？詳しくは<a href="http://blogs.msdn.com/b/dotnet/archive/2013/09/25/immutable-collections-ready-for-prime-time.aspx">NET Framework Blog - Immutable collections ready for prime time</a>を。または、以前に私がセッションで発表した資料もありますので、それも見てください。<a href="http://neue.cc/2013/10/31_430.html">neue cc - .NETのコレクション概要とImmutable Collectionsについて</a>。1.0リリースからもベータ版のリリースは続いていて、今回はそのベータのほうを使います（ダウンロードはNuGetでプリリリースのものを有効にするだけです）。何故かと言うと、今回使うImmutableArrayはベータのほうにしか入っていないからです。</p>
+<h2>素朴なSubject</h2>
+<p>最も素朴なSubjectを作ってみましょう。SubjectはEventのRx的な表現で+=とInvokeが出来るもの、とでも思ってもらえれば。</p>
+<pre><code class="language-csharp">public class MySubject&lt;T&gt; : IObservable&lt;T&gt;, IObserver&lt;T&gt;
+{
+    List&lt;IObserver&lt;T&gt;&gt; observers = new List&lt;IObserver&lt;T&gt;&gt;();
+
+    // Subscribeするとリストに貯めて
+    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
+    {
+        observers.Add(observer);
+        return null; // 本来は戻り値をDisposeするとRemoveだけど省略
+    }
+
+    // OnNextで配信
+    public void OnNext(T value)
+    {
+        foreach (var item in observers)
+        {
+            item.OnNext(value);
+        }
+    }
+
+    // OnErrorとOnCompletedは中略
+}
+</code></pre>
+<p>こんなもんですね、簡単簡単。実際使う場合は</p>
+<pre><code class="language-csharp">// とりあえずこういうの用意しとかないとメンドーなので。
+// Rxを参照してるならSubescribe(x =&gt; { })でいいよ！
+public class ActionObserver&lt;T&gt; : IObserver&lt;T&gt;
+{
+    readonly Action&lt;T&gt; onNext;
+
+    public ActionObserver(Action&lt;T&gt; onNext)
+    {
+        this.onNext = onNext;
+    }
+
+    public void OnNext(T value)
+    {
+        onNext(value);
+    }
+
+    // OnErrorとOnCompletedは中略
+}
+
+// で、こんなかんぢ
+var subject = new MySubject&lt;int&gt;();
+
+subject.Subscribe(new ActionObserver&lt;int&gt;(x =&gt; Console.WriteLine(x)));
+subject.Subscribe(new ActionObserver&lt;int&gt;(x =&gt; Console.WriteLine(x * 2)));
+
+subject.OnNext(500); // 500, 1000
+</code></pre>
+<p>概ね見たまんまな単純な話ですねー、さて、この実装は素朴すぎるので簡単に死にます。マルチスレッドで、とかそういうことじゃなく、例えば……</p>
+<pre><code class="language-csharp">// 呼ばれるとイベント登録しに走るような場合
+subject.Subscribe(new ActionObserver&lt;int&gt;(x =&gt; subject.Subscribe(new ActionObserver&lt;int&gt;(_ =&gt; Console.WriteLine(x)))));
+
+//ハンドルされていない例外: System.InvalidOperationException: コレクションが変更されました。列挙操作は実行されない可能性があります。
+subject.OnNext(10000);
+</code></pre>
+<p>foreachの最中にList本体にAddやRemoveといった操作は許可されていないのですねー。そんなのしねーよ、と突っぱねることはRxの使い方の場合は実際できないので、対処が必要です。一番簡単なのはまるっとコピーすること。</p>
+<pre><code class="language-csharp">// MySubject&lt;T&gt;.OnNext
+public void OnNext(T value)
+{
+    foreach (var item in observers.ToArray()) // 列挙はコピー
+    {
+        item.OnNext(value);
+    }
+}
+</code></pre>
+<p>こういう対処はLINQ to XMLのドキュメント<a href="http://msdn.microsoft.com/ja-jp/library/bb387088.aspx">宣言型コードと命令型コードの混在のバグ (LINQ to XML)</a>でも薦められている、特別でもない一般的なテクニックということで、場合によっては普通に使っても構わない話だと思います。スレッドセーフにするのもlock仕込むだけ。</p>
+<pre><code class="language-csharp">public IDisposable Subscribe(IObserver&lt;T&gt; observer)
+{
+    lock (observers)
+    {
+        observers.Add(observer);
+    }
+    return null;
+}
+
+public void OnNext(T value)
+{
+    IObserver&lt;T&gt;[] array;
+    lock (observers)
+    {
+        array = observers.ToArray();
+    }
+    foreach (var item in array)
+    {
+        item.OnNext(value);
+    }
+}
+</code></pre>
+<h2>高速化する</h2>
+<p>素朴な実装の問題は、まぁパフォーマンス。コピーだから一概に悪いとは言わなくて、場合によっては全然普通に使って構わないというのは頭に入れて欲しいのですけれど、さすがにOnNextのような、イベントが叩かれるような、頻度の高いもので毎回コピーが走るのは些か厳しい。じゃあどうしよう？そうだConcurrent Collectionだ！ふむ……。でもConcurrentQueueとかだと（今回省いてますが）Removeするのがむつかしい。ConcurrentDictionaryで代替だ！でも列挙の具合が不透明（並列コレクションの列挙の挙動は結構色々なのでそれなりに注意が必要です）、パフォーマンス的にもただのforeachよりは劣るよねえ、せっかくやるならエクストリームな性能を追い求めたい気もする。</p>
+<p>と、そこで出てくるのが（？）Immutable Collections、の、ImmutableArray。</p>
+<p>注意しなきゃいけないのは別にImmutable Collections使ったからって必ずしも早いとかってわけじゃないです。むしろ多くの場合でImmutable Collectionsは不適でしょう。コレクションには特性があって、それにうまく合致しなければむしろ遅いです。今回のシチュエーションではImmutableArrayが割と最適にハマります（同じAPIを持ったリスト的なものにImmutableListがありますが、今回だとArrayのほうが良い）。とりあえず見てみましょう、か。</p>
+<pre><code class="language-csharp">class MySubject&lt;T&gt; : IObservable&lt;T&gt;, IObserver&lt;T&gt;
+{
+    ImmutableArray&lt;IObserver&lt;T&gt;&gt; observers = ImmutableArray.Create&lt;IObserver&lt;T&gt;&gt;();
+
+    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
+    {
+        // スレッドセーフな入れ替え
+        while (true)
+        {
+            var oldCollection = observers;
+            var newCollection = oldCollection.Add(observer);
+            var comparedCollection = ImmutableInterlocked.InterlockedCompareExchange(ref observers, newCollection, oldCollection);
+
+            if (comparedCollection == oldCollection) return null; // 変更対象がAddしている間に変わってなければ成功
+        };
+    }
+
+    public void OnNext(T value)
+    {
+        // 普通にぐるぐる回しても安全
+        foreach (var item in observers)
+        {
+            item.OnNext(value);
+        }
+    }
+
+    // OnErrorとOnCompletedは中略
+}
+</code></pre>
+<p>Listの宣言をImmutableArrayに変えて、あとは、フィールドの代入が全然変わってる！そう、ImmutableArrayの差し替えはちょっと面倒くさいのです。所謂CAS(Compare And Swap)という奴で、「大抵の場合は衝突しないけど原理的にたまに衝突する」という場合のために、グルグル回って比較して置き換えるという手段を取ります。ImmutableCollectionsにはそういった処理のためのヘルパーメソッドがImmutableInterlockedクラスに幾つか用意されています。ここではImmutableArrayで使えるImmutableInterlocked.InterlockedCompareExchangeを使いました。</p>
+<h2>特性</h2>
+<p>ImmutableArrayの中身は、配列です。Addは中で内部の配列をまるっとコピーして、新しい配列を作っています。foreachはその内部の配列に対して列挙かけるだけなので、普通の配列を回すのと性能はまるっきり変わらない。なので、Addのコストは非常に高いけれど、他は通常の配列と変わらないぐらい高速というのが特性です。</p>
+<p>なんでSubjectの実装にImmutableArrayが適切かというと、「追加や削除よりも圧倒的に多く列挙が呼ばれる」からですね。そもそも普通にOnNext書けば毎回コピーが走るので、だったら追加の時のコピー一発で済ませられるなら遥かに高効率と思われるのではないでしょーか。</p>
+<p>これにより、イベント的な使用でのSubjectのパフォーマンスは、ノーロック・ノーコピーで、配列とほぼ同等の性能が出ます。完璧！</p>
+<h2>まとめ</h2>
+<p>Immutable Collectionsは、まぁ、実際のとこガチッと使えるシーンがはまるケースはぶっちけあんまないと思います！コレクションとしての重要度は 普通のジェネリックコレクション＞コンカレントコレクション＞超えられない壁＞イミュータブルコレクション でしょうし、使うコレクションを探す場合も、そこから順番で考えたほうが良いでしょふ。<a href="http://neue.cc/2013/10/31_430.html">neue cc - .NETのコレクション概要とImmutable Collectionsについて</a>でも書いたのですけれど、別にイミューラブルコレクション＝速い、というのは大間違いです。むしろかなりピーキーで、性能特性をしっかり考えないと全く使いこなせません。</p>
+<p>それでも今回のように使えるかもしれない！？ような局面というもの自体は存在するので、覚えておいて損はないと思います。次の.NET Frameworkに標準で入るのかどうかは今のところ分かりませんが、多分入るんじゃないかなー、Roslynで使いたいようだしー、って感じなので先取りしちゃりましょう！</p>
+</div>
+<h1><a href="https://neue.cc/2014/08/23_476.html">A Beginners Guide to Reactive Extensions with UniRx</a></h1>
 <ul class="date"><li>2014-08-23</li></ul>
 <div class="entry_body"><p>どうも始めましての人は始めまして、<a href="https://twitter.com/neuecc">@neuecc</a>といいます。この記事は<a href="http://unityassetjp.doorkeeper.jp/events/12843">Unity アセット真夏のアドベントカレンダー 2014 Summer！</a>というイベントの23日目です。クリスマスのアレ！真夏に……！しかしクリスマスのアレは比較的脱落も少なくのないのですが、これは見事ーに続いてます。しかも日付が変わった瞬間に公開されることの多いこと多いこと。〆切というのは23:59:59だと思っている私には辛い話です……。さて、前日はnaichiさんの<a href="http://naichilab.blogspot.jp/2014/08/unity.html">【うに部屋】Unityのゲーム投稿サイトにアセット検索機能を付けてみた</a>でした。便利でいいですねー、UniRxも使ったアセットとして沢山並ぶ日が来ると、いいなぁ。</p>
 <h2>Reactive Programming</h2>
@@ -1995,310 +2134,6 @@ var sum = LightNodeClient.Create&lt;IHoge&gt;(&quot;http://localhost&quot;).Sum(
 <pre><code class="language-text">C:\Program Files (x86)\Microsoft Visual Studio 12.0\VC#\Specifications\1041\CSharp Language Specification.docx
 </code></pre>
 <p>にあるので（日本語訳されてるよ！）、読んだことない人は眺めてみると楽しいんではかと思います。</p>
-</div>
-<h1><a href="https://neue.cc/2013/12/04_435.html">非同期時代のLINQ</a></h1>
-<ul class="date"><li>2013-12-04</li></ul>
-<div class="entry_body"><p>この記事は<a href="http://www.adventar.org/calendars/119">C# Advent Calendar 2013</a>の4日目となります。2012年は<a href="http://neue.cc/2012/12/03_389.html">MemcachedTranscoder - C#のMemcached用シリアライザライブラリ</a>というクソニッチな記事で誰得でした（しかもその後、私自身もMemcached使ってないし）。その前、2011年は<a href="http://neue.cc/2011/12/16_359.html">Modern C# Programming Style Guide</a>、うーん、もう2年前ですかぁ、Modernじゃないですねえ。2011年の時点ではC# 5.0はCTPでしたが、もう2013年、当然のようにC# 5.0 async/awaitを使いまくる時代です。変化は非常に大きくプログラミングスタイルも大きく変わりますが、特にコレクションの、LINQの取り扱いに癖があります。今回は、非同期時代においてLINQをどう使いこなしていくかを見ていきましょう。</p>
-<h2>Selectは非同期時代のForEach</h2>
-<p>これ超大事。これさえ掴んでもらえれば十二分です。さて、まず単純に、Selectで値を取り出す場合。</p>
-<pre><code class="language-csharp">// こんな同期版と非同期版のメソッドがあるとする
-static string GetName(int id)
-{
-    return &quot;HogeHoge:&quot; + id;
-}
-
-static async Task&lt;string&gt; GetNameAsync(int id)
-{
-    await Task.Delay(TimeSpan.FromMilliseconds(100)); // 適当に待機
-    return &quot;HogeHoge:&quot; + id;
-}
-
-// 以後idsと出てきたらこれのこと指してるとします
-var ids = Enumerable.Range(1, 10);
-
-// 同期バージョン
-var names1 = ids.Select(x =&gt; new { Id = x, Name = GetName(x) }).ToArray();
-
-// 非同期バージョン
-var names2 = await Task.WhenAll(ids.Select(async x =&gt; new { Id = x, Name = await GetNameAsync(x) }));
-</code></pre>
-<p>ラムダ内でasyncを書き、結果はIEnumerable&lt;Task&lt;T&gt;&gt;となるので、配列に戻してやるためにTask.WhenAllとセットで使っていくのが基本となります。Task.WhenAllで包むのはあまりにも頻出なので、以下の様な拡張メソッドを定義するといいでしょう。</p>
-<pre><code class="language-csharp">// こういう拡張メソッドを定義しておけば
-public static class TaskEnumerableExtensions
-{
-    public static Task WhenAll(this IEnumerable&lt;Task&gt; tasks)
-    {
-        return Task.WhenAll(tasks);
-    }
-
-    public static Task&lt;T[]&gt; WhenAll&lt;T&gt;(this IEnumerable&lt;Task&lt;T&gt;&gt; tasks)
-    {
-        return Task.WhenAll(tasks);
-    }
-}
-
-// スッキリ書ける
-var names2 = await ids.Select(async x =&gt; new { Id = x, Name = await GetNameAsync(x) }).WhenAll();
-</code></pre>
-<p>では、foreachは？</p>
-<pre><code class="language-csharp">// 同期
-foreach (var id in ids)
-{
-    Console.WriteLine(GetName(id));
-}
-
-// 非同期
-foreach (var id in ids)
-{
-    Console.WriteLine(await GetNameAsync(id));
-}
-</code></pre>
-<p>そりゃそーだ。……。おっと、しかしせっかく非同期なのに毎回待機してループしてたらMottaiなくない？GetNameAsyncは一回100ミリ秒かかっているから、100*10で1秒もかかってしまうんだ！ではどうするか、そこでSelectです。</p>
-<pre><code class="language-csharp">// 同期(idsがList&lt;int&gt;だとする)
-ids.ForEach(id =&gt;
-{
-    Console.WriteLine(GetName(id));
-});
-
-// 非同期
-await ids.Select(async id =&gt;
-{
-    Console.WriteLine(await GetNameAsync(id));
-})
-.WhenAll();
-</code></pre>
-<p>ForEachの位置にSelect。ラムダ式中では戻り値を返していませんが、asyncなので、Taskを返していることになります(Task&lt;T&gt;ではなく)。同期ではvoidとなりLINQで扱えませんが、非同期におけるvoidのTaskは、Selectを通ります。あとはWhenAllで待機してやれば出来上がり。これは全て同時に走るので100msで完了します。10倍の高速化！</p>
-<p>ただし、この場合処理順序は保証されません、同時に走っているので。例えばとある時はこうなりました。</p>
-<pre><code class="language-txt">HogeHoge:1
-HogeHoge:10
-HogeHoge:8
-HogeHoge:7
-HogeHoge:4
-HogeHoge:2
-HogeHoge:6
-HogeHoge:3
-HogeHoge:9
-HogeHoge:5
-</code></pre>
-<p>処理順序を保証したいなら？WhenAll後に処理ループを回せばいいぢゃない。</p>
-<pre><code class="language-csharp">// こうすれば全て並列でデータを取得したあと、取得順のままループを回せる
-var data = await ids.Select(async id =&gt; new { Id = id, Name = await GetNameAsync(id) }).WhenAll();
-foreach (var item in data)
-{
-    Console.WriteLine(item.Name);
-}
-</code></pre>
-<p>一旦、一気に詰めた(100ms)後に、再度回す(0ms)。これはアリです。そんなわけで、非同期時代のデータの処理方法は三択です。逐次await, ForEach代わりのSelect, 一気に配列に詰める。どれがイイということはないです、場合によって選べばいいでしょう。</p>
-<p>ただ言えるのは、超大事なのは、Selectがキーであるということ、ForEachのような役割を担うこと。しっかり覚えてください。</p>
-<h2>非同期とLINQ、そしてプリロードについて</h2>
-<p>さて、SelectだけではただのForEachでLINQじゃない。LINQといったらWhereしてGroupByして、ほげ、もげ……。そんなわけでWhereしてみましょう？</p>
-<pre><code class="language-csharp">// 非同期の ラムダ式 をデリゲート型 'System.Func&lt;int,int,bool&gt;' に変換できません。
-// 非同期の ラムダ式 は void、Task、または Task&lt;T&gt; を返しますが、
-// いずれも 'System.Func&lt;int,int,bool&gt;' に変換することができません。
-ids.Where(async x =&gt;
-{
-    var name = await GetNameAsync(x);
-    return name.StartsWith(&quot;Hoge&quot;);
-});
-</code></pre>
-<p>おお、コンパイルエラー！無慈悲なんでなんで？というのも、asyncを使うと何をどうやってもTask&lt;bool&gt;しか返せなくて、つまりFunc&lt;T,Task&lt;bool&gt;&gt;となってしまい、Whereの求めるFunc&lt;T,bool&gt;に合致させることは、できま、せん。</p>
-<p>Whereだけじゃありません。ラムダ式を求めるものは、みんな詰みます。また、Selectで一度Task&lt;T&gt;が流れると、以降のパイプラインは全てasyncが強いられ、結果として……</p>
-<pre><code class="language-csharp">// asyncでSelect後はTask&lt;T&gt;になるので以降ラムダ式は全てasyncが強いられる
-// これはコンパイル通ってしまいますがkeySelectorにTaskを渡していることになるので
-// 実行時エラーで死にます
-ids.Select(async id =&gt; new { Id = id, Name = await GetNameAsync(id) })
-   .OrderBy(async x =&gt; (await x).Id)
-   .ToArray();
-</code></pre>
-<p>Selectがパイプラインにならず、むしろ出口(ForEach)になっている。自由はない。</p>
-<p>ではどうするか。ここは、一度、配列に詰めましょう。</p>
-<pre><code class="language-csharp">// とある非同期メソッドのあるClassがあるとして
-var models = Enumerable.Range(1, 10).Select(x =&gt; new ToaruClass());
-
-// 以降の処理で使う非同期系のメソッドなり何かを、全てawaitで実体化して匿名型に詰める
-var preload = await models
-    .Select(async model =&gt; new
-    {
-        model,
-        a = await model.GetAsyncA(),
-        b = await model.GetAsyncB(),
-        c = await model.GetAsyncC()
-    })
-    .WhenAll();
-
-// そうして読み取ったもので処理して、（必要なら）最後に戻す
-preload.Where(x =&gt; x.a == 100 &amp;&amp; x.b == 20).Select(x =&gt; x.model);
-</code></pre>
-<p>概念的にはプリロード。というのが近いと思います。最初に非同期なデータを全て取得しまえば、扱えるし、ちゃんと並列でデータ取ってこれる。LINQの美徳である無限リストが取り扱えるような遅延実行の性質は消えてしまいますが、それはshoganai。それに、LINQにも完全な遅延実行と、非ストリーミングな遅延実行の二種類があります。非ストリーミングとは、例えばOrderBy。これは並び替えのために、実行された瞬間に全要素を一度蓄えます。例えばGroupBy。これもグルーピングのために、実行された瞬間に全要素を舐めます。非同期LINQもまた、それらと同種だと思えば、少しは納得いきませんか？現実的な妥協としては、このラインはアリだと私は思っています。分かりやすいしパフォーマンスもいい。</p>
-<h2>AsyncEnumerableの幻想、或いはRxとの邂逅</h2>
-<p>それでも妥協したくないならば、次へ行きましょう。まだ手はあります、良いかどうかは別としてね。注：ここから先は上級トピックなので適当に読み飛ばしていいです</p>
-<p>そう、例えばWhereAsyncのようにして、Func&lt;T,bool&gt;じゃなくFunc&lt;T,Task&lt;bool&gt;&gt;を受け入れてくれるオーバーロードがあれば、いいんじゃない？って思ってみたり。こんな風な？</p>
-<pre><code class="language-csharp">public static class AsyncEnumerable
-{
-    // エラー：asyncとyield returnは併用できないよ
-    public static async IEnumerable&lt;T&gt; WhereAsync&lt;T&gt;(this IEnumerable&lt;T&gt; source, Func&lt;T, Task&lt;bool&gt;&gt; predicate)
-    {
-        using (var e = source.GetEnumerator())
-        {
-            while (e.MoveNext())
-            {
-                if (await predicate(e.Current))
-                {
-                    yield return e.Current;
-                }
-            }
-        }
-    }
-}
-</code></pre>
-<p>ただ、問題の本質はそんなことじゃあない。別にyield returnが使えなければ手書きで作ればいいわけで。そして作ってみれば、本質的な問題がどこにあるのか気づくことができます。</p>
-<pre><code class="language-csharp">class WhereAsyncEnumerable&lt;T&gt; : IEnumerable&lt;T&gt;, IEnumerator&lt;T&gt;
-{
-    IEnumerable&lt;T&gt; source;
-    Func&lt;T, Task&lt;bool&gt;&gt; predicate;
-    T current = default(T);
-    IEnumerator&lt;T&gt; enumerator;
-
-    public WhereAsyncEnumerable(IEnumerable&lt;T&gt; source, Func&lt;T, Task&lt;bool&gt;&gt; predicate)
-    {
-        this.source = source;
-        this.predicate = predicate;
-    }
-
-    public IEnumerator&lt;T&gt; GetEnumerator()
-    {
-        return this;
-    }
-
-    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
-    {
-        return GetEnumerator();
-    }
-
-    public T Current
-    {
-        get { return current; }
-    }
-
-    object System.Collections.IEnumerator.Current
-    {
-        get { return Current; }
-    }
-
-    public void Reset()
-    {
-        throw new NotSupportedException();
-    }
-
-    public void Dispose()
-    {
-
-    }
-
-    // ↑まではdoudemoii
-    // MoveNextが本題
-
-    public bool MoveNext()
-    {
-        if (enumerator == null) enumerator = source.GetEnumerator();
-
-        while (enumerator.MoveNext())
-        {
-            // MoveNextはasyncじゃないのでawaitできないからコンパイルエラー
-            if (await predicate(enumerator.Current))
-            {
-                current = enumerator.Current;
-                return true;
-            }
-        }
-        return false;
-    }
-}
-</code></pre>
-<p>MoveNextだけ見てもらえればいいのですが、predicateを使うのはMoveNextなわけです。ここがasyncじゃないと、AsyncなLINQは成立しません。さて、もしMoveNextがasyncだと？</p>
-<pre><code class="language-csharp">public async Task&lt;bool&gt; MoveNext()
-{
-    // ここで取得するenumeratorのMoveNextも
-    // 全て同一のインターフェイスであることが前提条件なのでTask&lt;bool&gt;とする
-    if (enumerator == null) enumerator = source.GetEnumerator();
-
-    while (await enumerator.MoveNext())
-    {
-        if (await predicate(enumerator.Current))
-        {
-            current = enumerator.Current;
-            return true;
-        }
-    }
-    return false;
-}
-</code></pre>
-<p>これは機能します。MoveNextをasyncにするということは連鎖的に全てのMoveNextがasync。それが上から下まで統一されれば、このLINQは機能します。ただ、それってつまり、IEnumerator&lt;T&gt;を捨てるということ。MoveNextがasyncなのは、似て非なるものにすぎない。当然LINQっぽい何かもまた、全て、このasyncなMoveNextを前提にしたものが別途用意されなければならない。そして、それが、<a href="http://www.nuget.org/packages/Ix-Async/">Ix-Async</a>。</p>
-<p>Ix-Asyncのインターフェイスは、上で出したasyncなMoveNextを持ちます。</p>
-<pre><code class="language-csharp">public interface IAsyncEnumerable&lt;out T&gt;
-{
-    IAsyncEnumerator&lt;T&gt; GetEnumerator();
-}
-
-public interface IAsyncEnumerator&lt;out T&gt; : IDisposable
-{
-    T Current { get; }
-    Task&lt;bool&gt; MoveNext(CancellationToken cancellationToken);
-}
-</code></pre>
-<p>そして当然、各演算子はIAsyncEnumerableを求めます。</p>
-<pre><code class="language-csharp">public static IAsyncEnumerable&lt;TSource&gt; Where&lt;TSource&gt;(this IAsyncEnumerable&lt;TSource&gt; source, Func&lt;TSource, bool&gt; predicate);
-</code></pre>
-<p>これの何が便利？IEnumerable&lt;T&gt;からIAsyncEnumerable&lt;T&gt;へはToAsyncEnumerableで変換できはするけれど……、求めているのはIEnumerable&lt;Task&lt;T&gt;&gt;の取り扱いであったりpredicateにTaskを投げ込めたりすることであり、何だかどうにもなく、これじゃない感が否めない。</p>
-<p>そもそも、LINQ to Objectsから完全に逸脱した新しいものなら、既にあるじゃない？非同期をLINQで扱うなら、<a href="http://www.atmarkit.co.jp/fdotnet/introrx/introrx_01/introrx_01_01.html">Reactive Extensions</a>が。</p>
-<h2>Reactive Extensionsと非同期LINQ</h2>
-<p>ではRxで扱ってみましょう。の前に、まず、predicateにTaskは投げ込めません。なのでその前処理でロードするのは変わりません。ただ、そのまま続けてLINQ的に処理可能なのが違うところです。</p>
-<pre><code class="language-csharp">await ids.ToObservable()
-    .SelectMany(async x =&gt; new
-    {
-        Id = x,
-        Name = await GetNameAsync(x)
-    })
-    .Where(x =&gt; x.Name.StartsWith(&quot;Hoge&quot;))
-    .ForEachAsync(x =&gt;
-    {
-        Console.WriteLine(x);
-    });
-</code></pre>
-<p>おお、LINQだ？勿論、Where以外にも何でもアリです。RxならLINQ to Objects以上の山のようなメソッドを繋げまわることが可能です。ところで、ここで出てきているのはSelectMany。LINQ to ObjectsでのSelectの役割を、Rxの場合はSelectManyが担っています。asyncにおいてForEachはSelectでRxでSelectはSelectMany……。混乱してきました？</p>
-<p>なお、これの結果は順不同です。もしシーケンスの順序どおりにしたい場合はSelect + Concatを代わりに使います。</p>
-<pre><code class="language-csharp">await ids.ToObservable()
-    .Select(async x =&gt; new
-    {
-        Id = x,
-        Name = await GetNameAsync(x)
-    })
-    .Concat()
-    .Where(x =&gt; x.Name.StartsWith(&quot;Hoge&quot;))
-    .ForEachAsync(x =&gt;
-    {
-        Console.WriteLine(x);
-    });
-</code></pre>
-<p>ソーナンダー？ちなみにSelectManyはSelect + Mergeに等しい。</p>
-<pre><code class="language-csharp">await ids.ToObservable()
-    .Select(async x =&gt; new
-    {
-        Id = x,
-        Name = await GetNameAsync(x)
-    })
-    .Merge()
-    .Where(x =&gt; x.Name.StartsWith(&quot;Hoge&quot;))
-    .ForEachAsync(x =&gt;
-    {
-        Console.WriteLine(x);
-    });
-</code></pre>
-<p>この辺のことがしっくりくればRxマスター。つまり、やっぱRxムズカシイデスネ。とはいえ、見たとおり、Rx(2.0)からは、asyncとかなり統合されて、シームレスに取り扱うことが可能になっています。対立じゃなくて協調。自然に共存できます。ただし、単品でもわけわからないものが合わさって更なるカオス！強烈強力！</p>
-<h2>まとめ</h2>
-<p>後半のAsyncEnumerableだのIx-AsyncだのRxだのは、割とdoudemoii話です、覚えなくていいです。特にIx-Asyncはただの思考実験なだけで実用性ゼロなので本気でdoudemoiiです。Rxは便利なので覚えてくれてもいいのですが……。</p>
-<p>大事なのは、async + Selectです。SelectはForEachなんだー、というのがティンとくれば、勝ったも同然。そして、プリロード的な使い方。そこさえ覚えれば非同期でシーケンス処理も大丈夫。</p>
-<p>asyncって新しいので、今まで出来たことが意外と出来なくてはまったりします。でも、それも、どういう障壁があって、どう対処すればいいのか分かっていればなんてことはない話です。乗り越えた先には、間違いなく素晴らしい未来が待っているので、是非C# 5.0の非同期、使いこなしてください。</p>
 </div>
 <a href="https://neue.cc/8">Prev |</a>
 <a href="https://neue.cc/10">| Next</a>
