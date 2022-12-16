@@ -441,7 +441,7 @@ Providerを繋げて、実際にSource Generateさせるやつ。大事という
 	<ItemGroup>
 		<ProjectReference Include="..\SourceGeneratorSample\SourceGeneratorSample.csproj">
 			<OutputItemType>Analyzer</OutputItemType>
-      <!-- ReferenceOutputAssemblyをtrueにする! -->
+            <!-- ReferenceOutputAssemblyをtrueにする! -->
 			<ReferenceOutputAssembly>true</ReferenceOutputAssembly>
 		</ProjectReference>
 	</ItemGroup>
@@ -454,6 +454,8 @@ Providerを繋げて、実際にSource Generateさせるやつ。大事という
 
 </Project>
 ```
+
+後述しますが C# 11の内部コンパイルを行うために参照する Microsoft.CodeAnalysis.CSharp は 4.4.0 です。
 
 ```csharp
 namespace SourceGeneratorSample.Tests;
@@ -476,7 +478,7 @@ public partial class MyClass
 }
 ```
 
-あれ、なんか生成結果が更新されてない気がして無限にTestがこけるんだが？という時は、例によってVisual Studio再起動です。
+とりあえずこれをテストすればOK、と。なんか生成結果が更新されてない気がして無限にTestがこけるんだが？という時は、例によってVisual Studio再起動です。
 
 Source Generatorのいいところとして、生成コードへのステップ実行も可能ということで、なんかよーわからん挙動だわーという時はデバッガでどんどん突っ込んでいくといいでしょう。
 
