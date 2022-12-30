@@ -23,7 +23,83 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2016/10/02_540.html">過去に制作した30のライブラリから見るC#コーディングテクニックと個人OSSの原理原則</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2016/10/05_541.html">UnityのMonoアップグレードによるasync/awaitを更にUniRxで対応させる</a></h1>
+<ul class="date"><li>2016-10-05</li></ul>
+<div class="entry_body"><p>ついに！.NET 4.6アップグレードが始まりました。Unityの。Unity 5.5でC#コンパイラをアップグレードしていましたが、今回はついにフレームワークも、です。また、Unity 5.5のものはC#のバージョンは4に制限されていましたが、今回はC# 6が使えます。<a href="https://forum.unity3d.com/threads/upgraded-mono-net-in-editor-on-5-5-0b4.433541/">現在はForumでアーリアクセスバージョン</a>が公開されていて、ついでにそこでリンクされているVisual Studio Tools for Unityも入れると、かなりふつーに.NET 4.6, C# 6対応で書ける感じです。</p>
+<p>さて、.NET 4.6, C# 6といったら非同期。async/await。もちろん、書けました。が、しかし。</p>
+<pre><code class="language-csharp">async Task ThraedingError()
+{
+    Debug.Log($&quot;Start ThreadId:{Thread.CurrentThread.ManagedThreadId}&quot;);
+
+    await Task.Delay(TimeSpan.FromMilliseconds(300));
+
+    Debug.Log($&quot;From another thread, can't touch transform position. ThreadId:{Thread.CurrentThread.ManagedThreadId}&quot;);
+    Debug.Log(this.transform.position); // exception
+}
+</code></pre>
+<p><img src="https://cdn-images-1.medium.com/max/800/1*5ymBUlQvVdGoMqGyQL74xQ.png" alt="" /></p>
+<p>これはtransformのとこで例外でます。なんでかっていうと、awaitによって別スレッドに行ってしまっているから。へー。この辺、async/awaitでは<a href="https://msdn.microsoft.com/magazine/gg598924.aspx">SynchronizationContext</a>という仕組みで制御するのですが、現在のUnity標準では特に何もされてないようです。</p>
+<p>それだけだとアレなので、そこで出てくるのが<a href="https://github.com/neuecc/UniRx">UniRx</a>。今日、アセットストアで最新バージョンのVer 5.5.0を公開したのですが、この5.5.0ではasync/await対応を試験的に入れています。それによって自動的にSynchronizationContextも生成/登録してくれます。</p>
+<pre><code class="language-csharp">async Task UseUniRxInBackground()
+{
+    Debug.Log($&quot;Start ThreadId:{ Thread.CurrentThread.ManagedThreadId}&quot;);
+    await Task.Delay(TimeSpan.FromMilliseconds(300));
+    Debug.Log($&quot;From same thread, because UniRx installs UniRxSynchronizationContext.ThreadId:{ Thread.CurrentThread.ManagedThreadId}&quot;);
+    Debug.Log(this.transform.position); // show transform
+}
+</code></pre>
+<p><img src="https://cdn-images-1.medium.com/max/800/1*MvfGABsKHNVALQxa3OKFDg.png" alt="" /></p>
+<p>というように、UniRxをインポート後では、前の例外を吐いたコードと全く同じでも、ちゃんとメインスレッドに戻してくれるようになります。</p>
+<h2>Coroutine is awaitable</h2>
+<p>UniRxを入れることで追加される機能はそれだけではなく、更に普通のコルーチンもawait可能な仕組みを裏側で仕込んでいます。これにより</p>
+<pre><code class="language-csharp">async Task CoroutineBridge()
+{
+    Debug.Log(&quot;start www await&quot;);
+    var www = await new WWW(&quot;https://unity3d.com&quot;);
+    Debug.Log(www.text);
+    await CustomCoroutine();
+    Debug.Log(&quot;await after 3 seconds&quot;);
+}
+
+IEnumerator CustomCoroutine()
+{
+    Debug.Log(&quot;start wait 3 seconds&quot;);
+    yield return new WaitForSeconds(3);
+    Debug.Log(&quot;end 3 seconds&quot;);
+}
+</code></pre>
+<p><img src="https://cdn-images-1.medium.com/max/800/1*kAoZUrQoRQvI8J8dspN3-Q.png" alt="" /></p>
+<p>といったように、WWWとかIEnumeratorを直接awaitすることが可能になります。これはUniRx側で用意した仕組みによるものなので、普通では（現状は）できません。</p>
+<p>勿論（？）IObservableもawait可能になっています。</p>
+<pre><code class="language-csharp">async Task AwaitObservable()
+{
+    Debug.Log(&quot;start await observable&quot;);
+    await Observable.NextFrame();  // like yield return null
+    await Observable.TimerFrame(5); // await 5 frame
+    try
+    {
+        // ObservableWWW promote exception when await(difference in await WWW)
+        var result = await ObservableWWW.Get(&quot;https://404.com&quot;);
+        Debug.Log(result);
+    }
+    catch (WWWErrorException ex)
+    {
+        Debug.LogError(ex.ToString());
+    }
+    Debug.Log(&quot;end await observable&quot;);
+}
+</code></pre>
+<p><img src="https://cdn-images-1.medium.com/max/800/1*bYPypWXTd3IgxR9tpYxHSw.png" alt="" /></p>
+<p>ObservableWWWを使うと例外はちゃんとtry-catchのほうに投げてくれるようになって、より自然に、簡単に扱えるようになります。</p>
+<h2>まとめ</h2>
+<p>思ったよりも、普通に使えて、普通に統合できるな、という印象があります &lt; async/await。コルーチンで扱うよりも自然で、より強力なので、非同期を扱うのに適したシチュエーションではこっちのほうが良いのは間違いないはずです。Rxとの住み分けですが、基本的に非同期が対象ならばasync/awaitのほうが良いです。が、今回見ていただいたようにIObservableはawaitableなので、コードがRxになっているならば、現在のコードから自然にasync/awaitベースにソフトに移行することが可能でしょう。</p>
+<p>Unityが今後、標準でSynchronizationContextを入れてくるのか、コルーチン対応クラスをawait対応にさせてくるのか、などはちょっと分かりません。分かりませんが、UniRxならば、その対応がずっと後のことになるとしても、今すぐ問題なく使うことが出来ますし、その可能性を今すぐ感じ取ることが可能なので、ぜひとも試してみてください！</p>
+<h2>余談</h2>
+<p>UniRxがAssetStore STAFFPICKに選ばれましたー。</p>
+<img src="https://pbs.twimg.com/media/Ct57c5SVIAAzSAJ.jpg:large" width=620 />
+<p>うーん、嬉しい。</p>
+</div>
+<h1><a href="https://neue.cc/2016/10/02_540.html">過去に制作した30のライブラリから見るC#コーディングテクニックと個人OSSの原理原則</a></h1>
 <ul class="date"><li>2016-10-02</li></ul>
 <div class="entry_body"><p>という（サブ）タイトルで、<a href="http://dotnetfringe-japan.connpass.com/event/35659/">.NET Fringe Japan 2016</a>で発表してきました。<a href="http://live.nicovideo.jp/watch/lv277167391">ニコ生</a>では7時間目ぐらいから。</p>
 <iframe src="//www.slideshare.net/slideshow/embed_code/key/5aYQa7asGPlktr" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/what-why-how-create-oss-libraries-30coss" title="What, Why, How Create OSS Libraries - 過去に制作した30のライブラリから見るC#コーディングテクニックと個人OSSの原理原則" target="_blank">What, Why, How Create OSS Libraries - 過去に制作した30のライブラリから見るC#コーディングテクニックと個人OSSの原理原則</a> </strong> from <strong><a href="//www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
@@ -1366,106 +1442,6 @@ public class AdditionalFileAnalyzer : DiagnosticAnalyzer
 <p>コンフィグとして使うには、まぁイマドキのJSONでコンフィグだったらJSON.NETでJsonConvert.DeserializeObjectなんかでサクッと復元してやるのが楽でしょう。外部DLL読み込むのが嫌だという場合は、XMLにしてLINQ to XMLやXmlSerializer使うのも全然お手軽でいいとは思います。</p>
 <p>コンフィグなんてほぼほぼ固定になるのに毎回デシリアライズ走らせるのは嫌だなあ、って場合はstaticオブジェクトにキャッシュしちゃうのも悪くない手だと思います。その場合は、書き換えた場合はプロジェクト再読み込み（or VS再起動)になってしまいますが、実用的には全然問題ないはず。といいたいのですが、複数のプロジェクト跨ぎで共有されちゃうと厄介だったりするので注意が必要なので、まぁちょっとDeserializeするぐらい大したことねーよということで、毎度Deserializeするのも全然構わないかな、とは。</p>
 <p>このコンフィグを読み込む手法は<a href="https://github.com/DotNetAnalyzers/StyleCopAnalyzers/blob/master/documentation/Configuration.md">StyleCopAnalyzer/Configuration.md</a>でも採用されているし、これがスタンダードのやり方だと思って良さそうです。</p>
-</div>
-<h1><a href="https://neue.cc/2016/03/21_526.html">SerializableDictionary - Unityで高速に辞書復元するためのライブラリ</a></h1>
-<ul class="date"><li>2016-03-21</li></ul>
-<div class="entry_body"><p>という、ScriptableObjectとかJsonUtilityとか、そもそもSerializeFieldとかでシリアライズできるDictionaryを作りました。</p>
-<ul>
-<li><a href="https://github.com/neuecc/SerializableDictionary">GitHub - neuecc/SerializableDictionary</a></li>
-</ul>
-<p>もともとDictionaryはシリアライズできないのですが、ISerializationCallbackReceiverを用いてシリアライズ/デシリアライズのタイミングでKeyの配列、Valueの配列に戻してやるなどで保存すること自体は全然可能でした。のですが、速度的には問題あるな、というのに直面しました。</p>
-<p>その前に、JSONから復元するのがまず遅かった。じゃあMsgPackやProtobufに変更したら速いかといえば、別にそこまでそうではなかった。これはつまり、C#のレイヤーで大量の何かを舐めて何かを作るという行為そのものが遅い。ではScriptableObject化すればどうだろう、確かにデシリアライズのプロセスがUnityネイティブ（実体は不明）と化して、確かに速い。が、そこからDictionaryに変換してやるのをC#で書いたらやっぱりそこが遅い。</p>
-<p>遅い、というとアレで、量次第ですけどね。今回、量がやたら多かったので結構かなり相当引っ張られてた。初期化のタイミングなどで大量のDictionaryを捌くような場合に、無視できない程度に結構引っかかる遅さを醸し出してる。結局、配列からであっても、C#のレイヤーで大量の何かを舐めて何かを作るという行為そのものが遅い。という悲しい現実をつきつけられるのであった。</p>
-<p>というわけで、SerializableDictionaryはDictionaryの内部構造をシリアライズすることで、ネイティブプロセスのみで完結して爆速で復元します。</p>
-<p>SerializableDictionaryではSerializableDictionary, SerializableLookup(MultiDictinary), SerializableTupleの3つを提供します。今のとこアセットストアに公開するつもりはそんなないので、使いたい場合はソースコードをZipでダウンロードするなりGitで落とすなりしてプロジェクトに投げ込んでください。</p>
-<h2>SerializableDictionary</h2>
-<p>例えばキーがint、値がstringの辞書を保存したい場合は、まず、継承したクラスを作ります。</p>
-<pre><code class="language-csharp">[Serializable]
-public class IntStringSerializableDictionary : SerializableDictionary&lt;int, string&gt;
-{
-
-}
-</code></pre>
-<p>わざわざ継承しなきゃいけない理由は、ジェネリックな型はシリアライズできないからです！しょうがないね。別にゆうてそんなに大量の型があるわけでもないでしょうし、素直にそれぐらいは作りましょう。あとは、普通に使えば普通にシリアライズ可能になってます。メデタシメデタシ。</p>
-<p>インスペクタに表示するためのPropertyDrawerも用意してあります（こちらも定義しないとインスペクタに何も表示されなくて不安になる）。使う場合は、SerializableDictionaryPropertyDrawerを継承した型を一つ作って、そこに属性でひたすらぶら下げます。</p>
-<pre><code class="language-csharp">#if UNITY_EDITOR
-
-[UnityEditor.CustomPropertyDrawer(typeof(IntStringSerializableDictionary))]
-[UnityEditor.CustomPropertyDrawer(typeof(IntDoubleSerializableDictionary))]
-[UnityEditor.CustomPropertyDrawer(typeof(IntIntStringSerializableDictionary))]
-public class ExtendedSerializableDictionaryPropertyDrawer : SerializableDictionaryPropertyDrawer
-{
-
-}
-
-#endif
-</code></pre>
-<p>これを定義すれば、インスペクタ上では</p>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/13866974/da6f9fac-ec77-11e5-93a7-a8eb43c08680.png" alt="image" /></p>
-<p>なんとKeyとValueの確認しか用意されてなくて、エディット不能！ただのDump！うーん、気が向いたらエディット可能にします。そのうち（多分やらない）。</p>
-<h2>複数キーの辞書</h2>
-<p>Int + Intの組み合わせでキーにしたいとか、辞書にはよくあるケースです。そして、そういったよくあるケースではKeyにTupleを使うことが多いです。が、UnityにはTupleはありません。<a href="https://github.com/neuecc/UniRx">UniRx</a>にTupleがあります、が、それはシリアライズ可能ではありません(Genericだからねー、structなので継承もできない)。と、いうわけで、辞書のキーにしたいよね専用にSerializableTupleを用意しておきました。使う場合はもちろんまずは継承してジェネリックを消すとこからはじめます。</p>
-<pre><code class="language-csharp">[Serializable]
-public class IntIntTuple : SerializableTuple&lt;int, int&gt;
-{
-    public IntIntTuple()
-    {
-
-    }
-
-    public IntIntTuple(int item1, int item2)
-        : base(item1, item2)
-    {
-
-    }
-}
-
-[Serializable]
-public class IntIntStringSerializableDictionary : SerializableDictionary&lt;IntIntTuple, string&gt;
-{
-
-}
-</code></pre>
-<p>あとは普通にキーに使ってもらえれば、普通に使えます。ちょっと手間ですが、そこまで多いわけでもないでしょうし我慢できる範囲内。だといいかな。</p>
-<h2>SerializableLookup</h2>
-<p>ILookupは、Keyに対してValue側が複数になっている辞書です。Dictionary[Key, Value[]] みたいなイメージ。通常のILookupはLINQのToLookup経由でしか作成できない、Readonlyなシロモノです。これ、非常に便利な型でして、よく使います。ToLookupしらない人は覚えましょう。ただ、勿論シリアライズできないのでAddを加えたSerializableLookupを用意しました（Removeはありません！つまりBuilderのほうがイメージ近いかもしれません。Removeがない理由は実装しててバグッたからとりあえず消してるだけなのでそのうち入れるかもしれないかもしれない）</p>
-<p>使い方はDictionaryと同様。</p>
-<pre><code class="language-csharp">[Serializable]
-public class IntIntSerializableLookup : SerializableLookup&lt;int, int&gt;
-{
-}
-
-#if UNITY_EDITOR
-
-[UnityEditor.CustomPropertyDrawer(typeof(IntIntSerializableLookup))]
-public class ExtendedSerializableLookupPropertyDrawer : SerializableLookupPropertyDrawer
-{
-
-}
-
-#endif
-</code></pre>
-<p>ちなみに中身は面倒くさいんでSerializableDictionaryの一部を改変して辻褄合わせてるだけなので、実効速度的な意味ではToLookupで生成したものに比べるとやや劣るかなー、といったところ。まぁハッシュキーの衝突具合とかにもよるので、いうほどそこまでではないと思います。実装の雑さは気にしてるのでそのうち直したい（絶対やらない）</p>
-<h2>TrimExcess</h2>
-<p>ListにせよDictionaryにせよ、任意個数をAdd可能なものは、内部である程度余分なバッファを持っています。しかし、ScriptableObjectなどにしてAssetBundleに載せたい場合は、その後の追加なども特になく個数は固定である可能性も少なくないはずです。と、いうわけで、TrimExcessメソッドを呼ぶことで余分なバッファを切り落とすことができます。もし個数が固定であることが見えているなら、事前にSerialize前に呼んであげておくことで、メモリ節約につながります。</p>
-<h2>Unityでシリアライズ可能なもの</h2>
-<p>内部構造の話なのですが、その前にUnityでシリアライズ可能なものの制限についておさらい。</p>
-<ul>
-<li>[Serializable]のついた非ジェネリックな具象型</li>
-<li>UnityEngine.Objectを継承した型</li>
-<li>public、または[SerializeField]のついたインスタンスフィールド</li>
-<li>int, float, double, bool, stringなどのプリミティブなデータ型</li>
-<li>配列、もしくはList[T]</li>
-</ul>
-<p>Dictionaryに非対応なのは勿論ですが、Nullable[T]に非対応が割と痛かったりするかな！また、トップレベル以外でnullをサポートしていなかったりして、ちょっと複雑な型を作った場合、nullを入れたと思ったら全部0が入った謎データに置き換わっていた、とかが生じます。それらの制限の回避策としては、SerializableDictionaryと同じようにSerializableNullableのようなそれっぽい似非な型を自前で作ってあげればなんとかなります。nullのほうも同様にNullableClass（なんじゃそりゃ）を作ってあげることにより、nullかそうでないかの区別を可能にできます。面倒くさくはあるんですが、どうしても必要な場合はそうして回避できなくもないよ、ということで。</p>
-<p>SerializableDictionaryは、Dictionaryの内部構造を、Unityでシリアライズ可能な範囲（ようするにひたすら単純な配列まみれにする）に修正することで実現しています。オリジナルのDictionary自体は<a href="https://github.com/dotnet/corefx">dotonet/corefx</a>のものです。</p>
-<h2>ハッシュコードを永続化することの安全性</h2>
-<p>ハッシュコードを永続化することは、推奨されないことが明言されています。というのも、そのオブジェクトに対するハッシュコードが一意であるかが、どのスコープまで保たれるかというのは、全くもって不明瞭だからです。参照型などはアプリケーション起動毎に異なってなにの役にも立たなくなる、では数字は？文字列は？保証はないんですねー。</p>
-<p>実用的な意味では、問題ないと判断しても構わないと思っています。しかし、まず、monoと.NET Frameworkのような環境が違うもので生成したもの同士の互換性はないと考えたほうがいいでしょう（実際ない）。また、.NET Framework内だけでも、バージョンが異なれば、違うハッシュアルゴリズムが使われることにより異なるハッシュコードが使われる可能性は全然あります。今後も、Unityのバージョンアップ＋（もしあるのなら）monoのバージョンアップが発生した際などは、互換性が崩れる可能性があります。最悪そうなった場合は、任意のComparerを挟み込めるようになっているので、そこで互換性を保ったハッシュコードを返してやることにより、一応大丈夫とはいえます。一応。</p>
-<p>とはいえまあ、実用的な意味では大丈夫でしょう。タブンネ。まぁしかし、この辺グレーゾーンなきらいもあるから、Unity公式でサポートってのは難しいんじゃないかなあ、というのはしょうがないかなー。</p>
-<h2>まとめ</h2>
-<p>Unityって結局どこで動いているものなのよ、ってのを改めて突きつけられた感じがしました。C++のエンジンがあくまでも主だな、と。また、シリアライズを通して考えると、一見不思議なMonoBehaviourやpublic fieldなども納得がいくように見えてきて、ようするにネイティブとの境界線を接続している場所なんですね。COMとdynamicでやり取りするように、ネイティブレイヤーとフィールドでやり取りする。そう思えば、何もかも腑に落ちてきた気がします（悟り！）。</p>
-<p>C#のレイヤーでいかに仕事をさせないかがキモで、そのためにC#を書く。ってのも、まぁ悪くない話だし、Unityアプリケーションとしての整合感やパフォーマンスが最も求めるべきことなのだ。というのは認識しておきたいな、なんて改めて思わさせられました。</p>
 </div>
 <a href="https://neue.cc/5">Prev |</a>
 <a href="https://neue.cc/7">| Next</a>
