@@ -537,6 +537,11 @@ public static class CSharpGeneratorRunner
 
     public static Diagnostic[] RunGenerator(string source, string[]? preprocessorSymbols = null, AnalyzerConfigOptionsProvider? options = null)
     {
+        // NET 7 + C# 11
+        if (preprocessorSymbols == null)
+        {
+            preprocessorSymbols = new[] { "NET7_0_OR_GREATER" };
+        }
         var parseOptions = new CSharpParseOptions(LanguageVersion.CSharp11, preprocessorSymbols: preprocessorSymbols);
         var driver = CSharpGeneratorDriver.Create(new SourceGeneratorSample.SampleGenerator()).WithUpdatedParseOptions(parseOptions);
         if (options != null)
