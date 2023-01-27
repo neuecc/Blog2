@@ -4,11 +4,11 @@
 
 * [github.com/Cysharp/StructureOfArraysGenerator](https://github.com/Cysharp/StructureOfArraysGenerator/)
 
-これは何かというと、structure of arrays(SoA)を使いやすくするためのコードを生成するというものです。まずそもそもSoAですが、Wikipediaの[AoS and SoA](https://en.wikipedia.org/wiki/AoS_and_SoA)という記事によるところ（日本語版はない）、CPUキャッシュを有効活用したりSIMDを適用させやすくなる構造だよ、と。通常C#の配列はstructure of arrays(SoA)になります。
+これは何かというと、structure of arrays(SoA)を使いやすくするためのコードを生成するというものです。まずそもそもSoAですが、Wikipediaの[AoS and SoA](https://en.wikipedia.org/wiki/AoS_and_SoA)という記事によるところ（日本語版はない）、CPUキャッシュを有効活用したりSIMDを適用させやすくなる構造だよ、と。通常C#の配列はarray of structure(AoS)になります。
 
 ![](https://user-images.githubusercontent.com/46207/214814782-fd341e09-731a-4e2f-ba53-ef789a19160e.png)
 
-上がSoAでXYZXYZXYZXYZといったように並んでいる構造ですが、下のStructureOfArraysGeneratorで生成したAoSの配列はXXXXYYYYZZZZという並び順になります。実際にシンプルなパフォーマンステスト（Vector3[10000]に対してYの最大値を求める）によるところ
+上がAoSでXYZXYZXYZXYZといったように並んでいる構造ですが、下のStructureOfArraysGeneratorで生成したSoAの配列はXXXXYYYYZZZZという並び順になります。実際にシンプルなパフォーマンステスト（Vector3[10000]に対してYの最大値を求める）によるところ
 
 ![](https://user-images.githubusercontent.com/46207/215027253-6f94739f-b827-46ba-a395-690d1df89d46.png)
 
