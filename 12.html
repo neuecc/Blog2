@@ -23,7 +23,88 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2013/01/05_392.html">C#でローカル変数からDictionaryを生成する</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2013/01/10_393.html">C#でFlash Liteなswfをバイナリ編集して置換する</a></h1>
+<ul class="date"><li>2013-01-10</li></ul>
+<div class="entry_body"><p>Flash Liteに限定しませんが、そういうのをどうしてもしたい！というシチュエーションは少なからずごく一部であるようです。どーいうことかというと、ガラケーが積んでるFlash Lite、は、パラメータを受け取って、それをもとにどうこうする、というのが非常に弱い。ほぼほぼ出来ない。でも、違うメッセージを表示したい、画像を変えたい、などという需要があります。特に、ソーシャルゲームはまさにそうで。そこで各社がどういう手段を取っているかというと、.swfを開いてバイナリ編集して、直接、テキストだったり画像だったりを置換しています。</p>
+<p>RubyやPHPには有名なライブラリがあって実例豊富だけれど、ドトネトにはない。というのが弱点の一つでした。ん？あれ？gloopsではどうしていたの？というとそこのところは内緒（辞めた人間なのであまり言えません）</p>
+<p>で、SWF仕様読みながら自前で解析してやるしかないかなあ、画像置換ぐらいしかやらないからフルセットの再現はしなくていいので、手間でもないだろう、でも手間だなあ、嫌だなあ、と思ったら、ライブラリ、あったじゃないですか！それが<a href="https://github.com/debreuil/Swf2XNA">Swf2XNA</a>。to XNAということでFlashをXNAで使えるようにする(<a href="http://gree.github.com/lwf/">GreeのLWF</a>、よりもスクリプトも再現するから高級版ですなー)、他にXAMLに書きだしたりとか色々できるよう。中々高機能で良さそう！</p>
+<p>といっても、そもそも目的がテキスト/画像置換しかしないので高機能である必要はないのですが、高機能を実現するために、SWFの解析回りはバッチリ。</p>
+<p>残念ながらドキュメントはXNA周り中心で（当たり前か）さっぱり、コンパイル済みバイナリも用意されてないでソースからのみ。と、使うには微妙にハードですが、一から仕様読み解いてぽちぽち作るよりも百億倍楽なので、喜んで使わせて頂きます。とはいえ、swfの仕様については、ある程度読んで頭に入れておいたほうがいいです、というかそうでないと、どう操作すればいいのか全くピンと来ないので。</p>
+<p>SWFの詳しい話は<a href="http://labs.gree.jp/blog/2011/01/2353/">SWFバイナリ編集のススメ</a>が親切丁寧で非常に詳しい、分かりやすい。ので、それと照らし合わせながら進めていきましょう。</p>
+<h2>SWFをSwfFormatで読み込む</h2>
+<p>Swf2XNAのソリューションを開くといっぱいあって何が何やら。しかもコンパイル通らないし（XNA周りが未インストールだから）。で、困るのですが、今回はXNA周りは不要でコアのSWF解析さえできればいいので、そのためのプロジェクトはSwfFormat。これはXNAなどなどを入れなくても単体でビルド通るので、ビルドしてDLLを作りましょう。</p>
+<p>さて、ビルドが通ったら、まずは<a href="http://labs.gree.jp/blog/2010/08/631/">SWFバイナリ編集のススメ第一回</a>に従って、orz.swfをサンプルとしていただいて、解析してみましょう。</p>
+<pre><code class="language-csharp">// SwfReaderはちょっと高級なBinaryReader的なもの
+// swfはbit単位での処理しなきゃならない部分があるのでBinaryReaderだけだと不便
+var reader = new SwfReader(File.ReadAllBytes(&quot;orz.swf&quot;));
+
+// SwfCompilationUnitがSwfの構造を表す
+// コンストラクタの時点で生成出来てる(XElement.Loadみたいなもの)
+var swf = new SwfCompilationUnit(reader);
+</code></pre>
+<p>メインとなるクラスはSwfCompilationUnitです。これが全て。中身がどうなってるか、というと、Visual Studioで見るのが速いですね。いやほんと、皆IDE使うべきだと思いますよ、ほんと（最近ぺちぱーなので愚痴る、いや、私自身はPHPはPHPStormで書いてるのですが）</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/swfcompilationunit.jpg">
+</p>
+<p>ばっちり解析済みのようです。Headerを見ても、問題なく作れてる。</p>
+<h2>Tagを置き換えてみる</h2>
+<p>SWFの中身の実態はTagです。↑で見ると、orz.swfにはTagが87個ありますね。どういうのが並んでいるのか、というと、これもVisual Studioで見るのが手っ取り早い。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/swftags.jpg">
+</p>
+<p>ふむふむ。なんとなくわかるような感じ。フレームがあってオブジェクトがあって、みたいな。では、<a href="http://labs.gree.jp/blog/2010/08/726/">SWFバイナリ編集のススメ第二回</a>に進んで、背景色を変更しましょう。背景色は↑で開いている、BackgroundColorTagを弄ります。具体的な作業手順、コードは以下のような感じ。</p>
+<pre><code class="language-csharp">// 要素はTagの中に詰まってるので、それを探してパラメータを置きかえ
+var tagIndex = swf.Tags.FindIndex(x =&gt; x.TagType == TagType.BackgroundColor);
+var tag = (BackgroundColorTag)swf.Tags[tagIndex];
+tag.Color.R = 255; // 背景色を真っ赤に
+tag.Color.G = 0;
+tag.Color.B = 0;
+
+// Tagはstructなため、代入しないと反映されない
+swf.Tags[tagIndex] = tag;
+
+using (var ms = new MemoryStream())
+{
+    // SwfWriterはMemoryStreamしか受け付けない(Lengthを最後に書き換えたりするから、その必要があるみたい)
+    var sw = new SwfWriter(ms);
+    swf.ToSwf(sw); // メモリストリームに書きだされた
+
+    // ファイルに置換後のSWFを出力
+    File.WriteAllBytes(&quot;replaced.swf&quot;, ms.ToArray());
+}
+</code></pre>
+<p>Tagを置き換えて(classじゃなくてstructなので、実際にListに再代入しないと変更が反映されないことに注意)、あとはSwfCompilationUnitのToSwfを使ってMemoryStreamに吐き出してやれば、それだけでTagの置換は完了です。無事、背景色が真っ赤なswfが生成されました！すっごく簡単だわー。</p>
+<h2>画像置換</h2>
+<p><a href="http://labs.gree.jp/blog/2010/09/782/">SWFバイナリ編集のススメ第三回 (JPEG)</a>に従って、画像置換もやってみましょう。</p>
+<pre><code class="language-csharp">var reader = new SwfReader(File.ReadAllBytes(&quot;orz.swf&quot;));
+var swf = new SwfCompilationUnit(reader);
+
+// DefineBitsTagはCharacterIdを持つので、実際はそれを参照して置換するTagを探すと良い
+var tagIndex = swf.Tags.FindIndex(x =&gt; x.TagType == TagType.DefineBitsJPEG2);
+var tag = (DefineBitsTag)swf.Tags[tagIndex];
+tag.JpegData = File.ReadAllBytes(&quot;ethnyan.jpg&quot;); // jpegデータを直接置き換え
+swf.Tags[tagIndex] = tag;
+
+using (var ms = new MemoryStream())
+{
+    // Tagの画像を置き換えたことでHeaderのFileLengthも変わらなければなりませんが
+    // ↑でTagに代入しただけでは、そこは変わっていないままです
+    // が、ToSwfの際に、Headerも再計算された値に置き換えてくれるので、手動で変える必要はなし
+    var sw = new SwfWriter(ms);
+    swf.ToSwf(sw);
+
+    // ファイルに置換後のSWFを出力
+    File.WriteAllBytes(&quot;replaced.swf&quot;, ms.ToArray());
+}
+</code></pre>
+<p>やってることは当然ながら同じで、置き換えたいTagを探す、置き換える、ToSwfで吐き出す。それだけです。簡単～。</p>
+<p>置き換えによってFileLengthが変わる、などといったことはSwfCompilationUnitが面倒を見てくれるので、考えなくても大丈夫です。素晴らしい。</p>
+<h2>まとめ</h2>
+<p>RubyやPHPにはライブラリあるけれど、ドトネトにはないというのが弱点の一つでした（多分）。これで解決しましたね！さあ、C#で是非とも参入しましょう。</p>
+<p>置換にあたって元swfファイルって変わらないから、SwfCompilationUnitをキャッシュすれば、ファイルオープンや解析のコストがなくなり、バイナリ編集のコストが純粋なバイト書き出しだけに抑えられますね。<a href="http://www.klab.com/jp/services/products/flamixer/index.html">KlabのFlamixer</a>は、初回パース時に構造を変えてMessagePackでシリアライズしておくので、というけれど、それだって読み込みやデシリアライズのコストありますものね。ASP.NETならゼロシリアライゼーションコストでキャッシュ出来るから、それ以上に期待持てそうだし、実際、軽くテストして見た限りだと、相当速くて、かなりイケテルと思いますですね。</p>
+<p>というわけで謎社ではC#でほげもげしたい人をそのうち募集しますので暫しお待ちを。</p>
+</div>
+<h1><a href="https://neue.cc/2013/01/05_392.html">C#でローカル変数からDictionaryを生成する</a></h1>
 <ul class="date"><li>2013-01-05</li></ul>
 <div class="entry_body"><p>どうもPHPerです。あ、すぐC#のコード出しますので帰らないで！というわけで、PHPには<a href="http://php.net/manual/ja/function.compact.php">compact</a>というローカル変数からハッシュテーブルを作るという関数があります。割と多用します。その逆のextractという関数もありますが、そちらはカオスなのでスルー。</p>
 <pre><code class="language-php">$name = &quot;hogehoge&quot;;
@@ -1787,93 +1868,6 @@ static async Task Test()
 <p>Xbox.comが内部的にちょっと変わっていて動かなくなっていたので、それに対応しました。多分！</p>
 <p>ちょっと今シンガポールに来ていまして、Xbox360の実機がないので動作確認してません！うわぁぁぁ。shoganaiので、ちょっとこちらでXbox360を調達しようか割と考え中。まあともあれ、動いたか動かなかったか報告頂ければ嬉すぃなあ。</p>
 </div>
-<h1><a href="https://neue.cc/2012/07/20_378.html">linq.js ver.3.0.0-beta, メソッドlowerCamelCase化、など</a></h1>
-<ul class="date"><li>2012-07-20</li></ul>
-<div class="entry_body"><p>ずっとやるやる詐欺だったlinq.js ver.3ですが、ようやく始まりました！</p>
-<ul>
-<li><a href="http://linqjs.codeplex.com/">linq.js - LINQ for JavaScript</a></li>
-</ul>
-<p>トップページのボタンはstableのものになるので、DOWNLOADSタブからver.3.0.0-betaを選んでください。また、NuGetを使っている人はInstall-Package linq.js -Preで入ります。他にlinq.js-jQuery -Pre, linq.js-RxJS -Pre, linq.js-QUnit -Preなどり。</p>
-<h2>lowerCamelCase化</h2>
-<p>はい。ようやくJavaScriptらしくなりました。UpperCamelCaseにはC#っぽいとか、キーワードで衝突しなくなるとか、ちょっとした利点はなくもないのですが、そもそも.NETっぽくないほうがいい、というかJavaScriptの世界にちゃんと馴染ませたいという思いのほうが強い。そして、.NETの人以外にも使って欲しくて。</p>
-<pre><code class="language-javascript">Enumerable.range(1, 10)
-    .where(function(x){ return x % 2 == 0})
-    .select(function(x){ return x * x});
-</code></pre>
-<p>当然ながら超破壊的変更です。ver.2までのコードは一切動かなくなります。やりすぎですが、しょうがない。痛くてしょうがないけれどしょうがない。さて、ならばとついでにメソッド名の見直しもしました。</p>
-<pre><code class="language-text">Return -&gt; make
-CascadeBreadthFirst -&gt; traverseBreadthFirst
-CascadeDepthFirst -&gt; traverseDepthFirst
-BufferWithCount -&gt; buffer
-ToString -&gt; toJoinedString
-Do -&gt; doAction
-Let -&gt; letBind
-MemoizeAll -&gt; memoize
-Catch -&gt; catchError
-Finally -&gt; finallyAction
-ToJSON -&gt; toJSONString
-</code></pre>
-<p>これを機に、というかこういう機会じゃないとやれないですから。toStringやtoJSONは、上書きしてしまうとマズいので別名にしています。toStringは、まあそのままなので分かると思うのですが、toJSONのほうは、JSON.stringifyで特別扱いされるメソッドなので、こっそり注意が必要なんですね、というか実際ハマッて気づくのに時間かかりました。</p>
-<h2>extendTo</h2>
-<p>prototype.js以降、prototype拡張は悪、でしたが、最近のJavaScriptはfor inで列挙しない形での拡張(Object.definePropertyでenumerable:falseにする)が可能になっています。それを全面に押し出した<a href="http://sugarjs.com/">Sugar</a>といったライブラリもあり、確かに便利なのですよね。</p>
-<p>さて、linq.jsでは配列などをLINQで扱うためにEnumerable.fromで包んでやる必要があって面倒でしたが、配列からそのままselectとかwhereとかが生えていれば、便利、ですよね？なので、任意に拡張できるようにしました。</p>
-<pre><code class="language-javascript">// Arrayを拡張する
-Enumerable.Utils.extendTo(Array);
-        
-[1, 3, 10, 1000].where(&quot;$%2==0&quot;).select(&quot;$*$&quot;);
-</code></pre>
-<p>Enumerable.Utils.extendToを一度呼べば、from不要で直接LINQのメソッドを呼ぶことができます。もしブラウザがObject.definePropertyに対応していなければ、その時はprototypeを直接拡張しています。</p>
-<p>さて、LINQのメソッド名とネイティブのメソッド名が被っている場合は、ネイティブのメソッド名を優先して、上書きはしません。例えばjoinとか、concatとか。その場合はByLinqがメソッド名の末尾につきます。joinByLinq、など。</p>
-<pre><code class="language-javascript">// 名称が被るものはByLinqというプリフィックスがつく
-[1, 3, 10].reverseByLinq();
-
-// もしくはasEnumerableメソッドを呼んであげればLINQのメソッドのみになります
-[1, 10, 100].asEnumerable().forEach(function(x, index){alert(x + &quot;:&quot; + index)});
-</code></pre>
-<p>forEachなどは古いブラウザではそのまま、新しいブラウザではforEachByLinqになる、といったようにブラウザ互換性がなくなるので、個人的にはByLinqの形で呼ぶよりかは、asEnumerableを使うことのほうをお薦めします。</p>
-<h2>Visual Studio 2012でのIntelliSense超拡張</h2>
-<p>VS2012でlinq.jsを使うと、ただでさえ充実していたIntelliSenseが更に超補完されます。どのぐらい補完されるか、というと、selector関数でオブジェクトの候補が並んでしまうぐらいに。</p>
-<p class="noindent">
-	<img src="http://act.neue.cc/linq.js_3.0_intellisense.jpg">
-</p>
-<p>もはや完全にC#。あまりの快適さにチビる。勿論、↑の図ではFooは文字列なので、x.Foo.で文字列のメソッド候補がIntelliSenseに並びます。動的言語とは思えない超補完っぷりがヤバい。そして入力補完が最大限に活きるように設計されているLINQなので、組み合わさった時の快適度は半端ない。</p>
-<h2>Chaining Assertion for QUnit</h2>
-<p>ユニットテストを書く際に、equal(actual, expected)と書くのが嫌いでした。どちらがactualなのかexpectedなのか一瞬悩むし、そもそも外側から包むのがかったるくて。かといってshouldといった、英語的表現なのも冗長なだけで全く良いとは思っていませんでした。そこでC#では<a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>といった、actual.Is(expected)でアサートが書けるライブラリを作ったのですが、それをJavaScript用に移植しました。</p>
-<pre><code class="language-javascript">// 流れるように.isと打ち込むだけ
-Math.pow(10, 2).is(100); // strictEqual(Math.pow(10, 2), 100)
-
-// コレクションに対する適用は可変長にカンマ区切りで値を並べるだけ。勿論、配列にも使えます。
-Enumerable.rangeTo(10, 15, 2).is(10, 12, 14); // deepEqual(Enumerable.rangeTo(10, 15, 2).toArray(), [10, 12, 14])
-
-// LINQと組み合わさることでコレクション系のチェックが遥かに容易になる！
-[1, 5, 10].all(&quot;$&lt;12&quot;).isTrue(); // collection assertion with linq.js!
-</code></pre>
-<p>といった感じに書けて、超楽ちんです。使うにはlinq.qunit.jsを別途読み込んでください。</p>
-<h2>その他</h2>
-<p>createEnumerable, createEnumerator, createLambdaといった、自作Enumerableメソッドを作るための道具を外部公開するようにしました。是非作っちゃってください。</p>
-<pre><code class="language-text">Enumerable.Utils.createLambda
-Enumerable.Utils.createEnumerable
-Enumerable.Utils.createEnumerator
-</code></pre>
-<p>更に、メソッドも追加されています。</p>
-<pre><code class="language-text">Enumerable.defer
-asEnumerable
-merge
-choose
-isEmpty
-distinctUntilChanged
-weightedSample
-log
-</code></pre>
-<p>それらの細かい使い方などは追々書いていきます。また、merge, zip, concatは複数のシーケンスを引数に受け取れるようになりました。</p>
-<p>そして、C#では、以前に<a href="http://neue.cc/2012/03/08_367.html">neue cc - LINQのWhereやSelect連打のパフォーマンス最適化について</a>という記事を書いた通り、Where連打やSelect連打、それにWhere-&gt;Selectといったよくあるパターンに対して最適化が入っているのですが、それをlinq.jsでも再現しました。なので、Where連打などによるパフォーマンス劣化が抑えられています。また、頻出パターンのWhere-&gt;Selectで高速化されたのはかなり大きいと思っています。</p>
-<p>それに加えてrange, rangeDown, rangeToといったよく使う生成関数の速度を大幅に上げました（以前はtoInfinity().take()で生成していたのを、独自生成に変更したため）。</p>
-<p>なので全体的にパフォーマンスも向上しています。</p>
-<p>それと最後に、jQueryのプラグインとしてのものは今回からやめました。なんか混乱するし意味ないな、と思ったので、jQueryとの連携はlinq.jquery.jsによるtoEnumerable/tojQueryを追加するファイルのみとなっています。RxJSに関しても最新版のRxJSと連携できるようにしました(linq.rx.js)</p>
-<h2>今後</h2>
-<p>VS2012に対するIntelliSenseの充実化がまだ1/5ぐらいしか出来ていないので、それの充実が優先です。あと、リファレンスやサンプルが書けてないので追加。それらが出来たら、いったんver.3として正式公開します。<a href="http://atnd.org/events/30344">プログラミング生放送勉強会 第17回＠品川 #pronama : ATND</a>で話すつもりなので、その日、8/25までには正式公開を目指します！というわけで是非是非聞きに来てください。</p>
-<p>あ、あとnode.js用にnpm公開も、ですね。</p>
-</div>
 <a href="https://neue.cc/11">Prev |</a>
 <a href="https://neue.cc/13">| Next</a>
 </div>
@@ -1897,6 +1891,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2023/01/">2023-01</a>
 <li><a href="https://neue.cc/2022/12/">2022-12</a>
 <li><a href="https://neue.cc/2022/11/">2022-11</a>
 <li><a href="https://neue.cc/2022/07/">2022-07</a>

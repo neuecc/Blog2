@@ -5,7 +5,118 @@
     <link>http://neue.cc/</link>
     <description>C# Technical Blog</description>
     <language>ja</language>
-    <lastBuildDate>Tue, 03 Jan 2023 02:37:25 +0900</lastBuildDate>
+    <lastBuildDate>Fri, 27 Jan 2023 19:04:26 +0900</lastBuildDate>
+    <item>
+      <guid isPermaLink="true">https://neue.cc/2023/01/27_StructureOfArraysGenerator.html</guid>
+      <link>https://neue.cc/2023/01/27_StructureOfArraysGenerator.html</link>
+      <title>StructureOfArraysGenerator - C#でSoAを簡単に利用するためのSource Generator</title>
+      <description>&lt;h1&gt;&lt;a href="https://neue.cc/2023/01/27_StructureOfArraysGenerator.html"&gt;StructureOfArraysGenerator - C#でSoAを簡単に利用するためのSource Generator&lt;/a&gt;&lt;/h1&gt;
+&lt;ul class="date"&gt;&lt;li&gt;2023-01-27&lt;/li&gt;&lt;/ul&gt;
+&lt;div class="entry_body"&gt;&lt;p&gt;最近はSource Generatorブームが続いていて、去年末に&lt;a href="https://neue.cc/2022/12/16_IncrementalSourceGenerator.html"&gt;2022年のC# (Incremental) Source Generator開発手法&lt;/a&gt;という記事を出しましたが、まずは今年第一弾のSource Generatorライブラリです。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href="https://github.com/Cysharp/StructureOfArraysGenerator/"&gt;github.com/Cysharp/StructureOfArraysGenerator&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;これは何かというと、structure of arrays(SoA)を使いやすくするためのコードを生成するというものです。まずそもそもSoAですが、Wikipediaの&lt;a href="https://en.wikipedia.org/wiki/AoS_and_SoA"&gt;AoS and SoA&lt;/a&gt;という記事によるところ（日本語版はない）、CPUキャッシュを有効活用したりSIMDを適用させやすくなる構造だよ、と。通常C#の配列はstructure of arrays(SoA)になります。&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/214814782-fd341e09-731a-4e2f-ba53-ef789a19160e.png" alt="" /&gt;&lt;/p&gt;
+&lt;p&gt;上がSoAでXYZXYZXYZXYZといったように並んでいる構造ですが、下のStructureOfArraysGeneratorで生成したAoSの配列はXXXXYYYYZZZZという並び順になります。実際にシンプルなパフォーマンステスト（Vector3[10000]に対してYの最大値を求める）によるところ&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/215027253-6f94739f-b827-46ba-a395-690d1df89d46.png" alt="" /&gt;&lt;/p&gt;
+&lt;p&gt;そのまま書いても2倍、SIMDで書きやすい状態なのでSIMDで処理してしまえば10倍高速化されます。というわけで、パフォーマンスが求められるシチュエーションで非常に有用です。&lt;/p&gt;
+&lt;p&gt;このライブラリはZigという最近、日本でも注目されている言語（Node.jsの高速な代替として注目されている&lt;a href="https://bun.sh/"&gt;Bun&lt;/a&gt;の実装言語）のMultiArrayListにインスパイアされました。Zigの作者 Andrew Kelley氏が講演した &lt;a href="https://vimeo.com/649009599"&gt;A Practical Guide to Applying Data-Oriented Design&lt;/a&gt; という素晴らしい講演があるので是非見て欲しいのですが&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/215052372-1ab33bd2-a578-4c26-8e99-7615a49707ea.png" alt="image" /&gt;&lt;/p&gt;
+&lt;p&gt;データ指向設計(Data-Oriented Design)はパフォーマンスを飛躍的に改善する魔法なのです。ん、それはどこかで聞いたような……？そう、&lt;a href="https://unity.com/ja/dots"&gt;UnityのDOTS&lt;/a&gt;です。Data-Oriented Technology Stackです。ECSです。……。まぁ、そんなわけで全体に導入するにはそうとうガラッと設計を変える必要があるので大変厳しくはあるのですが、講演での実例としてZig自身のコンパイラの事例が出てますが、まぁつまりは徹底的にやれば成果は出ます。&lt;/p&gt;
+&lt;p&gt;しかしまぁ徹底的にやらず部分的に使っても効果があるのはUnityで Job System + Burst ぐらいでいいじゃん、という気持ちになっていることからも明らかです。というわけで部分的なSoA構造の導入にお使いください、かつ、導入や利用の敷居は全然高くないように設計しました。&lt;/p&gt;
+&lt;h2&gt;MultiArray&lt;/h2&gt;
+&lt;p&gt;NuGetからインストール（Unityの場合はgit参照か.unitypackageで）するとAnalyzerとして参照されます。StructureOfArraysGeneratorは属性も含めて依存はなく全てのコードが生成コードに含まれる（属性はinternal attributeとして吐かれる）ので、不要なライブラリ依存が増えることはありません。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;[MultiArray(Type)]&lt;/code&gt;を配列的に使いたい&lt;code&gt;readonly partial struct&lt;/code&gt;につけます。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;using StructureOfArraysGenerator;
+
+[MultiArray(typeof(Vector3))]
+public readonly partial struct Vector3MultiArray
+{
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;するとSource Generatorは内部的にはこういうコードを生成します。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;partial struct Vector3MultiArray
+{
+    // constructor
+    public Vector3MultiArray(int length)
+
+    // Span&amp;lt;T&amp;gt; properties for Vector3 each fields
+    public Span&amp;lt;float&amp;gt; X =&amp;gt; ...;
+    public Span&amp;lt;float&amp;gt; Y =&amp;gt; ...;
+    public Span&amp;lt;float&amp;gt; Z =&amp;gt; ...;
+
+    // indexer
+    public Vector3 this[int index] { get{} set{} }
+
+    // foreach
+    public Enumerator GetEnumerator()
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Structure of &lt;strong&gt;Arrays&lt;/strong&gt; と言ってますが、StructureOfArraysGeneratorは Arrays は生成しません。内部的には単一の &lt;code&gt;byte[]&lt;/code&gt; と各開始地点のオフセットのみを持っていて、生成されるプロパティによって&lt;code&gt;Span&amp;lt;T&amp;gt;&lt;/code&gt;のビューを返すという設計になっています。&lt;/p&gt;
+&lt;p&gt;使い方的には配列のように使えますが、&lt;code&gt;Span&amp;lt;T&amp;gt;&lt;/code&gt;の操作、例えばref var item inによるforeachを使うと、より効率的に扱えます。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;var array = new Vector3MultiArray(4);
+
+array.X[0] = 10;
+array[1] = new Vector3(1.1f, 2.2f, 3.3f);
+
+// multiply Y
+foreach (ref var item in v.Y)
+{
+    item *= 2;
+}
+
+// iterate Vector3
+foreach (var item in array)
+{
+    Console.WriteLine($&amp;quot;{item.X}, {item.Y}, {item.Z}&amp;quot;);
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Yに2倍を掛ける処理などは、メモリ領域が連続していることにより、&lt;code&gt;Vector3[]&lt;/code&gt;を &lt;code&gt;item.Y *= 2&lt;/code&gt; などとして書くよりも高速に処理されます．&lt;/p&gt;
+&lt;p&gt;他に&lt;code&gt;List&amp;lt;T&amp;gt;&lt;/code&gt;のようにAddできる&lt;code&gt;MultiArrayList&lt;/code&gt;や、内部的には&lt;code&gt;byte[]&lt;/code&gt;を持っているだけであることを生かした&lt;a href="https://github.com/Cysharp/MemoryPack"&gt;MemoryPack&lt;/a&gt;での超高速なシリアライズなどにも対応しています。気になったら是非ReadMeのほうを見てください。&lt;/p&gt;
+&lt;h2&gt;.NET 7 時代のSIMD&lt;/h2&gt;
+&lt;p&gt;.NETはSIMD対応が進んでいて、&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.runtime.intrinsics.x86"&gt;System.Runtime.Intrinsics.X86&lt;/a&gt;によって、直接ハードウェア命令を書くことが出来ます。&lt;/p&gt;
+&lt;p&gt;しかし、しかしですね、最近は .NET を Arm で動かすことが現実的になってきました。iOSやAndroidでけはなくMacのArm化、そしてAWS GravitonのようなArmサーバーはコスト面でも有利で、選択肢に十分入ります。そこでAvx.Addなんて書いていたらArmで動きません。勿論 &lt;a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.runtime.intrinsics.arm"&gt;System.Runtime.Intrinsics.Arm&lt;/a&gt; というクラスも公開されていて、Arm版のSIMDを手書きすることもできるんですが、分岐して似たようなものを二個書けというのか！という話です。&lt;/p&gt;
+&lt;p&gt;そこで、 &lt;a href="https://zenn.dev/pcysl5edgo/articles/d3e787599c5c8b"&gt;.NET 7こそがC# SIMDプログラミングを始めるのに最適である理由&lt;/a&gt; という記事があるのですが、確かに .NET 7 から追加された &lt;a href="https://learn.microsoft.com/en-us/dotnet/api/system.runtime.intrinsics.vector256.loadunsafe"&gt;Vector256.LoadUnsafe&lt;/a&gt; がまずめちゃくくちゃイイ！馴染みが深い（？）Unsafeによる ref var T で書けます！そして&lt;a href="https://github.com/dotnet/runtime/issues/49397"&gt;Expose cross-platform helpers for Vector64, Vector128, and Vector256&lt;/a&gt;により、&lt;code&gt;Vector64/128/256&amp;lt;T&amp;gt;&lt;/code&gt;にプラットフォーム抽象化されたSIMD処理が書けるようになりました、やはり .NET 7から。&lt;/p&gt;
+&lt;p&gt;例えば .NET 7 でint[]のSumのSIMD化を書いてみます。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;var array = Enumerable.Range(1, 100).ToArray();
+
+ref var begin = ref MemoryMarshal.GetArrayDataReference(array);
+ref var last = ref Unsafe.Add(ref begin, array.Length);
+
+var vectorSum = Vector256&amp;lt;int&amp;gt;.Zero;
+ref var current = ref begin;
+
+// Vector256で処理できるだけ処理
+ref var to = ref Unsafe.Add(ref begin, array.Length - Vector256&amp;lt;int&amp;gt;.Count);
+while (Unsafe.IsAddressLessThan(ref current, ref to))
+{
+    // 直接足し算できて便利
+    vectorSum += Vector256.LoadUnsafe(ref current);
+    current = ref Unsafe.Add(ref current, Vector256&amp;lt;int&amp;gt;.Count);
+}
+
+// Vector256をintに戻す
+ var sum = Vector256.Sum(vectorSum);
+
+// 残りの分は単純処理
+while (Unsafe.IsAddressLessThan(ref current, ref last))
+{
+    sum += current;
+    current = ref Unsafe.Add(ref current, 1);
+}
+
+Console.WriteLine(sum); // 5050
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;まぁforがwhileのアドレス処理になっていたり、最後にはみ出た分を処理する必要がありますが、かなり自然にSIMDを扱えているといってもいいんじゃないでしょうか。(Unsafeに慣れていれば)かなり書きやすいです。いいね。&lt;/p&gt;
+&lt;p&gt;というわけで、.NET 7 からは手書きX86 SIMDはArm対応が漏れやすいので、極力Vectorによって抽象化されたコードで書きましょう、ということになります。どうしてもVectorじゃ書けないところだけ、仕方なく書くという感じですね。&lt;/p&gt;
+&lt;h2&gt;まとめ&lt;/h2&gt;
+&lt;p&gt;反響全然ないだろうなあと想定していましたが、やはり反響全然ないです！まぁでも結構面白いライブラリになったと思うので、是非使ってください。それと、Incremental Source Generatorの作り方がMemoryPackの頃よりも習熟していて、コードがかなり洗練されたものになっているので、Source Generatorの作り方として参照するならMemoryPackのコードよりもこちらのコードのほうがお薦めです。&lt;/p&gt;
+&lt;p&gt;というわけで、まだまだSource Generatorネタはいっぱいあるので、今年は大量に量産します！&lt;/p&gt;
+&lt;/div&gt;</description>
+      <pubDate>Fri, 27 Jan 2023 00:00:00 +0900</pubDate>
+      <a10:updated>2023-01-27T00:00:00+09:00</a10:updated>
+    </item>
     <item>
       <guid isPermaLink="true">https://neue.cc/2022/12/30_year.html</guid>
       <link>https://neue.cc/2022/12/30_year.html</link>
@@ -2086,111 +2197,6 @@ internal class PreserveAttribute : System.Attribute
 &lt;/div&gt;</description>
       <pubDate>Mon, 28 Feb 2022 00:00:00 +0900</pubDate>
       <a10:updated>2022-02-28T00:00:00+09:00</a10:updated>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://neue.cc/2022/01/09_WebSerializer.html</guid>
-      <link>https://neue.cc/2022/01/09_WebSerializer.html</link>
-      <title>WebSerializer - オブジェクトからクエリストリングに変換するHttpClientリクエスト用シリアライザ</title>
-      <description>&lt;h1&gt;&lt;a href="https://neue.cc/2022/01/09_WebSerializer.html"&gt;WebSerializer - オブジェクトからクエリストリングに変換するHttpClientリクエスト用シリアライザ&lt;/a&gt;&lt;/h1&gt;
-&lt;ul class="date"&gt;&lt;li&gt;2022-01-09&lt;/li&gt;&lt;/ul&gt;
-&lt;div class="entry_body"&gt;&lt;p&gt;&lt;code&gt;T value&lt;/code&gt;から URLエンコードされたクエリストリング、または&lt;code&gt;x-www-form-urlencoded&lt;/code&gt;なHttpContentを生成する、つまりはウェブ(HTTP/1)リクエスト用のシリアライザを作りました。&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;a href="https://github.com/Cysharp/WebSerializer/"&gt;github.com/Cysharp/WebSerializer&lt;/a&gt;&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;クエリストリングの生成、意外と面倒くさいな！と。(C#用の)専用のSDKが存在しないWeb APIの場合は、自分でURL組み立てたり&lt;code&gt;FormUrlEncodedContent&lt;/code&gt;を組み立てたりしますが、数が多いとまぁ面倒くさい。リクエストのパラメーター数が多いと、null抜いたりも面倒くさい。&lt;/p&gt;
-&lt;p&gt;レスポンス側は&lt;a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.net.http.json.httpcontentjsonextensions.readfromjsonasync?view=net-6.0"&gt;ReadFromJsonAsync&lt;/a&gt;などでダイレクトに変換できるようになって特に問題はないのですが、リクエスト側は、かなりの手作業が要求されます。そのへんを全部やってくれる&lt;a href="https://github.com/reactiveui/refit"&gt;refit&lt;/a&gt;というライブラリもありますが(Androidの&lt;a href="https://github.com/square/retrofit"&gt;retrofit&lt;/a&gt;にインスパイアされたもの)、導入するにはちょっと大仰だな、と思うときも多々あります、というか私は今まで一度も使ってません。&lt;/p&gt;
-&lt;p&gt;HttpClient用にURLを組み立てるのを簡略化してくれるぐらいでいいな、と思って考えていたら、そういえばそもそもそれってT valueから何かに変換する、つまりシリアライザじゃん、ということに気づきました。T -&amp;gt; msgpack byte[]に変換すればMessagePackシリアライザだし、T -&amp;gt; Json stringに変換すればJSONシリアライザだし、これはT -&amp;gt; UrlEncoded stringに変換するということなのだと。シリアライザ脳なので、そう理解すれば話が早い。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;using Cysharp.Web;
-
-var req = new Request(sortBy: &amp;quot;id&amp;quot;, direction: SortDirection.Desc, currentPage: 3)
-
-// sortBy=id&amp;amp;direction=Desc&amp;amp;currentPage=3
-var q = WebSerializer.ToQueryString(req);
-
-await httpClient.GetAsync(&amp;quot;/sort?&amp;quot;+ q);
-
-// data...
-public record Request(string? sortBy, SortDirection direction, int currentPage);
-
-public enum SortDirection
-{
-    Default,
-    Asc,
-    Desc
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;基本的に使うメソッドは &lt;code&gt;WebSerializer.ToQueryString&lt;/code&gt; か &lt;code&gt;WebSerializer.ToHttpContent&lt;/code&gt; だけです。URLエンコードされてname=valueで&amp;amp;連結された文字列が取り出せます。メソッドとして叩いたりする場合は、そのまま匿名型で渡してあげればちょうど良い。urlも一緒に渡してあげれば全て同時に組み立ててくれます。値が&lt;code&gt;null&lt;/code&gt;のものは文字列化対象から自動で外されます。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;const string UrlBase = &amp;quot;https://foo.com/search&amp;quot;;
-
-// null, SortDirection.Asc, 0
-async Task SearchAsync(string? sortBy, SortDirection direction, int currentPage)
-{
-    // &amp;quot;https://foo.com/search?direction=Asc&amp;amp;currentPage=0&amp;quot;
-    var url = WebSerializer.ToQueryString(UrlBase, new { sortBy, direction, currentPage });
-    await httpClient.GetAsync(url);
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;動的に組み立てる場合は、&lt;code&gt;Dictionary&amp;lt;string, object&amp;gt;&lt;/code&gt; も渡せます。(&lt;code&gt;FormUrlEncodedContent&lt;/code&gt;は&lt;code&gt;Dictionary&amp;lt;string, string&amp;gt;&lt;/code&gt;で、Value側のToString()が必須なのが地味に面倒くさいので、&lt;code&gt;object&lt;/code&gt;で良いというのは何気に楽だったりします)。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;var req = new Dictionary&amp;lt;string, object&amp;gt;
-{
-    { &amp;quot;sortBy&amp;quot;, &amp;quot;id&amp;quot; },
-    { &amp;quot;direction&amp;quot;, SortDirection.Desc },
-    { &amp;quot;currentPage&amp;quot;, 10 }
-};
-var q = WebSerializer.ToQueryString(req);
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;POST用には、&lt;code&gt;ToHttpContent&lt;/code&gt;を使います。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;async Task PostMessage(string name, string email, string message)
-{
-    var content = WebSerializer.ToHttpContent(new { name, email, message });
-    await httpClient.PostAsync(&amp;quot;/postmsg&amp;quot;, content);
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;内部的には&lt;code&gt;FormUrlEncodedContent&lt;/code&gt;は使わずに、専用のHttpContentを通しているため、&lt;code&gt;byte[]&lt;/code&gt;変換のオーバーヘッドがありません。&lt;/p&gt;
-&lt;h2&gt;シリアライザ設計&lt;/h2&gt;
-&lt;p&gt;ただたんにクエリストリング組み立てるだけっしょ！というと軽く見られてしまうかもしれないのですが、中身はかなりガチめに作ってあって、構成としては&lt;a href="https://github.com/neuecc/MessagePack-CSharp/"&gt;MessagePack for C#&lt;/a&gt;と同様です。パフォーマンスに関しても超ギチギチに詰めているわけではないですが、かなり気を配って作られているので、手で組み立てるよりもむしろ高速になるケースも多いはずです。拡張性もかなり高く作れているはずです。&lt;/p&gt;
-&lt;p&gt;シリアライザのデザインに関してはMessagePack for C#の次期バージョン(v3)をどうしていこうかなあ、と考えているタイミングでもあるので、そのプロトタイプ的な意識もありますね。なので設計としてはむしろ最新型で、かなり洗練されています。.NET 5/6のみにしているので、レガシーも徹底的に切り捨てていますし。最初は .NET 6のみだったのですが、さすがにそれはやりすぎかと思い .NET 5は足しました。（が、2022-01-21のv1.3.0にて、.NET Standard 2.0/2.1対応もしました）&lt;/p&gt;
-&lt;p&gt;例えばコンフィグ(&lt;code&gt;WebSerializerOptions&lt;/code&gt;)はイミュータブルなのですが、これ自体はrecordで作ってあってwith式でカスタムのコンフィグを作れます。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;// CultureInfo: 数値型やDateTimeの文字列化変換に渡すCultureInfo、デフォルトはnull
-// CollectionSeparator: 配列などを変換する場合のセパレーター、デフォルトはnullでname=value&amp;amp;name=value...
-// Provider: 対象の型をどのように変換するか(`IWebSerialzier&amp;lt;T&amp;gt;`)の変更
-var newConfig = WebSerializerOptions.Default with
-{
-    CultureInfo = CultureInfo.InvariantCulture,
-    CollectionSeparator = &amp;quot;,&amp;quot;,
-    Provider = WebSerializerProvider.Create(
-        new[] { new BoolZeroOneSerializer() },
-        new[] { WebSerializerProvider.Default })
-};
-
-// Bool値を0, 1に変換する（こういうの求めてくるWeb APIあるんですよねー！）
-public class BoolZeroOneSerializer : IWebSerializer&amp;lt;bool&amp;gt;
-{
-    public void Serialize(ref WebSerializerWriter writer, bool value, WebSerializerOptions options)
-    {
-        // true =&amp;gt; 0, false =&amp;gt; 1
-        writer.AppendPrimitive(value ? 0 : 1);
-    }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;&lt;code&gt;IWebSerializer&amp;lt;T&amp;gt;&lt;/code&gt;のインターフェイスについて、&lt;code&gt;ref T value&lt;/code&gt;にしようか検討したのですが、最終的にやめました。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;public interface IWebSerializer&amp;lt;T&amp;gt; : IWebSerializer
-{
-    void Serialize(ref WebSerializerWriter writer, T value, WebSerializerOptions options);
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;&lt;code&gt;ref T value&lt;/code&gt;にすると、プロパティをそのまま渡せなくて、かなり面倒くさくなってね。理屈的にはlarge structに対するコピーコスト削減、ではあるけれど、まぁこのままだと99%効力ないかなあ、という感じがあり。入り口だけinにして一回分コピーを消すぐらいを落とし所にしました、とりあえず今回は。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;public static string ToQueryString&amp;lt;T&amp;gt;(in T value, WebSerializerOptions? options = default)
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;それとSource Generator対応についても考えましたが、まぁ一旦今回は見送って、後でやるかもという感じでしょうか。アイディアは色々ありますが、まずは作ってみないとうまくハマるか見えないところがあるし、MessagePack for C#のような大きなものでドカンとやるよりは、最初は小さなものでテストしていくのが良いものを作る正攻法でもありますね。&lt;/p&gt;
-&lt;h2&gt;Deserializeがない問題&lt;/h2&gt;
-&lt;p&gt;ASP.NET CoreのAddControllerなら、Model Bindingでデシリアライズできるので、不要でしょう。.NET 6時点でのMinimal APIだとなんと自動モデルバインディングがなくて手動でQueryStringから組み立てるという手間が必要になってて、まぁそこでは必要かなあ？と思ったんですが、いや、それしたいならMinimal APIではなくてAddControllerしろや、と思ったので、機能入れるのやめました。実際、そのうちバインディング自体はいれるそうです（さすがに不便なので）。&lt;/p&gt;
-&lt;h2&gt;まとめ&lt;/h2&gt;
-&lt;p&gt;手で組み立てている人は結構多いと思うので、使えるシチュエーションはかなりあると思ってます。ただまあ、こんぐらいなら手でやるよ！と思う人は多いと思うので、その点ではニッチかなあ、というところですね。Web APIの仕様によってはリクエストパラメーターが微妙にデカくてイライラすることがあったり、まぁあとは数を作るときにはやっぱダルいので、ハマるシチュエーションも少なくはないかな、と。&lt;/p&gt;
-&lt;p&gt;とりあえずは試してみてもらえればと思います。&lt;/p&gt;
-&lt;/div&gt;</description>
-      <pubDate>Sun, 09 Jan 2022 00:00:00 +0900</pubDate>
-      <a10:updated>2022-01-09T00:00:00+09:00</a10:updated>
     </item>
   </channel>
 </rss>

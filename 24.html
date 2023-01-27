@@ -23,7 +23,113 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2009/09/25_204.html">Linqは美人</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2009/09/28_205.html">.NET Reactive Framework メソッド探訪第五回:Scan</a></h1>
+<ul class="date"><li>2009-09-28</li></ul>
+<div class="entry_body"><p class="noindent">
+    <object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="300px">
+        <param name="source" value="http://neue.cc/wp-content/uploads/silverlight/Silverlight_Rx_Scan.xap"/>
+        <param name="background" value="white" />
+        <param name="minRuntimeVersion" value="3.0.40624.0" />
+        <param name="autoUpgrade" value="true" />
+        <a href="http://go.microsoft.com/fwlink/?LinkID=149156&#038;v=3.0.40624.0" style="text-decoration:none">
+        <img src="http://go.microsoft.com/fwlink/?LinkId=108181" alt="Microsoft Silverlight を入手" style="border-style:none"/>
+        </a>
+    </object>
+</p>
+<pre><code class="language-csharp">var random = new Random();
+Func&lt;byte&gt; nextByte = () =&gt; (byte)random.Next(0, byte.MaxValue + 1);
+
+// CenterEllipseは真ん中の円のこと。
+// 1000秒以内に3回クリックするとランダムで色が変わる
+// GetMultiClickScan関数が今回の主題で、解説は後で。
+CenterEllipse.GetMultiClickScan(3, 1000).Subscribe(() =&gt;
+    CenterEllipse.Fill = new SolidColorBrush(Color.FromArgb(255, nextByte(), nextByte(), nextByte())));
+</code></pre>
+<p>円を1秒以内にトリプルクリックすると色が変わります。右側のログ表示はミリセカンド単位でトリプルクリック時の経過時間を表しています。つまり、これが1000以内ならば色が変わり、1000より上ならば色は変わりません。このサンプルのテーマは、トリプルクリックの検出です。トリプルだけではなく、クアドラプルでもクインタプルでも、1秒以内じゃなくて5秒でも10秒でも応用できる形で書くとしたら、どう書く？ グローバル変数に、クリックイベントを格納する配列でも置くかしらん。それがきっと簡単で分かりやすくて、でも……。</p>
+<p>今回はRx Frameworkの関数から、Scanを取り上げます。この例題は私が考えたわけではなく、<a href="http://blogs.msdn.com/jeffva/archive/2009/08/14/my-solutions-to-the-reactive-framework-tripple-click-puzzle.aspx">Ramblings of a Lazy Coder : My solutions to the Reactive Framework Tripple-click puzzle</a>という問題からです。URLリンク先は解答編、というわけで、この解答を解説します。</p>
+<p>考え方としては、クリックイベントに「クリックされた時間」という情報を付加。更に、クリック回数分の「前のデータ」を参照して指定時間内で連続クリックかどうかを確認する。時間情報の付加は匿名型を作るだけなので簡単ですが、「前のデータ」を参照するのが厄介。Linqは前にしか進まないし、送られてくるデータは過去のものなど知らない。このことはReactive Frameworkだけの話ではなく、以前にも<a href="http://neue.cc/2009/03/06_138.html">LINQで左外部自己結合</a>や<a href="http://neue.cc/2009/03/16_141.html">Scan?</a>という記事で書きましたが、そこで出てくる解決策がScan。そうそう、ScanはAchiralにあるので(ということでlinq.jsにもあります)、動作は分かってます。ようするにAggregateの計算過程吐きだし版です。とりあえず<a href="http://neue.cc/reference.htm" title="linq.js Reference">linq.js Reference</a>でE.Range(1,10).Scan(&quot;x,y=&gt;x+y&quot;)と打ってみてください(宣伝宣伝)</p>
+<p>Scanならば「一個前」の情報が手に入る。しかし「複数個前」の情報はどうすれば？ 答えは配列使えばいいぢゃない。だそうです。過程のデータをとりあえず配列に入れて、次に送り出してやれば、そりゃ簡単に取り出せますね。何だか邪道な気がしますが、気にしない気にしない。URL先の解答例では生の配列を使って、インデックスをゴニャゴニャとしていて非常に正しいとは思いますが、あまり生の配列のインデックスは扱いたくないので、Queueを使ってみました。別にQueueのClear()のコストなんてたかが知れてるっしょ(中ではArray.Clearを呼んでいて、Array.Clearは……以下略)という割り切りで。</p>
+<pre><code class="language-csharp">public static IObservable&lt;MouseButtonEventArgs&gt; GetMultiClickScan
+    (this UIElement element, int count, int multiClickSpeedInMilliSeconds)
+{
+    return Observable.FromEvent&lt;MouseButtonEventArgs&gt;(element, &quot;MouseLeftButtonDown&quot;)
+        .Select(e =&gt; e.EventArgs)
+        .Scan(new
+        {
+            Times = new Queue&lt;DateTime&gt;(count),
+            Hit = false,
+            Event = (MouseButtonEventArgs)null // ダミーなのでnullをキャストするのが楽
+        }, (a, e) =&gt;
+        {
+            var isHit = false;
+            var now = DateTime.Now;
+            a.Times.Enqueue(now);
+            if (a.Times.Count == count)
+            {
+                var first = a.Times.Dequeue();
+                Debug.WriteLine((now - first).TotalMilliseconds); // Debug
+                if ((now - first).TotalMilliseconds &lt;= multiClickSpeedInMilliSeconds)
+                {
+                    isHit = true;
+                    a.Times.Clear();
+                }
+            }
+
+            return new
+            {
+                Times = a.Times,
+                Hit = isHit,
+                Event = e
+            };
+        })
+        .Where(a =&gt; a.Hit)
+        .Select(a =&gt; a.Event);
+}
+</code></pre>
+<p>ScanはAggregateと全く同じで、accumlatorのみの実行の他に、第一引数でseedを渡すこともできます。Scanのseedで、変数と判定を行うためのフラグを保持するクラスを作り、accumlatorで判定と変数の持ち越しを行い、Whereで判定をフィルタリング。このコンボは非常に強力で、幾らでも応用が効きそう。LinqでのAggregateはほとんど使われませんが、RxにおけるScanはよく見かけることになるのではないかと思います。</p>
+<p>で、理屈は分かったけれど、何だかゴチャゴチャとしてない？ という感想は否めない。ただ、グローバル領域に変数を置く必要なくフラグを閉じ込められていること、そして、応用の効きそうな柔らかさが見えたり見えなかったりしませんか？ 応用的なものも、追々考えていきたいです。</p>
+<h2>次元の狭間へ</h2>
+<p>Scanが出たので、Aggregateもついでにおさらい。これはLinq to ObjectsのAggregateと変わりません。ちなみにRx Frameworkでの内部実装はScan().Last()だったりするので、Scanとほんとーに丸っきり変わりません。じゃあ、無限リピートのFromEventにたいしてAggregateって、実行するとどうなるの？というのは気になるところですが、答えは次元の狭間に入ってしまって、その行からコードが一切進まなくなります。AggregateだけじゃなくCountやLast、ToEnumerableなど全てを列挙してから答えを返す系のメソッドは全て同じ結果になります。コンソールアプリの簡単なコードで試してみると、こうなる。</p>
+<pre><code class="language-csharp">class MyClass
+{
+    public event EventHandler&lt;EventArgs&gt; Ev;
+
+    public void Fire()
+    {
+        Ev(this, new EventArgs());
+    }
+}
+
+static void Main(string[] args)
+{
+    var mc = new MyClass();
+    var count = Observable.FromEvent&lt;EventArgs&gt;(mc, &quot;Ev&quot;)
+        .Count(); // ここで次元の狭間にダイブする
+
+    mc.Fire(); // ここに到達することは未来永劫無い
+}
+</code></pre>
+<p>恐ろしや。ただ、前段階でTakeやTakeWhileを挟めば、無限リストは有限リストとなるので、面白い感じに制限が出来ます。この辺も応用例として、そのうち紹介していければと思います。</p>
+<h2>カウンター</h2>
+<p>もう一度Scanを見ます。トリプルクリックの例題は捻りすぎな感が否めないので、もっとストレートに、Scanの「前の値を保持し続けることが出来る」という点を見せる例題を一つ。<a href="http://ja.wikipedia.org/wiki/%E3%82%AF%E3%83%AD%E3%83%BC%E3%82%B8%E3%83%A3" title="クロージャ - Wikipedia">クロージャの例</a>なんかでも定番のカウンターで。</p>
+<p class="noindent">
+    <object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="200px" height="50px">
+        <param name="source" value="http://neue.cc/wp-content/uploads/silverlight/Silverlight_Rx_Scan_Counter.xap"/>
+        <param name="background" value="white" />
+        <param name="minRuntimeVersion" value="3.0.40624.0" />
+        <param name="autoUpgrade" value="true" />
+        <a href="http://go.microsoft.com/fwlink/?LinkID=149156&#038;v=3.0.40624.0" style="text-decoration:none">
+        <img src="http://go.microsoft.com/fwlink/?LinkId=108181" alt="Microsoft Silverlight を入手" style="border-style:none"/>
+        </a>
+    </object>
+</p>
+<pre><code class="language-csharp">Observable.FromEvent&lt;RoutedEventArgs&gt;(CounterButton, &quot;Click&quot;)
+    .Scan(0, (x, y) =&gt; ++x)
+    .Subscribe(i =&gt; CounterButton.Content = i + &quot;Clicked&quot;);
+</code></pre>
+<p>とても簡潔で、変数が全て閉じ込められていて、綺麗……。</p>
+</div>
+<h1><a href="https://neue.cc/2009/09/25_204.html">Linqは美人</a></h1>
 <ul class="date"><li>2009-09-25</li></ul>
 <div class="entry_body"><pre><code class="language-csharp">public class Stamp
 {
@@ -936,16 +1042,6 @@ Folder.prototype =
 <p>まあ、そんなこんなでちゃんと一眼レフも買いました。わざわざこのためだけに！<a href="http://f.hatena.ne.jp/neuecc/" title="neuecc's fotolife">neuecc's fotolife</a> 。それで、しかし撮るものが悲しいほど無いんですよね、やっぱり。とはいえ、自分で撮って自分で上げてかないと、何をどうすれば良くなるのか分からないので、室内写真で栄える何かを探し中です。現在は多肉植物でも育てようかな、と思ってるんですがどうでしょうかねえ。</p>
 <p>ちなみに現在までのDL数は余裕で一桁。べ、別に悲しくないもん！ そういえばこの半自動ってぶっちゃけ機能的にいらなくね？むしろフォルダ監視で自動化したほうがよくね？とも思ってきたので、まあ、そのうち。そのうち。</p>
 </div>
-<h1><a href="https://neue.cc/2009/08/21_190.html">ネストした三項演算子の書き方</a></h1>
-<ul class="date"><li>2009-08-21</li></ul>
-<div class="entry_body"><p><a href="http://detail.chiebukuro.yahoo.co.jp/qa/question_detail/q1027163420" title="javaプログラムの組み方がわかりませんorz 無理な課題を学校で出されました(´･_･... - Yahoo!知恵袋">javaプログラムの組み方がわかりませんorz 無理な課題を学校で出されました(´･_･... - Yahoo!知恵袋</a></p>
-<p>「小学生向けの四則演算の計算練習のプログラムを考える」……？ 回答のJavaコードが長くてよくわからにゃい。ぽりもふぃずむって何？</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/condoperator.jpg">
-</p>
- 
-これでおｋ。最近、三項演算子の:は後置が普通だけど、前置にすると[F#のパターンマッチ](http://msdn.microsoft.com/en-us/library/dd233242(VS.100).aspx)みたいで格好良くね？とか思うので、開き直って前置にしたいです。これはコーディング規約に載せるべきですね(笑) あと三項演算子の、うにゃ、条件演算子の条件は必ずカッコで括る派。
-</div>
 <a href="https://neue.cc/23">Prev |</a>
 <a href="https://neue.cc/25">| Next</a>
 </div>
@@ -969,6 +1065,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2023/01/">2023-01</a>
 <li><a href="https://neue.cc/2022/12/">2022-12</a>
 <li><a href="https://neue.cc/2022/11/">2022-11</a>
 <li><a href="https://neue.cc/2022/07/">2022-07</a>

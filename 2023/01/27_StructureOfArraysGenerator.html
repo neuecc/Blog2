@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-2834006-1"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag() { dataLayer.push(arguments); }
+        gtag('js', new Date());
+        gtag('config', 'UA-2834006-1');
+    </script>
+    <meta charset="utf-8" />
+    <title>neue cc - StructureOfArraysGenerator - C#でSoAを簡単に利用するためのSource Generator</title>
+    <link rel="shortcut icon" href="https://neue.cc/favicon.ico" />
+    <link rel="alternate" type="application/rss+xml" href="https://neue.cc/feed"/>
+	<link rel="stylesheet" href="https://neue.cc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
+    
+<meta property="og:url" content="https://neue.cc/2023/01/27_StructureOfArraysGenerator.html" />
+<meta property="og:type" content="article" />
+<meta property="og:title" content="neue cc - StructureOfArraysGenerator - C#でSoAを簡単に利用するためのSource Generator" />
+<meta property="og:description" content="最近はSource Generatorブームが続いていて、去年末に[2022年のC# (Incremental) Source Generator開発手法](..." />
+
+ </head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <a href="https://neue.cc/"><div id="header"></div></a>
+        <div id="content"><h1><a href="https://neue.cc/2023/01/27_StructureOfArraysGenerator.html">StructureOfArraysGenerator - C#でSoAを簡単に利用するためのSource Generator</a></h1>
+<ul class="date"><li>2023-01-27</li></ul>
+<div class="entry_body"><p>最近はSource Generatorブームが続いていて、去年末に<a href="https://neue.cc/2022/12/16_IncrementalSourceGenerator.html">2022年のC# (Incremental) Source Generator開発手法</a>という記事を出しましたが、まずは今年第一弾のSource Generatorライブラリです。</p>
+<ul>
+<li><a href="https://github.com/Cysharp/StructureOfArraysGenerator/">github.com/Cysharp/StructureOfArraysGenerator</a></li>
+</ul>
+<p>これは何かというと、structure of arrays(SoA)を使いやすくするためのコードを生成するというものです。まずそもそもSoAですが、Wikipediaの<a href="https://en.wikipedia.org/wiki/AoS_and_SoA">AoS and SoA</a>という記事によるところ（日本語版はない）、CPUキャッシュを有効活用したりSIMDを適用させやすくなる構造だよ、と。通常C#の配列はstructure of arrays(SoA)になります。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/214814782-fd341e09-731a-4e2f-ba53-ef789a19160e.png" alt="" /></p>
+<p>上がSoAでXYZXYZXYZXYZといったように並んでいる構造ですが、下のStructureOfArraysGeneratorで生成したAoSの配列はXXXXYYYYZZZZという並び順になります。実際にシンプルなパフォーマンステスト（Vector3[10000]に対してYの最大値を求める）によるところ</p>
+<p><img src="https://user-images.githubusercontent.com/46207/215027253-6f94739f-b827-46ba-a395-690d1df89d46.png" alt="" /></p>
+<p>そのまま書いても2倍、SIMDで書きやすい状態なのでSIMDで処理してしまえば10倍高速化されます。というわけで、パフォーマンスが求められるシチュエーションで非常に有用です。</p>
+<p>このライブラリはZigという最近、日本でも注目されている言語（Node.jsの高速な代替として注目されている<a href="https://bun.sh/">Bun</a>の実装言語）のMultiArrayListにインスパイアされました。Zigの作者 Andrew Kelley氏が講演した <a href="https://vimeo.com/649009599">A Practical Guide to Applying Data-Oriented Design</a> という素晴らしい講演があるので是非見て欲しいのですが</p>
+<p><img src="https://user-images.githubusercontent.com/46207/215052372-1ab33bd2-a578-4c26-8e99-7615a49707ea.png" alt="image" /></p>
+<p>データ指向設計(Data-Oriented Design)はパフォーマンスを飛躍的に改善する魔法なのです。ん、それはどこかで聞いたような……？そう、<a href="https://unity.com/ja/dots">UnityのDOTS</a>です。Data-Oriented Technology Stackです。ECSです。……。まぁ、そんなわけで全体に導入するにはそうとうガラッと設計を変える必要があるので大変厳しくはあるのですが、講演での実例としてZig自身のコンパイラの事例が出てますが、まぁつまりは徹底的にやれば成果は出ます。</p>
+<p>しかしまぁ徹底的にやらず部分的に使っても効果があるのはUnityで Job System + Burst ぐらいでいいじゃん、という気持ちになっていることからも明らかです。というわけで部分的なSoA構造の導入にお使いください、かつ、導入や利用の敷居は全然高くないように設計しました。</p>
+<h2>MultiArray</h2>
+<p>NuGetからインストール（Unityの場合はgit参照か.unitypackageで）するとAnalyzerとして参照されます。StructureOfArraysGeneratorは属性も含めて依存はなく全てのコードが生成コードに含まれる（属性はinternal attributeとして吐かれる）ので、不要なライブラリ依存が増えることはありません。</p>
+<p><code>[MultiArray(Type)]</code>を配列的に使いたい<code>readonly partial struct</code>につけます。</p>
+<pre><code class="language-csharp">using StructureOfArraysGenerator;
+
+[MultiArray(typeof(Vector3))]
+public readonly partial struct Vector3MultiArray
+{
+}
+</code></pre>
+<p>するとSource Generatorは内部的にはこういうコードを生成します。</p>
+<pre><code class="language-csharp">partial struct Vector3MultiArray
+{
+    // constructor
+    public Vector3MultiArray(int length)
+
+    // Span&lt;T&gt; properties for Vector3 each fields
+    public Span&lt;float&gt; X =&gt; ...;
+    public Span&lt;float&gt; Y =&gt; ...;
+    public Span&lt;float&gt; Z =&gt; ...;
+
+    // indexer
+    public Vector3 this[int index] { get{} set{} }
+
+    // foreach
+    public Enumerator GetEnumerator()
+}
+</code></pre>
+<p>Structure of <strong>Arrays</strong> と言ってますが、StructureOfArraysGeneratorは Arrays は生成しません。内部的には単一の <code>byte[]</code> と各開始地点のオフセットのみを持っていて、生成されるプロパティによって<code>Span&lt;T&gt;</code>のビューを返すという設計になっています。</p>
+<p>使い方的には配列のように使えますが、<code>Span&lt;T&gt;</code>の操作、例えばref var item inによるforeachを使うと、より効率的に扱えます。</p>
+<pre><code class="language-csharp">var array = new Vector3MultiArray(4);
+
+array.X[0] = 10;
+array[1] = new Vector3(1.1f, 2.2f, 3.3f);
+
+// multiply Y
+foreach (ref var item in v.Y)
+{
+    item *= 2;
+}
+
+// iterate Vector3
+foreach (var item in array)
+{
+    Console.WriteLine($&quot;{item.X}, {item.Y}, {item.Z}&quot;);
+}
+</code></pre>
+<p>Yに2倍を掛ける処理などは、メモリ領域が連続していることにより、<code>Vector3[]</code>を <code>item.Y *= 2</code> などとして書くよりも高速に処理されます．</p>
+<p>他に<code>List&lt;T&gt;</code>のようにAddできる<code>MultiArrayList</code>や、内部的には<code>byte[]</code>を持っているだけであることを生かした<a href="https://github.com/Cysharp/MemoryPack">MemoryPack</a>での超高速なシリアライズなどにも対応しています。気になったら是非ReadMeのほうを見てください。</p>
+<h2>.NET 7 時代のSIMD</h2>
+<p>.NETはSIMD対応が進んでいて、<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.runtime.intrinsics.x86">System.Runtime.Intrinsics.X86</a>によって、直接ハードウェア命令を書くことが出来ます。</p>
+<p>しかし、しかしですね、最近は .NET を Arm で動かすことが現実的になってきました。iOSやAndroidでけはなくMacのArm化、そしてAWS GravitonのようなArmサーバーはコスト面でも有利で、選択肢に十分入ります。そこでAvx.Addなんて書いていたらArmで動きません。勿論 <a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.runtime.intrinsics.arm">System.Runtime.Intrinsics.Arm</a> というクラスも公開されていて、Arm版のSIMDを手書きすることもできるんですが、分岐して似たようなものを二個書けというのか！という話です。</p>
+<p>そこで、 <a href="https://zenn.dev/pcysl5edgo/articles/d3e787599c5c8b">.NET 7こそがC# SIMDプログラミングを始めるのに最適である理由</a> という記事があるのですが、確かに .NET 7 から追加された <a href="https://learn.microsoft.com/en-us/dotnet/api/system.runtime.intrinsics.vector256.loadunsafe">Vector256.LoadUnsafe</a> がまずめちゃくくちゃイイ！馴染みが深い（？）Unsafeによる ref var T で書けます！そして<a href="https://github.com/dotnet/runtime/issues/49397">Expose cross-platform helpers for Vector64, Vector128, and Vector256</a>により、<code>Vector64/128/256&lt;T&gt;</code>にプラットフォーム抽象化されたSIMD処理が書けるようになりました、やはり .NET 7から。</p>
+<p>例えば .NET 7 でint[]のSumのSIMD化を書いてみます。</p>
+<pre><code class="language-csharp">var array = Enumerable.Range(1, 100).ToArray();
+
+ref var begin = ref MemoryMarshal.GetArrayDataReference(array);
+ref var last = ref Unsafe.Add(ref begin, array.Length);
+
+var vectorSum = Vector256&lt;int&gt;.Zero;
+ref var current = ref begin;
+
+// Vector256で処理できるだけ処理
+ref var to = ref Unsafe.Add(ref begin, array.Length - Vector256&lt;int&gt;.Count);
+while (Unsafe.IsAddressLessThan(ref current, ref to))
+{
+    // 直接足し算できて便利
+    vectorSum += Vector256.LoadUnsafe(ref current);
+    current = ref Unsafe.Add(ref current, Vector256&lt;int&gt;.Count);
+}
+
+// Vector256をintに戻す
+ var sum = Vector256.Sum(vectorSum);
+
+// 残りの分は単純処理
+while (Unsafe.IsAddressLessThan(ref current, ref last))
+{
+    sum += current;
+    current = ref Unsafe.Add(ref current, 1);
+}
+
+Console.WriteLine(sum); // 5050
+</code></pre>
+<p>まぁforがwhileのアドレス処理になっていたり、最後にはみ出た分を処理する必要がありますが、かなり自然にSIMDを扱えているといってもいいんじゃないでしょうか。(Unsafeに慣れていれば)かなり書きやすいです。いいね。</p>
+<p>というわけで、.NET 7 からは手書きX86 SIMDはArm対応が漏れやすいので、極力Vectorによって抽象化されたコードで書きましょう、ということになります。どうしてもVectorじゃ書けないところだけ、仕方なく書くという感じですね。</p>
+<h2>まとめ</h2>
+<p>反響全然ないだろうなあと想定していましたが、やはり反響全然ないです！まぁでも結構面白いライブラリになったと思うので、是非使ってください。それと、Incremental Source Generatorの作り方がMemoryPackの頃よりも習熟していて、コードがかなり洗練されたものになっているので、Source Generatorの作り方として参照するならMemoryPackのコードよりもこちらのコードのほうがお薦めです。</p>
+<p>というわけで、まだまだSource Generatorネタはいっぱいあるので、今年は大量に量産します！</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2023<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="https://neue.cc/2023/01/">2023-01</a>
+<li><a href="https://neue.cc/2022/12/">2022-12</a>
+<li><a href="https://neue.cc/2022/11/">2022-11</a>
+<li><a href="https://neue.cc/2022/07/">2022-07</a>
+<li><a href="https://neue.cc/2022/05/">2022-05</a>
+<li><a href="https://neue.cc/2022/04/">2022-04</a>
+<li><a href="https://neue.cc/2022/02/">2022-02</a>
+<li><a href="https://neue.cc/2022/01/">2022-01</a>
+<li><a href="https://neue.cc/2021/12/">2021-12</a>
+<li><a href="https://neue.cc/2021/11/">2021-11</a>
+<li><a href="https://neue.cc/2021/08/">2021-08</a>
+<li><a href="https://neue.cc/2021/07/">2021-07</a>
+<li><a href="https://neue.cc/2021/05/">2021-05</a>
+<li><a href="https://neue.cc/2021/02/">2021-02</a>
+<li><a href="https://neue.cc/2020/12/">2020-12</a>
+<li><a href="https://neue.cc/2020/11/">2020-11</a>
+<li><a href="https://neue.cc/2020/10/">2020-10</a>
+<li><a href="https://neue.cc/2020/08/">2020-08</a>
+<li><a href="https://neue.cc/2020/07/">2020-07</a>
+<li><a href="https://neue.cc/2020/04/">2020-04</a>
+<li><a href="https://neue.cc/2020/01/">2020-01</a>
+<li><a href="https://neue.cc/2019/12/">2019-12</a>
+<li><a href="https://neue.cc/2019/09/">2019-09</a>
+<li><a href="https://neue.cc/2019/08/">2019-08</a>
+<li><a href="https://neue.cc/2019/07/">2019-07</a>
+<li><a href="https://neue.cc/2019/06/">2019-06</a>
+<li><a href="https://neue.cc/2019/05/">2019-05</a>
+<li><a href="https://neue.cc/2019/04/">2019-04</a>
+<li><a href="https://neue.cc/2018/12/">2018-12</a>
+<li><a href="https://neue.cc/2018/10/">2018-10</a>
+<li><a href="https://neue.cc/2018/08/">2018-08</a>
+<li><a href="https://neue.cc/2018/07/">2018-07</a>
+<li><a href="https://neue.cc/2018/05/">2018-05</a>
+<li><a href="https://neue.cc/2018/04/">2018-04</a>
+<li><a href="https://neue.cc/2018/01/">2018-01</a>
+<li><a href="https://neue.cc/2017/12/">2017-12</a>
+<li><a href="https://neue.cc/2017/09/">2017-09</a>
+<li><a href="https://neue.cc/2017/08/">2017-08</a>
+<li><a href="https://neue.cc/2017/07/">2017-07</a>
+<li><a href="https://neue.cc/2017/06/">2017-06</a>
+<li><a href="https://neue.cc/2017/04/">2017-04</a>
+<li><a href="https://neue.cc/2017/03/">2017-03</a>
+<li><a href="https://neue.cc/2016/12/">2016-12</a>
+<li><a href="https://neue.cc/2016/11/">2016-11</a>
+<li><a href="https://neue.cc/2016/10/">2016-10</a>
+<li><a href="https://neue.cc/2016/09/">2016-09</a>
+<li><a href="https://neue.cc/2016/08/">2016-08</a>
+<li><a href="https://neue.cc/2016/07/">2016-07</a>
+<li><a href="https://neue.cc/2016/06/">2016-06</a>
+<li><a href="https://neue.cc/2016/05/">2016-05</a>
+<li><a href="https://neue.cc/2016/04/">2016-04</a>
+<li><a href="https://neue.cc/2016/03/">2016-03</a>
+<li><a href="https://neue.cc/2016/01/">2016-01</a>
+<li><a href="https://neue.cc/2015/12/">2015-12</a>
+<li><a href="https://neue.cc/2015/11/">2015-11</a>
+<li><a href="https://neue.cc/2015/10/">2015-10</a>
+<li><a href="https://neue.cc/2015/09/">2015-09</a>
+<li><a href="https://neue.cc/2015/06/">2015-06</a>
+<li><a href="https://neue.cc/2015/05/">2015-05</a>
+<li><a href="https://neue.cc/2015/04/">2015-04</a>
+<li><a href="https://neue.cc/2015/03/">2015-03</a>
+<li><a href="https://neue.cc/2015/02/">2015-02</a>
+<li><a href="https://neue.cc/2015/01/">2015-01</a>
+<li><a href="https://neue.cc/2014/12/">2014-12</a>
+<li><a href="https://neue.cc/2014/11/">2014-11</a>
+<li><a href="https://neue.cc/2014/10/">2014-10</a>
+<li><a href="https://neue.cc/2014/09/">2014-09</a>
+<li><a href="https://neue.cc/2014/08/">2014-08</a>
+<li><a href="https://neue.cc/2014/07/">2014-07</a>
+<li><a href="https://neue.cc/2014/05/">2014-05</a>
+<li><a href="https://neue.cc/2014/04/">2014-04</a>
+<li><a href="https://neue.cc/2014/03/">2014-03</a>
+<li><a href="https://neue.cc/2014/01/">2014-01</a>
+<li><a href="https://neue.cc/2013/12/">2013-12</a>
+<li><a href="https://neue.cc/2013/11/">2013-11</a>
+<li><a href="https://neue.cc/2013/10/">2013-10</a>
+<li><a href="https://neue.cc/2013/09/">2013-09</a>
+<li><a href="https://neue.cc/2013/08/">2013-08</a>
+<li><a href="https://neue.cc/2013/07/">2013-07</a>
+<li><a href="https://neue.cc/2013/06/">2013-06</a>
+<li><a href="https://neue.cc/2013/05/">2013-05</a>
+<li><a href="https://neue.cc/2013/04/">2013-04</a>
+<li><a href="https://neue.cc/2013/03/">2013-03</a>
+<li><a href="https://neue.cc/2013/02/">2013-02</a>
+<li><a href="https://neue.cc/2013/01/">2013-01</a>
+<li><a href="https://neue.cc/2012/12/">2012-12</a>
+<li><a href="https://neue.cc/2012/11/">2012-11</a>
+<li><a href="https://neue.cc/2012/10/">2012-10</a>
+<li><a href="https://neue.cc/2012/09/">2012-09</a>
+<li><a href="https://neue.cc/2012/08/">2012-08</a>
+<li><a href="https://neue.cc/2012/07/">2012-07</a>
+<li><a href="https://neue.cc/2012/06/">2012-06</a>
+<li><a href="https://neue.cc/2012/05/">2012-05</a>
+<li><a href="https://neue.cc/2012/04/">2012-04</a>
+<li><a href="https://neue.cc/2012/03/">2012-03</a>
+<li><a href="https://neue.cc/2012/02/">2012-02</a>
+<li><a href="https://neue.cc/2012/01/">2012-01</a>
+<li><a href="https://neue.cc/2011/12/">2011-12</a>
+<li><a href="https://neue.cc/2011/11/">2011-11</a>
+<li><a href="https://neue.cc/2011/10/">2011-10</a>
+<li><a href="https://neue.cc/2011/09/">2011-09</a>
+<li><a href="https://neue.cc/2011/08/">2011-08</a>
+<li><a href="https://neue.cc/2011/07/">2011-07</a>
+<li><a href="https://neue.cc/2011/06/">2011-06</a>
+<li><a href="https://neue.cc/2011/05/">2011-05</a>
+<li><a href="https://neue.cc/2011/04/">2011-04</a>
+<li><a href="https://neue.cc/2011/03/">2011-03</a>
+<li><a href="https://neue.cc/2011/02/">2011-02</a>
+<li><a href="https://neue.cc/2011/01/">2011-01</a>
+<li><a href="https://neue.cc/2010/12/">2010-12</a>
+<li><a href="https://neue.cc/2010/11/">2010-11</a>
+<li><a href="https://neue.cc/2010/10/">2010-10</a>
+<li><a href="https://neue.cc/2010/09/">2010-09</a>
+<li><a href="https://neue.cc/2010/08/">2010-08</a>
+<li><a href="https://neue.cc/2010/07/">2010-07</a>
+<li><a href="https://neue.cc/2010/06/">2010-06</a>
+<li><a href="https://neue.cc/2010/05/">2010-05</a>
+<li><a href="https://neue.cc/2010/04/">2010-04</a>
+<li><a href="https://neue.cc/2010/03/">2010-03</a>
+<li><a href="https://neue.cc/2010/02/">2010-02</a>
+<li><a href="https://neue.cc/2010/01/">2010-01</a>
+<li><a href="https://neue.cc/2009/12/">2009-12</a>
+<li><a href="https://neue.cc/2009/11/">2009-11</a>
+<li><a href="https://neue.cc/2009/10/">2009-10</a>
+<li><a href="https://neue.cc/2009/09/">2009-09</a>
+<li><a href="https://neue.cc/2009/08/">2009-08</a>
+<li><a href="https://neue.cc/2009/07/">2009-07</a>
+<li><a href="https://neue.cc/2009/06/">2009-06</a>
+<li><a href="https://neue.cc/2009/05/">2009-05</a>
+<li><a href="https://neue.cc/2009/04/">2009-04</a>
+<li><a href="https://neue.cc/2009/03/">2009-03</a>
+<li><a href="https://neue.cc/2009/02/">2009-02</a>
+<li><a href="https://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul>
+<li>Index: <a href="https://neue.cc">neue.cc</a><li>
+<li>RSS feed: <a href="https://neue.cc/feed">neue.cc/feed</a><li>
+<li>Powered by: <a href="https://github.com/neuecc/Blog2">https://github.com/neuecc/Blog2</a>
+</ul></div>
+    </div>
+</body>

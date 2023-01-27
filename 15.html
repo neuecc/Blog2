@@ -23,7 +23,102 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2011/10/11_347.html">ReactivePropertyのデモをしました</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2011/10/14_348.html">Reactive Extensions v1.1.11011.11リリースに見る.NET 4.5からの非同期処理</a></h1>
+<ul class="date"><li>2011-10-14</li></ul>
+<div class="entry_body"><p><a href="http://msdn.microsoft.com/en-us/data/gg577609">Reactive Extensions</a>の<a href="http://www.microsoft.com/download/en/details.aspx?id=27724">v1.1.11011 (Experimental Release)</a>がリリースされました。リリース対象はExperimental(実験)版のみです。Stable(安定)版のほうは変更ありません。別件で少しコメントで質問したところ、近いうちにStable版の更新もあるかも、とのことでしたので、Stableはそちらを待ちましょう。<a href="http://social.msdn.microsoft.com/Forums/en-US/rx/thread/23062737-e154-41af-99f6-45d819992254">リリース内容の詳細な解説はフォーラムにあります</a>。</p>
+<p>今回の大きな追加は<a href="http://msdn.microsoft.com/en-us/netframework/hh403373">.NET Framework 4.5 Developer Preview</a>と<a href="http://msdn.microsoft.com/en-us/windows/apps">WinRT</a>への対応です。というわけで、WinRT関連では、WinRT用のスケジューラであったりイベントであったりへの対応とまぁまぁ想像つく普通のもの。あと非同期処理を他言語と結びつけるIAsyncOperationへの書き出し、などなどもサポートされるようですね。</p>
+<p>そして.NET 4.5周りでは、C#5.0のAsyncサポート・クラスライブラリがTask中心に書き換わることが念頭に置かれ、大規模に変更が入っています。今後のRxの方針がよく見えますので、Experimentalではありますが注意深く観察してみる必要がありそうです。というわけで、しっかり紹介します。なお、以下の話は.NET 4.5のRxの話なので、.NET 4.0以前の場合では直接は関係なく、Obsoleteにもなっていません。が、将来フレームワークのバージョン上げたらObsolete祭りでモニョるのは覚悟が必要かしらん。もう一つ注意としては、あくまでExperimentalなので、将来的にもこのままかどうかは保証されません。現時点での話です。</p>
+<h2>FromAsyncPatternがObsolete</h2>
+<p>はい、Obsoleteです。理由としては、.NET 4.5では多くのメソッドがBegin-Endパターンの代わりにTaskを返すXxxAsyncメソッドを持っています。そしてTaskとIObservableは相互に変換可能だから、Rxで扱いたいならXxxAsync().ToObservableすればいいでしょ、ということでした。Begin-EndパターンなのにXxxAsyncを持っていないメソッドにはどうするんだ！という場合は、TaskFactory.FromAsyncがあるので、それ使えばいい、とのこと。まあ、それはレアケースなので滅多にないかな。</p>
+<p>毎回ToObservableなんて面倒くさい、という人のためにSelectManyに限っては、Taskを受け取るオーバーロードが用意されているので、ToObservableは不要です。内部では予想つく通り、ただ単にToObservableしているだけですね。その他の合成系メソッド(MergeやSwitch)などは残念ながらというか当然というか、ToObservableしてください。</p>
+<h2>IObservableはAwaitable</h2>
+<p>IObservable&lt;T&gt;も非同期を扱うものなので、awaitできます。正確に言えばGetAwaiterが定義された、といったところでしょうか。</p>
+<pre><code class="language-csharp">var req = WebRequest.Create(&quot;http://google.com/&quot;);
+var response = await Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)();
+</code></pre>
+<p>基本的にRxの非同期はFromAsyncPatternを初めとして長さが1のものを扱っていますが、複数の値が流れる場合はどうなるかというと、挙動は「最後の値」です。正確に言えばAsyncSubjectが利用されているので、OnCompletedの直前のOnNextの値。ではEmpty(OnCompletedのみ)やNever(何もなし)ではどうなるのか、というと……</p>
+<pre><code class="language-csharp">// 10(最後の値)
+var a = await Observable.Range(1, 10);
+            
+// InvalidOperationException(シーケンスに値がない)
+var b = await Observable.Empty&lt;int&gt;();
+            
+// ある意味フリーズ、ここで永遠に止まる
+var c = await Observable.Never&lt;int&gt;();
+</code></pre>
+<p>となります。これだけ見るとNeverって使い道がイミフですが、何かとMergeする必要があるときに、マージ対象がないときはNeverを渡すなどなど、ライブラリに近い部分では結構使う場所あります。私の書いているReactivePropertyというライブラリでもそうして利用しています。</p>
+<h2>FirstなどがObsolete、かわりにFirstAsyncなどとWaitが追加</h2>
+<p>え？という感じですがObsoleteです。対象はFirst,Last,Single、それとForEachも。FirstOrDefaultなど、XxxDefault系も同様です。つまり同期的にブロックするタイプのものが全てObsolete行きになりました。代わりにFirstAsyncなどXxxAsyncが用意されています。それとawaitを組み合わせてください。</p>
+<pre><code class="language-csharp">var source = Observable.Return(&quot;async?&quot;);
+
+var value0 = await source; // LastAsyncと挙動は同じ
+var value1 = await source.FirstAsync();
+var value2 = await source.LastAsync();
+</code></pre>
+<p>長さ1と分かっている状況なら、何もなくそのままawaitでも良いのではかしらん。LastAsyncがそれに相当しますね。さて、しかしawaitのお陰で同期的「のように」書けるには違いないけれど、FirstやLastなどはブロックして「同期」な挙動を取っていたわけなので、単純にObsolete行きにされたら困ってしまいます。そこで、同期的に待機して最後の値を取り出すWaitメソッドが用意されました(これは.NET 4.0やSilverlightなどでも使える、新たに追加されたメソッドです)。</p>
+<pre><code class="language-csharp">var source = Observable.Return(&quot;async?&quot;);
+
+var value0 = source.Wait();
+var value1 = source.FirstAsync().Wait();
+var value2 = source.LastAsync().Wait();
+</code></pre>
+<p>ちなみにWaitの中身はLastです。Lastという名前から離して、同期的に待機して値を取り出す、と明示させたのですね。それはいいと思います。Waitはいい。Waitはいいんですが、FirstをObsoleteにしてFirstAsyncを追加するのは、正直気にいりません。私は反対です。</p>
+<p>ターゲットフレームワーク間でコードが共有出来なくなる、IQbservableプロバイダに影響が出る、そもそも標準クエリ演算子から離れるのはどうよ。などなど。だいたい、AllやAny、Maxなどは長さ1のIObservable&lt;T&gt;を返すようになっていました。Firstなどだけです、同期的に待機して値を取り出す、という別の意味が与えられていたのは。だから、ここはFirstはObsoleteにせず、FirstAsyncの挙動、つまりIObservable&lt;T&gt;を返すように変更すればいいのです。同期待ちについては、Waitが搭載されたので心配無用です。これで、全ての挙動に統一が取れる。</p>
+<p>唯一問題点を挙げれば、本当に本当に「破壊的変更」になるんですよね。それも、Stableとか銘打ったものへの影響も出る。メソッド名同じで戻り値が変わる。そういう変更を許せるものか。私は、許してしまってもいいと思うのですけれど。Firstを廃止してFirstAsyncを追加、などという歪な形を将来に残すよりかは、ずっといい。</p>
+<p>なので、Forumにもそうコメント入れましたところ返答貰えました。「Stableリリースが存在する以上、XxxAsyncのままでいるしかない。これが不幸なことは同意しますけれど、暫くはこのままでいるしかない。」とのことでした。というわけで、Stableと銘打つのが早まったな…… としか言いようがなく。あの段階でここまで読めなかったのはしょうがないところ、と思いつつ、やはり手痛いミスかなあ。うーん、将来に渡っての完璧なAPIを作り上げるというのは実に難しい。</p>
+<p>まあ、Firstを多用する(といっても単体テストや動作確認時ぐらいですけど)のは、値を一つ取り出したい、ということなので、await sourceかsource.Wait() で済む。FirstAsyncやLastAsyncを直接使うことは恐らく少なくて、ならば実際上の問題というのはそこまでないかもしれません。</p>
+<h2>長さ1の非同期処理の戻り値はTaskを選ぶべきか、Rxを選ぶべきか</h2>
+<p>メソッドを作るときの非同期処理の戻り値。これは、Taskを選ぶべきです。それは.NET標準と合わせるべきという理由からもそうですし、この.NET 4.5向けのRxの指針からしてそうなっています。長さ1のIObservableで非同期を表現する、というのは特殊だったと言わざるを得ないので、メソッドを作るとき、非同期処理の戻り値はTaskにしたほうが間違いなく良いでしょう。</p>
+<p>ただ、アプリケーショに全体でRxによる合成を中心に置く場合は、ToObservableが面倒くさい、というだけじゃなく逆にオーバーヘッドになる可能性もあるので、IObservable中心にしたほうが良いでしょう。この辺は一概には言えずケースバイケースでしょうか。どちらにせよToObservable&lt;-&gt;ToTaskで相互変換が可能なわけなので、あまりガチガチに捉える必要もないですけれど。</p>
+<p>あと、あくまで.NET 4.5の話でasync/awaitが入るからTaskのほうが良いと言ってるのであって、.NET 4.0以前ならまた違う話です。というかその場合だとRx一択です。</p>
+<h2>ねぇ、Rxってもう要らない子？</h2>
+<p>時代の徒花でしたね、短い命だった……。</p>
+<p>って、ちょっと待ったー。それはYESでもあり、NOでもあります。YESなのは、単純な形での非同期処理ならば、遥かに楽になりますし、それに何よりもRxを通すよりもパフォーマンスは良いと思われるので、むしろasync/awaitを使うべきです。具体的には、SelectManyしてSubscribeするだけ、あとCatchで少し例外処理、みたいなコードなら、もう全面的にRxさようならでいいでしょう。</p>
+<p>でも往々にしてそういう処理だけじゃないよね？以前にも紹介しましたがSwitch（新しい処理が入ったら以前の非同期処理はキャンセルして新しい処理のみを後続に流す）などを手書きせず演算子一つにパッケージ化できることや、全体的にTaskのメソッド群よりも合成や待ち合わせが容易に記述できる、などなど。そして、「複数の戻り値のある非同期処理、例えばStreamのBeginReadは細切れにbyte[]が得られますが、それを複数回分の非同期処理をまとめてシーケンスとして、IObservable&lt;byte[]&gt;としてまとめることは現状ではRxしかできません。</p>
+<pre><code class="language-csharp">// 複数回のBeginReadをRx+Asyncで一つにまとめる例
+static IObservable&lt;byte[]&gt; ReadMultipleAsync(Stream stream, int bufferSize)
+{
+    return Observable.Create&lt;byte[]&gt;(async observer =&gt;
+    {
+        try
+        {
+            while (true)
+            {
+                var buffer = new byte[bufferSize];
+                var readCount = await stream.ReadAsync(buffer, 0, bufferSize);
+
+                if (readCount == 0) break;
+                if (readCount != bufferSize)
+                {
+                    var newBuffer = new byte[readCount];
+                    Array.Copy(buffer, newBuffer, readCount);
+                    buffer = newBuffer;
+                }
+
+                observer.OnNext(buffer); // yield returnのノリで書く
+            }
+            observer.OnCompleted(); // 完了合図と
+        }
+        catch (Exception ex)
+        {
+            observer.OnError(ex); // 例外は自前で明示的に
+        }
+    });
+}
+</code></pre>
+<p>ExperimentalリリースではObservable.Createがasync/await対応しているので、擬似的なyield returnとして、非同期での列挙をそこそこ簡単に記述することができます。OnErrorとOnCompletedは自前で管理する必要がありますけれど。</p>
+<p>なので、メソッド単体で分けた場合の戻り値は「長さ1」ならTask、複数ならIObservable。それらメソッドを使って非同期処理を組み上げる時は、単純ならawaitのみ、複雑ならRx。というのが使い分けの指針です。とはいえ、使い分けっていうのは幻想に近くて、実際はどっちか一つになりがちだとは思っています。そして、それならTask中心になるでしょうねえ、とも。非同期における大抵のシチュエーションでRxがサヨウナラ気味になるのはしかたのない話です。ぶっちゃけSelectManyしてSubscribeがほとんどだし、それ以外のことだって、同期的のように書けるのなら、いくらでもやりようはありますから。</p>
+<p>まあ、未来を待たなくても今使える解としてなら十分ですし、それ自体がawait可能なので、今書いたコードは将来に渡っても無駄にはなりません。FromAsyncPatternがObsoleteというのは、まあ単純に.NET4.5本来のXxxAsyncに置き換えればいいというだけなので無駄になる、とは言わないでしょう。</p>
+<p>けれど、それだけじゃあ、すごく後ろ向きで、寂しいよね。Rx自体の持つ力というのは、別に非同期に限らない。ただの幾つもある側面のうちの一つにすぎない。そこで出した私の答えが<a href="http://neue.cc/2011/10/07_346.html">ReactiveProperty : WPF/SL/WP7のためのRxとMVVMを繋ぐ拡張ライブラリ</a>です。ReactivePropertyはC#5.0によってプレゼンスが低下するReactive Extensionsに新たな価値をもたらしたいという危機感から作ったものだったりします(後付け、じゃなくてこれは本当の話です、次の一手を指すならRx自体に注目の集まっている今しかない、とも)</p>
+<p>ReactivePropertyを通して見ると、非同期だけではない、Rxの持つポテンシャルがよく分かるのではないでしょうか？Rxの真の強みはイベント単独や非同期単独ではなくて、それらが、ただの配列も含めて、統一的に扱える、だから全て一本のストリームになって合成処理が自由自在。というOrchestrateな部分にある。ReactivePropertyはそれを全面的に押し出してます（半強制的に全てが一本に繋がるようになってる）</p>
+<p>Rxは、この先も力強く存在し続けるので、学習する価値は間違いなくありますよ！</p>
+<h2>まとめ</h2>
+<p>相変わらずフリーダムな変更が続いているRxですが、あくまでExperimental版の話です。Stableでは、こんなバカバカと変わっていくことはないので、安心して使えばいいです。あと、Experimentalなのでまだまだ変動の余地はある、と思いますので、意見あればForumで直接言っておくとよさそう。私も、何やらかんやらと意見言っておきました(昔は書くのにビビッてたのに、今は平然と書いててアレです、慣れですね、ようするに)。</p>
+<p>ところでRxは.NET 4.5に標準搭載されるのか否か、ですが、なんかまだまだ全然色々と変更や模索する気満々なようなので、この様子だと、仮にそういう話があったとしても間に合わなさそうという点で、標準搭載はなさそうですねー。ほぼ完成してるのに標準入りしない、とかだと悲しいんですが、そういう形で標準搭載見送り、ならばむしろ喜ばしい話なので、いいかなー、と思います。</p>
+<iframe src="https://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as4&m=amazon&f=ifr&ref=ss_til&asins=1430237473" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<p>それにしてもRx本は出すタイミング難しいですねえ。今回の変更は非同期周りの話がガラッと変わってきちゃうわけなので。また延期かしらねえ。さすがにそれはないか。ところで私もLINQ + Rx本をオライリーから出したいです(←ただたんに表紙をデンキウナギ(Rxのロゴはピンクのデンキウナギ)にしてウナギ本と呼ばれたいという一点だけの話なので間に受けないでください)</p>
+</div>
+<h1><a href="https://neue.cc/2011/10/11_347.html">ReactivePropertyのデモをしました</a></h1>
 <ul class="date"><li>2011-10-11</li></ul>
 <div class="entry_body"><p><a href="http://silverlightsquare.com/index.php/tokyo04.html">Silverlightを囲む会in東京#4</a>にて、<a href="http://neue.cc/2011/10/07_346.html">先日公開したReactiveProperty</a>についてお話しました。</p>
 <div style="width:595px" id="__ss_9602585"> <strong style="display:block;margin:12px 0 4px"><a href="http://www.slideshare.net/neuecc/reactiveproperty-slintokyo4" title="ReactiveProperty - slintokyo4" target="_blank">ReactiveProperty - slintokyo4</a></strong> <iframe src="https://www.slideshare.net/slideshow/embed_code/9602585" width="595" height="497" frameborder="0" marginwidth="0" marginheight="0" scrolling="no"></iframe> <div style="padding:5px 0 12px"> View more <a href="http://www.slideshare.net/" target="_blank">presentations</a> from <a href="http://www.slideshare.net/neuecc" target="_blank">neuecc</a> </div> </div>
@@ -2459,222 +2554,6 @@ IEnumerable&lt;int&gt; enumerable = new List&lt;int&gt;();
 <p>AsDynamicは、オマケ機能というか。privateなメソッドやプロパティ、フィールドにもdynamicを通してアクセス出来るように変換します。たまにしか使いませんが（MSTestにはPrivate Accessorがあるので）、あると便利よね、という時もそこそこあり。</p>
 <p>MSTestだけではなく、NUnitやMbUnit、xUnit.NETでも使えますので＆NuGet経由でも入れられますので、一度是非お試しを。</p>
 </div>
-<h1><a href="https://neue.cc/2011/07/09_333.html">非同期の再帰的な辿り方、或いはRxとC# 5.0 Asyncの連携について</a></h1>
-<ul class="date"><li>2011-07-09</li></ul>
-<div class="entry_body"><p>例えば、ページを辿る。何度もアクセスを繰り返して、辿る。非同期で。単純なようで、やってみると何気にこれが結構難しい。例としてコードレシピの<a href="http://code.msdn.microsoft.com/Reactive-ExtensionsTwitter-b8238b51">Reactive Extensionsを使用してTwitterから非同期にデータを取得し表示する</a>がありました。MVVMも絡めて、素晴らしいサンプルですね！</p>
-<p>というわけで、お題を拝借して、Twitter ApiのGET statuses/friendsを使わせて頂きます。んが、今回は、手を抜いてフォロワーのscreen_name(@hogehogeのhogehogeの部分)だけを取れれば良い、ということにします。JSON解析やデシリアライズも面倒だし話の本題でもないので省略するため、<a href="http://dynamicjson.codeplex.com/">DynamicJson</a>を使って、JSONを生のまんまっぽく扱うことにします。DynamicJsonは便利だなあ（棒）</p>
-<p>さて、まずTwitter APIのcursorですが、大体こんな風になっています。目的はカーソルを辿って全てのuser(に含まれるscreen_name)を集めること。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/twitter_nextcursor.jpg">
-</p>
-<p>JSON取得毎にnext_cursor_strという、次のページへのIDが取れるので、それを辿っていって、0が出たらページ末尾。といった具合です。next_cursor_strの値は一見ランダムに見える整数(2121409421とかそんな値になっている)であり、next_cursorという数字のものもあるのに、_strという文字列として得られるほうを使っています。何故かというと、<a href="http://d.hatena.ne.jp/tmyt/20101201/1291166929">TwitterのステータスIDが53bitを越えたお話 - tmytのらくがき</a>を参照ください。DynamicJsonでは数字(Number)はdoubleとして扱うので、_strのほうを使わないと、危ういわけです。</p>
-<p>まあ、ただのお題で本題な話ではないので、その辺は深く考えずそういうものなのだなあ、ぐらいで。</p>
-<h2>同期とyield returnと非同期</h2>
-<p>コードレシピのサンプルを見させて頂いたのですが、ネットワークアクセス部分がOpenReadなので、非同期&quot;ではない&quot;です。でも挙動は非同期だよ？というのは、Scheduler.ThreadPoolを使っているからなわけですが、つまるところ挙動的にはBackgroundWorkerを使って非同期にするのと同じことです。その場合ですと、Generateも確かに良いのですが、APIへのアクセスがそもそも同期であるならば、難しく考える必要はなく、yield returnを使ったほうが簡単です。単純なものは演算子の組み合わせで、複雑なものは素直に偉大なるコンパイラ生成(yield return)に頼る。そういう切り分けがLINQ的には大事かなって。</p>
-<pre><code class="language-csharp">static IEnumerable&lt;string&gt; EnumerateFriends(string screenName)
-{
-    var cursor = &quot;-1&quot;; // 初期値は-1から
-    while (cursor != &quot;0&quot;) // 0が出たら終了
-    {
-        var url = string.Format(&quot;http://api.twitter.com/1/statuses/friends.json?screen_name={0}&amp;cursor={1}&quot;,
-            screenName, cursor);
-        using (var stream = new WebClient().OpenRead(url))
-        {
-            var json = DynamicJson.Parse(stream); // 面倒くさいんでDynamicJson使いますよ:)
-            foreach (var item in json.users)
-            {
-                yield return item.screen_name; // screen_nameを列挙
-            }
-            cursor = json.next_cursor_str; // 次のカーソルにセット
-        }
-    }
-}
-
-static void Main()
-{
-    var friends = EnumerateFriends(&quot;neuecc&quot;).ToArray();
-}
-</code></pre>
-<p>すっきりと書けるのが分かると思います。え、これだとブロックしてしまって良くない？その通り。じゃあ非同期にしましょう。いえ、<a href="http://msdn.microsoft.com/en-us/data/gg577609" title="Reactive Extensions">Reactive Extensions</a>で簡単にできてしまいます。yield returnで生成されたEnumerableをObservableに変換するのは、ToObservableです。</p>
-<pre><code class="language-csharp">static void Main()
-{
-    EnumerateFriends(&quot;neuecc&quot;)
-        .ToObservable(Scheduler.ThreadPool) // ThreadPoolで実行！
-        .Subscribe(Console.WriteLine);
-        
-    Console.ReadLine(); // 終了してしまうからね
-}
-</code></pre>
-<p>ToObservableはデフォルトでは Scheduler.CurrentThread 上で実行されるため、同期的にブロックしますが(※Push型シーケンスだからといって必ずしも非同期とは限らない)、任意のものに変更することも可能です。今回はScheduler.ThreadPoolを指定したので、ThreadPool上で動くようになっています。そのため、ブロックされません。</p>
-<p>こういった書き方のほうが、コードがクリアになるし、IEnumerable&lt;T&gt;とIObservable&lt;T&gt;に両対応できてる、という柔軟性の点でも良いかと思います。また、BackgroundWorkerを使うよりも遥かに簡単ですよね。プログレス通知もなく、ただ処理をバックグラウンドでやりたい、というだけならば、Rxを使ったほうが楽チンです。プログレスが必要な場合は、Rxだとその辺の処理を作りこまなければならないので、素直にBackgroundWorkerを用いるのもいいかもしれません。私だったらRxをちょっと拡張してプログレス処理を作り込むほうを選ぶかな？その辺の話は<a href="http://neue.cc/2010/12/09_288.html" title="neue cc - Reactive ExtensionsとAsync CTPでの非同期のキャンセル・プログレス処理">Reactive ExtensionsとAsync CTPでの非同期のキャンセル・プログレス処理</a>を参照ください。</p>
-<p>また、Observable化するとPublishによる分配 - <a href="http://neue.cc/2010/04/29_255.html" title="neue cc - C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions">C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions</a>など、色々と応用な使い方が広がるのもメリットの一つと言えるでしょう。</p>
-<h2>Async CTP</h2>
-<p>今回は例がWPFなため、WebClientで同期的(OpenRead)に取ってしまいましたし、それでも全然問題ないわけですが、SilverlightとかWP7だったらこの手(同期でJSON取ってきてyield returnで返す)は使えません。同期のOpenReadがそもそもなくて、非同期のOpenReadAsyncしかないからね。どうしましょう？それだとyield returnが使えないのはモチロンのこと、Generateでもうまく動きません。もしページ番号がカーソルのように不定ではなく1,2,3...といった形で辿れたとしても、Observable.Rangeでやると、うまくいきません。非同期なので結果が帰ってくる時間が不定だからです。結果を取得してから次の結果を取得する、という形式にしないとダメなのです。</p>
-<p>ところでそもそも、同期的に書いたとしても、本来は書くのは大変なはずなのです。それが、yield returnというコンパイラ生成があるから簡単に書ける。ということは、そうです、非同期もコンパイラ生成してしまえばいいのです、ということで<a href="http://msdn.microsoft.com/en-us/vstudio/gg316360">Async CTP</a>で書きましょう。Async CTPはC# 5.0で入る、かもしれない、async/await構文を使えるようにするためのものです。コミュニティテクノロジープレビュー。ようするにベータ版ですね。</p>
-<pre><code class="language-csharp">// このコードはAsync CTP (SP1 Refresh)によるもので、将来的にも同じコードで動作することは保証しません
-async static Task&lt;List&lt;string&gt;&gt; EnumerateFriends(string screenName)
-{
-    var list = new List&lt;string&gt;();
-
-    var cursor = &quot;-1&quot;;
-    while (cursor != &quot;0&quot;)
-    {
-        var url = string.Format(&quot;http://api.twitter.com/1/statuses/friends.json?screen_name={0}&amp;cursor={1}&quot;,
-            screenName, cursor);
-        using (var stream = await new WebClient().OpenReadTaskAsync(url)) // await!
-        {
-            var json = DynamicJson.Parse(stream);
-            foreach (var item in json.users)
-            {
-                list.Add(item.screen_name); // yield returnの代わりに……
-            }
-            cursor = json.next_cursor_str;
-        }
-    }
-
-    return list;
-}
-</code></pre>
-<p>Async CTPは簡単に解説すると、awaitキーワードを使うと、本来非同期のものが同期のように書けるようになります。詳しくは<a href="http://ufcpp.net/study/csharp/sp5_async.html">非同期処理 (C# によるプログラミング入門)</a>を参照のこと。コード的にも見たように、差異はWebClientのOpenReadの部分を、await OpenReadTaskAsyncに変更しただけで、あとはまるっきり一緒です。非同期なんて簡単なものだね。と、言いたかったのですが、全部読み込んでListで返してるぢゃん……。これじゃEnumerateじゃないよ、yield returnじゃないの？これだと結果取得に時間かかるし、Takeなどを用いて、途中で止めることもできないし。あまりよくない。</p>
-<p>結論としては今のところどうやら無理ということで。asyncの返すものはTaskもしくはTask&lt;T&gt;でなければならない。いや、Task&lt;IEnumerable&lt;T&gt;&gt;を返してくれればいいぢゃん、await yield returnとか出来たら素敵ぢゃないのん？と思わなくもないというか、<a href="http://social.msdn.microsoft.com/Forums/en-ZW/async/thread/f7a42c29-4ee6-4a3c-b346-b3718e253dc0">普通にそういうリクエストも上がっている</a>のですが、それにはIAsyncEnumerable&lt;T&gt;のようなものと、それに対するコンパイラサポートが必要だよね、という返しでした。</p>
-<h2>Rx + Async</h2>
-<p>IAsyncEnumerable&lt;T&gt;、それってIObservable&lt;T&gt;で代替出来る話だよね。IObservable&lt;T&gt;は連続的な非同期を内包しているから。（※IObservable&lt;T&gt;は一つのインターフェイスであまりにも多くのものを表現出来てしまい、内部の状態が読みづらく(同期なのか非同期なのか、遅延なのか即時なのか)混乱を生みがちという問題もありますが……）。なので、Rxでやってみましょう。といっても、Rxで完全に自前でやるのは相当大変なので、Async CTPのサポートも併用します。これにより非同期の待機が同期的に書けるようになり、yield returnであったりlist.Addであったりの部分を、OnNextに置き換えるだけになります。</p>
-<p>Stable版のRxにはAsync CTP連携は入っていないのですが、Experimental(実験的)版には、awaitで待機出来る、というだけはなく、幾つかAsync CTPと連携できるメソッドが入っています。</p>
-<pre><code class="language-csharp">// ExperimentalのRxのため、将来的にもこのコードが動作し続けることは保証しません
-static IObservable&lt;string&gt; EnumerateFriends(string screenName)
-{
-    // ラムダ式の中でasync書けることがポイント
-    return Observable.Create&lt;string&gt;(async (observer, cancelToken) =&gt;
-    {
-        try
-        {
-            var cursor = &quot;-1&quot;;
-            while (cursor != &quot;0&quot;)
-            {
-                if (cancelToken.IsCancellationRequested) return; // cancelをチェック
-
-                var url = string.Format(&quot;http://api.twitter.com/1/statuses/friends.json?screen_name={0}&amp;cursor={1}&quot;,
-                    screenName, cursor);
-                using (var stream = await new WebClient().OpenReadTaskAsync(url)) // await!
-                {
-                    var json = DynamicJson.Parse(stream);
-                    foreach (var item in json.users)
-                    {
-                        observer.OnNext(item.screen_name); // yield returnのかわりに
-                    }
-                    cursor = json.next_cursor_str;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            observer.OnError(ex);
-            return; // 例外発生時はOnErrorを呼んで終了
-        }
-
-        observer.OnCompleted(); // 例外発生もキャンセルもなく完了したなら、OnCompletedを呼ぶ
-    });
-}
-
-static void Main()
-{
-    EnumerateFriends(&quot;neuecc&quot;)
-        .Take(350) // 350件後にDisposeされてtokenがcancelになる
-        .Subscribe(
-            s =&gt; Console.WriteLine(s),
-            e =&gt; Console.WriteLine(&quot;error:&quot; + e),
-            () =&gt; Console.WriteLine(&quot;完了&quot;)); // Takeのほうから呼び出されるので、cancel扱いになっても表示される
-
-    Console.ReadLine();
-}
-</code></pre>
-<p>Observable.Create(RangeやGenerateなどの生成子、WhereやSelectなどの演算子の全てが使っている、本当のプリミティブの生成子)を使って、生のobserverでOnNext, OnError, OnCompletedの3つを制御してやります。Createやtry-catchの分、ネストが深くなってしまっていますが、コード自体は同期的に、yield returnを使って書いていたものとほとんど変わってないのが分かると思います。yield returnの部分にOnNextを置いた、それだけでそのまま置き換えられています。</p>
-<p>これならIObservable&lt;T&gt;でも十分に自動生成のサポートが効いていると言えなくもないですね。やってみて、結構満足できてしまった。パフォーマンス的にも、演算子をベタベタ組み合わせるのはあまり良くはならないので、こうしてasync/awaitと連携させて作れると、素直に書けるうえに、パフォーマンス向上も狙えるのが嬉しい。ただ、OnErrorやOnCompleted、キャンセル(Dispose)をどうするか。考慮する事項が多いので、ある程度分かっていないと大変かもしれません。全て考えておかないと、正しく動作しません。既存演算子の組み合わせだけで済ませられるなら、そういった考慮事項は演算子が受け持ってくれるので、考えなくて済むのですが……。どうしても演算子の組み合わせじゃうまく出来ない、逆に複雑になりすぎる、そういった時の奥の手、ぐらいに考えておくと良さそう。</p>
-<p>ところでasyncはメソッドの宣言だけでなく、ラムダ式の部分でも宣言できてawaitすることが出てきてしまうんですよね、ならば、同じようなコンパイラ生成であるyield returnも、現状は外部メソッドでしか使えないわけですが、以下のようにインラインでも使えるようになってくれると嬉しいなって。思ってしまうのです。</p>
-<pre><code class="language-csharp">// 妄想なので、現状はこれは出来ませんが！
-var infinity = Enumerable.Create(()=&gt;
-{
-    var num = 0;
-    while(true)
-    {
-        yield return num++;
-    }
-});
-</code></pre>
-<p>そんなもの散々突っ込み受けたですって？<a href="http://blogs.msdn.com/b/ericlippert/archive/2009/08/24/iterator-blocks-part-seven-why-no-anonymous-iterators.aspx">Iterator Blocks Part Seven: Why no anonymous iterators? - Fabulous Adventures In Coding</a>。ええ、知ってます。しかし、awaitなどで必要さの要請を受けて、コストとベネフィットが逆転するときが来た、と、思うのです。それに、VBでも、いや、なんでもない。</p>
-<h2>Expand</h2>
-<p>さて、ともかくAsync CTPは未来の話であり、現状手元にあるもので何とかする方法はないのだろうかというと、あります。ようするところ、再帰的に辿ってるわけですよね、cursorを。じゃあ、Expandです。Expandは<a href="http://neue.cc/2011/06/30_331.html">Reactive Extensions v1.0安定版リリース</a>でEnumerableバージョンのものを説明しましたが、Observableバージョンもあります。</p>
-<pre><code class="language-csharp">// 補助メソッド、Async CTPにはOpenReadTaskAsyncとか、そういうのがデフォで用意されてますが、
-// Rxにはないので、自前で用意しなきゃあいけないという、それだけの話です(ダウンロードしてストリングを返すだけのもの)
-public static class WebRequestExtensions
-{
-    public static IObservable&lt;string&gt; DownloadStringAsync(this WebRequest request)
-    {
-        return Observable.Defer(() =&gt; Observable.FromAsyncPattern&lt;WebResponse&gt;(
-                request.BeginGetResponse, request.EndGetResponse)())
-            .Select(res =&gt;
-            {
-                using (var stream = res.GetResponseStream())
-                using (var sr = new StreamReader(stream))
-                {
-                    return sr.ReadToEnd();
-                }
-            });
-    }
-}
-
-// ExpandはStable版にはまだ搭載されていないので、Experimental版を使ってください
-static IObservable&lt;string&gt; EnumerateFriends(string screenName)
-{
-    Func&lt;string, IObservable&lt;dynamic&gt;&gt; downloadJson = cursor =&gt;
-    {
-        var url = string.Format(&quot;http://api.twitter.com/1/statuses/friends.json?screen_name={0}&amp;cursor={1}&quot;,
-            screenName, cursor);
-        return WebRequest.Create(url).DownloadStringAsync().Select(DynamicJson.Parse);
-    };
-
-    return downloadJson(&quot;-1&quot;)
-        .Expand(d =&gt; (d.next_cursor_str == &quot;0&quot;)
-            ? Observable.Empty&lt;dynamic&gt;() // TakeWhileで判定すると最後の一つを取りこぼすので
-            : downloadJson(d.next_cursor_str))
-        .SelectMany(d =&gt; (dynamic[])d.users)
-        .Select(d =&gt; (string)d.screen_name);
-}
-</code></pre>
-<p>そこそこ直感的ではないでしょうか？最初 Expand().TakeWhile(next_cursor_str != &quot;0&quot;) と書いたのですが、それだと最後のページを取りこぼしてしまうのに気づいて、Emptyを投げる方針に変更しました。その辺、境界については注意を払わなきゃですね。</p>
-<p>そして、残念ながら、ExpandはRxのStable版にはまだない。ということはWP7にもないわけで。</p>
-<h2>再帰とRx</h2>
-<p>Stable版でもやりましょう。awaitなし、Expandなし。では、どうやって作りましょうか。うーん、再帰的というのなら、本当に再帰させてしまえばいいのではないか？</p>
-<pre><code class="language-csharp">static IObservable&lt;string&gt; EnumerateFriends(string screenName)
-{
-    Func&lt;string, IObservable&lt;dynamic&gt;&gt; downloadJson = null; // 再帰するにはこーして最初にnull代入
-    downloadJson = cursor =&gt;
-    {
-        var url = string.Format(&quot;http://api.twitter.com/1/statuses/friends.json?screen_name={0}&amp;cursor={1}&quot;,
-            screenName, cursor);
-        return WebRequest.Create(url)
-            .DownloadStringAsync()
-            .Select(DynamicJson.Parse) // ここまでExpandと共通
-            .SelectMany(json =&gt;
-            {
-                // Expandメソッドの中でやってることを大幅簡易化、ということです、つまるところ。
-                var next = (json.next_cursor_str == &quot;0&quot;)
-                    ? Observable.Empty&lt;dynamic&gt;()
-                    : downloadJson((string)json.next_cursor_str);
-                return (IObservable&lt;dynamic&gt;)Observable.StartWith(next, json);
-            });
-    };
-
-    return downloadJson(&quot;-1&quot;)
-        .SelectMany(d =&gt; (dynamic[])d.users) // ここからもExpandと共通
-        .Select(d =&gt; (string)d.screen_name);
-}
-</code></pre>
-<p>これを再帰というには、あまり再帰してないのですが、まあ雰囲気雰囲気。Expandと大体共通です。つまるところ、Expandを自前で作る、のは結構大変なので、Expandのように汎用的ではなく、特化したものをその場で作る、といった程度の代物。そうすれば、少しは簡単に用意できます。</p>
-<h2>まとめ</h2>
-<p>同期でListに格納するだけなら簡単。遅延でやるのもyield returnのお陰で簡単。非同期で辿るのは難しい。awaitで複数の値をyield的に列挙するのは現状難しい。Rxとawaitの連携は大変素晴らしい。Expandは便利。なければないで何とかなる。でもやっぱ大変。</p>
-<p>一見簡単なことが存外難しいってのはいくないですね。一見簡単なら、簡単なままでできないと。Expandも悪くはないんですけど、中々どうして慣れてないと分かりづらい。しかし、将来のC#には十分期待できそう。と、思いました、まる。あとRxとAsyncは全然仲良しなんですよ～、というところです。</p>
-</div>
 <a href="https://neue.cc/14">Prev |</a>
 <a href="https://neue.cc/16">| Next</a>
 </div>
@@ -2698,6 +2577,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2023/01/">2023-01</a>
 <li><a href="https://neue.cc/2022/12/">2022-12</a>
 <li><a href="https://neue.cc/2022/11/">2022-11</a>
 <li><a href="https://neue.cc/2022/07/">2022-07</a>
