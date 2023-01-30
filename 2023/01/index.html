@@ -23,7 +23,53 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2023/01/27_StructureOfArraysGenerator.html">StructureOfArraysGenerator - C#でSoAを簡単に利用するためのSource Generator</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2023/01/30-SimdLinq.html">SimdLinq - LINQをそのままSIMD対応して超高速化するライブラリ</a></h1>
+<ul class="date"><li>2023-01-30</li></ul>
+<div class="entry_body"><p>ついこないだの<a href="https://neue.cc/2023/01/27_StructureOfArraysGenerator.html">StructureOfArraysGenerator - C#でSoAを簡単に利用するためのSource Generator</a>は、SoAになってるとSIMDを適用しやすいよ、という話だったのですが、そもそもSIMD手書きはカジュアルにやらないし、気合い入れてSIMD書くシチュエーションなら構造も気合い入れて専用に設計するよなぁ。と、なると、カジュアルにSIMD使えるライブラリが必要で、まぁLINQですね、と。</p>
+<ul>
+<li><a href="https://github.com/Cysharp/SimdLinq">Cysharp/SimdLinq</a></li>
+</ul>
+<p>これを入れると別にSoA関係なく、SIMDが適用できる状態(例えばint[]にSum)だと、自動的にSIMDが適用されるようになります。そして、実際めちゃくちゃ速い。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/215410106-b68d8567-5abf-4aa4-a050-a803b1913187.png" alt="" /></p>
+<p>SIMDとLINQの組み合わせが威力を発揮するというのは、別に新しいことではなく、そもそも .NET 7でも<a href="https://devblogs.microsoft.com/dotnet/performance_improvements_in_net_7/#linq">Performance Improvements in .NET 7 LINQ</a>で、幾つかのメソッドが内部でSIMD化されて高速化されていることが発表されています。しかし、 .NET 7のSIMD対応は非常に限定的なもので、具体的には<code>int[]</code>の<code>Average</code>,<code>Min</code>,<code>Max</code>、それと<code>long[]</code>の<code>Min</code>,<code>Max</code>だけです。これには理由はなくはないのですが、本来SIMD対応できる範囲はもっと広いため、これでは非常にもったいない。</p>
+<p>SimdLinqを適用できるメソッドは <code>Sum</code>, <code>Average</code>, <code>Min</code>, <code>Max</code>, <code>MinMax</code>, <code>Contains</code>, <code>SequenceEqual</code>、要素の型は <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code> int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code>、コレクションの型は <code>T[]</code>, <code>List&lt;T&gt;</code>, <code>Span&lt;T&gt;</code>, <code>ReadOnlySpan&lt;T&gt;</code>, <code>Memory&lt;T&gt;</code>, <code>ReadOnlyMemory&lt;T&gt;</code> と理屈上SIMD化できるものを全て詰め込みました。特に<code>Span&lt;T&gt;</code>/<code>ReadOnlySpan&lt;T&gt;</code>は通常のLINQでは使えない（メソッドが定義されていない）ので、有益です。また、Min, Maxを同時に取得する<code>MinMax</code>というメソッドを独自に追加しています。</p>
+<p>専用メソッドを呼ばせる（例えば<code>SumSimd()</code>とか)ようでは使いにくいと思ったので、現在のコードを何も弄らずとも、ライブラリ参照してglobal usingを設定すれば、全ての適用可能なメソッドに自動適用される仕組みにしました。これは同名メソッドを定義して、具象型のほうにオーバーロード解決が優先採用されることを利用しています。</p>
+<h2>使い方</h2>
+<p>なので、使い方もなにもなく、usingすれば勝手にSimdLinqになって高速化されます。</p>
+<pre><code class="language-csharp">using SimdLinq; // enable SimdLinq extension methods
+
+var array = Enumerable.Range(1, 100000).ToArray();
+
+var sum = array.Sum(); // used SimdLinqExtensions.Sum
+</code></pre>
+<p>using忘れちゃうというのはあるので、そこでglobal usingです。csprojに</p>
+<pre><code class="language-xml">&lt;ItemGroup&gt;
+    &lt;Using Include=&quot;SimdLinq&quot; /&gt;
+&lt;/ItemGroup&gt;
+</code></pre>
+<p>というのを仕込んでやれば、SimdLinqが使える場合はSimdLinqに、そうじゃないものは普通のLinqでオーバーロードが解決されるようになります。便利。</p>
+<p>具体的にSimdLinqが適用されるメソッドは以下のものになります。</p>
+<ul>
+<li><code>Sum</code> for <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
+<li><code>Average</code> for <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
+<li><code>Min</code> for <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
+<li><code>Max</code> for <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
+<li><code>MinMax</code> for <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
+<li><code>Contains</code> for <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
+<li><code>SequenceEqual</code> for <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
+</ul>
+<h2>互換性と安全性</h2>
+<p>.NET 7の標準に、このSimdLinqのようなアグレッシブなSIMD化が入らなかった理由は、互換性と安全性になります。え、安全じゃないの？というと怖くなるので、何が違うのかはしっかり把握しておきましょう。別に危険、というわけではないですが。</p>
+<p>まずSumとAverage(Averageの中身はSumしたのをLengthで割るだけなので中身は実質Sum)ですが、LINQのSumはcheckedで、オーバーフローすると例外を吐きます。SimdLinqはuncheckedです、つまりオーバーフローするとそのままオーバーフローしたまま結果を返します。checkedのほうが挙動としてはいいんですが、SIMD演算がオーバーフローのチェックできないので、SimdLinqではuncheckedとして提供しています。オーバーフローに関しては自己責任で。さすがにbyteのSumとかだとすぐオーバーフローしちゃうので、SimdLinqのSumは32 bit以上の要素にだけ提供しています、つまり<code>int</code>, <code>long</code>, <code>uint</code>, <code>ulong</code>, <code>double</code>, <code>float</code> です。そもそも元々のLINQのSum(引数なし)も<code>int</code>からなので、その辺は一緒ということで。</p>
+<p>floatの扱いは挙動の違いが若干あります。まず、通常のLINQのMin, Maxは<code>NaN</code>をチェックしますがSimdLinqは<code>NaN</code>をチェックしません。<code>NaN</code>チェックがあったほうが丁寧ですが、SIMDでそれは入れずらい＆NaNが入ってくるケースってあまりないので現実的にすごい問題か、というとそうではないかな、と。</p>
+<p>それとSumの場合に足し算の順序が変わって(LINQは前から順番に足しますが、SIMDだと並列に足すので)、浮動小数点演算だと足す順序が変わると微妙に誤差が出て同じ結果になりません。例えばLINQだと<code>1.5710588F</code>だけどSimdLinqだと<code>1.5710589F</code>になる、といったような違いが出てきます。結果としては別にどっちでも良い（ある意味で別にどっちも厳密にはあってない）と思いますが、結果の互換性がないですよ、ということは留意してください。</p>
+<h2>まとめ</h2>
+<p>高速なLINQのAlternativeって、結構あります。<a href="https://github.com/kevin-montrose/LinqAF">LinqAF</a>、<a href="https://github.com/jackmott/LinqFaster">LinqFaster</a>、<a href="https://github.com/NetFabric/NetFabric.Hyperlinq">NetFabric.Hyperlinq</a>など。ただ、どれも大仰なんですよね、StructのIteratorを作ってー、とか。専用メソッドを呼ぶためにラップするのも手間だし、その割に凄い効果的というほどでもないから、依存を増やす割にはメリットも薄くなので、私自身は使おうとはあまり思ってませんでした。</p>
+<p>そこでSimdLinqではLINQ全体を高速化させることを狙っているわけではなくて、SIMDが適用できるものだけピンポイントに、そしてソースコードには一切手を入れる必要のない&quot;Drop-in replacement&quot;になるようにデザインしました。また、SIMDのみに絞ったことで性能面に明らかに圧倒的な差をだして、あえて使う理由を作る、といったところですね。</p>
+<p>ついでにそうなると欲張ってどんどん適用できる箇所を増やしたい、つまりは<a href="https://github.com/Cysharp/StructureOfArraysGenerator">StructureOfArraysGenerator</a>だ、みたいなコンボも狙っています。エコシステム囲い込み！囲い込みはEvil！</p>
+<p>そんなわけでSIMDシリーズ第一弾でした。今年はSIMD関連も幾つか出していくかもしれませんし、Source Generatorネタがめちゃくちゃ溜まってるので時間が無限大に必要です。まぁ、ともかくまずはSimdLinqを使って見てください！</p>
+</div>
+<h1><a href="https://neue.cc/2023/01/27_StructureOfArraysGenerator.html">StructureOfArraysGenerator - C#でSoAを簡単に利用するためのSource Generator</a></h1>
 <ul class="date"><li>2023-01-27</li></ul>
 <div class="entry_body"><p>最近はSource Generatorブームが続いていて、去年末に<a href="https://neue.cc/2022/12/16_IncrementalSourceGenerator.html">2022年のC# (Incremental) Source Generator開発手法</a>という記事を出しましたが、まずは今年第一弾のSource Generatorライブラリです。</p>
 <ul>

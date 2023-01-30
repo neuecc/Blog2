@@ -23,7 +23,88 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2009/09/28_205.html">.NET Reactive Framework メソッド探訪第五回:Scan</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2009/09/30_206.html">C# Linqでクイックソート</a></h1>
+<ul class="date"><li>2009-09-30</li></ul>
+<div class="entry_body"><pre><code class="language-haskell">qsort []     = []
+qsort (x:xs) = qsort elts_lt_x ++ [x] ++ qsort elts_greq_x
+                 where
+                   elts_lt_x   = [y | y &lt;- xs, y &lt; x]
+                   elts_greq_x = [y | y &lt;- xs, y &gt;= x]
+</code></pre>
+<p>これはHaskellのコードで、良く見かける定番のQuickSort。うん、短い。というわけでLinqでそれをやる。というネタは既出のン番煎じなのですが、気にせずやる。</p>
+<pre><code class="language-csharp">// LinqでHaskell風のクイックソート
+public static IEnumerable&lt;T&gt; QuickSort&lt;T&gt;(IEnumerable&lt;T&gt; source)
+    where T : IComparable&lt;T&gt;
+{
+    if (!source.Any()) return source;
+    var pivot = source.First();
+    return source
+        .GroupBy(x =&gt; x.CompareTo(pivot))
+        .OrderBy(g =&gt; g.Key) // OrderBy使うのはどうかなー、というところはある
+        .SelectMany(g =&gt; (g.Key == 0) ? g : QuickSort(g));
+}
+</code></pre>
+<p>GroupBy-&gt;SelectManyと流れるように書けて美しいー。これならHaskellにも引けを取らないですね！但し問題なのは、OrderByを使用しているところ。CompareToの結果である-1, 0, 1を並べ替えるために使っているのだけど、OrderByの中身はシュワルツ変換の挟まったクイックソートそのものなので邪道な感は否めない。OrderBy使うなら、そもそもsource.OrderBy(x =&gt; x)でもいいぢゃん、って話になってしまう。</p>
+<pre><code class="language-csharp">// 非GroupBy版。LookupはGroupByの即時評価版と考えていい。
+public static IEnumerable&lt;T&gt; QuickSort&lt;T&gt;(IEnumerable&lt;T&gt; source)
+    where T : IComparable&lt;T&gt;
+{
+    if (!source.Any()) return source;
+    var pivot = source.First();
+    var lookup = source.ToLookup(x =&gt; x.CompareTo(pivot));
+    return QuickSort(lookup[-1]).Concat(lookup[0]).Concat(QuickSort(lookup[1]));
+}
+</code></pre>
+<p>GroupByをToLookupに書き変えました。ToLookupはGroupByの即時評価版といった感じで、インデクサによるアクセスが可能。インデクサ使わないでそのままforeachで列挙する、なんて時はGroupByを使った方が良いです。今回はインデクサで順番を明示的に指定するため、ToLookupでパーティション切って、Concatで繋いでやれば出来あがり。やってることが非常に分かりやすくて良い。ソースの見た目も中々綺麗じゃないでしょうか。Haskellのものとも非常に近いです(ようするに++がConcatなので) ToLookupではなくWhereを使えば、見た目は更にHaskellに近づきますが、列挙が二回になるので、ここはToLookupで。</p>
+<pre><code class="language-csharp">// 普通に？書いた場合。
+public static void QuickSort&lt;T&gt;(IList&lt;T&gt; source, int lowerBound, int upperBound)
+    where T : IComparable&lt;T&gt;
+{
+    var pivot = source[lowerBound + ((upperBound - lowerBound) &gt;&gt; 1)];
+    var left = lowerBound - 1;
+    var right = upperBound + 1;
+    while (true)
+    {
+        while (source[++left].CompareTo(pivot) &lt; 0) ;
+        while (source[--right].CompareTo(pivot) &gt; 0) ;
+        if (left &gt;= right) break;
+        var temp = source[left];
+        source[left] = source[right];
+        source[right] = temp;
+    }
+    if (lowerBound &lt; left - 1) QuickSort(source, lowerBound, left - 1);
+    if (right + 1 &lt; upperBound) QuickSort(source, right + 1, upperBound);
+}
+</code></pre>
+<p>今度は非Linqに一般的？な書き方で。あまりヘタな書き方するとアレだなあ、と思ったので<a href="http://blog.livedoor.jp/dankogai/archives/51182235.html">404 Blog Not Found:javascript - Array#sortはオレquicksortより遅い by Chrome</a>のコードをC#に移植しました。<a href="http://dic.nicovideo.jp/a/%E3%81%82%E3%81%9F%E3%81%97%E3%81%93%E3%81%AE%E3%83%91%E3%82%A4%E5%AB%8C%E3%81%84%E3%81%AA%E3%81%AE%E3%82%88%E3%81%AD">あたしこの書き方嫌いなのよね</a>、という感じにゴチャゴチャした印象は否めないというか、まあ、嫌いなのよね。一本の配列で頑張るところが、ゆとりな私としてはしんどい。ビットシフトも嫌よね。</p>
+<pre><code class="language-csharp">public static IEnumerable&lt;T&gt; QuickSort&lt;T&gt;(IEnumerable&lt;T&gt; source)
+    where T : IComparable&lt;T&gt;
+{
+    var enumerator = source.GetEnumerator();
+    if (!enumerator.MoveNext()) yield break;
+
+    var pivot = enumerator.Current;
+    var less = new List&lt;T&gt;();
+    var equal = new List&lt;T&gt;();
+    var greater = new List&lt;T&gt;();
+    do
+    {
+        switch (enumerator.Current.CompareTo(pivot))
+        {
+            case -1: less.Add(enumerator.Current); break;
+            case 0: equal.Add(enumerator.Current); break;
+            case 1: greater.Add(enumerator.Current); break;
+        }
+    } while (enumerator.MoveNext());
+
+    foreach (var item in QuickSort(less)) yield return item;
+    foreach (var item in equal) yield return item;
+    foreach (var item in QuickSort(greater)) yield return item;
+}
+</code></pre>
+<p>最後に、非Linqで、ToLookup版を再現してみたものを。do-whileがToLookupでforeachの連発がConcat。ようするに富豪的にListを作りまくるってわけなんですね！書きやすいし分かりやすいので、一本配列版よりも遥かに好き度高い。現代人はListを贅沢に大量に好きなだけ使うのです。まあ、Linq版がない状態でこの書き方が浮かぶ or 実行に移せるかどうかといったら、かなり無理ですけど。</p>
+</div>
+<h1><a href="https://neue.cc/2009/09/28_205.html">.NET Reactive Framework メソッド探訪第五回:Scan</a></h1>
 <ul class="date"><li>2009-09-28</li></ul>
 <div class="entry_body"><p class="noindent">
     <object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="300px">
@@ -1032,15 +1113,6 @@ Folder.prototype =
 </code></pre>
 <p>速度は、匿名型版のほうが圧倒的に速いです。100000回の繰り返しが匿名型だと2秒なのに対してラムダ式版は30秒かかった。Compile().Invokeがアレなんですかねえ。ちなみに、string.Formatでふつーにやった場合は0.03秒でした。まー、でも、メール雛型の置換に、とかちょっとしたことにそこそこ便利に使えるかなー、とは思いつつもっと効率考えてちゃんと組んだ方がいい気もする。</p>
 <p>ラムダ式から取り出すのは<a href="http://d.hatena.ne.jp/NyaRuRu/20071211/p3">C# 3.0 における疑似 Map 生成リテラル - NyaRuRuの日記</a>から、匿名型はprototype.jsとかPHPのstrtrとか色々。あと<a href="http://d.hatena.ne.jp/NyaRuRu/20080706/p1">ややニッチな Anonymous Types の使い方をまとめてみる (C# 3.0) - NyaRuRuの日記</a>です。</p>
-</div>
-<h1><a href="https://neue.cc/2009/08/22_191.html">ver 0.0.0.3</a></h1>
-<ul class="date"><li>2009-08-22</li></ul>
-<div class="entry_body"><ul>
-<li><a href="http://neue.cc/software/fotolifeuploader">neue cc - 半自動はてなフォトライフアップローダー</a></li>
-</ul>
-<p>拡張子が大文字だとアップロード出来なかったので直しました。XboxInfoTwitの時も同じのやってたのにまたかよって感じです。拡張子判定部分は、ちゃんとIgnoreCaseにしたしあれえ？と思ってたんですがContentType作るところで漏れがあって、ウッカリ。てへ。</p>
-<p>まあ、そんなこんなでちゃんと一眼レフも買いました。わざわざこのためだけに！<a href="http://f.hatena.ne.jp/neuecc/" title="neuecc's fotolife">neuecc's fotolife</a> 。それで、しかし撮るものが悲しいほど無いんですよね、やっぱり。とはいえ、自分で撮って自分で上げてかないと、何をどうすれば良くなるのか分からないので、室内写真で栄える何かを探し中です。現在は多肉植物でも育てようかな、と思ってるんですがどうでしょうかねえ。</p>
-<p>ちなみに現在までのDL数は余裕で一桁。べ、別に悲しくないもん！ そういえばこの半自動ってぶっちゃけ機能的にいらなくね？むしろフォルダ監視で自動化したほうがよくね？とも思ってきたので、まあ、そのうち。そのうち。</p>
 </div>
 <a href="https://neue.cc/23">Prev |</a>
 <a href="https://neue.cc/25">| Next</a>

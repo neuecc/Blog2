@@ -23,7 +23,120 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2015/04/19_511.html">LightNode 1.2.0 - Swagger統合によるAPIのデバッグ実行</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2015/05/11_512.html">UniRxでの空呼び出し検出、或いはRoslynによるCode Aware Libraries時代の到来について</a></h1>
+<ul class="date"><li>2015-05-11</li></ul>
+<div class="entry_body"><p><a href="https://github.com/neuecc/UniRx">UniRx - Reactive Extensions for Unity</a>用に、メソッド呼んだだけで何も処理してないIObservable&lt;T&gt;があったらWarningを出すAnalyzerを作ってみました。</p>
+<p><img src="https://raw.githubusercontent.com/neuecc/UniRx/master/StoreDocument/AnalyzerReference.jpg" alt="" /></p>
+<p><img src="https://raw.githubusercontent.com/neuecc/UniRx/master/StoreDocument/VSAnalyzer.jpg" alt="" /></p>
+<p>AnalyzerはVisual Studio 2015からの機能です。というわけで<a href="https://www.microsoft.com/ja-jp/dev/products/visual-studio-2015.aspx">Visual Studio 2015 RC</a>が必要です。あとは、NuGetからAnalyzerが入れられるようになっているので</p>
+<ul>
+<li>Install-Package <a href="http://www.nuget.org/packages/UniRxAnalyzer">UniRxAnalyzer</a></li>
+</ul>
+<p>でOK。Unityのプロジェクトであっても問題なく使えます(ただしVSTUのcsproj自動生成でAnalyzerタグは吹っ飛ぶので、生成をフックして復元する必要はあります、フック方法の詳細は<a href="https://speakerdeck.com/grabacr07/minnada-hao-ki-boo-dot-lang-wo-satsugai-surufang-fa">みんな大好き Boo.Lang を SATSUGAI する方法</a>を参照のこと)。もし、他にこういうAnalyzerがあったら便利なのになー、とかってアイディアあったら気楽に言ってください！作りますので！</p>
+<p>現在の<a href="http://grani.jp/">うちの会社（グラニ）</a>のプロジェクトはRxが土台から、ありとあらゆる全てで使われているので、ちょっとした呼び出しのつもりでやってたら何もおこらなくて(Susbcribe漏れ)クソが！となるシチュエーションが少なくなかったので、こういうAnalyzerが必需品だったのでした。</p>
+<p>ようするにC# 5.0のTaskでawaitしてないと警告が出るのと同じ話なのですが、そういうのが言語組み込みキーワードでなくても自由に、（VS2015で動かせるなら）簡単にプロジェクト単位で追加出来る、というのがミソです。こういったライブラリとアナライザーの組み合わせは、Code Aware Librariesという言葉でまとめられます。<a href="http://channel9.msdn.com/Events/Build/2015/3-725">.NET Compiler Platform (&quot;Roslyn&quot;): Analyzers and the Rise of Code-Aware Libraries</a>。従来はライブラリのみの提供でしたが、そこにAnalyzerも組み合わせて、Best Practiceを一体化して伝えていくような世界観が広がっています。</p>
+<p>例えば、私は<a href="https://github.com/neuecc/LightNode">LightNode</a>というWebAPIフレームワークを作っていますが、これは引数の型に幾つかの制約があります。また、メソッドのオーバーロードを許していなかったりします。それらは実行時のウォームアップのタイミングでフェイルファストとして気づかせるようにしていますが、それよりも前のタイミング、コードを書いている最中にリアルタイムで警告できれば、より良いでしょう。なので、Analyzerを同梱すれば、より良い形、より良いライブラリの有り様になります。</p>
+<h2>DiagnosticAnalyzerの作り方 Part2</h2>
+<p>以前に<a href="http://neue.cc/2014/11/20_485.html">VS2015のRoslynでCode Analyzerを自作する(ついでにUnityコードも解析する)</a>と<a href="http://neue.cc/2014/12/08_496.html">VS2015+RoslynによるCodeRefactoringProviderの作り方と活用法</a>という記事を書きましたが、基本的にはそれらと同じです、アタリマエですが。↑の記事はCTPの頃のもので、若干インターフェイスが変わっちゃっていますが、少し修正するだけでほぼほぼ同じかな。</p>
+<p>今回作ったのはCode Analyzerで、Fixは含めていないのでcsファイル一個だけで済んでいます。</p>
+<pre><code class="language-csharp">[DiagnosticAnalyzer(LanguageNames.CSharp)]
+public class HandleObservableAnalyzer : DiagnosticAnalyzer
+{
+    public const string DiagnosticId = &quot;HandleObservable&quot;;
+
+    internal const string Title = &quot;IObservable&lt;T&gt; does not handled.&quot;;
+    internal const string MessageFormat = &quot;This call does not handle IObservable&lt;T&gt;.&quot;;
+    internal const string Description = &quot;IObservable&lt;T&gt; should be handled(assign, subscribe, chain operator).&quot;;
+    internal const string Category = &quot;Usage&quot;;
+
+    internal static DiagnosticDescriptor Rule = new DiagnosticDescriptor(DiagnosticId, Title, MessageFormat, Category, DiagnosticSeverity.Warning, isEnabledByDefault: true, description: Description);
+
+    public override ImmutableArray&lt;DiagnosticDescriptor&gt; SupportedDiagnostics { get { return ImmutableArray.Create(Rule); } }
+
+    public override void Initialize(AnalysisContext context)
+    {
+        context.RegisterSyntaxNodeAction(AnalyzeMethodDeclaration, SyntaxKind.MethodDeclaration);
+    }
+
+    private static void AnalyzeMethodDeclaration(SyntaxNodeAnalysisContext context)
+    {
+        var invocationExpressions = context.Node
+            .DescendantNodes(descendIntoChildren: x =&gt; !(x is InvocationExpressionSyntax))
+            .OfType&lt;InvocationExpressionSyntax&gt;();
+
+        foreach (var expr in invocationExpressions)
+        {
+            var type = context.SemanticModel.GetTypeInfo(expr).Type;
+            // UniRx.IObservable? System.IObservable?
+            if (new[] { type }.Concat(type.AllInterfaces).Any(x =&gt; x.Name == &quot;IObservable&quot;))
+            {
+                // Okay =&gt; x = M(), var x = M(), return M(), from x in M()
+                if (expr.Parent.IsKind(SyntaxKind.SimpleAssignmentExpression)) continue;
+                if (expr.Parent.IsKind(SyntaxKind.EqualsValueClause) &amp;&amp; expr.Parent.Parent.IsKind(SyntaxKind.VariableDeclarator)) continue;
+                if (expr.Parent.IsKind(SyntaxKind.ReturnStatement)) continue;
+                if (expr.Parent.IsKind(SyntaxKind.FromClause)) continue;
+
+                // Okay =&gt; M().M()
+                if (expr.DescendantNodes().OfType&lt;InvocationExpressionSyntax&gt;().Any()) continue;
+
+                // Report Warning
+                var diagnostic = Diagnostic.Create(Rule, expr.GetLocation());
+                context.ReportDiagnostic(diagnostic);
+            }
+        }
+    }
+}
+</code></pre>
+<p>戦略的には、メソッド呼び出し、つまりInvocationExpressionを拾いだして、そこからローカル変数代入/フィールド代入/return/LINQクエリ構文/メソッド呼び出しで使われていなければダメ扱いにする、という流れ。コード自体は行数も少なくて難しくはないのですけれど、戦略を決定するまでは割と悩みました。SyntaxTree自体も大量のメソッドがあり、SemanticModelも絡めると、色々な手段が取れそうでいて取れなさそうで、相当悩ましい。最終的にはかなり単純な手法に落ち着きましたが、直線距離で到達できるようになるまでには、かなり慣れが必要そうです。あと、最初作った時はクエリ構文のチェックを見落としてたりとか（さすがにこれを最初から気づくのは無理）、必要なケースを全て洗い出すのはそこそこ大変かな、といった感はあります。</p>
+<p>DescendantNodesのdescendIntoChildrenという引数が中々面白くて、これは子孫ノードの探索を打ち切る条件を指定できます。これの何がいいって、例えばメソッド Observable.Range().Where().Select() があった場合、最上位のInvocationExpressionはObservable.Range().Where().Select()なのですが、その子孫に Observable.Range().Where() や Observable.Range() がいます。ふつーのDescendantNodesだとそれら全部を列挙してしまうんですが、今回は欲しいのは最上位だけなので、descendIntoChildrenで条件フィルタを足しています。</p>
+<p>以前には紹介していない、ユニットテストのやり方も紹介しましょう。といっても、テンプレートに最初からTestプロジェクトと、便利クラス群が同梱されています。Analyzerだけの場合は基底クラスをDiagnosticVerifierに変えて……</p>
+<pre><code class="language-csharp">namespace UniRxAnalyzer.Test
+{
+    [TestClass]
+    public class HandleObservableAnalyzerTest : DiagnosticVerifier
+    {
+        protected override DiagnosticAnalyzer GetCSharpDiagnosticAnalyzer()
+        {
+            return new UniRxAnalyzer.HandleObservableAnalyzer();
+        }
+
+        [TestMethod]
+        public void UnHandle()
+        {
+            var source = @&quot;
+using System;
+   
+class Test
+{
+    IObservable&lt;int&gt; GetObservable() =&gt; null;
+
+    void Hoge()
+    {
+        GetObservable();
+    }
+}&quot;;
+            var expected = new DiagnosticResult
+            {
+                Id = UniRxAnalyzer.HandleObservableAnalyzer.DiagnosticId,
+                Message = &quot;This call does not handle IObservable&lt;T&gt;.&quot;,
+                Severity = DiagnosticSeverity.Warning,
+                Locations = new[]
+                {
+                    new DiagnosticResultLocation(&quot;Test0.cs&quot;, 10, 9)
+                }
+            };
+
+            this.VerifyCSharpDiagnostic(source, expected);
+        }
+    }
+}
+</code></pre>
+<p>ようするにVerifyCSharpDiagnosticにテスト用のC#コードと、期待するDiagnosticResultを渡すだけです、実に簡単。もしエラーじゃなくOKの場合はsourceだけをVerifyCSharpDiagnosticに渡せば、そういうことになります。</p>
+<h2>まとめ</h2>
+<p>Analyzer、かなりイイです。実際。とにかくとりあえず触ってみませう。現状リファレンスとかは特にないですが、まぁLINQ to XML辺りがわかっていればSyntaxVisualizerとIntelliSenseを頼りになんとか作り上げられるでしょう！メソッド名を見ながらカンを働かせましょう。大丈夫大丈夫。また、GitHubには既にお手本となるAnalyzerが出回っているので、それを参照にすればかなりいけます。代表的なところでは<a href="http://nr6pack.net/">NR6Pack</a>, <a href="https://github.com/DotNetAnalyzers/StyleCopAnalyzers">StyleCopAnalyzers</a>, <a href="https://github.com/code-cracker/code-cracker">Code Cracker</a>などがあります。</p>
+<p>では、よきRoslynライフを！</p>
+</div>
+<h1><a href="https://neue.cc/2015/04/19_511.html">LightNode 1.2.0 - Swagger統合によるAPIのデバッグ実行</a></h1>
 <ul class="date"><li>2015-04-19</li></ul>
 <div class="entry_body"><p><a href="http://neue.cc/2015/03/25_508.html">グラニのC#フレームワークの過去と未来、現代的なASP.NETライブラリの選び方</a>という記事で、スライドと補足は先に上げましたが、以前に弊社で行った勉強会「Build Insider MEETUP with Grani 第1回」のレポートがBuild Insiderに上がっています。<a href="http://www.buildinsider.net/enterprise/granireport/0101">「using CSharp;」な企業を支える技術方針とベスト.NETライブラリ</a>記事によるレポートは、さくさく読めるし、スライドで欠けていた部分も補完できていーんじゃないでしょーか。まる。</p>
 <p>さて、で、基本的にAPIサーバーはOWINで行くんですが、API開発はとにかくふつーのウェブよりも開発がしにくい！の欠点を、前回<a href="http://neue.cc/2015/02/16_505.html">LightNode 1.0、或いはWeb APIでのGlimpseの使い方</a>はGlimpseフル統合で補おうとしました。それはそれでいいんですが、もう一つ足りない。それはともかく根本的にそもそも実行しづらい。さすがにモバイルのエミュレーターなりUnityのEditorなりから毎度実行は効率悪すぎてありえないし、<a href="https://chrome.google.com/webstore/detail/postman-rest-client/fdmmgilgnpjigdojojpjoooidkmcomcm">POSTMAN</a>や<a href="http://www.telerik.com/fiddler">Fiddler</a>で叩くのも面倒くせえ。</p>
@@ -1925,206 +2038,6 @@ public void Children()
 +public enum SortDirection
 </code></pre>
 <p>IOrderedEnumerableだけを露出させると危ないので、abstract classをpublicにしちゃいます。そうした調整のせいでSortContextとか本来はprivateにしてたいものも露出してっちゃって望ましくないんですが、まぁそこは背に腹は代えられないということで妥協しましょう。妥協は大事です。理想よりも現実が一番偉いんです。</p>
-</div>
-<h1><a href="https://neue.cc/2014/10/05_480.html">BigQueryで数列生成とC#クラスからのTable生成とデータインサート</a></h1>
-<ul class="date"><li>2014-10-05</li></ul>
-<div class="entry_body"><p>連番を作りましょう！突然！SQL的なものを見ると、まず連番を作りたくなるのは<a href="http://codezine.jp/article/detail/1076">SQLで数列を扱う</a>からなのですが、というわけでBigQueryでも作りますし作れます。実際、Enumerable.Rangeはダイジですからね？また、地味にLINQ to BigQueryもver 0.3.3になってました。ひっそり。そんなわけで、LINQで書くと何が嬉しいのかPart2です。</p>
-<p>LINQ to BigQuery（やBigQuery）については、最初の記事<a href="http://neue.cc/2014/09/24_479.html">LINQ to BigQuery - C#による型付きDSLとLINQPadによるDumpと可視化</a>をどーぞ。</p>
-<h2>0-9を作る</h2>
-<p>TempTableにInsertというわけにもいかないので、まずは愚直にUNION ALLで並べましょう。BigQueryのUNION ALLはFromをカンマで並べること(ふつーのSQLとそこが違います）で、また、Subqueryも突っ込めます。ド単純に書くとこうなる。</p>
-<pre><code class="language-csharp">// 以下contextとでてきたらコレのこと
-var context = new BigQueryContext(/* BigqueryService */, /* projectId */);
-
-var seq = Enumerable.Range(0, 10).Select(x =&gt; context.Select(() =&gt; new { num  = x }));
-context.From(seq)
-    .Select(x =&gt; new { x.num })
-    .Run()
-    .Dump(); // DumpはLINQPadのDumpね。
-    
-// ↓で、こんなクエリが出てくる
-/*
-SELECT
-  [num]
-FROM
-(
-  SELECT
-    0 AS [num]
-),
-(
-  SELECT
-    1 AS [num]
-),
-// 以下9まで続くので（略） */
-</code></pre>
-<p>普通に動きはしますが、馬鹿っぽいですね！少しだけカッコヨク書いてみましょうか。どうやって列を増やすか、が割と課題なのですが、BigQueryではSplitを使って増やせます。</p>
-<pre><code class="language-csharp">// LINQPadでRun().Dump()って書くの面倒いのでまとめちゃう:)
-public static class MyExtensions
-{
-    public static QueryResponse&lt;T&gt; DumpRun&lt;T&gt;(this IExecutableBigQueryable&lt;T&gt; source)
-    {
-        return source.Run().Dump();
-    }
-}
-
-// SELECT query which references non constant fields or uses aggregation functions
-// or has one or more of WHERE, OMIT IF, GROUP BY, ORDER BY clauses must have FROM clause.
-context.Select(() =&gt; new { digit = BqFunc.Integer(BqFunc.Split(&quot;0123456789&quot;, &quot;&quot;))}).DumpRun();
-</code></pre>
-<p>怒られました！FROM句を含めないとSplitが使えないそーですなので、wordはサブクエリに分離しましょう。この辺は覚えられないので怒られたらそーいうものなんだ、って感じに対応していきましょふ。案外エラーメッセージは（親切な時は）親切です。親切じゃない時は何言ってるのか分からないエラーメッセージを吐いてきますが、まぁ7割ぐらいは分かりやすいエラーメッセージを吐いてくれます、偉い。</p>
-<pre><code class="language-csharp">context
-    .Select(() =&gt; new { word = &quot;0123456789&quot; })
-    .AsSubquery()
-    .Select(x =&gt; new { digit = BqFunc.Integer(BqFunc.Split(x.word, &quot;&quot;))})
-    .DumpRun();
-</code></pre>
-<p><img src="http://neue.cc/wp-content/uploads/image/bq_word_linqpad.jpg" alt="" /></p>
-<p>さすがにFROM句に並べまくるよりは、綺麗に書けてる感が出てる気がします！</p>
-<h2>0-99を作る</h2>
-<p>0-9が出来たら、あとは簡単に増やせます。ここはCROSS JOINです。0-9と0-9の直積を取ればおｋ。LINQでBigQueryを書くことの利点に変数にクエリを渡せて、合成可能という点が挙げられます（また、合成可能というのはLINQらしい感じさせるための重要な要素でもある）。0-9を変数に置いてやれば、コピペで同じSQLを書かないでも済みます。</p>
-<pre><code class="language-csharp">var digit = context.Select(() =&gt; new { word = &quot;0123456789&quot; })
-    .Into()
-    .Select(x =&gt; new { digit = BqFunc.Integer(BqFunc.Split(x.word, &quot;&quot;))});
-
-// これは動かないけどネ
-// Cannot query the cross product of repeated fields 
-digit.Into()
-    .JoinCross(digit, (d1, d2) =&gt; new { d1, d2 })
-    .Select(x =&gt; new { seq = x.d1.digit + x.d2.digit * 10 })
-    .DumpRun();
-</code></pre>
-<p>ネ。まぁこれは動かないんですけどネ。例によってエラーメッセージが出てから対処すればいいんですが、これはSplitで生成したカラムがrepeated fieldになってるのでcross joinできないよ、とのこと。FLATTENを使えば解決します。あとOrderByを忘れてるのでOrderByも足してやりましょうか。</p>
-<pre><code class="language-csharp">var digit = context.Select(() =&gt; new { word = &quot;0123456789&quot; })
-    .Into()
-    .Select(x =&gt; new { digit = BqFunc.Integer(BqFunc.Split(x.word, &quot;&quot;))})
-    .Into()
-    .Flatten(x =&gt; x.digit);
-    
-digit.JoinCross(digit, (d1, d2) =&gt; new { d1, d2 })
-     .Select(x =&gt; new { seq = x.d1.digit + x.d2.digit * 10 })
-     .OrderBy(x =&gt; x.seq)
-     .DumpRun();
-</code></pre>
-<pre><code class="language-sql">SELECT
-  ([d1.digit] + ([d2.digit] * 10)) AS [seq]
-FROM FLATTEN(
-(
-  SELECT
-    INTEGER(SPLIT([word], '')) AS [digit]
-  FROM
-  (
-    SELECT
-      '0123456789' AS [word]
-  )
-), [digit]) AS [d1]
-CROSS JOIN FLATTEN(
-(
-  SELECT
-    INTEGER(SPLIT([word], '')) AS [digit]
-  FROM
-  (
-    SELECT
-      '0123456789' AS [word]
-  )
-), [digit]) AS [d2]
-ORDER BY
-  [seq]
-</code></pre>
-<p><img src="http://neue.cc/wp-content/uploads/image/bq_seq_linqpad.jpg" alt="" /></p>
-<p>この辺まで来ると、圧倒的に手書きよりも捗るのではないでしょうか。というか、LINQならサクサク書けますが（エラー来たら、ああはいはいIntoね、みたいに対処するだけだし）、手書きSQLはシンドイ。むしろ無理。その上で、別に意図と全然違うクエリが吐かれるわけではない、というラインはキープされてると思います。</p>
-<p>それとネストが深くなるクエリはどう整形したらいいか悩ましいものなのですが(Stackoverflowには可読性ゼロのめちゃくちゃなインデントのBigQueryのクエリの質問が沢山転がっている！実際きちんと書くのむつかしい）、LINQ to BigQueryは、まぁまぁ読みやすい感じにきっちりフォーマットして出してくれます。若干冗長に思えるところもあるかもですが、まぁそこはルールなのだと思ってもらえれば。見やすいフォーマットといえるものにするため、微調整を繰り返したコダワリがあります。</p>
-<h2>パラメータを使う</h2>
-<p>もう一個LINQ to BigQueryのいいとこは、パラメータが使えるとこです。パラメータというか、クエリ文字列にたいして値を埋め込めるの。例えば</p>
-<pre><code class="language-csharp">// こんなメソッドを作るじゃろ
-Task&lt;string[]&gt; GetTitleBetweenRevision(int revisionIdFrom, int revisionIdTo, int limit)
-{
-    return context.From&lt;wikipedia&gt;()
-        .Where(x =&gt; BqFunc.Between(x.revision_id, revisionIdFrom, revisionIdTo))
-        .Select(x =&gt; x.title)
-        .Limit(limit)
-        .ToArrayAsync();
-}
-
-// こういうふうに使いますね、的な 
-var rows = await GetTitleBetweenRevision(1, 200, 100);
-</code></pre>
-<pre><code class="language-sql">-- 1と200が文字列置換なくSQLに埋め込まれる
-SELECT
-  [title]
-FROM
-  [publicdata:samples.wikipedia]
-WHERE
-  ([revision_id] BETWEEN 1 AND 200)
-LIMIT 100
-</code></pre>
-<p>その場でのクエリ書きには使いませんが、プログラムに埋め込んで発行する場合なんかは当然ながらあるといいですよね、と。文字列置換や組み立てはかなり手間かかるので、ずっとぐっと遥かに楽になれるかと思います。LINQなら条件によってWhereを足したり足さなかったり、みたいな書き方も簡単です。</p>
-<p>（この機能は0.3.1から入れました！アタリマエのように見えて、ExpressionTreeを操作する上で、地味に微妙に面倒くさいのですよー。とはいえ実用性考えるとこういうのないとアリエナイというか私が使ってて不便したんでようやっと入れました）</p>
-<p>クエリ書きに使うのに便利といえば日付の操作は圧倒的に楽になります。例えば昨日の20時というのをBigQueryだけでやると……</p>
-<pre><code class="language-csharp">context // 走査範囲を狭くするために適当に5日前ぐらいからのRangeにしてる
-    .From&lt;github_timeline&gt;(&quot;[githubarchive:github.timeline]&quot;).WithRange(TimeSpan.FromDays(5))
-    .Where(x =&gt; x.type==&quot;CreateEvent&quot; 
-        &amp;&amp; BqFunc.ParseUtcUsec(x.repository_created_at) &gt;= BqFunc.ParseUtcUsec(BqFunc.StrftimeUtcUsec(BqFunc.TimestampToUsec(BqFunc.DateAdd(BqFunc.UsecToTimestamp(BqFunc.Now()), -1, IntervalUnit.Day)), &quot;%Y-%m-%d 20:00:00&quot;))
-        &amp;&amp; x.repository_fork == &quot;false&quot;
-        &amp;&amp; x.payload_ref_type == &quot;repository&quot;)
-    .Select(x =&gt; x.repository_name)
-    .DumpRun();
-    
-// SQL
-SELECT
-  [repository_name]
-FROM
-  [githubarchive:github.timeline@-432000000-]
-WHERE
-  (((([type] = 'CreateEvent') AND (PARSE_UTC_USEC([repository_created_at]) &gt;= PARSE_UTC_USEC(STRFTIME_UTC_USEC(TIMESTAMP_TO_USEC(DATE_ADD(USEC_TO_TIMESTAMP(NOW()), -1, 'DAY')), '%Y-%m-%d 20:00:00')))) AND ([repository_fork] = 'false')) AND ([payload_ref_type] = 'repository'))
-</code></pre>
-<p>結構しんどいです。厄介な日付部分を取り出すと</p>
-<pre><code class="language-sql">PARSE_UTC_USEC(STRFTIME_UTC_USEC(TIMESTAMP_TO_USEC(DATE_ADD(USEC_TO_TIMESTAMP(NOW, -1, 'DAY')), '%Y-%m-%d 20:00:00'))))
-</code></pre>
-<p>ですからね！結構かなり絶望的……。これをC#のDateTimeで操作すれば</p>
-<pre><code class="language-csharp">// 今日から一日引いてその日付のみのほうを取って20時間足す
-var yesterday = DateTime.UtcNow.AddDays(-1).Date.AddHours(20);
-
-context
-    .From&lt;github_timeline&gt;(&quot;[githubarchive:github.timeline]&quot;).WithRange(TimeSpan.FromDays(5))
-    .Where(x =&gt; x.type==&quot;CreateEvent&quot; 
-        &amp;&amp; BqFunc.Timestamp(x.repository_created_at) &gt;= yesterday // ほら超スッキリに！
-        &amp;&amp; x.repository_fork == &quot;false&quot;
-        &amp;&amp; x.payload_ref_type == &quot;repository&quot;)
-    .Select(x =&gt; x.repository_name)
-    .DumpRun();
-    
-// 日付比較部分のSQLはこう出力される
-TIMESTAMP([repository_created_at]) &gt;= '2014-10-03 20:00:00.000000')
-</code></pre>
-<p>その場で書いてクエリ実行する分には、別に日付が埋め込まれようとNOW()からSQLで全部操作しようと変わらない話ですからね。楽な方でやればいいし、日付操作は圧倒的にC#で操作して持ってたほうが楽でしょう、明らかに。</p>
-<h2>Tableを作る、データを投げる</h2>
-<p>サンプルデータを扱ってるのもいいんですが、やっぱ自分でデータ入れたいですね、テーブル作りたいですね。基本的には(Google API SDKの)BigqueryServiceを使え！っていう感じなのですが、それはそれでやっぱりそれもプリミティブな感じなので、テーブル作成に関してはちょっとしたユーティリティ用意してみました。以下の様な感じで作れます。</p>
-<pre><code class="language-csharp">// DataTypeUtility.ToTableFieldSchemaでTableFieldSchema[]を定義から作れる
-// 匿名型を渡す以外に既存クラスだったら&lt;T&gt;やtypeof(T)を渡すのもOK
-// もちろん手でTableFieldSchema[]を作って渡すのも構わない
-new MetaTable(&quot;project_id&quot;, &quot;mydata&quot;, &quot;people&quot;)
-    .CreateTable(service, DataTypeUtility.ToTableFieldSchema(new
-    {
-        firstName = default(string), // STRING REQUIRED
-        lastName = default(string), // STRING REQUIRED
-        age = default(int?), // INTEGER NULLABLE
-        birth = default(DateTimeOffset) // TIMESTAMP REQUIRED
-    }));
-</code></pre>
-<p>Web Interfaceから作ると、「空のテーブルが作れない」「スキーマはなんかカンマ定義で指定してかなきゃいけなくてダルい」という点があって存外ダルいです。bqも同様。やはり時代はLINQPad、で作る。ちなみにSTRING NULLABLEはクラス定義から抽出するのが不可能だったので（こういうところが不便なのよね……）、まあTableFieldSchema[]を作ってから schemas[1].Mode = &quot;NULLABLE&quot; とでも書いてください。</p>
-<p>データの投下も同じようにMetaTableを作ってInsertAllAsyncで。</p>
-<pre><code class="language-csharp">// ExponentialBackOffを渡した場合はそれにのっとってリトライをかける
-await new MetaTable(&quot;project_id&quot;, &quot;mydata&quot;, &quot;people&quot;)
-    .InsertAllAsync(service, new[]
-    {
-        new { firstName = &quot;hoge&quot;, lastName = &quot;huga&quot;, age = 20, birth = new DateTime(2010,1,1,12,13,14, DateTimeKind.Utc)},
-        new { firstName = &quot;tako&quot;, lastName = &quot;bcbc&quot;, age = 30, birth = new DateTime(1983,3,1,10,33,24, DateTimeKind.Utc)},
-        new { firstName = &quot;oooo&quot;, lastName = &quot;zzzz&quot;, age = 45, birth = new DateTime(2043,1,3,11,4,43, DateTimeKind.Utc)},
-    }, new Google.Apis.Util.ExponentialBackOff(TimeSpan.FromMilliseconds(250), 5));
-</code></pre>
-<p>これでBigQueryのStreming Insertになります。ひどーきなので別テーブルに並走して書きたい場合は複数書いてWhenAllすれば高速で良いでしょふ。Streaming Insertはそんな頻繁、ではないですけれどそれなりに失敗することもあるので、引数にExponentialBackOff（これ自体はGoogle API SDKに含まれている）を渡せば<a href="http://en.wikipedia.org/wiki/Exponential_backoff">Exponential backoff</a>でリトライを試みます。</p>
-<h2>まとめ</h2>
-<p>基本的な機能は完全に実装完了したかなあ、という感じ。0.1 ~ 0.3.3の間に自分で使っててイラッとした細かい部分をチクチク修正してきましたが、そろそろ完全に満足！といったところです。不満ない！完璧！パーフェクち！というわけで、残るはRECORD型サポートに向けて改装すれば敵なし、LINQったらサイキョーね！</p>
-<p>な、わけですが、まぁ.NET + BigQueryというニッチに二乗かけたようなアレなので、興味関心、はあっても使ってみた！という人は少ないでしょう、というかいないでしょう、残念無念。でもBigQueryは本当に凄く良いので使ってみて欲しいんだなー。ビッグデータなんてアタクシには無縁、と思ってる人も、実は使い出、使いドコロって、絶対あります。まずはログを片っ端から突っ込んでみましょう、から始めてみませんか？</p>
 </div>
 <a href="https://neue.cc/7">Prev |</a>
 <a href="https://neue.cc/9">| Next</a>

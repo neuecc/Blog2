@@ -23,7 +23,207 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2014/09/24_479.html">LINQ to BigQuery - C#による型付きDSLとLINQPadによるDumpと可視化</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2014/10/05_480.html">BigQueryで数列生成とC#クラスからのTable生成とデータインサート</a></h1>
+<ul class="date"><li>2014-10-05</li></ul>
+<div class="entry_body"><p>連番を作りましょう！突然！SQL的なものを見ると、まず連番を作りたくなるのは<a href="http://codezine.jp/article/detail/1076">SQLで数列を扱う</a>からなのですが、というわけでBigQueryでも作りますし作れます。実際、Enumerable.Rangeはダイジですからね？また、地味にLINQ to BigQueryもver 0.3.3になってました。ひっそり。そんなわけで、LINQで書くと何が嬉しいのかPart2です。</p>
+<p>LINQ to BigQuery（やBigQuery）については、最初の記事<a href="http://neue.cc/2014/09/24_479.html">LINQ to BigQuery - C#による型付きDSLとLINQPadによるDumpと可視化</a>をどーぞ。</p>
+<h2>0-9を作る</h2>
+<p>TempTableにInsertというわけにもいかないので、まずは愚直にUNION ALLで並べましょう。BigQueryのUNION ALLはFromをカンマで並べること(ふつーのSQLとそこが違います）で、また、Subqueryも突っ込めます。ド単純に書くとこうなる。</p>
+<pre><code class="language-csharp">// 以下contextとでてきたらコレのこと
+var context = new BigQueryContext(/* BigqueryService */, /* projectId */);
+
+var seq = Enumerable.Range(0, 10).Select(x =&gt; context.Select(() =&gt; new { num  = x }));
+context.From(seq)
+    .Select(x =&gt; new { x.num })
+    .Run()
+    .Dump(); // DumpはLINQPadのDumpね。
+    
+// ↓で、こんなクエリが出てくる
+/*
+SELECT
+  [num]
+FROM
+(
+  SELECT
+    0 AS [num]
+),
+(
+  SELECT
+    1 AS [num]
+),
+// 以下9まで続くので（略） */
+</code></pre>
+<p>普通に動きはしますが、馬鹿っぽいですね！少しだけカッコヨク書いてみましょうか。どうやって列を増やすか、が割と課題なのですが、BigQueryではSplitを使って増やせます。</p>
+<pre><code class="language-csharp">// LINQPadでRun().Dump()って書くの面倒いのでまとめちゃう:)
+public static class MyExtensions
+{
+    public static QueryResponse&lt;T&gt; DumpRun&lt;T&gt;(this IExecutableBigQueryable&lt;T&gt; source)
+    {
+        return source.Run().Dump();
+    }
+}
+
+// SELECT query which references non constant fields or uses aggregation functions
+// or has one or more of WHERE, OMIT IF, GROUP BY, ORDER BY clauses must have FROM clause.
+context.Select(() =&gt; new { digit = BqFunc.Integer(BqFunc.Split(&quot;0123456789&quot;, &quot;&quot;))}).DumpRun();
+</code></pre>
+<p>怒られました！FROM句を含めないとSplitが使えないそーですなので、wordはサブクエリに分離しましょう。この辺は覚えられないので怒られたらそーいうものなんだ、って感じに対応していきましょふ。案外エラーメッセージは（親切な時は）親切です。親切じゃない時は何言ってるのか分からないエラーメッセージを吐いてきますが、まぁ7割ぐらいは分かりやすいエラーメッセージを吐いてくれます、偉い。</p>
+<pre><code class="language-csharp">context
+    .Select(() =&gt; new { word = &quot;0123456789&quot; })
+    .AsSubquery()
+    .Select(x =&gt; new { digit = BqFunc.Integer(BqFunc.Split(x.word, &quot;&quot;))})
+    .DumpRun();
+</code></pre>
+<p><img src="http://neue.cc/wp-content/uploads/image/bq_word_linqpad.jpg" alt="" /></p>
+<p>さすがにFROM句に並べまくるよりは、綺麗に書けてる感が出てる気がします！</p>
+<h2>0-99を作る</h2>
+<p>0-9が出来たら、あとは簡単に増やせます。ここはCROSS JOINです。0-9と0-9の直積を取ればおｋ。LINQでBigQueryを書くことの利点に変数にクエリを渡せて、合成可能という点が挙げられます（また、合成可能というのはLINQらしい感じさせるための重要な要素でもある）。0-9を変数に置いてやれば、コピペで同じSQLを書かないでも済みます。</p>
+<pre><code class="language-csharp">var digit = context.Select(() =&gt; new { word = &quot;0123456789&quot; })
+    .Into()
+    .Select(x =&gt; new { digit = BqFunc.Integer(BqFunc.Split(x.word, &quot;&quot;))});
+
+// これは動かないけどネ
+// Cannot query the cross product of repeated fields 
+digit.Into()
+    .JoinCross(digit, (d1, d2) =&gt; new { d1, d2 })
+    .Select(x =&gt; new { seq = x.d1.digit + x.d2.digit * 10 })
+    .DumpRun();
+</code></pre>
+<p>ネ。まぁこれは動かないんですけどネ。例によってエラーメッセージが出てから対処すればいいんですが、これはSplitで生成したカラムがrepeated fieldになってるのでcross joinできないよ、とのこと。FLATTENを使えば解決します。あとOrderByを忘れてるのでOrderByも足してやりましょうか。</p>
+<pre><code class="language-csharp">var digit = context.Select(() =&gt; new { word = &quot;0123456789&quot; })
+    .Into()
+    .Select(x =&gt; new { digit = BqFunc.Integer(BqFunc.Split(x.word, &quot;&quot;))})
+    .Into()
+    .Flatten(x =&gt; x.digit);
+    
+digit.JoinCross(digit, (d1, d2) =&gt; new { d1, d2 })
+     .Select(x =&gt; new { seq = x.d1.digit + x.d2.digit * 10 })
+     .OrderBy(x =&gt; x.seq)
+     .DumpRun();
+</code></pre>
+<pre><code class="language-sql">SELECT
+  ([d1.digit] + ([d2.digit] * 10)) AS [seq]
+FROM FLATTEN(
+(
+  SELECT
+    INTEGER(SPLIT([word], '')) AS [digit]
+  FROM
+  (
+    SELECT
+      '0123456789' AS [word]
+  )
+), [digit]) AS [d1]
+CROSS JOIN FLATTEN(
+(
+  SELECT
+    INTEGER(SPLIT([word], '')) AS [digit]
+  FROM
+  (
+    SELECT
+      '0123456789' AS [word]
+  )
+), [digit]) AS [d2]
+ORDER BY
+  [seq]
+</code></pre>
+<p><img src="http://neue.cc/wp-content/uploads/image/bq_seq_linqpad.jpg" alt="" /></p>
+<p>この辺まで来ると、圧倒的に手書きよりも捗るのではないでしょうか。というか、LINQならサクサク書けますが（エラー来たら、ああはいはいIntoね、みたいに対処するだけだし）、手書きSQLはシンドイ。むしろ無理。その上で、別に意図と全然違うクエリが吐かれるわけではない、というラインはキープされてると思います。</p>
+<p>それとネストが深くなるクエリはどう整形したらいいか悩ましいものなのですが(Stackoverflowには可読性ゼロのめちゃくちゃなインデントのBigQueryのクエリの質問が沢山転がっている！実際きちんと書くのむつかしい）、LINQ to BigQueryは、まぁまぁ読みやすい感じにきっちりフォーマットして出してくれます。若干冗長に思えるところもあるかもですが、まぁそこはルールなのだと思ってもらえれば。見やすいフォーマットといえるものにするため、微調整を繰り返したコダワリがあります。</p>
+<h2>パラメータを使う</h2>
+<p>もう一個LINQ to BigQueryのいいとこは、パラメータが使えるとこです。パラメータというか、クエリ文字列にたいして値を埋め込めるの。例えば</p>
+<pre><code class="language-csharp">// こんなメソッドを作るじゃろ
+Task&lt;string[]&gt; GetTitleBetweenRevision(int revisionIdFrom, int revisionIdTo, int limit)
+{
+    return context.From&lt;wikipedia&gt;()
+        .Where(x =&gt; BqFunc.Between(x.revision_id, revisionIdFrom, revisionIdTo))
+        .Select(x =&gt; x.title)
+        .Limit(limit)
+        .ToArrayAsync();
+}
+
+// こういうふうに使いますね、的な 
+var rows = await GetTitleBetweenRevision(1, 200, 100);
+</code></pre>
+<pre><code class="language-sql">-- 1と200が文字列置換なくSQLに埋め込まれる
+SELECT
+  [title]
+FROM
+  [publicdata:samples.wikipedia]
+WHERE
+  ([revision_id] BETWEEN 1 AND 200)
+LIMIT 100
+</code></pre>
+<p>その場でのクエリ書きには使いませんが、プログラムに埋め込んで発行する場合なんかは当然ながらあるといいですよね、と。文字列置換や組み立てはかなり手間かかるので、ずっとぐっと遥かに楽になれるかと思います。LINQなら条件によってWhereを足したり足さなかったり、みたいな書き方も簡単です。</p>
+<p>（この機能は0.3.1から入れました！アタリマエのように見えて、ExpressionTreeを操作する上で、地味に微妙に面倒くさいのですよー。とはいえ実用性考えるとこういうのないとアリエナイというか私が使ってて不便したんでようやっと入れました）</p>
+<p>クエリ書きに使うのに便利といえば日付の操作は圧倒的に楽になります。例えば昨日の20時というのをBigQueryだけでやると……</p>
+<pre><code class="language-csharp">context // 走査範囲を狭くするために適当に5日前ぐらいからのRangeにしてる
+    .From&lt;github_timeline&gt;(&quot;[githubarchive:github.timeline]&quot;).WithRange(TimeSpan.FromDays(5))
+    .Where(x =&gt; x.type==&quot;CreateEvent&quot; 
+        &amp;&amp; BqFunc.ParseUtcUsec(x.repository_created_at) &gt;= BqFunc.ParseUtcUsec(BqFunc.StrftimeUtcUsec(BqFunc.TimestampToUsec(BqFunc.DateAdd(BqFunc.UsecToTimestamp(BqFunc.Now()), -1, IntervalUnit.Day)), &quot;%Y-%m-%d 20:00:00&quot;))
+        &amp;&amp; x.repository_fork == &quot;false&quot;
+        &amp;&amp; x.payload_ref_type == &quot;repository&quot;)
+    .Select(x =&gt; x.repository_name)
+    .DumpRun();
+    
+// SQL
+SELECT
+  [repository_name]
+FROM
+  [githubarchive:github.timeline@-432000000-]
+WHERE
+  (((([type] = 'CreateEvent') AND (PARSE_UTC_USEC([repository_created_at]) &gt;= PARSE_UTC_USEC(STRFTIME_UTC_USEC(TIMESTAMP_TO_USEC(DATE_ADD(USEC_TO_TIMESTAMP(NOW()), -1, 'DAY')), '%Y-%m-%d 20:00:00')))) AND ([repository_fork] = 'false')) AND ([payload_ref_type] = 'repository'))
+</code></pre>
+<p>結構しんどいです。厄介な日付部分を取り出すと</p>
+<pre><code class="language-sql">PARSE_UTC_USEC(STRFTIME_UTC_USEC(TIMESTAMP_TO_USEC(DATE_ADD(USEC_TO_TIMESTAMP(NOW, -1, 'DAY')), '%Y-%m-%d 20:00:00'))))
+</code></pre>
+<p>ですからね！結構かなり絶望的……。これをC#のDateTimeで操作すれば</p>
+<pre><code class="language-csharp">// 今日から一日引いてその日付のみのほうを取って20時間足す
+var yesterday = DateTime.UtcNow.AddDays(-1).Date.AddHours(20);
+
+context
+    .From&lt;github_timeline&gt;(&quot;[githubarchive:github.timeline]&quot;).WithRange(TimeSpan.FromDays(5))
+    .Where(x =&gt; x.type==&quot;CreateEvent&quot; 
+        &amp;&amp; BqFunc.Timestamp(x.repository_created_at) &gt;= yesterday // ほら超スッキリに！
+        &amp;&amp; x.repository_fork == &quot;false&quot;
+        &amp;&amp; x.payload_ref_type == &quot;repository&quot;)
+    .Select(x =&gt; x.repository_name)
+    .DumpRun();
+    
+// 日付比較部分のSQLはこう出力される
+TIMESTAMP([repository_created_at]) &gt;= '2014-10-03 20:00:00.000000')
+</code></pre>
+<p>その場で書いてクエリ実行する分には、別に日付が埋め込まれようとNOW()からSQLで全部操作しようと変わらない話ですからね。楽な方でやればいいし、日付操作は圧倒的にC#で操作して持ってたほうが楽でしょう、明らかに。</p>
+<h2>Tableを作る、データを投げる</h2>
+<p>サンプルデータを扱ってるのもいいんですが、やっぱ自分でデータ入れたいですね、テーブル作りたいですね。基本的には(Google API SDKの)BigqueryServiceを使え！っていう感じなのですが、それはそれでやっぱりそれもプリミティブな感じなので、テーブル作成に関してはちょっとしたユーティリティ用意してみました。以下の様な感じで作れます。</p>
+<pre><code class="language-csharp">// DataTypeUtility.ToTableFieldSchemaでTableFieldSchema[]を定義から作れる
+// 匿名型を渡す以外に既存クラスだったら&lt;T&gt;やtypeof(T)を渡すのもOK
+// もちろん手でTableFieldSchema[]を作って渡すのも構わない
+new MetaTable(&quot;project_id&quot;, &quot;mydata&quot;, &quot;people&quot;)
+    .CreateTable(service, DataTypeUtility.ToTableFieldSchema(new
+    {
+        firstName = default(string), // STRING REQUIRED
+        lastName = default(string), // STRING REQUIRED
+        age = default(int?), // INTEGER NULLABLE
+        birth = default(DateTimeOffset) // TIMESTAMP REQUIRED
+    }));
+</code></pre>
+<p>Web Interfaceから作ると、「空のテーブルが作れない」「スキーマはなんかカンマ定義で指定してかなきゃいけなくてダルい」という点があって存外ダルいです。bqも同様。やはり時代はLINQPad、で作る。ちなみにSTRING NULLABLEはクラス定義から抽出するのが不可能だったので（こういうところが不便なのよね……）、まあTableFieldSchema[]を作ってから schemas[1].Mode = &quot;NULLABLE&quot; とでも書いてください。</p>
+<p>データの投下も同じようにMetaTableを作ってInsertAllAsyncで。</p>
+<pre><code class="language-csharp">// ExponentialBackOffを渡した場合はそれにのっとってリトライをかける
+await new MetaTable(&quot;project_id&quot;, &quot;mydata&quot;, &quot;people&quot;)
+    .InsertAllAsync(service, new[]
+    {
+        new { firstName = &quot;hoge&quot;, lastName = &quot;huga&quot;, age = 20, birth = new DateTime(2010,1,1,12,13,14, DateTimeKind.Utc)},
+        new { firstName = &quot;tako&quot;, lastName = &quot;bcbc&quot;, age = 30, birth = new DateTime(1983,3,1,10,33,24, DateTimeKind.Utc)},
+        new { firstName = &quot;oooo&quot;, lastName = &quot;zzzz&quot;, age = 45, birth = new DateTime(2043,1,3,11,4,43, DateTimeKind.Utc)},
+    }, new Google.Apis.Util.ExponentialBackOff(TimeSpan.FromMilliseconds(250), 5));
+</code></pre>
+<p>これでBigQueryのStreming Insertになります。ひどーきなので別テーブルに並走して書きたい場合は複数書いてWhenAllすれば高速で良いでしょふ。Streaming Insertはそんな頻繁、ではないですけれどそれなりに失敗することもあるので、引数にExponentialBackOff（これ自体はGoogle API SDKに含まれている）を渡せば<a href="http://en.wikipedia.org/wiki/Exponential_backoff">Exponential backoff</a>でリトライを試みます。</p>
+<h2>まとめ</h2>
+<p>基本的な機能は完全に実装完了したかなあ、という感じ。0.1 ~ 0.3.3の間に自分で使っててイラッとした細かい部分をチクチク修正してきましたが、そろそろ完全に満足！といったところです。不満ない！完璧！パーフェクち！というわけで、残るはRECORD型サポートに向けて改装すれば敵なし、LINQったらサイキョーね！</p>
+<p>な、わけですが、まぁ.NET + BigQueryというニッチに二乗かけたようなアレなので、興味関心、はあっても使ってみた！という人は少ないでしょう、というかいないでしょう、残念無念。でもBigQueryは本当に凄く良いので使ってみて欲しいんだなー。ビッグデータなんてアタクシには無縁、と思ってる人も、実は使い出、使いドコロって、絶対あります。まずはログを片っ端から突っ込んでみましょう、から始めてみませんか？</p>
+</div>
+<h1><a href="https://neue.cc/2014/09/24_479.html">LINQ to BigQuery - C#による型付きDSLとLINQPadによるDumpと可視化</a></h1>
 <ul class="date"><li>2014-09-24</li></ul>
 <div class="entry_body"><p>と、いうものを作りました。<a href="https://cloud.google.com/products/bigquery/">BigQuery</a>はGoogleのビッグデータサービスで、最近非常に脚光を浴びていて、何度もほってんとりやTwitterに上がってきたりしてますね。詳細は<a href="https://speakerdeck.com/naoya/google-bigquery-falsehua-number-gcpja">Google BigQuery の話</a>とか<a href="http://qiita.com/kazunori279/items/10ac0066ac9b0b5aaaf3">Googleの虎の子「BigQuery」をFluentdユーザーが使わない理由がなくなった理由</a>あたりがいいかな、超でかいデータをGoogleパワーで数千台のサーバー並べてフルスキャンするから、超速くて最強ね、という話。で、実際凄い。超凄い。しかも嬉しいのが手間いらずなところで、最初<a href="http://aws.amazon.com/jp/redshift/">Amazon RedShift</a>を検討して試していたのですが、列圧縮エンコードとか考えるのすっごく大変だし、容量やパワーもインスタンスタイプと睨めっこする必要がある。それがBigQueryだと容量は格安だから大量に格納できる、チューニング設定もなし、この手軽さ！おまけにウェブインターフェイスが中々優れていてクエリが見やすい。<a href="https://developers.google.com/bigquery/query-reference">Query Reference</a>もしっかり書かれてて非常に分かりやすい。もう非の打ち所なし！</p>
 <p>触ってすぐに気に入った、んですが、C#ドライバがプリミティブすぎてデシリアライズすらしてくれないので、何か作る必要がある。せっかく作るならSQLっぽいクエリ言語なのでLINQだろう、と。それとIQueryableは幻想だと思っていたので、じゃあ代替を作るならどうするのか、を現実的に示したくて、ちょうど格好の題材が出現！ということで、LINQで書けるようなライブラリを作りました。</p>
@@ -2446,43 +2646,6 @@ app.Run(async context =&gt;
 <p>Middlewareのパイプラインは、ASP．NET MVC/Web APIとかのフィルターのパイプラインとも同じようなものです。だったらフィルターで作るよりMiddlewareで作ったほうが、フレームワークという制限から離れられて良さそう。でも、Middlewareの欠点は、後続のパイプラインのコンテキストを知らないことです。認証を入れるにしても、[AllowAnonymous]属性が適用されているかなんてしらないから、全部適用するかしないか、ぐらいにしか出来ない。filterContext.ActionDescriptorのようなもの、というのは、フレームワークの内側のシステムしか持ち得ないのです。でも、そうしてフィルターとして実装すれば、フレームワークに深く依存することになる。</p>
 <p>そんな悩ましさを抱えつつも、それは、あんま無理せずに、コンテキスト不要なら最大限独立性の高いOwin Middlewareとして。そうでないならアプリケーションのプラグイン（フィルター）として。でいいかな、って思ってます。今のところ。何れにせよIHttpModuleなんかよりは遥かに作りやすいし、その手の話だって今に始まったことじゃあないのよね？HttpModuleだってHTTPパイプラインぢゃーん、って。はい。</p>
 <p>2014/1/18（土）に開催される<a href="http://partake.in/events/a531c0be-e8dd-46fe-a73c-e51d8ad7a69b">めとべや東京#3</a>（開催場所は謎社です）では、LTで5分でサービスAPIをOwin/LightNodeを使って作って実際にAzure Web Sitesにホストするまで、デモしようと思ってますので、OWIN知りたい、どう動かすのか見てみたい、って人もどうぞ。めととは。</p>
-</div>
-<h1><a href="https://neue.cc/2013/12/30_440.html">2013年を振り返る</a></h1>
-<ul class="date"><li>2013-12-30</li></ul>
-<div class="entry_body"><p>振り返るシリーズ第三弾。毎年、30日に振り返っているので、今年も30日で。ちなみに12/30は私の誕生日でして、ついに30歳を迎えてしまった……。20代さようなら、いや、別にいいんですが、C#er若くない人サイドに入ったな！という感じなわけでして、新陳代謝がほげもげとか。</p>
-<p><a href="http://neue.cc/2011/12/30_361.html">2011年</a>はMVP受賞、<a href="http://neue.cc/2012/12/30_391.html">2012年</a>はgloopsへの入社と退社(在籍期間たったの10ヶ月だった！)、というわけですが、では今年のメイントピックは、やはり当然<a href="http://grani.jp/">グラニ a.k.a.謎社</a>の始動です。2012年末の段階では</p>
-<blockquote>
-<p>今はニート。ではなく、謎社にいます。謎社ってなんだよというか伏せる意味は特にないんですが、まぁまだ伏せておきます。実際のとこ出来たばかりの会社でして、だいたいほぼほぼ創立メンバーとして働いてます。そして現在のところPHPが95%でC#が5%といったところですが（私もPHP書いてますよ！毎日吐き気が！）、直近の目標はC#比率を高めることです（笑）</p>
-</blockquote>
-<blockquote>
-<p>来年は変化というよりは進化、↑で書いたとおりにゲームを、じゃあなくて会社を前身させるのに全力で突き進む、というわっかりやすい目標があるんで、そのとーりに邁進しましょう。C#といったら謎社！みたいな、C#を使う人が憧れるぐらいな立ち位置の会社にできればいいなと思っています。</p>
-</blockquote>
-<p>という話を立てていたわけですが、どうでしょう？かなりの部分で達成出来たのではないかと思います。会社は信じられないぐらいの成功を果たしていますし(※別に私の力ではなくてメンバー全員の力の賜物です)、当初PHPで書かれていたプログラムは、100%、C#へのリプレイスを果たしました。ボロ一軒家(リリース前は会社=一軒家にすし詰めで開発してた)でPHP書いてる時から、こういったヴィジョンを描いていたし、1年のうちに実現しきったのは、相当やった方だと年の末ぐらいは自画自賛させてくださいな。</p>
-<p>といっても、まだ「C#を使う人が憧れるぐらいな立ち位置の会社」になれているかといったら、知名度であったり、そしてまだまだ実績も足りていないので、全然、目指す水準には満たしていないです。まだ、やっと0→1に、スタート地点に立ったばかり。ここからは1→100にしていかなければならない。また、外向きだけではなく、内側もまた全然整備しきれてないので、働く人がここで働くことに満足できる状態を作れなきゃとか、やることは山積み。</p>
-<h2>C#</h2>
-<p>今年のブログ内容は一気に非同期に傾いています。というのも会社で本格的にasyncを導入して使いまくり始めたこともあって、実践的に地雷を踏みまくってノウハウが溜まったからです。こういう実践的な話は、リファレンス情報だけではどうしても足りないわけで、両方が必要なのです。よく、C#はMSDNに情報がいっぱいあって、こんなに充実している言語、他にないよ！何が不満なの！？というけれど、半分合ってて、実態としては全然あってない。あくまで実践的な情報が重要度では第一、リファレンスは補完するもの。だから不満に感じるのは当然です。Microsoftとしては、そういう不足は<a href="http://code.msdn.microsoft.com/">コードレシピ</a>で補いたいようだけれど、それじゃ補えないというか、結局こういうのってリファレンス側に近い情報であって、欠落を埋められるわけがない。</p>
-<p>じゃあ誰が埋めるのか、埋められるのかって、それは私達自身だけでしょう。自らの知見から来る情報がネットに溢れるといいな、と思っていますし、そのためにもまず自分たちがやっていきます。特に.NET界隈は実地的な話がなくて。海外とのレベル格差も酷い。圧倒的に日本はレベルが低い、ように見えてしまう。実際は優れた人は表に出てこないとか、絶対量が違うからとか、幾らでも言い分もあるし、確かにそうなのでしょう。でも、やっぱり、見えなければ意味がないし、その結果が、これ。C#という言語の他言語に比べた地位の低さ。例えばですよ、AWSは沢山の実地的な話が溢れてる。かたやAzureは、ただのリファレンス情報が垂れ流されているだけ。こういうの地味にきっついし差として現れるんだよね。C#も同じようなものですよ、現状。残念ながら。</p>
-<p>というわけで超積極的に、情報は出していきたいのですにぇ。</p>
-<p>さて、個人的には相変わらず小さなライブラリは作りまくってました。NuGetの登録数も36になりました。そういえば<a href="http://neue.cc/2013/02/27_398.html">AsyncOAuth</a>も今年からですね、おかげ様でOAuthライブラリといったらこれだよね！ぐらいに受け入れてもらえたようで、色々なところで使われているようです。謎社自身でもがしがし使ってます。</p>
-<p>今年もう一つ、注力していたのは<a href="http://neue.cc/2013/04/05_403.html">CloudStructures</a>というRedisクライアントですね。C# + Redis、しかもC# 5.0推奨というハードルの高さすぎてあまり使われてる感はないですが、これは謎社でハイパー使ってます。</p>
-<p>AsyncOAuthやCloudStructuresは、謎社でのPHP→C#移行で絶対必要になるパーツという目算だったので先行して仕上げていました。その路線に乗っかって、来年育てていくのは<a href="http://neue.cc/2013/12/23_439.html">LightNode</a>ですね。こういう技術、必要になってから調べ始めているのでは遅く、でもあまり長いスパンで見ていてもしょうがない。研究開発機関ではないのだから。というわけで、今のところ、半歩先ぐらいを見据えて動いています。</p>
-<p>ハイパー放置状態のlinq.jsを毎年何とかするする詐欺は、来年こそ、は……。</p>
-<h2>会社</h2>
-<p>今では当たり前のようにC#の企業ですが、当初はPHPでした。6/8時点で講演した<a href="http://www.slideshare.net/neuecc/net-22662425">.NET最先端技術によるハイパフォーマンスウェブアプリケーション</a>は、はてブ300以上、現時点でViewsが33500と、.NET系にしてはクリティカルヒットを飛ばしましたが、スライドの冒頭で紹介したとおり、この時点ではPHPだったのです。実際にリプレースが完了したのは7/16日。深夜メンテナンス時間を挟んで朝に一気に切り替え。若干のトラブルはあったものの無事完了。</p>
-<p>今年最大のハイライトであり、というか私自身も今のところ生きてて一番のハイライトですね。出来てまもない会社だから、体力も人員もない、でも凄い上り調子だからアプリを止めるとかありえないどころか育てなければならない。そんな中でリソース分散してPHPとC#を並走させて、統合、そして切り替え。まず、やるって決定が常識的に考えてありえないほど無茶苦茶だし、実際にやりきったのも凄いなぁと自画自賛Part2。やれるはずっていう机上の空論と、実際にやりきるってのは、違いはないけど必要な体力と精神力が全然違いますね、もうほんとヤバかった、特に精神的に……。</p>
-<p>これに関しては、メンバーに恵まれました。出来たばかりの先行き不明な会社の、しょぼいホームページに、たった二行で求人情報が書かれててmailtoで送れ、というような状況で、素晴らしい人が次々と来てくれたのは信じられない話で。ほんと感謝の念に尽きません。</p>
-<p>逆に今のほうが求人に苦戦しているのがアレ。あ、そんなわけでWe're Awaitingということで積極的に採用はしているのでいつでも歓迎ですよ - <a href="http://grani.jp/recruit.html">求人ページ</a> ← 未だにサイトしょぼい</p>
-<p>職種はCTOなのですけれど、CTO論をぶったりは、しません特に。色々なところにボーダーがあって、そこを超えそうになったら発言するようにしているのと、つまり超えない時は何もやってないように見えて実際何もやってない！こたぁない。って感じですかね（テキトー）。まぁ、かくあるべきみたいなものはあります、私の中で、ちゃんと。どんぐらい全うしてるかというと、うーん、70点？</p>
-<p>技術的な方向性はシンプルに最先端のC#、なわけですけれど、それが良いことなのかどーか。勿論、良いことです。でも必ずしも良いことと言えるわけじゃあない。じゃあ良いことに変えればいいだけです。こんなの単純な話で、よーは会社として保守的にならないことがバリューを産み出せるようになりゃあいいだけです。逆に、何も産み出せないならNGでしょうね。そうならないように何が出来るかを行動していくべきでしょう。</p>
-<h2>ゲーム</h2>
-<p><a href="http://superhexagon.com/">Super Hexagon</a>最高！これに尽きる。マジ最高。これはヤヴァい。Windows Phoneの最大の欠点はSuper Hexagonがプレイできないことと断言していい。絶対無理ー、と思ったHYPER HEXAGONESTをクリアした瞬間とか、ゲームの達成感の全てが詰まってた。超興奮。数年ぶりにゲームの面白さを思い出させてくれたマスターピース。</p>
-<p>というわけで、今年は圧倒的に超えられない壁にSuper Hexagonが存在しているのですが、次点としてはGAMELOFTのモバイル用レースゲーム、Asphalt 8かな。グラフィックのケレン味が実にモバイル向けで、スマートフォン向けゲームとしては現時点で最高のグラフィック品質。ゲームのほうも大味、じゃなくてダイナミックで楽しい。通信対戦もあるしね。</p>
-<p>そして<a href="http://apps.microsoft.com/windows/ja-jp/app/asphalt-8-airborne/9076a406-495e-4aac-8153-6d3695f88650">Windows Store App版</a>もある！しかもWindows Phone 8版もある！しかもWindows Store App - Windows Phone 8間での通信対戦が可能！(iPhone-AndroidとかiPhone-WP8とかは対戦不可)。そんなわけで社内Windowsクラスタで話題騒然、Surface持っているならマストバイ、とか微妙な盛り上がりを見せました。ていうか社内で普通にWindows Phone 8の実機が集まるところがまずアレ。</p>
-<h2>本とか映画とか漫画とかアニメとか</h2>
-<p>見てない！ゲームと同じく、この辺りも年々見なくなっていってますが今年は特に一番見てない気がする、忙しさのせいかな(言い訳)。引っ越しして、実家に預けていた本とか漫画を全部回収したのだけど、あー、学生の頃は、いっぱい読んでるわけでもないけれどまぁまぁ読んでたなぁ、とか寂しくなったりはしたりして。</p>
-<h2>来年</h2>
-<p>ここ数年は、毎年ジェットコースター状態で目まぐるしく変化していて。けれど、大きな目標からはブレないで、年々近づけている気がします。一番最初に若くない人サイドに入ったとか、新陳代謝とか言いましたが、来年はそういうことが起こる状態を作っていきたいですね。C#が、若い人がこぞって使うような言語になってればいい、と。そのためにできること。人がすぐに思い浮かべられる、メジャーなアプリケーションの創出と、C#による圧倒的な成果、C#だからこその強さ、というのを現実に示していくこと。雇用の創出、の連鎖。</p>
-<p>というわけで、来年も引き続きご期待くださいだし、よろしくお願いします。</p>
 </div>
 <a href="https://neue.cc/8">Prev |</a>
 <a href="https://neue.cc/10">| Next</a>

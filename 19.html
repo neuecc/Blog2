@@ -23,7 +23,308 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2010/12/04_287.html">Reactive Extensionsとエラーハンドリング</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2010/12/09_288.html">Reactive ExtensionsとAsync CTPでの非同期のキャンセル・プログレス処理</a></h1>
+<ul class="date"><li>2010-12-09</li></ul>
+<div class="entry_body"><p>暫くはAsync CTPを特集していく！と思っていたのですが、何だか随分と間があいてしまいました。じっくり非同期操作に必要なオペレーションは何か、と考えるに「バックグラウンドでの実行」「進捗のUI表示」「結果のUI表示」「キャンセル処理」「エラー時処理」が挙げられる気がします。というわけで、こないだまではRxで<a href="http://neue.cc/2010/11/26_286.html" title="neue cc - Reactive Extensions用のWebRequest拡張メソッド">進捗表示</a>とか<a href="http://neue.cc/2010/12/04_287.html" title="neue cc - Reactive Extensionsとエラーハンドリング">エラー時処理</a>とか見ていたわけです、決してAsync CTPをスルーしていたわけではありません！ホントダヨ？記事の分量的にどうしてもRxだけで埋まってしまったのです。</p>
+<p>さて、ところでこれらってつまり、BackgroundWorkerですよねー。ただたんに裏で実行するだけならThreadPool.QueueUserWorkItemでいいし、結果のUIへの伝達ぐらいならDispatcher.BeginInvoke書けば…… ですが、進捗やキャンセルなどを加えていくとドロドロドロドロしてしまいます。それらが統合された上でポトペタプロパティ設定で使えるBackgroundWorkerは偉大なわけです。</p>
+<p>では、BackgroundWorkerを使った場合とReactive Extensionsを使った場合、そしてAsync CTPのasync/await、つまりはTaskを使った場合とで比較していきます。</p>
+<p>あ、そうそう、Async CTPの本格的な解説はmatarilloさんの訳されているEric Lippertの<a href="http://matarillo.com/general/cps.php">継続渡しスタイル(CPS)と非同期構文(async/await)</a>やufcppさんの<a href="http://ufcpp.net/study/csharp/sp5_async.html">非同期処理 (C# によるプログラミング入門)</a>でがっちりと解説されています。私はがっちりした記事は書けないのでひたすらゆるふわに機能を雑多につまみ食いで。あと、Reactive Extensionsとしつこく比較するのも忘れません。</p>
+<h2>BackgroundWorkerの場合</h2>
+<p>BackgroundWorkerは、DoWorkはバックグラウンドで、ProgressChangedとRunWorkerCompletedはUIスレッド上で動きます。これにより、Dispatcherだとか、そういうことを意識せずに使えます。勿論、DoWork内でDispatcher.BeginInvokeすることも可能ですが、そういう場合はBackgroundWorkerの意味があまりなくなってしまうので、設計には素直に従っておいたほうが良いです。というわけで例など。</p>
+<pre><code class="language-csharp">static string HeavyHeavyHeavyMethod(string s)
+{
+    Thread.Sleep(5000); // 重たい処理をするとする
+    return s + s;
+}
+
+static void Main()
+{
+    var bw = new BackgroundWorker
+    {
+        WorkerReportsProgress = true,
+        WorkerSupportsCancellation = true
+    };
+
+    bw.ProgressChanged += (sender, e) =&gt;
+    {
+        var percentage = e.ProgressPercentage;
+        var state = e.UserState;
+        Console.WriteLine(percentage + &quot;%&quot; + &quot;:&quot; + state);
+    };
+
+    bw.DoWork += (sender, e) =&gt;
+    {
+        var worker = sender as BackgroundWorker; // くろーぢゃな場合はbwが直接取れるので不要ですが
+        var result = (string)e.Argument;
+        if (result == null) throw new ArgumentNullException(&quot;引数よこせゴルァ&quot;);
+        worker.ReportProgress(1, result); // 進捗報告
+
+        // 重たい処理が幾つかあって最終的な結果を出す
+        // キャンセルは随時出来るようにする
+        result = HeavyHeavyHeavyMethod(result);
+        if (worker.CancellationPending) { e.Cancel = true; return; }
+        worker.ReportProgress(33, result); // 進捗報告
+
+        result = HeavyHeavyHeavyMethod(result);
+        if (worker.CancellationPending) { e.Cancel = true; return; }
+        worker.ReportProgress(66, result); // 進捗報告
+
+        result = HeavyHeavyHeavyMethod(result);
+        if (worker.CancellationPending) { e.Cancel = true; return; }
+        worker.ReportProgress(100, result); // 進捗報告
+
+        e.Result = result; // 結果セットして正常完了
+    };
+
+    bw.RunWorkerCompleted += (sender, e) =&gt;
+    {
+        if (e.Cancelled) // // キャンセルした場合
+        {
+            Console.WriteLine(&quot;キャンセルされたー&quot;);
+        }
+        else if (e.Error != null) // 例外発生の場合
+        {
+            Console.WriteLine(&quot;例外出たー&quot;);
+            Console.WriteLine(e.Error);
+        }
+        else // 正常終了の場合
+        {
+            var result = e.Result;
+            Console.WriteLine(&quot;終わった、結果:&quot; + result);
+        }
+    };
+
+    // 以下実行例
+
+    bw.RunWorkerAsync(&quot;hoge&quot;); // 非同期実行開始と初期引数
+
+    Thread.Sleep(6000);
+    bw.CancelAsync(); // 6秒後にキャンセルするなど
+
+    while (bw.IsBusy) Thread.Sleep(1000);
+    bw.RunWorkerAsync(null); // 今度は引数なしで実行するなど
+
+    while (bw.IsBusy) Thread.Sleep(1000);
+    bw.RunWorkerAsync(&quot;hoge&quot;); // 最後まで実行
+
+    Console.ReadLine();
+}
+</code></pre>
+<p>実行結果などは他愛もないものなのでスルーで。さて、コードは見たとおりに、些か冗長なところはありますが一般的に考えられる処理は全て行えます。受け渡しがObjectなのダセーとか、EventArgsに値をセットして受け渡しダセーとか、キャンセルするのにCancellationPendingのチェックだりー、などなど思うところは色々あります。BackgroundWorkerのメリットはポトペタにあったと思われるので、時代背景的に、もうそぐわないかなあという気がかなりしています。</p>
+<h2>Reactive Extensionsの場合</h2>
+<p>Reactive Extensionsは、この手の非同期処理はお手の物。というわけでBackgroundWorkerで行った機能をまんま代替してみます。実行スレッドの切り替えはObserveOnで。</p>
+<pre><code class="language-csharp">static string HeavyHeavyHeavyMethod(string s)
+{
+    Thread.Sleep(5000); // 重たい処理をするとする
+    return s + s;
+}
+
+// WPFで適当なリストボックス(経過表示用)と適当なキャンセルボタンがあるとする
+public MainWindow()
+{
+    InitializeComponent();
+
+    Action&lt;int, string&gt; reportProgress = (i, s) =&gt; listBox1.Items.Add(i + &quot;%:&quot; + s);
+
+    var disposable = Observable.Return(&quot;hoge&quot;, Scheduler.ThreadPool)
+        .ObserveOnDispatcher().Do(s =&gt; reportProgress(1, s))
+        .ObserveOn(Scheduler.ThreadPool).Select(HeavyHeavyHeavyMethod)
+        .ObserveOnDispatcher().Do(s =&gt; reportProgress(33, s))
+        .ObserveOn(Scheduler.ThreadPool).Select(HeavyHeavyHeavyMethod)
+        .ObserveOnDispatcher().Do(s =&gt; reportProgress(66, s))
+        .ObserveOn(Scheduler.ThreadPool).Select(HeavyHeavyHeavyMethod)
+        .ObserveOnDispatcher().Do(s =&gt; reportProgress(100, s))
+        .Subscribe(
+            s =&gt; listBox1.Items.Add(&quot;終わった、結果:&quot; + s),
+            e =&gt; { listBox1.Items.Add(&quot;例外出たー&quot;); listBox1.Items.Add(e); },
+            () =&gt; { });
+
+    // キャンセルボタンクリックでキャンセル
+    CancelButton.Click += (sender, e) =&gt;
+    {
+        listBox1.Items.Add(&quot;キャンセルしたー&quot;);
+        disposable.Dispose();
+    };
+}
+</code></pre>
+<p>んん、あれれ？進捗表示する時はDispatcherに切り替え、重い処理をする時はThreadPoolに流すよう切り替える。理屈は簡単。書くのもそのまま。しかし、しかし、これは、どう見ても非効率的。おまけにコードの見た目もUgly。ダメだこりゃ。そんな時は拡張メソッド。例えばこんなものを用意しよう。</p>
+<pre><code class="language-csharp">public static class ObservableExtensions
+{
+    /// &lt;summary&gt;Report on Dispatcher&lt;/summary&gt;
+    public static IObservable&lt;T&gt; Report&lt;T&gt;(this IObservable&lt;T&gt; source, Action&lt;T&gt; action)
+    {
+        return source.Report(action, Scheduler.Dispatcher);
+    }
+
+    /// &lt;summary&gt;Report on Scheduler&lt;/summary&gt;
+    public static IObservable&lt;T&gt; Report&lt;T&gt;(this IObservable&lt;T&gt; source, Action&lt;T&gt; action, IScheduler scheduler)
+    {
+        return source.Do(x =&gt; scheduler.Schedule(() =&gt; action(x)));
+    }
+}
+</code></pre>
+<p>Doの変形バージョンで、actionをDispatcher.BeginInvoke(デフォルトでは。オーバーロードのISchedulerを渡すものを使えば、任意のスケジューラに変更出来ます)で行う、というものです。これなら進捗表示などにピッタリ合うはず。というわけで、適用してみます。</p>
+<pre><code class="language-csharp">var disposable = Observable.Return(&quot;hoge&quot;, Scheduler.ThreadPool)
+    .Report(s =&gt; reportProgress(1, s))
+    .Select(HeavyHeavyHeavyMethod)
+    .Report(s =&gt; reportProgress(33, s))
+    .Select(HeavyHeavyHeavyMethod)
+    .Report(s =&gt; reportProgress(66, s))
+    .Select(HeavyHeavyHeavyMethod)
+    .Report(s =&gt; reportProgress(100, s))
+    .ObserveOnDispatcher()
+    .Subscribe(
+        s =&gt; listBox1.Items.Add(&quot;終わった、結果:&quot; + s),
+        e =&gt; { listBox1.Items.Add(&quot;例外出たー&quot;); listBox1.Items.Add(e); },
+        () =&gt; { });
+</code></pre>
+<p>無難に仕上がりました。BackgroundWorkerと比べると、随分とすっきりします。受け渡しがオブジェクトではなく、しっかり型がついたままチェーンされること、例外処理もOnErrorの流れに沿ってすっきり記述できること、そして、何よりもキャンセル処理が楽！Disposeを呼ぶだけで、CancellationPendingのようなものをチェックする必要なくサクッとキャンセルすることが可能です。これは、処理単位が小さなメソッド毎に分割される、この場合は進捗報告を抜くとSelectの連打という形になりますが、その連打がちゃんと意味を持つわけです。</p>
+<p>余談ですが、INotifyPropertyChanged経由のデータバインディングは自動でDispatcher経由にしてくれるようなので、その辺楽。UIパーツなんて直接触るもんじゃない、MVVM！ でもObservableCollectionだとダメだったりするんですね、色々んもー。</p>
+<h2>Task(async/await)の場合</h2>
+<p>TaskにおけるキャンセルもBackgroundWorkerと同じく、キャンセル用オブジェクトの状態を確認して自分で挙動を挟む必要があります。ThrowIfCancellationRequested() を呼べばキャンセルされていた時は例外を送出して強制終了。</p>
+<pre><code class="language-csharp">string HeavyHeavyHeavyMethod(string s)
+{
+    Thread.Sleep(5000); // 重たい処理をするとする
+    return s + s;
+}
+
+// 進捗表示用入れ物クラス
+class ProgressResult
+{
+    public int Percentage { get; set; }
+    public string Value { get; set; }
+}
+
+async void DoAsync(string start, CancellationToken token, IProgress&lt;ProgressResult&gt; progress)
+{
+    // 進捗報告はIProgress&lt;T&gt;のReportを呼ぶ
+    progress.Report(new ProgressResult { Percentage = 1, Value = start });
+
+    try
+    {
+        var s = await TaskEx.Run(() =&gt; HeavyHeavyHeavyMethod(start));
+        token.ThrowIfCancellationRequested(); // キャンセルされた場合は例外送出
+        progress.Report(new ProgressResult { Percentage = 33, Value = s });
+
+        s = await TaskEx.Run(() =&gt; HeavyHeavyHeavyMethod(s));
+        token.ThrowIfCancellationRequested(); // キャンセルされた場合は例外送出
+        progress.Report(new ProgressResult { Percentage = 66, Value = s });
+
+        s = await TaskEx.Run(() =&gt; HeavyHeavyHeavyMethod(s));
+        token.ThrowIfCancellationRequested(); // キャンセルされた場合は例外送出
+
+        listBox1.Items.Add(&quot;終わった、結果:&quot; + s);
+    }
+    catch (OperationCanceledException)
+    {
+        listBox1.Items.Add(&quot;キャンセルされたー&quot;);
+    }
+}
+
+public MainWindow()
+{
+    InitializeComponent();
+
+    // プログレスが変化したときの挙動の登録
+    var progress = new EventProgress&lt;ProgressResult&gt;();
+    progress.ProgressChanged += (sender, e) =&gt;
+        listBox1.Items.Add(e.Value.Percentage + &quot;%&quot; + &quot;:&quot; + e.Value.Value);
+
+    // キャンセルボタンを押したとする、時にキャンセルする
+    var ctsSource = new CancellationTokenSource();
+    button1.Click += (_, __) =&gt; ctsSource.Cancel();
+
+    // 非同期実行
+    DoAsync(&quot;hoge&quot;, ctsSource.Token, progress);
+}
+</code></pre>
+<p>例外送出という形なので、BackgroundWorkerよりはキャンセルが楽です。プログレスに関しては、EventProgress&lt;T&gt;を用意して、それのReportメソッドを呼ぶという形になります。これはBackgroundWorkerに非常に近い感じですね。</p>
+<h2>同期→非同期</h2>
+<p>今まで見た「重い処理」であるHeavyHeavyHeavyMethodは同期的なものでした。言うならばWebRequestのGetResponse。もしくはCPU時間を喰う処理。では、BeginGetResponseのような、重い処理が非同期の場合の非同期処理(こんがらがる)はどうなるでしょう。</p>
+<pre><code class="language-csharp">void HeavyMethod2(string s, Action&lt;string&gt; action)
+{
+    ThreadPool.QueueUserWorkItem(_ =&gt;
+    {
+        Thread.Sleep(5000);
+        var result = s + s;
+        action(result);
+    });
+}
+</code></pre>
+<p>こんな、なんちゃって非同期メソッドがあるとして、こいつをどう料理出来るか。</p>
+<h2>非同期とBackgroundWorker</h2>
+<p>元から非同期のものに対し、BackgroundWorkerは無力です。破綻です。さようならです。</p>
+<pre><code class="language-csharp">// DoWorkは実行されるとすぐに抜けて(HeavyMethod2が非同期のため)
+// RunWorkerCompletedが呼ばれることになって全く正常に動かない
+bw.DoWork += (sender, e) =&gt;
+{
+    HeavyMethod2(&quot;hoge&quot;, s1 =&gt;
+    {
+        bw.ReportProgress(33, s1);
+        HeavyMethod2(s1, s2 =&gt;
+        {
+            bw.ReportProgress(66, s2);
+            HeavyMethod2(s2, s3 =&gt;
+            {
+                bw.ReportProgress(100, s3);
+            });
+        });
+    });
+};
+
+bw.RunWorkerCompleted += (sender, e) =&gt;
+{
+    var result = e.Result;
+    listBox1.Items.Add(&quot;終わった、結果:&quot; + result);
+};
+
+bw.RunWorkerAsync(&quot;hoge&quot;);
+</code></pre>
+<p>これはちっとも動きません。というかReportProgressで例外が出ます(実行が完了=RunWorkerCompletedが呼ばれている状態ではReportProgressは呼べない)。なんとも、ならないですねえ。ここでAutoResetEventなどを呼んでDoWorkの完了を待機してやるぜ、という策もありますが、そんなことをやる意味は全くないでしょう。</p>
+<h2>Reactive Extensions</h2>
+<p>補助拡張メソッドとしてXxxAsObservableを定義しましょう。Begin-EndパターンのものならFromAsyncPatternが使えますが、今回のような俺々非同期メソッドには使えないので、AsyncSubjectを使って自前でラップします。</p>
+<pre><code class="language-csharp">IObservable&lt;string&gt; HeavyMethod2AsObservable(string input)
+{
+    var asyncSubject = new AsyncSubject&lt;string&gt;();
+    HeavyMethod2(input, s =&gt;
+    {
+        try
+        {
+            asyncSubject.OnNext(s);
+            asyncSubject.OnCompleted();
+        }
+        catch(Exception e)
+        {
+             asyncSubject.OnError(e);
+        }    
+    });
+    return asyncSubject.AsObservable();
+}
+</code></pre>
+<p>ラップ自体はそんなに難しいものでもないですし、定型なので割と楽です。AsyncSubjectの詳細、もしくは何故AsyncSubjectを使わなければならないのか、非同期ラップの落とし穴、的なものは<a href="http://neue.cc/2010/09/28_277.html" title="neue cc - Reactive Extensionsの非同期周りの解説と自前実装">以前の記事</a>を参照してください。</p>
+<pre><code class="language-csharp">var disposable = Observable.Return(&quot;hoge&quot;)
+    .Report(s =&gt; reportProgress(1, s))
+    .SelectMany(HeavyMethod2AsObservable)
+    .Report(s =&gt; reportProgress(33, s))
+    .SelectMany(HeavyMethod2AsObservable)
+    .Report(s =&gt; reportProgress(66, s))
+    .SelectMany(HeavyMethod2AsObservable)
+    .Report(s =&gt; reportProgress(100, s))
+    .ObserveOnDispatcher()
+    .Subscribe(
+        s =&gt; listBox1.Items.Add(&quot;終わった、結果:&quot; + s),
+        e =&gt; { listBox1.Items.Add(&quot;例外出たー&quot;); listBox1.Items.Add(e); },
+        () =&gt; { });
+</code></pre>
+<p>同期のものと見比べてもらうと分かりますが、ほとんど変わりません。SelectをSelectManyに変えただけです。同期だとか非同期だとか、そんなの全く関係なく同じように取りまとめられてしまう。これはRxの強みの一つです。</p>
+<h2>async/await</h2>
+<p>RxでAsyncSubjectを使ってラップしたように、こちらではTaskCompletationSourceを使ってラップします。詳細は<a href="http://neue.cc/2010/10/09_278.html" title="neue cc - Rxを使って非同期プログラミングを簡単に">Rxを使って非同期プログラミングを簡単に</a>で。そうしたら、後は以前のものと同じように書きます。同じなので割愛。</p>
+<h2>まとめ</h2>
+<p>BackgroundWorkerの成したことは大きいと思います。全く非同期を意識させずにコントロールのポトペタで、UIをブロックしないコードが書ける。でもその反面、受け渡しがobjectであったりと、弊害と限界が見えているように思えます。そしてそれは、非同期APIしかないSilverlightでついに限界を向かえた。もうそろそろ、お役御免。しょうがない。</p>
+<p>では代わりに何を使うかと言ったら、Rxを使えばいいんじゃないでしょうか、いやこれは本気で。見てきたとおり、十分にBackgroundWorkerの機能を代替出来ていますし。TaskはSilverlightにはまだ入ってないし、素のままでは使いやすいとは言い難い。目の前に現実的な解が転がっているのだから、とりあえず使ってみるのもいいんじゃないかな。機能的にはReactive Extensionsがイケてるのは間違いないと思うので(キャンセルの容易さは非常に大きい！)、そして、現実的に使える形で提供されている状態でもあるので、Rx使うといいんぢゃないかな(そればっか)。</p>
+<p>今後。私は、Reactive Extensionsとasync/awaitは共存するものだと思っています。そして、どちらも、必須であると、両者を知れば知るほど思い始めています。なので、もう単純に比較してどうこうはお終い。次は連携を考えていきたいと思います。とりあえず、何で共存するのか、何故に両者が必須であるのか(私であるのならばRxだけじゃダメなんですか！ダメなんです、の理由などなどり)は、そのうち書きます。</p>
+</div>
+<h1><a href="https://neue.cc/2010/12/04_287.html">Reactive Extensionsとエラーハンドリング</a></h1>
 <ul class="date"><li>2010-12-04</li></ul>
 <div class="entry_body"><p>例外処理は非常に大事だけれど、非常に難しい。非同期となると、なおのこと難しくなる！一体どう処理したらいいものか。勿論、放置するわけにもいかない避けては通れない話。そのため、<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Reactive Extensions</a>には豊富な例外処理手段が用意されています。決してOnErrorだけではありません。想像を遥かに越える、恐るべき柔軟さがそこにはあります。そして、これもまた、何故Rxを使うべきなのか、の強い理由の一つになるでしょう。</p>
 <h2>OnError</h2>
@@ -1914,363 +2215,6 @@ class Program
 </ul>
 <p>TwitterのBasic認証の有効期限が8月いっぱいだったのですよね。それは知っていて動かなくなるのも知っておきながら、実際に動かなくなるまで放置していたという酷い有様。結果的に自分で困ってました（普通に今も使っていたので）。というわけで、TwitterTL to HTMLをOAuth対応にしました。認証時のアプリケーション名がTL to HTMLなのですが、これは「Twitter」という単語名をアプリケーション名に入れられないためです。面倒くさいねえ。</p>
 <p>OAuth認証は<a href="http://twitter.com/ugaya40" title="尾上 雅則 (ugaya40) on Twitter">@ugaya40</a>さんの<a href="http://oauthaccess.codeplex.com/" title="OAuthAccess">OAuthAccess</a>を利用しています。XboxInfoTwitでは自前のものを使っていたのですが、どうしょうもなく酷いので自分で作り直すかライブラリを使うか、でズルズル悩んで締切りを迎えたのでライブラリ利用に決定ー。使いやすくて良いと思います。</p>
-</div>
-<h1><a href="https://neue.cc/2010/08/30_273.html">T4による不変オブジェクト生成のためのテンプレート</a></h1>
-<ul class="date"><li>2010-08-30</li></ul>
-<div class="entry_body"><p>不変欲しい！const欲しい！readonlyをローカル変数にもつけたい！という要望をたまに見かけるこの頃。もし、そういった再代入不可というマークがローカル変数に導入されるとしたら、readonlyの使い回しだけは勘弁です。何故って、ローカル変数なんて大抵は再代入しないので、readonly推奨ということになるでしょう、そのうちreadonly付けろreadonly付けろというreadonly厨が出てくるのは目に見えています。</p>
-<p>良いことなら付ければいいじゃない、というのはもっともですが、Uglyですよ、視覚的に。readonly var hoge = 3 だなんて、見たくはない。頻繁に使うほうがオプションで醜く面倒くさいってのは、良くないことです。let hoge = 3 といったように、let、もしくはその他のキーワード(valとか？)を導入するならば、いいかな、とは思いますが。</p>
-<p>それに、ただ単にマークしただけじゃあ不変を保証するわけでもない……。例えばListなんてClearしてAddRangeしたのと再代入とは、どう違うの？的な。難しいねえ。そんなimmutableの分類に関しては<a href="http://ufcpp.spaces.live.com/blog/cns!5C622397E11C979D!931.entry">ufcppさんのimmutable</a>という記事が、コメント欄含め参考になりました。</p>
-<p>そうはいっても、そんなにガチに捉えなくても、不変にしたいシチュエーションはいっぱいあります。<a href="http://d.hatena.ne.jp/zecl/20100531/p1">実はオブジェクト指向ってしっくりきすぎるんです！ 不変オブジェクトのすゝめ。 - Bug Catharsis</a>。おお、すすめられたい。ところでしかし、こういう時にいつも疑問に思っているのは、生成どうすればいいのだろう、ということ。今のところ現実解としてあるのはreadonly、つまり、コンストラクタに渡すしかないのですが……</p>
-<pre><code class="language-csharp">public Hoge(int a, int b, int c, string d, string e, DateTime f, .....
-</code></pre>
-<p>破綻してる。こんなクソ長いコンストラクタ見かけたら殺していいと思う。全くもって酷い。さて、どうしましょう。こういう場合はビルダーを使いましょう、とはEffective Javaが言ってますので(私、この本あんま好きじゃないんだよねー、とかはどうでもいいんですがー)とりあえずストレートに従ってみます。</p>
-<pre><code class="language-csharp">// あまり行数使うのもアレなので短くしますが、実際は10行ぐらいあると思ってください
-Hoge hoge = new HogeBuilder()
-  .Age(10)
-  .Name(&quot;hogehoge&quot;)
-  .Build();
-</code></pre>
-<p>まあ、悪くない、ですって？いえいえ、これはBuilder作るの面倒くさいし、第一Java臭い。メソッドチェーンだからモダンで素敵、と脳が直結してる人は考えが一歩足らない。むしろ古臭い。最近は流れるようなインターフェイスとかも割と懐疑的で、私は。頂くのはアイディアだけであって、書き方に関しては、各言語にきっちり馴染ませるべき。先頭の大文字小文字だけ整えて移植だとか、愚かな話。というわけで、C#ならオブジェクト初期化子を使おう。</p>
-<pre><code class="language-csharp">var hoge = new HogeBuilder
-{
-    Age = 10,
-    Name = &quot;hogehoge&quot;
-}.Build();
-
-// 暗黙的な型変換を使えばBuildメソッドも不要になる(私はvarのほうが好みですが)
-Hoge hoge = new HogeBuilder
-{
-    Age = 10,
-    Name = &quot;hogehoge&quot;
-};
-</code></pre>
-<p>ええ、これなら悪くない。オブジェクト初期化子は大変素晴らしい(本当にそろそろModern C# Designをですね……)。ビルダーを作る手間もJava方式に比べ大幅に軽減されます(set専用の自動プロパティを用意するだけ)。それにIntelliSenseのサポートも効きます。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/objectinitializer_intellisense.jpg">
-</p>
-<p>未代入のもののみリストアップしてくれる(Ctrl+Space押しだと全部出てきたりする、バグですかね、困った困った)。そういえばで、これは、不変である匿名型の記法とも似ています。余分なのは.Build()だけで、書く手間的にはそんな変わらない。</p>
-<p>前説が長ったらしくなりました。本題は「匿名型のような楽な記法で不変型を生成したい」が目標です。C#の現在の記法では、それは無い。欲しいなあ。名前付き引数使えば似たような雰囲気になると言えばなるんですが、アレ使うと「省略可」な雰囲気が出てダメ。ビルダーで作りたいのは、原則「省略不可」なので。</p>
-<p>なければ作ればいいじゃない、オブジェクト初期化子を使って.Buildで生成させるビルダーを作れば似たような感じになる。あとは、手動でそれ定義するの非常に面倒なので、そう、T4で自動生成しちゃえばいいぢゃない。</p>
-<p>以下コード。例によってパブリックドメインで。別にブログにベタ貼りなコードは自明でいいんじゃないかって気もするんですが、宣言は一応しておいたほうがいいのかなー、と。</p>
-<pre><code class="language-csharp">&lt;#@ assembly Name=&quot;System.Core.dll&quot; #&gt;
-&lt;#@ import namespace=&quot;System.Linq&quot; #&gt;
-&lt;#@ import namespace=&quot;System.Collections.Generic&quot; #&gt;
-&lt;#@ import namespace=&quot;System.Text.RegularExpressions&quot; #&gt;
-&lt;#@ output extension=&quot;Generated.cs&quot; #&gt;
-&lt;#
-    // 設定：クラス名はそのまま文字列で入力
-    // クラスの持つ変数は、コンストラクタに書くみたいにdeffinesに
-    // &quot;string hoge&quot;,&quot;int huga&quot; といった形で並べてください
-    // usingとnamespaceは、直下の出力部を直に弄ってください
-    // partial classなので、これをベースにメソッドを足す場合は別ファイルにpartialで定義することを推奨します
-    // Code Contractsに関わる部分は(ContractVerification属性とContract.EndContractBlock())は、
-    // 対象がWindows Phone 7などContractが入っていない環境下では削除してください（通常の.NET 4環境では放置で大丈夫）
-
-    var className = &quot;Person&quot;;
-    var deffines = new DeffineList {
-        &quot;string name&quot;,
-        &quot;DateTime birth&quot;,
-        &quot;string address&quot;
-    };
-#&gt;
-using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Diagnostics.Contracts;
-
-namespace Neue.Test
-{
-    [DebuggerDisplay(@&quot;&lt;#= deffines.DebuggerDisplay #&gt;&quot;, Type = &quot;&lt;#= className #&gt;&quot;)]
-    public partial class &lt;#= className #&gt; : IEquatable&lt;&lt;#= className #&gt;&gt;
-    {
-&lt;# foreach(var x in deffines) {#&gt;
-        [DebuggerBrowsable(DebuggerBrowsableState.Never)]
-        private readonly &lt;#= x.TypeName #&gt; &lt;#= x.FieldName #&gt;;
-        public &lt;#= x.TypeName #&gt; &lt;#= x.PropName #&gt; { get { return &lt;#= x.FieldName #&gt;; } }
-&lt;# } #&gt;
-
-        private &lt;#= className #&gt;(&lt;#= deffines.Constructor #&gt;)
-        {
-&lt;# foreach(var x in deffines) {#&gt;
-            this.&lt;#= x.FieldName #&gt; = &lt;#= x.FieldName #&gt;;
-&lt;# } #&gt;
-        }
-        
-        [ContractVerification(false)]
-        public static implicit operator Person(Builder builder)
-        {
-            return builder.Build();
-        }
-
-        public bool Equals(&lt;#= className #&gt; other)
-        {
-            if (other == null || GetType() != other.GetType()) return false;
-            if (ReferenceEquals(this, other)) return true;
-            return EqualityComparer&lt;&lt;#= deffines.First().TypeName #&gt;&gt;.Default.Equals(&lt;#= deffines.First().FieldName #&gt;, other.&lt;#= deffines.First().FieldName #&gt;)
-&lt;# foreach(var x in deffines.Skip(1)) {#&gt;
-                &amp;&amp; EqualityComparer&lt;&lt;#= x.TypeName #&gt;&gt;.Default.Equals(&lt;#= x.FieldName #&gt;, other.&lt;#= x.FieldName #&gt;)
-&lt;# } #&gt;
-                ;
-        }
-
-        public override bool Equals(object obj)
-        {
-            var other = obj as &lt;#= className #&gt;;
-            return (other != null) ? Equals(other) : false;
-        }
-
-        public override int GetHashCode()
-        {
-            var hash = 0xf937b6f;
-&lt;# foreach(var x in deffines) {#&gt;
-            hash = (-1521134295 * hash) + EqualityComparer&lt;&lt;#= x.TypeName #&gt;&gt;.Default.GetHashCode(&lt;#= x.FieldName #&gt;);
-&lt;# } #&gt;
-            return hash;
-        }
-
-        public override string ToString()
-        {
-            return &quot;{ &quot; + &quot;&lt;#= deffines.First().PropName #&gt; = &quot; + &lt;#= deffines.First().FieldName #&gt; +
-&lt;# foreach(var x in deffines.Skip(1)) {#&gt;
-                &quot;, &lt;#= x.PropName #&gt; = &quot; + &lt;#= x.FieldName #&gt; +
-&lt;# } #&gt;
-                &quot; }&quot;;
-        }
-
-        public class Builder
-        {
-&lt;# foreach(var x in deffines) {#&gt;
-            public &lt;#= x.TypeName #&gt; &lt;#= x.PropName #&gt; { private get; set; }
-&lt;# } #&gt;
-
-            public &lt;#= className #&gt; Build()
-            {
-&lt;# foreach(var x in deffines) {#&gt;
-                if ((object)&lt;#= x.PropName #&gt; == null) throw new ArgumentNullException(&quot;&lt;#= x.PropName #&gt;&quot;);
-&lt;# } #&gt;
-                Contract.EndContractBlock();
-                return new &lt;#= className #&gt;(&lt;#= string.Join(&quot;, &quot;, deffines.Select(d =&gt; d.PropName)) #&gt;);
-            }
-        }
-    }
-}
-&lt;#+
-    class Deffine
-    {
-        public string TypeName, FieldName, PropName;
-
-        public Deffine(string constructorParam)
-        {
-            var split = constructorParam.Split(' ');
-            this.TypeName = split.First();
-            this.FieldName = Regex.Replace(split.Last(),  &quot;^(.)&quot;, m =&gt; m.Groups[1].Value.ToLower());
-            this.PropName = Regex.Replace(FieldName, &quot;^(.)&quot;, m =&gt; m.Groups[1].Value.ToUpper());
-        }
-    }
-
-    class DeffineList : IEnumerable&lt;Deffine&gt;
-    {
-        private List&lt;Deffine&gt; list = new List&lt;Deffine&gt;();
-
-        public void Add(string constructorParam)
-        {
-            list.Add(new Deffine(constructorParam));
-        }        
-        
-        public string DebuggerDisplay
-        {
-            get
-            {
-                return &quot;\\{ &quot; + string.Join(&quot;, &quot;, list.Select(d =&gt;
-                    string.Format(&quot;{0} = {{{1}}}&quot;, d.PropName, d.FieldName))) + &quot; }&quot;;
-            }
-        }
-
-        public string Constructor
-        {
-            get { return string.Join(&quot;, &quot;, list.Select(d =&gt; d.TypeName + &quot; &quot; + d.FieldName)); }
-        }
-
-        public IEnumerator&lt;Deffine&gt; GetEnumerator()
-        {
-            return list.GetEnumerator();
-        }
-
-        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
-        {
-            return GetEnumerator();
-        }
-    }
-#&gt;
-</code></pre>
-<p>以下のようなのが出力されます（長いねー）</p>
-<pre><code class="language-csharp">using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Diagnostics.Contracts;
-
-namespace Neue.Test
-{
-    [DebuggerDisplay(@&quot;\{ Name = {name}, Birth = {birth}, Address = {address} }&quot;, Type = &quot;Person&quot;)]
-    public partial class Person : IEquatable&lt;Person&gt;
-    {
-        [DebuggerBrowsable(DebuggerBrowsableState.Never)]
-        private readonly string name;
-        public string Name { get { return name; } }
-        [DebuggerBrowsable(DebuggerBrowsableState.Never)]
-        private readonly DateTime birth;
-        public DateTime Birth { get { return birth; } }
-        [DebuggerBrowsable(DebuggerBrowsableState.Never)]
-        private readonly string address;
-        public string Address { get { return address; } }
-
-        private Person(string name, DateTime birth, string address)
-        {
-            this.name = name;
-            this.birth = birth;
-            this.address = address;
-        }
-        
-        [ContractVerification(false)]
-        public static implicit operator Person(Builder builder)
-        {
-            return builder.Build();
-        }
-
-        public bool Equals(Person other)
-        {
-            if (other == null || GetType() != other.GetType()) return false;
-            if (ReferenceEquals(this, other)) return true;
-            return EqualityComparer&lt;string&gt;.Default.Equals(name, other.name)
-                &amp;&amp; EqualityComparer&lt;DateTime&gt;.Default.Equals(birth, other.birth)
-                &amp;&amp; EqualityComparer&lt;string&gt;.Default.Equals(address, other.address)
-                ;
-        }
-
-        public override bool Equals(object obj)
-        {
-            var other = obj as Person;
-            return (other != null) ? Equals(other) : false;
-        }
-
-        public override int GetHashCode()
-        {
-            var hash = 0xf937b6f;
-            hash = (-1521134295 * hash) + EqualityComparer&lt;string&gt;.Default.GetHashCode(name);
-            hash = (-1521134295 * hash) + EqualityComparer&lt;DateTime&gt;.Default.GetHashCode(birth);
-            hash = (-1521134295 * hash) + EqualityComparer&lt;string&gt;.Default.GetHashCode(address);
-            return hash;
-        }
-
-        public override string ToString()
-        {
-            return &quot;{ &quot; + &quot;Name = &quot; + name +
-                &quot;, Birth = &quot; + birth +
-                &quot;, Address = &quot; + address +
-                &quot; }&quot;;
-        }
-
-        public class Builder
-        {
-            public string Name { private get; set; }
-            public DateTime Birth { private get; set; }
-            public string Address { private get; set; }
-
-            public Person Build()
-            {
-                if ((object)Name == null) throw new ArgumentNullException(&quot;Name&quot;);
-                if ((object)Birth == null) throw new ArgumentNullException(&quot;Birth&quot;);
-                if ((object)Address == null) throw new ArgumentNullException(&quot;Address&quot;);
-                Contract.EndContractBlock();
-                return new Person(Name, Birth, Address);
-            }
-        }
-    }
-}
-</code></pre>
-<p>これで、どれだけ引数の多いクラスであろうとも、簡単な記述でイミュータブルオブジェクトを生成させることが出来ます。しかも、普通にクラス作るよりも楽なぐらいです、.ttをコピペって、先頭の方に、コンストラクタに並べる型を書くだけ。後は全部自動生成任せ。もし積極的に使うなら、Generated.csのほうを消して.ttのみにした状態で、ファイル→テンプレートのエクスポートで項目のエクスポートをすると使い回しやすくて素敵と思われます、項目名はImmutableObjectとかで。</p>
-<pre><code class="language-csharp">// 書くときはこんな風にやります
-var person1 = new Person.Builder
-{
-    Name = &quot;hoge&quot;,
-    Birth = new DateTime(1999, 12, 12),
-    Address = &quot;Tokyo&quot;
-}.Build();
-
-// 暗黙的な型変換も実装されているので、.Buildメソッドの省略も可
-Person person2 = new Person.Builder
-{
-    Name = &quot;hoge&quot;,
-    Birth = new DateTime(1999, 12, 12),
-    Address = &quot;Tokyo&quot;
-};
-
-// 参照ではなく、全てのフィールドの値の同値性で比較される
-Console.WriteLine(person1.Equals(person2)); // true
-</code></pre>
-<p>匿名型の再現なので、EqualsやGetHashCodeもオーバーライドされて、フィールドの値で比較を行うようになっています。この辺はもう手動だと書いてられないですよね。ReSharperなどを入れて生成をお任せする、という手はありますが。</p>
-<p>==はオーバーライドされていません。これもまた匿名型の再現なので……。Tupleもされてないですしね。これは、フィールドをreadonlyで統一しようと「変更可能」な可能性が含まれるので==は不適切、というガイドライン的なもの(と解釈しました)に従った結果です。変更可能云々は、下の方で解説します。</p>
-<h2>Code Contracts</h2>
-<p>更に、<a href="http://msdn.microsoft.com/en-us/devlabs/dd491992.aspx" title="Code Contracts">Code Contracts</a>を入れれば、値の未代入に対するコンパイラからの静的チェックまで得られます！下記画像のは、Addressが未入力で、通常は実行時に例外が飛ぶことで検出するしかないですが、Code Contractsが静的チェックで実行前にnullだと警告してくれています。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/codecontracts_build.jpg">
-</p>
-<p>ビルダーの欠点は未代入の検出が実行時まで出来なかったりすること。インターフェイスで細工することで、順番を規定したり、必ず代入しなければならないものを定義し終えるまでは.BuildメソッドがIntelliSenseに出てこないようにする。などが出来ますが、手間がかかりすぎて理想論に留まっている気がします。</p>
-<p>簡単であることってのはとても大事で、過剰な手間暇や複雑な設計だったりってのは、必ず無理が生じます。手間がかかること、複雑であることは、それ自体が良くない性質の一つであり、メリットがよほど上回らない限りは机上の空論にすぎない。</p>
-<p>今回、Code Contractsのパワーにより、シンプルなオブジェクト初期化子を使ったビルダーでも未代入の静的チェックをかませる、という素敵機構が実現しました。残念ながらCode Contractsは要求環境が厳しいです。アドインを入れてない/入れられない(Express)場合はどうなるのか、というと、.NET 4にクラス群は入っているので、コンパイル通らないということはありません。普通にArgumentNullExceptionがthrowされるという形になります。</p>
-<p>私が考えるに、.NET 4でクラスが入ったのって、Code Contractsのインストールの有無に関係なくコードが共有出来るように、という配慮でしかない予感。ExpressでContractクラスを使う意味は、あまりなさそうですね。Windows Phone 7環境など、Contractクラスそのものがないような場合では、T4のBuilderクラスBuildメソッドのContract.EndContractBlock();の一行とimplict operatorのContractVerification属性を削除してください。自分で好きに簡単に書き換えられるのもT4の良さです。</p>
-<p>今回はnullチェックしかしていないので、つまり値型の未代入には無効です。何とかして入れたいとは思ったんですが、例えば対策として値型をNullableにするにせよType情報が必要で、そのためにはAssembly参照が必要で、と設定への手間が増えてしまうので今回は止めました(このT4はただ文字列を展開しているだけで、完全にリフレクション未使用)</p>
-<p>Code Contractsに関しては、事前条件のnullチェックにしか使っていなくて真価の1%も発揮されていないので、詳しくは<a href="http://d.hatena.ne.jp/zecl/20100131/p1">とある契約の備忘目録。契約による設計(Design by Contract)で信頼性の高いソフトウェアを構築しよう。 - Bug Catharsis</a>などなどを。不変オブジェクトに関してもそうだけれど、zeclさんの記事は素晴らしいです。</p>
-<p>Code Contracts自体は、メソッド本体の上の方で、コントラクトの記述が膨れ上がるのは好きでないかも。従来型の、if-then-throwでの引数チェックも、5行を超えるぐらいになるとウンザリしますね。ご丁寧に{で改行して、if-then-throwの一個のチェックに4行も使って、それが5個ぐらい連なって20行も使いやがったりするコードを見ると発狂します。そういう場合に限ってメソッド本体は一行で他のメソッド呼んでるだけで、更にその、他のメソッドの行頭にも大量の引数チェックがあったりすると、死ねと言いたくなる。コードは視覚的に、横領域の節約も少しは大事だけど、縦も大事なんだよ、分かってよね……。メソッド本体が1000行とか書く人じゃなく、100行超えたら罰金(ｷﾘｯ とか言ってる人だけど、それならガード句が10行超えたら罰金だよこっちとしては。</p>
-<p>話が脱線した。つまるところ、コントラクトはライブラリレベルで頑張るよりも、言語側でのサポートが必要な概念ですね、ということで。実際rewriterとか、ライブラリレベル超えて無茶しやがって、の領域に踏み込んでいますし＜Code Contracts。</p>
-<h2>プラスアルファ</h2>
-<p>partial classで生成されるので(デフォルトではクラス名.Generated.cs)、別ファイルにクラスを作ることで、フィールドの増減などでT4を後で修正しても、影響を受けることなくメソッドを追加することができます。</p>
-<pre><code class="language-csharp">// Person.csという形で別ファイルで追加
-using System;
-
-namespace Neue.Test
-{
-    public partial class Person
-    {
-        public int GetAge(DateTime target)
-        {
-            return (target.Year - birth.Year);
-        }
-    }
-}
-</code></pre>
-<p>それと、nullチェックだけじゃなくきっちりBuildに前提条件入れたい(もしくはnullを許容したい)場合は、T4のBuildメソッドの部分に直に条件を書いてしまうか、それも何だか不自然に感じる場合は生成後のファイルをT4と切り離してしまうのも良いかもですね。自由なので好きにどうぞですます。</p>
-<h2>で、本当に不変なの？</h2>
-<p>何をもってどこまでを不変というのかはむつかしいところですが、Equalsが、GetHashCodeが変化するなら、可変かしら？ 単純に全ての含まれる型のゲッターが常に同一の値を返さなければ不変ではない、でも良いですが。冒頭でも言いましたが、そう見るとreadonlyだけでは不変を厳密には保証しきれていません。匿名型で例を出すと</p>
-<pre><code class="language-csharp">class MyClass
-{
-   public int i;
-
-   public override int GetHashCode()
-   {
-       return i;
-   }
-}
-
-static void Main(string[] args)
-{
-   var anon = new { MC = new MyClass { i = 100 } };
-   var hashCode1 = anon.GetHashCode();
-
-   anon.MC.i = 1000; // 変更
-   var hashCode2 = anon.GetHashCode();
-
-   Console.WriteLine(hashCode1 == hashCode2); // false
-   Console.WriteLine(hashCode1);
-   Console.WriteLine(hashCode2);
-}
-</code></pre>
-<p>参照しているMyClassのインスタンスの中身が変化可能で、それが変化してしまえば、違う値になってしまいます。厳密に不変であるためには、中のクラス全てが不変でなければなりません。これは今の言語仕様的には制限かけるのは無理かなー、といったところ。T4なのでリフレクションで全部バラして、参照している型が本当の意味で不変なのかどうか検証して、可変の型を含む場合はジェネレートしない、という形でチェックかけるのは原理的には可能かもしれません、が、やはり色々無理があるかなあ。</p>
-<h2>まとめ</h2>
-<p>プログラミングの楽しさの源は、書きやすく見た目が美しいことです。私はLinq to Objects/Linq to Xmlでプログラミングを学んだようなものなので、Linqの成し遂げたこと(究極のIntelliSenseフレンドリーなモデル・使いづらいDOMの大破壊)というのが、設計の理想と思っているところが相当あります。C#は言語そのものが素晴らしいお手本。匿名型素晴らしいよ(一年ぐらい前は匿名型も可変ならいいのに、とか口走っていた時期があった気がしますが忘れた、いやまあ、可変だと楽なシチュエーションってのもそれなりにいっぱいあるんですよね)。</p>
-<p>T4の標準搭載はC#にとって非常に大きい。T4標準搭載によって、出来る事の幅がもう一段階広がった気がします。partial class素晴らしい。自動生成って素敵。T4はただのテキストテンプレートじゃなくて「VSと密接に結びついていて」「なおかつ標準搭載」「もはやC#の一部といってもいい」ことが、全く違った価値をもたらしていると思います。自動生成前提のパターンを作っても/使ってもいいんだよ、と。言語的に足らない部分の迂回策が、また一つ加わった。</p>
-<p>見た目上若干Uglyになっても自動生成でなんとかする、というのはJava + Eclipseもそうですが、それと違うのはpartialでUglyな部分を隔離出来る(隔離によって自動生成の修正が容易になることも見逃せない)ことと、自動生成部分をユーザーが簡単に書けること、ですね。Eclipseの自動生成のプラグインを書くのは敷居が高すぎですが、T4を書く、書くまではしなくても修正する、というのは相当容易でしょう。</p>
-<p>最近本当にT4好きですねー。色々と弄ってしまいます。こーどじぇねれーと素晴らしい。あとは、T4自体のUglyさが少し軽減されればな、といったところでしょうか。テンプレートエンジンとしてRazorに切り替えられたりを望みたいなあ。</p>
 </div>
 <a href="https://neue.cc/18">Prev |</a>
 <a href="https://neue.cc/20">| Next</a>
