@@ -23,7 +23,72 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2013/06/23_409.html">The History of LINQ</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2013/06/24_410.html">AsyncOAuth ver.0.7.0 - HttpClient正式版対応とバグ修正</a></h1>
+<ul class="date"><li>2013-06-24</li></ul>
+<div class="entry_body"><p>HttpClientが<a href="http://blogs.msdn.com/b/dotnet/archive/2013/05/29/get-httpclient-rtm-200-ok.aspx">RTMを迎えた</a>、と思ったら、<a href="http://blogs.msdn.com/b/dotnet/archive/2013/06/19/update-to-httpclient-and-automatic-decompression.aspx">次バージョンのベータ</a>が出た、と、展開早くて追いつけないよ～な感じですが、とりあえず正式版のほうを要求する形で、AsyncOAuthも今回からBetaじゃなくなりました。</p>
+<ul>
+<li><a href="https://github.com/neuecc/AsyncOAuth">AsyncOAuth - GitHub</a></li>
+<li>PM&gt; Install-Package <a href="https://nuget.org/packages/AsyncOAuth/">AsyncOAuth</a></li>
+</ul>
+<p>AsyncOAuthについては<a href="http://neue.cc/2013/02/27_398.html">AsyncOAuth - C#用の全プラットフォーム対応の非同期OAuthライブラリ</a>を、HttpClientについては<a href="http://neue.cc/2013/05/27_405.html">HttpClient詳解、或いはAsyncOAuthのアップデートについて</a>を参照ください。</p>
+<p>今回のアップデートなのですが、PCL版HttpClientのRTM対応という他に、バグ修正が二点ほどあります。バグ的には、結構痛いところですね……。</p>
+<h2>OrderByと文字列について</h2>
+<p>バグ修正その一として、OAuthの認証シグネチャを作るのにパラメータを並び替える必用があるのですが、その並び順が特定条件の時に狂っていました。狂っている結果、正しく認証できないので、実行が必ず失敗します。特定条件というのは、パラメータ名が大文字始まりと小文字始まりが混在するときです。例えばhogeとHugaとか。本当はHuga-hogeにならなければならないのに、hoge-Hugaの順序になってしまっていたのでした。</p>
+<p>なぜそうなったか、というと、OrderByをデフォルトで使っていたからです。</p>
+<pre><code class="language-csharp">// charの配列をOrderByで並び替えると、ASCIIコード順 = 65:'A', 97:'a'
+foreach (var item in new[] { 'a', 'A' }.OrderBy(x =&gt; x))
+{
+    Console.WriteLine((int)item + &quot;:&quot; + (char)item);
+}
+
+// stringの配列をOrderByで並び替えると、良い感じ順 = &quot;a&quot;, &quot;A&quot;
+foreach (var item in new[] { &quot;a&quot;, &quot;A&quot; }.OrderBy(x =&gt; x))
+{
+    Console.WriteLine(item);
+}
+</code></pre>
+<p>良い感じ順！というのはなにかというと、<a href="http://msdn.microsoft.com/ja-jp/library/system.stringcomparer.currentculture.aspx">StringComparison/Comparer.CurrentCulture</a>の順番です。ほぅ……。ありがたいような迷惑のような。で、今回はASCIIコードにきっちり従って欲しいので、</p>
+<pre><code class="language-csharp">// 実際のコード。
+// ところでrealmのところは!x.Key.Equals(&quot;realm&quot;, StringComparison.OrdinalIgnoreCase) って書くべき、次のバージョンで直します
+var stringParameter = parameters
+    .Where(x =&gt; x.Key.ToLower() != &quot;realm&quot;)
+    .Concat(queryParams)
+    .OrderBy(p =&gt; p.Key, StringComparer.Ordinal)
+    .ThenBy(p =&gt; p.Value, StringComparer.Ordinal)
+    .Select(p =&gt; p.Key.UrlEncode() + &quot;=&quot; + p.Value.UrlEncode())
+    .ToString(&quot;&amp;&quot;);
+</code></pre>
+<p>といったように、StringComparer.OrdinalをOrderBy/ThenByに渡してあげることで解決しました。メデタシメデタシ。文字列の比較とか、言われてみれば基本中の基本っっっ！なのですけれど、完全に失念してました。テストでも、パラメータ小文字ばっかだったりして問題が中々表面化しないんですね、言い訳ですけれど……。しかし、幾つかのライブラリ見てみると、ほとんどがこれの対応できてなかったので私だけじゃないもん！みたいな、うう、情けないのでやめておきましょう。OAuthBase.csもissueには上がってましたがマージされてないんで、同様の問題抱えてるのですねえ。さすがにDotNetOpenAuthはきっちりできていました。</p>
+<h2>UriクラスとQueryとエスケープについて</h2>
+<p>バグ修正その2。GETにパラメータをくっつける、つまりクエリストリングとして並べた時に、日本語などURLエンコードが必要な物が混ざっている時に必ず認証に失敗しました。エンコード周りということで、お察しの通り二重エンコードが原因です。</p>
+<p>これに関しては、私のUriクラスへの認識が甘々だったのがマズかったです。ぶっちけ、ただのstringを包んだだけの面倒臭い代物とか思ってたりとかしたりとか……。いや、さすがにそこまでではないんですが、まぁしかし甘々でした。こっちは↑のに比べても本当に初歩ミスすぎて穴掘って埋まりたいですぅー。相当恥ずかしい。</p>
+<pre><code class="language-csharp">// クエリストリングつけたものを投げるとして
+var uri = new Uri(&quot;http://google.co.jp/serach?q=つくば&quot;);
+
+// QueryはURLエンコードされてる =&gt; ?q=%E3%81%A4%E3%81%8F%E3%81%B0
+Console.WriteLine(uri.Query);
+
+// URLエンコードされてるのを渡したとして
+uri = new Uri(&quot;http://google.co.jp/serach?q=%E3%81%A4%E3%81%8F%E3%81%B0&quot;);
+
+// ToString結果はURLデコードされたものがでてくる =&gt; http://google.co.jp/serach?q=つくば
+Console.WriteLine(uri.ToString());
+</code></pre>
+<p>というわけで、Queryは常にURLエンコードされるし、ToStringは常にURLデコードされてる。この辺の認識がフワフワッとしてると、エンコードやデコード結果が非常にアレになっちゃうんですね……。</p>
+<pre><code class="language-csharp">// 元データが欲しい時はOriginalString
+Console.WriteLine(uri.OriginalString);
+
+// エンコードされないで取るにはGetComponentsで指定してあげる
+// ちなみにQueryは (UriComponents.Query | UriComponents.KeepDelimiter, UriFormat.Escaped) と等しい
+var unescaped = uri.GetComponents(UriComponents.Query, UriFormat.Unescaped);
+Console.WriteLine(unescaped); // q=つくば
+</code></pre>
+<p>GetComponents大事大事。</p>
+<h2>Next</h2>
+<p>今回からBetaを取ったということで、1.0に上げようかなあ、とか思ったんですが、↑のように手痛いバグが残っていたことが発覚したりなので、まだもう少し様子見といった感。さすがにもう大丈夫なはず！といくら思っても見つかっていくわけで、枯れてるって本当に大事ですねえ。AsyncOAuthも枯れたライブラリになるよう、頑張ります。今回のバグとかもユーザーが伝えてくれるお陰なので足を向けて寝られません。</p>
+<p>私自身が使ってるのか？というと、答えは、使っています！こないだに<a href="http://neue.cc/2013/06/10_406.html">.NET最先端技術によるハイパフォーマンスウェブアプリケーション</a>というセッションを行ない、そこで言及したように、現在、某ソーシャルゲームをC#で再構築中です。で、GREEにせよMobageにせよ、ソーシャルゲームってOpenSocialの仕組みに乗っかっているのですが、その認証がOAuthなのです。というわけで、めっちゃくちゃヘヴィーに使っています。(認証の形態がちょっと違うので幾つかメソッドが足されているのと、Shift-JIS対応とかのためのカスタムバージョンだったりはしますが…… その辺はAsyncOAuth本体にも載せるか検討中)。実戦投下まであとちょっとってところですが、それできっちり動ききれば、十分に枯れた、といえるのではないかと思っています。その時までは0.xで。でも現状でもかなり大丈夫だとは思いますので、是非是非使ってください。</p>
+</div>
+<h1><a href="https://neue.cc/2013/06/23_409.html">The History of LINQ</a></h1>
 <ul class="date"><li>2013-06-23</li></ul>
 <div class="entry_body"><p>という内容で、<a href="http://atnd.org/event/E0015958">つくばC#勉強会</a>で話してきました。</p>
 <iframe src="https://www.slideshare.net/slideshow/embed_code/23314703" width="597" height="400" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC;border-width:1px 1px 0;margin-bottom:5px" allowfullscreen webkitallowfullscreen mozallowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="http://www.slideshare.net/neuecc/the-history-of-linq" title="The History of LINQ" target="_blank">The History of LINQ</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
@@ -1499,173 +1564,6 @@ public class DistributedLock : IDisposable
 <p>うーん、まんま、かつ、ゆるふわ単純な話なので特にまとめる話はないかしらん。</p>
 <p>ので、We're Hiringということで<a href="http://grani.jp/">謎社のほめぱげが少しだけリニューアル</a>、ただしリクルートページが諸事情でまだ工事中！メールフォーム入れるつもりなので、↑のような感じにC# 5.0をすぐに振り回すような最先端な環境のC#でウェブな開発がやりたい方は、是非応募してください。相当本気で人が欲しいところですねー。現状ですけれど、<a href="http://gamebiz.jp/?p=93013">リリース2週間で早くもランキング3位を獲得</a>などと、あまり細かくは言えないのですけれど、まあ非常に好調ですので、安心して＆是非とも一緒に加速させましょう。</p>
 </div>
-<h1><a href="https://neue.cc/2013/02/02_395.html">Razorで空テンプレートとセパレータテンプレート</a></h1>
-<ul class="date"><li>2013-02-02</li></ul>
-<div class="entry_body"><p>Razorに限らずT4でもなんでもいいんですが、テンプレートで素のforeachだと、セパレータだったり空の時の代替テンプレートだったりを、どういう風に表現すればいいのかなあ、と悩ましいのです、どうなっているのでしょう実際世の中的に。</p>
-<p>WebFormsのRepeaterだとSeparatorTemplateタグと、拡張すればEmptyTemplateなども作れますね。Smarty(PHPのテンプレート、最近ペチパーなので)には{foreachelse}で配列が空の時のテンプレートが吐かれます。カスタムの構文を定義すれば、勿論なんだってありです。</p>
-<p>RepeaterにせよSmartyにせよ、よーするところ独自のテンプレート構文だから好き放題できますが、俺々構文って、それ自体の覚える手間もあり、あんまスッキリしないんですよねえ。RazorのIs not a new language、だからEasy to Learn。は大事。また、そういった独自拡張がないからこそ、Compact, Expressive, and Fluidが実現できる(開き@だけで閉じタグレスはやっぱ偉大)し、フルにIntelliSenseなどエディタサポートも効くわけだし。</p>
-<p>やりたいことって、コード上のノイズが限りなく少なく、かつ、HTMLという&quot;テキスト&quot;を最大限コントロールの効く形で吐くこと。なわけで、その辺を損なっちゃあ、見失っちゃあ、いけないね。</p>
-<p>で、しかしようするところ、やりたいのはforeachを拡張したい。foreachする時に空の時の出力とセパレータの時の出力を足したい。あと、どうせならインデックスも欲しい。あと、最初の値か、とか最後の値か、とかも欲しい（最初はともかく「最後」はindexがないものを列挙すると大変）</p>
-<p>そのうえで、Razorの良さである素のC#構文（と、ほぼほぼ同じものとして扱える）というのを生かしたうえで、書きやすくするには(例えばHtmlヘルパーに拡張メソッド定義して、引数でテンプレートやラムダ渡したり、というのは閉じカッコが増えたり空ラムダが出たりして書きづらいしグチャグチャしてしまいクリーンさが消える)、と思って、考えたのが、foreachで回すアイテム自体に情報載せればいいな、と。</p>
-<pre><code class="language-csharp">&lt;table&gt;
-    @foreach (var item in source.ToLoopItem(withEmpty: true, withSeparator: true))
-    {
-        // empty template
-        if (item.IsEmpty)
-        {
-        &lt;tr&gt;
-            &lt;td colspan=&quot;2&quot;&gt;中身が空だよ！&lt;/td&gt;
-        &lt;/tr&gt;
-        }
-
-        // separator
-        if (item.IsSeparator)
-        { 
-        &lt;tr&gt;
-            &lt;td colspan=&quot;2&quot;&gt;------------&lt;/td&gt;
-        &lt;/tr&gt;
-        }
-
-        // body
-        if (item.IsElement)
-        {
-        &lt;tr style=&quot;@(item.IsLast ? &quot;background-color:red&quot; : null)&quot;&gt;
-            &lt;td&gt;@item.Index&lt;/td&gt;
-            &lt;td&gt;@item.Item&lt;/td&gt;
-        &lt;/tr&gt;
-        }
-    }
-&lt;/table&gt;
-</code></pre>
-<p>何も足さない何も引かない。とはいえどっかに何か足さなきゃならない。C#として崩さないで足すんなら、単独の要素の一つ上に包んで情報を付与してやりゃあいいんだね、と。foreachで回す時にToLoopItem拡張メソッドを呼べば、情報を足してくれます。</p>
-<p>IsEmptyは全体が空の時、IsSeparatorは要素の間の時、IsElementが本体の要素の列挙の時、を指します。Elementの時は、更にIsFirst, IsLast, Indexが取れる。item.Itemはちょっと間抜けか。ともあれ、実際にRazorで書いてみた感触としても悪くなく収まってる。</p>
-<p>Emptyだけならばループの外で@if(!source.Any()) /* 空の時のテンプレート */ としてやればいいし、そのほうが綺麗感はある。けれど、それだとsourceがIEnumerableの時キモチワルイ（二度列挙開始が走る）とかもあるし、コレクションに関わるものはforeachのスコープ内に全部収まったほうがスッキリ感も、なくもない。</p>
-<p>IndexとIsLastだけが欲しいなら、空テンプレートとセパレータはオプションだから、withEmpty, withSeparatorを共にfalseにすれば、全部Elementなので、if(item.IsElement)は不要になる。</p>
-<p>それにしてもRazor V2で属性にnull渡すと属性自体を吐かないでくれる機能は素敵ですなあ。クリーンは正義！</p>
-<p>実装はこんな感じ。</p>
-<pre><code class="language-csharp">public struct LoopItem&lt;T&gt;
-{
-    public readonly bool IsEmpty;
-    public readonly bool IsSeparator;
-    public readonly bool IsElement;
-    public readonly bool IsFirst;
-    public readonly bool IsLast;
-    public readonly int Index;
-    public readonly T Item;
-
-    public LoopItem(bool isEmpty = false, bool isSeparator = false, bool isElement = false, bool isFirst = false, bool isLast = false, int index = 0, T item = default(T))
-    {
-        this.IsEmpty = isEmpty;
-        this.IsSeparator = isSeparator;
-        this.IsElement = isElement;
-        this.IsFirst = isFirst;
-        this.IsLast = isLast;
-        this.Index = index;
-        this.Item = item;
-    }
-
-    public override string ToString()
-    {
-        return (IsEmpty) ? &quot;Empty&quot;
-             : (IsSeparator) ? &quot;Separator&quot;
-             : Index + &quot;:&quot; + Item.ToString();
-    }
-}
-
-public static class LoopItemEnumerableExtensions
-{
-    public static IEnumerable&lt;LoopItem&lt;T&gt;&gt; ToLoopItem&lt;T&gt;(this IEnumerable&lt;T&gt; source, bool withEmpty = false, bool withSeparator = false)
-    {
-        if (source == null) source = Enumerable.Empty&lt;T&gt;();
-
-        var index = 0;
-        using (var e = source.GetEnumerator())
-        {
-            var hasNext = e.MoveNext();
-            if (hasNext)
-            {
-                while (true)
-                {
-                    var item = e.Current;
-                    hasNext = e.MoveNext();
-                    if (hasNext)
-                    {
-                        yield return new LoopItem&lt;T&gt;(index: index, isElement: true, isFirst: (index == 0), item: item);
-                    }
-                    else
-                    {
-                        yield return new LoopItem&lt;T&gt;(index: index, isElement: true, isFirst: (index == 0), isLast: true, item: item);
-                        break;
-                    }
-
-                    if (withSeparator) yield return new LoopItem&lt;T&gt;(index: index, isSeparator: true);
-                    index++;
-                }
-            }
-            else
-            {
-                if (withEmpty)
-                {
-                    yield return new LoopItem&lt;T&gt;(isEmpty: true);
-                }
-            }
-        }
-    }
-}
-</code></pre>
-<p>大事なのは、IEnumerable&lt;T&gt;へのループは必ず一回にすること、ね。よくあるAny()で調べてから、ループ本体を廻すと、二度列挙実行が走る（Anyは最初を調べるだけですが、もしIEnumerable&lt;T&gt;が遅延実行の場合、そのコストは読めない）というのは、精神衛生上非常に良くない。</p>
-<p>あとIsLastを取るために、一手先を取得してからyield returnをしなければならないので、少しゴチャついてしまいましたが、まあ、こういうのがViewの表面上に現れる苦難を思えば！</p>
-<p>最近、イミュータブルな入れ物を作りたい時はコンストラクタにずらずら引数並べるでファイナルアンサー。と思うようになりました、一周回って。名前付き引数で書かせれば、数が多くても可読性落ちたりとかないですし、これでいいでしょう。名前付きで書かせることを強制したいけれど、それは無理なので適度に諦めるとして。</p>
-<p>最後にユニットテストを置いておきます。例によってMSTest + <a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>で。</p>
-<pre><code class="language-csharp">[TestClass]
-public class LoopItemTest
-{
-    [TestMethod]
-    public void Empty()
-    {
-        Enumerable.Empty&lt;int&gt;().ToLoopItem(withEmpty: false).Any().IsFalse();
-        Enumerable.Empty&lt;int&gt;().ToLoopItem(withEmpty: true).Is(new LoopItem&lt;int&gt;(isEmpty: true));
-        ((IEnumerable&lt;int&gt;)null).ToLoopItem(withEmpty: false).Any().IsFalse();
-        ((IEnumerable&lt;int&gt;)null).ToLoopItem(withEmpty: true).Is(new LoopItem&lt;int&gt;(isEmpty: true));
-    }
-
-    [TestMethod]
-    public void Separator()
-    {
-        Enumerable.Range(1, 3).ToLoopItem(withSeparator: false).Is(
-            new LoopItem&lt;int&gt;(index: 0, item: 1, isFirst: true, isElement: true),
-            new LoopItem&lt;int&gt;(index: 1, item: 2, isElement: true),
-            new LoopItem&lt;int&gt;(index: 2, item: 3, isLast: true, isElement: true)
-        );
-
-        Enumerable.Range(1, 1).ToLoopItem(withSeparator: true).Is(
-            new LoopItem&lt;int&gt;(index: 0, item: 1, isFirst: true, isLast: true, isElement: true)
-        );
-
-        Enumerable.Range(1, 3).ToLoopItem(withSeparator: true).Is(
-            new LoopItem&lt;int&gt;(index: 0, item: 1, isFirst: true, isElement: true),
-            new LoopItem&lt;int&gt;(index: 0, isSeparator: true),
-            new LoopItem&lt;int&gt;(index: 1, item: 2, isElement: true),
-            new LoopItem&lt;int&gt;(index: 1, isSeparator: true),
-            new LoopItem&lt;int&gt;(index: 2, item: 3, isLast: true, isElement: true)
-        );
-
-        Enumerable.Range(1, 4).ToLoopItem(withSeparator: true).Is(
-            new LoopItem&lt;int&gt;(index: 0, item: 1, isFirst: true, isElement: true),
-            new LoopItem&lt;int&gt;(index: 0, isSeparator: true),
-            new LoopItem&lt;int&gt;(index: 1, item: 2, isElement: true),
-            new LoopItem&lt;int&gt;(index: 1, isSeparator: true),
-            new LoopItem&lt;int&gt;(index: 2, item: 3, isLast: false, isElement: true),
-            new LoopItem&lt;int&gt;(index: 2, isSeparator: true),
-            new LoopItem&lt;int&gt;(index: 3, item: 4, isLast: true, isElement: true)
-        );
-    }
-}
-</code></pre>
-<p>structだと同値比較のために何もしなくていいのが楽ですね、けれどChaining AssertionならIsStructuralEqualがあるので、もしclassでも、やっぱり楽です！</p>
-<h2>まとめ</h2>
-<p>RazorだけじゃなくT4でコレクション回す時なんかにも使えます。なにかと毎度毎度、悩みの種なんですよねー。他に、こういうやり方もいいんでないー？とかあったら教えてください。</p>
-</div>
 <a href="https://neue.cc/10">Prev |</a>
 <a href="https://neue.cc/12">| Next</a>
 </div>
@@ -1689,6 +1587,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2023/03/">2023-03</a>
 <li><a href="https://neue.cc/2023/01/">2023-01</a>
 <li><a href="https://neue.cc/2022/12/">2022-12</a>
 <li><a href="https://neue.cc/2022/11/">2022-11</a>

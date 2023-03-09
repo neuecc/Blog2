@@ -28,7 +28,503 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2023/01/30-SimdLinq.html">SimdLinq - LINQをそのままSIMD対応して超高速化するライブラリ</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2023/03/09-csbindgen.html">csbindgen - C#のためのネイティブコード呼び出し自動生成、或いはC#からのネイティブコード呼び出しの現代的手法について</a></h1>
+<ul class="date"><li>2023-03-09</li></ul>
+<div class="entry_body"><p>ネイティブコードとC#を透過的に接続するために、RustのFFIからC#のDllImportコードを自動生成するライブラリを作成し、公開しました。Cysharp初のRustライブラリです！先週にプレビューを出していましたが、しっかりした機能強化とReadMeの充実をして正式公開、です！</p>
+<ul>
+<li><a href="https://github.com/Cysharp/csbindgen">Cysharp/csbindgen</a></li>
+<li><a href="https://crates.io/crates/csbindgen">crates.io/crates/csbindgen</a></li>
+</ul>
+<p>めちゃくちゃスムーズにネイティブコードがC#から呼べるようになります。すごい簡単に。超便利。こりゃもうばんばんネイティブコード書きたくなりますね……！ただし書くコードはRustのみ対応です。いや、別にRustでいいでしょ、Rustはいいぞ……！</p>
+<p>しかしまず前提として言っておくと、ネイティブコードは別に偉くもなければ、必ず速いというわけでもないので、極力書くのはやめましょう。C#で書くべき、です。高速なコードが欲しければ、ネイティブコードに手を出す前にC#で速くすることを試みたほうがずっと良いです。C#は十分高速に書くことのできる言語です！ネイティブコードを書くべきでない理由は山ほどありますが、私的に最大の避けたい理由はクロスプラットフォームビルドで、今の世の中、ターゲットにしなければならないプラットフォーム/アーキテクチャの組み合わせは、普通にやっていても10を超えてしまいます。win/linux/osx/iOS/Android x x86/x64/arm。C#では .NET のランタイムやUnityが面倒見てくれますが、ネイティブコードの場合はこれを自前で面倒みていく必要があります。そこそこ面倒みてくれるはずのUnityだって辛いのに、それにプラスして俺々ビルド生態系を加えるのはかなり厳しいものがある。</p>
+<p>とはいえ、C#をメインに据えつつもネイティブコードを利用すべきシチュエーションもあるにはあります。</p>
+<ul>
+<li>Android NDKや .NET unmanaged hosting APIなど、ネイティブAPIしか提供されていないものを使いたい場合</li>
+<li>C で作られているネイティブライブラリを利用したい場合</li>
+<li>ランタイムのライブラリの利用を避けたい場合、例えばUnityで .NET のSocket(Unityの場合 .NET のランタイムが古いのでパフォーマンスを出しにくい)を避けてネイティブのネットワークコードを書くのには一定の道理がある</li>
+</ul>
+<p><a href="https://learn.microsoft.com/ja-jp/dotnet/core/deploying/native-aot/">NativeAOT</a>という解決策もなくはないですが、まだそんなに現実的でもなければ、用途的にもこういうシチュエーションでは限定的でもあるので、そこは素直にネイティブコードを書いていくべき、でしょう。</p>
+<p>そこでの最初の選択肢は当然C++なわけですが、いやー、C++のクロスプラットフォームビルドは大変だしなあ。となると、最近評判を聞く<a href="https://ziglang.org/ja/">Zig</a>はどうだろうか、と試してみました、が、撤退。目指すコンセプトは大変共感するところがあるのですが(FFIなしのCライブラリとの統合や、安全だけど複雑さを抑えた文法など)、まだ、完成度が、かなり、厳しい……。</p>
+<p>で、最後の選択肢が<a href="https://www.rust-lang.org/ja">Rust</a>でした。FFIなしでの呼び出しではないものの<a href="https://crates.io/crates/cc">cc crate</a>や<a href="https://crates.io/crates/cmake">cmake crate</a>といったライブラリを使うと自然に統合されるし、<a href="https://github.com/rust-lang/rust-bindgen">bindgen</a>によるバインディングの自動生成はよく使われているだけあってめっちゃ安定して簡単に生成できます。ていうかZigが全然安定感なかった（シームレスなCとの統合とは……）ので雲泥の差でびっくりした。開発環境もまぁまぁ充実してるしコマンド体系も現代的。クロスプラットフォームビルドも容易！そして難しいと評判で避けていた言語面でも、いや、全然いいね。仕組みが理屈で納得できるし、C#とは文法面でもあまり離れていないので、全然すんなりと入れました。もちろん難しいところも多々ありますが、ラーニングカーブはそんなに急ではない、少なくとも最近のモダンC#をやり込んでる人なら全然大丈夫でしょう……！</p>
+<p>と、いうわけで、しかし主な用途はC#からの利用で、特にCライブラリの取り込みにRustを使おうと決めたわけですが、C#に対して公開するためのコードが膨大でキツかったので、自動化したかったんですね。DllImportの自動化は<a href="https://www.swig.org/">SWIG</a>や<a href="https://github.com/mono/CppSharp">CppSharp</a>というのもありますが、普通のC++をそのまま持ってこようとする思想は、複雑なコードを吐いてしまったりで正直イマイチだな、と。</p>
+<p>csbindgenは、まず、面倒なところをRustのbindgenに丸投げです。複雑なC(C++)のコードを解析対処にするから複雑になるのであって、bindgenによって綺麗なRustに整形してもらって、生成対象にするのはそうしたFFI向けに整理されたRustのみを対象にすることで、精度と生成コードの単純さを担保しました。自分でネイティブコードを書く場合も、RustはFFI不可能な型を公開しようとすると警告も出してくれるので、必然的に生成しやすい綺麗なコードになっています。型もRustは非常に整理されているため、C#とマッピングしやすくなっています。C#もまた近年のnintや<code>delegate*</code>、.NET 6からの<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.runtime.interopservices.clong">CLong</a>などの追加によって自然なやり取りができるようになりました。csbindgenはそれら最新の言語機能を反映することで、自然で、かつパフォーマンスの良いバインディングコードを生成しています。</p>
+<h2>Getting Started</h2>
+<p>コンフィグにビルド時依存に追加してもらって、<code>build.rs</code>というコンパイル前呼び出し(Rustのコードでpre-build書ける機能やビルド時依存を追加できる機能はとても良い)に設定を入れるだけです、簡単！</p>
+<pre><code>[build-dependencies]
+csbindgen = &quot;1.2.0&quot;
+</code></pre>
+<pre><code class="language-rust">// extern &quot;C&quot; fnが書かれているlib.rsを読み取って DllImport[&quot;nativelib&quot;]なコードを&quot;NativeMethods.g.cs&quot;に出力する
+csbindgen::Builder::default()
+    .input_extern_file(&quot;lib.rs&quot;)
+    .csharp_dll_name(&quot;nativelib&quot;)
+    .generate_csharp_file(&quot;../dotnet/NativeMethods.g.cs&quot;)
+    .unwrap();
+</code></pre>
+<p>単純なコードを例に出すと、このx, yを受け取ってintを返す関数は</p>
+<pre><code class="language-csharp">#[no_mangle]
+pub extern &quot;C&quot; fn my_add(x: i32, y: i32) -&gt; i32 {
+    x + y
+}
+</code></pre>
+<p>こういったC#コードを生成します。</p>
+<pre><code class="language-csharp">// NativeMethods.g.cs
+using System;
+using System.Runtime.InteropServices;
+
+namespace CsBindgen
+{
+    internal static unsafe partial class NativeMethods
+    {
+        const string __DllName = &quot;nativelib&quot;;
+
+        [DllImport(__DllName, EntryPoint = &quot;my_add&quot;, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int my_add(int x, int y);
+    }
+}
+</code></pre>
+<p>直感的で単純な出力です、逆にそれがいい、むしろそれがいい。生成に対応している型はプリミティブ以外にもstructやunion、enum、関数やポインターなどRustのFFIで流せる型のほとんどには対応しています。</p>
+<p>また、Rustのbindgenやcc/cmake crateを併用すると、CのライブラリをC#に簡単に持ちこむことができます。例えば圧縮ライブラリの<a href="https://github.com/lz4/lz4">lz4</a>は、csbindgenでの生成の前にbindgenとccの設定も足してあげると</p>
+<pre><code class="language-csharp">// lz4.h を読み込んで lz4.rs にRust用のbindingコードを出力する
+bindgen::Builder::default()
+    .header(&quot;c/lz4/lz4.h&quot;)
+    .generate().unwrap()
+    .write_to_file(&quot;lz4.rs&quot;).unwrap();
+
+// cc(C Compiler)によってlz4.cを読み込んでコンパイルしてリンクする
+cc::Build::new().file(&quot;lz4.c&quot;).compile(&quot;lz4&quot;);
+
+// bindgenの吐いたコードを読み込んでcsファイルを出力する
+csbindgen::Builder::default()
+    .input_bindgen_file(&quot;lz4.rs&quot;)
+    .rust_file_header(&quot;use super::lz4::*;&quot;)
+    .csharp_entry_point_prefix(&quot;csbindgen_&quot;)
+    .csharp_dll_name(&quot;liblz4&quot;)
+    .generate_to_file(&quot;lz4_ffi.rs&quot;, &quot;../dotnet/NativeMethods.lz4.g.cs&quot;)
+    .unwrap();
+</code></pre>
+<p>これでC#から呼び出せるコードが簡単に生成できます。ビルドもRustで <code>cargo build</code> するだけでCのコードがリンクされてDLLに含まれています。</p>
+<pre><code class="language-csharp">// NativeMethods.lz4.g.cs
+
+using System;
+using System.Runtime.InteropServices;
+
+namespace CsBindgen
+{
+    internal static unsafe partial class NativeMethods
+    {
+        const string __DllName = &quot;liblz4&quot;;
+
+        [DllImport(__DllName, EntryPoint = &quot;csbindgen_LZ4_compress_default&quot;, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int LZ4_compress_default(byte* src, byte* dst, int srcSize, int dstCapacity);
+
+        // snip...
+    }
+}
+</code></pre>
+<p>試してもらうと、本当に簡単にCライブラリが持ち込みができて感動します。Rustやbindgenがとにかく偉い。</p>
+<p>csbindgenはUnityでの利用も念頭においているので、よくあるiOSでのIL2CPPだけ __Internal にしたいみたいなシチュエーションでも</p>
+<pre><code class="language-csharp">#if UNITY_IOS &amp;&amp; !UNITY_EDITOR
+    const string __DllName = &quot;__Internal&quot;;
+#else
+    const string __DllName = &quot;nativelib&quot;;
+#endif
+</code></pre>
+<p>といったような生成ルールの変更がコンフィグに含めてあります。とても実用的で気が利いてます。</p>
+<h2>LibraryImport vs DllImport</h2>
+<p>.NET 7から<a href="https://learn.microsoft.com/ja-jp/dotnet/standard/native-interop/pinvoke-source-generation">LibraryImport</a>という新しい呼び出しのためのソースジェネレーターが追加されました。これはDllImportのラッパーになっていて、DllImportは、本来ネイティブコードとやり取りできない型(例えば配列や文字列などの参照型はC#のヒープ上に存在するもので、ネイティブ側に渡せない)を裏で自動的にやってくれるという余計なお世話が含まれていて、それがややこしさや性能面、そしてNativeAOTビリティの欠如などの問題を含んでいたので、そういう型が渡された場合はLibraryImportの生成するC#コードで吸収した上で、byte* としてDllImportに渡すようなラッパーが生成されるようになっています。</p>
+<p>つまり余計なお世話をする本来ネイティブコードとやり取りできない型を生成しないようにすればDllImportでも何の問題もないので、今回はDllImportでの生成を選んでいます。そのほうがUnityでも使いやすいし。</p>
+<p>Win32のAPIをDllImportで簡単に呼び出せるようにするために暗黙的な自動変換を多数用意しておく、というのは時代背景的には理解できます。C#がWindowsのためだけの言語であり、時折Win32 APIの呼び出しが必須なこともあったのは事実であり、便利な側面もあったでしょう。しかし現在はWindowsのためだけの言語でもなく、またWin32 APIの呼び出しに関しては<a href="https://github.com/microsoft/CsWin32">CsWin32</a>というSource Generatorを活用した支援も存在します。</p>
+<p>もう現代では、そうしたDllImportの古い設計を引きずって考える必要はない、頼るべきではないでしょう。つまり参照型を渡したり[In]や[Out]は使うべきではないし、変換を考慮した設計を練る必要もありません。実際 .NET 7ではそうしたDllImportの機能を使うとエラーにする<a href="https://learn.microsoft.com/en-us/dotnet/api/system.runtime.compilerservices.disableruntimemarshallingattribute">DisableRuntimeMarshallingAttribute</a>が追加されました。</p>
+<p>ポインターに関しても今はあまり忌避するものではないと思っています。そもそもネイティブとの通信はunsafeだし、Spanによって比較的使いやすい型に変換することも容易なので。中途半端に隠蔽するぐらいなら、DllImportするレイヤーではポインターはポインターとして持っておきましょう。C#として使いやすくするのは、その外側できっちりやればいい話です、DllImportで吸収するものではない。というのが今風の設計思想であると考えています。なんだったら私はIntPtrよりvoid*のほうが好きだよ。</p>
+<h2>コールバックの相互受け渡し</h2>
+<p>C# -&gt; Rust あるいは Rust -&gt; C# でコールバックを渡し合ってみましょう。まずRust側はこんな風に書くとします。</p>
+<pre><code class="language-rust">#[no_mangle]
+pub extern &quot;C&quot; fn csharp_to_rust(cb: extern &quot;C&quot; fn(x: i32, y: i32) -&gt; i32) {
+    let sum = cb(10, 20); // invoke C# method
+    println!(&quot;{sum}&quot;);
+}
+
+#[no_mangle]
+pub extern &quot;C&quot; fn rust_to_csharp() -&gt; extern fn(x: i32, y: i32) -&gt; i32 {
+    sum // return rust method
+}
+
+extern &quot;C&quot; fn sum(x:i32, y:i32) -&gt; i32 {
+    x + y
+}
+</code></pre>
+<p>C#のメソッドを受け取ったら、それを読んで表示(println)するだけ、あるいは足し算する関数をC#に渡すだけ、のシンプルなメソッドです。生成コードは以下のようなものになります。</p>
+<pre><code class="language-csharp">[DllImport(__DllName, EntryPoint = &quot;csharp_to_rust&quot;, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+public static extern void csharp_to_rust(delegate* unmanaged[Cdecl]&lt;int, int, int&gt; cb);
+
+[DllImport(__DllName, EntryPoint = &quot;rust_to_csharp&quot;, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+public static extern delegate* unmanaged[Cdecl]&lt;int, int, int&gt; rust_to_csharp();
+</code></pre>
+<p><code>delegate* unmanaged[Cdecl]&lt;int, int, int&gt;</code> というのは、あまり見慣れない定義だと思うのですが、C# 9.0から追加された本物の<a href="https://learn.microsoft.com/ja-jp/dotnet/csharp/language-reference/proposals/csharp-9.0/function-pointers">関数ポインター</a>になります。定義を手書きするのは少しややこしいですが、自動生成されるので特に問題なしでしょう（？）。使い勝手はかなりよく、普通の静的メソッドのように扱えます。</p>
+<pre><code class="language-csharp">// ネイティブ側に渡したい静的メソッドはUnmanagedCallersOnlyを付ける必要がある
+[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+static int Sum(int x, int y) =&gt; x + y;
+
+// &amp;で関数ポインターを取得して渡す
+NativeMethods.csharp_to_rust(&amp;Sum);
+
+// Rustからdelegate*を受け取る
+var f = NativeMethods.rust_to_csharp();
+
+// 受け取った関数ポインターは普通に呼び出せる
+var v = f(20, 30);
+Console.WriteLine(v); // 50
+</code></pre>
+<p>インスタンスメソッドを渡せないのか？というと渡せません。Cとの相互運用にそんなものはない。どうでもいい勝手な変換はしなくていい。第一引数にコンテキスト(void*)を受け取るコードを用意しておけばいいでしょう。</p>
+<p>ところで、UnityもC# 9.0対応、しているし関数ポインターも使えるには使えるのですが、<a href="https://docs.unity3d.com/ja/2021.3/Manual/CSharpCompiler.html">Extensible calling conventions for unmanaged function pointers is not supported</a>です。UnmanagedCallersOnlyAttributeもないしね。Unity Editor上では普通に動いちゃったりとかしますが、IL2CPPでは動かないのでちゃんと対応しましょう。csbindgenでは <code>csharp_use_function_pointer(false)</code> というオプションを設定すると、従来のデリゲートを使用したコードを出力します。</p>
+<pre><code class="language-csharp">// csharp_use_function_pointer(false) の場合の出力結果、専用のデリゲートを一緒に吐き出すようになる
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+public delegate int csharp_to_rust_cb_delegate(int x, int y);
+
+[DllImport(__DllName, EntryPoint = &quot;csharp_to_rust&quot;, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+public static extern void csharp_to_rust(csharp_to_rust_cb_delegate cb);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+public delegate int rust_to_csharp_return_delegate(int x, int y);
+
+[DllImport(__DllName, EntryPoint = &quot;rust_to_csharp&quot;, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+public static extern rust_to_csharp_return_delegate rust_to_csharp();
+
+// MonoPInvokeCallback属性を静的メソッドにつける(typeofでデリゲートを設定)
+[MonoPInvokeCallback(typeof(NativeMethods.csharp_to_rust_cb_delegate))]
+static int Sum(int x, int y) =&gt; x + y;
+
+// そのまま渡す
+NativeMethods.csharp_to_rust(Method);
+
+// 受け取る関数ポインターに関しては .NET の場合と一緒
+var f = NativeMethods.rust_to_csharp();
+var v = f(20, 30);
+Console.WriteLine(v); // 50
+</code></pre>
+<p>面倒くさい専用のデリゲートも同時に出力してくれるので、定義はそこそこ楽になります（Action/Funcといった汎用デリゲートを使うと場合によりクラッシュしてしまったので、必ずそれぞれのパラメーター専用のデリゲートを出力するようにしています）。概ねcsbindgenがよしなに動くように面倒見てあげるので、属性の違いだけ考えればほぼ問題はありません。</p>
+<h2>コンテキスト</h2>
+<p>多値返しみたいなのは、普通にStructを作ってくださいという話になって、その場合は、C#側でStructはコピーされて、Rust側のメモリからはすぐ消えるということになります。</p>
+<pre><code class="language-rust">#[no_mangle]
+pub unsafe extern &quot;C&quot; fn return_tuple() -&gt; MyTuple {
+    MyTuple { is_foo: true, bar: 9999 }
+}
+
+#[repr(C)]
+pub struct MyTuple {
+    pub is_foo: bool,
+    pub bar: i32,
+}
+</code></pre>
+<p>もう少し寿命を長く、返却するStructをポインターで返して状態を持ちたい、という場合はRust的には少し工夫が必要です。</p>
+<pre><code class="language-rust">#[no_mangle]
+pub extern &quot;C&quot; fn create_context() -&gt; *mut Context {
+    let ctx = Box::new(Context { foo: true });
+    Box::into_raw(ctx)
+}
+
+#[no_mangle]
+pub extern &quot;C&quot; fn delete_context(context: *mut Context) {
+    unsafe { Box::from_raw(context) };
+}
+
+#[repr(C)]
+pub struct Context {
+    pub foo: bool,
+    pub bar: i32,
+    pub baz: u64
+}
+</code></pre>
+<pre><code class="language-csharp">// C#側、Context*を受け取って
+var context = NativeMethods.create_context();
+
+// なにか色々したりずっと持っていたり
+
+// 最後に明示的にfreeしにいく
+NativeMethods.delete_context(context);
+</code></pre>
+<p><code>Box::new</code> でヒープ上にデータを確保して、<code>Box::into_raw</code>でRust上でのメモリ管理から外します。Rustは通常だとスコープが外れると即座にメモリを返却する、のですが、寿命をRust管理外のC#に飛ばすので、素直に（？）unsafeにRust上の管理から外してしまうのが普通に素直でしょう。Rust側で確保しているメモリを開放する場合は、<code>Box::from_raw</code>でRust上の管理に戻します。そうするとスコープが外れたらメモリ返却という通常の動作をして、返却が完了します。</p>
+<p>この辺はRustだから難しい！という話ではなく、C#でもfixedスコープを外れてポインタを管理したい場合には <code>GCHandle.Allocc(obj, GCHandleType.Pinned)</code> して手動でunsafeな管理しなければいけないので、完全に同じ話です。そう考えると、むしろ素直にC#と変わらない話でいいですね。</p>
+<p>なお、C#上でこうしたコンテキストの管理をする場合に専用のSafeHandleを作って、それにラップするという流儀がありますが、大仰で、基本的にはそこまでやる必要はないと思ってます。No SafeHandle。そもそも境界越えというunsafeなことをしているのだから、最後まで自己責任でいいでしょう。</p>
+<p>csbindgenは戻り値にstructが指定されていると、C#側にも同様のものを生成しに行ってしまいますが、Rust内だけで使うのでC#側には内容公開したくない、というか参照(Box)とかも含まれてるから公開できないし、みたいな場合もあると思います。その場合は <code>c_void</code> を返してください。</p>
+<pre><code class="language-rust">#[no_mangle]
+pub extern &quot;C&quot; fn create_counter_context() -&gt; *mut c_void {
+    let ctx = Box::new(CounterContext {
+        set: HashSet::new(),
+    });
+    Box::into_raw(ctx) as *mut c_void // voidで返す
+}
+
+#[no_mangle]
+pub unsafe extern &quot;C&quot; fn insert_counter_context(context: *mut c_void, value: i32) {
+    let mut counter = Box::from_raw(context as *mut CounterContext); // as で型を戻す
+    counter.set.insert(value);
+    Box::into_raw(counter); // contextを使い続ける場合はinto_rawを忘れないように
+}
+
+#[no_mangle]
+pub unsafe extern &quot;C&quot; fn delete_counter_context(context: *mut c_void) {
+    let counter = Box::from_raw(context as *mut CounterContext);
+    for value in counter.set.iter() {
+        println!(&quot;counter value: {}&quot;, value)
+    }
+}
+
+// C#側には公開しない
+pub struct CounterContext {
+    pub set: HashSet&lt;i32&gt;,
+}
+</code></pre>
+<pre><code class="language-csharp">// C#側では ctx = void* として受け取る
+var ctx = NativeMethods.create_counter_context();
+    
+NativeMethods.insert_counter_context(ctx, 10);
+NativeMethods.insert_counter_context(ctx, 20);
+
+NativeMethods.delete_counter_context(ctx);
+</code></pre>
+<p>この辺、<code>PhantomData&lt;T&gt;</code>を使って格好良く処理する手法も一応あるんですが、正直複雑になるだけなので、素直に <code>void*</code> ベースでやり取りする、に倒したほうがむしろ健全でいいのではと思っています。どっちにしろunsafeな処理してるんだから素直にunsafeな業を受け入れるべき！</p>
+<h2>Stringと配列のマーシャリング</h2>
+<p>Stringと配列は、C#とRustでそれぞれ構造が違うので、そのままやり取りはできません。ポインタと長さ、つまりC#でいうところのSpanのみがやり取りできます。Span的な処理をするだけならゼロコピーですが、Stringや配列に変換したくなったら、C#とRust、どちらの側でも新規のアロケーションが発生します。これはネイティブコードを導入することの弱みで、Pure C#で通したほうが融通が効く（或いはパフォーマンスに有利に働く）ポイントですね。まあ、ともあれ、つまり基本はSpanです。DllImport上でStringを受けたり配列を受けたりしてはいけません、その手の自動変換にゆだねてはダメ！アロケーションも自己責任で明示的に。</p>
+<p>さて、まずは文字列ですが、こういったケースでやり取りする文字列の種類は3つ、UTF8とUTF16と<a href="https://ja.wikipedia.org/wiki/%E3%83%8C%E3%83%AB%E7%B5%82%E7%AB%AF%E6%96%87%E5%AD%97%E5%88%97">ヌル終端文字列</a>、です。UTF8はRustの文字列(RustのStringは<code>Vec&lt;u8&gt;</code>)、C#の文字列はUTF16、そしてCのライブラリなどはヌル終端文字列を返してくることがあります。</p>
+<p>今回は例なので明示的にRust上でヌル終端文字列を返してみます。</p>
+<pre><code class="language-rust">#[no_mangle]
+pub extern &quot;C&quot; fn alloc_c_string() -&gt; *mut c_char {
+    let str = CString::new(&quot;foo bar baz&quot;).unwrap();
+    str.into_raw()
+}
+
+#[no_mangle]
+pub unsafe extern &quot;C&quot; fn free_c_string(str: *mut c_char) {
+    unsafe { CString::from_raw(str) };
+}
+</code></pre>
+<pre><code class="language-csharp">// null-terminated `byte*` or sbyte* can materialize by new String()
+var cString = NativeMethods.alloc_c_string();
+var str = new String((sbyte*)cString);
+NativeMethods.free_c_string(cString);
+</code></pre>
+<p>C#上では new Stringでポインタ(<code>sbyte*</code>)を渡すとヌル終端を探してStringを作ってくれます。明示的にアロケーションしているという雰囲気がいいですね。ポインタはこの場合Rustで確保したメモリなので、C#のヒープ上にコピー（新規String作成）したなら、即返却してやりましょう。</p>
+<p>Rustで確保したUTF8、byte[]、あるいはint[]などとにかく配列全般の話はもう少し複雑になってきます。Rustでの配列的なもの(<code>Vec&lt;T&gt;</code>)をC#に渡すにあたっては、ポインタと長さをC#に渡せばOKといえばOKなのですが、解放する時にそれだけだと困ります。<code>Vec&lt;T&gt;</code>の実態はポインタ、長さ、そしてキャパシティの3点セットになっているので、この3つを渡さなきゃいけないのですね。そして、都度3点セットを処理するのも面倒です、Rust的なメモリ管理を外したり戻したりの作業もあるし。</p>
+<p>というわけでちょっと長くなりますが以下のようなユーティリティーを用意しましょう。これの元コードは(元)Rustの開発元であるMozillaのコードなので安全安心です……！</p>
+<pre><code class="language-rust">#[repr(C)]
+pub struct ByteBuffer {
+    ptr: *mut u8,
+    length: i32,
+    capacity: i32,
+}
+
+impl ByteBuffer {
+    pub fn len(&amp;self) -&gt; usize {
+        self.length.try_into().expect(&quot;buffer length negative or overflowed&quot;)
+    }
+
+    pub fn from_vec(bytes: Vec&lt;u8&gt;) -&gt; Self {
+        let length = i32::try_from(bytes.len()).expect(&quot;buffer length cannot fit into a i32.&quot;);
+        let capacity = i32::try_from(bytes.capacity()).expect(&quot;buffer capacity cannot fit into a i32.&quot;);
+
+        // keep memory until call delete
+        let mut v = std::mem::ManuallyDrop::new(bytes);
+
+        Self {
+            ptr: v.as_mut_ptr(),
+            length,
+            capacity,
+        }
+    }
+
+    pub fn from_vec_struct&lt;T: Sized&gt;(bytes: Vec&lt;T&gt;) -&gt; Self {
+        let element_size = std::mem::size_of::&lt;T&gt;() as i32;
+
+        let length = (bytes.len() as i32) * element_size;
+        let capacity = (bytes.capacity() as i32) * element_size;
+
+        let mut v = std::mem::ManuallyDrop::new(bytes);
+
+        Self {
+            ptr: v.as_mut_ptr() as *mut u8,
+            length,
+            capacity,
+        }
+    }
+
+    pub fn destroy_into_vec(self) -&gt; Vec&lt;u8&gt; {
+        if self.ptr.is_null() {
+            vec![]
+        } else {
+            let capacity: usize = self.capacity.try_into().expect(&quot;buffer capacity negative or overflowed&quot;);
+            let length: usize = self.length.try_into().expect(&quot;buffer length negative or overflowed&quot;);
+
+            unsafe { Vec::from_raw_parts(self.ptr, length, capacity) }
+        }
+    }
+
+    pub fn destroy_into_vec_struct&lt;T: Sized&gt;(self) -&gt; Vec&lt;T&gt; {
+        if self.ptr.is_null() {
+            vec![]
+        } else {
+            let element_size = std::mem::size_of::&lt;T&gt;() as i32;
+            let length = (self.length * element_size) as usize;
+            let capacity = (self.capacity * element_size) as usize;
+
+            unsafe { Vec::from_raw_parts(self.ptr as *mut T, length, capacity) }
+        }
+    }
+
+    pub fn destroy(self) {
+        drop(self.destroy_into_vec());
+    }
+}
+</code></pre>
+<p>Box::into_raw/from_rawのVec版という感じで、from_vecしたタイミングでメモリ管理から外すのと、destroy_into_vecするとメモリ管理を呼び側に戻す（何もしなければスコープを抜けて破棄される）といったような動作になっています。これはC#側でも(csbindgenによって)定義が生成されているので、メソッドを追加してやります。</p>
+<pre><code class="language-csharp">// C# side span utility
+partial struct ByteBuffer
+{
+    public unsafe Span&lt;byte&gt; AsSpan()
+    {
+        return new Span&lt;byte&gt;(ptr, length);
+    }
+
+    public unsafe Span&lt;T&gt; AsSpan&lt;T&gt;()
+    {
+        return MemoryMarshal.CreateSpan(ref Unsafe.AsRef&lt;T&gt;(ptr), length / Unsafe.SizeOf&lt;T&gt;());
+    }
+}
+</code></pre>
+<p>これでByteBuffer*で受け取ったものを即Spanに変換できるようになりました！というわけで、Rust上の通常のstring、byte[]、それとint[]の例を見てみると</p>
+<pre><code class="language-rust">#[no_mangle]
+pub extern &quot;C&quot; fn alloc_u8_string() -&gt; *mut ByteBuffer {
+    let str = format!(&quot;foo bar baz&quot;);
+    let buf = ByteBuffer::from_vec(str.into_bytes());
+    Box::into_raw(Box::new(buf))
+}
+
+#[no_mangle]
+pub unsafe extern &quot;C&quot; fn free_u8_string(buffer: *mut ByteBuffer) {
+    let buf = Box::from_raw(buffer);
+    // drop inner buffer, if you need String, use String::from_utf8_unchecked(buf.destroy_into_vec()) instead.
+    buf.destroy();
+}
+
+#[no_mangle]
+pub extern &quot;C&quot; fn alloc_u8_buffer() -&gt; *mut ByteBuffer {
+    let vec: Vec&lt;u8&gt; = vec![1, 10, 100];
+    let buf = ByteBuffer::from_vec(vec);
+    Box::into_raw(Box::new(buf))
+}
+
+#[no_mangle]
+pub unsafe extern &quot;C&quot; fn free_u8_buffer(buffer: *mut ByteBuffer) {
+    let buf = Box::from_raw(buffer);
+    // drop inner buffer, if you need Vec&lt;u8&gt;, use buf.destroy_into_vec() instead.
+    buf.destroy();
+}
+
+#[no_mangle]
+pub extern &quot;C&quot; fn alloc_i32_buffer() -&gt; *mut ByteBuffer {
+    let vec: Vec&lt;i32&gt; = vec![1, 10, 100, 1000, 10000];
+    let buf = ByteBuffer::from_vec_struct(vec);
+    Box::into_raw(Box::new(buf))
+}
+
+#[no_mangle]
+pub unsafe extern &quot;C&quot; fn free_i32_buffer(buffer: *mut ByteBuffer) {
+    let buf = Box::from_raw(buffer);
+    // drop inner buffer, if you need Vec&lt;i32&gt;, use buf.destroy_into_vec_struct::&lt;i32&gt;() instead.
+    buf.destroy();
+}
+</code></pre>
+<p>ByteBuffer自体の管理を外す(into_raw)が必要なのと、from_rawで戻したあとの中身のByteBufferもdestoryかinto_vecしなきゃいけないという、入れ子の管理になっているというのが紛らわしくて死にそうになりますが、ソウイウモノということで諦めましょう……。Drop traitを実装しておくことでクリーンナップ側の処理はもう少しいい感じにできる余地がありますが、Drop traitを実装しないことの理由もそれなりにある（と、Mozillaが言っている）ので、トレードオフになっています。</p>
+<p>C#側では、とりあえずAsSpanして、あとはよしなにするという感じですね。</p>
+<pre><code class="language-csharp">var u8String = NativeMethods.alloc_u8_string();
+var u8Buffer = NativeMethods.alloc_u8_buffer();
+var i32Buffer = NativeMethods.alloc_i32_buffer();
+try
+{
+    var str = Encoding.UTF8.GetString(u8String-&gt;AsSpan());
+    Console.WriteLine(str);
+
+    Console.WriteLine(&quot;----&quot;);
+
+    var buffer = u8Buffer-&gt;AsSpan();
+    foreach (var item in buffer)
+    {
+        Console.WriteLine(item);
+    }
+
+    Console.WriteLine(&quot;----&quot;);
+
+    var i32Span = i32Buffer-&gt;AsSpan&lt;int&gt;();
+    foreach (var item in i32Span)
+    {
+        Console.WriteLine(item);
+    }
+}
+finally
+{
+    NativeMethods.free_u8_string(u8String);
+    NativeMethods.free_u8_buffer(u8Buffer);
+    NativeMethods.free_i32_buffer(i32Buffer);
+}
+</code></pre>
+<p>Rust側で確保したメモリはRust側で解放する！という基本に関しては忠実に守っていきましょう。この例だとC#側で処理したら即解放なので、いい感じにしてくれよ、なんだったらDllImportで暗黙的に自動処理最高、みたいな気になるかもしれませんが、もう少し長寿命で持つケースもあるので、やはりマニュアルでちゃんと解放していきましょう。ていうか暗黙的なアロケーションは一番最悪じゃないです？？？</p>
+<p>最後に、C#で確保したメモリをRust側で使う場合の例をどうぞ。</p>
+<pre><code class="language-rust">#[no_mangle]
+pub unsafe extern &quot;C&quot; fn csharp_to_rust_string(utf16_str: *const u16, utf16_len: i32) {
+    let slice = std::slice::from_raw_parts(utf16_str, utf16_len as usize);
+    let str = String::from_utf16(slice).unwrap();
+    println!(&quot;{}&quot;, str);
+}
+
+#[no_mangle]
+pub unsafe extern &quot;C&quot; fn csharp_to_rust_utf8(utf8_str: *const u8, utf8_len: i32) {
+    let slice = std::slice::from_raw_parts(utf8_str, utf8_len as usize);
+    let str = String::from_utf8_unchecked(slice.to_vec());
+    println!(&quot;{}&quot;, str);
+}
+
+
+#[no_mangle]
+pub unsafe extern &quot;C&quot; fn csharp_to_rust_bytes(bytes: *const u8, len: i32) {
+    let slice = std::slice::from_raw_parts(bytes, len as usize);
+    let vec = slice.to_vec();
+    println!(&quot;{:?}&quot;, vec);
+}
+</code></pre>
+<pre><code class="language-csharp">var str = &quot;foobarbaz:あいうえお&quot;; // JPN(Unicode)
+fixed (char* p = str)
+{
+    NativeMethods.csharp_to_rust_string((ushort*)p, str.Length);
+}
+
+var str2 = Encoding.UTF8.GetBytes(&quot;あいうえお:foobarbaz&quot;);
+fixed (byte* p = str2)
+{
+    NativeMethods.csharp_to_rust_utf8(p, str2.Length);
+}
+
+var bytes = new byte[] { 1, 10, 100, 255 };
+fixed (byte* p = bytes)
+{
+    NativeMethods.csharp_to_rust_bytes(p, bytes.Length);
+}
+</code></pre>
+<p>std::slice::from_raw_partsでSliceを作って、あとはよしなに処理したいことをします。関数を超えて長い寿命を持たせたいならコピー(String作りなりVec作るなり)は必須になってきます。Rust側で確保したメモリはRust側で解放する、のと同じように、C#側で確保したメモリはC#側で解放する、のが重要です。C#の場合はfixedスコープを抜けて参照を持っていない場合は、そのうちGCが処理してくれるでしょう、といった話ですね。</p>
+<p>なお、fixedを超えてC#でもう少し長い寿命で持ち回したいときは <code>GCHandle.Allocc(obj, GCHandleType.Pinned)</code> して持ち回します。</p>
+<h2>Rust for C# Developer</h2>
+<p>Rustは、正直すごい気に入ってます。C#の次に気に入りました……！まぁ正直、これで全部やる、Webもなにもかも作る、みたいなのはヤバいかな、と思います。RustでWebやりたいって人はあれでしょ、型がついてて開発環境が充実していてエコシステムが回ってる言語がいいんでしょ？ちょうどいい言語があるんですよ、C#という。……。ではあるんですが、ネイティブが必要って局面で、やりたくないーって逃げたり、NativeAOTがなんとかしてくれるだのといった現実逃避したりせず、ちゃんと正面から向き合えるようになったということはいいことです。</p>
+<p>で、実際RustはかなりC#erに馴染む道具だと思っていて、そもそもインターフェイスがないかわりにstructとジェネリクスとtrait(インターフェイスみたいなやつ)で処理するってのは、別にそれC#でもやってますよ！C#のパフォーマンス最速パターンってstructにインターフェイス実装してジェネリクスの型制約でインターフェイス指定してボクシング/仮想メソッド呼び出し回避でstruct投げ込むことですからね。ようはC#の最速パターンだけが強制されてるんだと思えば何も違和感がない。</p>
+<p>インスタンスメソッドがないかわりに全部拡張メソッドみたいな雰囲気なのも、いやー、C#も、もはやインスタンスメソッドと拡張メソッド、どっちで実装すればいいかなーって切り分けに悩むこともあるし、<a href="https://ufcpp.net/blog/2023/3/extensions/">C# 12候補のExtensions</a>なんてきたら完全にどこで実装すりゃいいのかわからんわ、ってなるので、拡張メソッド一択(impl, trait)ですよ、みたいなのはすっきり整理されていて逆にいい。</p>
+<p>シンタックスも自然というかC系の多数派に寄り添った感じで親しみやすいし、ドットでメソッド繋げていくので、馴染み深いオブジェクト指向的な手触りが十分ある。それとミュータブルに寛容なところがいいですね。関数型にありがちなイミュータブル至上主義ではなく、どちらかというとメモリそこにあるんだからミュータブルやろ、みたいな雰囲気なのがとてもいい。無駄もないし。所有権周りが厳密なのでミュータブルであっても固めな手応えなのは、これでいいんだよというかこれで的な何かではある。</p>
+<p>キツいかなーと思うのは所有権がどうとかっていうよりも、ジェネリクスの見た目がキツい。C#だったらインターフェイスで動的ディスパッチで整理されているものが、ジェネリクスで静的ディスパッチに倒れているのでジェネリクスの出現率がめっちゃ高い。いや、だってC#でもジェネリクスでると読みやすさ的には一段落下がるわけじゃないですか、それが当たり前って感じだと、慣れとかって問題じゃなく見やすさレベルは下がる。更にその上にジェネリクスがネストするのが当たり前。C#だったらジェネリクスがネストしてるのは見やすさレベル最底辺なので極力出現しないようにしたいって感じなのですが、Rustだと日常茶飯事に出てくる。<code>Option&lt;Rc&lt;RefCell&lt;_&gt;&gt;&gt;</code>とかも全然普通に出現するのが、うーむ。理屈では納得いくから特に文句があるようでなにもないんですが。</p>
+<p>なんだったらパターンマッチも別に好きじゃないしOptionもResultも好きじゃないしnullの何が悪いんだよぐらいの気持ちにならなくもないんですが、まぁそれはそれ。でも全体的には凄い良いですね、ほんと。</p>
+<h2>まとめ</h2>
+<p>ところで<a href="https://github.com/Cysharp/csbindgen">csbindgen</a>のReadMeのほうには更にもっといっぱい変換パターンを紹介していますので、是非そちらもチェックしてみてください。</p>
+<p>ネイティブ呼び出しは定義の部分でも、二重定義がそもそもダルいうえに、かなり気を使わなきゃいけないことがなにげに多くて割と大変というか知識量と単純作業量を要求してくるのですが、csbindgenはその部分を完全自動化してくれます。自分でも使っててネイティブコードめっちゃ楽……！という気になります。事実楽。すごい。その後のメモリ管理に関しては、そこはまぁ思う存分悩んでくれという話になるのですが、もはや複雑な点がそれだけに落ち着いたという点では、やはり革命的に便利なのでは？という気になります。</p>
+<p>Cのライブラリを持ってくるのも圧倒的に楽なので、私の中でもちょっと考え方が変わってきました。今までは割とPure C#実装至上主義、みたいなところがあったんですが、うまい切り分け、使い分けみたいなのを考えられるようになりました。そして、Cライブラリ利用がより自由になると、まさに<a href="https://cysharp.co.jp/">Cysharp</a>の掲げる「C#の可能性を切り開いていく」ことにまた一つ繋がってしまったな、と。</p>
+<p>まずはこの後に数個、csbindgenを活用したC#ライブラリを提供する予定があります！のですが、その前に、Rustかー、とは思わずに是非csbindgen、試してみてもらえると嬉しいです。</p>
+</div>
+<h1><a href="https://neue.cc/2023/01/30-SimdLinq.html">SimdLinq - LINQをそのままSIMD対応して超高速化するライブラリ</a></h1>
 <ul class="date"><li>2023-01-30</li></ul>
 <div class="entry_body"><p>ついこないだの<a href="https://neue.cc/2023/01/27_StructureOfArraysGenerator.html">StructureOfArraysGenerator - C#でSoAを簡単に利用するためのSource Generator</a>は、SoAになってるとSIMDを適用しやすいよ、という話だったのですが、そもそもSIMD手書きはカジュアルにやらないし、気合い入れてSIMD書くシチュエーションなら構造も気合い入れて専用に設計するよなぁ。と、なると、カジュアルにSIMD使えるライブラリが必要で、まぁLINQですね、と。</p>
 <ul>
@@ -2426,148 +2922,6 @@ options.ReplaceToUseSimpleConsoleLogger = false;
 <p>今回がっつし仕切り直したので、しばらくはメンテが楽になれるかなあ、という感じで、よきかなよきかな。</p>
 <p>まぁしかしC# 10.0は地味にヤバいですよ！使えば使うほど味が出てくるというか、最近ようやく手に馴染んで、よくわかってきた感じです。なんというか、とにかく、めっちゃいい。それとC# 10.0 + ConsoleAppFrameworkは全言語見渡しても最強のコマンドラインツール作成ライブラリじゃないです？いや、API自体のできの良さはほとんど ASP .NET CoreのMinimal APIのコピーにすぎないんですが、まぁしかしそれでもやっぱ、これはかなり良い感じじゃないかという手応えがあります。</p>
 </div>
-<h1><a href="https://neue.cc/2021/12/22.html">NativeMemoryArray - .NET 6 APIをフル活用した2GB超えの巨大データを扱うライブラリ</a></h1>
-<ul class="date"><li>2021-12-22</li></ul>
-<div class="entry_body"><p><a href="https://qiita.com/advent-calendar/2021/microsoft">.NET 6 Advent Calendar 2021</a>の12日の代理投稿となります。プレゼント付きですと！？<a href="https://www.balmuda.com/jp/brew/special-model">BALMUDA The Brew STARBUCKS RESERVE LIMITED EDITION</a>が欲しいです！</p>
-<p>さて、先程NativeMemoryArrayという新しいライブラリを作成し、公開しました。.NET Standard 2.0でも動作しますが、全体的に .NET 6 の新API群(NativeMemory, Scatter/Gather I/O)を活かすための作りになっていますので、今回のAdvent Calendarにもピッタリ。実用性も、ある……！あります……！もちろんUnity版も用意してあります（NativeArrayと何が違うって？まぁ違うと言えば違います）。</p>
-<ul>
-<li><a href="https://github.com/Cysharp/NativeMemoryArray">GitHub - Cysharp/NativeMemoryArray</a></li>
-</ul>
-<p>C#には配列、特にbyte[]を扱う上で大きな制約が一つあります。それは、一次元配列の上限値が0x7FFFFFC7(2,147,483,591)ということ。int.MaxValueよりちょっと小さめに設定されていて、ようするにざっくり2GBちょいが限界値になっています。</p>
-<blockquote>
-<p>この限界値は、正確には .NET 6 でひっそり破壊的変更が行われましたので、.NET 6とそれ以外で少し異なります。詳しくは後で述べます。</p>
-</blockquote>
-<p>この2GBという値は、int Lengthの都合上しょうがない(intの限界値に引っ張られている)のですが、昨今は4K/8Kビデオや、ディープラーニングの大容量データセットや、3Dスキャンの巨大点群データなどで、大きな値を扱うことも決して少ないわけではないため、2GB制約は正直厳しいです。そして、この制約は<code>Span&lt;T&gt;</code>や<code>Memory&lt;T&gt;</code>であっても変わりません(Lengthがintのため)。</p>
-<p>ちなみに<code>LongLength</code>は多次元配列における全次元の総数を返すためのAPIのため、一次元配列においては特に意味をなしません。.NET Frameworkの設定である<a href="https://docs.microsoft.com/ja-jp/dotnet/framework/configure-apps/file-schema/runtime/gcallowverylargeobjects-element">gcAllowVeryLargeObjects</a>も、構造体などを入れた場合の大きなサイズを許容するものであり(例えば4バイト構造体の配列ならば、2GB*4のサイズになる)、要素数の限界は超えられないため、byte[]としては2GBが限界であることに変わりはありません。</p>
-<p>こうした限界に突き当たった場合は、ストリーミング処理に切り替えるか、またはポインタを使って扱うかになりますが、どちらもあまり処理しやすいとは言えませんし、必ずしもインメモリで行っていた操作が代替できるわけではありません（ポインタなら頑張れば最終的にはなんとでもなりますが）。</p>
-<p>そこで、2GB制約を超えつつも、新しいAPI群(<code>Span&lt;T&gt;</code>, <code>IBufferWriter&lt;T&gt;</code>, <code>ReadOnlySequence&lt;T&gt;</code>, <code>RandomAccess.Write/Read</code>, <code>System.IO.Pipelines</code>など)と親和性の高いネイティブメモリを裏側に持つ配列（みたいな何か）を作りました。</p>
-<p>これによって、例えば巨大データの読み込み/書き込みも、 .NET 6の新Scatter/Gather APIの<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.io.randomaccess?view=net-6.0">RandomAccess</a>を用いると、簡単に処理できます。</p>
-<pre><code class="language-csharp">// for example, load large file.
-using var handle = File.OpenHandle(&quot;4GBfile.bin&quot;, FileMode.Open, FileAccess.Read, options: FileOptions.Asynchronous);
-var size = RandomAccess.GetLength(handle);
-
-// via .NET 6 Scatter/Gather API
-using var array = new NativeMemoryArray&lt;byte&gt;(size);
-await RandomAccess.ReadAsync(handle, array.AsMemoryList(), 0);
-
-// iterate Span&lt;byte&gt; as chunk
-foreach (var chunk in array)
-{
-    Console.WriteLine(chunk.Length);
-}
-</code></pre>
-<p>Scatter/Gather APIに馴染みがなくても、<code>IBufferWriter&lt;T&gt;</code>や <code>IEnumerable&lt;Memory&lt;T&gt;&gt;</code> を経由してStreamで処理する手法も選べます。</p>
-<pre><code class="language-csharp">public static async Task ReadFromAsync(NativeMemoryArray&lt;byte&gt; buffer, Stream stream, CancellationToken cancellationToken = default)
-{
-    var writer = buffer.CreateBufferWriter();
-
-    int read;
-    while ((read = await stream.ReadAsync(writer.GetMemory(), cancellationToken).ConfigureAwait(false)) != 0)
-    {
-        writer.Advance(read);
-    }
-}
-
-public static async Task WriteToAsync(NativeMemoryArray&lt;byte&gt; buffer, Stream stream, CancellationToken cancellationToken = default)
-{
-    foreach (var item in buffer.AsMemorySequence())
-    {
-        await stream.WriteAsync(item, cancellationToken);
-    }
-}
-</code></pre>
-<p>あるいは<code>Span&lt;T&gt;</code>のSliceを取り出して処理してもいいし、<code>ref T this[long index]</code>によるインデクサアクセスやポインタの取り出しもできます。 .NET 6時代に完全にマッチしたAPIを揃えることで、標準の配列と同等、もしくはそれ以上の使い心地に仕上げることによって、C#の限界をまた一つ超える提供できたと思っています。</p>
-<p>とはいえもちろん、 .NET Standard 2.0/2.1 にも対応しているので、非 .NET 6なAPIでも大丈夫です、というかScatter/Gather API以外は別に今までもありますし普通に使えますので。</p>
-<p>普通の配列的にも使えます。GC避けには、こうした普通のAPIを使っていくのでも便利でしょう、</p>
-<pre><code class="language-csharp">// call ctor with length, when Dispose free memory.
-using var buffer = new NativeMemoryArray&lt;byte&gt;(10);
-
-buffer[0] = 100;
-buffer[1] = 100;
-
-// T allows all unmanaged(struct that not includes reference type) type.
-using var mesh = new NativeMemoryArray&lt;Vector3&gt;(100);
-
-// AsSpan() can create Span view so you can use all Span APIs(CopyTo/From, Write/Read etc.).
-var otherMeshArray = new Vector3[100];
-otherMeshArray.CopyTo(mesh.AsSpan());
-</code></pre>
-<h2><code>NativeMemoryArray&lt;T&gt;</code></h2>
-<p><code>NativeMemoryArray&lt;T&gt;</code>はwhere T : unmanagedです。つまり、参照型を含まない構造体にしか使えません。まぁ巨大配列なんて使う場合には参照型含めたものなんて含めてんじゃねーよなので、いいでしょうきっと。巨大配列で使えることを念頭においてはいますが、別に普通のサイズの配列として使っても構いません。ネイティブメモリに確保するので、ヒープを汚さないため、適切な管理が行える箇所では便利に使えるはずです。</p>
-<p><code>Span&lt;T&gt;</code>との違いですが、<code>NativeMemoryArray&lt;T&gt;</code>そのものはクラスなので、フィールドに置けます。<code>Span&lt;T&gt;</code>と違って、ある程度の長寿命の確保が可能ということです。<code>Memory&lt;T&gt;</code>のSliceが作れるため、Async系のメソッドに投げ込むこともできます。また、もちろん、<code>Span&lt;T&gt;</code>の長さの限界はint.MaxValueまで(ざっくり2GB)なので、それ以上の大きさも確保できます。</p>
-<p>Unityにおける<code>NativeArray&lt;T&gt;</code>との違いですが、<code>NativeArray&lt;T&gt;</code>はUnity Engine側との効率的なやりとりのための入れ物なので、あくまでC#側で使うための<code>NativeMemoryArray&lt;T&gt;</code>とは全然役割が異なります。まぁ、必要に思えない状況ならば、おそらく必要ではありません。</p>
-<p>主な長所は、以下になります。</p>
-<ul>
-<li>ネイティブメモリから確保するためヒープを汚さない</li>
-<li>2GBの制限がなく、メモリの許す限り無限大の長さを確保できる</li>
-<li><code>IBufferWriter&lt;T&gt;</code> 経由で、MessagePackSerializer, System.Text.Json.Utf8JsonWriter, System.IO.Pipelinesなどから直接読み込み可能</li>
-<li><code>ReadOnlySequence&lt;T&gt;</code> 経由で、MessagePackSerializer, System.Text.Json.Utf8JsonReaderなどへ直接データを渡すことが可能</li>
-<li><code>IReadOnlyList&lt;Memory&lt;T&gt;&gt;</code>, <code>IReadOnlyList&lt;ReadOnlyMemory&lt;T&gt;&gt;</code> 経由で <code>RandomAccess</code>(Scatter/Gather API)に巨大データを直接渡すことが可能</li>
-</ul>
-<p>あまりピンと来ない、かもしれませんが、使ってみてもらえれば分かる、かも。</p>
-<p><code>NativeMemoryArray&lt;T&gt;</code>の全APIは以下のようになっています。</p>
-<ul>
-<li><code>NativeMemoryArray(long length, bool skipZeroClear = false, bool addMemoryPressure = false)</code></li>
-<li><code>long Length</code></li>
-<li><code>ref T this[long index]</code></li>
-<li><code>ref T GetPinnableReference()</code></li>
-<li><code>Span&lt;T&gt; AsSpan()</code></li>
-<li><code>Span&lt;T&gt; AsSpan(long start)</code></li>
-<li><code>Span&lt;T&gt; AsSpan(long start, int length)</code></li>
-<li><code>Memory&lt;T&gt; AsMemory()</code></li>
-<li><code>Memory&lt;T&gt; AsMemory(long start)</code></li>
-<li><code>Memory&lt;T&gt; AsMemory(long start, int length)</code></li>
-<li><code>bool TryGetFullSpan(out Span&lt;T&gt; span)</code></li>
-<li><code>IBufferWriter&lt;T&gt; CreateBufferWriter()</code></li>
-<li><code>SpanSequence AsSpanSequence(int chunkSize = int.MaxValue)</code></li>
-<li><code>MemorySequence AsMemorySequence(int chunkSize = int.MaxValue)</code></li>
-<li><code>IReadOnlyList&lt;Memory&lt;T&gt;&gt; AsMemoryList(int chunkSize = int.MaxValue)</code></li>
-<li><code>IReadOnlyList&lt;ReadOnlyMemory&lt;T&gt;&gt; AsReadOnlyMemoryList(int chunkSize = int.MaxValue)</code></li>
-<li><code>ReadOnlySequence&lt;T&gt; AsReadOnlySequence(int chunkSize = int.MaxValue)</code></li>
-<li><code>SpanSequence GetEnumerator()</code></li>
-<li><code>void Dispose()</code></li>
-</ul>
-<p><code>AsSpan()</code>, <code>AsMemory()</code>はスライスのためのAPIです。取得したSpanやMemoryは書き込みも可能なため、 .NET 5以降に急増したSpan系のAPIに渡せます。SpanやMemoryには最大値(int.MaxValue)の限界があるため、lengthの指定がない場合は、例外が発生する可能性もあります。そこで<code>TryGetFullSpan()</code>を使うと、単一Spanでフル取得が可能かどうか判定できます。また、<code>AsSpanSequence()</code>, <code>AsMemorySequence()</code>でチャンク毎のforeachで全要素を列挙することが可能です。直接foreachした場合は、<code>AsSpanSequence()</code>と同様の結果となります。</p>
-<pre><code class="language-csharp">long written = 0;
-foreach (var chunk in array)
-{
-    // do anything
-    written += chunk.Length;
-}
-</code></pre>
-<p>ポインタの取得は、配列とほぼ同様に、そのまま渡せば0から(これは<code>GetPinnableReference()</code>の実装によって実現できます)、インデクサ付きで渡せばそこから取れます。</p>
-<pre><code class="language-csharp">fixed (byte* p = buffer)
-{
-}
-
-fixed (byte* p = &amp;buffer[42])
-{
-}
-</code></pre>
-<p><code>CreateBufferWriter()</code> によって <code>IBufferWriter&lt;T&gt;</code>を取得できます。これは<code>MessagePackSerializer.Serialize</code>などに直接渡すこともできるほかに、先の例でも出しましたがStreamからの読み込みのように、先頭からチャンク毎に取得して書き込んでいくようなケースで便利に使えるAPIとなっています。</p>
-<p><code>AsReadOnlySequence()</code> で取得できる<code>ReadOnlySequence&lt;T&gt;</code>は、<code>MessagePackSerializer.Deserialize</code>などに直接渡すこともできるほかに .NET 5から登場した <a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.buffers.sequencereader-1?view=net-6.0">SequenceReader</a>に通すことで、長大なデータのストリーミング処理をいい具合に行える余地があります。</p>
-<p><code>AsMemoryList()</code>, <code>AsReadOnlySequence()</code>は .NET 6から登場した<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.io.randomaccess?view=net-6.0">RandomAccess</a>の<code>Read/Write</code>に渡すのに都合の良いデータ構造です。プリミティブな処理なので使いにくいと思いきや、意外とすっきりと処理できるので、File経由の処理だったらStreamよりもいっそもうこちらのほうがいいかもしれません。</p>
-<h2>NativeMemory</h2>
-<p>.NET 6から<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.runtime.interopservices.nativememory?view=net-6.0">NativeMemory</a>というクラスが新たに追加されました。その名の通り、ネイティブメモリを扱いやすくするものです。今までも<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.runtime.interopservices.marshal.allochglobal?view=net-6.0">Marshal.AllocHGlobal</a>といったメソッド経由でネイティブメモリを確保することは可能であったので、何が違うのか、というと、何も違いません。実際NativeMemoryArrayの .NET 6以前版はMarshalを使ってますし。そして .NET 6 では Marshal.AllocHGlobal は NativeMemory.Alloc を呼ぶので、完全に同一です。</p>
-<p>ただしもちろん .NET 6 実装時にいい感じに整理された、ということではあるので、NativeMemory、いいですよ。NativeMemory.Allocがmalloc、NativeMemory.AllocZeroedがcalloc、NativeMemory.Freeがfreeと対応。わかりやすいですし。</p>
-<p>ちなみにゼロ初期化する NativeMemory.AllocZeroed に相当するものはMarshalにはないので、その点でも良くなったところです。<code>NativeMemoryArray&lt;T&gt;</code>では、コンストラクタのskipZeroClear(<code>public NativeMemoryArray(long length, bool skipZeroClear = false)</code>)によってゼロ初期化する/しないを選べます。デフォルトは（危ないので）初期化しています。非.NET 6版では、メモリ確保後に<code>Span&lt;T&gt;.Clear()</code>経由で初期化処理を入れています。</p>
-<h2>真のArray.MaxValue</h2>
-<p>.NET 6以前では、配列の要素数はバイト配列(1バイト構造体の配列)と、それ以外の配列で異なる値がリミットに設定されていました。例えば<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.array?view=net-6.0">System.Arrayのドキュメント</a>を引いてくると</p>
-<blockquote>
-<p>配列のサイズは、合計で40億の要素に制限され、任意の次元の0X7FEFFFFF の最大インデックス (バイト配列の場合は0X7FFFFFC7、1バイト構造体の配列の場合) に制限されます。</p>
-</blockquote>
-<p>つまり、0X7FFFFFC7の場合と、0X7FEFFFFFの場合がある、と。</p>
-<p>と、いうはずだったのですが、.NET 6から<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.array.maxlength">Array.MaxLength</a>というプロパティが新規に追加されて、これは単一の定数を返します。その値は、0X7FFFFFC7です。よって、いつのまにかひっそりと配列の限界値は(ちょびっと大きい方に)大統一されました。</p>
-<p>この変更は意外とカジュアルに行われ、まず最大値を取得する、ただし単一じゃないため型によって結果の変わる <code>Array.GetMaxLength&lt;T&gt;()</code> を入れよう、<a href="https://github.com/dotnet/runtime/pull/43301">という実装があがってきました</a>。そうしたら、そのPR上での議論で、そもそも当初は最適化を期待したけど別にそんなことなかったし、統一しちゃってよくね？という話になり、そのまま限界値は統一されました。そして新規APIも無事、Array.MaxLengthという定数返しプロパティになりました。</p>
-<p>まぁ、シンプルになって良いですけどね。大きい方で統一されたので実害も特にないでしょうし。前述のSystem.Arrayのドキュメントは更新されてないということで、正しくは、.NET 6からは0x7FFFFFC7が限界で、その値はArray.MaxLengthで取れる。ということになります。</p>
-<p><code>Span&lt;T&gt;</code>の限界値はint.MaxValueなので、限界に詰め込んだ<code>Span&lt;T&gt;</code>をそのままToArray()すると死ぬ、という微妙な問題が発生することがあるんですが、まぁそこはしょうがないね。</p>
-<h2>まとめ</h2>
-<p>NativeArrayという名前にしたかったのですがUnityと被ってしまうので避けました。しょーがない。</p>
-<p>着手当時はマネージド配列のチャンクベースで作っていたのですが(<a href="https://gist.github.com/neuecc/e6293b1d88244cf942753d6408b3e966">LargeArray.cs</a>)、Sliceが作りづらいし、ネイティブメモリでやったほうが出来ること多くて何もかもが圧倒的にいいじゃん、ということに作業進めている最中に気づいて、破棄しました。参照型の配列が作れるという点で利点はありますが、まぁ参照型で巨大配列なんて作らねーだろ、思うと、わざわざ実装増やして提供するメリットもないかな、とは。</p>
-<p>配列はもう昔からあるのでint Lengthなのはしょうがないのですが、<code>Span&lt;T&gt;</code>, <code>Memory&lt;T&gt;</code>のLengthはlongであって欲しかったかなー、とは少し思っています。<a href="https://github.com/dotnet/apireviews/tree/main/2016/11-04-SpanOfT#spant-and-64-bit">2016年の段階でのSpanのAPIどうするかドキュメント</a>によると、候補は幾つかあったけど、結果的に配列踏襲のint Lengthになったそうで。2GBでも別に十分だろ、みたいなことも書いてありますが、いや、そうかなー？年にそこそこの回数でたまによく引っかかるんだけどねー？</p>
-<p>そして2016年の議論時点ではなかった、C# 9.0で<a href="https://docs.microsoft.com/ja-jp/dotnet/csharp/language-reference/builtin-types/nint-nuint">nuint, nuint</a>が追加されたので、<code>nuint Span&lt;T&gt;/Memory&lt;T&gt;.Length</code>はありなんじゃないかな、と。</p>
-<p>ただNativeMemoryArrayの開発当初は<code>nuint Length</code>で作っていたのですが、<code>AsSpan(nuint start, nuint length)</code>みたいなAPIは、カジュアルにintやlongを突っ込めなくて死ぬほど使いづらかったので、最終的にlongで統一することにしました。ので、<code>nuint Length</code>は、なしかな。つまり一周回って現状維持。そんなものかー、そんなもんですねー。</p>
-</div>
 <a href="https://neue.cc/2">| Next</a>
 </div>
         <div id="side">
@@ -2590,6 +2944,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2023/03/">2023-03</a>
 <li><a href="https://neue.cc/2023/01/">2023-01</a>
 <li><a href="https://neue.cc/2022/12/">2022-12</a>
 <li><a href="https://neue.cc/2022/11/">2022-11</a>

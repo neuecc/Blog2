@@ -23,7 +23,119 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2020/01/28_589.html">Unityによるリアルタイム通信とMagicOnionによるC#大統一理論の実現 - フォローアップ</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2020/01/30_590.html">ProcessX - C#でProcessを C# 8.0非同期ストリームで簡単に扱うライブラリ</a></h1>
+<ul class="date"><li>2020-01-30</li></ul>
+<div class="entry_body"><p>C#使う人って全然外部プロセス呼び出して処理ってしないよね。というのは、Windowsがなんかそういうのを避ける雰囲気だから、というのもあるのですが、ともあれ実際、可能な限り避けるどころか絶対避ける、ぐらいの勢いがあります。ライブラリになってないと嫌だ、断固拒否、みたいな。しかし最近はLinuxでもばっちし動くのでそういう傾向もどうかなー、と思いつつ。</p>
+<p>避けるというのはOSの違いというのもありそうですが、もう一つはそもそも外部プロセスの呼び出しが死ぬほど面倒くさい。ProcessとProcessStartInfoを使ってどうこうするのですが、異常に面倒くさい。理想的にはシェルで書くように一行でコマンドと引数繋げたstringを投げておしまい、と行きたいのですが、全然そうなってない。呼び出すだけでも面倒くさいうぇに、StdOutのリダイレクトとかをやると更に面倒くさい。非同期でStdOutを読み込むとかすると絶望的に面倒くさい、うえに罠だらけでヤバい。この辺の辛さは<a href="https://qiita.com/skitoy4321/items/10c47eea93e5c6145d48">非同期外部プロセス起動で標準出力を受け取る際の注意点</a>という記事でしっかり紹介されてますが、実際これを正しくハンドリングするのは難儀です。</p>
+<p>そこで「シェルを書くように文字列一行投げるだけで結果を」「C# 8.0の非同期ストリームで、こちらも一行await foreachするだけで受け取れて」「ExitCodeやStdErrorなども適切にハンドリングする」ライブラリを作りました。</p>
+<ul>
+<li><a href="https://github.com/Cysharp/ProcessX">GitHub - Cysharp/ProcessX</a></li>
+</ul>
+<pre><code class="language-csharp">using Cysharp.Diagnostics; // using namespace
+
+// async iterate.
+await foreach (string item in ProcessX.StartAsync(&quot;dotnet --info&quot;))
+{
+    Console.WriteLine(item);
+}
+</code></pre>
+<p>というように、 <code>await foreach(... in ProcessX.StartAsync(command))</code> だけで済みます。普通にProcessで書くと30行ぐらいかかってしまう処理がたった一行で！革命的便利さ！C# 8.0万歳！</p>
+<p>実際これ、普通のProcessで書くと中々のコード量になります。</p>
+<pre><code class="language-csharp">var pi = new ProcessStartInfo
+{
+    // FileNameとArgumentsが別れる（地味にダルい）
+    FileName = &quot;dotnet&quot;,
+    Arguments = &quot;--info&quot;,
+    // からの怒涛のboolフラグ
+    UseShellExecute = false,
+    CreateNoWindow = true,
+    ErrorDialog = false,
+    RedirectStandardError = true,
+    RedirectStandardOutput = true,
+};
+
+using (var process = new Process()
+{
+    StartInfo = pi,
+    // からのここにもboolフラグ
+    EnableRaisingEvents = true
+})
+{
+    process.OutputDataReceived += (sender, e) =&gt;
+    {
+        // nullが終端なのでnullは来ます！のハンドリングは必須
+        if (e.Data != null)
+        {
+            Console.WriteLine(e.Data);
+        }
+    };
+
+    process.Exited += (sender, e) =&gt;
+    {
+        // ExitCode使ってなにかやるなら
+        // ちなみにExitedが呼ばれてもまだOutputDataReceivedが消化中の場合が多い
+        // そのため、Exitと一緒にハンドリングするなら適切な待受コードがここに必要になる
+    };
+
+    process.Start();
+
+    // 何故かStart後に明示的にこれを呼ぶ必要がある
+    process.BeginOutputReadLine();
+
+    // processがDisposeした後にProcess関連のものを触ると死
+    // そして↑のようにイベント購読しているので気をつけると触ってしまうので気をつけよう
+    // ↓でもWaitForExitしちゃったら結局は同期じゃん、ということで真の非同期にするには更にここから工夫が必要
+    process.WaitForExit();
+}
+</code></pre>
+<p>↑のものでも少し簡略化しているぐらいなので、それぞれより正確にハンドリングしようとすると相当、厳しい、です……。</p>
+<p>さて、await foreachの良いところは例外処理にtry-catchがそのまま使えること、というわけで、ExitCodeが0以外（或いはStdErrorを受信した場合)には、ProcessErrorExceptionが飛んでくるという仕様になっています。</p>
+<pre><code class="language-csharp">try
+{
+    await foreach (var item in ProcessX.StartAsync(&quot;dotnet --foo --bar&quot;)) { }
+}
+catch (ProcessErrorException ex)
+{
+    // int .ExitCode
+    // string[] .ErrorOutput
+    Console.WriteLine(ex.ToString());
+}
+</code></pre>
+<p>WaitForExit的に、同期待ちして結果を全部取りたいという場合は、ToTaskが使えます。</p>
+<pre><code class="language-csharp">// receive buffered result(similar as WaitForExit).
+string[] result = await ProcessX.StartAsync(&quot;dotnet --info&quot;).ToTask();
+</code></pre>
+<p>キャンセルに関しては非同期ストリームのWithCancellationがそのまま使えます。キャンセル時にプロセスが残っている場合はキャンセルと共にKillして確実に殺します。</p>
+<pre><code class="language-csharp">await foreach (var item in ProcessX.StartAsync(&quot;dotnet --info&quot;).WithCancellation(cancellationToken))
+{
+    Console.WriteLine(item);
+}
+</code></pre>
+<p>タイムアウトは、CancellationTokenSource自体が時間と共に発火というオプションがあるので、それを使えます。</p>
+<pre><code class="language-csharp">using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1)))
+{
+    await foreach (var item in ProcessX.StartAsync(&quot;dotnet --info&quot;).WithCancellation(cts.Token))
+    {
+        Console.WriteLine(item);
+    }
+}
+</code></pre>
+<p>また、ProcessX.StartAsyncのオーバーロードとして、作業ディレクトリや環境変数、エンコードを設定できるものも用意しているので、ほとんどのことは問題なく実装できるはずです。</p>
+<pre><code class="language-csharp">StartAsync(string command, string? workingDirectory = null, IDictionary&lt;string, string&gt;? environmentVariable = null, Encoding? encoding = null)
+StartAsync(string fileName, string? arguments, string? workingDirectory = null, IDictionary&lt;string, string&gt;? environmentVariable = null, Encoding? encoding = null)
+StartAsync(ProcessStartInfo processStartInfo)
+
+Task&lt;string[]&gt; ToTask(CancellationToken cancellationToken = default)
+</code></pre>
+<h2>System.Threading.Channels</h2>
+<p>今回、ProcessのイベントとAsyncEnumeratorとのデータの橋渡しにはSystem.Threading.Channelsを使っています。詳しくは<a href="https://devblogs.microsoft.com/dotnet/an-introduction-to-system-threading-channels/">An Introduction to System.Threading.Channels</a>、或いは日本語だと<a href="https://qiita.com/skitoy4321/items/c19ca3dc7624a7049fd5">System.Threading.Channelsを使う</a>を読むと良いでしょう。</p>
+<p>プロデューサー・コンシューマーパターンのためのライブラリなのですが、めっちゃ便利です。シンプルなインターフェイス（ちょっと弄ってれば使い方を理解できる）かつasync/awaitビリティがめっちゃ高い設計になっていて、今まで書きづらかったものがサクッと書けるようになりました。</p>
+<p>これはめちゃくちゃ良いライブラリなのでみんな使いましょう。同作者による System.Threading.Tasks.DataFlow（TPL Dataflow) は全く好きじゃなくて全然使うことはなかったのですが、Channelsは良い。めっちゃ使う。</p>
+<h2>まとめ</h2>
+<p>Process自体は、C# 1.0世代(10年前！)に設計されたライブラリなのでしょうがないという側面もありつつも、やはり現代は現代なので、ちゃんと現代流に設計したものを再度提供してあげる価値はあるでしょう。設計技法も言語自体も、遥かに進化しているので、ちゃんとしたアップデートは必要です。</p>
+<p>こうした隙間産業だけど、C#に今までなくて面倒で、でもそれが一気に解消して超絶便利に、というのは<a href="https://github.com/Cysharp/ConsoleAppFramework/">ConsoleAppFramework</a>に通じるものがあります。C#の面倒と思えるところを片っ端から潰して超絶便利言語にしていく、ことを目指して引き続きどしどし開発していきます。というわけで是非使ってみてください。</p>
+</div>
+<h1><a href="https://neue.cc/2020/01/28_589.html">Unityによるリアルタイム通信とMagicOnionによるC#大統一理論の実現 - フォローアップ</a></h1>
 <ul class="date"><li>2020-01-28</li></ul>
 <div class="entry_body"><p>先週の土曜日に<a href="https://kyoto-gamedevel.doorkeeper.jp/events/100492">Unity道場 京都スペシャル4</a>というイベントで登壇してきました。関西にはめったに行かないので、良い機会を頂いて感謝です。参加者応募も231名、場所もかなり大きなホールでいい感じでした。また、主催された<a href="http://cloud-creative-studios.com/">クラウドクリエイティブスタジオ</a>さんはサーバー開発もC#でしてる企業さんでもありますね……！すばらすばら。</p>
 <iframe src="//www.slideshare.net/slideshow/embed_code/key/3ZjDetvdWRnmMQ" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/UnityTechnologiesJapan002/unity4unitymagiconionc" title="【Unity道場京都スペシャル4】Unityによるリアルタイム通信とMagicOnionによるC#大統一理論の実現" target="_blank">【Unity道場京都スペシャル4】Unityによるリアルタイム通信とMagicOnionによるC#大統一理論の実現</a> </strong> from <strong><a href="https://www.slideshare.net/UnityTechnologiesJapan002" target="_blank">UnityTechnologiesJapan002</a></strong> </div>
@@ -858,21 +970,6 @@ var (x, y, z) = FixtureFactory.Create&lt;(int, string, short)&gt;();
 <p>できなかった理由の半分はSwitchで<a href="http://www.celestegame.com/">Celeste</a>を遊び始めたらめちゃくちゃハマって延々とやり続けちゃったせいなのですが、まぁそれはそれで面白いゲームをたっぷり楽しめたということで有意義なのでよしということにしておきます。</p>
 <p><a href="https://connpass.com/event/127369/">MagicOnionは6月4日に勉強会をやります</a>。というわけで、やる気もかなりあるし、アップデートネタも溜まっているんですが、実際にアップデートはできてないので（Issueのヘンジはちゃんとやってます！）、GWでガッと手を入れておきたかったんですが、うーん、まぁ明けてからやりまうす。色々良い感じになっていると思います。いやほんと。</p>
 </div>
-<h1><a href="https://neue.cc/2019/04/24_575.html">True Cloud Native Batch Workflow for .NET with MicroBatchFramework</a></h1>
-<ul class="date"><li>2019-04-24</li></ul>
-<div class="entry_body"><p><a href="https://jaws-dotnet.connpass.com/event/122981/">AWS .NET Developer User Group 勉強会 #1</a>にて、先日リリースした<a href="https://github.com/Cysharp/MicroBatchFramework">MicroBatchFramework</a>について、話してきました。</p>
-<iframe src="//www.slideshare.net/slideshow/embed_code/key/LIa5Ht82wbd7Oe" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/true-cloud-native-batch-workflow-for-net-with-microbatchframework" title="True Cloud Native Batch Workflow for .NET with MicroBatchFramework" target="_blank">True Cloud Native Batch Workflow for .NET with MicroBatchFramework</a> </strong> from <strong><a href="https://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
-<p>タイトルが英語的に怪しいですが、まぁいいでしょう（よくない）</p>
-<p>MicroBatchFrameworkの概要については、リリース時にCygames Engineers' Blogにて<a href="http://tech.cygames.co.jp/archives/3241/">MicroBatchFramework – クラウドネイティブ時代のC#バッチフレームワーク</a>として書かせていただきました。そう、最近はそっち（どっち）に書いてしまうのでこっち（あっち）に書かれなくなる傾向が！リポジトリの置き場としても、Cysharpオーガナイゼーション中心になってきています。これは会社としてメンテナンス体制とかもしっかり整えていくぞ、の現れなので基本的にはいいことです。</p>
-<p>ちなみに<a href="https://cysharp.co.jp/">Cysharp</a>、ページ下段にお問い合わせフォームが（ついに）付きました。興味ある方は応募していただいてもよろしくてよ？ビジネスのお問い合わせも歓迎です。別にゲームに限らずで.NET Coreの支援とかでもいいですよ。ただしオールドレガシーWindows案件はやりません。</p>
-<h2>クラウドネイティブ</h2>
-<p>これはセッションで口頭で言いましたが、バズワードだから付けてます。という側面は大いにあります。世の中マーケティングなのでしょーがないね。そもそも私はそういうのに乗っかるの、好きです。</p>
-<p>そんな中身のないクラウドネイティブですが（真面目な定義は<a href="https://github.com/cncf/toc/blob/master/DEFINITION.md">CNCFのDefinition</a>にちゃんとあります)、まぁコンテナ化です。ベンダー中立な。というのをコンテナ化ビリティの高さという表現に落としました。.NET Coreは結構いい線言ってると思いますよ。実際。</p>
-<p>さて、そんなクラウドネイティブなふいんきのところでの、理想のバッチ処理ってなんやねん。というのを考えて、逆算でアプリケーション側で埋めるべきものを埋めるために作ったのがMicroBatchFrameworkです。インフラ側の欠けてるところはそのうちクラウド事業者が埋めてくれるか、現状でも全然実用レベルで回避はどうとでもなるでしょう。</p>
-<p>私としてはC#が快適にかければなんだっていいんですが、なんだっていいというだけではなくC#としての自由の追求に関しては相当ラディカルなのですが、でも、それって割とクラウドネイティブの定義（ちゃんとしたほうの）通りなんですよね。別にコンテナに夢見てるわけじゃなくて、意外と堅実に正しく定義どおりのことやってるわけです。まー、FaaSのオーケストレーターは私の理想からベクトル真逆だし、FaaSのランタイムの重さ（実行が遅いという意味ではなくてシステムとしてのヘヴィさ）も受け入れ難いんで、世の中の正しい進化について正面から向かい合うのが結局一番ということで。</p>
-<p>ところでMicroBatchFrameworkのウェブホスティング機能(MicroBatchFramework.WebHosting)はSwaggerによる実行可能なドキュメント生成、のほかに、HTTPをトリガーにする待ち受けという側面もあります。GCP Cloud Runの実行のためにはそういうの必要ですからね。毎回コンテナ起動みたいな夢見たモデルだけじゃなくて、割とちゃんと現実に即して機能は用意してます。意外と。割とちゃんと。そもそも、その辺は実用主義なので。</p>
-<p>MicroBatchFrameworkはいい具合のバランス感覚で作れていると思うので、実際良いと思います。というわけで、是非試していただければですね。</p>
-</div>
 <a href="https://neue.cc/2">Prev |</a>
 <a href="https://neue.cc/4">| Next</a>
 </div>
@@ -896,6 +993,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2023/03/">2023-03</a>
 <li><a href="https://neue.cc/2023/01/">2023-01</a>
 <li><a href="https://neue.cc/2022/12/">2022-12</a>
 <li><a href="https://neue.cc/2022/11/">2022-11</a>
