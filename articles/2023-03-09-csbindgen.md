@@ -29,7 +29,7 @@ Getting Started
 ---
 コンフィグにビルド時依存に追加してもらって、`build.rs`というコンパイル前呼び出し(Rustのコードでpre-build書ける機能やビルド時依存を追加できる機能はとても良い)に設定を入れるだけです、簡単！
 
-```
+```toml
 [build-dependencies]
 csbindgen = "1.2.0"
 ```
