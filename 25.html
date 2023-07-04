@@ -23,7 +23,106 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2009/08/23_192.html">簡易文字列置換</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2009/08/24_193.html">WSH用にCOMのIntelliSenseを自動生成する</a></h1>
+<ul class="date"><li>2009-08-24</li></ul>
+<div class="entry_body"><p>本題、の前にJavaScript用のIntelliSenseの作成方法について。以前、<a href="http://neue.cc/2009/06/06_164.html" title="neue cc - 最もタメになる「初心者用言語」はVisualStudio(言語?)">linq.jsにIntelliSense用ファイルを追加した時</a>に利用法を書きましたが、今回はvsdocの作成方法を、ざっと書きます。まずVS2008 SP1とパッチを適用する。hoge.jsに対しhoge-vsdoc.jsを用意するとhoge.jsのかわりにhoge-vsdoc.jsがIntelliSense用に読み込まれる。IntelliSenseでVSが見ているのはメソッド名と引数だけなので、コードの中身はなくてもいい。例えば本来は存在するがprivateメソッドのつもりのものは、vsdoc.js側に書かなければIntelliSenseには表示されない。C#と同様に関数にはXMLドキュメントコメントを記述することが出来る。記述箇所はC#とは異なり開始の波括弧の直下。ドキュメントコメントのタグで現在機能しているものはsummary, params, returnsのみ。特に重要なのはreturns typeで、これにprototypeが存在する関数(ようするにクラスですなー)を指定することで戻り値の型をVSに認識させ、IntelliSenseを働かせることが出来る。ちなみに、ただのオブジェクトだと認識してくれない。</p>
+<pre><code class="language-javascript">function Hoge(aaa, bbb)
+{
+    /// &lt;summary&gt;hogehogehogehoge&lt;/summary&gt;
+    /// &lt;param name=&quot;aaa&quot; type=&quot;String&quot;&gt;a!a!a!a!a!&lt;/param&gt;
+    /// &lt;param name=&quot;bbb&quot; type=&quot;Optional:Boolean&quot;&gt;b?b?b?b?b?&lt;/param&gt;
+    /// &lt;returns type=&quot;Number&quot;&gt;&lt;/returns&gt;
+}
+</code></pre>
+<p>基本はこんな感じ。引数の省略や、型が目で見て分かるので大分書きやすくなります。 で、<a href="http://neue.cc/2009/08/02_182.html" title="neue cc - linq.js :: Next">いつぞやかに作成中</a>とか言っていた通りにlinq.jsをWSH対応させようとしているわけですが、IntelliSense書きの量が思ったよりも膨大なわけです。実は最初は普通に手書きしてました。一応勉強も兼ねて書写みたいなノリで。ですが、あまりにも手間かかりすぎるので自動生成することにしました。こんなの人力でやるもんじゃないですよ。微調整はどちらにせよ必要なのですか、大枠だけでも書きだされていると物凄く楽になる。</p>
+<pre><code class="language-csharp">static void Main(string[] args)
+{
+    // add reference and replace dll path
+    var assembly = Assembly.LoadFrom(@&quot;Interop.IWshRuntimeLibrary.dll&quot;);
+    var types = assembly.GetTypes();
+
+    var enums = types
+        .Where(t =&gt; t.IsEnum)
+        .OrderBy(t =&gt; t.Name)
+        .Select(t =&gt; string.Format(&quot;{0}: \r\n{{\r\n{1}\r\n}}&quot;,
+            t.Name,
+            Enum.GetNames(t).Select(s =&gt; string.Format(&quot;\t{0}: {1}&quot;, s, (int)Enum.Parse(t, s))).Join(&quot;,\r\n&quot;)));
+
+    var classes = types
+        .Where(t =&gt; t.IsClass)
+        .Select(type =&gt;
+        {
+            var bindingFlag = BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+
+            var properties = type.GetProperties(bindingFlag)
+                .OrderBy(pi =&gt; pi.Name)
+                // .Select(pi =&gt; string.Format(&quot;{0}: {1}&quot;, pi.Name, pi.PropertyType.Name
+                .Select(pi =&gt; string.Format(&quot;{0}: null&quot;, pi.Name));
+
+            var methods = type.GetMethods(bindingFlag)
+                .Where(mi =&gt; !mi.IsSpecialName &amp;&amp; mi.Name != &quot;GetEnumerator&quot;)
+                .Select(mi =&gt; new { mi.Name, Parameters = mi.GetParameters(), ReturnType = mi.ReturnType.Name })
+                .OrderBy(t =&gt; t.Name)
+                .Select(t =&gt; string.Format(&quot;{0}: function({1})\r\n{{\r\n{2}\t/// &lt;returns type=\&quot;{3}\&quot;&gt;&lt;/returns&gt;\r\n}}&quot;,
+                    t.Name,
+                    t.Parameters.Select(pi =&gt; pi.Name).Join(&quot;, &quot;),
+                    t.Parameters.Select(pi =&gt; string.Format(&quot;\t/// &lt;param name=\&quot;{0}\&quot; type=\&quot;{1}{2}\&quot;&gt;&lt;/param&gt;\r\n&quot;,
+                            pi.Name,
+                            (pi.IsOptional) ? &quot;Optional:&quot; : &quot;&quot;,
+                            pi.ParameterType.Name.Replace(&quot;Void&quot;, &quot;void&quot;).Replace(&quot;Int32&quot;, &quot;Number&quot;)))
+                        .Join(&quot;&quot;),
+                    t.ReturnType.Replace(&quot;Void&quot;, &quot;void&quot;).Replace(&quot;Int32&quot;, &quot;Number&quot;)));
+
+            var result = properties.Concat(methods).Join(&quot;,\r\n&quot;);
+            return string.Format(&quot;{0} = function() {{ }}\r\n{0}.prototype =\r\n{{\r\n{1}\r\n}}&quot;,
+                Regex.Replace(type.Name, &quot;Class$&quot;, &quot;&quot;),
+                result.Split(new string[] { &quot;\r\n&quot; }, StringSplitOptions.None).Select(s =&gt; &quot;\t&quot; + s).Join(&quot;\r\n&quot;));
+        });
+
+    var name = assembly.GetName().Name.Split('.').Last();
+    File.WriteAllText(name + &quot;_enum.js&quot;, string.Format(&quot;{0}Enum =\r\n{{\r\n{1}\r\n}}&quot;, name,
+        enums.Join(&quot;,\r\n&quot;).Split(new string[] { &quot;\r\n&quot; }, StringSplitOptions.None).Select(s =&gt; &quot;\t&quot; + s).Join(&quot;\r\n&quot;)), Encoding.UTF8);
+    File.WriteAllText(name + &quot;_class.js&quot;, classes.Join(&quot;\r\n\r\n&quot;), Encoding.UTF8);
+}
+
+static string Join&lt;T&gt;(this IEnumerable&lt;T&gt; source, string separator)
+{
+    var index = 0;
+    return source.Aggregate(new StringBuilder(),
+            (sb, o) =&gt; (index++ == 0) ? sb.Append(o) : sb.AppendFormat(&quot;{0}{1}&quot;, separator, o))
+        .ToString();
+}
+</code></pre>
+<p>参照設定で対象のCOMを読み込んで、一旦ビルド。生成されてるInterop.hoge.dllを読み込んで解析、という流れをとってみました。もっとマシなやり方があれば教えてください。コードは、んーと、string.Formatがクドくて見難いですね！ 最初はVSのフォーマッタに後で手動でかければいいや、と思ってたのを、出力状態でちゃんとフォーマットされてるようにと継ぎ接ぎしてたら酷いことに。一回文字列にしたものを改行でバラして再生成とか笑えない。こういうの、HTML/XMLが対象なら何も考えなくてもLinq to Xmlで綺麗に書けるのになあ……。 それ以外はまぁ、こんなものかしらんって感じでしょうか？ リフレクションが絡むとLinq大活躍。Selectがネストしまくるのでクエリ構文の出番はない。リフレクションは掘り進める都合上、ネストが深くなるのでLinqがなかったら、と思うとゾッとします。最近はforの二重ループですらウエエ、とか思ってしまうので。</p>
+<pre><code class="language-javascript">IWshRuntimeLibraryEnum =
+{
+    IOMode:
+    {
+        ForReading: 1,
+        ForWriting: 2,
+        ForAppending: 8
+    }
+}
+
+Folder = function() { }
+Folder.prototype =
+{
+    Name: null,
+    ParentFolder: null,
+    Drive: null,
+    CreateTextFile: function(FileName, Overwrite, Unicode)
+    {
+        /// &lt;param name=&quot;FileName&quot; type=&quot;String&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;Overwrite&quot; type=&quot;Optional:Boolean&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;Unicode&quot; type=&quot;Optional:Boolean&quot;&gt;&lt;/param&gt;
+        /// &lt;returns type=&quot;TextStream&quot;&gt;&lt;/returns&gt;
+    }
+}
+</code></pre>
+<p>一部抜粋ですが、こんなようなデータが出力されます。プロパティが全部nullなのは、ここに未指定のものが記述されているとIntelliSenseがエラー起こしてしまうから。例えばDrive: new Drive()で戻り値の型指定が可能といえば可能なのですが、出現位置の上下が問題になってくるので結構面倒くさい。ようはFolderよりも上にDriveがあれば関数が存在するので大丈夫だけど、下にあれば存在しないのでエラー。当たり前といえば当たり前なのですが、ダミーでのIntelliSense作りとしては面倒な問題でして。 この辺は素直に諦めて全部nullで型連鎖を止めてしまうのがお気楽といえばお気楽。あと、Dateはnew Date()にしてもDate.prototypeにしても型指定出来なかったりする問題もある。これは今のところ対処不能。</p>
+<p>そんなわけで、linq.js + WSHはわりと順調に作成中なので期待しないでも待っててください。IntelliSenseというだけじゃなく、JScriptではバイト配列が扱いにくいので、扱いやすく出来るような補助メソッドを用意したりとか色々やってたらいつになっても終わらないー。<a href="http://gyazo.com/5707f82cea9dc9af36ee5f825c5d56b7.png" title="5707f82cea9dc9af36ee5f825c5d56b7.png (PNG 画像, 632x672 px)">例としてWSHでMD5を作る</a>、とか。.NET Frameworkを通しているのでSHA1でも何でもいけます。これでWSHでwsse認証通してAtomAPIで投稿、とか出来ますね。まあ、もうC#でいいぢゃん、って気がかなりしなくもないですけど、うーん。C#4.0からdynamicが追加されるからCOM連携も楽になるしねえ。ただサイドバーガジェットに使うとか、JavaScriptの用途はまだまだあるもん！(これもSilverlightでやれば？って話がなくもないので、うーん)</p>
+</div>
+<h1><a href="https://neue.cc/2009/08/23_192.html">簡易文字列置換</a></h1>
 <ul class="date"><li>2009-08-23</li></ul>
 <div class="entry_body"><pre><code class="language-csharp">static void Main(string[] args)
 {
@@ -636,13 +735,6 @@ public static string Replace(this string input, string pattern, MatchEvaluator e
 </p>
 <p>ダミー置いて、その場で止められるようになる。それで作って、出来あがったらTapの行をCtrl+Xでゴミ箱ぽい。IEnumerableの場合は、普通にダミーのSelect置けばいいだけでしたね！ 今、そのことに気付いた。うーん、あと.Groups.Cast&lt;Group&gt;().Skip(1).Select(g =&gt; g.Value) も、頻繁にあるあるなので、Matchに拡張メソッド埋めときますか。</p>
 </div>
-<h1><a href="https://neue.cc/2009/07/12_175.html">ver 1.3.0.2 色々バグ修正</a></h1>
-<ul class="date"><li>2009-07-12</li></ul>
-<div class="entry_body"><ul>
-<li><a href="http://neue.cc/software/xboxinfotwit">neue cc - XboxInfoTwit</a></li>
-</ul>
-<p>バグフィックス祭り！ まずバグ報告があってそれを直して、つまりは普段と少し違う状態の時の処理が全く入ってなかったので、洗い出して処理を入れました。別に全く考えていなかったわけじゃないのですが、想定からの漏れが幾つか、というかたっぷりありまして……。具体的には「申請待ちのフレンドがいるとエラーになる」「ステータスが「退席中」の際にデータが正しく取得出来ない」「ステータスが「取り込み中」の際にエラーになる」です。不具合くせえええ、と思ったら遠慮無く言っていただけるととっても助かりますので、お願いします。</p>
-</div>
 <a href="https://neue.cc/24">Prev |</a>
 <a href="https://neue.cc/26">| Next</a>
 </div>
@@ -666,6 +758,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2023/07/">2023-07</a>
 <li><a href="https://neue.cc/2023/03/">2023-03</a>
 <li><a href="https://neue.cc/2023/01/">2023-01</a>
 <li><a href="https://neue.cc/2022/12/">2022-12</a>

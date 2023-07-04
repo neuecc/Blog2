@@ -23,7 +23,231 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2013/06/24_410.html">AsyncOAuth ver.0.7.0 - HttpClient正式版対応とバグ修正</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2013/06/30_411.html">Micro-ORMとテーブルのクラス定義自動生成について</a></h1>
+<ul class="date"><li>2013-06-30</li></ul>
+<div class="entry_body"><p>謎社のデータアクセスは<a href="http://neue.cc/2012/12/11_390.html">Micro-ORM</a>でやっています。生SQL書いて、シンプルなPOCOにマッピングするだけの。ですが、そこで困るのはPOCOの作成。データベースの写しなだけのクラスですが、手で作るには、ひじょーに面倒。Entity Frameworkならドラッグアンドドロップで！DataSetですらホイホイと作れるのに、100%手作業とか嫌だよー、200テーブルを延々とクラス作るだけの刺身たんぽぽなんてしてたら死んじゃうよー。</p>
+<p>というわけで、Micro-ORM使うなら避けては通れない定義。EFのクラス定義だけ流用しちゃうとか色々と逃げ道も考えられなくもないですが、もしくは数によっては手動で頑張ってしまうのも手ですが、ここは自動生成しましょうの会。</p>
+<h2>GetSchema</h2>
+<p>普通にSQLのクエリを書いてデータベースの情報を取ってくることも可能ですが、各データベースでそれぞれバラバラだったりするので、ここはADO.NETで用意されている<a href="http://msdn.microsoft.com/ja-jp/library/kcax58fh.aspx">GetSchema</a>を使いましょう。情報取得の部分が抽象化されていて、型無しDataTableとして受け取ることが可能です。</p>
+<pre><code class="language-csharp">using (var conn = new MySqlConnection(&quot;接続文字列。MySQLでもなんでもいいよ。&quot;))
+{
+    conn.Open();
+
+    var schema = conn.GetSchema();
+}
+</code></pre>
+<p>さて、schemaとやらをデバッガで見てみるとですね……</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/dt_table_rows.jpg" />
+</p>
+<p>うおおお、これがDataTableか！な、なんだ、このデバッガビリティの低さは……。これはヤヴァい。マジキチ。RowsのKeyを辿るのも苦労するうえに、Valueが一覧で見れない。頑張ってもKeyだけ。なんだこりゃ。データの取得もLINQ to DataSet(笑)によって、普通に実に扱いづらい。話にならない。 クソが。というわけで、今時ならば型無しDataTableはdynamicで扱ったほうが楽です。ExpandoObjectに変換しましょう。</p>
+<pre><code class="language-csharp">public static class DataTableExtensions
+{
+    /// &lt;summary&gt;DataTableの各RowをExpandoObjectに変換します。&lt;/summary&gt;
+    public static IEnumerable&lt;dynamic&gt; AsDynamic(this DataTable table)
+    {
+        return table.AsEnumerable().Select(x =&gt;
+        {
+            IDictionary&lt;string, object&gt; dict = new ExpandoObject();
+            foreach (DataColumn column in x.Table.Columns)
+            {
+                var value = x[column];
+                if (value is System.DBNull) value = null;
+                dict.Add(column.ColumnName, value);
+            }
+            return (dynamic)dict;
+        });
+    }
+}
+</code></pre>
+<p>こんなものを用意すると、 var schema = conn.GetSchema().AsDynamic() とするだけで</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/dt_dynamic_view.jpg">
+</p>
+<p>うおおおおおおお、超捗る！ちゃんと動的ビューでKeyとValueが見える！ExpandoObjectありがとう。DataTableは死ね。また、DBNullをフツーのnullに変換したりなどもしているので、データを触るのもかなり捗るといったところもあります。item.Field&lt;string&gt;(&quot;CollectionName&quot;)と書くよりも、item.CollectionNameって書きたいですから。</p>
+<p>では、気を取り直してこれで解析していきましょう。まずは、件のCollectionNameを見てみますか。</p>
+<pre><code class="language-csharp">// MetaDataCollections
+// DataSourceInformation
+// DataTypes
+// Restrictions
+// ReservedWords
+// Databases
+// Tables
+// Columns
+// Users
+// Foreign Keys
+// IndexColumns
+// Indexes
+// Foreign Key Columns
+// UDF
+// Views
+// ViewColumns
+// Procedure Parameters
+// Procedures
+// Triggers
+foreach (var item in conn.GetSchema().AsDynamic())
+{
+    Console.WriteLine(item.CollectionName);
+}
+</code></pre>
+<p>MySQLでは以上のデータが取れるようです。この辺は使ってるデータベースによってかなり変わるので、適宜調べながら合わせてみてくださいな。というわけで、それっぽそうなTablesを見てみます。var tables = conn.GetSchema(&quot;Tables&quot;).AsDynamic(); とすれば</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/dt_table_schema.jpg" />
+</p>
+<p>テーブル一覧が取れるようです。で、しかし、今回必要なのはTablesではありません。TablesはほんとーにTableのデータだけなので。今回必要なのは、Columnsです。</p>
+<pre><code class="language-csharp">var columns = conn.GetSchema(&quot;Columns&quot;).AsDynamic()
+    .GroupBy(x =&gt; x.TABLE_NAME) // 全てのカラムが平らに列挙されてくるのでテーブル名でグルーピング
+    .Select(g =&gt; new
+    {
+        ClassName = g.Key, // クラス名はテーブル名(= グルーピングのキー)
+        Properties = g
+            .OrderBy(x =&gt; x.ORDINAL_POSITION) // どんな順序で来るか不明なので、カラム定義順にきちんと並び替え
+            .Select(x =&gt; new
+            {
+                Name = x.COLUMN_NAME,
+                Type = x.DATA_TYPE
+            })
+            .ToArray()
+    });
+</code></pre>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/dt_columns_def.jpg" />
+</p>
+<p>良い感じに作れてきました。さて、クラスを自動生成するのに必要なのは「クラス名」「プロパティ名」「プロパティの型」です。DATA_TYPEだとDBの生の型名、bigintとかvarcharとかC#のデータ型じゃないよー。なので、このまんまじゃダメです。</p>
+<p>というわけで、マッピングを用意してあげます。といっても手動でやる必要はなくて、これはGetSchema(&quot;DataTypes&quot;)で取れます。</p>
+<pre><code class="language-csharp">// 型名を決めるのに必要なのは
+// TypeName(MySQLの型名), DataType(.NETの型名), IsUnsigned
+var typeDictionary = conn.GetSchema(&quot;DataTypes&quot;).AsDynamic()
+    .ToDictionary(x =&gt;
+        Tuple.Create((string)x.TypeName.ToLower(), (bool?)x.IsUnsigned ?? false),
+        x =&gt; (Type)Type.GetType(x.DataType));
+
+// MySQLのtinyintはboolとして使われることが多いので、そちらにマッピングしちゃう（不要ならしなくていいです）
+typeDictionary[Tuple.Create(&quot;tinyint&quot;, true)] = typeof(bool);
+typeDictionary[Tuple.Create(&quot;tinyint&quot;, false)] = typeof(bool);
+
+// nullableの場合を考慮する必要があるのでTypeDictionaryは生では使わない
+Func&lt;string, bool, bool, string&gt; getTypeName = (dataType, isUnsigned, isNullable) =&gt;
+{
+    var type = typeDictionary[Tuple.Create(dataType.ToLower(), isUnsigned)];
+    return (isNullable &amp;&amp; type.IsValueType)
+        ? type.Name + &quot;?&quot; // 値型かつnull許可の時
+        : type.Name;
+};
+</code></pre>
+<p>TypeName(MySQLの型名), DataType(.NETの型名), IsUnsigned。それにNullableへの対応を組み合わせれば、マッピングできると考えられます。GetSchemaからの情報だけだとNullable対応が苦しくなるので、外にメソッド立てています。</p>
+<p>さて、この型定義辞書を使って変換すると、以下のようになります。</p>
+<pre><code class="language-csharp">var columns = conn.GetSchema(&quot;Columns&quot;).AsDynamic()
+    .GroupBy(x =&gt; x.TABLE_NAME) // 全てのカラムが平らに列挙されてくるのでテーブル名でグルーピング
+    .Select(g =&gt; new
+    {
+        ClassName = g.Key, // クラス名はテーブル名(= グルーピングのキー)
+        Properties = g
+            .OrderBy(x =&gt; x.ORDINAL_POSITION) // どんな順序で来るか不明なので、カラム定義順にきちんと並び替え
+            .Select(x =&gt; new
+            {
+                Name = x.COLUMN_NAME,
+                // unsignedの判定はCOLUMN_TYPEから、nullableの判定はYES/NOで行われる
+                Type = getTypeName(x.DATA_TYPE, x.COLUMN_TYPE.Contains(&quot;unsigned&quot;), x.IS_NULLABLE == &quot;YES&quot;)
+            })
+            .ToArray()
+    });
+</code></pre>
+<p>これで完璧！さて、定義の抽出はできたので、次はテンプレート作りにいきましょうか。</p>
+<h2>T4</h2>
+<p>（テキストとしての）C#コード生成は、C#コード上で文字列を切った貼ったする、わけは勿論ありません。この手の作業するときはテンプレートエンジンを使うのが良いでしょう。最近だとRazorを使った<a href="http://razorengine.codeplex.com/">RazorEngine</a>などもあるのですが、RazorはあくまでHTML/XMLを出力するのに向いている構文で、C#コードを出力するような用途で使うのは、あまり向いていません。ここは素直にVisual Studio標準の<a href="http://msdn.microsoft.com/ja-jp/library/bb126445.aspx">T4 Template</a>を使うのが良いでしょう。あえてStringTemplate.NETとか、他のを選ぶ理由は、ないかなぁ。T4でいいですよ。</p>
+<p>T4にはVisual Studioと連携して保存時にテンプレートが当てはまったテキストを出力するタイプと、ふつーのクラスとして、実行時に任意の変数をあてて、テキストを生成するもののニタイプが選べます。このブログでも何度か紹介してきたのは、全て前者でしたが、今回は後者のパターンを使います。</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/image/dt_runtime_template.jpg" />
+</p>
+<p>昔の名前は「前処理されたテキストテンプレート」でした。VS2012から名前変わって「ランタイムテキストテンプレート」になったようです。見つからなかったら検索ウィンドウにT4と入れると良いですよ。では、まず、TableGeneratorTemplate.ttとしてテンプレートを定義します。</p>
+<pre><code class="language-csharp">&lt;#@ template language=&quot;C#&quot; #&gt;
+&lt;#@ assembly name=&quot;System.Core&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Linq&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Text&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Collections.Generic&quot; #&gt;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+public class &lt;#= ClassName #&gt;
+{
+&lt;# foreach(var x in Properties) {#&gt;
+    public &lt;#= x.Type #&gt; &lt;#= x.Name #&gt; { get; set; }
+&lt;# } #&gt;
+
+    public override string ToString()
+    {
+        return &quot;&quot;
+&lt;# foreach(var x in Properties) {#&gt;
+            + &quot;&lt;#= x.Name #&gt; : &quot; + &lt;#= x.Name #&gt; + &quot;|&quot;
+&lt;# } #&gt;
+            ;
+    }
+}
+</code></pre>
+<p>テンプレートの記法としては、#=で囲むだけなので、まぁそう難しいものでもないです、読みづらさはかなりありますが。さて、このままだとClassNameとかPropertiesとかいうのは未定義でコンパイルもできないので、パーシャルクラスを作ります。クラス名はテンプレートと同名で。</p>
+<pre><code class="language-csharp">public partial class TableGeneratorTemplate
+{
+    public string ClassName { get; set; }
+    public IEnumerable&lt;dynamic&gt; Properties { get; set; }
+
+    public TableGeneratorTemplate(string className, IEnumerable&lt;dynamic&gt; properties)
+    {
+        this.ClassName = className;
+        this.Properties = properties;
+    }
+}
+</code></pre>
+<p>これで、パラメータを渡せるようになりました。コンパイルエラーも出ません。というわけで実際に出力しましょう。テンプレートをnewして、TransformTextを呼ぶだけです。</p>
+<pre><code class="language-csharp">// あ、ちなみにここまでのはConsoleApplicationでの話でした、はい。
+// テーブル名.csにテンプレートを当てて全部出力
+foreach (var item in columns)
+{
+    var tt = new TableGeneratorTemplate(item.ClassName, item.Properties);
+    var text = tt.TransformText();
+    File.WriteAllText(item.ClassName + &quot;.cs&quot;, text, Encoding.UTF8);
+}
+</code></pre>
+<p>これで、以下の様なファイルがテーブル数だけ出力されます。</p>
+<pre><code class="language-csharp">using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+public class aiueo_test_table
+{
+    public Int64 id { get; set; }
+    public String name { get; set; }
+    public Int32 age { get; set; }
+    public DateTime? created { get; set; }
+    public DateTime? modified { get; set; }
+
+    public override string ToString()
+    {
+        return &quot;&quot;
+            + &quot;id : &quot; + id + &quot;|&quot;
+            + &quot;name : &quot; + name + &quot;|&quot;
+            + &quot;age : &quot; + age + &quot;|&quot;
+            + &quot;created : &quot; + created + &quot;|&quot;
+            + &quot;modified : &quot; + modified + &quot;|&quot;
+            ;
+    }
+}
+</code></pre>
+<p>やったね！刺身たんぽぽさようなら！ちなみにただのプロパティの塊というだけじゃなく、ToStringも生成しておいてやると、実アプリでのデバッグの時に割と便利ですねー。</p>
+<h2>応用</h2>
+<p>GetSchemaで得られる情報は他にも沢山ありますので、Diffを取るプログラムを書けたり、あと、Index, IndexColumnsでインデックスの情報が取れます。インデックスで貼られているものはselectクエリーをほぼほぼ発行するはず、とみなせるので、selectクエリを発行するメソッドを自動生成しちゃったりとかは、実際に謎社ではしています。</p>
+<p>つまり作業手順としては、どちらかというデータベースファーストになります。結局、コードとデータベースは違うので、データベース優先の定義・作業のほうが、どこまでいっても自然かな、と。(EF)コードファーストは私は幻想だと思っています。別に、SQL Server Management StudioなりHeidiSQLなどのツールでぽちぽち定義作るのは、そう面倒なわけでもない。そこからC#側のクラス定義も自動で生成できるのなら、むしろ、無理のあるコードでのデータベース表現をして回るよりも、結局、楽じゃない？DB定義をC#側から発行されて、どーのこーとか、なんてのに気を使わなくてもいいので、ずっと楽ちんだと思うんだ。原始的で全然スマートじゃないようで、実利はこっちにある。</p>
+<h2>まとめ</h2>
+<p>コードの詳細はMySQLなので、SQL Serverとかじゃ100%そのままは動かないかもですが、その辺は適宜調整してください、きっと似たようなのはあるはずなので。</p>
+<p>あと、GetSchemaのDataTableで何が取れるのか、どんなフィールドがあるのかって、特にMySQLだとドキュメントゼロなのですが、そこでAsDynamicは本当に死ぬほど役に立ちました。Visual Studio上でのデバッガビリティを高めるの超大事。その辺がクソなのがDataTableの嫌なところですねえ。今時DataSetを使いまくってるレガシー会社とかあると悲しいですねえ。</p>
+<p>ともあれ、dynamicはかなりデバッガビリティ高いので、活用してあげると良いです。dynamic、最近だと忘れ去られているC#の機能らしいので（笑）まあ、メインには使いませんけれど、あるとやっぱ便利なので、あって良かったなって、思いますよん。</p>
+</div>
+<h1><a href="https://neue.cc/2013/06/24_410.html">AsyncOAuth ver.0.7.0 - HttpClient正式版対応とバグ修正</a></h1>
 <ul class="date"><li>2013-06-24</li></ul>
 <div class="entry_body"><p>HttpClientが<a href="http://blogs.msdn.com/b/dotnet/archive/2013/05/29/get-httpclient-rtm-200-ok.aspx">RTMを迎えた</a>、と思ったら、<a href="http://blogs.msdn.com/b/dotnet/archive/2013/06/19/update-to-httpclient-and-automatic-decompression.aspx">次バージョンのベータ</a>が出た、と、展開早くて追いつけないよ～な感じですが、とりあえず正式版のほうを要求する形で、AsyncOAuthも今回からBetaじゃなくなりました。</p>
 <ul>
@@ -1454,116 +1678,6 @@ Console.WriteLine(value2); // ほげ！
 <h2>もにゃど</h2>
 <p>それもにゃど、という人はLINQでMaybeモナドでも検索しませう。既出なので私は書きません。</p>
 </div>
-<h1><a href="https://neue.cc/2013/02/08_396.html">連打対策などりの同時アクセス禁止機構</a></h1>
-<ul class="date"><li>2013-02-08</li></ul>
-<div class="entry_body"><p>ゆるふわ連打対策のお時間です。連打されて無限にあーーーーーーー！という悲鳴を上げたり上げなかったりするとかしないとしても、何らかの対策したいよね！ということで、ASP.NETのお話。Application.Lock使ってSessionに、というのは複数台数あったら死ぬのでナシね(Application.Lockは当然、一台単位でのロックなので複数台数でロックは共有されてない)。そんなわけで、カジュアルな一手を打ちます。先に利用例から。</p>
-<pre><code class="language-csharp">static void StandardUsage(string token)
-{
-    // 複数サーバーで共有されるロックもどきの取得
-    using (var rock = DistributedLock.Acquire(&quot;StandardUsage-Lock-Token-&quot; + token))
-    {
-        rock.ThrowIfLockAlreadyExists(); // 二重に取得された場合は即座に例外！
-
-        // 以下、本体を書けばいい
-    }
-}
-</code></pre>
-<p>こんなふーに書けると、楽ですね。tokenは、まあ好きな単位で。ユーザー一人の単位だったら、認証済みなら何らかのIDを。非認証状態なら、POSTのHiddenにGUIDでも仕込んでおけばいい、と。ただの連打対策ってわけじゃなく、複数ユーザー間で同時処理されるのを抑えたければ、何らかのキーを、例えばソーシャルゲームだとチーム単位で、チームIDでかけたりとかします。</p>
-<p>ロックもどきには↑の例ではMemcachedを使いました。単純に、Memcachedに指定キーでAddしにいく→Keyが既に存在していると上書きしないで追加に失敗→二重実行時は必ず失敗したという結果を受け取れる(bool:falseで)→Disposeで追加出来たときのみキーを必ず削除する（＆保険でexpireもつけておく)</p>
-<p>usingの部分は割と定型なので、毎回コントローラーを丸ごと囲むとかなら、属性作って、属性ペタッと貼るだけでOKみたいな形にするといいと思われます！</p>
-<p>ド単純ですが、普通に機能して、結構幸せになれるかな？Memcachedならカジュアルに叩いても、相当耐えきれますから。あ、勿論、固定の台にリクエストが飛ぶの前提なのでノードがぐいぐい動的に追加削除されまくるよーな状況ではダメですよ、はい。あんまないでしょうが（Memcachedはクライアントサイドの分散で、複数台あってもキーが同一の場合は基本的に同じ台に飛ぶ）。</p>
-<pre><code class="language-csharp">public class DistributedLockAlreadyExistsException : Exception
-{
-    public DistributedLockAlreadyExistsException(string key)
-        : base(&quot;LockKey:&quot; + key)
-    { }
-}
-
-public class DistributedLock : IDisposable
-{
-    static MemcachedClient client = new MemcachedClient();
-    static readonly TimeSpan DefaultExpire = TimeSpan.FromSeconds(5);
-
-    public bool IsAcquiredLock { get; private set; }
-    string key;
-    bool disposed;
-
-    private DistributedLock(string key, TimeSpan expire)
-    {
-        this.key = key;
-        this.IsAcquiredLock = client.Store(StoreMode.Add, key, DateTime.Now.Ticks, expire);
-    }
-
-    public static DistributedLock Acquire(string key)
-    {
-        return Acquire(key, DefaultExpire);
-    }
-
-    public static DistributedLock Acquire(string key, TimeSpan expire)
-    {
-        return new DistributedLock(key, expire);
-    }
-
-    public async Task&lt;bool&gt; WaitAndRetry(int retryCount, TimeSpan waitTime)
-    {
-        var count = 0;
-        while (count++ &lt; retryCount &amp;&amp; !IsAcquiredLock)
-        {
-            await Task.Delay(waitTime);
-            IsAcquiredLock = client.Store(StoreMode.Add, key, DateTime.Now.Ticks, DefaultExpire);
-        }
-        return IsAcquiredLock;
-    }
-
-    public void ThrowIfLockAlreadyExists()
-    {
-        if (!IsAcquiredLock)
-        {
-            throw new DistributedLockAlreadyExistsException(key);
-        }
-    }
-
-    public void Dispose()
-    {
-        if (!disposed &amp;&amp; IsAcquiredLock)
-        {
-            disposed = true;
-            var removeSuccess = client.Remove(key);
-        }
-        GC.SuppressFinalize(this);
-    }
-
-    ~DistributedLock()
-    {
-        Dispose();
-    }
-}
-</code></pre>
-<p>Memcachedのライブラリは<a href="https://github.com/enyim/EnyimMemcached">EnyimMemcached</a>です。</p>
-<h2>Asyncとリトライ</h2>
-<p>取得に失敗したら、間隔おいてリトライぐらいはしたいですよね、いや、連打対策なら不要ですが、そうでないように使う場合は。でも、ベタにThread.Sleepでまったりしたくないよねえ、という、そこでasyncですよ！async！</p>
-<pre><code class="language-csharp">async static Task TaskUsage(string token)
-{
-    using (var rock = DistributedLock.Acquire(&quot;TaskUsage-Lock-Token-&quot; + token))
-    {
-        if (!rock.IsAcquiredLock)
-        {
-            // 200ミリ秒感覚で3回取得に挑戦する
-            await rock.WaitAndRetry(3, TimeSpan.FromMilliseconds(200));
-            rock.ThrowIfLockAlreadyExists(); // それでもダメなら例外投げるん
-        }
-
-        // 以下、本体を書けばいい！
-    }
-}
-</code></pre>
-<p>WaitAndRetryメソッドではawait Task.Delay(waitTime)によって待機させています。少し前だとまんどくせ、と思って書く気のしない処理も、C# 5.0のお陰でカジュアルに書けるようになっていいですね。</p>
-<h2>Memcachedを立てないサーバー一台の場合</h2>
-<p>サーバー一台の場合は、わざわざMemcached立てるのも馬鹿らしいので、インメモリなキャッシュを代替として使えばいいと思われます。HttpRuntime.Cacheでも、System.Runtime.Caching.MemoryCacheでも、なんでもを、client.Storeのとこに差し替えてもらえれば。ただ、MemoryCacheは何かちょっと今回試すためにもぞもぞ弄ってたんですが、Addまわりの挙動がすんごく怪しくて信用ならない気がするので私は使うのパス。大丈夫なのかなあ。</p>
-<h2>まとめ</h2>
-<p>うーん、まんま、かつ、ゆるふわ単純な話なので特にまとめる話はないかしらん。</p>
-<p>ので、We're Hiringということで<a href="http://grani.jp/">謎社のほめぱげが少しだけリニューアル</a>、ただしリクルートページが諸事情でまだ工事中！メールフォーム入れるつもりなので、↑のような感じにC# 5.0をすぐに振り回すような最先端な環境のC#でウェブな開発がやりたい方は、是非応募してください。相当本気で人が欲しいところですねー。現状ですけれど、<a href="http://gamebiz.jp/?p=93013">リリース2週間で早くもランキング3位を獲得</a>などと、あまり細かくは言えないのですけれど、まあ非常に好調ですので、安心して＆是非とも一緒に加速させましょう。</p>
-</div>
 <a href="https://neue.cc/10">Prev |</a>
 <a href="https://neue.cc/12">| Next</a>
 </div>
@@ -1587,6 +1701,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2023/07/">2023-07</a>
 <li><a href="https://neue.cc/2023/03/">2023-03</a>
 <li><a href="https://neue.cc/2023/01/">2023-01</a>
 <li><a href="https://neue.cc/2022/12/">2022-12</a>
