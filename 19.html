@@ -23,7 +23,68 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2010/12/20_290.html">linq.js & Reactive Extensions for JavaScript(RxJS)入門</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2010/12/24_291.html">Reactive ExtensionsとPublishによるシーケンスの分配</a></h1>
+<ul class="date"><li>2010-12-24</li></ul>
+<div class="entry_body"><p>Twitter上で見たお題、10個コンソールから整数の入力を受けて最少と最大を出す。Linqで書くならこうでしょうか。通常は0-10でfor文を回すところはRangeで。あとはMinとMax。int.Parseなので数字以外は例外飛んでしまいますが、その辺は無視で。</p>
+<pre><code class="language-csharp">var input = Enumerable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()));
+
+var max = input.Max();
+var min = input.Min();
+</code></pre>
+<p>はい。これだと20回入力させることになってしまいます。Maxで列挙され、Minでも列挙され。ダメですね。というわけで、配列に一度保存しますか。</p>
+<pre><code class="language-csharp">var input = Enumerable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()))
+    .ToArray();
+
+var max = input.Max();
+var min = input.Min();
+</code></pre>
+<p>よろしい。しかしこれの列挙回数は3回です。ToArrayで一度、Maxで一度、Minで一度。しかもMaxとMinを出したいだけなのに、わざわざ配列に保存してしまっています。もし配列が巨大になる場合はメモリ的な意味でもちょっと嫌ですねえ。さて、そこで出番なのが、プッシュ型シーケンスを持つReactive Extensions。プッシュ型ならば分配が可能です。やってみましょう？</p>
+<pre><code class="language-csharp">Observable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()))
+    .Publish(xs =&gt; xs.Min().Zip(xs.Max(), (min, max) =&gt; new { min, max }))
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>ふむ、これはクールだ……。Rxの格好良さは異常。</p>
+<p>Publishは<a href="http://neue.cc/2010/06/24_263.html" title="neue cc - Reactive Extensions for .NET (Rx) メソッド探訪第7回:IEnumerable vs IObservable">今までにも何度も出してきました</a>が、シーケンスを分配するメソッドです。今までは引数なしにして、IConnectableObservableを変数に受けて、それに対してポコポコ足して、最後にConnect。としていましたが、Publishには引数有り版も用意されています。引数有りの場合は分配されたIObservableが変数として渡ってくるわけです。つまり上のコードは</p>
+<pre><code class="language-csharp">var input = Observable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()))
+    .Publish();
+
+input.Min().Zip(input.Max(), (min, max) =&gt; new { min, max })
+    .Subscribe(Console.WriteLine);
+
+input.Connect();
+</code></pre>
+<p>と等しいということになります。ちなみにPublish内でSubscribeしたって構わないわけなので</p>
+<pre><code class="language-csharp">Observable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()))
+    .Publish(xs =&gt;
+    {
+        xs.Min().Subscribe(x =&gt; Console.WriteLine(&quot;min:&quot; + x));
+        xs.Max().Subscribe(x =&gt; Console.WriteLine(&quot;max:&quot; + x));
+        xs.Sum().Subscribe(x =&gt; Console.WriteLine(&quot;sum:&quot; + x));
+        xs.Average().Subscribe(x =&gt; Console.WriteLine(&quot;avg:&quot; + x));
+        return xs;
+    })
+    .Subscribe();
+</code></pre>
+<p>といったような書き方も可能ですね。では、min,max,sum,avgと4つを返したい場合はどうしよう。Join-And-Thenを使います。</p>
+<pre><code class="language-csharp">Observable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()))
+    .Publish(xs =&gt; Observable.Join(xs
+        .Min().And(xs.Max()).And(xs.Sum()).And(xs.Average())
+        .Then((min, max, sum, avg) =&gt; new { min, max, sum, avg })))
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>この例だと単純に直列に繋いでいるだけなので、Zipと同じようにAndで繋いでThen。というだけですね。ちょいとゴチャッとしていますが。Joinの強力なところはAnd-Thenで作るPlan(Thenの戻り値)を複数受けられるという点にあります。これにより複雑な結合を生成する事ができます。ZipとMergeが混ざったような、でももう少し複雑な何か。といった雰囲気。</p>
+<h2>Publish</h2>
+<p>Publishはオーバーロードが8つもあって最初戸惑ってしまいますが、分類としては二つに分けられます(そしてそれぞれFuncを受け取る/スケジューラを受け取るの組み合わせで4つに分かれて2x4=8のオーバーロード)。一つは引数として初期値を受け取らないもの。もう一つは受け取るもの。今までは全部、受け取らないものを見てきました。内部的にはSubjectを使って分配しています。一方、初期値を受け取るものは内部的にBehaviorSubjectを使って分配します。というわけで、どんな挙動を取るのかよくわからない、という場合はBehaviorSubjectを試してみると良いでしょう！(何だこの解説する気ゼロな投げっぱなしな説明は)</p>
+<h2>ところでな余談</h2>
+<p>注意しないといけないのは、ふつーのシーケンスがあって、それをRxで分配やるとはっきし言って遅いです。列挙数が多くなると、ただ配列舐めるのに比べて数万倍のパフォーマンス差が出たりします。ほとんどのシチュエーションでRxで分配するぐらいなら二度三度舐めたほうが速いです。まあ、分配に限らずRxが普通に遅いということなのですがー。ご利用は計画的に。今回の例のConsole.ReadLineで、というのは、当然Rxのほうが速いですが。入力とリアルタイムに応答していますからね。Reactive！ようするところ、Rxが活きるのってそういうところ、かしらん。</p>
+</div>
+<h1><a href="https://neue.cc/2010/12/20_290.html">linq.js & Reactive Extensions for JavaScript(RxJS)入門</a></h1>
 <ul class="date"><li>2010-12-20</li></ul>
 <div class="entry_body"><p>このエントリは<a href="http://atnd.org/events/10497">JavaScript Advent Calendar 2010 : ATND</a>の20日目として書きます。一つ前はsecondlifeさんの<a href="http://subtech.g.hatena.ne.jp/secondlife/20101219/1292717231" title="コマンドラインから JavaScript のシンタックスチェックを行う方法 - って、なんでですか〜 - subtech">コマンドラインから JavaScript のシンタックスチェックを行う方法 - って、なんでですか〜 - subtech</a>でした。</p>
 <p>普段はC#でもしゃもしゃしている、<a href="http://twitter.com/neuecc" title="neuecc (neuecc) on Twitter">@neuecc</a>(twitter)といいます。そんなわけで今回はC#畑からのJavaScriptライブラリを二つほど紹介します。</p>
@@ -2204,171 +2265,6 @@ ReplayButton.Click += (sender, e) =&gt;
 <p>Rxの厄介なところは、IObservable&lt;T&gt;が一つで色々な状態を持ちすぎ。HotとColdの違いもある上に、更には混じり合った状態まである、Deferと非Deferも、外からだけだと全く区別がつかない。もう分かりづらいったらない。これに関しては一個一個丁寧に見ていくしかない、かな。今回はRxにおける非同期を徹底的に解剖してみました。一つ一つ、丁寧に。Rxも徐々に盛り上がりつつあるようなので、これからも、私なりに出来る限りに情報を発信していけたらと思います。</p>
 <p>ところで、凄くシンプルなんですよね、Rxって。何を言ってるんだ？って話ですが、ええと、ほら、あくまでも「簡易」だからってのもありますが、実装のコード行数も少ないし全然難しいことやってないという。Linq to Objectsもそれ自体は凄くシンプルで、シンプルなのにとんでもなく強力という。それと同じで。Rx触ってて、内部をリフレクタでちょろちょろと見てて、本当に驚く。シンプルなのだけど、自分じゃ絶対書けないし思いつけないしっていう。悔しいし、そして、憧れるところですねえ。</p>
 <p>特に魔法もなく、素直に中間層厚めな実装は、パフォーマンスは（もがもがもがもが）。何か言いました？</p>
-</div>
-<h1><a href="https://neue.cc/2010/09/12_276.html">ReactiveOAuth - Windows Phone 7対応のOAuthライブラリ</a></h1>
-<ul class="date"><li>2010-09-12</li></ul>
-<div class="entry_body"><ul>
-<li><a href="http://reactiveoauth.codeplex.com/" title="ReactiveOAuth">CodePlex - ReactiveOAuth</a></li>
-</ul>
-<p>Windows Phone 7用のOAuth認証ライブラリを作成し、公開しました。他のライブラリに比べての特徴は、非同期APIしか用意されていないWindows Phone 7での利用を念頭に置き、<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Reactive Extensions(Rx)</a>をフル活用しているという点です。そもそもWindows Phone 7対応のOAuthライブラリが少ないので、特にWindows Phone 7開発者は是非どうぞ。</p>
-<p>Windows Phone 7専用というわけでもないですが(Console/WPFで使えるよう、DLLとサンプルコードを用意してあります)、Windows Phone 7以外では別途Rxのインストールが必要です。Windows Phone 7環境では最初から入っているのでRxのインストール不要。Silverlight用は、コードコピペで別プロジェクト立てるだけで動くと思うんですが、確認取るのが面倒だった（クロスドメインがー）ので、そのうちに。</p>
-<p>ところでそもそもRxって何、という人は <a href="http://neue.cc/2010/07/28_269.html" title="neue cc - Reactive Extensions入門 + メソッド早見解説表">Reactive Extensions入門 + メソッド早見解説表</a> をどうぞ。</p>
-<h2>何故Rxを使うのか</h2>
-<p>ReactiveOAuthの説明に入る前に、何故Rxを使うのかということを少し。理由は簡単で、非同期プログラミングは大変だから。論より証拠で、WebRequestのPOSTを全てBegin-Endパターンで構築してみましょう。</p>
-<pre><code class="language-csharp">var req = (HttpWebRequest)WebRequest.Create(&quot;http://google.co.jp/&quot;); // dummy
-req.Method = &quot;POST&quot;;
-req.BeginGetRequestStream(ar =&gt;
-{
-    var stream = req.EndGetRequestStream(ar);
-    stream.BeginWrite(new byte[10], 0, 10, _ar =&gt;
-    {
-        stream.EndWrite(_ar);
-        req.BeginGetResponse(__ar =&gt;
-        {
-            var res = req.EndGetResponse(__ar);
-            var resStream = res.GetResponseStream();
-            var s = new StreamReader(resStream).ReadToEnd();
-            Console.WriteLine(s);
-        }, null);
-    }, null);
-}, null);
-</code></pre>
-<p>コールバックの連鎖とはこういうことであり、大変酷い。冗談のようだ。こんなに面倒なら、こんなに苦しいのなら、非同期などいらぬ！しかし現実問題、Silverlightには、Windows Phone 7には、非同期APIしか搭載されていません。Begin-Endが強要される世界。理由は分かる。ユーザーエクスペリエンスの為でしょう。モバイル機器は性能が貧弱だから重い処理はいけない、と言うけれど、大事なのは処理が重いか否かではなく、体感。UIを止めさえしなければ、不快感を与えることはない。だから、強制的に非同期操作のみとした。</p>
-<p>けれど、それで開発難しくなったり面倒になってしまってはいけない。非同期処理が簡単に出来れば……。その答えが、Rx。「簡単に出来るから」「開発者が幸せで」「全てが非同期になり」「ユーザーも幸せになる」。楽しい開発って大事だよね。本当にそう思っていて。開発者が不幸せで、コードに愛がなければ良いものなんて生まれやしないんだって、本当に思っていて。</p>
-<pre><code class="language-csharp">// Rxならこう書ける（...AsObservableは拡張メソッドとして別途定義）
-req.GetRequestStreamAsObservable()
-    .SelectMany(stream =&gt; stream.WriteAsObservable(new byte[10], 0, 10))
-    .SelectMany(_ =&gt; req.GetResponseAsObservable())
-    .Select(res =&gt; new StreamReader(res.GetResponseStream()).ReadToEnd())
-    .Subscribe(Console.WriteLine);
-
-// SelectManyが苦手ならばクエリ構文という手もあります
-var query = from stream in req.GetRequestStreamAsObservable()
-            from _ in stream.WriteAsObservable(new byte[10], 0, 10)
-            from res in req.GetResponseAsObservable()
-            select new StreamReader(res.GetResponseStream()).ReadToEnd();
-query.Subscribe(Console.WriteLine);
-</code></pre>
-<p>ネストが消滅して、メソッドチェーンの形をとって非同期が同期的のように書けるようになります。利点は他にもあって、様々な操作（合成・射影・抽出・待機などなど）が可能になる、ということもありますが、それはまたそのうち。</p>
-<p>ところで、最初のコールバックの連鎖って何だか見覚えのあるような雰囲気ありませんか？JavaScriptで。そう、XmlHttpRequestであったりsetTimeoutであったりの連鎖と同じです。RxのJavaScript版、RxJSではJavaScriptでのそれらのネストを殺害することが可能です。興味があれば、そちらも是非試してみてくださいな。</p>
-<h2>ReactiveOAuthとは?</h2>
-<p>OAuthであっても、ようするにWebRequestなわけです。GET/POSTしてResponseを取ってくるということにかわりはない。そんなわけで、ネットワーク通信してResponseを取ってくる部分を片っ端から全てIObservableにしたのがReactiveOAuthです。Rxにべったり依存したことで、良くも悪くも、他のOAuthライブラリとは全く毛色の違う仕上がりになっています。</p>
-<p>とはいっても、とにかく「簡単に書けること」にこだわりを持ってデザインしたので、利用自体は簡単ですし、Rxの知識もそんなに必要ありません。普通に取得するなら、SelectとSubscribeしか使わないので、全然安心です！まあ、できれば、これが入り口になってRxの世界を知ってもらえると嬉しいなあ、という皮算用もあったりですが。</p>
-<h2>使いかた1. AccessToken取得</h2>
-<p>デスクトップアプリケーション上でのOAuthの仕組みを簡単に説明すると、RequestToken取得→認証URL表示→PINコード入力→PINコード＋RequestTokenを使ってAccessToken取得。という形になっています。まず、ユーザー名・パスワードの代わりとなるものはAccessTokenです。これを取得して、API呼び出しの時に使い、また、パスワード代わりに保存するわけです。そのRequestTokenやPINコードはAccessTokenを取得するための一時的な認証用キーということです。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/rxoauth_gettoken.jpg">
-</p>
-<p>AccessToken取得までにはOAuthAuthorizerクラスを使います。</p>
-<pre><code class="language-csharp">// グローバル変数ということで。
-const string ConsumerKey = &quot;consumerkey&quot;;
-const string ConsumerSecret = &quot;consumersecret&quot;;
-RequestToken requestToken;
-AccessToken accessToken;
-
-private void GetRequestTokenButton_Click(object sender, RoutedEventArgs e)
-{
-    var authorizer = new OAuthAuthorizer(ConsumerKey, ConsumerSecret);
-    authorizer.GetRequestToken(&quot;http://twitter.com/oauth/request_token&quot;)
-        .Select(res =&gt; res.Token)
-        .ObserveOnDispatcher()
-        .Subscribe(token =&gt;
-        {
-            requestToken = token;
-            var url = authorizer.BuildAuthorizeUrl(&quot;http://twitter.com/oauth/authorize&quot;, token);
-            webBrowser1.Navigate(new Uri(url)); // navigate browser
-        });
-} 
-</code></pre>
-<p>GetRequestTokenとBuildAuthorizeUrlを使い、RequestTokenの取得と、内蔵ブラウザに認証用URLを表示させました。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/rxoauth_authorized.jpg">
-</p>
-<pre><code class="language-csharp">private void GetAccessTokenButton_Click(object sender, RoutedEventArgs e)
-{
-    var pincode = PinCodeTextBox.Text; // ユーザーの入力したピンコード
-
-    var authorizer = new OAuthAuthorizer(ConsumerKey, ConsumerSecret);
-    authorizer.GetAccessToken(&quot;http://twitter.com/oauth/access_token&quot;, requestToken, pincode)
-        .ObserveOnDispatcher()
-        .Subscribe(res =&gt;
-        {
-            // Token取得時のレスポンスには、Token以外に幾つかのデータが含まれています
-            // Twitterの場合はuser_idとscreeen_nameがついてきます
-            // ILookup&lt;string,string&gt;なので、First()で取り出してください
-            UserIdTextBlock.Text = res.ExtraData[&quot;user_id&quot;].First();
-            ScreenNameTextBlock.Text = res.ExtraData[&quot;screen_name&quot;].First();
-            accessToken = res.Token; // AccessToken
-        });
-}
-</code></pre>
-<p>画像は認証が全て終わった時の図になっています。RequestTokenとPinCodeをGetAccessTokenメソッドに渡すだけです。これでAccessTokenが取得できたので、全ての認証が必要なAPIにアクセス出来るようになりました。</p>
-<h2>使いかた2. APIへのGet/Post</h2>
-<p>ここからはConsoleApplicationのサンプルコードで説明。</p>
-<pre><code class="language-csharp">var client = new OAuthClient(ConsumerKey, ConsumerSecret, accessToken)
-{
-    Url = &quot;http://api.twitter.com/1/statuses/home_timeline.xml&quot;,
-    Parameters = { { &quot;count&quot;, 20 }, { &quot;page&quot;, 1 } },
-    ApplyBeforeRequest = req =&gt; { req.Timeout = 1000; req.UserAgent = &quot;ReactiveOAuth&quot;; }
-};
-client.GetResponseText()
-    .Select(s =&gt; XElement.Parse(s))
-    .Run(x =&gt; Console.WriteLine(x.ToString()));
-</code></pre>
-<p>IObservable&lt;T&gt;連鎖の最後のメソッドとしてRunを使うと、同期的になります。通常はSubscribeで非同期にすると良いですが、コンソールアプリケーションなどでは、同期的な動作のほうが都合が良いでしょう。</p>
-<p>OAuthClientを作成し、オブジェクト初期化子でURL、パラメータ（コレクション初期化子が使えます）を設定したら、GetResponseTextを呼ぶだけ。あとはIObservable&lt;string&gt;になっているので、Linqと同じように操作していけます。</p>
-<p>ApplyBeforeRequestではリクエストが発行される前に、生のHttpWebRequestが渡されるので（！）、TimeoutやUserAgentなど細かい設定がしたい場合は、ここにラムダ式を埋めてください。</p>
-<p>では、POSTは？</p>
-<pre><code class="language-csharp">new OAuthClient(ConsumerKey, ConsumerSecret, accessToken)
-{
-    MethodType = MethodType.Post,
-    Url = &quot;http://api.twitter.com/1/statuses/update.xml&quot;,
-    Parameters = { { &quot;status&quot;, &quot;PostTest from ReactiveOAuth&quot; } }
-}.GetResponseText()
-    .Select(s =&gt; XElement.Parse(s))
-    .Run(x =&gt; Console.WriteLine(&quot;Post Success:&quot; + x.Element(&quot;text&quot;)));
-</code></pre>
-<p>POSTの場合はMethodTypeにMethodType.Postを指定します(デフォルトがGETなので、GETの場合は指定の省略が可)。それ以外はGETと同じです。Urlとパラメータ指定して、GetResponse。</p>
-<h2>ストリーミングもいけます</h2>
-<p>OAuthClientには3つのメソッドがあります。GetResponseは生のWebResponseを返すもので細かい制御をしたい時にどうぞ。GetResponseTextはStreamReaderのReadToEndで応答をテキストに変えたものを返してくれるもので、お手軽です。そのままXElement.Parseとかに流すと楽ちん。そして、GetResponseLinesはReadLineで一行ずつ返してくれるもの、となっています。GetResponseTextとGetResponseLinesは型で見ると両方共IObservable&lt;string&gt;なため戸惑ってしまうかもですが、前者は流れてくるのは一つだけ、後者は行数分だけ、となります。</p>
-<p>GetResponseLinesはStreamingAPIで使うことを想定しています。とりあえず、WPF用のサンプルを見てください。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/rxoauth_streaming.jpg">
-</p>
-<pre><code class="language-csharp">var client = new OAuthClient(ConsumerKey, ConsumerSecret, accessToken)
-{
-    Url = &quot;http://chirpstream.twitter.com/2b/user.json&quot;
-};
-// streamingHandleはIDisposableで、これのDisposeを呼べばストリーミング停止
-streamingHandle = client.GetResponseLines()
-    .Where(s =&gt; !string.IsNullOrWhiteSpace(s)) // filter invalid data
-    .Select(s =&gt; DynamicJson.Parse(s))
-    .Where(d =&gt; d.text()) // has text is status
-    .ObserveOnDispatcher()
-    .Subscribe(
-        d =&gt; StreamingViewListBox.Items.Add(d.user.screen_name + &quot;:&quot; + d.text),
-        ex =&gt; MessageBox.Show(ReadWebException(ex))); // エラー処理
-</code></pre>
-<p>ストリーミングAPIを使うにあたっても、何の面倒くささもなく、至って自然に扱えてしまいます！Dynamicを使ったJsonへの変換には<a href="http://neue.cc/2010/04/30_256.html" title="neue cc - DynamicJson - C# 4.0のdynamicでスムーズにJSONを扱うライブラリ">DynamicJson - C# 4.0のdynamicでスムーズにJSONを扱うライブラリ</a>を、また、RxとStreamingAPIとの相性については過去記事<a href="http://neue.cc/2010/04/29_255.html" title="neue cc - C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions">C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions</a>を見てください。</p>
-<p>そうそう、それとネットワーク通信で起こったエラーのハンドリングが、SubscribeのOnErrorに書くだけで済むというのもRxを使って嬉しいことの一つです。</p>
-<h2>実装について</h2>
-<p>構造は全体的に<a href="http://twitter.com/ugaya40" title="尾上 雅則 (ugaya40) on Twitter">@ugaya40</a>さんの<a href="http://oauthaccess.codeplex.com/" title="OAuthAccess">OAuthAccess</a>がベースになっています(パク……)。そもそもにTwitterTL to HTMLのOAuth対応した時に、OAuthAccessを使って、あー、OAuth周りってRxに乗せると快適になるなー、とか思ったのが作ろうとした最初の動機だったりもして。非常に感謝。</p>
-<p>WebClient風の、認証がOAuthなだけのベタなWebRequestラッパーという感じなので、特別なところはありません。インターフェイスとかなくて、本当にただのベタ書き。特に奇をてらってるところはないんですが、ストリーミングAPIで使うために用意したGetResponseLinesは個人的には笑えたり。</p>
-<pre><code class="language-csharp">var req = WebRequest.Create(Url);
-return Observable.Defer(() =&gt; req.GetRequestStreamAsObservable())
-    .SelectMany(stream =&gt; stream.WriteAsObservable(postData, 0, postData.Length))
-    .SelectMany(_ =&gt; req.GetResponseAsObservable());
-    .Select(res =&gt; res.GetResponseStream())
-    .SelectMany(s =&gt; Observable.Using(() =&gt; new StreamReader(s), sr =&gt; Observable.Repeat(sr)))
-    .TakeWhile(sr =&gt; !sr.EndOfStream)
-    .Select(sr =&gt; sr.ReadLine());
-</code></pre>
-<p>うわー……。利用者としては、ただのIObservable&lt;string&gt;としか見えないので、前段階でこんなにチェーンが繋がってるだなんてこと、気にする必要は全くないんですけどねー。これがベストな書き方だとは全然思えないので、誰かアドバイス欲すぃです。</p>
-<h2>まとめ</h2>
-<p>RxというとLinq to Events、イベントのLinq化という方向が目につきますが、今回は非同期のLinq化のほうにフォーカスしました。何というか、実に、素晴らしい！asynchronus programming is hard、と、思っていた時もありました。今や私達にはRxがある。恐れることはなにもない。</p>
-<p>今回WPFとWindows Phone 7(Silverlight)でサンプルを作ったのですが、コードがコピペで、完全な互換性もって動いちゃうんですね。WPFで書いてSilverlightに持っていく時に、ああ、BeginGetResponseに書き換えなきゃ…… みたいなことが起こらない。最初から非同期で統一することで、全部ライブラリがネットワーク周りを吸収してくれる。非同期→同期にするのも簡単だし(RunやToEnumerableを使えばいい)、そもそも、Rxの土台に乗っている方が、普通に同期的に書くよりもむしろ楽だったりします。</p>
-<p>個人的には、Windows Phone 7のローンチに粗製乱造Twitterアプリを送り込むという野望があるんですがねえー。いや、粗製乱造にするつもりはないんですが、機能をザックリと削って、一般性を無視して「私が使うシチュエーションで私が使いやすいような」アプリを出したいなーと思ってます。構想はあって、そこそこ尖った個性ある内容になる予定なので一部の人がフィットしてくれればいいな、と。多くの人に目に触れては欲しいのでローンチのタイミングは外したくない。問題はWorldのローンチタイミングに合わせてもJapanだと実機がないってことですね！開発機欲しい(お金は払いますからどうかー)。</p>
-<p>と、思ってたのですがサンプル作りで、あきらかーなXAML知識のなさ（ていうか何も知りません）が露呈したので、ローンチに間にあわせるとか寝言すぎるのですが。せめてJapanのローンチまでにはそれなりな技量を身につけたいところです。</p>
 </div>
 <a href="https://neue.cc/18">Prev |</a>
 <a href="https://neue.cc/20">| Next</a>

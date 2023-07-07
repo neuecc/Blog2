@@ -23,7 +23,199 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2014/11/11_482.html">LINQ to GameObjectによるUnityでのLINQの活用</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2014/11/20_485.html">VS2015のRoslynでCode Analyzerを自作する(ついでにUnityコードも解析する)</a></h1>
+<ul class="date"><li>2014-11-20</li></ul>
+<div class="entry_body"><p><a href="http://www.visualstudio.com/downloads/visual-studio-2015-downloads-vs">Visual Studio 2015 Preview</a>が発表されました！この中にはC# 6.0やRoslynも含まれていて、今から試すことができます。C#の言語機能は他の人が適当にまとめてくれるので私はノータッチということで、新機能である<a href="https://roslyn.codeplex.com/">Roslyn</a>で拡張を作っていきましょう。</p>
+<p>Roslynによる拡張は、ン年前に最初のPreviewが出た時は、Visual Studioの解析エンジン自体がRoslynになるから簡単にアレもコレも出来るぜ！と夢いっぱいのこと言ってましたが、実のところ最終的に現在(VS2015 Preview)ではかなり萎んでしまいました。「Code Refactoring」と「Diagnostic with Code Fix」だけです。何ができるかは、まぁ名前から察しということで、あんま大したことはできないです。がっくし。とはいえ、しかし全然使いドコロはあるし簡単に作れはするので、とにかく見て行きましょう。</p>
+<p>下準備としてVS2015 Previewのインストールの他に、<a href="http://www.visualstudio.com/downloads/visual-studio-2015-downloads-vs">Visual Studio 2015 Preview SDK</a>と<a href="https://visualstudiogallery.msdn.microsoft.com/849f3ab1-05cf-4682-b4af-ef995e2aa1a5">.NET Compiler Platform SDK Templates</a>、そして<a href="https://visualstudiogallery.msdn.microsoft.com/70e184da-9b3a-402f-b210-d62a898e2887">.NET Compiler Platform Syntax Visualizer</a>を入れてください。</p>
+<h2>Diagnostic with Code Fix</h2>
+<p>今回は「Diagnostic with Code Fix」を作ります。まずテンプレートのVisual C#→Extensibilityから「Diagnostic with Code Fix(NuGet + VSIX)」を選んでください。NuGet + VSIXというのが面白いところなんですが、とりあえずこのテンプレート（はサンプルになってます）をビルドしましょう(Testプロジェクトは無視していいです)。そして、ReferencesのAnalyzers（ここがVS2015から追加されたものです！）からAdd Analyzerを選び、さっきビルドしたdllを追加してみてください。</p>
+<img src='http://neue.cc/wp-content/uploads/2014/11/add_analyzer.jpg' />
+<p>するとコード解析が追加されて、クラス名のところにQuick Fixが光るようになります。</p>
+<img src='http://neue.cc/wp-content/uploads/2014/11/analyzer_window1.jpg' />
+<p>サンプルコードのものはMakeUpperCaseということで、クラス名に小文字が含まれていたら警告を出す＆全部大文字に修正するQuickFixが有効になります。</p>
+<p>つまりDiagnostic with Code Fixは、よーするに今までもあったCode Analysis、FxCopです。ただし、Roslynによって自由に解析でき、追加できます。また、ReferencesのAnalyzersに追加できるということで、ユーザーのVisual Studio依存ではなく、プロジェクト内に直接含めることができます。追加/インストールはdllをNuGetで配ることが可能（だからVSIX + NuGetなんですね、もちろんVSIXでも配れます）。より気軽に、よりパワフルにコード解析が作れるようになったということで、地味に中々革命的に便利なのではないでしょうか？</p>
+<p>このまま、そのサンプルコードのMakeUpperCaseの解説、をしてもつまらないので、続けて実用的（？）なものを一個作りました。</p>
+<h2>namespaceの修正</h2>
+<p>うちの会社ではUnityを使ってモバイルゲーム開発を行っていますが、LINQもガリガリ使います。その辺のことは<a href="http://neue.cc/2014/11/11_482.html">LINQ to GameObjectによるUnityでのLINQの活用</a>にも書いたのですが、困ったことに標準UnityではLINQ to Objectsを使うとAOTで死にます。<a href="http://neue.cc/2014/07/01_474.html">Unity + iOSのAOTでの例外の発生パターンと対処法</a>で書いたように対処事態は可能なんですが、最終的に標準LINQを置き換える独自実装をSystem.LinqExネームスペースに用意することになりました。で、それを使うには「using System.LinqEx;」する必要があります。「using System.Linq;」のかわりに。むしろ「using System.Linq;」はAOTで死ぬので禁止したいし、全面的に「using System.LinqEx;」して欲しい。すみやかに。どうやって……？</p>
+<p>そこでDiagnostic with Code Fixなんですね。既存コードの全てに検査をかけることもできるし（ソリューションエクスプローラーから対象プロジェクトを右クリックしてAnalyze→Run Code Analysis）、書いてる側からリアルタイムに警告も出せるし、ワンポチでSystem.LinqExに置き換えてくれる。このぐらいなら全ファイルから「using System.Linq;」を置換すりゃあいいだけなんですが、リアルタイムに警告してくれるとうっかり忘れもなくなるし（CIで警告すればいいといえばいいけど、その前に自分で気づいて欲しいよね）、もっと複雑な要件でも、RoslynでSyntaxTreeを弄って置き換えるので、テキスト置換のような誤爆の可能性があったり、そもそも複雑で警告/置換不能、みたいなことがなくなるので、とても有益です。</p>
+<p>というわけで「using System.Linq;」を見つけたら「using System.LinqEx;」に書き換える拡張を作りましょう！（うちの会社にとっては）実用的で有益で、かつ、はぢめての拡張のテーマとしてもシンプルで作りやすそうでちょうどいいですね！</p>
+<h2>DiagnosticAnalyzer</h2>
+<p>コード解析はDiagnosticAnalyzer、コード置換はCodeFixProviderが担当します。必要なファイルはこの2ファイルだけ（シンプル！）、コード置換が不要ならDiagnosticAnalyzerだけ用意すればOK。というわけで、以下がDiagnosticAnalyzerのコードです。</p>
+<pre><code class="language-csharp">using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Diagnostics;
+using System.Collections.Immutable;
+
+namespace UseLinqEx
+{
+    [DiagnosticAnalyzer(LanguageNames.CSharp)]
+    public class UseLinqExAnalyzer : DiagnosticAnalyzer
+    {
+        // この辺はテンプレートのままに適当に書き換え
+        public const string DiagnosticId = &quot;UseLinqEx&quot;;
+        internal const string Title = &quot;System.Linq is unsafe in Unity. Must use System.LinqEx.&quot;;
+        internal const string MessageFormat = &quot;System.Linq is unsafe in Unity. Must use System.LinqEx.&quot;; // 同じの書いてる(テキトウ)
+        internal const string Category = &quot;Usage&quot;; // Categoryの適切なのってナンダロウ
+
+        internal static DiagnosticDescriptor Rule = new DiagnosticDescriptor(DiagnosticId, Title, MessageFormat, Category, DiagnosticSeverity.Warning, isEnabledByDefault: true);
+
+        public override ImmutableArray&lt;DiagnosticDescriptor&gt; SupportedDiagnostics { get { return ImmutableArray.Create(Rule); } }
+
+        // namespaceを引っ掛ける
+        public override void Initialize(AnalysisContext context)
+        {
+            // なにをRegisterすればいいのか問題、テンプレではRegisterSymbolActionですが、
+            // SymbolActionにはなさそうだなー、と思ったら他のRegisterHogeを使いましょう
+            // ここではRegisterSyntaxNodeActionでSyntaxKind.UsingDirectiveを呼びます
+            // SyntaxKindの判定はRoslyn Syntax Visualizerに助けてもらいましょう
+            context.RegisterSyntaxNodeAction(Analyze, SyntaxKind.UsingDirective);
+        }
+
+        static void Analyze(SyntaxNodeAnalysisContext context)
+        {
+            // Nodeの中身はSyntaxKindで何を選んだかで変わるので適宜キャスト
+            var syntax = (UsingDirectiveSyntax)context.Node;
+            if (syntax.Name.NormalizeWhitespace().ToFullString() == &quot;System.Linq&quot;)
+            {
+                var diagnostic = Diagnostic.Create(Rule, syntax.GetLocation());
+                context.ReportDiagnostic(diagnostic);
+            }
+        }
+    }
+}
+</code></pre>
+<p>SupportedDiagnosticsより上のものは見た通りのコンフィグなので、まぁ見たとおりに適当に弄っておけばいいでしょう。コード本体はInitializeです。ここで、対象のノードの変更があったら起こすアクションを登録します。で、まずいきなり難しいのは、何をRegisterすればいいのか！ということだったりして。そこで手助けになるのがSyntax Visualizerです。入れましたか？入れましたよね？View -&gt; Other Window -&gt; Roslyn Syntax Visualizerを開くと、あとはエディタ上で選択している箇所のSyntaxTreeを表示してくれます。例えば、今回の対象であるusingの部分を選択すると「using System.Linq;」は……</p>
+<img src='http://neue.cc/wp-content/uploads/2014/11/roslynsyntaxvis.jpg' />
+<p>と、いうわけで、たかがusingの一行ですが、めっちゃいっぱい入ってます。Node(でっかいの), Token（こまかいの）, Trivia（どうでもいいの）というぐらいに覚えておけばいいでしょう（適当）。さて、というわけでusingの部分はUsingDirectiveであることが大判明しました。これ以外にもとにかくSyntaxTreeの操作は、何がどこに入ってて何を置換すればいいのかを見極める作業が必要なので、Syntax Visualizerはマストです。めっちゃ大事。めっちゃ助かる。超絶神ツール。</p>
+<p>あとは、まぁ、見たまんまな感じで、これで警告は出してくれます。WarningじゃなくてErrorにしたいとか、Infoにしたいとかって場合はRuleからDiagnosticSeverityを変えればOK。</p>
+<h2>CodeFixProvider</h2>
+<p>続いてCodeFixProviderに行きましょう。まずはコード全体像を。</p>
+<pre><code class="language-csharp">using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CodeActions;
+using Microsoft.CodeAnalysis.CodeFixes;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using System.Collections.Immutable;
+using System.Composition;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace UseLinqEx
+{
+    [ExportCodeFixProvider(&quot;UseLinqExCodeFixProvider&quot;, LanguageNames.CSharp), Shared]
+    public class UseLinqExCodeFixProvider : CodeFixProvider
+    {
+        public sealed override ImmutableArray&lt;string&gt; GetFixableDiagnosticIds()
+        {
+            // このDiagnosticIdでAnalyzerと起動するCodeFixProviderが紐付けられてる
+            return ImmutableArray.Create(UseLinqExAnalyzer.DiagnosticId);
+        }
+
+        public sealed override FixAllProvider GetFixAllProvider()
+        {
+            return WellKnownFixAllProviders.BatchFixer;
+        }
+
+        public sealed override async Task ComputeFixesAsync(CodeFixContext context)
+        {
+            // ドキュメントのルート
+            var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
+
+            var diagnostic = context.Diagnostics.First(); // 警告だしてるとこ
+            var diagnosticSpan = diagnostic.Location.SourceSpan; // の、ソース上の位置みたいなの
+
+            // ↑を使って、目的のモノを見つける独自コードを書く！
+            // 何が何だか分からないので、ウォッチウィンドウで手探るに書きまくって探し当てるといいでしょふ
+
+            // &quot;UsingDirectiveSyntax UsingDirective using System.Linq;&quot; が見つかる
+            var usingDirective = root.FindNode(diagnosticSpan);
+
+            // で、作って登録する
+            var codeAction = CodeAction.Create(&quot;ReplaceTo System.LinqEx&quot;, c =&gt; ReplaceToLinqEx(context.Document, root, usingDirective, c));
+            context.RegisterFix(codeAction, diagnostic);
+        }
+
+        static Task&lt;Document&gt; ReplaceToLinqEx(Document document, SyntaxNode root, SyntaxNode usingDirective, CancellationToken cancellationToken)
+        {
+            // たんなるusingDirectiveでも、中にはキーワード・スペース、;や\r\nが含まれているので、
+            // 純粋に新しいusingを作って置換するだけだと、付加情報がうまく置換できない可能性が高い
+            // ので、（面倒くさくても）既存ノードからReplaceしていったほうが無難
+            var linqSyntax = usingDirective.DescendantNodes().OfType&lt;IdentifierNameSyntax&gt;().First(x =&gt; x.ToFullString() == &quot;Linq&quot;);
+            var linqEx = usingDirective.ReplaceNode(linqSyntax, SyntaxFactory.IdentifierName(&quot;LinqEx&quot;));
+
+            // ルートのほうにリプレースリプレース
+            var newRoot = root.ReplaceNode(usingDirective, linqEx);
+            var newDocument = document.WithSyntaxRoot(newRoot); // ルート差し替えでフィニッシュ
+
+            return Task.FromResult(newDocument);
+        }
+    }
+}
+</code></pre>
+<p>ここでの作業は、変更対象のノードを見つけることと、差し替えることです。ノードを見つけるための下準備に関しては、とりあえずサンプルコードのまんま(diagnostic/diagnosticSpan)でいいかな、と。そこから先は独自に探し出す必要があります。今回はUsingDirectiveを見つけたかったんですが、幸いルートからのFindNode一発で済みました、楽ちん。あとは置換するだけです。</p>
+<p>置換に関しては、コード上に書いたように、大きい単位で新しいSyntaxNodeを作って差し替える、のはやめたほうがいいです。そうするとトリビアを取りこぼす可能性が高く、うまく修正かけられなかったりします。面倒くさくても、置き換えたいものをピンポイントに絞って置換かけましょう。ノードを探索するにはLINQ to XMLスタイルでのDescendantsやAncestors、ChildNodesとかがあります。LINQ to SyntaxTreeってところで、この辺はまさに<a href="http://neue.cc/2014/11/11_482.html">LINQ to XMLとは何であるのか。ツリー構造に対するLINQ的操作のリファレンスデザインだと捉えることができる</a>って感じですね。</p>
+<p>さて、置換といっても、Roslynのコードは全てイミュータブル（不変）なので、戻り値をうまく使ってルートに伝えていく必要があります。Replace一発では済まないのです。これは面倒くさいんですが、まぁ慣れればこんなものかなー、と思えるでしょう、多分きっと。</p>
+<p>ともあれ、これで出来上がりました！ちなみにデバッグはVsixプロジェクトをデバッグ実行すれば、拡張ロード済みの新しいVSが立ち上がる＆アタッチされているので、サクッとデバッグできます。これは相当楽だし助かる（いかんせん慣れないRoslynプログラムは試行錯誤しまくるので！）。また、生成物に関してはAnalyzersにdllを手配置もいいですが、ビルドプロジェクト自体に.nupkg生成が含まれているので、そいつを使ってもいいでせう。その辺のことはテンプレートに入ってるReadMe.txtに書いてあるので一回読んでおくといいかな。</p>
+<h2>Unityで使う</h2>
+<p>新しいVSが出ると拡張が対応してくれるか、が最大の懸念になるのですが、なんとVisual Studio Tools for Unity(VSTU/旧UnityVS)は初日から対応してくれました！まさにMicrosoft買収のお陰という感じで、非常に嬉しい。遠慮無く<a href="https://visualstudiogallery.msdn.microsoft.com/8d26236e-4a64-4d64-8486-7df95156aba9">Visual Studio 2015 Preview Tools for Unity</a>を入れましょう。VSTUについては<a href="http://neue.cc/2014/04/10_450.html">Visual Studio Tools for Unity(UnityVS) - Unity開発におけるVisual Studioのすすめ</a>を見てね。</p>
+<p>基本的にはUnityのプロジェクトにも全く問題なくAnalyzerを追加できて解析できます。素晴らしい！んですが、問題が一点だけあります。それはVSTUはUnity側に何か変更があった時に.csprojを自動生成するんですが、その自動生成によってせっかく追加したAnalyzerも吹っ飛びます。Oh……。</p>
+<p>という時のためにVSTUは<a href="http://unityvs.com/documentation/api/project-file-generation/">Project File Generation</a>という仕組みを用意してくれています。これによってプロジェクトとソリューションの自動生成をフックできます（ちなみに実例として、うちの会社ではソリューションにサーバーサイドとか色々なプロジェクトをぶら下げてるのでソリューション自動生成を抑制したり、Unityプロジェクト側に<a href="http://msdn.microsoft.com/ja-jp/library/bb126445.aspx">T4テンプレート</a>を使った自動生成コードを入れているので、VSTUのcsprojの自動生成時に.ttファイルを復元してやったり、とか色々な処理を入れてます）</p>
+<p>今回は自動生成で消滅するAnalyzerを復元してやる処理を書きましょう。Editor拡張として作るので、Editorフォルダ以下にProjectFileHook.csを追加し、以下のコードを追加。</p>
+<pre><code class="language-csharp">using System.IO;
+using System.Linq;
+using System.Text;
+using System.Xml.Linq;
+using UnityEditor;
+
+[InitializeOnLoad]
+public class ProjectFileHook
+{
+    // necessary for XLinq to save the xml project file in utf8
+    private class Utf8StringWriter : StringWriter
+    {
+        public override Encoding Encoding
+        {
+            get { return Encoding.UTF8; }
+        }
+    }
+
+    static ProjectFileHook()
+    {
+        SyntaxTree.VisualStudio.Unity.Bridge.ProjectFilesGenerator.ProjectFileGeneration += (string name, string content) =&gt;
+        {
+            // ファイルがない場合はスルー（初回生成時）
+            if (!File.Exists(name)) return content;
+
+            // 現在のcsprojをnameから引っ張ってきてAnalyzerを探す
+            var currentContent = XDocument.Load(name);
+            var ns = currentContent.Root.Name.Namespace;
+            var analyzers = currentContent.Descendants(ns + &quot;Analyzer&quot;).ToArray();
+
+            // content(VSTUが生成した新しいcsprojにAnalyzerを注入)
+            var newContent = XDocument.Parse(content);
+            newContent.Root.Add(new XElement(ns + &quot;ItemGroup&quot;, analyzers));
+
+            // したのを返す
+            using (var sw = new Utf8StringWriter())
+            {
+                newContent.Save(sw);
+
+                return sw.ToString();
+            }
+        };
+    }
+}
+</code></pre>
+<p>nameにファイルパス、contentにVSTUが生成した新しいcsprojのテキストが渡ってくるので、それを使ってモニョモニョ処理。csprojはXMLなので、LINQ to XML使ってゴソゴソするのが楽ちんでしょう。</p>
+<p>これでUnityでもRoslynパワーを100%活かせます！やったね！</p>
+<h2>まとめ</h2>
+<p>あんだけ盛大に吹聴してたわりには、コード解析とリファクタリングだけかよ……、という感はなきにしも非ずですが、そのかわりすっごく簡単に作れる、追加できる仕組みを用意してくれたのは評価できます（えらそう）。かなり便利なので、早速是非是非遊んでみるといいんじゃないかな、とオモイマス。</p>
+<p>ところで今回の例、CodeFixProviderはナシにしてAnalyzerだけにして、AnalyzerのレベルをWarningではなくDiagnosticSeverity.Errorにすることで、「LINQ禁止」を暗黙のルールじゃなくコンパイル不可能レベルで実現できます。拡張メソッドを明示的に呼び出せば回避できますが、ルールにプラスしてEnumerableの静的メソッドも殺せば、もう完全に死亡！恐ろしい恐ろしい。あ、勿論やらないでくださいね！</p>
+</div>
+<h1><a href="https://neue.cc/2014/11/11_482.html">LINQ to GameObjectによるUnityでのLINQの活用</a></h1>
 <ul class="date"><li>2014-11-11</li></ul>
 <div class="entry_body"><p>Unityで、LINQは活用されているようでされていないようで、基本的にはあまりされていない気配を非常に感じます。もったいない！というわけじゃないんですが、以前に私の勤務先と別の会社さんとで勉強会/交流会したのですが、そこで作ったスライドがあるので（若干手直ししたものを）公開します。LINQについて全くの初心者の人向けにLINQの良さを説明しようー、みたいな感じです、でもちょびっとだけ踏み込んだ内容もね、みたいな。勉強会自体は5月ぐらいにやったので、ずいぶんと公開まで開いてしまった……。</p>
 <iframe src="//www.slideshare.net/slideshow/embed_code/41364443" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/linq-in-unity" title="LINQ in Unity" target="_blank">LINQ in Unity</a> </strong> from <strong><a href="//www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
@@ -2196,202 +2388,6 @@ Disconnect-RedisServer
 </code></pre>
 <h2>まとめ</h2>
 <p>弊社で<a href="http://tech.guitarrapc.com/">ぎたぱそさん</a>がたまに使ってます。（私は……そもそもあんま生で触る機会がなく、かな！？）</p>
-</div>
-<h1><a href="https://neue.cc/2014/01/27_446.html">C#での動的なメソッド選択における定形高速化パターン</a></h1>
-<ul class="date"><li>2014-01-27</li></ul>
-<div class="entry_body"><p>動的なメソッド選択、といってもなんのこっちゃというわけですが、身近な例だと、ようするにURLをルーティングして何のコントローラーの何のメソッドを呼ぶのか決めるって奴です、ASP.NET MVCとかの。ようするに<a href="http://neue.cc/2013/12/23_439.html">LightNode</a>はいかにして速度を叩きだしているのか、のお話。自慢。嘘本当。</p>
-<p>以前に<a href="http://neue.cc/2011/04/20_317.html">Expression Treeのこね方・入門編 - 動的にデリゲートを生成してリフレクションを高速化</a>という記事を書いたのですが(2011/04ですって！もうすっかり大昔！)、その実践編です。Real World メタプログラミング。</p>
-<h2>とあるController/Action</h2>
-<p>とあるControllerのとあるActionを呼び出したいとするじゃろ？あ、ちなみに別に例として手元にあるのがちょーどこれだったというだけで、別に同様なシチュエーション（動的にメソッドを選択する）では、うぇぶに限らず何にでも応用効きます。というわけでウェブ興味ね、という人も帰らないで！！！このサイトはC#のサイトですから！</p>
-<pre><code class="language-csharp">// 何の変哲もない何か
-public class HogeController
-{
-    public string HugaAction(int x, int y)
-    {
-        return (x + y).ToString();
-    }
-}
-</code></pre>
-<pre><code class="language-csharp">// コード上で静的に解決できるならこう書くに決まってるじゃろ？
-var result = new HogeController().HugaAction(1, 10);
-</code></pre>
-<p>ただたんにnewして実行するならこうなります。が、これが動的にControllerやActionを選ばなきゃいけないシチュエーションではどうなりますん？ルーティング処理が済んで、呼び出すクラス名・メソッド名が確定できたというところから行きましょう。</p>
-<pre><code class="language-csharp">// コントローラー名・アクション名が文字列で確定出来た場合
-var controllerName = &quot;ConsoleApplication.HogeController&quot;;
-var actionName = &quot;HugaAction&quot;;
-
-var instance = Activator.CreateInstance(Type.GetType(controllerName));
-var result = (string)Type.GetType(controllerName).GetMethod(actionName).Invoke(instance, new object[] { 1, 10 });
-</code></pre>
-<p>一番単純なやり方はこんなものでしょう。<a href="http://msdn.microsoft.com/ja-jp/library/wccyzw83.aspx">Activator.CreateInstance</a>でインスタンスを生成し、<a href="http://msdn.microsoft.com/ja-jp/library/a89hcwhh.aspx">MethodInfoのInvoke</a>を呼ぶことでメソッドを実行する。基本はこれ。何事も素直が一番良いですよ。おしまい。</p>
-<h2>動的コード生成事始め</h2>
-<p>あけましておめでとうございます。素直が一番、おしまい、で済まない昨今、リフレクションは実行速度がー、という亡霊の声が聞こえてくるのでshoganaiから対処しましょう。基本的にC#でリフレクションの速度を高める手段は一択です、デリゲート作ってキャッシュする。というわけでデリゲート作りましょう。</p>
-<pre><code class="language-csharp">// ここから先のコードでは↓4つの変数は省略します
-var controllerName = &quot;ConsoleApplication.HogeController&quot;;
-var actionName = &quot;HugaAction&quot;;
-var type = Type.GetType(controllerName);
-var method = type.GetMethod(actionName);
-            
-// インスタンスが固定されちゃう
-var instance = Activator.CreateInstance(type);
-var methodDelegate = (Func&lt;int, int, string&gt;)Delegate.CreateDelegate(typeof(Func&lt;int, int, string&gt;), instance, method);
-</code></pre>
-<p>Delegate作ると言ったら<a href="http://msdn.microsoft.com/ja-jp/library/53cz7sc6.aspx">Delegate.CreateDelegate</a>。なのですが、静的メソッドならいいんですが、インスタンスメソッドだと、それも込み込みで作られちゃうので些かイケてない。今回は毎回インスタンスもnewしたいので、これはダメ。</p>
-<p>が、Delegate.CreateDelegateの面白いところは、「オープンなインスタンス メソッド デリゲート (インスタンス メソッドの隠れた第 1 引数を明示的に指定するデリゲート) を作成することもできます」ことです。どういうことか、というと</p>
-<pre><code class="language-csharp">// 第一引数にインスタンスの型が渡せる
-var methodDelegate = (Func&lt;HogeController, int, int, string&gt;)Delegate.CreateDelegate(
-    typeof(Func&lt;HogeController, int, int, string&gt;), method);
-
-// だからこう呼べる(キャストしてたりしてActivator.CreateInstanceの意味がほげもげ)
-var result = methodDelegate((HogeController)Activator.CreateInstance(type), 10, 20);
-</code></pre>
-<p>あら素敵。素敵ではあるのですが、面白いだけで今回では使い道はなさそうです、Activator.CreateInstance消せてないし、HogeControllerにキャストって、ほげほげですよ。</p>
-<p>というわけで、ちょっと込み入った生成をしたい場合はExpressionTreeの出番です。new生成まで内包したものを、以下のように捏ね捏ねしましょう。</p>
-<pre><code class="language-csharp">// インスタンスへのnewを行う部分まで生成する、つまり以下の様なラムダを作る
-// (x, y) =&gt; new HogeController().HugaAction(x, y)
-var x = Expression.Parameter(typeof(int), &quot;x&quot;);
-var y = Expression.Parameter(typeof(int), &quot;y&quot;);
-var lambda = Expression.Lambda&lt;Func&lt;int, int, string&gt;&gt;(
-    Expression.Call( // .HugaAction(x, y)
-        Expression.New(type), // new HogeController()
-        method,
-        x, y),
-    x, y) // (x, y) =&gt; 
-    .Compile();
-</code></pre>
-<p>ExpressionTreeの文法とかは3年前だか4年前だかの<a href="http://neue.cc/2011/04/20_317.html">Expression Treeのこね方・入門編 - 動的にデリゲートを生成してリフレクションを高速化</a>を参照してください、というわけでここでは解説はスルー。ExpressionTreeの登場はVS2008, .NET 3.5, C# 3.0から。もう5年以上前なのですねー。</p>
-<p>さて、Compileは非常に重たい処理なので（カジュアルに呼びまくるようなコード例をたまに見ますが、マヂヤヴァイのでやめましょう）、作ったらキャッシュします。</p>
-<pre><code class="language-csharp">// Compile済みのラムダ式はキャッシュするのが基本！
-// 以下の様なものに詰めときゃあいいでしょう
-// .NET 4以降はキャッシュ系はConcurrentDictionaryのGetOrAddに入れるだけで済んで超楽
-var cache = new ConcurrentDictionary&lt;Tuple&lt;string, string&gt;, Func&lt;int, int, string&gt;&gt;();
-</code></pre>
-<p>ConcurrentDictionaryのKeyは場合によりけり。Typeの場合もあればStringの場合もあるし、今回のようなCotrollerName/ActionNameのペアの場合はTupleを使うと楽ちんです。Tupleは辞書のキーなどに使った場合、全値の一致を見てくれるので、適当に文字列連結して代用、なんかよりも正確で好ましい結果をもたらしてくれます。簡易的に作る場合は、私も、とても多用しています。</p>
-<p>大文字小文字比較とかの比較まではやってくれないので、そこまでやりたければ、ちゃんとGetHashCode/Equalsを実装したクラスを作りましょう(LightNodeではそれらを実装した<a href="https://github.com/neuecc/LightNode/blob/master/Source/LightNode.Server/RequestPath.cs">RequestPath</a>というクラスを作っています)</p>
-<p>そういえばPCLはWindows Phoneを対象に含めるとConcurrentDictionary使えなくてイラ壁なのでWindows Phoneは見なかったことにしてPCLの対象に含めないのが最善だと思います！どうせ端末出てないし！</p>
-<h2>: Delegate</h2>
-<p>ところでFunc&lt;int, int, string&gt;という型をLambdaに指定しているけれど、これもまた決め打ちで、動的じゃあない。んで、そもそもこの手の作る場合、メソッドの型って色々あるのね。</p>
-<pre><code class="language-csharp">// メソッドの型は色々ある！
-public class HogeController
-{
-    public string HugaAction(int x, int y)
-    {
-        return (x + y).ToString();
-    }
-
-    public double TakoAction(string s, float f)
-    {
-        return double.Parse(s) * f;
-    }
-}
-</code></pre>
-<p>こんな風にActionが増えたら、というか普通は増えるというか違うに決まってるだろという話なわけで、問題色々でてきちゃいます。 まずデリゲートの型が違うのでキャッシュ不可能。Func&lt;int, int, string&gt;のConcurrentDictionaryにFunc&lt;string, float, double&gt;は入りません。そして&quot;HugaAction&quot;や&quot;TakoAction&quot;という動的に来る文字列から、コンパイル時にデリゲートの型は決められない。ていうかそもそもパラメータのほうもxだのyだのって不明じゃないですかー？ゼロ引数かもしれないし10引数かもしれないし。</p>
-<p>どーするか。型名指定ができないなら指定しなければいいじゃない。</p>
-<pre><code class="language-csharp">// Expression.Lambdaに型名指定をやめ、CacheはDelegateを取ってみる
-var cache = new ConcurrentDictionary&lt;Tuple&lt;string, string&gt;, Delegate&gt;();
-var dynamicDelegate = cache.GetOrAdd(Tuple.Create(controllerName, actionName), _ =&gt;
-{
-    // パラメータはMethodInfoから動的に作る
-    var parameters = method.GetParameters().Select(x =&gt;
-            Expression.Parameter(x.ParameterType, x.Name))
-        .ToArray();
-
-    return Expression.Lambda(
-            Expression.Call(Expression.New(type), method, parameters),
-        parameters).Compile();
-});
-</code></pre>
-<p>やった、大解決！</p>
-<pre><code class="language-csharp">// 但しDelegateのキャッシュは呼び出しがDynamicInvokeでイミナイ。
-// もちろん別に速くない。
-var result = dynamicDelegate.DynamicInvoke(new object[] { 10, 20 });
-</code></pre>
-<p>はい、意味ありません。全然意味ないです。Funcなんちゃらの共通型としてDelegateで統一しちゃうと、DynamicInvokeしか手がなくて、ほんとほげもげ！</p>
-<h2>Everything is object</h2>
-<p>Cacheに突っ込むためには、あらゆるメソッドシグネチャの共通項を作らなきゃあならない。でもDelegateじゃあダメ。じゃあどうするか、というと、objectですよ！なんでもobjectに詰めればいいんです！</p>
-<pre><code class="language-csharp">// 解決策・最も汎用的なFuncの型を作ること
-// オブジェクトの配列という引数を受け取り、オブジェクトを返す関数である
-// Func&lt;object[], object&gt;
-// これを作ることによりDynamicInvokeを回避可能！(Boxingはあるけどそこは諦める)
-
-// このキャッシュならなんでも入りそうでしょう
-var cache = new ConcurrentDictionary&lt;string, Func&lt;object[], object&gt;&gt;();
-</code></pre>
-<p>良さそうな感じ、というわけで、object[]の配列を受け取りobjectを返すデリゲートを作っていきましょう。</p>
-<pre><code class="language-csharp">// 作る形をイメージしよう、以下の様な形にするのを狙う
-// (object[] args) =&gt; (object)new HogeController().HugaAction((int)object[0], (int)object[1])
-
-// 引数はオブジェクトの配列
-var args = Expression.Parameter(typeof(object[]), &quot;args&quot;);
-
-// メソッドに渡す引数はオブジェクト配列をインデクサでアクセス+キャスト =&gt; (cast)args[index]
-var parameters = method.GetParameters()
-    .Select((x, index) =&gt;
-        Expression.Convert(
-            Expression.ArrayIndex(args, Expression.Constant(index)),
-        x.ParameterType))
-    .ToArray();
-
-// あとは本体作るだけ、但し戻り値にもobjectでキャストを忘れず
-var lambda = Expression.Lambda&lt;Func&lt;object[], object&gt;&gt;(
-    Expression.Convert(
-        Expression.Call(Expression.New(type), method, parameters),
-        typeof(object)),
-    args).Compile();
-
-// これでふつーのInvokeで呼び出せるように！
-var result = lambda.Invoke(new object[] { 1, 10 });
-</code></pre>
-<p>これは完璧！若干Boxingが気になりますが、そこは贅沢は敵ってものです。というか、実際はパラメータ作る前工程の都合でobjectになってたりするので、そこのコストはかかってないと考えて構わない話だったりします。ちなみにvoidなメソッドに関しては、戻り値だけちょっと弄った別デリゲートを作ればOKですことよろし。その辺の小さな分岐程度は管理するが吉。</p>
-<h2>Task &amp; Task&lt;T&gt;</h2>
-<p>Extra Stage。今どきのフレームワークはTaskへの対応があるのが当たり前です。(いい加減ASP.NET MVCもフィルターのTask対応してください、LightNodeのフィルターは当然対応してるよ！)。というわけでTaskへの対応も考えていきましょう。</p>
-<p>TaskだってobjectなのだからobjectでOK！ではないです。Taskなメソッドに求めることって、awaitすることなのです。Taskで受け取って、awaitするまでが、戻り値を取り出す工程に含まれる。</p>
-<pre><code class="language-csharp">var result = new Hoge().HugaAsync();
-await result; // ここで実行完了される、的なイメージ 
-</code></pre>
-<p>といってもTaskは簡単です、ようは戻り値をTaskに変えればいいだけで、↑のと変わらないです。Func&lt;object[], Task&gt;ということです。Taskに変えるといっても、元から戻り値がTaskのもののデリゲートを作るわけですから、ようするところObjectへのConvertを省くだけ。簡単。</p>
-<pre><code class="language-csharp">// もちろん、実際にはキャッシュしてね
-var lambda = Expression.Lambda&lt;Func&lt;object[], Task&gt;&gt;(
-        Expression.Call(Expression.New(type), method, parameters),
-    args).Compile();
-
-var task = lambda.Invoke(new object[] { 1, 10 }); // 戻り値はTask
-await task; // 待機
-</code></pre>
-<p>そう、Taskはいいんです、Taskは。簡単です。でもTask&lt;T&gt;が問題。というかTが。Tってなんだよ、という話になる。例によってTは静的に決まらないのですねえ……。こいつはストレートには解決できま、せん。</p>
-<p>少しだけ周りっくどい道を通ります。まず、メソッド呼び出しのためのデリゲートはTaskと共通にします。Task&lt;T&gt;はTaskでもあるから、これはそのままで大丈夫。で、取り出せるTaskから、更にTを取り出します。どういうこっちゃ？というと、.Resultですよ、Result！</p>
-<pre><code class="language-csharp">Task task = new Hoge().HugaAsync(); // Taskとして受け取る
-await task; // ここで実行完了される
-var result = ((Task&lt;T&gt;)task).Result; // ↑で実行完了しているので、Resultで取り出せる
-</code></pre>
-<p>こういう風なコードが作れればOK。イメージつきました？</p>
-<pre><code class="language-csharp">// (Task task) =&gt; (object)((Task&lt;&gt;).Result)
-// キャッシュする際は、キーはTypeでTを取って、ValueにFunc&lt;Task, object&gt;が省エネ
-var taskParameter = Expression.Parameter(typeof(Task), &quot;task&quot;);
-var extractor = Expression.Lambda&lt;Func&lt;Task, object&gt;&gt;(
-    Expression.Convert(
-        Expression.Property(
-            Expression.Convert(taskParameter, method.ReturnType), // method.ReturnType = Task&lt;T&gt;
-            &quot;Result&quot;),
-        typeof(object)),
-    taskParameter).Compile();
-
-// これで以下のように値が取れる！
-await task;
-var result = extractor(task);
-</code></pre>
-<p>ここまでやれば、非同期にも対応した、モダンな俺々フレームワーク基盤が作れるってものです。</p>
-<h2>C# is not LightWeight in Meta Programming</h2>
-<p>そんなわけでこれらの手法は、特にOwinで俺々フレームワークを作る時などは覚えておくと良いかもです。そして、定形高速化パターンと書いたように、この手法は別に全然珍しくなくて、実のところASP.NET MVCやASP.NET Web APIの中身はこれやってます。ほとんど全くこのとーりです。(べ、べつに中身見る前からコード書いてたしその後に答え合わせしただけなんだから！！！)。まぁ、このぐらいやるのが最低水準ってことですね。</p>
-<p>で、しかし、簡単ではありません。ExpressionTreeの取り扱いとか、ただのパターンなので慣れてしまえばそう難しくもないのですけれど、しかし、簡単とはいいません。この辺がね、C#ってメタプログラミングにおいてLightWeightじゃないよねっ、ていう事実。最初の例のようにActivator.CreateInstanceで済ませたり、dynamicだけで済む範囲ならそうでもないんですが、そこを超えてやろうとするとねーっ、ていう。</p>
-<p>ExpressionTreeの登場のお陰で、今どきだとIL弄りの必要はほぼほぼなく(とはいえゼロじゃあないですけどね)、楽になったとはいえ、もっと、もっとじゃもん、と思わないこともない。そこでRoslynなら文字列でソースコードベタベタ書いてEvalでDelegateが生成できて楽ちんぽん！な未来は間違いなくありそうです。ですがまぁ、あと1~2年であったり、あとPortable Class Libraryに落ちてくるのはいつかな？とかっていった事情を鑑みる、まだまだExpressionTree弄りスキルの重要性は落ちなさそうなので、学ぶならイマノウチ！損はしません！</p>
-<iframe src="https://rcm-fe.amazon-adsystem.com/e/cm?lt1=_blank&bc1=000000&IS2=1&nou=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as4&m=amazon&f=ifr&ref=ss_til&asins=4048867741" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
- 
-メタプログラミング.NETは、満遍なく手法が紹介された良書だと思いますので、読んだことない人は是非是非読むといいかと思います。参考資料へのリンクが充実してたりする(ILのOpCodeとか)のも嬉しい点でした。
-<h2>まとめ</h2>
-<p>ExpresionTreeは優秀なIL Builder(Code as Dataとしての側面は残念ながらあまり活用できそうにもないですが、こちらの側面で活躍しているのでいいじゃないですか、いいの、か？？？)なんでも生成頑張ればいいってものではなく頻度によりけり。頻度少なけりゃDynamicで全然OK。ん……？</p>
-<p>ちゃぶ台返しますと、ウェブのリクエスト処理的な、リクエストの度に1回しか呼ばれない場合だと、別にここがDynamicInvokeで実行されるかどーかなんて、ハイパー誤差範囲なんですねぇ、実は！クライアントアプリとか、O/R Mapperとかシリアライザとか、テンプレートエンジンのプロパティ評価とか、凄く呼び出されまくるとかじゃなければ、割とどうでもいい範囲になってしまいます。0.01msが0.001msになって10倍高速！なのは事実ですが、そもそもウェブは1回叩いて10msかかったりするわけで誤差範囲としか言い様がない次元になってしまう。</p>
-<p>でも、ちゃんと頑張ったほうが格好はつくので、頑張ってみると良いです、みんなもやってるし！こんなのチキンレースですから。<a href="http://neuecc.github.io/LightNode/">LightNode</a>の速さの秘訣はこれだけ、ではないですが、大事な一端には変わりないです。</p>
 </div>
 <a href="https://neue.cc/8">Prev |</a>
 <a href="https://neue.cc/10">| Next</a>

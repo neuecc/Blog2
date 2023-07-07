@@ -23,7 +23,172 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2010/09/09_275.html">C#から使うMicrosoft Ajax MinifierでのJavaScriptコード圧縮</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2010/09/12_276.html">ReactiveOAuth - Windows Phone 7対応のOAuthライブラリ</a></h1>
+<ul class="date"><li>2010-09-12</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://reactiveoauth.codeplex.com/" title="ReactiveOAuth">CodePlex - ReactiveOAuth</a></li>
+</ul>
+<p>Windows Phone 7用のOAuth認証ライブラリを作成し、公開しました。他のライブラリに比べての特徴は、非同期APIしか用意されていないWindows Phone 7での利用を念頭に置き、<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Reactive Extensions(Rx)</a>をフル活用しているという点です。そもそもWindows Phone 7対応のOAuthライブラリが少ないので、特にWindows Phone 7開発者は是非どうぞ。</p>
+<p>Windows Phone 7専用というわけでもないですが(Console/WPFで使えるよう、DLLとサンプルコードを用意してあります)、Windows Phone 7以外では別途Rxのインストールが必要です。Windows Phone 7環境では最初から入っているのでRxのインストール不要。Silverlight用は、コードコピペで別プロジェクト立てるだけで動くと思うんですが、確認取るのが面倒だった（クロスドメインがー）ので、そのうちに。</p>
+<p>ところでそもそもRxって何、という人は <a href="http://neue.cc/2010/07/28_269.html" title="neue cc - Reactive Extensions入門 + メソッド早見解説表">Reactive Extensions入門 + メソッド早見解説表</a> をどうぞ。</p>
+<h2>何故Rxを使うのか</h2>
+<p>ReactiveOAuthの説明に入る前に、何故Rxを使うのかということを少し。理由は簡単で、非同期プログラミングは大変だから。論より証拠で、WebRequestのPOSTを全てBegin-Endパターンで構築してみましょう。</p>
+<pre><code class="language-csharp">var req = (HttpWebRequest)WebRequest.Create(&quot;http://google.co.jp/&quot;); // dummy
+req.Method = &quot;POST&quot;;
+req.BeginGetRequestStream(ar =&gt;
+{
+    var stream = req.EndGetRequestStream(ar);
+    stream.BeginWrite(new byte[10], 0, 10, _ar =&gt;
+    {
+        stream.EndWrite(_ar);
+        req.BeginGetResponse(__ar =&gt;
+        {
+            var res = req.EndGetResponse(__ar);
+            var resStream = res.GetResponseStream();
+            var s = new StreamReader(resStream).ReadToEnd();
+            Console.WriteLine(s);
+        }, null);
+    }, null);
+}, null);
+</code></pre>
+<p>コールバックの連鎖とはこういうことであり、大変酷い。冗談のようだ。こんなに面倒なら、こんなに苦しいのなら、非同期などいらぬ！しかし現実問題、Silverlightには、Windows Phone 7には、非同期APIしか搭載されていません。Begin-Endが強要される世界。理由は分かる。ユーザーエクスペリエンスの為でしょう。モバイル機器は性能が貧弱だから重い処理はいけない、と言うけれど、大事なのは処理が重いか否かではなく、体感。UIを止めさえしなければ、不快感を与えることはない。だから、強制的に非同期操作のみとした。</p>
+<p>けれど、それで開発難しくなったり面倒になってしまってはいけない。非同期処理が簡単に出来れば……。その答えが、Rx。「簡単に出来るから」「開発者が幸せで」「全てが非同期になり」「ユーザーも幸せになる」。楽しい開発って大事だよね。本当にそう思っていて。開発者が不幸せで、コードに愛がなければ良いものなんて生まれやしないんだって、本当に思っていて。</p>
+<pre><code class="language-csharp">// Rxならこう書ける（...AsObservableは拡張メソッドとして別途定義）
+req.GetRequestStreamAsObservable()
+    .SelectMany(stream =&gt; stream.WriteAsObservable(new byte[10], 0, 10))
+    .SelectMany(_ =&gt; req.GetResponseAsObservable())
+    .Select(res =&gt; new StreamReader(res.GetResponseStream()).ReadToEnd())
+    .Subscribe(Console.WriteLine);
+
+// SelectManyが苦手ならばクエリ構文という手もあります
+var query = from stream in req.GetRequestStreamAsObservable()
+            from _ in stream.WriteAsObservable(new byte[10], 0, 10)
+            from res in req.GetResponseAsObservable()
+            select new StreamReader(res.GetResponseStream()).ReadToEnd();
+query.Subscribe(Console.WriteLine);
+</code></pre>
+<p>ネストが消滅して、メソッドチェーンの形をとって非同期が同期的のように書けるようになります。利点は他にもあって、様々な操作（合成・射影・抽出・待機などなど）が可能になる、ということもありますが、それはまたそのうち。</p>
+<p>ところで、最初のコールバックの連鎖って何だか見覚えのあるような雰囲気ありませんか？JavaScriptで。そう、XmlHttpRequestであったりsetTimeoutであったりの連鎖と同じです。RxのJavaScript版、RxJSではJavaScriptでのそれらのネストを殺害することが可能です。興味があれば、そちらも是非試してみてくださいな。</p>
+<h2>ReactiveOAuthとは?</h2>
+<p>OAuthであっても、ようするにWebRequestなわけです。GET/POSTしてResponseを取ってくるということにかわりはない。そんなわけで、ネットワーク通信してResponseを取ってくる部分を片っ端から全てIObservableにしたのがReactiveOAuthです。Rxにべったり依存したことで、良くも悪くも、他のOAuthライブラリとは全く毛色の違う仕上がりになっています。</p>
+<p>とはいっても、とにかく「簡単に書けること」にこだわりを持ってデザインしたので、利用自体は簡単ですし、Rxの知識もそんなに必要ありません。普通に取得するなら、SelectとSubscribeしか使わないので、全然安心です！まあ、できれば、これが入り口になってRxの世界を知ってもらえると嬉しいなあ、という皮算用もあったりですが。</p>
+<h2>使いかた1. AccessToken取得</h2>
+<p>デスクトップアプリケーション上でのOAuthの仕組みを簡単に説明すると、RequestToken取得→認証URL表示→PINコード入力→PINコード＋RequestTokenを使ってAccessToken取得。という形になっています。まず、ユーザー名・パスワードの代わりとなるものはAccessTokenです。これを取得して、API呼び出しの時に使い、また、パスワード代わりに保存するわけです。そのRequestTokenやPINコードはAccessTokenを取得するための一時的な認証用キーということです。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/rxoauth_gettoken.jpg">
+</p>
+<p>AccessToken取得までにはOAuthAuthorizerクラスを使います。</p>
+<pre><code class="language-csharp">// グローバル変数ということで。
+const string ConsumerKey = &quot;consumerkey&quot;;
+const string ConsumerSecret = &quot;consumersecret&quot;;
+RequestToken requestToken;
+AccessToken accessToken;
+
+private void GetRequestTokenButton_Click(object sender, RoutedEventArgs e)
+{
+    var authorizer = new OAuthAuthorizer(ConsumerKey, ConsumerSecret);
+    authorizer.GetRequestToken(&quot;http://twitter.com/oauth/request_token&quot;)
+        .Select(res =&gt; res.Token)
+        .ObserveOnDispatcher()
+        .Subscribe(token =&gt;
+        {
+            requestToken = token;
+            var url = authorizer.BuildAuthorizeUrl(&quot;http://twitter.com/oauth/authorize&quot;, token);
+            webBrowser1.Navigate(new Uri(url)); // navigate browser
+        });
+} 
+</code></pre>
+<p>GetRequestTokenとBuildAuthorizeUrlを使い、RequestTokenの取得と、内蔵ブラウザに認証用URLを表示させました。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/rxoauth_authorized.jpg">
+</p>
+<pre><code class="language-csharp">private void GetAccessTokenButton_Click(object sender, RoutedEventArgs e)
+{
+    var pincode = PinCodeTextBox.Text; // ユーザーの入力したピンコード
+
+    var authorizer = new OAuthAuthorizer(ConsumerKey, ConsumerSecret);
+    authorizer.GetAccessToken(&quot;http://twitter.com/oauth/access_token&quot;, requestToken, pincode)
+        .ObserveOnDispatcher()
+        .Subscribe(res =&gt;
+        {
+            // Token取得時のレスポンスには、Token以外に幾つかのデータが含まれています
+            // Twitterの場合はuser_idとscreeen_nameがついてきます
+            // ILookup&lt;string,string&gt;なので、First()で取り出してください
+            UserIdTextBlock.Text = res.ExtraData[&quot;user_id&quot;].First();
+            ScreenNameTextBlock.Text = res.ExtraData[&quot;screen_name&quot;].First();
+            accessToken = res.Token; // AccessToken
+        });
+}
+</code></pre>
+<p>画像は認証が全て終わった時の図になっています。RequestTokenとPinCodeをGetAccessTokenメソッドに渡すだけです。これでAccessTokenが取得できたので、全ての認証が必要なAPIにアクセス出来るようになりました。</p>
+<h2>使いかた2. APIへのGet/Post</h2>
+<p>ここからはConsoleApplicationのサンプルコードで説明。</p>
+<pre><code class="language-csharp">var client = new OAuthClient(ConsumerKey, ConsumerSecret, accessToken)
+{
+    Url = &quot;http://api.twitter.com/1/statuses/home_timeline.xml&quot;,
+    Parameters = { { &quot;count&quot;, 20 }, { &quot;page&quot;, 1 } },
+    ApplyBeforeRequest = req =&gt; { req.Timeout = 1000; req.UserAgent = &quot;ReactiveOAuth&quot;; }
+};
+client.GetResponseText()
+    .Select(s =&gt; XElement.Parse(s))
+    .Run(x =&gt; Console.WriteLine(x.ToString()));
+</code></pre>
+<p>IObservable&lt;T&gt;連鎖の最後のメソッドとしてRunを使うと、同期的になります。通常はSubscribeで非同期にすると良いですが、コンソールアプリケーションなどでは、同期的な動作のほうが都合が良いでしょう。</p>
+<p>OAuthClientを作成し、オブジェクト初期化子でURL、パラメータ（コレクション初期化子が使えます）を設定したら、GetResponseTextを呼ぶだけ。あとはIObservable&lt;string&gt;になっているので、Linqと同じように操作していけます。</p>
+<p>ApplyBeforeRequestではリクエストが発行される前に、生のHttpWebRequestが渡されるので（！）、TimeoutやUserAgentなど細かい設定がしたい場合は、ここにラムダ式を埋めてください。</p>
+<p>では、POSTは？</p>
+<pre><code class="language-csharp">new OAuthClient(ConsumerKey, ConsumerSecret, accessToken)
+{
+    MethodType = MethodType.Post,
+    Url = &quot;http://api.twitter.com/1/statuses/update.xml&quot;,
+    Parameters = { { &quot;status&quot;, &quot;PostTest from ReactiveOAuth&quot; } }
+}.GetResponseText()
+    .Select(s =&gt; XElement.Parse(s))
+    .Run(x =&gt; Console.WriteLine(&quot;Post Success:&quot; + x.Element(&quot;text&quot;)));
+</code></pre>
+<p>POSTの場合はMethodTypeにMethodType.Postを指定します(デフォルトがGETなので、GETの場合は指定の省略が可)。それ以外はGETと同じです。Urlとパラメータ指定して、GetResponse。</p>
+<h2>ストリーミングもいけます</h2>
+<p>OAuthClientには3つのメソッドがあります。GetResponseは生のWebResponseを返すもので細かい制御をしたい時にどうぞ。GetResponseTextはStreamReaderのReadToEndで応答をテキストに変えたものを返してくれるもので、お手軽です。そのままXElement.Parseとかに流すと楽ちん。そして、GetResponseLinesはReadLineで一行ずつ返してくれるもの、となっています。GetResponseTextとGetResponseLinesは型で見ると両方共IObservable&lt;string&gt;なため戸惑ってしまうかもですが、前者は流れてくるのは一つだけ、後者は行数分だけ、となります。</p>
+<p>GetResponseLinesはStreamingAPIで使うことを想定しています。とりあえず、WPF用のサンプルを見てください。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/rxoauth_streaming.jpg">
+</p>
+<pre><code class="language-csharp">var client = new OAuthClient(ConsumerKey, ConsumerSecret, accessToken)
+{
+    Url = &quot;http://chirpstream.twitter.com/2b/user.json&quot;
+};
+// streamingHandleはIDisposableで、これのDisposeを呼べばストリーミング停止
+streamingHandle = client.GetResponseLines()
+    .Where(s =&gt; !string.IsNullOrWhiteSpace(s)) // filter invalid data
+    .Select(s =&gt; DynamicJson.Parse(s))
+    .Where(d =&gt; d.text()) // has text is status
+    .ObserveOnDispatcher()
+    .Subscribe(
+        d =&gt; StreamingViewListBox.Items.Add(d.user.screen_name + &quot;:&quot; + d.text),
+        ex =&gt; MessageBox.Show(ReadWebException(ex))); // エラー処理
+</code></pre>
+<p>ストリーミングAPIを使うにあたっても、何の面倒くささもなく、至って自然に扱えてしまいます！Dynamicを使ったJsonへの変換には<a href="http://neue.cc/2010/04/30_256.html" title="neue cc - DynamicJson - C# 4.0のdynamicでスムーズにJSONを扱うライブラリ">DynamicJson - C# 4.0のdynamicでスムーズにJSONを扱うライブラリ</a>を、また、RxとStreamingAPIとの相性については過去記事<a href="http://neue.cc/2010/04/29_255.html" title="neue cc - C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions">C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions</a>を見てください。</p>
+<p>そうそう、それとネットワーク通信で起こったエラーのハンドリングが、SubscribeのOnErrorに書くだけで済むというのもRxを使って嬉しいことの一つです。</p>
+<h2>実装について</h2>
+<p>構造は全体的に<a href="http://twitter.com/ugaya40" title="尾上 雅則 (ugaya40) on Twitter">@ugaya40</a>さんの<a href="http://oauthaccess.codeplex.com/" title="OAuthAccess">OAuthAccess</a>がベースになっています(パク……)。そもそもにTwitterTL to HTMLのOAuth対応した時に、OAuthAccessを使って、あー、OAuth周りってRxに乗せると快適になるなー、とか思ったのが作ろうとした最初の動機だったりもして。非常に感謝。</p>
+<p>WebClient風の、認証がOAuthなだけのベタなWebRequestラッパーという感じなので、特別なところはありません。インターフェイスとかなくて、本当にただのベタ書き。特に奇をてらってるところはないんですが、ストリーミングAPIで使うために用意したGetResponseLinesは個人的には笑えたり。</p>
+<pre><code class="language-csharp">var req = WebRequest.Create(Url);
+return Observable.Defer(() =&gt; req.GetRequestStreamAsObservable())
+    .SelectMany(stream =&gt; stream.WriteAsObservable(postData, 0, postData.Length))
+    .SelectMany(_ =&gt; req.GetResponseAsObservable());
+    .Select(res =&gt; res.GetResponseStream())
+    .SelectMany(s =&gt; Observable.Using(() =&gt; new StreamReader(s), sr =&gt; Observable.Repeat(sr)))
+    .TakeWhile(sr =&gt; !sr.EndOfStream)
+    .Select(sr =&gt; sr.ReadLine());
+</code></pre>
+<p>うわー……。利用者としては、ただのIObservable&lt;string&gt;としか見えないので、前段階でこんなにチェーンが繋がってるだなんてこと、気にする必要は全くないんですけどねー。これがベストな書き方だとは全然思えないので、誰かアドバイス欲すぃです。</p>
+<h2>まとめ</h2>
+<p>RxというとLinq to Events、イベントのLinq化という方向が目につきますが、今回は非同期のLinq化のほうにフォーカスしました。何というか、実に、素晴らしい！asynchronus programming is hard、と、思っていた時もありました。今や私達にはRxがある。恐れることはなにもない。</p>
+<p>今回WPFとWindows Phone 7(Silverlight)でサンプルを作ったのですが、コードがコピペで、完全な互換性もって動いちゃうんですね。WPFで書いてSilverlightに持っていく時に、ああ、BeginGetResponseに書き換えなきゃ…… みたいなことが起こらない。最初から非同期で統一することで、全部ライブラリがネットワーク周りを吸収してくれる。非同期→同期にするのも簡単だし(RunやToEnumerableを使えばいい)、そもそも、Rxの土台に乗っている方が、普通に同期的に書くよりもむしろ楽だったりします。</p>
+<p>個人的には、Windows Phone 7のローンチに粗製乱造Twitterアプリを送り込むという野望があるんですがねえー。いや、粗製乱造にするつもりはないんですが、機能をザックリと削って、一般性を無視して「私が使うシチュエーションで私が使いやすいような」アプリを出したいなーと思ってます。構想はあって、そこそこ尖った個性ある内容になる予定なので一部の人がフィットしてくれればいいな、と。多くの人に目に触れては欲しいのでローンチのタイミングは外したくない。問題はWorldのローンチタイミングに合わせてもJapanだと実機がないってことですね！開発機欲しい(お金は払いますからどうかー)。</p>
+<p>と、思ってたのですがサンプル作りで、あきらかーなXAML知識のなさ（ていうか何も知りません）が露呈したので、ローンチに間にあわせるとか寝言すぎるのですが。せめてJapanのローンチまでにはそれなりな技量を身につけたいところです。</p>
+</div>
+<h1><a href="https://neue.cc/2010/09/09_275.html">C#から使うMicrosoft Ajax MinifierでのJavaScriptコード圧縮</a></h1>
 <ul class="date"><li>2010-09-09</li></ul>
 <div class="entry_body"><p>いつのまにか独立してCodePlex入りしている<a href="http://ajaxmin.codeplex.com/">Microsoft Ajax Minifier</a>。その名の通り、Microsoft謹製のJavaScript/CSSの圧縮/整形ツールです。発表からすぐに、GoogleのClosure Compilerが出てしまったのですっかり影も薄く、ていうか名前悪いよね、Ajax関係ないじゃん……。CodePlexのプロジェクトページも何だか活気ない寂れた感じで、あーあ、といった趣。良いツールなんですけどねえ。</p>
 <p>コマンドライン版とDLL版が用意されていて、コマンドラインの、単体で実行可能なexeの解説は<a href="http://journal.mycom.co.jp/articles/2010/05/21/minifier/index.html">【ハウツー】Microsoft Ajax MinifierでJavaScriptを縮小化しよう</a>で解説されているので、DLL版の使い方を簡単に解説します。</p>
@@ -2222,272 +2387,6 @@ sum = Enumerable.Empty&lt;int&gt;().Aggregate(0, (x, y) =&gt; x + y); // 0
 <p>言語面で見ると、Java5から進化の足を止めている(そしてJava7延期しすぎ)ように見えるJavaと、ひたすら貪欲に(無節操に)取り込み続けるC#。スタート時には似たようなものだったとして、今はもうコードの見た目からして全然似てるようには見えない。Java畑の人は、今でもC#はJavaに似たようなもの、という認識なのかしら。
 確かに、古典的に書けば似てますが……。そして、他の言語を考えれば、やっぱ似てるといえば似てるのですが。しかし……。ふむ。そろそろModern C# Designが出版されるべき。 <a href="http://community.bartdesmet.net/blogs/bart/Default.aspx">Bart De Smet</a>が書く<a href="http://www.amazon.co.jp/gp/product/0672330792?ie=UTF8&tag=ilsgeometrati-22&linkCode=as2&camp=247&creative=7399&creativeASIN=0672330792">C# 4.0 Unleashed</a><img src="http://www.assoc-amazon.jp/e/ir?t=ilsgeometrati-22&l=as2&o=9&a=0672330792" width="1" height="1" border="0" alt="" style="border:none !important; margin:0px !important;" />
 には超期待。</p>
-</div>
-<h1><a href="https://neue.cc/2010/05/29_261.html">.NET(C#)におけるシリアライザのパフォーマンス比較</a></h1>
-<ul class="date"><li>2010-05-29</li></ul>
-<div class="entry_body"><p>ちょっとしたログ解析(細々としたのを結合して全部で10万件ぐらい)に書き捨てコンソールアプリケーションを使って行っていたのですが(データ解析はC#でLinqでコリっと書くのが楽だと思うんです、出力するまでもなく色々な条件を書いておいてデバッガで確認とか出来るし)、実行の度に毎回読んでパースして整形して、などの初期化に時間がかかってどうにも宜しくない。そこで、データ丸ごとシリアライズしてしまえばいいんじゃね？と思い至り、とりあえずそれならバイナリが速いだろうとBinaryFormatterを使ってみたら異常に時間がかかってあらあら……。</p>
-<p>というしょうもない用途から始まっているので状況としては非現実的な感じではありますが、標準/非標準問わず.NET上で実装されている各シリアライザで、割と巨大なオブジェクトをシリアライズ/デシリアライズした時間を計測しました。そんなヘンテコな状況のパフォーマンスなんてどうでもいー、という人は、各シリアライザの基本的な使いかたの参考にでもしてください(いやまあ、どれもnewしてSerializeメソッド呼ぶだけですが)。ソースは後で出しますが、具体的に計測に使ったオブジェクトはテスト用クラスが10万件含まれたListです。まずは結果のほうを。</p>
-<pre><code class="language-text">Serialize BinaryFormatter
-00:00:06.4701421
-53MB
-Serialize XmlSerializer
-00:00:07.7035246
-59MB
-Serialize DataContractSerializer
-00:00:02.1545153
-149MB
-Serialize DataContractSerializer Binary
-00:00:01.4706517
-78MB
-Serialize DataContractJsonSerializer
-00:00:02.6021908
-47MB
-Serialize DataContractJsonSerializer Binary
-00:00:02.5019512
-75MB
-Serialize NetDataContractSerializer
-00:00:09.1802584
-183MB
-Serialize NetDataContractSerializer Binary
-00:00:08.1960399
-99MB
-Serialize Formatter`1 - Protocol Buffers
-00:00:00.7043000
-13MB
-Serialize MsgPackFormatter - MessagePack
-00:01:33.3844083
-46MB
-Serialize JsonSerializer - JSON.NET
-00:00:07.4997295
-38MB
-Serialize JsonSerializer - JSON.NET BSON
-00:00:11.7767353
-44MB
-
-Deserialize BinaryFormatter
-00:00:59.1693980
-Check =&gt; OK
-Deserialize XmlSerializer
-00:00:02.7073623
-Check =&gt; NG
-Deserialize DataContractSerializer
-00:00:06.3459340
-Check =&gt; OK
-Deserialize DataContractSerializer Binary
-00:00:03.5622500
-Check =&gt; OK
-Deserialize DataContractJsonSerializer
-00:00:10.5392504
-Check =&gt; OK
-Deserialize DataContractJsonSerializer Binary
-00:00:07.2658857
-Check =&gt; OK
-Deserialize NetDataContractSerializer
-00:00:09.1020073
-Check =&gt; OK
-Deserialize NetDataContractSerializer Binary
-00:00:07.4024345
-Check =&gt; OK
-Deserialize Formatter`1 - Protocol Buffers
-00:00:00.9176016
-Check =&gt; OK
-Deserialize MsgPackFormatter - MessagePack
-00:00:29.8292134
-Check =&gt; OK
-Deserialize JsonSerializer - JSON.NET
-00:00:11.7517757
-Check =&gt; OK
-Deserialize JsonSerializer - JSON.NET BSON
-00:00:12.0099519
-Check =&gt; OK
-</code></pre>
-<p>対象シリアライザ、かかった時間、シリアライズ時は出力ファイルサイズ、デシリアライズ時は正しく復元できたかを表示しています。</p>
-<p>.NET標準ライブラリからはBinaryFormatter, XmlSerializer, DataContractSerializerとそのバイナリ出力, DataContractJsonSerializerとそのバイナリ出力, NetDataContractSerializerとそのバイナリ出力。オープンソースライブラリからは、GoogleのProtocol Buffersの.NET移植<a href="http://code.google.com/p/protobuf-net/">protobuf-net</a>、国産のMessagePackの<a href="http://d.hatena.ne.jp/saiya_moebius/20081227">C#実装</a>、<a href="http://json.codeplex.com/">Json.NET</a>のJSONシリアライズとBSON(Mong DBで使われているバイナリ形式のJSON)のシリアライズを出力しました。</p>
-<p>BinaryFormatter遅くね？が発端であり裏付けるように、BinaryFormatterのデシリアライズが異常に遅い。他が数秒なのに1分かかってます。テスト用データの詳細は後で述べますが、どうもObjectの配列が含まれていると遅くなるようです。テストデータにはKeyValuePair[]を含んでいるので、それが引っかかって激遅に。シリアライザする対象によって速度が変化するのは分かりますが、幾らなんでも限度を超えた速度低下。バグじゃないかしら？と言いたい。DataContractSerializerでもバイナリが吐ける昨今、もはやObsoleteにしてもいい雰囲気すら漂う。</p>
-<p>XmlSerializerが速い・サイズ少ないという感じですがデシリアライズでCheck =&gt; NGと表記されているように、シリアライズに失敗しています。テストデータにKeyValuePair[]が含まれているのですが、それがシリアライズ出来なくて空配列になってしまったため。Dictionaryがシリアライズ出来なかったりと、XmlSerializerは割と使いにくいところがあります。今だとガイドライン的にも、XmlのAttributeの設定とか出力するXMLを細かく制御するならXmlSerializer、そうでないならDataContractSerializerのほうを推奨、とのことです。</p>
-<p>そのDataContractSerializerはファイルサイズが嵩んでいるのが難点。属性などを付与していないため、テストデータ中の自動プロパティが &lt;_x003C_MyProperty1_x003E_k__BackingField&gt;hoge1&lt;/_x003C_MyProperty1_x003E_k__BackingField&gt; といったような、とんでもなく長ったらしいタグになってしまっているのが原因。DataMember属性で名前を振ってあげればマシになりますが、今回は属性未使用で計測としました。そんなDataContractSerializerですが、バイナリXMLとして保存するとファイルサイズが縮むので気になる場合はそちらを使えばいいのかも。パフォーマンスも良くなります。</p>
-<p>DataContractJsonSerializerは、シリアライズ・デシリアライズの速度はXMLよりも劣っていますが、ファイルサイズに関しては（JSONなので当然とはいえ)比較にならないほど小さい。バイナリXMLよりも小さくて、中々優秀のようです。しかし、バイナリ化して保存すると逆にファイルサイズが膨らむという罠が。</p>
-<p>NetDataContractSerializerはシリアライザ作る時に型指定がいらなかったりと利便性はちょびっと○。また、循環参照が含まれていても問題なくシリアライズ出来たりと、DataContractSerializer（素の状態だと循環参照が含まれると例外）とは若干毛色が違います。といった点から言っても、BinaryFormatterの後継はこれになるのでしょう。</p>
-<p>Protocol Buffersは爆速な上に非常に縮んで素晴らしい！さすがGoogle。ということだけじゃなく、protobuf-netの実装も良いのでしょうね。APIも非常に練られていて使いやすいし、C#でのクラスから.protoファイルの生成とかも出来て大変便利。Silverlightで使えるし、Windows Phone 7でも動かせるよう調整中、とのことでかなり気に入りました。</p>
-<p>MsgPackFormatterはシリアライズ、デシリアライズ共にかなり時間が……。これは、MessagePackが、というよりも、実装の方でオブジェクトグラフの生成に時間がかかってるようです。</p>
-<p>JSON.NETは中々優秀な結果を出しています。しかし、<a href="http://james.newtonking.com/archive/2010/01/01/net-serialization-performance-comparison.aspx" title=".NET Serialization Performance Comparison - James Newton-King">Performance Comparison</a>でDataContractSerializerよりも速いぜ！と謳っていたけれど、そんなことはなく。こういうのは計測する内容によって変わってくるので一概にどうこう言えないんですねー、というのを知るなど。バイナリ化で逆にサイズが膨らむのはDataContractJsonSerializerと同様。なお、JSON.NETはAPIが正直使いにくくてどうにかならないのかねー、と思うので個人的には好きじゃありません。使いやすいAPI設計ってセンスが必要ですよね……。</p>
-<h2>コード</h2>
-<p>割と長ったらしいので、分割して。追試したい方は<a href="http://neue.cc/wp-content/uploads/file/SerializerBench.cs">こちら</a>に元ソース置いておくので使ってみてください。VS2010用。ライブラリ全部揃えるのも大変だと思うので、測定を省きたい項目はMainメソッドのリスト初期化子の部分で該当するものをコメントアウトすれば省けます。</p>
-<pre><code class="language-csharp">[ProtoContract]
-[Serializable]
-public class TestClass : IEquatable&lt;TestClass&gt;
-{
-    [ProtoMember(1)]
-    public string MyProperty1 { get; set; }
-    [ProtoMember(2)]
-    public int MyProperty2 { get; set; }
-    [ProtoMember(3)]
-    public DateTime MyProperty3 { get; set; }
-    [ProtoMember(4)]
-    public bool MyProperty4 { get; set; }
-    [ProtoMember(5)]
-    public KeyValuePair&lt;string, string&gt;[] MyProperty5 { get; set; }
-
-    public bool Equals(TestClass other)
-    {
-        return this.MyProperty1 == other.MyProperty1
-            &amp;&amp; this.MyProperty2 == other.MyProperty2
-            &amp;&amp; this.MyProperty3 == other.MyProperty3
-            &amp;&amp; this.MyProperty4 == other.MyProperty4
-            &amp;&amp; this.MyProperty5.SequenceEqual(other.MyProperty5);
-    }
-
-    public override int GetHashCode()
-    {
-        return this.MyProperty1.GetHashCode() + this.MyProperty2.GetHashCode();
-    }
-}
-</code></pre>
-<p>これがテスト用クラスの中身です。string, int, DateTime, bool, KeyValuePair&lt;string,string&gt;[] とそこそこ満遍なく散りばめて、それとデシリアライズがちゃんと出来たか確認出来るようIEquatable&lt;TestClass&gt;を実装して値比較出来るようにしています。&amp;&amp;や||や三項演算子の:は前置にする派。綺麗に揃う感じが好き。属性はProtocol Buffersはつけないと動かないのでProtoMemberを指定していますが、それ以外は無指定です。指定した方が縮んだりとかありそうですが、私的には無指定の状態で調べたいなあ、と思ったのでなし。最適じゃない状態からのそれぞれのシリアライズ形式への生成、書き戻しの具合を見たいと思ったので。いや、単純に各実装で使う属性を調べるのが面倒だったという手抜きな理由もありますが。</p>
-<pre><code class="language-csharp">public abstract class SerializerBenchmark
-{
-    public static readonly List&lt;TestClass&gt; TestData;
-
-    static SerializerBenchmark()
-    {
-        TestData = Enumerable.Range(1, 100000)
-            .Select(i =&gt; new TestClass
-            {
-                MyProperty1 = &quot;hoge&quot; + i,
-                MyProperty2 = i,
-                MyProperty3 = new DateTime(1999, 12, 11).AddDays(i),
-                MyProperty4 = i % 2 == 0,
-                MyProperty5 = Enumerable.Range(1, 10)
-                    .ToDictionary(x =&gt; x.ToString(), _ =&gt; i.ToString()).ToArray()
-            })
-            .ToList();
-    }
-
-    public static SerializerBenchmark&lt;T&gt; Create&lt;T&gt;(T serializer, Func&lt;T, Action&lt;Stream, Object&gt;&gt; serializeSelector, Func&lt;T, Func&lt;Stream, Object&gt;&gt; deserializeSelector, string optional = null)
-    {
-        return new SerializerBenchmark&lt;T&gt;(serializer, serializeSelector, deserializeSelector, optional);
-    }
-
-    public abstract void Serialize();
-    public abstract void Deserialize();
-}
-</code></pre>
-<p>ベンチマークで重複コードのコピペ(ストップウォッチを前後に挟んだり)を省くために抽象クラスを作りました。このList&lt;TestClass&gt; TestDataが実際にシリアライズ/デシリアライズに使ったデータになります。Enumerable.Range(1, 100000)のToListで10万件のリスト生成。KeyValuePairの配列は、全て長さ10で、DictionaryのToArrayで作っています。</p>
-<pre><code class="language-csharp">public class SerializerBenchmark&lt;T&gt; : SerializerBenchmark
-{
-    private T serializer;
-    private string name;
-    Action&lt;Stream, Object&gt; serialize;
-    Func&lt;Stream, Object&gt; deserialize;
-
-    private string FileName { get { return name + &quot;.temp&quot;; } }
-
-    public SerializerBenchmark(T serializer, Func&lt;T, Action&lt;Stream, Object&gt;&gt; serializeSelector, Func&lt;T, Func&lt;Stream, Object&gt;&gt; deserializeSelector, string optional = null)
-    {
-        this.serializer = serializer;
-        this.name = serializer.GetType().Name + ((optional == null) ? &quot;&quot; : &quot; &quot; + optional);
-        this.serialize = serializeSelector(serializer);
-        this.deserialize = deserializeSelector(serializer);
-    }
-
-    private void Bench(string label, Action action)
-    {
-        GC.Collect();
-        Console.WriteLine(label + &quot; &quot; + name);
-        var sw = Stopwatch.StartNew();
-        action();
-        Console.WriteLine(sw.Elapsed);
-    }
-
-    private void OpenAndExecute(string path, Action&lt;FileStream&gt; action)
-    {
-        using (var fs = File.Open(path, FileMode.OpenOrCreate))
-        {
-            action(fs);
-        }
-    }
-
-    public override void Serialize()
-    {
-        Bench(&quot;Serialize&quot;, () =&gt; OpenAndExecute(FileName, fs =&gt; serialize(fs, TestData)));
-        Console.WriteLine(new FileInfo(FileName).Length / 1024 / 1024 + &quot;MB&quot;);
-    }
-
-    public override void Deserialize()
-    {
-        List&lt;TestClass&gt; data = null;
-        Bench(&quot;Deserialize&quot;, () =&gt; OpenAndExecute(FileName, fs =&gt; data = (List&lt;TestClass&gt;)deserialize(fs)));
-        Console.Write(&quot;Check =&gt; &quot;);
-        Console.WriteLine(TestData.SequenceEqual(data) ? &quot;OK&quot; : &quot;NG&quot;);
-    }
-}
-</code></pre>
-<p>こちらがベンチマークの中身。処理を共通化したかったのですが、各シリアライザがIFormatter（Serialize,Deserializeメソッドを持つインターフェイス）を実装している、なんてことは全くなくて共通化しようがなくてうぎゃー。せめてメソッド名が全てSerializeならdynamic使うという最終手段もあるけれど、DataContractSerializerのメソッド名はWriteObjectだし、ダメだこりゃ。</p>
-<p>で、気づいたのがSerializeはAction&lt;Stream, Object&gt;、DeserializeはFunc&lt;Stream, Object&gt;だということ。というわけで、各メソッドそのものをコンストラクタで渡してあげる形にすることで共通化できた。めでたしめでたし。もはやFuncやActionのない世界は考えられませんね！え、Javaのことですか知りません。</p>
-<p>Deserialize時には、正しくデシリアライズ出来たかのチェックを仕込んでいます。データがListなのでLinqのSequenceEqualで元データと値比較。Listの要素であるTestClassもIEquatableなので、全部値比較で確認。</p>
-<pre><code class="language-csharp">static class Program
-{
-    static void Main(string[] args)
-    {
-        var bench = new List&lt;SerializerBenchmark&gt;
-        {
-            SerializerBenchmark.Create(new BinaryFormatter(), x =&gt; x.Serialize, x =&gt; x.Deserialize),
-            SerializerBenchmark.Create(new XmlSerializer(typeof(List&lt;TestClass&gt;)), x =&gt; x.Serialize, x =&gt; x.Deserialize),
-            SerializerBenchmark.Create(new DataContractSerializer(typeof(List&lt;TestClass&gt;)), x =&gt; x.WriteObject, x =&gt; x.ReadObject),
-            SerializerBenchmark.Create(new DataContractSerializer(typeof(List&lt;TestClass&gt;)),
-                x =&gt; (s, data) =&gt; XmlDictionaryWriter.CreateBinaryWriter(s).Using(xw =&gt; x.WriteObject(xw, data)),
-                x =&gt; s =&gt; XmlDictionaryReader.CreateBinaryReader(s,XmlDictionaryReaderQuotas.Max).Using(xr =&gt; x.ReadObject(xr)),
-                &quot;Binary&quot;),
-            SerializerBenchmark.Create(new DataContractJsonSerializer(typeof(List&lt;TestClass&gt;)), x =&gt; x.WriteObject, x =&gt; x.ReadObject),
-            SerializerBenchmark.Create(new DataContractJsonSerializer(typeof(List&lt;TestClass&gt;)),
-                x =&gt; (s, data) =&gt; XmlDictionaryWriter.CreateBinaryWriter(s).Using(xw =&gt; x.WriteObject(xw, data)),
-                x =&gt; s =&gt; XmlDictionaryReader.CreateBinaryReader(s,XmlDictionaryReaderQuotas.Max).Using(xr =&gt; x.ReadObject(xr)),
-                &quot;Binary&quot;),
-            SerializerBenchmark.Create(new NetDataContractSerializer(), x =&gt; x.Serialize, x =&gt; x.Deserialize),
-            SerializerBenchmark.Create(new NetDataContractSerializer(),
-                x =&gt; (s, data) =&gt; XmlDictionaryWriter.CreateBinaryWriter(s).Using(xw =&gt; x.WriteObject(xw, data)),
-                x =&gt; s =&gt; XmlDictionaryReader.CreateBinaryReader(s,XmlDictionaryReaderQuotas.Max).Using(xr =&gt; x.ReadObject(xr)),
-                &quot;Binary&quot;),
-            SerializerBenchmark.Create(ProtoBuf.Serializer.CreateFormatter&lt;List&lt;TestClass&gt;&gt;(), x =&gt; x.Serialize, x =&gt; x.Deserialize, &quot;- Protocol Buffers&quot;),
-            SerializerBenchmark.Create(new MsgPackFormatter(), x =&gt; x.Serialize, x =&gt; x.Deserialize, &quot;- MessagePack&quot;),
-            SerializerBenchmark.Create(new JsonSerializer(),
-                x =&gt; (s, data) =&gt; new StreamWriter(s).Using(sw =&gt; new JsonTextWriter(sw).Using(tw=&gt; x.Serialize(tw, data))),
-                x =&gt; s =&gt; new StreamReader(s).Using(sr =&gt; new JsonTextReader(sr).Using(tr=&gt; x.Deserialize&lt;List&lt;TestClass&gt;&gt;(tr))),
-                &quot;- JSON.NET&quot;),
-            SerializerBenchmark.Create(new JsonSerializer(),
-                x =&gt; (s, data) =&gt; new BsonWriter(s).Using(bw =&gt; x.Serialize(bw, data)),
-                x =&gt; s =&gt; new BsonReader(s){ReadRootValueAsArray = true}.Using(br =&gt; x.Deserialize&lt;List&lt;TestClass&gt;&gt;(br)),
-                &quot;- JSON.NET BSON&quot;)
-        };
-
-        bench.ForEach(b =&gt; b.Serialize());
-        Console.WriteLine();
-        bench.ForEach(b =&gt; b.Deserialize());
-
-        Console.ReadKey();
-    }
-
-    // IDisposable extensions
-
-    static void Using&lt;T&gt;(this T disposable, Action&lt;T&gt; action) where T : IDisposable
-    {
-        using (disposable) action(disposable);
-    }
-
-    static TR Using&lt;T, TR&gt;(this T disposable, Func&lt;T, TR&gt; func) where T : IDisposable
-    {
-        using (disposable) return func(disposable);
-    }
-}
-</code></pre>
-<p>Listに突っ込んで、まとめてForEachで計測。でも何だかゴチャゴチャしててキタナイですね……。Listの最初の3つまでは良いんです。それぞれ一行で。SerializeとDeserialize登録するだけで。その次から想定外でして……。そう、Serializeは決して必ずしもAction&lt;Stream, Object&gt;じゃあなかった！例えばDataContractSerializerでバイナリXML化を行うには、WriteObjectにStreamじゃなくてXmlDictionaryWriterを渡さなきゃいけない。と、いうわけで、そういった特別対応が必要なメソッドには入れ子のラムダ式を作って処理しています。そのせいでゴチャゴチャと。もはや可読性の欠片もない。がくり。入れ子のラムダが出てくると読むのシンドイんですよね、可能な限り避けたいとは思ってるんですが……。</p>
-<p>Using拡張メソッドは、using構文使うと式じゃなくて文になってラムダ式で書きづらくてウザいので無理やり式にするためのシロモノ。そのせいで入れ子が更に入れ子になって可読性落としてる気がする。何事もやりすぎはいけない。</p>
-<h2>まとめ</h2>
-<p>DataContractSerializer良いよね。XmlDictionaryWriter.CreateBinaryWriter突っ込めばバイナリ化も出来るし。あと<a href="http://code.google.com/p/protobuf-net/">protobuf-net</a>はこうして数字見ると本当に凄いね。と、いったことことぐらいしか言うことがなく。</p>
-<p>それとは関係あったりなかったりで、Twitter素晴らしい。毎回思うけれど、やっぱTwitterは素晴らしい。もともと<a href="http://twitter.com/neuecc/status/14755041874" title="Twitter / neuecc: そういえばですが、BinaryFormatterのデ ...">BinaryFormatterなんか遅くね？</a>とTwitterに愚痴ったところからスタートして、色々な人にアドバイスを受けて最終的にこんな記事（斜め上なだけな気はする）になったわけで、Twitterなかったら「遅くね？以上終了」で終わってた。</p>
-<p>私がTwitterをはじめたのは<a href="http://neue.cc/2008/01/04_48.html" title="neue cc - Twitterはじめました">Twitterはじめました</a>とかいう記事で確認出来るところでは2008/01/04(CoD4について書いてますけど、CoD4のシングルはあんま好きじゃなかった、でもその後マルチプレイヤーにはまったので結局MW2買ってますね！)。しかも、この後も当分は何もポストしないままでいて、同年9月の<a href="http://neue.cc/2008/09/30_106.html" title="neue cc - 三度目の正直">三度目の正直</a>とかいう記事でTwitter→はてダへの転送ツールを作ってからようやく始めてました。コードの一部が載ってますけど、postList.Addとかいうのが初々しいなあ。今だとforeach使ったら負け、.ToList()だろ常識的に考えて。ですね。あと、TrimStartの使い方を間違えてるという。1年半前の私のド素人っぷりが伺えて面白い。ていうか、考えてみると物凄く成長しましたね……。</p>
-<p>そして今ではすっかりTwitter中毒です。あらあらうふふ。</p>
-<p>アドバイス受けてばかりというのもアレですので、私でも応えられそうなのがTLに流れてきたり検索(キーワード「Linq」を割と頻繁に眺めてる)にかかった時は答えるようにしています。いや、あんましてないかも。積極的に答えるようにしていきたいなあ、と。そんなわけで、<a href="http://twitter.com/neuecc/" title="neuecc (neuecc) on Twitter">@neuecc</a>でTwitterやってるので気が向いたらフォローしてやってください。</p>
 </div>
 <a href="https://neue.cc/19">Prev |</a>
 <a href="https://neue.cc/21">| Next</a>
