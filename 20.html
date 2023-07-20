@@ -23,7 +23,199 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2010/09/12_276.html">ReactiveOAuth - Windows Phone 7対応のOAuthライブラリ</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2010/09/28_277.html">Reactive Extensionsの非同期周りの解説と自前実装</a></h1>
+<ul class="date"><li>2010-09-28</li></ul>
+<div class="entry_body"><p>最近<a href="http://d.hatena.ne.jp/okazuki/" title="かずきのBlog@Hatena">id:okazuki</a>さんが凄い勢いでRx解説を書いていて凄い！そして、刺激を受けますねー。というわけで、今回はRxの非同期周りの解説をします。今日の昼に<a href="http://d.hatena.ne.jp/okazuki/20100927/1285553227" title="非同期処理を行うメソッドの戻り値は全てIObservable&lt;T&gt;にしてしまえばいいんじゃないんだろうか - かずきのBlog@Hatena">非同期処理を行うメソッドの戻り値は全てIObservable&lt;T&gt;にしてしまえばいいんじゃないんだろうか</a>を読んで、Twitterで少しAsyncSubjectについて書いたのでそれをまとめて……、と思ったら<a href="http://d.hatena.ne.jp/okazuki/20100927/1285590312" title="Reactive Extensions入門 11「非同期処理用のSubject」 - かずきのBlog@Hatena">Reactive Extensions入門 11「非同期処理用のSubject」</a>ですって！早！私なんて一年かけて何も書いていやしなかったりするのに、この早さは本当に見習いたい、ごほごほ。</p>
+<p>そんなわけかで、色々と被ってしまっているのですが、Rxの非同期実行についてまとめます。まず、Rxの非同期の起点はStart, ToAsync, FromAsyncPatternの3つ。Start,ToAsyncはFromAsyncPatternの簡易化みたいなものなので、実質は1つです。これらを使うと長さ1のIObservable&lt;T&gt;として非同期処理が扱えるわけです。ところで非同期処理が完了するまでの間に複数Subscribeしたらどうなるのだろう、または非同期処理が完了してしまった後にSubscribeしたらどうなるのだろう？ Silverlightで実際に触って試してみてください。</p>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="300px">
+<param name="source" value="http://neue.cc/wp-content/uploads/silverlight/RxConsoleAsyncSubject.xap"/>
+<param name="background" value="white" />
+<param name="minRuntimeVersion" value="4.0.50401.0" />
+<param name="initparams" value="Start=1" />
+<a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=4.0.50401.0" style="text-decoration:none">
+ 	<img src="http://go.microsoft.com/fwlink/?LinkId=161376" alt="Microsoft Silverlight の取得" style="border-style:none"/>
+</a>
+</object>
+</p>
+<p>ボタンだらけでイミフ？ 解説します……。Rxの非同期系処理は全てAsyncSubjectを通ります。AsyncSubjectのOnNextが非同期で実行された値の戻り値を、OnCompletedが非同期処理の完了を示します。通常はOnNextとOnCompletedはワンセットで非同期処理です。というわけで、例えばSubscribeを二回押す→OnNextを一回押す→OnCompletedを一回押すで、非同期のIObservable&lt;int&gt;に対して二つSubscribe(Console.WriteLine)したということになり、1が二つ右側のログに表示されたはずです。続けてSubscribeを押す（非同期処理が完了した後にSubscribeした場合）とどうなるか？というと、1が追加されたはずです。</p>
+<p>以前に<a href="http://neue.cc/2010/06/24_263.html" title="neue cc - Reactive Extensions for .NET (Rx) メソッド探訪第7回:IEnumerable vs IObservable">Hot vs Cold</a>としてIObservableの性質を少し取り上げました。ColdはSubscribeするとすぐに実行される。HotはSubscribeしても値が流れてくるまで待機する。非同期におけるIObservable&lt;T&gt; = AsyncSubjectは、つまり、両方の性質を持ちます。OnCompleted以前はHotで、値が流れてくる（非同期処理が完了する）まで待機される。OnCompleted以後はColdとなって、Subscribeするとすぐに値を流す。</p>
+<p>何となくAsyncSubjectの中身が想像付いてきました？そう、非同期の実行結果である値をキャッシュしています。もし複数回OnNextされたらどうなるか、というと、これは最後の値だけが残ります。(一度Resetしてから)OnNextを連打してからOnCompletedを押して、Subscribeしてみてください。</p>
+<p>非同期というとキャンセルはどうするの？というと、ありますよ！Subscribeの戻り値はIDisposable。イベントのRx化、FromEventの場合はイベントのデタッチでしたが、非同期で使う場合はキャンセルになります。例えばSubscribeを押してから、Disposeを押して（キャンセル！）、OnNext→OnCompleted(非同期処理完了)を押してみてください。ログに何も出てきません。非同期処理が完了する前にDisposeしたということで、Subscribeがキャンセルされた、ということです。では、続けて(OnCompleted完了後)Subscribeを押すと……、ログに値が表示されます。Disposeは処理自体をキャンセルするわけではなく、 Subscribeのキャンセルということですね。</p>
+<p>そうそう、ResetボタンはSubscribeやDispose、AsyncSubjectの状態をリセットして初期化します。Clearボタンはログの消去になります。</p>
+<h2>AsyncSubjectの簡易実装</h2>
+<p>AsyncSubjectの実態が大体分かったので、次は自分で実装してみましょう！その前にSubjectって何ぞや、というと、IObservable&lt;T&gt;かつIObserver&lt;T&gt;。これはRxネイティブのイベントだと思ってください。<a href="http://neue.cc/2010/07/28_269.html" title="neue cc - Reactive Extensions入門 + メソッド早見解説表">詳しくはReactive Extensions入門 + メソッド早見解説表</a>をどうぞ。</p>
+<p>とりあえず実装したコードを。</p>
+<pre><code class="language-csharp">public class MyAsyncSubject&lt;T&gt; : IObservable&lt;T&gt;, IObserver&lt;T&gt;
+{
+    bool isCompleted = false;
+    T lastValue = default(T);
+    readonly List&lt;IObserver&lt;T&gt;&gt; observers = new List&lt;IObserver&lt;T&gt;&gt;();
+
+    // OnCompleted済みなら即座にOnNext呼び出し、そうでないならListへAdd
+    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
+    {
+        if (isCompleted)
+        {
+            observer.OnNext(lastValue);
+            observer.OnCompleted();
+            return Disposable.Empty;
+        }
+        else
+        {
+            observers.Add(observer);
+            // 正しくはキャンセルが可能なように、Disposeが呼ばれた際にListからremoveされるよう
+            // ラップした特別なIDisposableを返す必要があるけれど、簡略化した例ということでその辺は省きます
+            return Disposable.Empty;
+        }
+
+    }
+
+    // 初回呼び出しの場合は最後の値で全てのobserverのOnNextとOnCompletedを呼ぶ
+    public void OnCompleted()
+    {
+        if (isCompleted) return;
+        isCompleted = true;
+        observers.ForEach(o =&gt;
+        {
+            o.OnNext(lastValue);
+            o.OnCompleted();
+        });
+        observers.Clear();
+    }
+
+    // OnCompletedと同じ。これも呼ばれたらCompleted済みとなる
+    public void OnError(Exception error)
+    {
+        if (isCompleted) return;
+        isCompleted = true;
+        observers.ForEach(o =&gt;
+        {
+            o.OnError(error);
+        });
+        observers.Clear();
+    }
+
+    // Completed済みでなければキャッシュを置き換える
+    public void OnNext(T value)
+    {
+        if (isCompleted) return;
+        lastValue = value;
+    }
+}
+</code></pre>
+<p>あくまでこれは簡易化したものです。実際はこれより、もう少し複雑です。あとlockを省いているのにも注意。まあ、ちゃんとしたのが知りたい場合はリフレクタとキャッキャウフフしてくださいということで。コードの中身ですが、Silverlightのデモで見てきた通りの、比較的単純な作りになっています。OnCompleted前後のSubscribeの挙動なんて、コードで見たほうが一目瞭然で早いですね。</p>
+<p>これの挙動がRxの非同期系の挙動です。もしAsyncSubjectではなくSubject(値のキャッシュなし)を使った場合は、非同期開始からSubscribeまでの間に完了してしまった場合、何も起きないことになってしまいます。キャッシュを取るというのは、非同期に最適な理に叶った、というか、少なくとも不都合は起きないような挙動になります。もし自前で非同期でIObservable&lt;T&gt;を返すようなメソッドを実装する場合は、必ずAsyncSubjectを使いましょう。ユーザーの期待する挙動を取らなければならないという、義務として。</p>
+<h2>FromAsyncPatternの簡易実装</h2>
+<p>ここまで来たら、ついでなのでFromAsyncPatternも実装してしまいましょう！AsyncSubjectがあれば簡単です。あ、こちらでも断っておくと、あくまで簡易実装であって実際のものとは若干異なります。</p>
+<pre><code class="language-csharp">static class Program
+{
+    static Func&lt;T, IObservable&lt;TR&gt;&gt; MyFromAsyncPattern&lt;T, TR&gt;(Func&lt;T, AsyncCallback, object, IAsyncResult&gt; begin, Func&lt;IAsyncResult, TR&gt; end)
+    {
+        return arg =&gt;
+        {
+            var asyncSubject = new AsyncSubject&lt;TR&gt;(Scheduler.ThreadPool); // おや、引数に……
+
+            // 引数を渡されたら、Subscribeを待たずBeginInvokeで非同期実行が始まります
+            begin.Invoke(arg, ar =&gt;
+            {
+                TR result;
+                try
+                {
+                    result = end.Invoke(ar); // EndInvokeで結果を得て
+                }
+                catch (Exception error)
+                {
+                    asyncSubject.OnError(error);
+                    return;
+                }
+                asyncSubject.OnNext(result); // OnNext!
+                asyncSubject.OnCompleted();
+            }, null);
+
+            return asyncSubject.AsObservable(); // SubjectのOnNextなどを隠す(なので昔はHideというメソッド名でした)
+        };
+    }
+
+    // ToAsyncはFunc/ActionのBeginInvoke,EndInvoke簡略化版です
+    // というのは少し嘘です、実際はSchedulerを使うのであってBeginInvokeは使いません、詳しくはまたそのうち
+    static Func&lt;T, IObservable&lt;TR&gt;&gt; MyToAsync&lt;T, TR&gt;(this Func&lt;T, TR&gt; func)
+    {
+        return MyFromAsyncPattern&lt;T, TR&gt;(func.BeginInvoke, func.EndInvoke);
+    }
+
+    // StartはToAsyncの引数無しのものを即時実行というものです
+    // Func&lt;T&gt;のみのFromAsyncPatternを作っていないので、Rx本来のToAsyncで書きます
+    static IObservable&lt;T&gt; MyStart&lt;T&gt;(Func&lt;T&gt; func)
+    {
+        return Observable.ToAsync(func).Invoke(); // ここで即座にInvoke
+    }
+
+    static void Main(string[] args)
+    {
+        // *が引数の分だけ並ぶという関数があったとする
+        Func&lt;int, string&gt; repeat = i =&gt; new String('*', i);
+
+        var obs = MyFromAsyncPattern&lt;int, string&gt;(repeat.BeginInvoke, repeat.EndInvoke)
+            .Invoke(3); // Subscribe時ではなく、Invokeした瞬間に非同期の実行は開始されていることに注意
+
+        obs.Subscribe(Console.WriteLine); // ***
+        Console.ReadKey();
+    }
+}
+</code></pre>
+<p>FromAsyncPatternは引数の多さや引数のイミフさにビビりますが、デリゲートのBeginInvoke, EndInvokeに合わせてやるだけです。こんなの私もソラでは書けませんよー。さて、今回は引数を一つ取るFromAsyncPatternを定義してみました。戻り値がFunc&lt;T, IObservable&lt;TR&gt;&gt;なのは、引数を一つ取ってIObservable&lt;T&gt;にする、ということです。</p>
+<p>中身は割と簡単で、とりあえずBeginInvokeして、EndInvokeを待たずに（そりゃ非同期なので当然だ）とりあえずAsyncSubjectを戻します。つまり、これでIObservableとしてはHotの状態。そして何らかの処理が終えたらEndInvokeで戻り値を得て、AsyncSubjectのOnNext, OnCompletedを呼んでやる。これでSubscribeされていたものが実行されて、ついでにIObservableとしてColdになる。これだけ。意外とシンプル。</p>
+<p>ついでのついでなのでObservable.ToAsyncとObservable.Startも定義してみました。ToAsyncはFunc/Actionを簡単にRx化するもの。FromAsyncPatternだとジェネリックの引数を書いたりと、何かと面倒くさいですから。StartはToAsyncを更に簡略化したもので、引数なしのものならInvoke不要で即時実行するというもの。</p>
+<h2>実行開始タイミングについて</h2>
+<p>FromAsyncPatternは(ToAsync/Startも)Invokeした瞬間に非同期実行が始まります。　FromAsyncPattern().Invoke().Subscribe() といったように、直接繋げる場合は気にする必要も特にないかもですが、一時変数などに置いたりする場合などは、Subscribeされたときに初めて非同期実行が開始されて欲しい、と思ったりあるかもですね。そんな場合はDeferを使います。</p>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="300px">
+<param name="source" value="http://neue.cc/wp-content/uploads/silverlight/RxConsoleAsyncSubject.xap"/>
+<param name="background" value="white" />
+<param name="minRuntimeVersion" value="4.0.50401.0" />
+<param name="initparams" value="Start=2" />
+<a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=4.0.50401.0" style="text-decoration:none">
+ 	<img src="http://go.microsoft.com/fwlink/?LinkId=161376" alt="Microsoft Silverlight の取得" style="border-style:none"/>
+</a>
+</object>
+</p>
+<pre><code class="language-csharp">// 100を返すだけのどうでもいい関数
+Func&lt;int&gt; func = () =&gt;
+{
+    Console.WriteLine(&quot;fire&quot;);
+    return 100;
+};
+
+var start = Observable.Start(func);
+var defer = Observable.Defer(() =&gt; Observable.Start(func));
+var prune= Observable.Defer(() =&gt; Observable.Start(func)).Prune();
+
+StartButton.Click += (sender, e) =&gt;
+{
+    start.Subscribe(Console.WriteLine);
+};
+
+DeferButton.Click += (sender, e) =&gt;
+{
+    defer.Subscribe(Console.WriteLine);
+};
+
+var isConnected = false;
+ReplayButton.Click += (sender, e) =&gt;
+{
+    if (!isConnected) { prune.Connect(); isConnected = true; }
+    prune.Subscribe(Console.WriteLine);
+};
+</code></pre>
+<p>何もボタンを押さなくてもログにfireと出てしまっています。Observable.Startのせいなわけですががが。そんなわけで、Deferを使うとSubscribeまで実行を遅延することができます。ところで注意なのが、どちらもIObservable&lt;T&gt;なのですが、StartはColdとしてキャッシュされた値を返し続けるのに対して、Deferは中の関数を再度実行します。もしキャッシュしたい場合は、Pruneを使うといいでしょう。Pruneはこのブログでも延々と出してきた値の分配のためのPublishの親戚で、Connect後は最後の値をキャッシュして返し続けるという、AsyncSubjectと同じ動作をします（というか中身がAsyncSubjectなのですが）。この辺の使い分けというのもヤヤコシイところですねえ、そもそもPruneっていうメソッド名がイミフ……。</p>
+<h2>まとめ</h2>
+<p>Linq to Objectsで、最初分からなかったんですよ、yield returnなどで返される遅延評価としてのIEnumerable&lt;T&gt;と、配列(これもIEnumerable&lt;T&gt;ではある)の違いが。初めてLinqを知った後、半年ぐらいは分からないままだった（C#歴も半年でしたが）。同じインターフェイスなのに、状態としては、ちょっと違う。こういうのって結構分かりづらくて、躓いてしまうところです。</p>
+<p>Rxの厄介なところは、IObservable&lt;T&gt;が一つで色々な状態を持ちすぎ。HotとColdの違いもある上に、更には混じり合った状態まである、Deferと非Deferも、外からだけだと全く区別がつかない。もう分かりづらいったらない。これに関しては一個一個丁寧に見ていくしかない、かな。今回はRxにおける非同期を徹底的に解剖してみました。一つ一つ、丁寧に。Rxも徐々に盛り上がりつつあるようなので、これからも、私なりに出来る限りに情報を発信していけたらと思います。</p>
+<p>ところで、凄くシンプルなんですよね、Rxって。何を言ってるんだ？って話ですが、ええと、ほら、あくまでも「簡易」だからってのもありますが、実装のコード行数も少ないし全然難しいことやってないという。Linq to Objectsもそれ自体は凄くシンプルで、シンプルなのにとんでもなく強力という。それと同じで。Rx触ってて、内部をリフレクタでちょろちょろと見てて、本当に驚く。シンプルなのだけど、自分じゃ絶対書けないし思いつけないしっていう。悔しいし、そして、憧れるところですねえ。</p>
+<p>特に魔法もなく、素直に中間層厚めな実装は、パフォーマンスは（もがもがもがもが）。何か言いました？</p>
+</div>
+<h1><a href="https://neue.cc/2010/09/12_276.html">ReactiveOAuth - Windows Phone 7対応のOAuthライブラリ</a></h1>
 <ul class="date"><li>2010-09-12</li></ul>
 <div class="entry_body"><ul>
 <li><a href="http://reactiveoauth.codeplex.com/" title="ReactiveOAuth">CodePlex - ReactiveOAuth</a></li>
@@ -2306,87 +2498,6 @@ observableButton.Click += (sender, e) =&gt;
 <p>PullとPushは、むしろ動作的にはPushのほうが素直で分かりやすい雰囲気。難解だと思って避けていたそこのアナタ、さあ、Rxを使おう！ しかしColdとHotは大いなる罠。初見ではきっとつまづく。この区別は本当に大事。Rxが難解っぽいとしたら、Cold/Hotのせい。挙動がまるっと変わるんだもの。でも、ゆっくり紐解けば全然大丈夫。さあ、Rxを使おう！Publishや集計系はそんなには使わないかもですが、覚えておくと便利な時も割とある。さあ、Rxを(ry</p>
 <p>個人的にRxの特色・使いどころは「イベントの合成」「タイマー・ネットワーク・スレッドなど非同期処理の一元化」「シーケンスの分配」の3つだと思っているのですが、このブログでは、延々とシーケンス分配という、3つの中で一番どうでもいい機能しか紹介していない！という酷い事実に気がつきました。そんなんじゃRxのポテンシャルを全然伝えられない。</p>
 <p>というわけで、次回はタイマー辺りを紹介したいと思います予定は未定。というか計画ではObservableの合流周りとMarble Diagramについてを書く予定。Rxの知名度も徐々に上がってきているようなので、しっかり紹介していきたいですし、他の人も書いて欲すぃ。</p>
-</div>
-<h1><a href="https://neue.cc/2010/06/08_262.html">Linq雑話</a></h1>
-<ul class="date"><li>2010-06-08</li></ul>
-<div class="entry_body"><p>ここ数日Twitterで見た/出したLinqネタまとめ。私の広くない観測範囲(<a href="http://twitter.com/neuecc" title="neuecc (neuecc) on Twitter">@neuecc</a>)での話ですが。</p>
-<h2>SelectManyとクエリ構文でUsing</h2>
-<p>ネタ元、コード元は<a href="http://marcgravell.blogspot.com/2009/11/selectmany-combining-idisposable-and.html">Code, code and more code.: SelectMany; combining IDisposable and LINQ</a>から。</p>
-<pre><code class="language-csharp">static void Main(string[] args)
-{
-    var firstLines =
-        from path in new[] { &quot;foo.txt&quot;, &quot;bar.txt&quot; }
-        from stream in File.OpenRead(path)
-        from reader in new StreamReader(stream)
-        select path + &quot;\t&quot; + reader.ReadLine();
-}
-
-public static IEnumerable&lt;TResult&gt; SelectMany&lt;TSource, TDisposable, TResult&gt;(
-    this IEnumerable&lt;TSource&gt; source,
-    Func&lt;TSource, TDisposable&gt; disposableSelector,
-    Func&lt;TSource, TDisposable, TResult&gt; resultSelector) where TDisposable : IDisposable
-{
-    foreach (var item in source)
-    {
-        using (var disposableItem = disposableSelector(item))
-            yield return resultSelector(item, disposableItem);
-    }
-}
-</code></pre>
-<p>自前定義の拡張メソッドはメソッド構文だけのものと思っていませんでしたか？私はそう思っていました。でも、クエリ構文でも同名のものがあれば拡張メソッドが使用されるんです、というお話。それを利用してusingのネストをクエリ構文で華麗に表現してやったぜー、というサンプルで、確かにこれはクール！素晴らしすぎる。</p>
-<p>でも、クエリ構文使いたいかというと、そんなことはなく変わらずメソッド構文派です、私は。クエリ構文自体は悪いとは思わないし、良さがあるのも分かるんですが、他の拡張メソッドに繋げる時に前後にカッコで括ると途端に書き/読みにくくなることと、拡張性の乏しさが如何ともし難い。クエリ構文とメソッド構文のちゃんぽんになるぐらいなら、メソッド構文だけで書いたほうが美しいよね、と思ってしまう。あと、クエリ構文の存在が「LINQ = SQLみたいなの」という図式を産んでしまっているくさいのも、憎んでしまいますね……。</p>
-<h2>ラムダ式の引数の名前とシャッフルについて</h2>
-<p>お馴染み感溢れるOrderByでのシャッフル。</p>
-<pre><code class="language-csharp">var rand = new Random();
-var shuffle = Enumerable.Range(1, 10).OrderBy(_ =&gt; rand.Next());
-</code></pre>
-<p>それはそれとして、ラムダ式の引数の名前どうする？というお話が。私は、引数を使わない場合は _ を、使う場合は型の1～2文字(i(Int32)とかs(String)とかa(AnonymousType)とか、考えるの面倒なときはx、配列系はarかxs)という自分ルールを敷いています。以前に<a href="http://neue.cc/2009/10/05_207.html">ラムダ式の引数の名前</a>という記事を書いたのですが、その時から変わっていません。ですが、最近ネットで見かけるコードでは全部_でまかなう例もよく見るね、と。Scalaでは匿名関数の引数として_が使える(プレースホルダ構文って言うんですね、名前知らなかった)ようなので、_をダメとは言い辛いのですけど、私はちょち苦手(linq.jsで$をゴリゴリ使ってるくせに、って話ではあるけど) 。</p>
-<p>C#にもプレースホルダ構文みたいなの欲しいね、というのは、若干ある。プロパティの「value」とか最初からそこにある良く分からない変数、みたいなのはあるし。ただ、IntelliSenseとの兼ね合いもあるし、そういうのが入れられるか、入って本当に幸せになれるのかどうかの判断は保留。短絡的に欲しい！って言うのは簡単だけど、それの及ぼす影響となると分からないものだ。</p>
-<p>それともう一つ。OrderByの引数は比較関数ではなくキーセレクターにすぎないのでちゃんとシャッフルされる、とか言ったりなどした私ですが、そうじゃなくて<a href="http://blog.livedoor.jp/dankogai/archives/50615442.html">シャッフルの精度はランダムの範囲に影響される</a>ね(実際上は問題ないとしても)、という話が。完全に頭から抜け落ちていて、かつ、全くもってその通りで恥ずかしかったりしたのですが確認できてよかったです、感謝。</p>
-<h2>OrderByのComparison</h2>
-<p>全然使わないけどOrderByの第二引数。</p>
-<pre><code class="language-csharp">class MyClass
-{
-    public int Hoge { get; set; }
-    public int Fuga { get; set; }
-}
-static void Main(string[] args)
-{
-    var array = new[] { new MyClass(), new MyClass() };
-    // コンパイルは通るけど例外出る
-    var ordered = array.OrderBy(x =&gt; x).ToArray();
-    // 上のはこれに等しい(当然、例外出る)
-    array.OrderBy(x =&gt; x, Comparer&lt;MyClass&gt;.Default);
-    // AnonymousComparerを使えばComparisonを使った比較が出来る
-    array.OrderBy(x =&gt; x, (x, y) =&gt; x.Fuga - y.Hoge);
-}
-</code></pre>
-<p>OrderByついでですが、キーセレクターは制約かかってないので別にIComparableじゃなくても動いたりします。そういう時はComparer&lt;T&gt;.Defaultが指定されることになって、例外出て死ぬだけです。意味ナイネ。</p>
-<p>DescendingとThenByがあるので滅多に使わないであろう第二引数はIComparer。一々クラス作ってnewですってよ、C#らしくないですね。Comparisonじゃないなんて！大変ウザい。そんな人のための<a href="http://linqcomparer.codeplex.com/">AnonymousComparer</a>。ラムダ式でIEqualityComparer/IComparerを作ることが出来ます。また、Linq標準演算子への拡張メソッドとしてOrderBy/ThenByのオーバーロードとしてComparisonが使えるようになります。便利ですね！是非使ってください、という宣伝。</p>
-<h2>Empty -&gt; Sum</h2>
-<p>Empty.Sum()は0。言われてみれば当たり前といえば当たり前なのですが……。</p>
-<pre><code class="language-csharp">// SumはAggregateで表現出来る
-var sum = Enumerable.Range(1, 10).Aggregate((x, y) =&gt; x + y); // 55
-// でもEmptyで例外出るから表現出来ない(ｷﾘｯ
-sum = Enumerable.Empty&lt;int&gt;().Sum(); // 0
-sum = Enumerable.Empty&lt;int&gt;().Aggregate((x, y) =&gt; x + y); // 例外
-// 実はseed与えればおk
-sum = Enumerable.Empty&lt;int&gt;().Aggregate(0, (x, y) =&gt; x + y); // 0
-</code></pre>
-<p>SumやMax, Minなどは全てAggregateで表現出来ます。でも、Sumは空シーケンスの時はゼロ出すけど(MaxやAverageは例外)Aggregateを使うと例外が出てしまうので表現出来ない、とか言ったのですが0を最初に与えとけばいいよね、という話が。ぬお、そうでした！</p>
-<p>発端は<a href="http://linqjs.codeplex.com/">linq.js</a>でこの問題(というかC#と互換が取れてないこと)に気づいたことで、linq.jsではAggregateでやってるため、AggregateはScan.LastだからScan.LastOrDefault(0)にするー、なんて考えてたんですが、初項0で済むというシンプルさを完全に失念。標準演算子外のメソッドを大量に用意してあるので、そっち側で解決しちゃおうとしてしまう姿勢は、ちょっと頭硬直化しちゃってる、全くもってよろしくない。</p>
-<p>シャッフルの話といい、Aggregateの話といい、最近はLinqに慣れすぎて逆に見方が定型的になりすぎていると実感したので、少し気を引き締めないと。あ、で、そんなこんなでlinq.jsの空シーケンスでのSumの問題は次のリリースで直します。他にもバグがあったり(MemoizeAllが少しマズい)、加えたいことが数点あったりするので、もう少し先になりますが。</p>
-<h2>世の中の主流はまだVS2005ですか？</h2>
-<blockquote>
-<p>開発言語としてのJavaとC＃を10の視点から比較<br />
-共通点が多いが、今後は違いが大きくなるかも<br />
-しかし近年のC#はLINQ（Language Integrated Query：言語統合クエリ）プロジェクトが重視されています。これはクエリ、集合操作、変換、および型推測などのデータ指向機能の多くを直接的にC#言語に統合しようとするものです。今後は違いがさらに大きくなっていくかもしれません。<br />
-<a href="http://www.atmarkit.co.jp/fjava/rensai4/java_dotnet01/03.html">プログラマが知っておきたいJavaと.NETの違い (3/4) - ＠IT</a></p>
-</blockquote>
-<p>Linqは、VS2008出たのは3年前だよね(プレビュー版から言えばどれだけ前なのかしら)。今後は違いが大きくなるかも、じゃなくて既に違いは大きすぎるような。そして10の比較というけれど、最大の違いはデリゲートの有無では？特に、匿名メソッド/ラムダ式の有無。<a href="http://www.asahi-net.or.jp/%7Edp8h-izn/delegate.html">A.R.N [ Top &gt; 書庫 &gt; Microsoftの「Delegate」について ]</a>にある、Javaには無名クラスがあるからdelegateは不要、とは10年以上前のSunの言で、さすがに10年以上も前のを持ち出してどうこう言ってもしょうがないのですが(比較対象に匿名メソッドないし)、価値観は移り変わっていくものなのだと思わずにはいられない。匿名クラスで代用出来るって、いやまあ出来なくもないのは分かりますがUglyすぎ。今、クロージャなんて不要、とか言ったらフルボッコなはず。</p>
-<p>言語面で見ると、Java5から進化の足を止めている(そしてJava7延期しすぎ)ように見えるJavaと、ひたすら貪欲に(無節操に)取り込み続けるC#。スタート時には似たようなものだったとして、今はもうコードの見た目からして全然似てるようには見えない。Java畑の人は、今でもC#はJavaに似たようなもの、という認識なのかしら。
-確かに、古典的に書けば似てますが……。そして、他の言語を考えれば、やっぱ似てるといえば似てるのですが。しかし……。ふむ。そろそろModern C# Designが出版されるべき。 <a href="http://community.bartdesmet.net/blogs/bart/Default.aspx">Bart De Smet</a>が書く<a href="http://www.amazon.co.jp/gp/product/0672330792?ie=UTF8&tag=ilsgeometrati-22&linkCode=as2&camp=247&creative=7399&creativeASIN=0672330792">C# 4.0 Unleashed</a><img src="http://www.assoc-amazon.jp/e/ir?t=ilsgeometrati-22&l=as2&o=9&a=0672330792" width="1" height="1" border="0" alt="" style="border:none !important; margin:0px !important;" />
-には超期待。</p>
 </div>
 <a href="https://neue.cc/19">Prev |</a>
 <a href="https://neue.cc/21">| Next</a>

@@ -23,7 +23,106 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2009/05/18_160.html">Stopwatch</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2009/05/24_161.html">linq.js ver 1.3.0.0 - Unfold, Matches, etc...</a></h1>
+<ul class="date"><li>2009-05-24</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript Library - Home">linq.js - LINQ for JavaScript Library - Home</a></li>
+</ul>
+<p>今回は本体も含めて大量更新です。生成子にUnfoldとMatchesを追加しました。Unfoldは応用範囲がとても広く(広すぎて逆に使い道が思いつかない)、Matchesは正規表現がより使いやすくなるので、実用度が非常に高いと思われます。そして、FromにStringを入れたときの動作を一文字毎に分解するよう変更。更に操作用メソッドにも、Insert, IndexOf, LastIndexOfを追加しました。あと、その他色々。</p>
+<h2>Unfold</h2>
+<p>UnfoldはAggregateの反対、といっても良くわからないのですが、引数と戻り値の型が同一の関数を無限に適用し続ける、という感じです。例えばE.Unfold(0, &quot;$+3&quot;)は、初期値が0で、適用する関数が+3。というわけで、0,3,6,9....と無限に3ずつ増幅していく値が取り出せます。これだけでは終了しないので、終了条件はTakeかTakeWhileで別に与えます。</p>
+<pre><code class="language-javascript">// フィボナッチ数列の無限リスト
+var fib = E.Unfold({ a: 1, b: 1 }, &quot;{a:$.b, b:$.a + $.b}&quot;).Select(&quot;$.a&quot;);
+// 10個分だけ画面に出力 - 1,1,2,3,5,8,13,21,34,55
+fib.Take(10).WriteLine();
+
+// abcdefを一文字ずつ削っていく- abcdef,bcdef,cdef,def,ef,f
+E.Unfold(&quot;abcdef&quot;, &quot;$.substr(1)&quot;).TakeWhile(&quot;$.length&gt;0&quot;).WriteLine();
+</code></pre>
+<p>例はフィボナッチ数列で、これは<a href="http://d.hatena.ne.jp/NyaRuRu/20080127/p2" title="熟練した C# 使いは再帰を書かない？ - NyaRuRuの日記">熟練した C# 使いは再帰を書かない？ - NyaRuRuの日記</a>の丸コピです。タプルの片方を計算用の一時領域として使う、という感じでしょうか？</p>
+<pre><code class="language-csharp">static void Main(string[] args)
+{
+    // 16進の文字列をByte配列に変換する
+    var str16 = &quot;FF-04-F2 B3 05 16F3&quot;;
+
+    var regex = new Regex(@&quot;[abcdef\d]{2}&quot;, RegexOptions.IgnoreCase);
+
+    // 全部マッチさせてから変換
+    var byteArray1 = regex.Matches(str16)
+        .Cast&lt;Match&gt;()
+        .Select(m =&gt; Convert.ToByte(m.Value, 16));
+
+    // Unfold使って一つずつ変換
+    var byteArray2 = Unfold(regex.Match(str16), m =&gt; m.NextMatch())
+        .TakeWhile(m =&gt; m.Success)
+        .Select(m =&gt; Convert.ToByte(m.Value, 16));
+}
+
+static IEnumerable&lt;T&gt; Unfold&lt;T&gt;(T seed, Func&lt;T, T&gt; func)
+{
+    while (true)
+    {
+        yield return seed;
+        seed = func(seed);
+    }
+}
+</code></pre>
+<p>UnfoldをC#で正規表現のマッチに使ってみた。あまり意味はない。これをJavaScriptでやると、マッチオブジェクトにNextMatch()がないので、lastIndexの変化したRegExpにexec()し続ける必要がある。というわけで、Timesを使えば同じことができます。E.Times(&quot;regex.exec(input)&quot;).TakeWhile(&quot;$ != null&quot;) です。String.match(オプションはglobal)を使って配列を取得したほうが楽なのですが、それだと文字列配列(みたいな何か)であって、個々のマッチオブジェクトが取れないので、個々のindex(一致した位置)やキャプチャが必要な場合はRegExp.execを使う、という使い分けかなー、と私は思っています。</p>
+<h2>Matches</h2>
+<p>そんなことを考えていたら、やっぱRegExp.execのglobalって使いづらいね、と思ったのでE.Matchesを追加しました。C#のRegex.Matchesと同じようにマッチオブジェクト全てを返します。配列で欲しい場合はToArray()を。そのまま処理を加えたい場合は、Linqのメソッド群全てが使えます。マッチのうち先頭だけが欲しいけど射影処理もしたい場合はMatches().Select().First()という手が使えます。</p>
+<pre><code class="language-javascript">var input = &quot;abcdefgABzDefabgdg&quot;;
+E.Matches(input, &quot;ab(.)d&quot;, &quot;i&quot;).ForEach(function(match)
+{
+    for (var prop in match)
+    {
+        document.write(prop + &quot; : &quot; + match[prop] + &quot;&lt;br /&gt;&quot;);
+    }
+    document.write(&quot;toString() : &quot; + match.toString() + &quot;&lt;br /&gt;&quot;);
+    document.write(&quot;&lt;br /&gt;&quot;);
+});
+
+E.Matches(input, /ab(.)/i); // こうも書ける、gフラグはつけなくていい
+E.Matches(input, &quot;ab(.)d&quot;); // 大文字小文字を区別するならflag無しで
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/ieregex.jpg">
+</p>
+<p>E.Matches(input, pattern, flags)で、patternは文字列でも正規表現オブジェクトでも、どちらでも可能。flagsは省略可、与える場合は仕様通り&quot;i&quot;, &quot;m&quot;, &quot;im&quot;が使えます。gフラグを明示的に与える必要はありません。与えても与えなくても関係なくglobalで検索します。</p>
+<p>中に入るマッチオブジェクトなのですが、[0]にマッチした文字列全体、キャプチャがある場合は[1]以降にキャプチャした文字列が入ります。あとは.indexと.input。IEだと.lastIndexも取れてますが、IE以外のブラウザではlastIndexは使えません(undefinedでした)</p>
+<h2>From(String)</h2>
+<p>今までE.From(&quot;hoge&quot;).ToArray()とすると[0]=&quot;hoge&quot;になっていました。つまりE.Repeat(&quot;hoge&quot;,1)というわけです。これは、何というか、意味ないですよね。C#だと['h','o','g','e']というように、Charに分解します。というわけで、E.From(&quot;hoge&quot;).ToArray()の結果が[&quot;h&quot;,&quot;o&quot;,&quot;g&quot;,&quot;e&quot;]になるように動作を変更しました。</p>
+<pre><code class="language-javascript">var input = &quot;こんにちは みなさん おげんき ですか？ わたしは げんき です。\
+             この ぶんしょう は いぎりすの ケンブリッジ だいがく の けんきゅう の けっか\
+             いかりゃく&quot;
+
+var result = E.From(input.split(/[\s\t\n]/))
+    .Select(function(s)
+    {
+        return (s.length &gt; 3)
+            ? s.charAt(0)
+              + E.From(s).Skip(1).Take(s.length - 2).Shuffle().ToString()
+              + s.charAt(s.length - 1)
+            : s;
+    })
+    .ToString(&quot; &quot;);
+
+alert(result);
+</code></pre>
+<p>サンプルとして、流行から100歩遅れて<a href="http://www.itmedia.co.jp/news/articles/0905/08/news021.html">ケブンッリジ</a>変換をlinq.jsで。</p>
+<p>真ん中の、「E.From(s).Skip(1).Take(s.length - 2).Shuffle().ToString()」という部分が「こんにちは」を「こんちには」に変換する部分です。E.From(s)で文字列を一文字ずつにバラしているわけです。Skip(1).Take(s.length-2)が、「最初と最後の文字を除く」です。実際の実行例は下のURLからどうぞ。</p>
+<p><a href="http://neue.cc/kebunridge.htm" title="ケブンリッジ ジェネレータ">ケブンリッジ ジェネレータ</a></p>
+<p>↑で動かしているものは、必ずシャッフルされるようにしたり、「、。！？」が末尾の時には別の処理をしていたりと、例に出しているコードとはちょっと違いますけれど。詳しくはソースを見てください。</p>
+<h2>その他</h2>
+<p>他に追加したメソッドはぶっちゃけ全然使い道ないのでササッと書き流します。まずInsertですが、これはConcatの場所自由版という感じにシーケンスを特定場所に挿入。IndexOf, LastIndexOfは位置の発見で見つからない場合は-1を返すというお馴染みな動作をします。他にlinq.tools.jsにHashSetを追加しました。これはC#のHashSetに似たようなもので、詳しくはリファレンス見てください。そして、Stopwatchに静的メソッドBenchを追加。これは、どうせStopwatch使うのはベンチマークの時だけでしょ？ということで。</p>
+<pre><code class="language-javascript">var result = Linq.Tools.Stopwatch.Bench(1000, function()
+{
+    E.Range(1,100).Where(&quot;$%2==0&quot;).Select(&quot;$*$&quot;).Force();
+});
+document.write(result + 'ms')
+</code></pre>
+<p>第一引数に繰り返し回数、第二引数に実行する関数。わざわざDateの引き算をすることなく、気楽に計れるので、便利といえば便利。というか、この手のものは手間がかかるとついつい避けてしまうので、サクッと計れないとダメですものね。</p>
+</div>
+<h1><a href="https://neue.cc/2009/05/18_160.html">Stopwatch</a></h1>
 <ul class="date"><li>2009-05-18</li></ul>
 <div class="entry_body"><ul>
 <li><a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript Library - Home">linq.js - LINQ for JavaScript Library - Home</a></li>
@@ -715,71 +814,6 @@ var B = colors.ToArray();
 var clone = E.From(array).ToArray();
 </code></pre>
 <p>そういえば、前回RepeatがいわゆるFillの代用になると書きましたが、From().ToArray()はシャローコピーの代用になります。あんまり派手なことに使わずに、地味にこそこそっと使うのがお薦め。派手にメソッドチェーン組み立てるのもお薦め。楽しいです、ほんと。</p>
-</div>
-<h1><a href="https://neue.cc/2009/04/08_146.html">linq.js サンプルサンプル</a></h1>
-<ul class="date"><li>2009-04-08</li></ul>
-<div class="entry_body"><p><a href="http://neue.cc/2009/04/04_145.html" title="neue cc - linq.js - JavaScript用LINQライブラリ">前回投稿したlinq.js</a>、誰の目にも触れず埋もれてしまうのではないかと思っていたのですが、ある程度は見てもらえたようでホッとしました。表作ったり動画作ったりと、ゲーム攻略サイトのノリで書き上げたかいがありました(そして、もうすっかりゲームサイトじゃなくなってしまった！)。ここ数日に新しく登録されたCodePlexのプロジェクトで見ても、Views/Downloads共に多いほうのようです。とはいってもDLは30前後なので、感覚的には全然少ないのですが。ただ、そもそもJavaScriptで野良ライブラリを使うシチュエーションなんてないだろ常識的に考えて……といったところなのでしょうがない。でも使って欲すぃ。前回は完全にチュートリアルだったので、今回はちょっと実用っぽいサンプルで行きます。</p>
-<pre><code class="language-javascript">// abcdefghijklmnopqrstuvwxyzという文字列を作る
-E.Range('a'.charCodeAt(0),26)
-  .Select(&quot;String.fromCharCode($)&quot;)
-  .ToString()
-// 現在の年から10年前までを生成(2009,2008,2007...,2000)
-E.RangeDown(new Date().getFullYear(),10)
-// 0で初期化した配列、とか
-// 空配列で初期化した配列、とかに地味に便利(いわゆるFill)
-var array = E.Repeat(0, 100).ToArray();
-var array = E.Repeat([], 100).ToArray();
-</code></pre>
-<p>RepeatはC#ではイマイチ使い道が見つからないんですが、JavaScriptでは激しく便利なよう。あ、この辺は<a href="http://neue.cc/reference.htm" title="linq.js Reference">LINQ Pad</a>で動かしながら作れます。a-zの生成は頭の中で作ってたモノはちょっと違ってて反応みながら即座に直してました。やっぱリアルタイムで反映されると便利。特にJavaScriptはIntelliSenseがないので、細かいミスが多くなってしまうので(charCodeFromだと思ってたんですよー)</p>
-<p>そういえば、a-zの生成の26という数字は良くない。'z'.charCodeAt(0)を使いたいのですが、Rangeの二つ目はcountなので、(z-a+1)を書かなくてはいけなくて、少し長くなるかなあ。「第二引数の数字まで生成」も用意しておくべきでした。近いうちに追加しておきます。E.ToInfinity('a'.charCodeAt(0)).TakeWhile(&quot;$&lt;='z'.charCodeAt(0)&quot;)で結果は同じになりますけど、無駄があるかなあ。TakeWhileは加工した後のものに使いたいのであって、生成のすぐ後に使うのは違和感がある。</p>
-<pre><code class="language-javascript">E.Repeat(null)
-  .Select(&quot;Math.floor(Math.random() * 26 + 'a'.charCodeAt(0))&quot;)
-  .Select(&quot;String.fromCharCode($)&quot;)
-  .Select(&quot;Math.round(Math.random()) ? $.toUpperCase() : $ &quot;)
-  .Take(100)
-</code></pre>
-<p>更に応用して、100個ランダムなa-z,A-Zのアルファベットを生成する、というもの。Selectを繋げていっての加工は楽しくて簡単。生成後はToArray()で配列にするのも、ToString()で文字列にするのも、好きに選べます。終了条件を今回はTake(100)にしましたが、TakeWhileで条件をつけるのが自然。たとえば画面を埋め尽くしたら終了とか。</p>
-<pre><code class="language-csharp">var rand = new Random();
-Func&lt;bool&gt; TrueOrFalse = () =&gt; (rand.Next(2) == 0);
-
-Enumerable.Repeat(rand, 100)
-  .Select(r =&gt; r.Next('A', 'Z' + 1))
-  .Select(i =&gt; TrueOrFalse() ? (char)i : (char)(i + 'a' - 'A'));
-</code></pre>
-<p>文字を数字と見なしての生成はC#のLINQでも便利に使えます。C#だとこんな感じでしょうか。randomの扱いがちょっと微妙かな？ Repeat内にnew Random()としたいところなのですが、それだと二個目のSelect時にはRandomが消滅しているので使えないので、しょうがなく。</p>
-<pre><code class="language-csharp">Enumerable.Repeat(new Random(), 100)
-  .Select(r =&gt; new { r, i = r.Next('A', 'Z' + 1) })
-  .Select(t =&gt; (t.r.Next(2) == 0) ? (char)t.i : (char)(t.i + 'a' - 'A'));
-</code></pre>
-<p>最初のSelectの段階でランダムも保持しておけば解決。ただ、素直に外出しのほうがいいかなあ、という気もします。この辺、どっちにすべきか微妙に悩ましい。この程度の場合ならSelectを二段にせず、一段階目で全部処理してしまえば万事解決な気はします。個人的には多段階に繋いでこそのLINQであり浪漫だと思うのだけど……。</p>
-<p>他に、例えばしつこくランダムソートを検証すると……</p>
-<pre><code class="language-javascript">var result = E.Repeat(0, 10).ToArray(); // 結果格納用配列の初期化
-for (var i = 0; i &lt; 10000; i++){
-	var array = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]; // 配列はあえて手書き?
-	array.sort(function() { return Math.round(Math.random()) ? 1 : -1 });
-	result[array[0]]++;
-}
-// 画面に出力
-E.From(result).ForEach(function(value, index){
-	document.write(index + ':' + value);
-	document.write(&quot;&lt;br /&gt;&quot;);
-});
-
-/* 結果例
-0:498
-1:888
-2:808
-3:1345
-4:1033
-5:1119
-6:897
-7:1214
-8:1170
-9:1028
-*/
-</code></pre>
-<p>初期化と書き出しにだけlinq.jsを使いました。比較関数にランダムはダメ・絶対。と、こんな感じに、地味にコソコソっと普通のJavaScriptコードに混ぜ込んでも便利に使えるんじゃないかなあ、と思います。私自身は、もうこれなしだとJavaScript書く気になれない、のですがそもそも全然JavaScriptで何も書いちゃあいないので何とも言えなかったり。</p>
-<p>とりあえず、あと一回分はアップデートネタがあるので、今週末にでも追加します。</p>
 </div>
 <a href="https://neue.cc/26">Prev |</a>
 <a href="https://neue.cc/28">| Next</a>

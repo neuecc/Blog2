@@ -23,7 +23,89 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2013/07/02_412.html">asyncの落とし穴Part2, SynchronizationContextの向こう側</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2013/07/10_414.html">C#で扱うRedisのLuaスクリプティング</a></h1>
+<ul class="date"><li>2013-07-10</li></ul>
+<div class="entry_body"><p>Redis 2.6からLuaスクリプティングが使えるようになりました。コマンドは<a href="http://redis.io/commands/eval">EVAL</a>です。というわけでC#のRedisライブラリ、<a href="https://code.google.com/p/booksleeve/">BookSleeve</a>で、試してみましょう。RedisやBookSleeveに関しては、以前に私がBuildInsiderで書いた<a href="http://www.buildinsider.net/small/rediscshap/01">C#のRedisライブラリ「BookSleeve」の利用法</a>を参照ください。</p>
+<p>BookSleeveは当然NuGet経由で入れるとして、Windows版のRedisバイナリもNuGetで配布されています。手軽に試してみるなら、<a href="https://nuget.org/packages/Redis-64/">Install-Package Redis-64</a>が良いのではないでしょーか。現在の最新は2.6.12.1ということで、Evalにも対応しています。インストールするとpackages\Redis-64.2.6.12.1\toolsにredis-server.exeが転がっているので、それを起動すれば、とりあえず127.0.0.1:6379で動きます。</p>
+<h2>多重アクセスの検出</h2>
+<p>HelloWorld!ということで、多重アクセス検知のスクリプトでも書いてみます。ルールとしては、X秒以内にY回アクセスしてきた人間はZ秒アク禁にする。という感じですね。DOSアタック対策的な。LUAスクリプティングを使わないと、キーを2つ用意したりしなけりゃいけなかったり複数コマンド打ったりしたりとか、若干面倒だったり効率悪いのですが、スクリプティング使えば一発で済ませられます。</p>
+<pre><code class="language-csharp">    public static class RedisExtensions
+    {
+        public static async Task&lt;bool&gt; DetectAttack(this RedisConnection redis, int db, string key, int limitCount = 10, int durationSecond = 1, int bannedSecond = 300)
+        {
+            var result = await redis.Scripting.Eval(db, @&quot;
+local key = KEYS[1]
+local limit = tonumber(ARGV[1])
+local count = redis.call('incr', key)
+if(count &gt;= limit) then
+    local banSec = tonumber(ARGV[3])
+    redis.call('EXPIRE', key, banSec)
+    return true
+else
+    local expireSec = tonumber(ARGV[2])
+    redis.call('EXPIRE', key, expireSec)
+    return false
+end&quot;, new[] { key }, new object[] { limitCount, durationSecond, bannedSecond }).ConfigureAwait(false);
+
+            // Lua-&gt;Redisはtrueの時に1を、falseの時にnullを返す
+            return (result == null) ? false
+                : ((long)result == 1) ? true
+                : false;
+        }
+    }
+</code></pre>
+<p>こんな感じですね。基本的にはEvalメソッドでスクリプトを渡すだけです、あとKEYS配列とARGV配列を必要ならば。戻り値の扱いなどに若干のクセがありますので、その辺はRedisのEVALのドキュメントを読んでおくといいでしょう。</p>
+<p>スクリプトは、まずincrを呼んでカウントを取る。そのカウントが指定数を超えてたらExpireの時間をBanの時間（デフォは300秒=5分）引き伸ばす。超えてなければ、Expireの時間を指定間隔(デフォは1秒)だけ伸ばす。もし1秒以内に連続でアクセスがあれば、Incrのカウントが増えていく。1秒以上経過すればExpireされているので、countは0スタートになる。といった感じです。</p>
+<p>利用する場合はこんな具合。</p>
+<pre><code class="language-csharp">var redis = new RedisConnection(&quot;127.0.0.1&quot;);
+await redis.Open();
+
+var v = await redis.DetectAttack(0, &quot;hogehoge&quot;);
+Console.WriteLine(v); // false
+
+for (int i = 0; i &lt; 15; i++)
+{
+    var v2 = await redis.DetectAttack(0, &quot;hogehoge&quot;);
+    Console.WriteLine(v2); // false,false,...,true,true
+}
+</code></pre>
+<p>いい具合ですにぇ？</p>
+<h2>EVALSHA</h2>
+<p>BookSleeveのEvalは、正確には<a href="http://redis.io/commands/evalsha">EVALSHA</a>です（更に正しくはデフォルトの、引数のuseCacheがtrueの場合）。</p>
+<p>EVALSHAは、事前にスクリプトのSHA1を算出し、初回に登録しておくことで、コマンドの転送をSHA1の転送だけで済ませます。スクリプトを毎回投げていたらコマンド転送に時間がかかるので、それの節約です。この辺をBookSleeveは何も意識しなくても、やってくれるのが非常に楽ちん。素晴らしい。</p>
+<h2>Increment/DecrementLimit</h2>
+<p>せっかくなので、もう一つ例を。RedisのIncrementやDecrementはアトミックな操作で非常に使いやすいのですが、上限や下限を設けたい場合があります。例えば、HPは0以下になって欲しくないし、最大HPを超えて回復されても困る、みたいな。それも当然、Luaスクリプティングを使えば簡単に実現可能です。</p>
+<pre><code class="language-csharp">        public static async Task&lt;long&gt; IncrementWithLimit(this RedisConnection redis, int db, string key, long value, long maxLimit)
+        {
+            var result = await redis.Scripting.Eval(db, @&quot;
+local inc = tonumber(ARGV[1])
+local max = tonumber(ARGV[2])
+local x = redis.call('incrby', KEYS[1], inc)
+if(x &gt; max) then
+    redis.call('set', KEYS[1], max)
+    x = max
+end
+return x&quot;, new[] { key }, new object[] { value, maxLimit }).ConfigureAwait(false);
+            return (long)result;
+        }
+</code></pre>
+<p>incrbyの結果が指定の値を超えていたら、setで固定する、といった感じです、単純単純。使うときはこんな具合。</p>
+<pre><code class="language-csharp">var redis = new RedisConnection(&quot;127.0.0.1&quot;);
+await redis.Open();
+
+var v1 = await redis.IncrementWithLimit(0, &quot;hoge&quot;, 40, maxLimit: 100);
+var v2 = await redis.IncrementWithLimit(0, &quot;hoge&quot;, 40, maxLimit: 100);
+var v3 = await redis.IncrementWithLimit(0, &quot;hoge&quot;, 40, maxLimit: 100);
+
+// 40-&gt;80-&gt;100
+Console.WriteLine(v1 + &quot;-&gt;&quot; + v2 + &quot;-&gt;&quot; + v3);
+</code></pre>
+<p>楽ちん、これは捗る。</p>
+<h2>まとめ</h2>
+<p>というわけで、RedisいいよRedis。いやほんと色々な面で使ってて嬉しいことが多いです。RDBMSだけで頑張ると非常に辛ぽよ、Redisがあるだけで何かと楽になれますので、一家に一台は置いておきたい。</p>
+<p>Luaスクリプティングは複数コマンド間で戻り値が扱えるため、利用範囲がグッと広がります。そしてスクリプティング中の動作もまたアトミックである、というのが嬉しい点です（C#コード上で複数コマンドを扱うと、そこの保証がないというのが大きな違い）。と同時に注意しなければならないのは、アトミックなので、スクリプト実行中は完全にブロックされてます。ので、あまりヘヴィなことをLuaスクリプティングでやるのは避けたほうがいいのではないかなー、と思われます。</p>
+</div>
+<h1><a href="https://neue.cc/2013/07/02_412.html">asyncの落とし穴Part2, SynchronizationContextの向こう側</a></h1>
 <ul class="date"><li>2013-07-02</li></ul>
 <div class="entry_body"><p>非同期QUIZの時間がやってきました！前回はデッドロックについてでしたが、今回はヌルポについて扱いましょう。まずは以下のコードの何が問題なのかを当ててください。ASP.NET MVCです。あ、.NET 4.5ね。</p>
 <pre><code class="language-csharp">public class HomeController : Controller
@@ -1588,133 +1670,6 @@ for (int i = 0; i &lt; 100; i++)
 }
 </code></pre>
 <p>これで、軽量かつ安全安泰なRandomが手に入りました。めでたしめでたし。</p>
-</div>
-<h1><a href="https://neue.cc/2013/02/27_398.html">AsyncOAuth - C#用の全プラットフォーム対応の非同期OAuthライブラリ</a></h1>
-<ul class="date"><li>2013-02-27</li></ul>
-<div class="entry_body"><p>待ち望まれていた<a href="http://blogs.msdn.com/b/bclteam/archive/2013/02/18/portable-httpclient-for-net-framework-and-windows-phone.aspx">HttpClientがPortable Class Library化</a>しました、まだBetaだけどね！というわけで、早速PCL版のHttpClientをベースにしたOAuthライブラリを仕上げてみました。ポータブルクラスライブラリなので、.NET 4.5は勿論、Windows Phone 7.5, 8, Windows Store Apps, Silverlight, それと.NET 4.0にも対応です。</p>
-<ul>
-<li><a href="https://github.com/neuecc/AsyncOAuth">AsyncOAuth - GitHub</a></li>
-</ul>
-<p>前身のReactiveOAuthがTwitterでしかロクにテストしてなくてHatenaでズタボロだったことを反省し、今回はSampleにTwitterとHatenaを入れておきました＆どっちでもちゃんと正常に動きます。なお、完全に上位互換なので、ReactiveOAuthはObsoleteです。それと、ライブラリのインストールはNuGet経由でのみの提供です。</p>
-<p>PM&gt; Install-Package <a href="https://nuget.org/packages/AsyncOAuth/">AsyncOAuth -Pre</a></p>
-<p>もしくはPreReleaseを表示に含めてGUIから検索してください。</p>
-<h2>AsyncOAuth is not a new library</h2>
-<p>AsyncOAuthの実態はOAuthMessageHandlerというDelegatingHandlerです。</p>
-<pre><code class="language-csharp">var client = new HttpClient(new OAuthMessageHandler(&quot;consumerKey&quot;, &quot;consumerSecret&quot;, new AccessToken(&quot;accessToken&quot;, &quot;accessTokenSecret&quot;)));
-
-// 上のだとnewの入れ子が面倒なので短縮形、戻り値は上のと同じ
-var client = OAuthUtility.CreateOAuthClient(&quot;consumerKey&quot;, &quot;consumerSecret&quot;, new AccessToken(&quot;accessToken&quot;, &quot;accessTokenSecret&quot;));
-</code></pre>
-<p>こうなっていると何がいいか、というと、全ての操作がHttpClient標準通りなのです。</p>
-<pre><code class="language-csharp">// Get
-var json = await client.GetStringAsync(&quot;http://api.twitter.com/1.1/statuses/home_timeline.json?count=&quot; + count + &quot;&amp;page=&quot; + page);
-
-// Post
-var content = new FormUrlEncodedContent(new[] { new KeyValuePair&lt;string, string&gt;(&quot;status&quot;, status) });
-var response = await client.PostAsync(&quot;http://api.twitter.com/1.1/statuses/update.json&quot;, content);
-var json = await response.Content.ReadAsStringAsync();
-
-// Multi Post
-var content = new MultipartFormDataContent();
-content.Add(new StringContent(status), &quot;\&quot;status\&quot;&quot;);
-content.Add(new ByteArrayContent(media), &quot;media[]&quot;, &quot;\&quot;&quot; + fileName + &quot;\&quot;&quot;);
-
-var response = await client.PostAsync(&quot;https://upload.twitter.com/1/statuses/update_with_media.json&quot;, content);
-var json = await response.Content.ReadAsStringAsync();
-</code></pre>
-<p>もうおれおれクライアントのAPIを覚える必要はありません。これからの標準クライアントであるHttpClientの操作だけを覚えればいいのです。</p>
-<p>コンセプトはHttpClientチームから掲示されているサンプルコード<a href="http://blogs.msdn.com/b/henrikn/archive/2012/02/16/extending-httpclient-with-oauth-to-access-twitter.aspx">Extending HttpClient with OAuth to Access Twitter</a>どおりですが、このサンプルコードは本当にただのコンセプトレベルなサンプルで、そのまんまじゃ使えないので、ちゃんと実用的なOAuthライブラリとして叩き直したのがAsyncOAuthになります。DelegatingHandlerというのは、リクエストを投げる直前をフックするものなので、そこでOAuth用の認証を作っているわけです。</p>
-<h2>イニシャライズ</h2>
-<p>使う場合は、必ず最初にHMAC-SHA1の計算関数をセットしなければなりません。何故か、というと、ポータブルクラスライブラリには現状、暗号系のライブラリが含まれていなくて、その部分は含むことができないからです。外部から差し込んでもらうことでしか対処できない、という。ご不便おかけしますが、的な何か。そのうち含まれてくれるといいなあ、って感じですねえ。それまでは、以下のコードをApp.xaml.csとかApplication_Startとか、初回の本当に最初の最初に呼ばれるところに、コピペってください。</p>
-<pre><code class="language-csharp">// WinRT以外(Silverlight, Windows Phone, Consoleなどなど)
-OAuthUtility.ComputeHash = (key, buffer) =&gt; { using (var hmac = new HMACSHA1(key)) { return hmac.ComputeHash(buffer); } };
-
-// Windows Store App(めんどうくせえええええ)
-AsyncOAuth.OAuthUtility.ComputeHash = (key, buffer) =&gt;
-{
-    var crypt = Windows.Security.Cryptography.Core.MacAlgorithmProvider.OpenAlgorithm(&quot;HMAC_SHA1&quot;);
-    var keyBuffer = Windows.Security.Cryptography.CryptographicBuffer.CreateFromByteArray(key);
-    var cryptKey = crypt.CreateKey(keyBuffer);
-
-    var dataBuffer = Windows.Security.Cryptography.CryptographicBuffer.CreateFromByteArray(buffer);
-    var signBuffer = Windows.Security.Cryptography.Core.CryptographicEngine.Sign(cryptKey, dataBuffer);
-
-    byte[] value;
-    Windows.Security.Cryptography.CryptographicBuffer.CopyToByteArray(signBuffer, out value);
-    return value;
-};
-</code></pre>
-<p>また、使いかたの詳しいサンプルは、GitHub上のソースコードからAsyncOAuth.ConsoleAppの中にTwitter.csとHatena.csがあるので、それを見てもらえればと思います。AccessToken取得までの、認証系の説明はここには書きませんが（OAuthAuthorizerという特別に用意してあるものを使う）、その具体的な書き方が乗っています。特にHatenaの認証はTwitterに比べるとかなりメンドーくさいので、メンドーくさい系のOAuthが対象の場合は参考になるかと思います。</p>
-<h2>ストリーミング、Single vs Multiple、或いはRxの再来</h2>
-<p>勿論、TwitterのストリーミングAPIにも対応できます。以下のようなコードを書けばOK。</p>
-<pre><code class="language-csharp">public async Task GetStream(Action&lt;string&gt; fetchAction)
-{
-    var client = OAuthUtility.CreateOAuthClient(consumerKey, consumerSecret, accessToken);
-    client.Timeout = System.Threading.Timeout.InfiniteTimeSpan; // ストリーミングなのでTimeoutで切られないよう設定しておくこと
-
-    using (var stream = await client.GetStreamAsync(&quot;https://userstream.twitter.com/1.1/user.json&quot;))
-    using (var sr = new StreamReader(stream))
-    {
-        while (!sr.EndOfStream)
-        {
-            var s = await sr.ReadLineAsync();
-            fetchAction(s);
-        }
-    }
-}
-</code></pre>
-<p>ほぅ、Actionですか、コールバックですか……。ダサい。使い勝手悪い。最悪。しかし、じゃあ何返せばいいんだよ！ということになる。Taskは一つしか返せない、でもストリーミングは複数。うーん、うーん、と、そこでIObservable&lt;T&gt;の出番です。Reactive Extensionsを参照して、以下のように書き換えましょう。</p>
-<pre><code class="language-csharp">public IObservable&lt;string&gt; GetStream()
-{
-    return Observable.Create&lt;string&gt;(async (observer, ct) =&gt;
-    {
-        try
-        {
-            var client = OAuthUtility.CreateOAuthClient(consumerKey, consumerSecret, accessToken);
-            client.Timeout = System.Threading.Timeout.InfiniteTimeSpan; // ストリーミングなのでTimeoutで切られないよう設定しておくこと
-
-            using (var stream = await client.GetStreamAsync(&quot;https://userstream.twitter.com/1.1/user.json&quot;))
-            using (var sr = new StreamReader(stream))
-            {
-                while (!sr.EndOfStream &amp;&amp; !ct.IsCancellationRequested)
-                {
-                    var s = await sr.ReadLineAsync();
-                    observer.OnNext(s);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            observer.OnError(ex);
-            return;
-        }
-        if (!ct.IsCancellationRequested)
-        {
-            observer.OnCompleted();
-        }
-    });
-}
-</code></pre>
-<pre><code class="language-csharp">var client = new TwitterClient(consumerKey, consumerSecret, new AccessToken(accessTokenKey, accessTokenSecret));
-
-// subscribe async stream
-var cancel = client.GetStream()
-    .Skip(1)
-    .Subscribe(x =&gt; Console.WriteLine(x));
-
-Console.ReadLine();
-cancel.Dispose(); // キャンセルはDisposeで行う
-</code></pre>
-<p>といったように、自然にRxと繋げられます。コールバックのObservable化はObservable.Createで、そんなに難しくはない(ただしOnNext以外にちゃんとOnError, OnCompletedも記述してあげること)です。キャンセル対応に関しては、ちゃんとCancelleationToken付きのオーバーロードで行いましょう。そうしないと、Subscribeの解除はされていても、内部ではループが延々と動いている、といったような状態になってしまいますので。</p>
-<p>ともあれ、asyncやCancellationTokenとRxがスムースに結合されていることは良くわかるかと思います。完璧！</p>
-<p>こういった、単発の非同期はTaskで、複数の非同期はIObservable&lt;T&gt;で行う、というガイドはTPLチームからも示されています。先日の<a href="http://blogs.msdn.com/b/pfxteam/archive/2013/02/20/mvp-summit-presentation-on-async.aspx">pfxteamからのスライド</a>から引用すると（ちなみにこのスライドはTask系の落とし穴などが超丁寧に書かれているので必読！）</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/asnc_sync_mult.jpg">
-</p>
-<p>といった感じです。んねー。</p>
-<h2>まとめ</h2>
-<p>ReactiveOAuthはオワコン。HttpClient始まってる。Reactive Extensions自体は終わってない、むしろ始まってる。というわけで、色々と使いこなしていきましょう。</p>
-<p>追記：リリースから一晩開けて、POST周りを中心にバグが発見されていてお恥ずかしい限りです。あらかた修正したとは思うのですが(NuGetのバージョンは随時上げています)、怪しい挙動見つけたら報告下さると嬉しいです。勿論、GitHubなのでPull Requestでも！</p>
 </div>
 <a href="https://neue.cc/10">Prev |</a>
 <a href="https://neue.cc/12">| Next</a>

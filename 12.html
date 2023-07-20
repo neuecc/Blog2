@@ -23,7 +23,134 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2013/02/19_397.html">C#でぬるぽを回避するどうでもいい方法</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2013/02/27_398.html">AsyncOAuth - C#用の全プラットフォーム対応の非同期OAuthライブラリ</a></h1>
+<ul class="date"><li>2013-02-27</li></ul>
+<div class="entry_body"><p>待ち望まれていた<a href="http://blogs.msdn.com/b/bclteam/archive/2013/02/18/portable-httpclient-for-net-framework-and-windows-phone.aspx">HttpClientがPortable Class Library化</a>しました、まだBetaだけどね！というわけで、早速PCL版のHttpClientをベースにしたOAuthライブラリを仕上げてみました。ポータブルクラスライブラリなので、.NET 4.5は勿論、Windows Phone 7.5, 8, Windows Store Apps, Silverlight, それと.NET 4.0にも対応です。</p>
+<ul>
+<li><a href="https://github.com/neuecc/AsyncOAuth">AsyncOAuth - GitHub</a></li>
+</ul>
+<p>前身のReactiveOAuthがTwitterでしかロクにテストしてなくてHatenaでズタボロだったことを反省し、今回はSampleにTwitterとHatenaを入れておきました＆どっちでもちゃんと正常に動きます。なお、完全に上位互換なので、ReactiveOAuthはObsoleteです。それと、ライブラリのインストールはNuGet経由でのみの提供です。</p>
+<p>PM&gt; Install-Package <a href="https://nuget.org/packages/AsyncOAuth/">AsyncOAuth -Pre</a></p>
+<p>もしくはPreReleaseを表示に含めてGUIから検索してください。</p>
+<h2>AsyncOAuth is not a new library</h2>
+<p>AsyncOAuthの実態はOAuthMessageHandlerというDelegatingHandlerです。</p>
+<pre><code class="language-csharp">var client = new HttpClient(new OAuthMessageHandler(&quot;consumerKey&quot;, &quot;consumerSecret&quot;, new AccessToken(&quot;accessToken&quot;, &quot;accessTokenSecret&quot;)));
+
+// 上のだとnewの入れ子が面倒なので短縮形、戻り値は上のと同じ
+var client = OAuthUtility.CreateOAuthClient(&quot;consumerKey&quot;, &quot;consumerSecret&quot;, new AccessToken(&quot;accessToken&quot;, &quot;accessTokenSecret&quot;));
+</code></pre>
+<p>こうなっていると何がいいか、というと、全ての操作がHttpClient標準通りなのです。</p>
+<pre><code class="language-csharp">// Get
+var json = await client.GetStringAsync(&quot;http://api.twitter.com/1.1/statuses/home_timeline.json?count=&quot; + count + &quot;&amp;page=&quot; + page);
+
+// Post
+var content = new FormUrlEncodedContent(new[] { new KeyValuePair&lt;string, string&gt;(&quot;status&quot;, status) });
+var response = await client.PostAsync(&quot;http://api.twitter.com/1.1/statuses/update.json&quot;, content);
+var json = await response.Content.ReadAsStringAsync();
+
+// Multi Post
+var content = new MultipartFormDataContent();
+content.Add(new StringContent(status), &quot;\&quot;status\&quot;&quot;);
+content.Add(new ByteArrayContent(media), &quot;media[]&quot;, &quot;\&quot;&quot; + fileName + &quot;\&quot;&quot;);
+
+var response = await client.PostAsync(&quot;https://upload.twitter.com/1/statuses/update_with_media.json&quot;, content);
+var json = await response.Content.ReadAsStringAsync();
+</code></pre>
+<p>もうおれおれクライアントのAPIを覚える必要はありません。これからの標準クライアントであるHttpClientの操作だけを覚えればいいのです。</p>
+<p>コンセプトはHttpClientチームから掲示されているサンプルコード<a href="http://blogs.msdn.com/b/henrikn/archive/2012/02/16/extending-httpclient-with-oauth-to-access-twitter.aspx">Extending HttpClient with OAuth to Access Twitter</a>どおりですが、このサンプルコードは本当にただのコンセプトレベルなサンプルで、そのまんまじゃ使えないので、ちゃんと実用的なOAuthライブラリとして叩き直したのがAsyncOAuthになります。DelegatingHandlerというのは、リクエストを投げる直前をフックするものなので、そこでOAuth用の認証を作っているわけです。</p>
+<h2>イニシャライズ</h2>
+<p>使う場合は、必ず最初にHMAC-SHA1の計算関数をセットしなければなりません。何故か、というと、ポータブルクラスライブラリには現状、暗号系のライブラリが含まれていなくて、その部分は含むことができないからです。外部から差し込んでもらうことでしか対処できない、という。ご不便おかけしますが、的な何か。そのうち含まれてくれるといいなあ、って感じですねえ。それまでは、以下のコードをApp.xaml.csとかApplication_Startとか、初回の本当に最初の最初に呼ばれるところに、コピペってください。</p>
+<pre><code class="language-csharp">// WinRT以外(Silverlight, Windows Phone, Consoleなどなど)
+OAuthUtility.ComputeHash = (key, buffer) =&gt; { using (var hmac = new HMACSHA1(key)) { return hmac.ComputeHash(buffer); } };
+
+// Windows Store App(めんどうくせえええええ)
+AsyncOAuth.OAuthUtility.ComputeHash = (key, buffer) =&gt;
+{
+    var crypt = Windows.Security.Cryptography.Core.MacAlgorithmProvider.OpenAlgorithm(&quot;HMAC_SHA1&quot;);
+    var keyBuffer = Windows.Security.Cryptography.CryptographicBuffer.CreateFromByteArray(key);
+    var cryptKey = crypt.CreateKey(keyBuffer);
+
+    var dataBuffer = Windows.Security.Cryptography.CryptographicBuffer.CreateFromByteArray(buffer);
+    var signBuffer = Windows.Security.Cryptography.Core.CryptographicEngine.Sign(cryptKey, dataBuffer);
+
+    byte[] value;
+    Windows.Security.Cryptography.CryptographicBuffer.CopyToByteArray(signBuffer, out value);
+    return value;
+};
+</code></pre>
+<p>また、使いかたの詳しいサンプルは、GitHub上のソースコードからAsyncOAuth.ConsoleAppの中にTwitter.csとHatena.csがあるので、それを見てもらえればと思います。AccessToken取得までの、認証系の説明はここには書きませんが（OAuthAuthorizerという特別に用意してあるものを使う）、その具体的な書き方が乗っています。特にHatenaの認証はTwitterに比べるとかなりメンドーくさいので、メンドーくさい系のOAuthが対象の場合は参考になるかと思います。</p>
+<h2>ストリーミング、Single vs Multiple、或いはRxの再来</h2>
+<p>勿論、TwitterのストリーミングAPIにも対応できます。以下のようなコードを書けばOK。</p>
+<pre><code class="language-csharp">public async Task GetStream(Action&lt;string&gt; fetchAction)
+{
+    var client = OAuthUtility.CreateOAuthClient(consumerKey, consumerSecret, accessToken);
+    client.Timeout = System.Threading.Timeout.InfiniteTimeSpan; // ストリーミングなのでTimeoutで切られないよう設定しておくこと
+
+    using (var stream = await client.GetStreamAsync(&quot;https://userstream.twitter.com/1.1/user.json&quot;))
+    using (var sr = new StreamReader(stream))
+    {
+        while (!sr.EndOfStream)
+        {
+            var s = await sr.ReadLineAsync();
+            fetchAction(s);
+        }
+    }
+}
+</code></pre>
+<p>ほぅ、Actionですか、コールバックですか……。ダサい。使い勝手悪い。最悪。しかし、じゃあ何返せばいいんだよ！ということになる。Taskは一つしか返せない、でもストリーミングは複数。うーん、うーん、と、そこでIObservable&lt;T&gt;の出番です。Reactive Extensionsを参照して、以下のように書き換えましょう。</p>
+<pre><code class="language-csharp">public IObservable&lt;string&gt; GetStream()
+{
+    return Observable.Create&lt;string&gt;(async (observer, ct) =&gt;
+    {
+        try
+        {
+            var client = OAuthUtility.CreateOAuthClient(consumerKey, consumerSecret, accessToken);
+            client.Timeout = System.Threading.Timeout.InfiniteTimeSpan; // ストリーミングなのでTimeoutで切られないよう設定しておくこと
+
+            using (var stream = await client.GetStreamAsync(&quot;https://userstream.twitter.com/1.1/user.json&quot;))
+            using (var sr = new StreamReader(stream))
+            {
+                while (!sr.EndOfStream &amp;&amp; !ct.IsCancellationRequested)
+                {
+                    var s = await sr.ReadLineAsync();
+                    observer.OnNext(s);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            observer.OnError(ex);
+            return;
+        }
+        if (!ct.IsCancellationRequested)
+        {
+            observer.OnCompleted();
+        }
+    });
+}
+</code></pre>
+<pre><code class="language-csharp">var client = new TwitterClient(consumerKey, consumerSecret, new AccessToken(accessTokenKey, accessTokenSecret));
+
+// subscribe async stream
+var cancel = client.GetStream()
+    .Skip(1)
+    .Subscribe(x =&gt; Console.WriteLine(x));
+
+Console.ReadLine();
+cancel.Dispose(); // キャンセルはDisposeで行う
+</code></pre>
+<p>といったように、自然にRxと繋げられます。コールバックのObservable化はObservable.Createで、そんなに難しくはない(ただしOnNext以外にちゃんとOnError, OnCompletedも記述してあげること)です。キャンセル対応に関しては、ちゃんとCancelleationToken付きのオーバーロードで行いましょう。そうしないと、Subscribeの解除はされていても、内部ではループが延々と動いている、といったような状態になってしまいますので。</p>
+<p>ともあれ、asyncやCancellationTokenとRxがスムースに結合されていることは良くわかるかと思います。完璧！</p>
+<p>こういった、単発の非同期はTaskで、複数の非同期はIObservable&lt;T&gt;で行う、というガイドはTPLチームからも示されています。先日の<a href="http://blogs.msdn.com/b/pfxteam/archive/2013/02/20/mvp-summit-presentation-on-async.aspx">pfxteamからのスライド</a>から引用すると（ちなみにこのスライドはTask系の落とし穴などが超丁寧に書かれているので必読！）</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/asnc_sync_mult.jpg">
+</p>
+<p>といった感じです。んねー。</p>
+<h2>まとめ</h2>
+<p>ReactiveOAuthはオワコン。HttpClient始まってる。Reactive Extensions自体は終わってない、むしろ始まってる。というわけで、色々と使いこなしていきましょう。</p>
+<p>追記：リリースから一晩開けて、POST周りを中心にバグが発見されていてお恥ずかしい限りです。あらかた修正したとは思うのですが(NuGetのバージョンは随時上げています)、怪しい挙動見つけたら報告下さると嬉しいです。勿論、GitHubなのでPull Requestでも！</p>
+</div>
+<h1><a href="https://neue.cc/2013/02/19_397.html">C#でぬるぽを回避するどうでもいい方法</a></h1>
 <ul class="date"><li>2013-02-19</li></ul>
 <div class="entry_body"><p>どうもペチパーです。嘘です逃げないで。まあ、どうでもいいPHPの例をまずは出しませう。あ、逃げないで、PHPの話はすぐやめるんで。</p>
 <pre><code class="language-php">// ネストしてる配列
@@ -1698,140 +1825,6 @@ var Grouping: (groupKey: any,elements: any) =&gt; void;
 <p>今年の1月1日に入社してから10ヶ月。非常に濃密だったのであっという間でしたね。良い経験ができたし、私の方からも十分に貢献できたとは自負しています(LINQの布教とかね！)。とはいえ、まだまだやり残していることは山のようにあり、時期的にも、まさにこれから！というタイミングなので、心残りは非常にあります。gloops自体は非常に良い会社ですし、これからますます技術的にも力強く、面白くなっていくところです。なので、その点は安心してください。ですが、個人的により大きな飛躍を目指したく決断と相成りました。</p>
 <p>円満、です。最後に社内勉強会でThe Patterns of LINQというセッションをやりまして、それが置き土産です。そんなこんなで温かく送っていただいて、本当にgloopsの皆様へ感謝！</p>
 <p>ちなみに日本にずっといます。いつぞやかにはシンガポールが、とかって話もありましたが、あれは種々諸々で爆散しました。それは凄く残念でしたね……、、海外への挑戦というのは、またいつか機会があればやりたいです。ともあれ今は、当面は地下に潜伏していますが、必ず浮上しますのでしばしお待ちくだしあ。</p>
-</div>
-<h1><a href="https://neue.cc/2012/10/16_383.html">非同期WebRequestとTimeout処理の今昔</a></h1>
-<ul class="date"><li>2012-10-16</li></ul>
-<div class="entry_body"><p>最近はTypeScriptにお熱ですが、とはいえ、C#も大好きな私です。むしろC#は大好きです。今日はすっかり飽き飽きな非同期のTimeout処理について、おさらいすることにしましょう！題材はいつもどーりWebRequestでいいですよね。</p>
-<p>まず、都合のいいTimeoutをシミュレートできるAPIは探せば多分あるでしょうが、面倒なので自分で作りましょう。いえ、簡単です。「空のASP.NET WebApplication」を立ち上げてジェネリックハンドラを追加。とりあえずレスポンスを返すのに3秒かかるということにしときましょう。</p>
-<pre><code class="language-csharp">public class Timeout : HttpTaskAsyncHandler
-{
-    public override async Task ProcessRequestAsync(HttpContext context)
-    {
-        await Task.Delay(TimeSpan.FromSeconds(3)); // 3秒かかるってことにする
-        context.Response.ContentType = &quot;text/plain&quot;;
-        context.Response.Write(&quot;Hello World&quot;);
-    }
-}
-</code></pre>
-<p>で、そのまま実行してIIS Expressで動いてもらってれば準備できあがり。</p>
-<h2>同期の場合</h2>
-<p>さて、そしてConsoleApplicationを立ちあげて、まずは同期でやる場合でも見ましょうか。</p>
-<pre><code class="language-csharp">var req = WebRequest.Create(&quot;http://localhost:18018/Timeout.ashx&quot;);
-req.Timeout = 1000; // 1秒でタイムアウト
-
-req.GetResponse();
-</code></pre>
-<p>これはちゃんとタイムアウトでWebExceptionを返してくれます。そりゃそーだ。</p>
-<h2>古き良き非同期の場合</h2>
-<p>じゃあBegin-Endパターンの非同期でやってみましょうか。</p>
-<pre><code class="language-csharp">var req = WebRequest.Create(&quot;http://localhost:18018/Timeout.ashx&quot;);
-req.Timeout = 1000; // 1秒でタイムアウトのつもり
-
-req.BeginGetResponse(ar =&gt;
-{
-    var res = req.EndGetResponse(ar);
-    Console.WriteLine(new StreamReader(res.GetResponseStream()).ReadLine());
-}, null);
-
-Console.ReadLine(); // 適当に待つ
-</code></pre>
-<p>この結果はなんと、普通にHello Worldと表示されてしまいます。はい、Timeout機能していません、全く。そう、WebRequestのTimeoutプロパティによる設定は同期限定なのだよ、なんだってー。このことはMSDNの<a href="http://msdn.microsoft.com/ja-jp/library/system.net.httpwebrequest.begingetresponse.aspx">BeginGetResponse</a>のとこにも書いてあって、「非同期要求の場合は、クライアント側のアプリケーションが独自のタイムアウト機構を実装する必要があります」ということになっています。</p>
-<h2>ThreadPool.RegisterWaitForSingleObject</h2>
-<p>なので、そこに書いてあるとおり、ThreadPool.RegisterWaitForSingleObjectで実装してみましょう。</p>
-<pre><code class="language-csharp">var req = WebRequest.Create(&quot;http://localhost:18018/Timeout.ashx&quot;);
-// req.Timeout = 1000; このTimeoutはイミナイのでイラナイ
-
-var result = req.BeginGetResponse(ar =&gt;
-{
-    var res = req.EndGetResponse(ar);
-    Console.WriteLine(new StreamReader(res.GetResponseStream()).ReadLine());
-}, null);
-
-ThreadPool.RegisterWaitForSingleObject(result.AsyncWaitHandle, (state, timeout) =&gt;
-{
-    // 引数で指定した時間の後にここの部分が発火する。
-    // そのとき非同期処理が完了していなければ(Timeoutしていれば)timeoutがtrue, 普通に終了してればfalse
-    if (timeout)
-    {
-        Console.WriteLine(&quot;TIMEOUT!!&quot;);
-
-        var _req = (WebRequest)state;
-        if (_req != null) _req.Abort(); // あぼーんでキャンセルというか打ち切る
-    }
-}, req, timeout: TimeSpan.FromSeconds(1), executeOnlyOnce: true);
-
-Console.ReadLine(); // 適当に待つ
-</code></pre>
-<p>うん、ややこしいですね。ウンザリです。しかし昔はこれぐらいしか手段がなかったのだからShoganai！</p>
-<h2>C# 5.0で救われよう</h2>
-<p>そんなこんなで一気に時代が進んで、C# 5.0です。GetResponseAsyncですね！GetResponseAsyncなら、GetResponseAsync先生ならやってくれる、と思っていた時がありました。</p>
-<pre><code class="language-csharp">static async Task Run()
-{
-    var req = WebRequest.Create(&quot;http://localhost:18018/Timeout.ashx&quot;);
-    req.Timeout = 1000; // ま、このTimeoutはイミナイですよ
-
-    var res = await req.GetResponseAsync();
-
-    Console.WriteLine(new StreamReader(res.GetResponseStream()).ReadLine());
-}
-
-static void Main(string[] args)
-{
-    Run().Wait();
-}
-</code></pre>
-<p>結果はBegin-Endの時と同じでTimeout指定は無視されます。はい残念残念。所詮別にBegin-Endと何も変わってはいないわけです。とはいえ、Taskならば、この辺、柔軟に処理を仕込めます。</p>
-<h2>Timeoutという拡張メソッドを作る</h2>
-<p>async/awaitやTaskといった道具立てはあるのですが、細かい色々なものはない(<a href="http://blogs.msdn.com/b/pfxteam/archive/2012/10/05/how-do-i-cancel-non-cancelable-async-operations.aspx">Cancelを足す</a>とかTimeoutを足すとかRetryを足すとか、この辺はよく使うであろうシチュエーションだと思うので、自分の道具箱に仕込んでおくと幸せになれます)ので、作りましょう。</p>
-<pre><code class="language-csharp">public static async Task Timeout(this Task task, TimeSpan timeout)
-{
-    var delay = Task.Delay(timeout);
-    if (await Task.WhenAny(task, delay) == delay)
-    {
-        throw new TimeoutException();
-    }
-}
-
-public static async Task&lt;T&gt; Timeout&lt;T&gt;(this Task&lt;T&gt; task, TimeSpan timeout)
-{
-    await ((Task)task).Timeout(timeout);
-    return await task;
-}
-</code></pre>
-<p>単純ですね。ポイントはTask.WhenAnyで、これは特殊なやり方ではなくて、イディオムです。C# 5.0を使っていくなら覚えておきましょう、絶対に。</p>
-<p>さて、これを使えば</p>
-<pre><code class="language-csharp">static async Task Run()
-{
-    var req = WebRequest.Create(&quot;http://localhost:18018/Timeout.ashx&quot;);
-    var res = await req.GetResponseAsync().Timeout(TimeSpan.FromSeconds(1));
-
-    Console.WriteLine(new StreamReader(res.GetResponseStream()).ReadLine());
-}
-
-static void Main(string[] args)
-{
-    Run().Wait();
-}
-</code></pre>
-<p>超シンプルになりました。やったね！</p>
-<h2>HttpClient</h2>
-<p>ちなみに.NET 4.5から入ったHttpClientは、非同期操作しか提供していない、だけに、ちゃんとTimeoutプロパティが非同期でも対応していますので、フツーはこっちを使うと良いでしょう。</p>
-<pre><code class="language-csharp">static async Task Run()
-{
-    var client = new System.Net.Http.HttpClient() { Timeout = TimeSpan.FromSeconds(1) };
-    var s = await client.GetStringAsync(&quot;http://localhost:18018/Timeout.ashx&quot;);
-
-    Console.WriteLine(s);
-}
-
-static void Main(string[] args)
-{
-    Run().Wait();
-}
-</code></pre>
-<p>吐いてくる例外はSystem.Threading.Tasks.TaskCanceledExceptionです。これは、中でCancellationTokenSource.CreateLinkedTokenSourceとリンクさせた上で、CancellationTokenSourceのCancelAfterによってTimeoutを処理しているからです。HttpClientも、最終的にネットワークとやり取りしている部分はWebRequestですから。</p>
-<h2>まとめ</h2>
-<p>まあ、今までは細かい罠があってクソが、となる局面も少なからず多かったわけですが、ようやく整理された、感があります。しょっぱいことは考えないで、甘受していきたいですねー。</p>
 </div>
 <a href="https://neue.cc/11">Prev |</a>
 <a href="https://neue.cc/13">| Next</a>

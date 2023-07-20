@@ -23,7 +23,97 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2019/05/14_577.html">MagicOnion Ver 2.1.0</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2019/05/27_578.html">LitJWTに見るモダンなC#のbyte[]とSpan操作法</a></h1>
+<ul class="date"><li>2019-05-27</li></ul>
+<div class="entry_body"><p>LitJWT、という超高速な認証ライブラリを作りました。</p>
+<ul>
+<li><a href="https://github.com/Cysharp/LitJWT">github.com/Cysharp/LitJWT</a></li>
+</ul>
+<p>なんと今回はUnity用が、ない！どころか.NET Standardですら、ない！.NET Core専用になってます（今のとこ）。理由はパフォーマンス都合で現状.NET CoreにしかないAPIを使いすぎたので修正が面倒ということなので、そのうちなんとかするかもしれませんかもしれません。</p>
+<h2>5倍高速</h2>
+<p><img src="https://user-images.githubusercontent.com/46207/58414904-c4c31300-80b7-11e9-9bd2-12f794518494.png" alt="" /></p>
+<p><img src="https://user-images.githubusercontent.com/46207/58415891-d823ad80-80ba-11e9-9182-8d8ce339e1c9.png" alt="image" /></p>
+<p>そもそも認証ライブラリでパフォーマンス追求しているものなんてない！ので！まぁそりゃそうだという感じではある。実際、そこまで認証で必要か？というと疑問符が付くところなので、ただのオーバーエンジニアリングなのですが、とはいえ速いというのは良いことです。シンプルに。</p>
+<p><a href="https://jwt.io/">JWT</a>に関しては特に説明することもないので（セッションにでも何にでも使えばいいんじゃないかしら、実際、私は<a href="https://github.com/Cysharp/MagicOnion">MagicOnion</a>のステートレスセッションのために必要なので用意しました）、ここから先は実装の話をします。</p>
+<h2>モダンBase64(Url)</h2>
+<p>JWTは大雑把にはJSONをBase64Urlでエンコードして署名を引っ付けたもの、です。Base64UrlというのはBase64の亜種で、URLセーフになるように、使う文字列が少し異なります。性質上、GETでURLにトークンが引っ付いたりするかもですしね。なるほど。</p>
+<p>さて、しかしそんなマイナーなBase64Urlをエンコードするメソッドは用意されていないので、普通はこんな風に書いてます。</p>
+<pre><code class="language-csharp">Convert.ToBase64String(input)
+    .TrimEnd('=')      // 新しいstringを作る
+    .Replace('+', '-') // 新しいstringを作る
+    .Replace('/', '_') // 新しいstringを作る
+</code></pre>
+<p>改めてBase64Urlは、ようするにパディング（4の倍数に収まらない場合に末尾につく)の=が不要で、+が-、/が_なBase64なので、置換！ただたんに置換！する、すなわち新規文字列を無駄に作成！無駄に検索して無駄に作成！なわけです。</p>
+<p>実際、別にこの<a href="https://ja.wikipedia.org/wiki/Base64">Base64の変換表</a>の一部を差し替えるだけの話なのに。</p>
+<p>無駄すぎて発狂しちゃうので、ここは普通に自前で<a href="https://github.com/Cysharp/LitJWT/blob/master/src/LitJWT/Base64.cs">Base64を実装</a>することで大解決しましょう。実際それしか方法はない、しょうがない。</p>
+<p>せっかく作るので、今風のAPIにしましょう。例えばデコードのAPIはこんな感じに。</p>
+<pre><code class="language-csharp">public static bool TryFromBase64UrlString(string s, Span&lt;byte&gt; bytes, out int bytesWritten)
+public static bool TryFromBase64UrlChars(ReadOnlySpan&lt;char&gt; chars, Span&lt;byte&gt; bytes, out int bytesWritten)
+public static bool TryFromBase64UrlUtf8(ReadOnlySpan&lt;byte&gt; utf8, Span&lt;byte&gt; bytes, out int bytesWritten)
+</code></pre>
+<p>stringだけ受け入れるのではなくて、<code>ReadOnlySpan&lt;char&gt;</code>と、UTF8を直接受け入れられるように<code>ReadOnlySpan&lt;byte&gt;</code>のオーバーロードを用意しましょう（面倒くせえ……）。中身の実装はcharとbyteで似てるようで若干違うので今回は雑にコピペコードで済ませてます。コピペ最強。</p>
+<p>ともあれこれでゼロアロケーションなデコードです。</p>
+<p>ちなみにSystem.Security.Cryptographyも、こうしたSpan対応のAPIが(.NET Core 2.1なら)あります。.NET Standard 2.0にはありません。2.1から、なのでまだ先です。</p>
+<pre><code class="language-csharp">bool TryComputeHash(ReadOnlySpan&lt;byte&gt; source, Span&lt;byte&gt; destination, out int bytesWritten)
+bool TrySignData(ReadOnlySpan&lt;byte&gt; data, Span&lt;byte&gt; destination, HashAlgorithmName hashAlgorithm, RSASignaturePadding padding, out int bytesWritten)
+bool VerifyData(ReadOnlySpan&lt;byte&gt; data, ReadOnlySpan&lt;byte&gt; signature, HashAlgorithmName hashAlgorithm, RSASignaturePadding padding)
+</code></pre>
+<p>今回の最初のリリースが.NETCore Appのみなのは、主にこの辺が理由です。迂回できないこともないんですけどねえ。</p>
+<h2>stackallocとArrayPoolをめっちゃ使う</h2>
+<p>先のBase64のデコード繋がりで説明すると、デコード先のbyte[]をどう用意するか、という話であり。headerのBase64とかsignatureのBase64とか、あまり大きくないのが確定しているので、stackallocをSpanで受けて、デコード先を作ります。</p>
+<pre><code class="language-csharp">Span&lt;byte&gt; bytes = stackalloc byte[Base64.GetMaxBase64UrlDecodeLength(header.Length)];
+if (!Base64.TryFromBase64UrlUtf8(header, bytes, out var bytesWritten))
+</code></pre>
+<p>Payloadは長さがわからない（そこそこ大きい可能性もある）ので、stackallocで受けるのは不安があるので、ArrayPoolを使いましょう。</p>
+<pre><code class="language-csharp">var rentBytes = ArrayPool&lt;byte&gt;.Shared.Rent(Base64.GetMaxBase64UrlDecodeLength(payload.Length));
+try
+{
+    Span&lt;byte&gt; bytes = rentBytes.AsSpan();
+    if (!Base64.TryFromBase64UrlUtf8(payload, bytes, out var bytesWritten))
+    {
+        return DecodeResult.InvalidBase64UrlPayload;
+    }
+    bytes = bytes.Slice(0, bytesWritten);
+
+    // ....
+}
+finally
+{
+    ArrayPool&lt;byte&gt;.Shared.Return(rentBytes);
+}
+</code></pre>
+<p>ようするに、今どきnew byte[]なんてしたら殺されるぞ！</p>
+<h2>ReadOnlySpanの辞書を作る</h2>
+<p><code>ReadOnlySpan&lt;byte&gt;</code>はref struct！つまりDictionaryのKeyにはできない！けどルックアップはしたい！</p>
+<p>どーいうことかというと、例えば</p>
+<p><img src="https://user-images.githubusercontent.com/46207/58417809-ef659980-80c0-11e9-8de3-79b7d21174b1.png" alt="image" /></p>
+<p>HeaderのJSONを舐めて、デコードに使うアルゴリズムが何であるかあるかチェックしたいわけですが、まず、今どきはJSONをstringで検索したりはしません。UTF8のままやります(System.Text.Json(preview)や<a href="https://github.com/neuecc/Utf8Json/">Utf8Json</a>を使いましょう)。特に、今回はBase64Urlからデコードしてきたバイナリなので、更にstringにデコードしてしまうのは無駄の極みなので、絶対避けたいわけです。</p>
+<p>そうして、algのvalue部分に相当するReadOnlySpan<byte>が切り出せたとしましょう。さて、じゃあこれが何であるか。HS256なのかRS512なのか、そして、それをキーにしてIJwtAlgorithmを取り出したいわけです。必要なデータ構造は<code>Dictionary&lt;ReadOnlySpan&lt;byte&gt;, IJwtAlgorithm&gt;&gt;</code>なわけです。が、それは無理。C#の言語仕様がそれを許してくれないのです。困ったねえ。</p>
+<p>もちろん、答えは自作しましょう。今回は<a href="https://github.com/Cysharp/LitJWT/blob/master/src/LitJWT/ReadOnlyUtf8StringDictionary.cs">ReadOnlyUtf8StringDictionary</a>というものを用意しました。Dictionary内部で持っておくキーは別にSpanである必要はないので、普通にbyte[]で確保しておきます。ルックアップだけ</p>
+<pre><code class="language-csharp">public bool TryGetValue(ReadOnlySpan&lt;byte&gt; key, out TValue value)
+</code></pre>
+<p>というAPIを用意すればOKという寸法です。</p>
+<p>実装において、byte[]の一致比較はSpanのSequenceEqualを使えば良いんですが、GetHashCodeの実装だけはどうにもなりません（Utf8Stringも控えてることだし、標準でいい感じのがそろそろ入るといいんですけどねえ）。私は延々と使いまわせいている<a href="https://github.com/Cysharp/LitJWT/blob/master/src/LitJWT/FarmHash.cs">FarmHash</a>の実装をコピペで用意していますが、適当にxxHashを実装したり何かするといいと思います。適当に拾ってきたものを使うとパフォーマンス的に意味のないクソ実装の可能性もあるので、その辺は適当に気をつけましょう。</p>
+<h2>最後まで配列の切り出しをしない実装を作る</h2>
+<p>jwtEncoderのEncodeメソッドは、3つのオーバーロード(名前違い含む)を持ってます。</p>
+<pre><code class="language-csharp">string Encode&lt;T&gt;(...)
+byte[] EncodeAsUtf8Bytes&lt;T&gt;(...)
+void Encode&lt;T&gt;(IBufferWriter&lt;byte&gt; writer, ...)
+</code></pre>
+<p>一番使うのは、stringだとは思います。Httpのヘッダーとかに埋めたりするケースが多いと思うので、stringが要求されるのでしょーがない。でも、byte[]を返すもののほうが高速です。内部的には全てUtf8 byte[]で処理しているので、stringへのエンコード処理をバイパスできるからです。例えばgRPCは(<a href="https://github.com/Cysharp/MagicOnion/">MagicOnion</a>も)、バイナリヘッダーを許容しているので、stringヘッダーよりも高速に処理できます。</p>
+<pre><code class="language-csharp">// gRPC Header
+var metadata = new Metadata();
+metadata.Add(&quot;auth-token-bin&quot;, encoder.EncodeAsUtf8Bytes());
+</code></pre>
+<p>さて、じゃあ最後の <code>IBufferWriter&lt;byte&gt;</code> はなにかというと、直接これに書き込みます。まぁ、<code>Span&lt;byte&gt;,int bytesWritten</code>みたいなものですが、<code>Span&lt;byte&gt;</code>を渡すのが使えるのって、処理後の長さが概ね分かっているときで、JwtのエンコードはPayloadの処理とかあるので、基本的には処理が完了するまで分かりません。ので、bytesWritten形式のAPIは向いてません。</p>
+<p>IBufferWriterはStreamみたいなもので、これに直接書き込みます。新しいI/O APIである System.IO.Pipelines で使われているAPIで、つまりは、一応それに対応しているということで。<a href="https://github.com/neuecc/MessagePack-CSharp/">MessagePack-CSharp</a>のv2(現在絶賛制作中)も、IBufferWriterが主役になっています。時代はダイレクトライト。</p>
+<h2>System.IdentityModel.Tokens.Jwtは最低</h2>
+<p>JWTの話は特にするつもりはなかったんですが、とにかくSystem.IdentityModel.Tokens.Jwtが最低だということは言っておきたい！とにかくAPIがヤバい！まぁ、これ、他の認証系も統合された抽象化の上に乗っているので、JWT的に不要で意味不明なものがいっぱいついているうえに、その抽象化がエンタープライズグレード（笑）の重厚長大な酷いもので、Microsoftの認証が難しいと感じるとしたら（実際難しい）、ただたんにライブラリのAPIが腐ってるから難しいだけですからね。</p>
+<p>何かのフレームワークと統合されてて、ワンポチで導入される、とかだったらまだいいんですが、直接は触りたくないですねえ。誰が作ってんだかって感じですが(お、公開されてる先はAzure配下かな……)</p>
+<h2>まとめ</h2>
+<p>MagicOnionで――というのもありますが、認証系はJWT中心に、ちょっと色々考えてます。あとまぁ、さすがにパフォーマンスだけが差別化要因というのはしょっぱいので、Unity対応しよ。</p>
+</div>
+<h1><a href="https://neue.cc/2019/05/14_577.html">MagicOnion Ver 2.1.0</a></h1>
 <ul class="date"><li>2019-05-14</li></ul>
 <div class="entry_body"><p><a href="https://github.com/Cysharp/MagicOnion/">MagicOnion</a>のVer 2.1.0を出しました。前回が2月28日なので、3ヶ月ぶりで少し間が空いてしまった感じもありますが、色々良くなったので紹介していきまうまう。</p>
 <h2>StramingHubClientでメッセージが詰まるバグの修正</h2>
@@ -749,216 +839,6 @@ async UniTask&lt;string&gt; DemoAsync()
 <p>口幅ったいことを言えばグラニは「C#の大本山」みたいになれましたし、実際、この先にC#大統一理論的に、めちゃくちゃやれる企業がどれだけ出てくるだろうか。ということを考えると、幸い技術的な情報は積極的に公開していったので、芽吹いていってくれたら嬉しいなあ、って。めっちゃ思います。まだまだやり残したこともやれることもあるので！</p>
 <p>私自身は幸い、現在も色々とお声掛け頂いています。ちょっとばかし煮え切らない姿勢でいて申し訳なさもあるのですが、皆さんからお話を伺いながら、何をしていこうか固めている最中です。</p>
 <p>グラニでの5年間で、大きな成長を果たせました。良い経営陣、良い同僚に恵まれて、私が好き放題やるのを支えてもらっちゃいました。本当に、良い経験ができ、良い実績が残せ、楽しかったです。願わくば次のキャリアでも同じような、より大きな挑戦をしていきたいところです。</p>
-</div>
-<h1><a href="https://neue.cc/2018/01/18_562.html">ReactivePropertySlim詳解</a></h1>
-<ul class="date"><li>2018-01-18</li></ul>
-<div class="entry_body"><p><a href="http://blog.okazuki.jp/entry/2018/01/18/103347">ReactiveProperty v4.1.0 をリリースしました</a>ということで、Pull Requestしたコードをリリースして頂きました。ReactivePropertyはオリジナルは私が作ったのですが、数年前からokazukiさんがメインに開発/リリースしてもらっています。</p>
-<p>今回はReactivePropertySlimという新クラスが追加されました！名前の通り、軽量なReactivePropertyで、これはもともと社内で(Unityの)ReactivePropertyを大量に使っていて、改善のやり玉に上がっていて、その中で施された/施した施策を移植してきたという代物になります。当初そんな乗り気じゃなかったんですが、同僚に書き換えてもらったのを見て、ようやくやる気が上がったという、最低ですね、はい。</p>
-<p>無印との違いは</p>
-<ul>
-<li>フィールド数を最小限にしてアロケーションを抑えた（無印はバリデーション系などのためにSubjectやLazyの保持がかなりある）</li>
-<li>内部で使ってるSubjectをやめて完全自前管理＆Subscription(IDisposable)自体を連結リストのノード自身にすることで、複数Subscribeでのアロケーションをなくした</li>
-<li>変更通知の実行をスケジューラー経由で行わず直接する（無印はデフォルトでDispatcher経由になるけれど、パフォーマンス上の問題と、厄介な挙動を時折示していた）</li>
-<li>バリデーション系のメソッドを除去</li>
-<li>ReactivePropertySlimからObservable Sourceを受けとる機能/コンストラクタを削除（ReadOnlyReactivePropertySlimのみがその機能を持つ）</li>
-</ul>
-<p>もともとReactivePropertyはViewModelでのViewへのバインディング用を主に考えて機能を足していったため、Modelで使う分には不適切な重さがあるな、と考えていました。なので今回、一掃して、2018年エディションとして再デザインしました。基本的な箇所の設計は2011年と6年前のものなので、今視点で見ると考慮が甘い部分も割とあったのですよね。</p>
-<p>パフォーマンスを見てみましょう。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/35102451-5cd2f4d6-fca6-11e7-865c-6c473fd3a032.png" alt="image" /></p>
-<p><img src="https://user-images.githubusercontent.com/46207/35102357-1404b7da-fca6-11e7-8bf0-001ef3e68637.png" alt="image" /></p>
-<p>上がコンストラクタ＋3つSubscribeした場合。下がValueへの代入を3回した場合。Subscribeの高速化と生成時も含めた省メモリは意図通りなのですが、Valueの代入のほうがインパクト大きいですね。こっちは想定外。これはScheduler経由をなくした効果だと思われるけれど、かなりの差がでてて、あらあら、という感じ……(ちなみにSchedulerはImmediate指定してるのでSchedulerの中では最速ではあるはず）。</p>
-<p>生成/Subscribeの高速化は起動時間（Unityだとシーン初期化だとか、WPFでもWindow作ったりとか）に影響あるので、短いにこしたこたぁないですねん。いいことです。</p>
-<h2>ReactiveProperty/Subject分解</h2>
-<p>Slim、について考える前に、改めてReactivePropertyについて見てみましょう。</p>
-<pre><code class="language-csharp">// 最小のReactivePropertyはSubjectのラッパーというイメージ
-public class MinimumReactiveProperty&lt;T&gt; : IObservable&lt;T&gt;
-{
-    readonly Subject&lt;T&gt; subject = new Subject&lt;T&gt;();
-    T latestValue;
-
-    public T Value
-    {
-        get
-        {
-            return latestValue;
-        }
-        set
-        {
-            // 値の設定で通知
-            latestValue = value;
-            subject.OnNext(value);
-        }
-    }
-
-    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
-    {
-        return subject.Subscribe(observer);
-    }
-}
-</code></pre>
-<p>これ以上ないってぐらいシンプルで、まぁいいじゃんって話で、2011年は不満はなかったんですが、今視点で見るとちょっと引っかかるところがあったりします。</p>
-<p>というわけで、Subjectを展開してみます。</p>
-<pre><code class="language-csharp">public class MinimumReactiveProperty&lt;T&gt; : IObservable&lt;T&gt;
-{
-    // Subjectの内部のobserverのリスト
-    IObserver&lt;T&gt;[] data;
-
-    public T Value
-    {
-        set
-        {
-            // subject.OnNext(value);
-            for (var i = 0; i &lt; data.Length; i++)
-            {
-                data[i].OnNext(value);
-            }
-        }
-    }
-
-    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
-    {
-        // observerの追加のたびに新しい配列に詰め直し(ImmutableArray)
-        var newData = new IObserver&lt;T&gt;[data.Length + 1];
-        Array.Copy(data, newData, data.Length);
-        newData[data.Length] = value;
-        data = newData; // (代入時、実際にはThreadsafeのための挙動も入ります)
-
-        // 購読解除のためのIDisposableの生成
-        return new Subscription(this, observer);
-    }
-}
-</code></pre>
-<p>Subjectは内部でIObserverをImmutableArrayとして保持しています。なのでSubscribeがある度に、新規配列を生成してコピーしてます。古いやつはゴミ行き！これは一見無駄に見えますが、別に悪い話ではなくて、一点目はスレッドセーフになること（しやすいこと、実際には代入前後にThreadSafeを確保する処理は必要）。二点目は、OnNextが最速になること。C#において列挙は、配列をその配列の長さでforで回すのが最速です。通常、この手のイベント処理は、購読が初回の一回で、その後に大量の配信があるという構成になるのが普通なので、OnNext側の性能を最大限にするというのは全然アリです。</p>
-<p>また、こう見ると、Subjectではなく生のevent構文を使ったほうが安価に見えるかもしれませんが、実はC#のeventも似たような実装になっているため<a href="https://referencesource.microsoft.com/#mscorlib/system/multicastdelegate.cs,267">MulticastDelegate.CompibeImpl</a>ぶっちゃけ同じです（この辺は特にイベント専用のマジックとかなく、割と実装されたまんまに実行されます）。</p>
-<p>そして、最後に購読解除のためのSubscriptionを作って返す。これは必要コストですよねshoganai。</p>
-<p>で、まぁ、OnNextの性能を最大限にするとはいえImmutableArrayは生成コストがちょっと高いよねー、と思ってました。また、Subscriptionを都度生成しなきゃいけないのも必要コストとはいえ勿体無くて、気になるものは気になる。うーむ。</p>
-<p>それらを何とかするアイディアとして、必要コストとして絶対に存在するSubscriptionを線形リストのノードにすることで、最小限の生成に抑えました。</p>
-<pre><code class="language-csharp">// 別添えでLinkedList本体は作らず、ReactivePropertySlim自体をLinkedListにする（節約）
-internal interface IObserverLinkedList&lt;T&gt;
-{
-    void UnsubscribeNode(ObserverNode&lt;T&gt; node);
-}
-
-// LinkedListNode自体がSubscriptionになる(節約)
-internal sealed class ObserverNode&lt;T&gt; : IObserver&lt;T&gt;, IDisposable
-{
-    readonly IObserver&lt;T&gt; observer;
-    IObserverLinkedList&lt;T&gt; list;
-
-    public ObserverNode&lt;T&gt; Previous { get; internal set; }
-    public ObserverNode&lt;T&gt; Next { get; internal set; }
-
-    public ObserverNode(IObserverLinkedList&lt;T&gt; list, IObserver&lt;T&gt; observer)
-    {
-        this.list = list;
-        this.observer = observer;
-    }
-
-    public void OnNext(T value)
-    {
-        observer.OnNext(value);
-    }
-
-    public void OnError(Exception error)
-    {
-        observer.OnError(error);
-    }
-
-    public void OnCompleted()
-    {
-        observer.OnCompleted();
-    }
-
-    public void Dispose()
-    {
-        var sourceList = Interlocked.Exchange(ref list, null);
-        if (sourceList != null)
-        {
-            sourceList.UnsubscribeNode(this);
-            sourceList = null;
-        }
-    }
-}
-
-// というのを使って実装すると
-public class ReactivePropertySlim&lt;T&gt; : IReactiveProperty&lt;T&gt;, IReadOnlyReactiveProperty&lt;T&gt;, IObserverLinkedList&lt;T&gt;
-{
-    // LinkedListでいうFirstとLastを保持(ReactivePropertySlim自体がLinkedList本体になる)
-    ObserverNode&lt;T&gt; root;
-    ObserverNode&lt;T&gt; last;
-
-    public T Value
-    {
-        set
-        {
-            this.latestValue = value;
-            
-            // LinkedListを辿ってObserverを発火
-            var node = root;
-            while (node != null)
-            {
-                node.OnNext(value);
-                node = node.Next;
-            }
-
-            this.PropertyChanged?.Invoke(this, SingletonPropertyChangedEventArgs.Value);
-        }
-    }
-
-    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
-    {
-        // 線形リストのノードを作って、自身でノードを管理する
-        var next = new ObserverNode&lt;T&gt;(this, observer);
-        if (root == null)
-        {
-            root = last = next;
-        }
-        else
-        {
-            last.Next = next;
-            next.Previous = last;
-            last = next;
-        }
-
-        return next; // ノード自体がSubscription
-    }
-    
-    // SubscriptionのDisposeでLinkedListを張り替える
-    void IObserverLinkedList&lt;T&gt;.UnsubscribeNode(ObserverNode&lt;T&gt; node)
-    {
-        if (node == root)
-        {
-            root = node.Next;
-        }
-        if (node == last)
-        {
-            last = node.Previous;
-        }
-
-        if (node.Previous != null)
-        {
-            node.Previous.Next = node.Next;
-        }
-        if (node.Next != null)
-        {
-            node.Next.Previous = node.Previous;
-        }
-    }
-}
-</code></pre>
-<p>良い所は、生成において無駄が全くない。同居できるものは徹底的に同居させることで、もうこれ以上は削れないでしょう。多分。悪い所は、線形リストの列挙は、配列列挙よりも明らかに遅いので、通知のパフォーマンスの低下がある。まあこのへんは購読料にもよりけりなので、なんとも言い難いところですね。（それとReactiveProperty, ReactivePropertySlim比較だと、スケジューラー経由を削ったことによってそれどころじゃないパフォーマンス向上を果たした）。</p>
-<p>悪い所は、スレッドセーフじゃないです。うーん、Subscriptionの解除側ぐらいはスレッドセーフにしたほうがいいかなあ。ここちょっと悩ましい所で、考えさせてください。</p>
-<h2>***Slim</h2>
-<p>***Slimという命名は、<a href="https://msdn.microsoft.com/ja-jp/library/system.threading.manualresetevent(v=vs.110).aspx">ManualResetEvent</a>と<a href="https://msdn.microsoft.com/ja-jp/library/system.threading.manualreseteventslim(v=vs.110).aspx">ManualResetEventSlim</a>の関係性にならって付けています。ManualResetEventは、通常Slim版しか使わないです。</p>
-<p>と、いうわけで、ReactivePropertySlimも、Model専用での推奨というかは、ViewModel側でも支障がなければ積極的に使ったほうが幸せになれると思っています。機能的には、バリデーションが必要なところだけ、無印を使うのがいいと考えています。</p>
-<p>機能的に低下した所は他に、ToReactivePropertySlimがありません。これは、Sourceから流れてくるのとValueへのセットの二通りで値が変化する(Mergeされてる)のが気持ち悪いというか、使いみちあるのそれ？みたいに思ったからです。ない、とはいわないまでも、存在がおかしい。のでいっそ消しました。かわりにToReadOnlyReactivePropertySlimがあります。値の変化はSourceからのみ。このほうが自然でしょふ。</p>
-<h2>UniRx</h2>
-<p>Unityは元々ほとんどシングルスレッドなので、スレッドセーフじゃなくても概ね問題はないし、ゴミにたいして敏感な環境でもあるので、むしろReactiveProeprty（無印）をSlim版に変えたいと思ってます（今の無印版の命名をどうしようか問題はある、どうしよう）。が、破壊的変更になるので、どうしようか……。でも明らかにSlimのほうがいいし、デフォで使ってもらうべきなので、まぁ、多分、変えます。近いうち（ほんとか？）に。</p>
-<p>あとToReactivePropertyでReadOnlyReactivePropertyを返すようにするかも。前述のように普通のToReactivePropertyがなくなるので、そっちのほうが自然にまとまった感じでいいんじゃないかなー、とか。</p>
-<p>ところでちなみに.NET版のReactivePropertyよりもUniRxのReactivePropertyのほうが元々スリムなので、冒頭のベンチマークほどのOnNext(Valueへの代入)の性能差は出ませんので、そこは安心してください。</p>
-<h2>まとめ</h2>
-<p>パフォーマンス向上の原則はオブジェクトを作らない！オブジェクトを作らないためには、機能を一つのクラスに詰める！機能は分けない！まぁ、分けないことによって使い勝手が悪くなるのは最悪なので、パブリックAPIは適切な分割と集約をきっちり意識して、プライベートAPIは、性能を意識して、あえて統合する、というのもアリ（必ずしも性能が最重要案件ではないというか、最適化は後回しでいい場合が多いので、別に全てをそうしろとはいいませんよ）。ということで。</p>
-<p>ReactivePropertySlimはSlimの名前の通り、小さくはあるんですが、大きく作るよりも、小さく作るほうが存外難しく、そして価値あるものです。実装自体は見た通り簡単なもので、別に複雑なアルゴリズムやコーディングが入っているわけでもないですが、アイディアが大事ということで。言われてみれば、そうですねー、っていう話ではあるのだけれど、そこに気づいて実装まで回せるかというのは全然難易度が違うんですよね。ともあれ、中々良い仕上がりになったと思うので、是非試してみてください（機能的には無印と一緒ですが！）。</p>
 </div>
 <a href="https://neue.cc/3">Prev |</a>
 <a href="https://neue.cc/5">| Next</a>
