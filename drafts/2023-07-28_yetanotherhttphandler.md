@@ -4,7 +4,9 @@ Cysharpから(主に)Unity用のHTTP/2, gRPC, MagicOnion用の通信ネットワ
 
 * [Cysharp/YetAnotherHttpHandler](https://github.com/Cysharp/YetAnotherHttpHandler)
 
-何故これが必要なのかの背景情報としては、[Synamon’s Engineer blog - Unityでもgrpc-dotnetを使ったgRPCがしたい](https://synamon.hatenablog.com/entry/grpc-dotnet-unity) が詳しいのですが、まず、.NETには2つのgRPC実装があります。googleが提供してきたgRPCのネイティブバインディングのGrpc.Core(C-Core)と、Microsoftが提供しているPure C#実装のgrpc-dotnet。現在.NETのgRPCはサーバーもクライアントも完全にPure C#実装のほうに寄っていて、[MagicOnion](https://github.com/Cysharp/MagicOnion/)もサーバーはPure C#実装のものを使っています。しかしクライアントに関しては、諸事情によりUnityでは動かない（TLS関連の問題など）ため、ずっとC-Coreを推奨してきました。しかし、Unity用のビルドは元々experimentalだったうえに、とっくにメンテナンスモードに入り、そしてついに今年5月にサポート期限も切れて完全に宜しくない気配が漂っていました。また、古いx64ビルドなので最近のMac(M1, M2チップ)では動かないためUnity Editorで使うのにも難儀するといった問題も出てきていました。
+何故これが必要なのかの背景情報としては、[Synamon’s Engineer blog - Unityでもgrpc-dotnetを使ったgRPCがしたい](https://synamon.hatenablog.com/entry/grpc-dotnet-unity) が詳しいのですが、まず、.NETには2つのgRPC実装があります。googleが提供してきたgRPCのネイティブバインディングのGrpc.Core(C-Core)と、Microsoftが提供しているPure C#実装のgrpc-dotnet。現在.NETのgRPCはサーバーもクライアントも完全にPure C#実装のほうに寄っていて、[MagicOnion](https://github.com/Cysharp/MagicOnion/)もサーバーはPure C#実装のものを使っています。
+
+しかしクライアントに関しては、諸事情によりUnityでは動かない（TLS関連の問題など）ため、ずっとC-Coreを推奨してきました。更に、Unity用のビルドは元々experimentalだったうえに、とっくにメンテナンスモードに入り、そしてついに今年5月にサポート期限も切れて完全に宜しくない気配が漂っていました。また、古いx64ビルドなので最近のMac(M1, M2チップ)では動かないためUnity Editorで使うのにも難儀するといった問題も出てきていました。
 
 と、いうわけで、CysharpではUnityで使うgRPCを推奨してきたということもあり、Unityで問題なく使えるgRPC実装としてYetAnotherHttpHandlerを開発・リリースしました。HttpClientの通信レイヤーであるHttpHandlerを差し替えるという形で実装してあるので、ほとんど通常の .NET でのgRPCと同様に扱えます。
 
