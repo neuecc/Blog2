@@ -23,7 +23,227 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2011/11/13_353.html">XboxInfoTwit - ver.2.4.0.0</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2011/11/20_354.html">ReactiveProperty ver 0.3.0.0 - MとVMのバインディングという捉え方</a></h1>
+<ul class="date"><li>2011-11-20</li></ul>
+<div class="entry_body"><p>今回の更新よりアイコンが付きました。専用のアイコンがあると、とっても本格的な感じがしますねー。色はRxにあわせて紫-赤紫。デザインは私の好みな幾何学的な感じです。@ocazucoさんに作って頂きました、ありがとうございます！色々ワガママ言ってお手数かけました。</p>
+<p class="noindent">
+	<img src="http://neue.cc/ReactivePropertyIcon_100x100.png">
+<a href="http://reactiveproperty.codeplex.com/">ReactiveProperty - MVVM Extensions for Rx - ver 0.3.0.0</a>
+</p>
+<p>Rxとは何か、というとIObservable&lt;T&gt;と「見なせる」ものを合成するためのライブラリです。だから、見なせるものさえ見つかれば、活躍の幅は広がっていく。ReactivePropertyは色々なものを、そのように「見なして」いくことで、RxでOrchestrateできる幅をドラスティックに広げます。土台にさえ乗せてしまえば、あとはRxにお任せ。その場合に大切なのは、土台に乗せられるよう、閉じないことです。しかし、もし閉じているのなら、開くための鍵を提供します。</p>
+<h2>デフォルトモード変更</h2>
+<p>ReactivePropertyのデフォルトモードが DistinctUntilChanged|RaiseLatestValueOnSubscribe になりました。今まではRaise...が入ってなかったのですが、思うところあって変わりました。例えばCombineLatestは、全てが一度は発火していないと動き出しません。ReactiveCommandの条件に使うなどの場合にRaiseしてくれないと不都合極まりなく、かつ、Subscribeと同時にRaiseすることによる不都合なシーンは逆に少ない。ことを考えると、必然的にデフォルトをどちらに振るべきかは、分かりきった話でした。</p>
+<p>そのことは0.1の時、サンプル作りながら思ってたんですが悩んだ末に、省いちゃったんですねえ。RaiseLatestValueOnSubscribeが入ると不便なシーンもある(initialValueを設定しないとまず最初にnullが飛んでいくとか)ので、どちらを取るかは悩ましいところではあるんですが、シチュエーションに応じて最適なほうを選んでください、としか言いようがないところです。</p>
+<h2>ToReactivePropertyAsSynchronized</h2>
+<p>長い。メソッド名が。</p>
+<p>これは何かというとINotifyPropertyChanged-&gt;ReactiveProperty変換です。今までもObservePropertyメソッド経由で変換できましたが、それは一度IObservable&lt;T&gt;に変換するため、Model→ReactivePropertyという一方向のPushでしかありませんでした。Two-wayでのバインドで値の同期を取りたい場合は、今回から搭載されたToReactivePropertyAsSynchronizedを使ってください。</p>
+<pre><code class="language-csharp">// こんな通知付きモデルがあるとして
+public class ObservableObject : INotifyPropertyChanged
+{
+    private string name;
+    public string Name
+    {
+        get { return name; }
+        set
+        {
+            name = value;
+            PropertyChanged(this, new PropertyChangedEventArgs(&quot;Name&quot;));
+        }
+    }
+
+    public event PropertyChangedEventHandler PropertyChanged = (_, __) =&gt; { };
+}
+
+// それを使ったViewModelを作るなら
+public class TwoWayViewModel
+{
+    public ReactiveProperty&lt;string&gt; OneWay { get; private set; }
+    public ReactiveProperty&lt;string&gt; TwoWay { get; private set; }
+
+    public TwoWayViewModel()
+    {
+        var inpc = new ObservableObject { Name = &quot;ヤマダ&quot; };
+
+        // ObservePropertyを使うとIObservable&lt;T&gt;に変換できます
+        // ラムダ式でプロパティを指定するので、完全にタイプセーフです
+        // それをToReactivePropertyすればOneWayで同期したReactivePropertyになります
+        OneWay = inpc.ObserveProperty(x =&gt; x.Name).ToReactiveProperty();
+
+        // ToReactivePropertyAsSynchronizedで双方向に同期することができます
+        TwoWay = inpc.ToReactivePropertyAsSynchronized(x =&gt; x.Name);
+    }
+}
+</code></pre>
+<p>INotifyProeprtyChangedなModelをReactivePropertyなViewModelに持っていきたい時などに、使いやすいのではと思います。また、同期する型が異なっていても対応することができます。コンバーターのようにconvertとconvertBackを指定してください。</p>
+<h2>ReactiveProperty.FromObject</h2>
+<p>こちらもToReactivePropertyの亜種ですが、ReactiveProperty→Modelというソース方向への片方向の同期を取ります。ModelはINotifyPropertyChangedである必要はありません。</p>
+<pre><code class="language-csharp">// こんなただのクラスがあったとして
+public class PlainObject
+{
+    public string Name { get; set; }
+}
+
+// それと同期させたいとき
+public class OneWayToSourceViewModel
+{
+    public ReactiveProperty&lt;string&gt; OneWayToSource { get; private set; }
+
+    public OneWayToSourceViewModel()
+    {
+        var poco = new PlainObject { Name = &quot;ヤマダ&quot; };
+
+        // ReactiveProperty.FromObjectで変換することができます
+        // この場合、ReactiveProperty -&gt; Objectの方向のみ値が流れます
+        OneWayToSource = ReactiveProperty.FromObject(poco, x =&gt; x.Name);
+    }
+}
+</code></pre>
+<p>片方向の同期が定型的な局面、例えば設定クラスなんかは通知は必要ないと思うのですが、それをUIから一方向で値を投影したい場合に、これを使うことで楽になると思います。</p>
+<p>また、Sampleにこれら3つの解説を追加しましたので、実際にどう反映されるのか、動きを確認したい場合はそちらを見てください。</p>
+<h2>CombineLatestValuesAreAllTrue</h2>
+<p>長い。メソッド名が。これは<a href="http://d.hatena.ne.jp/okazuki/20111027/1319722680">Reactive Extensionsお題 - かずきのBlog@Hatena</a>に書かれているもので、使うシーンよくありそうな頻出パターンになりそうだと思ったので、お借りすることにしました。ありがとうございます。使い方を見てもらったほうが速いので、まず例を。</p>
+<p class="noindent">
+<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="100px">
+  <param name="source" value="http://neue.cc/wp-content/uploads/silverlight/ReactivePropertyComibineLatestAllTrue.xap"/>
+  <param name="background" value="white" />
+  <param name="minRuntimeVersion" value="3.0.40624.0" />
+  <param name="autoUpgrade" value="true" />
+  <param name="initparams" value="Start=0" />
+  <a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=3.0.40624.0" style="text-decoration:none">
+      <img src="http://go.microsoft.com/fwlink/?LinkId=108181" alt="Microsoft Silverlight を入手" style="border-style:none"/>
+  </a>
+</object>
+</p>
+<pre><code class="language-xml">&lt;StackPanel&gt;
+    &lt;StackPanel Orientation=&quot;Horizontal&quot;&gt;
+        &lt;CheckBox IsChecked=&quot;{Binding IsCheckedA.Value, Mode=TwoWay}&quot;&gt;Check A&lt;/CheckBox&gt;
+        &lt;CheckBox IsChecked=&quot;{Binding IsCheckedB.Value, Mode=TwoWay}&quot;&gt;Check B&lt;/CheckBox&gt;
+        &lt;CheckBox IsChecked=&quot;{Binding IsCheckedC.Value, Mode=TwoWay}&quot;&gt;Check C&lt;/CheckBox&gt;
+    &lt;/StackPanel&gt;
+    &lt;Button Command=&quot;{Binding ExecCommand}&quot;&gt;全部チェックで押せる&lt;/Button&gt;
+&lt;/StackPanel&gt;
+</code></pre>
+<pre><code class="language-csharp">// using Codeplex.Reactive.Extensions; (これを忘れないように)
+
+public class MainPageViewModel
+{
+    public ReactiveProperty&lt;bool&gt; IsCheckedA { get; private set; }
+    public ReactiveProperty&lt;bool&gt; IsCheckedB { get; private set; }
+    public ReactiveProperty&lt;bool&gt; IsCheckedC { get; private set; }
+    public ReactiveCommand ExecCommand { get; private set; }
+
+    public MainPageViewModel()
+    {
+        IsCheckedA = new ReactiveProperty&lt;bool&gt;();
+        IsCheckedB = new ReactiveProperty&lt;bool&gt;();
+        IsCheckedC = new ReactiveProperty&lt;bool&gt;();
+
+        ExecCommand = new[] { IsCheckedA, IsCheckedB, IsCheckedC }
+            .CombineLatestValuesAreAllTrue()
+            .ToReactiveCommand();
+
+        ExecCommand.Subscribe(_ =&gt; MessageBox.Show(&quot;しんぷる！&quot;));
+    }
+}
+</code></pre>
+<p>3つのチェックボックスが全てONなら実行可能なコマンドを作る、です。こんな風に、全てがtrueの時、といった集約をしたい場合に便利に使うことができます。プレゼンテーションロジック、に該当する部分だと思いますが、ここでもRxは十分以上に活躍できます。また、外部からCanExecuteChangedをぶっ叩くようなカオティックなこともしません、ReactiveCommandならね。</p>
+<h2>ReactiveTimer</h2>
+<p>Timerです。.NETはTimerが山のようにあります。Threading.Timer, Timers.Timer, Forms.Timer, DispatcherTimer, Observable.Timer。ここにまたReactiveTimerという新たなるTimerが誕生し、人類を混乱の淵に陥れようとしていた……。まさにカオス。</p>
+<p>ちょっと整理しましょう。まず、Threading.Timerは一番ネイティブなTimerと捉えられます。そのままだと少しつかいづらいので、軽くラップしてイベントベースにしたのがTimers.Timer。Forms.TimerとDispatcherTimerは、それぞれのアプリケーション基盤で時間を計って伝達してくれるというもの、UI系でのInvokeが不要になるので便利。と、それなりに役割の違いはあります。微妙な差ですが。</p>
+<p>最後のObservable.TimerはIObservableで通達してくれるのでRxと非常に相性が良いタイマー。また、タイマーを行う場所もISchedulerで任意に指定できるので、ThreadPoolでもDispatcherでもCurrentThread(この場合はSleepで止まるので固まりますけどね)でも、もしくは仮想スケジューラ(任意に時間を動かせるのでテストが簡単になる)でも良いという柔軟さが素敵で、Rx以降のプログラミングではタイマーなんてObseravble.Timer一択だろ常識的に考えて。という勢い。(精度は若干落ちるので、よほど精度を求める時はThreading．Timerを使いましょう)。だと思っていた時もありました。</p>
+<p>一時停止出来ないんですよ、Observable.Timer。発動したらしっぱなし。Stopはできる(Disposeする)けど、そうしたら再開は出来ない。それじゃあ困る場合があります！はい。結構あります。そういう場合はTimers.TimerをFromEventでラップする。それはそれで良いのですが、Observable.TimerのISchedulerを指定可能という柔軟さを捨てるのは勿体無いなあ、と思ったのでした。</p>
+<p>そこで、今回ReactiveTimerを作りました。機能は、Observable.TimerのStop/Start出来る版です。</p>
+<pre><code class="language-csharp">[TestClass]
+public class ReactiveTimerTest : ReactiveTest
+{
+    [TestMethod]
+    public void TimerTest()
+    {
+        // テスト用の自由に時間を動かせるスケジューラ
+        var testScheduler = new TestScheduler();
+        var recorder = testScheduler.CreateObserver&lt;long&gt;();
+
+        // 作成時点では動き出さない
+        var timer = new ReactiveTimer(TimeSpan.FromSeconds(1), testScheduler);
+        timer.Subscribe(recorder); // Subscribeしても動き出さない
+
+        timer.Start(TimeSpan.FromSeconds(3)); // ここで開始。初期値を与えるとその時間後にスタート
+
+        // 時間を絶対時間10秒のポイントまで進める(AdvanceTo)
+        testScheduler.AdvanceTo(TimeSpan.FromSeconds(5).Ticks);
+
+        // MessagesにSubscribeに届いた時間と値が記録されているので、Assertする
+        recorder.Messages.Is(
+            OnNext(TimeSpan.FromSeconds(3).Ticks, 0L),
+            OnNext(TimeSpan.FromSeconds(4).Ticks, 1L),
+            OnNext(TimeSpan.FromSeconds(5).Ticks, 2L));
+        
+        timer.Stop(); // timerを止める
+        recorder.Messages.Clear(); // 記録をクリア
+
+        // 時間を現在時間から5秒だけ進める(AdvanceBy)
+        testScheduler.AdvanceBy(TimeSpan.FromSeconds(5).Ticks);
+
+        // timerは止まっているので値は届いてないことが確認できる
+        recorder.Messages.Count.Is(0);
+    }
+}
+</code></pre>
+<p>そう、単体テストしたい場合は、TestSchedulerに差し替えれば、AdvancedBy/Toによって、時間を自由に進めることが可能になります。Assertに使っているIs拡張メソッドは<a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>です。Testing周りの詳しい解説は<a href="http://d.hatena.ne.jp/ZOETROPE/20111031#1320077799">Rx-Testingの使い方 - ZOETROPEの日記</a>に書かれています。</p>
+<h2>CountNotifier/BooleanNotifier</h2>
+<p>SignalNotifierという名前はよく分からないので、今回よりCountNotifierに変更しました。また、名前空間をNotifiersに変更しました。更に、二値での通知を行うBooleanNotifierを新規追加しました。どちらも、IObservable経由での通知を行うフラグです。</p>
+<pre><code class="language-csharp">// using Codeplex.Reactive.Notifiers;
+
+// 通知可能(IObservable)なboolean flag
+var boolFlag = new BooleanNotifier(initialValue: false);
+boolFlag.Subscribe(b =&gt; Console.WriteLine(b));
+
+boolFlag.TurnOn(); // trueにする, trueの状態だったら何もしない
+boolFlag.Value = false; // .Valueで変更、既にfalseの状態でも通知する
+boolFlag.SwitchValue(); // 値を反転させる
+
+// 通知可能(IObservable)なcount flag
+var countFlag = new CountNotifier();
+countFlag.Subscribe(x =&gt; Console.WriteLine(x));
+
+countFlag.Increment(); // incしたり
+countFlag.Decrement(); // decしたりの状態が通知される
+
+// Empty(0になった状態)という判定でフィルタして状態監視したりできる
+countFlag.Where(x =&gt; x == CountChangedStatus.Empty);
+</code></pre>
+<p>例えば非同期処理を行う際などの、状態の管理に使うことができます。</p>
+<h2>Pairwise</h2>
+<p><a href="http://neue.cc/2011/11/09_352.html">neue cc - Reactive Extensionsで前後の値を利用する</a>で書いた、前後の値をまとめる拡張メソッドです。</p>
+<pre><code class="language-csharp">// { Old = 1, New = 2 }
+// { Old = 2, New = 3 }
+// { Old = 3, New = 4 }
+// { Old = 4, New = 5 }
+Observable.Range(1, 5)
+    .Pairwise()
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>古い値と新しい値を使って何かしたい場合などにどうぞ。</p>
+<h2>CatchIgnore</h2>
+<p>例外処理用に、OnErrorRetryというものを用意していましたが、今回それ以外にCatchIgnoreを追加しました。</p>
+<pre><code class="language-csharp">// 1, 2
+Observable.Range(1, 5)
+    .Do(x =&gt; { if (x == 3) throw new Exception(); })
+    .CatchIgnore()
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>ようするに、CatchしてEmptyを返す手間を省くためのものです。onErrorにe =&gt; {}と書くのと似てますが、シーケンスの途中で捕まえれるので、メソッドチェーンの繋ぎ方によっては全然異なる役割を持つ可能性があります。</p>
+<h2>その他の削除やバグ修正や見送ったものなど</h2>
+<p>RxのExperimental版が更新されてたので、それに合わせました。Rxの更新内容はZipとCombineLatestに大量のオーバーロード+配列を受け入れるようになったので、何でも結合できるようになりました。それにともないReactivePropertyでは独自拡張としてCombineLatestのオーバーロードを用意していたのですが、Experimental版のみ削除しました。パフォーマンスもExperimentalのもののほうがずっと良いので、早くStableにも降りてきて欲しいです。</p>
+<p>WebRequestのUploadValuesで、値が&amp;で連結されていないという致命的なバグがあったので修正しました。本当にすみません……。また、Silverlightでデザイン画面がプレビューできなくなる不具合を修正しました。デザインモード怖い。</p>
+<p>バリデーション周りは、ちょっと大きめに(といっても内部だけの話で外部的には変わらない予定)変更入れようと思ってたのですが、それは次回で。あと、同期系メソッドもバリデーションの成否によって同期するかしないかを決定しようかなあ、とか思うんですが、ちょっと大変なので後になりそう。</p>
+<h2>まとめ</h2>
+<p>今回はデータリンクを主眼に置きました。デフォルトモードの変更もその一環です。直接的に意味を見るのなら、厚めのMをスマートにVMとシンクロナイズさせる、ということになります。冒頭の台詞、閉じた世界を開けるための道具です。ObserveProperty(OneWay)、ToReactivePropertyAsSynchronized(TwoWay)、ReactiveProperty.FromObject(OneWayToSource)。</p>
+<p>OneWayとかTwoWayとかOneWayToSourceというとおり、VMとMの間のバインディングエンジンだと見ることができます。VとVMの間をWPFなりのフレームワークが担い吸収するように、ReactivePropertyはVMとMの間を吸収します。手書きでバインディングだと、ボイラープレートでは手間だし見通しも悪くなる。このほうが、ずっと、楽だし自然に書けます。</p>
+<p>ReactivePropertyはV-VM間の接続も担うため、結果として全てがV-VM-M-VM-Vとして一つに繋がる。何をどう組もうと自然に一つに繋がっていく。わくわくしませんか？むしろカオスの予感がする？けれど、カオスの先に本当の光がある、……かもしれない。</p>
+<p>ちなみに同期系のものはみんなプロパティ指定だけでGetとかSetとか自動でやっていますが、動的コード生成(＆キャッシュ)によりハイパー高速化されているので、パフォーマンス上の問題はありません。そこは安心してください。というと何か凄そうなことやってる気がしますが、勿論そんなことはなくて、偉大なるExpressionTreeに全面的にお任せしているだけだったり。</p>
+</div>
+<h1><a href="https://neue.cc/2011/11/13_353.html">XboxInfoTwit - ver.2.4.0.0</a></h1>
 <ul class="date"><li>2011-11-13</li></ul>
 <div class="entry_body"><ul>
 <li><a href="http://neue.cc/software/xboxinfotwit" title="neue cc - XboxInfoTwit">neue cc - XboxInfoTwit</a></li>
@@ -1631,107 +1851,6 @@ public static class ObservableExtensions
 <div style="width:595px" id="__ss_8930196"> <strong style="display:block;margin:12px 0 4px"><a href="http://www.slideshare.net/neuecc/linqjs-linq-to-objects-for-javascript" title="linq.js - Linq to Objects for JavaScript" target="_blank">linq.js - Linq to Objects for JavaScript</a></strong> <iframe src="https://www.slideshare.net/slideshow/embed_code/8930196" width="595" height="497" frameborder="0" marginwidth="0" marginheight="0" scrolling="no"></iframe> <div style="padding:5px 0 12px"> View more <a href="http://www.slideshare.net/" target="_blank">presentations</a> from <a href="http://www.slideshare.net/neuecc" target="_blank">neuecc</a> </div> </div>
 <p>スライドのテンプレは同じの使っていてそろそろ飽きたので、新しいのに変えたいところ。基本的にはテンプレのテーマまんまですが、やっぱ細かいところでスライドマスタの調整は必要なので、面倒くさー、と思ってしまい中々に気力が。むしろデザイン変更は一年に一回でいいかしらいいかしら？</p>
 <p>そういえばどうでもよくないのですが、SlideshareをBlogに埋め込む時はlargeサイズを選んで欲しい。文字潰れてしまうもの、わざわざ小さいサイズで埋め込む必要はどこにもなくて。</p>
-</div>
-<h1><a href="https://neue.cc/2011/08/19_339.html">文字列を先頭から見て同じところまで除去をlinq.jsとC#で解いてみた</a></h1>
-<ul class="date"><li>2011-08-19</li></ul>
-<div class="entry_body"><p><a href="http://blog.livedoor.jp/okashi1/archives/51778281.html">JavaScript で「文字列を先頭から見て同じところまで除去」をやってみました。</a>という記事を見て、「linq.js を使いたかったのですが使いどころがパッと思い浮かびませんでした」とのことなので、<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js - LINQ for JavaScript</a>で答えてみます。お題の元は<a href="http://d.hatena.ne.jp/fumokmm/20110812/1313138407">お題：文字列を先頭から見て同じところまで除去</a>からです。解き方も色々あると思いますが、最長の一致する文字を見つけて、それを元に文字列を削除していく、という方法を取ることにしました。</p>
-<pre><code class="language-javascript">function dropStartsSame(array)
-{
-    var seq = Enumerable.From(array);
-    return Enumerable.From(seq.First())
-        .Scan(&quot;$+$$&quot;)
-        .TakeWhile(function (x) { return seq.All(function (y) { return y.indexOf(x) == 0 }) })
-        .Insert(0, [&quot;&quot;]) // 一つもマッチしなかった場合のため
-        .TakeFromLast(1)
-        .SelectMany(function (x) { return seq.Select(function (y) { return y.substring(x.length) }) });
-}
-
-dropStartsSame([&quot;abcdef&quot;, &quot;abc123&quot;]).WriteLine();
-dropStartsSame([&quot;あいうえお&quot;, &quot;あいさんさん&quot;, &quot;あいどる&quot;]).WriteLine();
-dropStartsSame([&quot;12345&quot;, &quot;67890&quot;, &quot;12abc&quot;]).WriteLine();
-</code></pre>
-<p>はい、ワンライナーで書けました、って何だか意味不明ですね！まず、例えば&quot;abcdef&quot;から[&quot;a&quot;,&quot;ab&quot;,&quot;abc&quot;,&quot;abcd&quot;,&quot;abcde&quot;,&quot;abcdef&quot;]を作ります。これはものすごく簡単で、Scanを使うだけです。</p>
-<pre><code class="language-javascript">// [&quot;a&quot;,&quot;ab&quot;,&quot;abc&quot;,&quot;abcd&quot;,&quot;abcde&quot;,&quot;abcdef&quot;]
-Enumerable.From(&quot;abcdef&quot;).Scan(&quot;$+$$&quot;)
-</code></pre>
-<p>素晴らしい！そうして比較のタネができたら、あとは全てのindexOfが0(先頭に一致する)の間だけ取得(TakeWhile)します。[&quot;abcdef&quot;,&quot;abc123&quot;]だとシーケンスは[&quot;a&quot;,&quot;ab&quot;,&quot;abc&quot;]に絞られます。必要なのは最長のもの一つだけなのでTakeFromLast(1)で最後のものだけを取得。もし一つもマッチしなかった場合は代わりに&quot;&quot;が通るようにInsertで事前に先頭にさしてやってます。あとは、その&quot;abc&quot;を元にして文字列を置換したシーケンスを返してやるようにすればいい、というわけです、はい。</p>
-<h2>少し修正</h2>
-<p>SelectManyで繋げるのは悪趣味なので、ちょっと変えましょう。</p>
-<pre><code class="language-javascript">function dropStartsSame(array)
-{
-    var seq = Enumerable.From(array);
-    var pre = Enumerable.From(seq.First())
-        .Scan(&quot;$+$$&quot;)
-        .TakeWhile(function (x) { return seq.All(function (y) { return y.indexOf(x) == 0 }) })
-        .LastOrDefault(&quot;&quot;);
-
-    return seq.Select(function (x) { return x.substring(pre.length) });
-}
-</code></pre>
-<p>変数を一つ置いてやるだけで随分とすっきり。無理に全部繋げるのはよくないね、という当たり前の話でした。</p>
-<h2>C# + Ix</h2>
-<p>C#とIxで書くとこうなるかな？基本的には同じです。(Ixって何？という人は<a href="http://neue.cc/2011/08/10_337.html" title="neue cc - LINQ to Objects &amp; Interactive Extensions &amp; linq.js 全メソッド概説">neue cc - LINQ to Objects &amp; Interactive Extensions &amp; linq.js 全メソッド概説</a>を参照ください)</p>
-<pre><code class="language-csharp">static IEnumerable&lt;string&gt; DropStartsSame(params string[] args)
-{
-    var pre = args.First()
-        .Scan(&quot;&quot;, (x, y) =&gt; x + y)
-        .TakeWhile(x =&gt; args.All(y =&gt; y.StartsWith(x)))
-        .LastOrDefault() ?? &quot;&quot;;
-    return args.Select(x =&gt; x.Substring(pre.Length));
-}
-
-static void Main()
-{
-    var x = DropStartsSame(&quot;abcdef&quot;, &quot;abc123&quot;).SequenceEqual(new[] { &quot;def&quot;, &quot;123&quot; });
-    var y = DropStartsSame(&quot;あいうえお&quot;, &quot;あいさんさん&quot;, &quot;あいどる&quot;).SequenceEqual(new[] { &quot;うえお&quot;, &quot;さんさん&quot;, &quot;どる&quot; });
-    var z = DropStartsSame(&quot;12345&quot;, &quot;67890&quot;, &quot;12abc&quot;).SequenceEqual(new[] { &quot;12345&quot;, &quot;67890&quot;, &quot;12abc&quot; });
-
-    Console.WriteLine(x == y == z == true);
-}
-</code></pre>
-<p>Ixで使ってるのはScanだけですけれど。</p>
-<h2>Deferの使い道</h2>
-<p>ところで、上のコードは遅延評価なのか遅延評価でないのか、微妙な感じです。preの計算までは即時で、その後は遅延されています。まるごと遅延したい場合はIxのDeferというメソッドが使えます。</p>
-<pre><code class="language-csharp">// Deferで生成を遅延する
-static IEnumerable&lt;string&gt; DropStartsSame2(params string[] args)
-{
-    return EnumerableEx.Defer(() =&gt;
-    {
-        var pre = args.First()
-            .Scan(&quot;&quot;, (x, y) =&gt; x + y)
-            .TakeWhile(x =&gt; args.All(y =&gt; y.StartsWith(x)))
-            .LastOrDefault() ?? &quot;&quot;;
-        return args.Select(x =&gt; x.Substring(pre.Length));
-    });
-}
-
-// もしくはyield returnを使ってしまうという手も私はよく使っていました
-static IEnumerable&lt;string&gt; DropStartsSame3(params string[] args)
-{
-    var pre = args.First()
-        .Scan(&quot;&quot;, (x, y) =&gt; x + y)
-        .TakeWhile(x =&gt; args.All(y =&gt; y.StartsWith(x)))
-        .LastOrDefault() ?? &quot;&quot;;
-    var query = args.Select(x =&gt; x.Substring(pre.Length));
-    
-    foreach (var item in query) yield return item;
-}
-
-// 勿論、全部LINQで組んでしまってもOK
-static IEnumerable&lt;string&gt; DropStartsSame4(params string[] args)
-{
-    return args.First()
-        .Scan(&quot;&quot;, (x, y) =&gt; x + y)
-        .TakeWhile(x =&gt; args.All(y =&gt; y.StartsWith(x)))
-        .StartWith(&quot;&quot;) // linq.jsではInsert(0, [])でした
-        .TakeLast(1) // linq.jsではTakeFromLastでした
-        .SelectMany(x =&gt; args.Select(y =&gt; y.Substring(x.Length)));
-}
-</code></pre>
-<p>私はIx以前はyield returnを結構よく使ってました。今は、Deferのほうが、例えば if(args == null) throw new ArgumentNullException(); とかがそのまま書けるのでDeferを選びたいかも。この辺の評価タイミングの話は前回、<a href="http://neue.cc/2011/08/15_338.html" title="neue cc - 詳説Ix Share/Memoize/Publish編(もしくはyield returnの注意点)">詳説Ix Share/Memoize/Publish編(もしくはyield returnの注意点)</a>で書きました。</p>
-<h2>まとめ</h2>
-<p>というわけで、Scanの使い方でした。Scan可愛いよScan。ようするにAggregateの計算途中も列挙する版なわけなので、これ、標準クエリ演算子にも入って欲しかったなあ。結構使えるシーン多いです。</p>
-<p>ああ、あとJavaScriptでもforなんて使いません(ｷﾘｯ。<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js</a>は真面目に普通に多機能なので遅い、じゃなくて、いや、それはまあ事実なんですが、便利には違いないです。他の普通のコレクションライブラリじゃ出来ないことも平然と出来ます。でもかわりに（ry</p>
 </div>
 <a href="https://neue.cc/14">Prev |</a>
 <a href="https://neue.cc/16">| Next</a>

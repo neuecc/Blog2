@@ -23,7 +23,512 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2020/07/09_593.html">ライブラリ作成のすゝめ - 40以上のOSS作成事例から見る個人OSSによる効能とキャリアの開発</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2020/08/20_594.html">async decoratorパターンによるUnityWebRequestの拡張とUniTaskによる応用的設計例</a></h1>
+<ul class="date"><li>2020-08-20</li></ul>
+<div class="entry_body"><p><a href="https://github.com/Cysharp/UniTask/">UniTask v2</a>も2.0.30まで到達し、いい加減そろそろ安定したと言える頃合いです（ほんと！）。GitHub Star数も1000を超えて、準スタンダードとして安心して使ってもらえるレベルまで到達したと思うので、基盤部分から入れ込んで設計するとこんなことができますよ、という一例を出してみます。</p>
+<p>UnityWebRequestはかなりプリミティブな代物で、そのまま使うよりかはある程度はアプリケーションに沿ったラッパーを被せることがほとんどなのではないかと思います。しかし、ライブラリ単体でアプリケーションの要求を全て満たそうとするとヘヴィになりすぎたり、というかそもそもアプリケーション固有の要求には絶対に答えられない。というわけで、理想的なラッパーというのは、それ自身が極力軽量で、拡張性を持たせたプラガブルな仕組みが用意されているものということになります。プラガブルな拡張性がないと、例えば基盤ライブラリ側で用意されたラッパーをアプリケーションで使う場合にうまく要件をあわせられなくて、Forkして直接改造しちゃう、という不毛な自体になったりします。</p>
+<p>と、いうものを実現するにあたって、非同期リクエストにつきもののコールバックは非常に相性が悪い。コールバックの連鎖は、コード上でその場でネストしていくだけだったら数階層ネストしてもまぁまぁなんとかなりますが、プラガブルで複雑な組み合わせを実現しようとするとハンドリング不可能になります。</p>
+<p>そこでasync/await。async/awaitならコンパイラの力に頼ることでそういうものができます！</p>
+<p>async decoratorパターンという名前で紹介しますが、一般にはMiddlewareとして知られているものを実装します。ASP.NET Core、node.js(Express)やReactのMiddleware、PythonのWSGI、MagicOnionではFilterとして実装している、サーバーサイドではよく使われるデザインです。これは非常に強力なデザインパターンで、クライアント処理においても有用だと私は考えています。もし知らなければ絶対に覚えるべき……！</p>
+<p>MagicOnionのフィルターの図を持ってくるとこんな感じで</p>
+<img src="https://user-images.githubusercontent.com/46207/50969421-cb465900-1521-11e9-8824-8a34cc52bbe4.png" width=600 />
+<p>メソッドが外から内側に包まれて呼ばれていきます。</p>
+<pre><code class="language-csharp">await next(
+    await next(
+        await next()
+    )
+);
+</code></pre>
+<p>通常やりたいことってざっくり</p>
+<ul>
+<li>ロギング</li>
+<li>モック</li>
+<li>タイムアウト処理</li>
+<li>リクエスト前のヘッダー処理</li>
+<li>リクエスト後のヘッダー処理</li>
+<li>ステータスコードに応じた例外時処理</li>
+<li>エラー時の処理（ポップアップ/リトライ/画面遷移）</li>
+</ul>
+<p>といったことだと思われますが、この仕組みなら、これだけで全て実装できます……！</p>
+<p>というわけで、実装例を見ていきましょう。</p>
+<h2>デコレーター例</h2>
+<p>まずは共通のインターフェイスとして以下のものを用意します。</p>
+<pre><code class="language-csharp">public interface IAsyncDecorator
+{
+    UniTask&lt;ResponseContext&gt; SendAsync(RequestContext context, CancellationToken cancellationToken, Func&lt;RequestContext, CancellationToken, UniTask&lt;ResponseContext&gt;&gt; next);
+}
+</code></pre>
+<p>なるほどわからん。RequestContext、ResponseContextがそれぞれリクエスト/レスポンスに必要なデータが詰まっている単純な入れ物ということで特に気にしないこととして、大事なのはFunc nextです。</p>
+<p>とりあえず、単純な例としてヘッダーの前後で処理するなにかを。</p>
+<pre><code class="language-csharp">public class SetupHeaderDecorator : IAsyncDecorator
+{
+    public async UniTask&lt;ResponseContext&gt; SendAsync(RequestContext context, CancellationToken cancellationToken, Func&lt;RequestContext, CancellationToken, UniTask&lt;ResponseContext&gt;&gt; next)
+    {
+        context.RequestHeaders[&quot;x-app-timestamp&quot;] = context.Timestamp.ToString();
+        context.RequestHeaders[&quot;x-user-id&quot;] = &quot;132141411&quot;; // どこかから持ってくる
+        context.RequestHeaders[&quot;x-access-token&quot;] = &quot;fafafawfafewaea&quot;; // どこかから持ってくる2
+
+        var respsonse = await next(context, cancellationToken); // 次のメソッドが呼ばれる
+
+        var nextToken = respsonse.ResponseHeaders[&quot;token&quot;];
+        UserProfile.Token = nextToken; // どこかにセットするということにする
+
+        return respsonse;
+    }
+}
+</code></pre>
+<p>await next() によって連鎖しているデコレーターメソッドの内側に進んでいきます。つまり、その前に書けば前処理、後ろに書けば後処理になります。nextの定義がよくわからなくても、デコレーターを量産していくことは簡単です。そこが大事。そんなんでいいんです。</p>
+<p>さて、async/awaitと統合されていることによって、try-catch-finallyも自然に書けます。例えばロギングを用意すると</p>
+<pre><code class="language-csharp">public class LoggingDecorator : IAsyncDecorator
+{
+    public async UniTask&lt;ResponseContext&gt; SendAsync(RequestContext context, CancellationToken cancellationToken, Func&lt;RequestContext, CancellationToken, UniTask&lt;ResponseContext&gt;&gt; next)
+    {
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            UnityEngine.Debug.Log(&quot;Start Network Request:&quot; + context.Path);
+
+            var response = await next(context, cancellationToken);
+
+            UnityEngine.Debug.Log($&quot;Complete Network Request: {context.Path} , Elapsed: {sw.Elapsed}, Size: {response.GetRawData().Length}&quot;);
+
+            return response;
+        }
+        catch (Exception ex)
+        {
+            if (ex is OperationCanceledException)
+            {
+                UnityEngine.Debug.Log(&quot;Request Canceled:&quot; + context.Path);
+            }
+            else if (ex is TimeoutException)
+            {
+                UnityEngine.Debug.Log(&quot;Request Timeout:&quot; + context.Path);
+            }
+            else if (ex is UnityWebRequestException webex)
+            {
+                if (webex.IsHttpError)
+                {
+                    UnityEngine.Debug.Log($&quot;Request HttpError: {context.Path} Code:{webex.ResponseCode} Message:{webex.Message}&quot;);
+                }
+                else if (webex.IsNetworkError)
+                {
+                    UnityEngine.Debug.Log($&quot;Request NetworkError: {context.Path} Code:{webex.ResponseCode} Message:{webex.Message}&quot;);
+                }
+            }
+            throw;
+        }
+        finally
+        {
+            /* log other */
+        }
+    }
+}
+</code></pre>
+<p>また、処理を打ち切ることも簡単に実現できます。nextを呼ばないだけですから。例えばダミーのレスポンスを返す（テストに使ったり、サーバー側の実装が整わない間に進めたりするために）デコレーターが作れます。</p>
+<pre><code class="language-csharp">public class MockDecorator : IAsyncDecorator
+{
+    Dictionary&lt;string, object&gt; mock;
+
+    // Pathと型を1:1にして事前定義したオブジェクトを返す辞書を渡す
+    public MockDecorator(Dictionary&lt;string, object&gt; mock)
+    {
+        this.mock = mock;
+    }
+
+    public UniTask&lt;ResponseContext&gt; SendAsync(RequestContext context, CancellationToken cancellationToken, Func&lt;RequestContext, CancellationToken, UniTask&lt;ResponseContext&gt;&gt; next)
+    {
+        // それと if (EditorProfile.EnableMocking) とか用意しておいて、モック使うかの有無をエディタ拡張辺りで切り替えれるようにしとくと楽
+        if (mock.TryGetValue(context.Path, out var value))
+        {
+            // 一致したものがあればそれを返す（実際の通信は行わない）
+            return new UniTask&lt;ResponseContext&gt;(new ResponseContext(value));
+        }
+        else
+        {
+            return next(context, cancellationToken);
+        }
+    }
+}
+</code></pre>
+<p>リトライ的な処理も考えてみましょう。例えば特殊なレスポンスコードを受信したときは、Tokenを取ってから再度処理し直してくれ、みたいな要求があるとします。</p>
+<pre><code class="language-csharp">public class AppendTokenDecorator : IAsyncDecorator
+{
+    public async UniTask&lt;ResponseContext&gt; SendAsync(RequestContext context, CancellationToken cancellationToken, Func&lt;RequestContext, CancellationToken, UniTask&lt;ResponseContext&gt;&gt; next)
+    {
+        string token = &quot;token&quot;; // どっかから取ってくるということにする
+        RETRY:
+        try
+        {
+            context.RequestHeaders[&quot;x-accesss-token&quot;] = token;
+            return await next(context, cancellationToken);
+        }
+        catch (UnityWebRequestException ex)
+        {
+            // 例えば700はTokenを再取得してください的な意味だったとする
+            if (ex.ResponseCode == 700)
+            {
+                // 別口でTokenを取得します的な処理
+                var newToken = await new NetworkClient(context.BasePath, context.Timeout).PostAsync&lt;string&gt;(&quot;/Auth/GetToken&quot;, &quot;access_token&quot;, cancellationToken);
+                context.Reset(this); // RequestContextの状態が汚れてる（？）ので、nextを最初からやり直す場合はResetする
+                token = newToken;
+                goto RETRY;
+            }
+
+            throw;
+        }
+    }
+}
+</code></pre>
+<p>シーケンシャルな処理を強制するために、キューを挟む場合はこのように書けます。私は並列リクエストできるなら極力並列にしたい派なので、あまりこういうのを挟むのは好きではないのですけれど、サーバー側の要求によっては必要な場合もあると思います。</p>
+<pre><code class="language-csharp">public class QueueRequestDecorator : IAsyncDecorator
+{
+    readonly Queue&lt;(UniTaskCompletionSource&lt;ResponseContext&gt;, RequestContext, CancellationToken, Func&lt;RequestContext, CancellationToken, UniTask&lt;ResponseContext&gt;&gt;)&gt; q = new Queue&lt;(UniTaskCompletionSource&lt;ResponseContext&gt;, RequestContext, CancellationToken, Func&lt;RequestContext, CancellationToken, UniTask&lt;ResponseContext&gt;&gt;)&gt;();
+    bool running;
+
+    public async UniTask&lt;ResponseContext&gt; SendAsync(RequestContext context, CancellationToken cancellationToken, Func&lt;RequestContext, CancellationToken, UniTask&lt;ResponseContext&gt;&gt; next)
+    {
+        if (q.Count == 0)
+        {
+            return await next(context, cancellationToken);
+        }
+        else
+        {
+            var completionSource = new UniTaskCompletionSource&lt;ResponseContext&gt;();
+            q.Enqueue((completionSource, context, cancellationToken, next));
+            if (!running)
+            {
+                Run().Forget();
+            }
+            return await completionSource.Task;
+        }
+    }
+
+    async UniTaskVoid Run()
+    {
+        running = true;
+        try
+        {
+            while (q.Count != 0)
+            {
+                var (tcs, context, cancellationToken, next) = q.Dequeue();
+                try
+                {
+                    var response = await next(context, cancellationToken);
+                    tcs.TrySetResult(response);
+                }
+                catch (Exception ex)
+                {
+                    tcs.TrySetException(ex);
+                }
+            }
+        }
+        finally
+        {
+            running = false;
+        }
+    }
+}
+</code></pre>
+<p>簡単なものから結構複雑そうなものまで、そこそこ単純に書けることがわかったと思います！ただのawait nextという仕組みを用意するだけで！</p>
+<p>用意したデコレーターはこんな風に使います。</p>
+<pre><code class="language-csharp">// デコレーターの詰まったClientを生成（これは一度作ったらフィールドに保存可）
+var client = new NetworkClient(&quot;http://localhost&quot;, TimeSpan.FromSeconds(10),
+    new QueueRequestDecorator(),
+    new LoggingDecorator(),
+    new AppendTokenDecorator(),
+    new SetupHeaderDecorator());
+
+// 例えばこんな風に呼ぶということにする
+var result = await client.PostAsync(&quot;/User/Register&quot;, new { Id = 100 });
+</code></pre>
+<h2>async decoratorを実装する</h2>
+<p>ちょっと長くなりますが、そんな複雑なわけではありません。</p>
+<pre><code class="language-csharp">// 基本のインターフェイス
+public interface IAsyncDecorator
+{
+    UniTask&lt;ResponseContext&gt; SendAsync(RequestContext context, CancellationToken cancellationToken, Func&lt;RequestContext, CancellationToken, UniTask&lt;ResponseContext&gt;&gt; next);
+}
+
+// リクエスト用の入れ物
+public class RequestContext
+{
+    int decoratorIndex;
+    readonly IAsyncDecorator[] decorators;
+    Dictionary&lt;string, string&gt; headers;
+
+    public string BasePath { get; }
+    public string Path { get; }
+    public object Value { get; }
+    public TimeSpan Timeout { get; }
+    public DateTimeOffset Timestamp { get; private set; }
+
+    public IDictionary&lt;string, string&gt; RequestHeaders
+    {
+        get
+        {
+            if (headers == null)
+            {
+                headers = new Dictionary&lt;string, string&gt;();
+            }
+            return headers;
+        }
+    }
+
+    public RequestContext(string basePath, string path, object value, TimeSpan timeout, IAsyncDecorator[] filters)
+    {
+        this.decoratorIndex = -1;
+        this.decorators = filters;
+        this.BasePath = basePath;
+        this.Path = path;
+        this.Value = value;
+        this.Timeout = timeout;
+        this.Timestamp = DateTimeOffset.UtcNow;
+    }
+
+    internal Dictionary&lt;string, string&gt; GetRawHeaders() =&gt; headers;
+    internal IAsyncDecorator GetNextDecorator() =&gt; decorators[++decoratorIndex];
+
+    public void Reset(IAsyncDecorator currentFilter)
+    {
+        decoratorIndex = Array.IndexOf(decorators, currentFilter);
+        if (headers != null)
+        {
+            headers.Clear();
+        }
+        Timestamp = DateTimeOffset.UtcNow;
+    }
+}
+
+// レスポンス用の入れ物
+public class ResponseContext
+{
+    readonly byte[] bytes;
+
+    public long StatusCode { get; }
+    public Dictionary&lt;string, string&gt; ResponseHeaders { get; }
+
+    public ResponseContext(byte[] bytes, long statusCode, Dictionary&lt;string, string&gt; responseHeaders)
+    {
+        this.bytes = bytes;
+        StatusCode = statusCode;
+        ResponseHeaders = responseHeaders;
+    }
+
+    public byte[] GetRawData() =&gt; bytes;
+
+    public T GetResponseAs&lt;T&gt;()
+    {
+        return JsonUtility.FromJson&lt;T&gt;(Encoding.UTF8.GetString(bytes));
+    }
+}
+
+// 本体
+public class NetworkClient : IAsyncDecorator
+{
+    readonly Func&lt;RequestContext, CancellationToken, UniTask&lt;ResponseContext&gt;&gt; next;
+    readonly IAsyncDecorator[] decorators;
+    readonly TimeSpan timeout;
+    readonly IProgress&lt;float&gt; progress;
+    readonly string basePath;
+
+    public NetworkClient(string basePath, TimeSpan timeout, params IAsyncDecorator[] decorators)
+        : this(basePath, timeout, null, decorators)
+    {
+    }
+
+    public NetworkClient(string basePath, TimeSpan timeout, IProgress&lt;float&gt; progress, params IAsyncDecorator[] decorators)
+    {
+        this.next = InvokeRecursive; // setup delegate
+
+        this.basePath = basePath;
+        this.timeout = timeout;
+        this.progress = progress;
+        this.decorators = new IAsyncDecorator[decorators.Length + 1];
+        Array.Copy(decorators, this.decorators, decorators.Length);
+        this.decorators[this.decorators.Length - 1] = this;
+    }
+
+    public async UniTask&lt;T&gt; PostAsync&lt;T&gt;(string path, T value, CancellationToken cancellationToken = default)
+    {
+        var request = new RequestContext(basePath, path, value, timeout, decorators);
+        var response = await InvokeRecursive(request, cancellationToken);
+        return response.GetResponseAs&lt;T&gt;();
+    }
+
+    UniTask&lt;ResponseContext&gt; InvokeRecursive(RequestContext context, CancellationToken cancellationToken)
+    {
+        return context.GetNextDecorator().SendAsync(context, cancellationToken, next); // マジカル再帰処理
+    }
+
+    async UniTask&lt;ResponseContext&gt; IAsyncDecorator.SendAsync(RequestContext context, CancellationToken cancellationToken, Func&lt;RequestContext, CancellationToken, UniTask&lt;ResponseContext&gt;&gt; _)
+    {
+        // Postしか興味ないからPostにしかしないよ！
+        // パフォーマンスを最大限にしたい場合はuploadHandler, downloadHandlerをカスタマイズすること
+
+        // JSONでbodyに送るというパラメータで送るという雑設定。
+        var data = JsonUtility.ToJson(context.Value);
+        var formData = new Dictionary&lt;string, string&gt; { { &quot;body&quot;, data } };
+
+        using (var req = UnityWebRequest.Post(basePath + context.Path, formData))
+        {
+            var header = context.GetRawHeaders();
+            if (header != null)
+            {
+                foreach (var item in header)
+                {
+                    req.SetRequestHeader(item.Key, item.Value);
+                }
+            }
+
+            // Timeout処理はCancellationTokenSourceのCancelAfterSlim(UniTask拡張)を使ってサクッと処理
+            var linkToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            linkToken.CancelAfterSlim(timeout);
+            try
+            {
+                // 完了待ちや終了処理はUniTaskの拡張自体に丸投げ
+                await req.SendWebRequest().ToUniTask(progress: progress, cancellationToken: linkToken.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // 元キャンセレーションソースがキャンセルしてなければTimeoutによるものと判定
+                if (!cancellationToken.IsCancellationRequested)
+                {
+                    throw new TimeoutException();
+                }
+            }
+            finally
+            {
+                // Timeoutに引っかからなかった場合にてるのでCancelAfterSlimの裏で回ってるループをこれで終わらせとく
+                if (!linkToken.IsCancellationRequested)
+                {
+                    linkToken.Cancel();
+                }
+            }
+
+            // UnityWebRequestを先にDisposeしちゃうので先に必要なものを取得しておく（性能的には無駄なのでパフォーマンスを最大限にしたい場合は更に一工夫を）
+            return new ResponseContext(req.downloadHandler.data, req.responseCode, req.GetResponseHeaders());
+        }
+    }
+}
+</code></pre>
+<p>コアの処理はInvokeRecursiveです。もう少し単純化すると</p>
+<pre><code class="language-csharp">UniTask&lt;ResponseContext&gt; InvokeRecursive(RequestContext context, CancellationToken cancellationToken)
+{
+    context.decoratorIndex++;
+    return decorators[context.decoratorIndex].SendAsync(context, cancellationToken, InvokeRecursive);
+}
+</code></pre>
+<p>というように、IAsyncDecorator[]を少しずつ進めています。nextに入っているのは、配列の次の要素ということで、実際パターンの実装としてはそれだけです。</p>
+<p>また、NetworkClient自体がIAsyncDecoratorとなっていて、つまりnextを使わないものが最奥部の、最後の処理となるわけです。</p>
+<pre><code class="language-csharp">async UniTask&lt;ResponseContext&gt; IAsyncDecorator.SendAsync(RequestContext context, CancellationToken cancellationToken, Func&lt;RequestContext, CancellationToken, UniTask&lt;ResponseContext&gt;&gt; _)
+{
+    // nextは使わず、ここで実際の通信処理を始める
+}
+</code></pre>
+<p>今回はasync decoratorの紹介なので本体の処理は雑なんですが（とりあえずJsonシリアライズ/デシリアライズしたものを受け渡しするだけ、的な）、まぁ概ね雰囲気はわかると思うのでそれでいいでしょう。通常Pathとリクエスト/レスポンス型は1:1のはずなので（そうなってなければサーバー実装者を〆て1:1にさせましょう)、その辺のメソッドを自動生成しておくとかはよくあります。また、戻り値を複数めいたこと（ポリモーフィズム的な）のしたいんだよなあ、という場合にはMessagePack for C#のUnionという機能が使えるので、活用するといい感じになります。</p>
+<p>面白要素としてはTimeoutの処理を CancellationTokenSource.CancelAfterSlim で行っているところでしょうか。TimeoutはWhenAnyを使って外側から処理するパターンもありますが、対象がCancellationTokenを受け取れる場合は、こっちのほうがより効率的で良いです。</p>
+<h2>タイトル画面に戻すなどダイアログとシーン遷移を組み合わせる</h2>
+<p>ネットワークリクエストに失敗した時って、なんかポップアップ出して 「エラーが発生しました タイトルに戻ります 「OK」」 みたいな画面が出てきますよね？それをやりましょうやりましょう。</p>
+<pre><code class="language-csharp">public enum DialogResult
+{
+    Ok,
+    Cancel
+}
+
+public static class MessageDialog
+{
+    public static async UniTask&lt;DialogResult&gt; ShowAsync(string message)
+    {
+        // (例えば)Prefabで作っておいたダイアログを生成する
+        var view = await Resources.LoadAsync(&quot;Prefabs/Dialog&quot;);
+
+        // Ok, Cancelボタンのどちらかが押されるのを待機
+        return await (view as GameObject).GetComponent&lt;MessageDialogView&gt;().ClickResult;
+    }
+}
+
+public class MessageDialogView : MonoBehaviour
+{
+    [SerializeField] Button okButton = default;
+    [SerializeField] Button closeButton = default;
+
+    UniTaskCompletionSource&lt;DialogResult&gt; taskCompletion;
+
+    // これでどちらかが押されるまで無限に待つを表現
+    public UniTask&lt;DialogResult&gt; ClickResult =&gt; taskCompletion.Task;
+
+    private void Start()
+    {
+        taskCompletion = new UniTaskCompletionSource&lt;DialogResult&gt;();
+
+        okButton.onClick.AddListener(() =&gt;
+        {
+            taskCompletion.TrySetResult(DialogResult.Ok);
+        });
+
+        closeButton.onClick.AddListener(() =&gt;
+        {
+            taskCompletion.TrySetResult(DialogResult.Cancel);
+        });
+    }
+
+    // もしボタンが押されずに消滅した場合にネンノタメ。
+    private void OnDestroy()
+    {
+        taskCompletion.TrySetResult(DialogResult.Cancel);
+    }
+}
+</code></pre>
+<p>UniTaskCompletionSourceを活用して、ボタンが押されるまで待機というのを表現できます。こういう使い方、めっちゃするので覚えましょう。UniTaskCompletionSourceめっちゃ大事。</p>
+<p>では、これとasync decoratorを組み合わせていきます。</p>
+<pre><code class="language-csharp">public class ReturnToTitleDecorator : IAsyncDecorator
+{
+    public async UniTask&lt;ResponseContext&gt; SendAsync(RequestContext context, CancellationToken cancellationToken, Func&lt;RequestContext, CancellationToken, UniTask&lt;ResponseContext&gt;&gt; next)
+    {
+        try
+        {
+            return await next(context, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            if (ex is OperationCanceledException)
+            {
+                // キャンセルはきっと想定されている処理なのでそのまんまスルー（呼び出し側でOperationCanceledExceptionとして飛んでいく)
+                throw;
+            }
+
+            if (ex is UnityWebRequestException uwe)
+            {
+                // ステータスコードを使って、タイトルに戻す例外です、とかリトライさせる例外です、とかハンドリングさせると便利
+                // if (uwe.ResponseCode) { }...
+            }
+
+            // サーバー例外のMessageを直接出すなんて乱暴なことはデバッグ時だけですよ勿論。
+            var result = await MessageDialog.ShowAsync(ex.Message);
+
+            // OK か Cancelかで分岐するなら。今回はボタン一個、OKのみの想定なので無視
+            // if (result == DialogResult.Ok) { }...
+
+            // シーン呼び出しはawaitしないこと！awaitして正常終了しちゃうと、この通信の呼び出し元に処理が戻って続行してしまいます
+            // のでForget。
+            SceneManager.LoadSceneAsync(&quot;TitleScene&quot;).ToUniTask().Forget();
+
+
+            // そしてOperationCanceledExceptionを投げて、この通信の呼び出し元の処理はキャンセル扱いにして終了させる
+            throw new OperationCanceledException();
+        }
+    }
+}
+</code></pre>
+<p>await使ってサクサク書いていけるので、道具が揃っていれば非同期処理とは思えないほど難なく書けます。</p>
+<p>一つ注意なのは、呼び出し元に処理を戻すか戻さないか。普通にreturnすると処理が戻っていってしまいますが、Exceptionを再スローすればそれはそれでエラーとして出てしまってウザい。タイトル画面に戻すということは、その通信処理はキャンセルされたということなので、ここは処理がキャンセルされたとマークするのが正解です。asyncメソッドでキャンセル扱いするにはOperationCanceledExceptionを投げる必要があります。これは初見だと？？？という感じになると思いますが、そういうものなのでそういうものとして受け入れませう。</p>
+<h2>まとめ</h2>
+<p>UniTaskで道具を揃えたんだから、別に普通にばんばん書けるでしょ、便利に使ってね！ぐらいの気持ちでいたのであんまり応用例みたいなのの発信をしてこなかったんですが、よくよく考えると別にそんなことないよね……。ということにやっと気づいたので、色々盛りだくさんで紹介してみましたがどうでしょう。</p>
+<p>最初はコールバックに毛が生えたもの程度でもいいとは思いますが、それだけじゃあ勿体ないわけです。せっかく言語機能として用意されているので、コールバックでは実現不可能なもう一段階上の設計が狙えるので、コールバックのことは忘れて使いこなしていって欲しいですね。</p>
+<p>キャンセル処理に癖があるのは事実ですが（実際、最後に書いた明示的にOperationCanceledExceptionを投げよう、とかは一から発想していくのは難しいかもしれません）、「引数の最後に渡す」「明示的に投げてもいい」の二点だけなので、これは慣れるしかないし、それを理由にして利用範囲を限定的にするのはよくないかなー、と思ってます。</p>
+<p>まぁ、ようするに普通に使ってね！便利ですよ実際！ということで。</p>
+</div>
+<h1><a href="https://neue.cc/2020/07/09_593.html">ライブラリ作成のすゝめ - 40以上のOSS作成事例から見る個人OSSによる効能とキャリアの開発</a></h1>
 <ul class="date"><li>2020-07-09</li></ul>
 <div class="entry_body"><iframe src="//www.slideshare.net/slideshow/embed_code/key/4eUpWKiOa9rO8W" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/oss-236734450" title="ライブラリ作成のすゝめ - 事例から見る個人OSS開発の効能" target="_blank">ライブラリ作成のすゝめ - 事例から見る個人OSS開発の効能</a> </strong> from <strong><a href="https://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
 <p>去年に専門学校の学生さん向けに講演した資料で、それ以外には未発表のスライドです。デベロッパーのキャリアとしてのエモい話になっているのでデブサミ向けにいいかな、と思って公募したところ落ちた！（←微妙にショックだった）のでずっとお蔵入りで眠っていたのですが、このご時世ですし他で講演できるところもなさそうなので、ここで放出することにしました。</p>
@@ -913,29 +1418,6 @@ async ValueTask Demo()
 <h2>まとめ</h2>
 <p>MagicOnionの事情としては<a href="https://github.com/Cysharp/MagicOnion/pull/161">実装のPR</a>は用意してますが、まだMergeしてません。ただまぁ、スライドに書いたのですが、結構これらを入れるだけで、撮って出しでもいい感じのダッシュボードが作れるんじゃないかと思います。このへんは前職でリリースしたゲームのダッシュボードを作り込んだ経験が生きてるかな、ってのはありますね。いやほんと。</p>
 <p>ともあれというわけで、私はOpenTelemetryにベットするんで、みんなも是非やっていきましょう！ね！流行らせないと未来はない！</p>
-</div>
-<h1><a href="https://neue.cc/2019/06/14_579.html">MagicOnion勉強会を開催しました</a></h1>
-<ul class="date"><li>2019-06-14</li></ul>
-<div class="entry_body"><p><a href="https://connpass.com/event/127369/">【Unity / .NET Core】 MagicOnion勉強会</a>。正確には開催してもらいました、ですが！<a href="https://virtualcast.jp/">バーチャルキャスト</a>さん、ありがとうございました！</p>
-<p>こちらは私のスライド、 <a href="https://www.slideshare.net/neuecc/the-usage-and-patterns-of-magiconion">The Usage and Patterns of MagicOnion</a> になります。</p>
-<iframe src="//www.slideshare.net/slideshow/embed_code/key/N4e3rLCF5EVuI1" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/the-usage-and-patterns-of-magiconion" title="The Usage and Patterns of MagicOnion" target="_blank">The Usage and Patterns of MagicOnion</a> </strong> from <strong><a href="https://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
-<p>実際何に使えるの、というところについて（妄想の）繋ぎ方を紹介したりしました。まぁ、ようするになんでも使えます、ということですね。</p>
-<p><a href="https://github.com/Cysharp/MagicOnion">MagicOnion</a>はGitHub Starも1000超えたので、野良ぽっと出謎ライブラリからは、少し脱却したんじゃないかと思います。まだメジャー級とは言い難いですが。アングラ級？</p>
-<p>私はP2P推すのどうかなーって思ってるわけなんですが、その理由はポジショントーク、じゃなくて自分がサーバー書けるから、ってのは勿論あるんですが、本当にP2Pでいいんすかねー、というのがあり。実際真面目に。リレーサーバー用意するんだったらもう自前でやる領域を秒速で超えちゃうし、P2P→Dedicated Serverだと、機能制限されたサーバーモデル(サーバーがリレーとしてしか機能できなくてロジック積んだりモロモロができない）になっちゃうので微妙に感じたり、結局自前でやるならP2Pでもマッチングどうすんねんであったり、まぁもろもろ色々と。信頼できるクライアント -&gt; サーバーのRPCが一つあるだけで、色々すっきり解決できるんじゃないのかなー、ってのはずっと思っているところで。</p>
-<p>MagicOnionに問題がないとは言わないんですが、特にネイティブDLLは問題の塊なのでPure C#実装に変えたいねえ、そうすればプラットフォームの制限もなくなるしねえ、とかもあったりはあったりはあったりはしますが、まぁそのうちなんとかします:) コード生成に関しては肯定的なんですが（リフレクション拒否した非コードジェネレーションのモデルは、やれることにかなり制約入りますですのです）、現状のヘボジェネレーターはよろしくないのでそれも早急に直しまうす。インフラ系はドキュメントとかの拡充でカバーですかね、知識がいるのは事実なので。</p>
-<h2>発表一覧</h2>
-<p><a href="https://raspberly.hateblo.jp/entry/MagicOnionMeetup">勉強会レポ : 【Unity / .NET Core】 MagicOnion勉強会</a>さんのところにまとまっているのですが、こちらでも改めてリンク集で。</p>
-<ul>
-<li><a href="https://twitter.com/mitchydeath">@mitchydeath</a> - <a href="https://docs.google.com/presentation/d/1pFebnU8Rx7I8zEVJauKVGINUKcA4IznKRq9Wv1ziApk/edit?usp=sharing">MagicOnion ライブコーディング+α</a></li>
-<li><a href="https://twitter.com/kimika127">@kimika127</a> - <a href="https://ykimisaki-my.sharepoint.com/:p:/g/personal/y_kimisaki_kimisaki_jp/EX9J_lb_fj1GptYDZ4tX_ZcBanQZ_FfNDIpQDT4wOrZueQ?rtime=tEjRcrXw1kg">明日から使えるMagicOnion</a></li>
-<li><a href="https://twitter.com/p_a_sta">@p_a_sta</a> - <a href="https://speakerdeck.com/p_a_sta/magiconiondefalsegong-tong-chu-li-falsexie-mifang">MagicOnionでの共通処理の挟み方</a></li>
-<li><a href="https://twitter.com/tanaka_733">@tanaka_733</a> - <a href="https://www.slideshare.net/tanakata/20190604-containerized-magiconion-on-kubernetes-with-observability-with-new-relic">MagicOnionをContainer化してkubernetesで動かしてNew Relicで監視する</a></li>
-<li><a href="https://twitter.com/gsino_">gsino_</a> - <a href="https://www.slideshare.net/GoichiShinohara/using-or-not-using-magic-onion-148852440">MagicOnionを使う場合と使わない場合</a></li>
-<li><a href="https://twitter.com/_y_minami">_y_minami</a> - <a href="https://www.slideshare.net/YutoNishine/ss-148924074">リアルタイムなゲームの開発でコンテナを使ってみたら簡単便利で激安だったのでオススメしたい！</a></li>
-</ul>
-<p>これだけトークが集まって、大感謝です。</p>
-<p>第二回の開催、は（あるとしても）当面先だとは思いますが、実際MagicOnionを使用した開発に入っているプロジェクトは割とないわけではない（？）という感じですので、ご安心を（？）。一応<a href="https://www.slideshare.net/neuecc/grpchttp2-api-streaming">歴史的にはかなりの負荷を捌いている実績もある</a>ので……！<a href="https://cysharp.co.jp/">Cysharp</a>としても、「会社として」力を入れているところがあるので、その辺も安心材料に含めていただければと思っています。最悪、本当に困ったら<a href="https://cysharp.co.jp/contact/">お問い合わせ</a>下されば色々解決のお手伝いもできるかもしれません。</p>
-<p>また、CEDEC 2019では<a href="https://cedec.cesa.or.jp/2019/session/detail/s5c9dede391631">Unity C# × gRPC × サーバーサイドKotlinによる次世代のサーバー/クライアント通信 〜ハイパフォーマンスな通信基盤の開発とMagicOnionによるリアルタイム通信の実現〜</a>と第して、<a href="https://www.applibot.co.jp/">アプリボット</a>さんと共同でセッションを行うので、そちらも是非是非。</p>
 </div>
 <a href="https://neue.cc/2">Prev |</a>
 <a href="https://neue.cc/4">| Next</a>
