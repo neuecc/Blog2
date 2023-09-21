@@ -23,7 +23,104 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2011/11/20_354.html">ReactiveProperty ver 0.3.0.0 - MとVMのバインディングという捉え方</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2011/11/30_355.html">Reactive Extensionsとスレッドのlock</a></h1>
+<ul class="date"><li>2011-11-30</li></ul>
+<div class="entry_body"><p>ぱられるぱられる。もしパラレルにイベントが飛んできたら、どうする？</p>
+<pre><code class="language-csharp">public class TestParallel
+{
+    public event Action&lt;int&gt; Log = _ =&gt; { }; // nullチェック面倒ぃので
+
+    public void Raise()
+    {
+        // デュアルコア以上のマシンで試してね！
+        Parallel.For(0, 10000000, x =&gt;
+        {
+            Log(x);
+        });
+    }
+}
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        var list = new List&lt;int&gt;();
+        var tes = new TestParallel();
+
+        // イベント登録して
+        tes.Log += x =&gt; list.Add(x);
+
+        // 実行
+        tes.Raise();
+    }
+}
+</code></pre>
+<p>これは、十中八九、例外が出ます。list.Addはスレッドセーフじゃないので、まあそうだよね、と。では、Rxを使ってみるとどうなるでしょうか。</p>
+<pre><code class="language-csharp">var list = new List&lt;int&gt;();
+var tes = new TestParallel();
+
+// イベント登録して
+Observable.FromEvent&lt;int&gt;(h =&gt; tes.Log += h, h =&gt; tes.Log -= h)
+    .Subscribe(list.Add);
+
+// 実行
+tes.Raise();
+</code></pre>
+<p>やはり変わりません。例外出ます。FromEventを中継しているだけですから……。さて、しかし一々Addの手前でlockするのは面倒だ、と、そこでSynchronizeメソッドが使えます。</p>
+<pre><code class="language-csharp">Observable.FromEvent&lt;int&gt;(h =&gt; tes.Log += h, h =&gt; tes.Log -= h)
+    .Synchronize()
+    .Subscribe(list.Add);
+
+// ようするにこんな感じになってる
+
+var gate = new Object();
+//....
+lock(gate)
+{
+    OnNext();
+}
+</code></pre>
+<p>これで、list.Addを問題なく動作させられます。Listとか適度にデリケートなので適当に注意してあげましょう。</p>
+<h2>Subjectの場合</h2>
+<p>さて、上のはイベントでしたが、ではSubjectの場合はどうなるでしょう。</p>
+<pre><code class="language-csharp">public class TestParallel
+{
+    Subject&lt;int&gt; logMessenger = new Subject&lt;int&gt;();
+    public IObservable&lt;int&gt; Log { get { return logMessenger.AsObservable(); } }
+
+    public void Raise()
+    {
+        // デュアルコア以上のマシンで試してね！
+        Parallel.For(0, 10000000, x =&gt;
+        {
+            logMessenger.OnNext(x);
+        });
+    }
+}
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        var list = new List&lt;int&gt;();
+        var tes = new TestParallel();
+
+        // イベント登録して
+        tes.Log.Subscribe(list.Add);
+
+        // 実行
+        tes.Raise();
+    }
+}
+</code></pre>
+<p>たまーに例外起こらず処理できることもあるんですが、まあ大体は例外起こるんじゃないかと思います。初期のRxのSubjectは割とガチガチにlockされてたのですが、現在はパフォーマンスが優先されているため挙動が変更され、ゆるゆるです。回避策は同様にSynchronizeを足すことです。</p>
+<pre><code class="language-csharp">tes.Log.Synchronize().Subscribe(list.Add);
+</code></pre>
+<p>これで問題なし。</p>
+<h2>余談</h2>
+<p>手元に残っていた大昔のRxを使って実行してみたら、死ぬほど遅かったり。確実に現在のものはパフォーマンス上がっていますねえ。あと、なんかもう最近面倒でeventだからってEventArgs使わなきゃならないなんて誰が言ったー、とActionばかり使うという手抜きをしてます。だってsenderいらないもん、大抵のばやい。</p>
+</div>
+<h1><a href="https://neue.cc/2011/11/20_354.html">ReactiveProperty ver 0.3.0.0 - MとVMのバインディングという捉え方</a></h1>
 <ul class="date"><li>2011-11-20</li></ul>
 <div class="entry_body"><p>今回の更新よりアイコンが付きました。専用のアイコンがあると、とっても本格的な感じがしますねー。色はRxにあわせて紫-赤紫。デザインは私の好みな幾何学的な感じです。@ocazucoさんに作って頂きました、ありがとうございます！色々ワガママ言ってお手数かけました。</p>
 <p class="noindent">
@@ -1845,13 +1942,6 @@ public static class ObservableExtensions
 <iframe src="https://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as4&m=amazon&f=ifr&ref=ss_til&asins=1430237473" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
 <p>オライリーで出ているProgramming C#の著者と、ReactiveUIの作者(元Microsoft Office Labs、つい最近Githubに転職した模様)の共著です。私も買いますので、うーん、読書会とかやったら来てくれる方います？</p>
 </div>
-<h1><a href="https://neue.cc/2011/08/22_340.html">linq.js LT資料</a></h1>
-<ul class="date"><li>2011-08-22</li></ul>
-<div class="entry_body"><p>LTで簡単に<a href="http://linqjs.codeplex.com/">linq.js</a>の紹介をしましたので、その資料を。といっても、資料は全く使わないでLTの場では完全にデモ一本にしました。ええ、こういう場では、やっぱデモ優先のほうがいいかなー、と。資料は資料で、要素がきっちりまとまって紹介という感じなので、見てもらえればと思います。</p>
-<div style="width:595px" id="__ss_8930196"> <strong style="display:block;margin:12px 0 4px"><a href="http://www.slideshare.net/neuecc/linqjs-linq-to-objects-for-javascript" title="linq.js - Linq to Objects for JavaScript" target="_blank">linq.js - Linq to Objects for JavaScript</a></strong> <iframe src="https://www.slideshare.net/slideshow/embed_code/8930196" width="595" height="497" frameborder="0" marginwidth="0" marginheight="0" scrolling="no"></iframe> <div style="padding:5px 0 12px"> View more <a href="http://www.slideshare.net/" target="_blank">presentations</a> from <a href="http://www.slideshare.net/neuecc" target="_blank">neuecc</a> </div> </div>
-<p>スライドのテンプレは同じの使っていてそろそろ飽きたので、新しいのに変えたいところ。基本的にはテンプレのテーマまんまですが、やっぱ細かいところでスライドマスタの調整は必要なので、面倒くさー、と思ってしまい中々に気力が。むしろデザイン変更は一年に一回でいいかしらいいかしら？</p>
-<p>そういえばどうでもよくないのですが、SlideshareをBlogに埋め込む時はlargeサイズを選んで欲しい。文字潰れてしまうもの、わざわざ小さいサイズで埋め込む必要はどこにもなくて。</p>
-</div>
 <a href="https://neue.cc/14">Prev |</a>
 <a href="https://neue.cc/16">| Next</a>
 </div>
@@ -1875,6 +1965,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2023/09/">2023-09</a>
 <li><a href="https://neue.cc/2023/07/">2023-07</a>
 <li><a href="https://neue.cc/2023/03/">2023-03</a>
 <li><a href="https://neue.cc/2023/01/">2023-01</a>

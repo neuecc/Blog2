@@ -5,7 +5,158 @@
     <link>http://neue.cc/</link>
     <description>C# Technical Blog</description>
     <language>ja</language>
-    <lastBuildDate>Fri, 28 Jul 2023 17:25:21 +0900</lastBuildDate>
+    <lastBuildDate>Thu, 21 Sep 2023 21:29:08 +0900</lastBuildDate>
+    <item>
+      <guid isPermaLink="true">https://neue.cc/2023/09/21_privateproxy.html</guid>
+      <link>https://neue.cc/2023/09/21_privateproxy.html</link>
+      <title>PrivateProxy</title>
+      <description>&lt;h1&gt;&lt;a href="https://neue.cc/2023/09/21_privateproxy.html"&gt;PrivateProxy&lt;/a&gt;&lt;/h1&gt;
+&lt;ul class="date"&gt;&lt;li&gt;2023-09-21&lt;/li&gt;&lt;/ul&gt;
+&lt;div class="entry_body"&gt;&lt;p&gt;PrivateProxyというライブラリを公開しました。つまるところ、privateフィールド/プロパティ/メソッドにアクセスするライブラリなのですが、.NET 8 のUnsafeAccessorという新機能を活用することでNo Reflection、ハイパフォーマンス、AOTセーフになっています。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href="https://github.com/Cysharp/PrivateProxy"&gt;Cysharp/PrivateProxy&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;もちろん .NET 8 でしか動きません！ので、.NET 8が正式リリースされた頃に思い出して使ってみてください。エクストリームな人は今すぐ試しましょう。&lt;/p&gt;
+&lt;p&gt;雰囲気としては、privateメンバーにアクセスしたい型があったとして、&lt;code&gt;[GeneratePrivateProxy(type)]&lt;/code&gt;をつけた型を用意します。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;using PrivateProxy;
+
+public class Sample
+{
+    int _field1;
+    int PrivateAdd(int x, int y) =&amp;gt; x + y;
+}
+
+[GeneratePrivateProxy(typeof(Sample))]
+public partial struct SampleProxy;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;すると、いい感じにアクセスできるようになります。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;// You can access like this.
+var sample = new SampleProxy();
+sample.AsPrivateProxy()._field1 = 10;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;いいところとしては、 Source Generatorベースの生成なので、型がついていて入力補完も効くし、変数名を変更したらコンパイルエラーで検出可能です。&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/269376472-f6dd22e1-e82e-4acc-ba6e-8895c8c8734b.png" alt="" /&gt;&lt;/p&gt;
+&lt;p&gt;ここまではSource Generatorベースで作れば、今まででもやれないことはなかったのですが、UnsafeAccessorのいいところとして、objectが一切出てこないで元のメソッドそのままの型がそのまま使えることです。生成されたコードを見ると、こうなっています。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;// Source Generator generate this type
+partial struct SampleProxy(Sample target)
+{
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = &amp;quot;_field1&amp;quot;)]
+    static extern ref int ___field1__(Sample target);
+
+    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = &amp;quot;PrivateAdd&amp;quot;)]
+    static extern int __PrivateAdd__(Sample target, int x, int y);
+
+    public ref int _field1 =&amp;gt; ref ___field1__(target);
+    public int PrivateAdd(int x, int y) =&amp;gt; __PrivateAdd__(target, x, y);
+}
+
+public static class SamplePrivateProxyExtensions
+{
+    public static SampleProxy AsPrivateProxy(this Sample target)
+    {
+        return new SampleProxy(target);
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;これによって &lt;code&gt;ref&lt;/code&gt; や &lt;code&gt;readonly&lt;/code&gt; などの言語機能をそのまま反映できたり、mutableなstructの対応が自然にできたり、そして何よりパフォーマンスの低下も一切ありません。&lt;/p&gt;
+&lt;p&gt;使い道は、主にユニットテスト用になるとは思いますので、なのでパフォーマンスはそこまで重要ではないといえばないのですが、性能的にはアプリケーションの実行時に使っても問題ないものとなっています。&lt;/p&gt;
+&lt;p&gt;私は昔&lt;a href="https://github.com/neuecc/ChainingAssertion"&gt;Chaining Assertion&lt;/a&gt;というユニットテスト用のライブラリを作っていたのですが、現在は&lt;a href="https://fluentassertions.com/"&gt;Fluent Assertions&lt;/a&gt;という別のライブラリを使っています。ほとんどの機能は概ねなんとかなっているのですが、&lt;code&gt;AsDynamic()&lt;/code&gt;を呼ぶと、移行はprivateフィールドやメソッドにアクセスし放題という機能は結構便利で、そしてそれがFluent Assertionsにないのは若干不便と思ってたんですね。今回、やっとそれの進化系を作れたのでメデタシメデタシです。&lt;/p&gt;
+&lt;h2&gt;C# 12&lt;/h2&gt;
+&lt;p&gt;ところで、冒頭のSampleProxyの書き方、地味にこれはC# 12の記法を使っています。どこだかわかりますか？&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;[GeneratePrivateProxy(typeof(Sample))]
+public partial struct SampleProxy;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;&lt;code&gt;SampleProxy;&lt;/code&gt; の部分で、空のクラスを作る際に &lt;code&gt;{ }&lt;/code&gt; じゃなくて &lt;code&gt;;&lt;/code&gt; だけで済ませられるようになりました。これは地味ですがかなりいい機能で、というのもSource Generatorだと空クラスに割り当てることが多かったんですよね。そして、たった2文字が1文字に変わっただけ、ではあるのですが、 &lt;code&gt;{ }&lt;/code&gt; だとコードフォーマットに影響があります。改行して3行で表現するのか、後ろにつけるのか。そうした判断のブレが &lt;code&gt;;&lt;/code&gt; だとなくなります。だから2文字が1文字に変わっただけ、以上のインパクトがある、良い機能追加だと思います。&lt;/p&gt;
+&lt;h2&gt;ref field&lt;/h2&gt;
+&lt;p&gt;PrivateProxyはstaticメソッドにも対応していますし、そしてmutable structにも対応しています。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;using PrivateProxy;
+
+public struct MutableStructSample
+{
+    int _counter;
+    void Increment() =&amp;gt; _counter++;
+
+    // static and ref sample
+    static ref int GetInstanceCounter(ref MutableStructSample sample) =&amp;gt; ref sample._counter;
+}
+
+// use ref partial struct
+[GeneratePrivateProxy(typeof(MutableStructSample))]
+public ref partial struct MutableStructSampleProxy;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;var sample = new MutableStructSample();
+var proxy = sample.AsPrivateProxy();
+proxy.Increment();
+proxy.Increment();
+proxy.Increment();
+
+// call private static method.
+ref var counter = ref MutableStructSampleProxy.GetInstanceCounter(ref sample);
+
+Console.WriteLine(counter); // 3
+counter = 9999;
+Console.WriteLine(proxy._counter); // 9999
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;mutable structの対応って結構難しい話で、というのもフィールドにstructを保持するとコピーが渡されることになるので、普通に書いていると変更が元のstructに反映されないんですね。この問題をPrivateProxyではC# 11 ref fieldで解決しました。&lt;/p&gt;
+&lt;p&gt;MutableStructSampleProxyはSource Generatorによって以下のようなコードが生成されます。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;ref partial struct MutableStructSampleProxy
+{
+    ref MutableStructSample target;
+
+    public MutableStructSampleProxy(ref MutableStructSample target)
+    {
+        this.target = ref target;
+    }
+
+    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = &amp;quot;Increment&amp;quot;)]
+    static extern void __Increment__(ref MutableStructSample target);
+    
+    public void Increment() =&amp;gt; __Increment__(ref this.target);
+}
+
+public static class MutableStructSamplePrivateProxyExtensions
+{
+    public static MutableStructSampleProxy AsPrivateProxy(this ref MutableStructSample target)
+    {
+        return new MutableStructSampleProxy(ref target);
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;AsPrivateProxy(これはthis refですが、拡張メソッドの場合、予備側はrefを書かなくていいので自然に使えます)で渡されたstructは、そのままずっとrefのまま保持されています。これにより、メソッド呼び出しでstructの状態に変更があった場合も問題なく変更が共有されています。&lt;/p&gt;
+&lt;h2&gt;privateメソッドの単体テスト&lt;/h2&gt;
+&lt;p&gt;&lt;a href="https://t-wada.hatenablog.jp/entry/should-we-test-private-methods"&gt;プライベートメソッドのテストは書かない&lt;/a&gt;みたいな流儀も世の中にはありますが、私は何言ってんの？と思ってます。パブリックメソッドのテストでprivateメソッドの確認が内包されるから不要というなら、はぁー？だったら全部E2Eテストでいいんじゃないですかー？真の振る舞いがテストされますよー？&lt;/p&gt;
+&lt;p&gt;もちろんそれは非現実的で、E2Eでパブリックメソッドのロジックを全て通過させるのは手間とコストがかかりすぎる。というのと同じ話で、privateメソッドのエッジケースを全てチェックする時に、public経由だとやりにくいことは往々にある。場合によってはコード通すためにモックを仕込まなければならないかもしれない。そこまでいくとアホらしいですよね、privateメソッドを直接テストすればすむだけの話なのに？メソッドは小さければ小さいほど良いし、テストもしやすい。そしてprivateを内包したpublicよりもprivateそのもののほうが小さく、テストしやすい。&lt;/p&gt;
+&lt;p&gt;ようするにコスト面を考えて境界をどこに置くかというだけの話で。そして、privateメソッドのテストそのものは、C#の場合reflection呼び出しだと、変更コストがかかるなど、コスパは悪い部類に入ってしまう。でもそれはただの言語からの制約であって、だからプライベートメソッドのテストは不要みたいなしょーもない理屈をこねて絶対視するほどのことでもない。リフレクション使うとコスパ感が合わないから原則publicで済ませること、ぐらいだったらいいけど、変な教義立てるのはおかしいでしょ。&lt;/p&gt;
+&lt;p&gt;チェックしたいがためにprivateであるべきものをinternalにする（たまによくやる、internalならInternalsVisibleToをテストプロジェクトに指定することで、ユニットテストプロジェクトで参照できるようになる）こともありますが、あまりお行儀の良いことではない。そもそもinternalなので同一アセンブリ内では不要に可視レベル上がっちゃってるし。&lt;/p&gt;
+&lt;p&gt;と、いうわけで、PrivateProxyは比較的低コストでprivateメソッドをテスト対象にすることができるので、全然使っちゃっていいし、テストも書いちゃって良い、わけです。&lt;/p&gt;
+&lt;h2&gt;UnsafeAccessor for InternalCall&lt;/h2&gt;
+&lt;p&gt;UnsafeAccessor の使い道として、corelibの InternalCall を強引に呼べることはかなりいいこと（？）だと思ってます。例えば string の生成には大元に &lt;a href="https://source.dot.net/#System.Private.CoreLib/src/System/String.CoreCLR.cs,12"&gt;FastAllocateString&lt;/a&gt; というのがあって、通常ユーザーはこれを呼ぶことはできないのですが&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;[UnsafeAccessor(UnsafeAccessorKind.StaticMethod, Name = &amp;quot;FastAllocateString&amp;quot;)]
+static extern string FastAllocateString(string _, int length);
+
+var rawString = FastAllocateString(null!, 10);
+var mutableSpan = MemoryMarshal.CreateSpan(ref MemoryMarshal.GetReference(rawString.AsSpan()), rawString.Length);
+
+&amp;quot;abcde&amp;quot;.CopyTo(mutableSpan);
+&amp;quot;fghij&amp;quot;.CopyTo(mutableSpan.Slice(5));
+
+Console.WriteLine(rawString); // abcdefghij
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;といったようにUnsafeAccessorを通せばやりたい放題できます。&lt;/p&gt;
+&lt;p&gt;Stringに関しては、やりたい放題させないために、&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.string.create"&gt;String.Create&lt;/a&gt;というメソッドが用意されていて、Actionのコールバックで変更して、不変のStringを返すというものが用意されてはいるのですが、ActionだとTStateに&lt;code&gt;Span&amp;lt;T&amp;gt;&lt;/code&gt;を渡せないとか、使えないケースがそれなりにあります、というか使いたいシチュエーションに限って使えないことが多い……。&lt;/p&gt;
+&lt;p&gt;なお、こういうFastAllocateStringを呼んでStringに変更をかけるというのは、&lt;a href="https://github.com/dotnet/runtime/issues/36989"&gt;dotnet/runtime#36989 Make string.FastAllocateString public&lt;/a&gt;で見事に却下されています。つまり、やるな、ということです。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;It is never safe or supported to mutate the contents of a returned string instance.
+If you mutate a string instance within your own library or application, you are entering unsupported territory.
+A future framework update could break you. Or - more likely - you'll encounter memory corruption that will be very painful for you or your customers to diagnose.&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;お怒りはご尤もです。しかしString.CreateでAction渡す口あるんだからそれでいいだろーというのはお粗末すぎだと思うんですよねー、どうせやってること一緒なんだから弄るの許可してよ、というのもそれはそれで理解してもらいたいです（私は弄りたいほうの人間なので！）。というわけで、自己責任で、やっていきましょう、つまりやっていくということです……！&lt;/p&gt;
+&lt;h2&gt;まとめ&lt;/h2&gt;
+&lt;p&gt;.NET 8でしか動きません！11月に .NET 8 がリリースされるので、その時まで忘れないでください！&lt;/p&gt;
+&lt;/div&gt;</description>
+      <pubDate>Thu, 21 Sep 2023 00:00:00 +0900</pubDate>
+      <a10:updated>2023-09-21T00:00:00+09:00</a10:updated>
+    </item>
     <item>
       <guid isPermaLink="true">https://neue.cc/2023/07/28_yetanotherhttphandler.html</guid>
       <link>https://neue.cc/2023/07/28_yetanotherhttphandler.html</link>
@@ -1487,25 +1638,6 @@ public interface IGeneratorContext
 &lt;/div&gt;</description>
       <pubDate>Fri, 16 Dec 2022 00:00:00 +0900</pubDate>
       <a10:updated>2022-12-16T00:00:00+09:00</a10:updated>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://neue.cc/2022/12/08_MemoryPackSessionInDotNetConfRecapTokyo.html</guid>
-      <link>https://neue.cc/2022/12/08_MemoryPackSessionInDotNetConfRecapTokyo.html</link>
-      <title>C# 11 による世界最速バイナリシリアライザー「MemoryPack」の作り方</title>
-      <description>&lt;h1&gt;&lt;a href="https://neue.cc/2022/12/08_MemoryPackSessionInDotNetConfRecapTokyo.html"&gt;C# 11 による世界最速バイナリシリアライザー「MemoryPack」の作り方&lt;/a&gt;&lt;/h1&gt;
-&lt;ul class="date"&gt;&lt;li&gt;2022-12-08&lt;/li&gt;&lt;/ul&gt;
-&lt;div class="entry_body"&gt;&lt;p&gt;と題して、.NET Conf 2022 Recap Event Tokyo というイベントで話してきました。&lt;/p&gt;
-&lt;iframe class="speakerdeck-iframe" frameborder="0" src="https://speakerdeck.com/player/7b71dc84ae4a4241aa241340fa890f65" title="C#11 による世界最速バイナリシリアライザー「MemoryPack」の作り方" allowfullscreen="true" mozallowfullscreen="true" webkitallowfullscreen="true" style="border: 0px; background: padding-box padding-box rgba(0, 0, 0, 0.1); margin: 0px; padding: 0px; border-radius: 6px; box-shadow: rgba(0, 0, 0, 0.2) 0px 5px 40px; width: 840px; height: 471px;" data-ratio="1.78343949044586"&gt;&lt;/iframe&gt;
-&lt;p&gt;今回は久々の（数年ぶりの！）オフライン登壇イベントということで、なんだか新鮮な気分で、そして実際、オンライン登壇よりも目の前にオーディエンスがいたほうがいいなぁという思いを新たに。事前レコーディングやオンライン登壇だと、どうしてもライブ感のない、冷めた感じになっちゃうな、と。セッション単体の完成度で言ったら何度も取り直して完璧に仕上げた事前録画のほうがいい、かもしれませんが、でもそういうもんじゃあないかなあ、と。スタジオアルバムとライブアルバムみたいなもんですね。そしてスタジオアルバムに相当するのは念入りに書かれたブログ記事とかだったりするので、事前録画のセッションって、なんか中途半端に感じてしまったりはしますね。スタジオライブみたいな。あれってなんかいまいちじゃないですか、そういうことで。&lt;/p&gt;
-&lt;p&gt;&lt;a href="https://github.com/Cysharp/MemoryPack"&gt;MemoryPack&lt;/a&gt;は先程 v1.9.0 をリリースしました！日刊MemoryPackか？というぐらいに更新ラッシュをしていたのですが、バグというかは機能追加をめちゃくちゃやってました。性能面で究極のシリアライザーを目指した、というのはセッションスライドのほうにも書かせてもらっていますが、機能面でも究極のシリアライザーを目指しています、ということで、めちゃくちゃやれる幅が広がってます。GitHub Star数も既に1200と、めちゃくちゃ凄い勢いで伸びているので（過去最高の勢いです）、出す前は独自フォーマットのシリアライザーだと、どのぐらいまで使ってもらえるものだろうか？と不安に思ったところもあったのですが、割と自信もって押していける感じです。実際、性能も機能も凄い。&lt;/p&gt;
-&lt;h2&gt;Formatterという名前付けについて&lt;/h2&gt;
-&lt;p&gt;特に誰にも聞かれていないのですが説明しておきたいのが &lt;code&gt;MemoryPackFormatter&lt;/code&gt; という名前を。Formatterって正直馴染みがないし(&lt;code&gt;BinaryFormatter&lt;/code&gt;かよ？)、 &lt;code&gt;IMemoryPackSerializer&lt;/code&gt; にしようかな、と当初は考えていたのですが最終的には(MessagePack for C#と同じの)Formatterに落ち着きました。理由は、エントリーポイントである &lt;code&gt;MemoryPackSerializer&lt;/code&gt; と紛らわしいんですよね。 &lt;code&gt;MemoryPackFormatter&lt;/code&gt;は自作でもしない限りは表に出て来ないし、上級向けのオプションなので、すっきりと名前で区別がついたほうが良いかな、という感じでつけてます。System.Text.Jsonの場合は &lt;code&gt;JsonSerializer&lt;/code&gt; と &lt;code&gt;JsonConverter&lt;/code&gt;という分類で、同じような感じです。&lt;/p&gt;
-&lt;p&gt;候補になる名前としては&lt;code&gt;Serializer&lt;/code&gt;か&lt;code&gt;Formatter&lt;/code&gt;か&lt;code&gt;Converter&lt;/code&gt;か&lt;code&gt;Encoder&lt;/code&gt;か&lt;code&gt;Codec&lt;/code&gt;という感じでしょうか。単純で当たり前のチョイスのようでいて、ユーザーがなるべく悩まず直感的に理解できるように、しっかり考えて悩みながらつけてるんですよということで。それで出来上がった名前が、単純で当たり前のように思ってもらえれば正解なわけです。&lt;/p&gt;
-&lt;h2&gt;イベント2&lt;/h2&gt;
-&lt;p&gt;久々のオンフライン登壇！だったのですが、こういうのは始まると続くもので、今月は12/14に &lt;a href="https://bitflyer.connpass.com/event/266685/"&gt;bitFlyer.C#/Azure 01&lt;/a&gt;というイベントに、Azureじゃないほうの枠として登壇する予定です。「AlterNatsにみる .NET 7世代のハイパフォーマンスSocketプログラミング技法」という内容ですが&lt;a href="https://github.com/Cysharp/AlterNats"&gt;AlterNats&lt;/a&gt;というよりかは、最新のC#でハイパフォーマンスなSocketプログラミングをどうすればいいか、ということに重点を置いた内容になってますので、C#の最適化に興味ある方は是非是非来てください。まだ席空いてますので……！&lt;/p&gt;
-&lt;/div&gt;</description>
-      <pubDate>Thu, 08 Dec 2022 00:00:00 +0900</pubDate>
-      <a10:updated>2022-12-08T00:00:00+09:00</a10:updated>
     </item>
   </channel>
 </rss>

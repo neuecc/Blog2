@@ -23,7 +23,148 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2010/03/26_248.html">RxJS用IntelliSense生成プログラム(と、VisualStudioのJavaScript用vsdocの書き方)</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2010/04/05_249.html">C#で原始的にSQLを扱うお話</a></h1>
+<ul class="date"><li>2010-04-05</li></ul>
+<div class="entry_body"><p>世の中はLinq to SQLだのLinq to Entitiesだのを羨ましいなあ、と指を加えて眺めている昨今ですがこんばんわ。Linq好きーな私ですがこのサイトではObjectsとXmlしか扱っていないのは、単純に私が触った事ないから、です。あうあう。そんな私ですが、SQLを(大変嫌々ながら)触らなければならなかったりする場合もないわけじゃないのですが、アレですね、思うのはパラメータ。あれにadd。add。するのが大変美しくない。もっと格好良く、一発で決めようぜ。と思って色々悩んだんですが、どうにも上手く行きそうにない。やけくそになってビルダー＋コレクション初期化子を考えてみました。</p>
+<pre><code class="language-csharp">var cmd = new SqlCommand();
+cmd.CommandText = @&quot;select * from Foo where Bar &gt; @Hoge and Tako = @Ika&quot;;
+cmd.Parameters.AddRange(new SqlParameterBuilder
+{
+    {&quot;@Hoge&quot;, &quot;2&quot;}
+    {&quot;@Ika&quot;, &quot;たこやき&quot;}
+}.ToArray());
+</code></pre>
+<p>分かりづらくなってるだけで、普通にadd, addでいいですね。ダメだこりゃ。ボツ。ちなみに実装は超単純。</p>
+<pre><code class="language-csharp">public class SqlParameterBuilder : IEnumerable&lt;SqlParameter&gt;
+{
+    List&lt;SqlParameter&gt; parameters = new List&lt;SqlParameter&gt;();
+
+    public SqlParameterBuilder Add(string parameterName, object value)
+    {
+        parameters.Add(new SqlParameter(parameterName, value));
+        return this;
+    }
+    
+    public IEnumerator&lt;SqlParameter&gt; GetEnumerator()
+    {
+        return parameters.GetEnumerator();
+    }
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+    {
+        return GetEnumerator();
+    }
+}
+</code></pre>
+<p>コレクション初期化子の復習をしますと、IEnumerableかつAddメソッドが実装されているクラスに対してコレクション初期化子が使えます。Addは名前で決め打ちされています。メソッド名はAddじゃなくてAppendがいいなー、とか思ってもダメです。コレクション初期化子を使いたい場合はAddです。何でこんなヘンテコなことになってるのか、の理由は<a href="http://d.hatena.ne.jp/siokoshou/20080208#p1" title="2008-02-08 - 当面C#と.NETな記録">2008-02-08 - 当面C#と.NETな記録</a>の記事を参照に。Addが複数引数を取る場合は{{},{}}って書けますが、IntelliSenseの補助がないので割と不便だったりしますねえ。</p>
+<h2>関数渡し</h2>
+<p>whileでEndまで読んで、ってのは嫌いです。Stream系のは全部yield returnでライン毎に返す拡張メソッドを定義しますね、私は。というわけで、SQLのDataReaderもStreamと同じ図式なので、同じ感じにしましょー。</p>
+<pre><code class="language-csharp">var command = new SqlCommand();
+command.CommandText = @&quot;select hogehogehoge&quot;;
+var result = command.EnumerateAll(dr =&gt; new
+{
+    AA = dr.GetString(0),
+    BB = dr.GetInt32(1)
+});
+</code></pre>
+<p>いい感じに見えないでしょうかどうでしょうか？といっても、これは<a href="http://neue.cc/2009/10/08_208.html" title="neue cc - return IEnumerableとyield return">以前書いたもの</a>の使い回しだったりしますが、その以前書いたコードとやらは若干反省してます。以下、書き直したコード。</p>
+<pre><code class="language-csharp">public static IEnumerable&lt;T&gt; EnumerateAll&lt;T&gt;(this IDbCommand command, Func&lt;IDataReader, T&gt; selector)
+{
+    using (var reader = command.ExecuteReader())
+    {
+        while (reader.Read())
+        {
+            yield return selector(reader);
+        }    
+    }
+}
+
+public static T[] ReadAll&lt;T&gt;(this IDbCommand command, Func&lt;IDataReader, T&gt; selector)
+{
+    return command.EnumerateAll(selector).ToArray();
+}
+</code></pre>
+<p>そう、以前は無理やりEnumerable.Repeatで無限リピートさせておりましたが、あのテクニックはyield returnが使えない(別関数に分けない場合)時のためのテクニックであって、yield returnが使えるなら素直にwhileループを回して書いた方がマシなのです。どうにも、まずLinqで書いたらどうなるのか、というのが頭に最初に浮かんでしまってフツーの書き方を忘れてしまいがちなのですが、大事なのはシンプルに表現すること、です。何故Linqを使うのか、そのほうがシンプルに書けるから。whileのほうがシンプルになるなら、そちらを選ぼう。弁解のために言っておくと、あれはreturn IEnumerableとyield returnの挙動の違いの例のために書いたわけですががが。あと、yieldが言語によってサポートされてるからってのもありますね。C#1.0のように自前でEnumerator用意して書かなきゃならないのならば、Linqで生成したほうが良いわけで。</p>
+<h2>マッピング</h2>
+<p>GetInt32(1)とか列を意識してオブジェクトに詰めるのがダルい。定形作業だし列がズれたら修正面倒だし殺したい。こんなの人間のやる作業じゃない。つーわけで、入れ物に詰めるのぐらいは自動化しよう。ああ、Linq to Sql使いたいなあ。</p>
+<pre><code class="language-csharp">// このクラスにデータベースから値を入れるとして
+class MyClass
+{
+    public int IntProp { get; set; }
+    public string StrProp { get; set; }
+}
+
+static void Main(string[] args)
+{
+    // プロパティ名と対比させて自動詰め込み
+    var command = new SqlCommand();
+    command.CommandText = @&quot;
+            select
+                hoge as IntProp,
+                huga as StrProp
+            from NantokaTable&quot;;
+
+    var result = command.Map&lt;MyClass&gt;();
+}
+
+public static T[] Map&lt;T&gt;(this IDbCommand command) where T : new()
+{
+    Dictionary&lt;string, PropertyInfo&gt; properties = typeof(T)
+        .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+        .ToDictionary(pi =&gt; pi.Name);
+
+    return command.ReadAll(dr =&gt;
+    {
+        var result = new T();
+        for (int i = 0; i &lt; dr.FieldCount; i++)
+        {
+            properties[dr.GetName(i)].SetValue(result, dr[i], null);
+        }
+        return result;
+    });
+}
+</code></pre>
+<p>列名とプロパティ名を摺り合わせているだけで、非常に単純なものです。気になるreaderのFieldCountとかGetNameの処理効率ですが、実行した時点で一行のキャッシュが生成されて、そこから取ってくる感じになるので重たくはないっぽいです。たぶん。ちゃんと追っかけたわけじゃないので全然断言は出来ませんが。あとは辞書生成のコストですかね。Type毎で固定なら毎回辞書作らなくてもキャッシュ出来るじゃん、という。静的コンストラクタを使えば、実現できます。</p>
+<pre><code class="language-csharp">public static class Extensions
+{
+    public static T[] Map&lt;T&gt;(this IDbCommand command) where T : new()
+    {
+        return SqlMapper&lt;T&gt;.Map(command);
+    }
+
+    private static class SqlMapper&lt;T&gt; where T : new()
+    {
+        static readonly Dictionary&lt;string, PropertyInfo&gt; properties;
+
+        static SqlMapper()
+        {
+            properties = typeof(T)
+                .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                .ToDictionary(pi =&gt; pi.Name);
+        }
+
+        public static T[] Map(IDbCommand command)
+        {
+            return command.ReadAll(dr =&gt;
+            {
+                var result = new T();
+                for (int i = 0; i &lt; dr.FieldCount; i++)
+                {
+                    if (dr.IsDBNull(i)) continue;
+                    properties[dr.GetName(i)].SetValue(result, dr[i], null);
+                }
+                return result;
+            });
+        }
+    }
+}
+</code></pre>
+<p>割とスマート。ジェネリック静的クラスには直接拡張メソッドは定義出来ないので、入れ子のprivateな静的クラスを挟んでいます。 と、こんな感じにSQLを触っていると非常に原始人っぽい。<a href="http://neue.cc/2010/03/26_248.html" title="neue cc - RxJS用IntelliSense生成プログラム(と、VisualStudioのJavaScript用vsdocの書き方)">先日のテンプレート置換</a>と同じく、コピペに優しい小粒でピリッと役立ち、なメソッドの作成を志してる感じです。まあ実際は自分だけが使うUtilなんて許されるわけもなく普通に地味にドロドロと（ああ、胃が……）。</p>
+<p>そういえばであまり関係ないのですが、SQL文ってどこに置くべきなんでしょうかね。外部ファイルにしておいて読み込み、などというのは個人的にはどうかなー、と思っていて。どうせ呼び出し部分と1:1になるなら、↑のようにハードコードでも別によくないかしらん、そのほうがソースコード上の距離が近いこともあって分かりやすくなる。とか、どうなんでしょうかねえ。再コンパイルが不要になるといって、どうせSQLに変更入ったらコードのほうも変更入れないとマズい可能性が高そう、とか。</p>
+<h2>追記</h2>
+<p>マッパーはSystem.Data.Linqにある<a href="http://msdn.microsoft.com/ja-jp/library/bb361109(v=VS.90).aspx">DataContext.ExecuteQuery(TResult) メソッド</a> そのものですね、たはは、シラナカッタヨ。↑のほうが超単純実装＋キャッシュなので速いとは思いますが、どうでもいい差ですな。全く同じものだと悔しいので、outer joinとかでNullが混じる場合もすんなり使えるように、IsDBNullを足してスキップするようにしました。まあSQLでcoalesceで明示的にやったほうが良いとは思いますが。EnumerateAllのほうは普通に使えると思うのでぜひぜひ。</p>
+</div>
+<h1><a href="https://neue.cc/2010/03/26_248.html">RxJS用IntelliSense生成プログラム(と、VisualStudioのJavaScript用vsdocの書き方)</a></h1>
 <ul class="date"><li>2010-03-26</li></ul>
 <div class="entry_body"><p class="noindent">
 	<img src="http://neue.cc/wp-content/uploads/image/rx_intellisense.jpg">
@@ -849,69 +990,6 @@ Console.WriteLine(stringTime); // 0.64sec
 </code></pre>
 <p>速度はほとんど変わりません。StringBuilderとString.Concatでは処理の中身は結構違いますが、速度変わらないのならどっちでもいいよね。なら、記述しやすいほうを選ぶのが良いでしょう。妄信的にパフォーマンスのためにStringBuilder！とか思っている人は、少し考え直してみてください。そんなの当たり前だろ常識的に考えて、と思っていた時期が私にもありました……。世の中は存外StringBuilder神話に溢れているかもですよ？ いやほんと。あとC#なら逐語的リテラル文字列もお忘れなく。</p>
 </div>
-<h1><a href="https://neue.cc/2010/01/04_233.html">Haskell用IDE 「Leksah」の紹介と導入方法</a></h1>
-<ul class="date"><li>2010-01-04</li></ul>
-<div class="entry_body"><p>本格的にプログラミングを学び始めたのがC# with Visual Studioな私としては、充実した、とまではいかなくてもそれなりに動くIDEがないとシンドい。新しい言語を学ぶときは、まずIDE探しから始めるのだよ、はっはっは。と、全く自慢にならないゆとりっぷりを晒してしまうわけですが、事実辛いものは辛い。そしてHaskell。日本語による書籍も4冊出ていて、学習しやすくなったものの実行環境導入の敷居の高さは変わらず。GHCi(インタプリタ)でコマンド打ち込みながらやれって？ いやいや、ムリムリ。</p>
-<p>初心者にこそ強力なIDEが必要なのだよー、入力補完や背後でのコンパイルによるエラー報告、色分けにオートインデント、デバッガ。これらが素早いトライアンドエラーを可能にし、学習速度を高める。まずはメモ帳で十分、なんていうのは誤り。学習するなら最初からIDE。ということは<a href="http://neue.cc/2009/06/06_164.html" title="以前にも語っててVisual Studioを猛プッシュしたりしてました">neue cc - 最もタメになる「初心者用言語」はVisualStudio(言語?)</a>が、それをHaskellにも持ってこようとしています。大体がしてEmacsってIDEっしょ、もはや。さて、しかしWindowsでEmacsってちょっと……。</p>
-<h2>Leksah</h2>
-<p>そこで、<a href="http://leksah.org/index.html">Leksah</a>の登場です。HaskellによるHaskellのための開発環境。Leksah(逆から読むと……)はHaskell自身で書かれたHaskell用IDEで、WindowsでもMac OSでも動作します。バージョンは0.6と、まだまだ不安定気味なところも見え隠れしますが(不意に落ちても泣かない)十二分に使えます。インストール・設定も簡単なので、非常にお薦め。Windows用のIDEだと、他にEclipseプラグインのEclipseFPやVisual Studio 2005拡張のVisual Haskellがありますが、試したところどちらもイマイチでした。今のところLeksahしか選択択はないように思います。</p>
-<h2>Haskell Platform</h2>
-<p>IDEを入れる前にコンパイラを入れましょう。ということはGHCですね？と思ってしまいますがちょっと違います。<a href="http://hackage.haskell.org/platform/">Haskell Platform</a>からセットアッププログラムをダウンロードしましょう。オールインワンで全てやってくれます。インストールが終了したら、<a href="http://leksah.org/index.html">Leksah</a>のインストールと実行。初回実行時には何やらディレクトリ位置を指定してください的なダイアログが立ち上がりますが、それは無視しても構わなかった、はず、です。</p>
-<h2>Hello, Worldまで</h2>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/leksah_1.jpg">
-</p>
-<p>IDEのお約束として、最初の設定は少し面倒くさいです。が、それさえ乗り越えれば簡単生活が待っているので、ちゃちゃっと設定を済ませましょう。まずメニューからPackage-&gt;New Packageを選択して新しいPackageの作成。これはVisualStudioで言うところのソリューションですかね。するとPackageのコンフィグ画面が立ち上がっているので、まずはPackage IdentifierのNameとVersionを適当に記載します。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/leksah_2.jpg">
-</p>
-<p>次にDependenciesを選択して、Selectからbaseを選び、Addボタンを押す。これはVisualStudioで言うところの参照設定です。System.dllを読み込むように、baseを読み込むよう指定したわけです。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/leksah_3.jpg">
-</p>
-<p>次にExecutablesを選択して、Executable NameとFile with main functionにMain.hsと記述してAddボタン。これはVisualStudioで言うところのスタートアッププロジェクトですね。今はまだMain.hsはないので、後で作ります。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/leksah_4.jpg">
-</p>
-<p>最後に1 Buildでファイルを置く予定のディレクトリを指定したら設定は完了。Saveボタンを押してからClose。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/leksah_5.jpg">
-</p>
-<p>次に右ウィンドウModulesタブを開き、ラジオボタンLocalを選択して右クリックからAdd Module。入力欄にMainと入力すればMain.hsが作成されます。コメントが色々書かれたものが読み込まれているので、とりあえず全部削除。一行目にmodule Main where。あとは好きなように書いて、最後にmain = do以下に実行文を書けば出来上がり。</p>
-<pre><code class="language-haskell">module Main where -- 名前空間みたいなもの
-
-double x = x * 2 -- とりあえず関数など作ってみる
-
--- mainは必須。ようはstatic void Mainですな
-main = do
-    print &quot;Hello World&quot;
-    print $ double 100 -- $でカッコを省く print(double 100)と同じ
-</code></pre>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/leksah_6.jpg">
-</p>
-<p>Ctrl+Bでビルド。Ctrl+Alt+Rで実行結果が見れます。
-あとは、好きなように書き換えて実行、実行、実行。インタプリタで頑張るよりも学習効率良いですよ、きっと。なお、デバッグはデバッグのアイコンを押してデバッグモードに入って、Show Debuggerでデバッガウィンドウを出して、あとは適当に弄る(よくわかってない)。</p>
-<h2>Leksahの特徴</h2>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/leksah_7.jpg">
-</p>
-<p>インパクトがあるのが、エディタ上で文字が記号に置換されること。上の画像は一切手を加えていないエディタのスクリーンショットなのですよ。非常に異国情緒に溢れていて、いいですね。λがλですよ。<a href="http://iiyu.asablo.jp/blog/2009/12/01/4731394">ホットコーナーの舞台裏でのプログラミングHaskellのレビュー</a>でも記号について触れられていますが、本の通りの綺麗な記号でディスプレイに表示し、編集出来ます。</p>
-<p>ただし、使用するフォントが制限されます。プログラミング用フォントでは、私はConsolasがお気に入りなのですが、Consolasでは一部の記号が化けてしまうため、今は<a href="http://sourceforge.net/projects/dejavu/">DejaVu Sans Mono</a>を使っています。ただ、これだと今度は日本語が化けてしまったり。</p>
-<p>変換される記号はインストールディレクトリの\data\Default.candyで確認出来ます。スペースも補完入力されるのが気にくわないぜ、と思ったら書き換えてやりましょう。また、Default以外にも、.candyファイルを作成してエディタのコンフィグで読み込むcandyファイルを指定すれば、好きな文字を好きなルールで変換可能です。ショートカットキーも同様にHoge.keymapを作成してエディタで直に編集して、コンフィグで指定します。ちなみに私はRunがCtrl+Alt+Rなのは指が厳しいので、とりあえずF5にしておきました。</p>
-<p>なお、もし通常表記したい場合は、Config-&gt;To Candyを選択することで簡単にオンオフできます。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/leksah_8.jpg">
-</p>
-<p>何か書くと常にバックグラウンドでコンパイラが動いて、エラーを表示してくれます。静的言語の強み！勿論、ダブルクリックで該当行にジャンプできます。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/leksah_9.jpg">
-</p>
-<p>入力補完も効きます。また、ModulesのPackageを見れば、標準ライブラリ一覧と、その型を見ることが出来ます。素早く関数を知る・試すことができるのは学習速度に影響しますからね。非常に便利。これでDescriptionも表示されれば完璧なのですが、今は型のみ。</p>
-<h2>本</h2>
-<iframe src="https://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=4274067815" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
-<p>という感じに、プログラミングHaskellをぽてぽてと読んでいます。Haskell自体が刺激的な言語ということもあって、非常に楽しい。良い本です。章末問題の解答は<a href="http://www.cs.nott.ac.uk/%7Egmh/book.html" title="Programming in Haskell">公式サイト</a>でpdfが配られています。そして、最近では<a href="http://neue.cc/category/programming/rxframework" title="neue cc - Rx Framework">Reactive Extensions</a>ですっかりお馴染みに動画を見ることが多いErik Meijerによる各章解説動画もありますね。おお、なんという致せり尽くせり。素晴らしい。</p>
-</div>
 <a href="https://neue.cc/21">Prev |</a>
 <a href="https://neue.cc/23">| Next</a>
 </div>
@@ -935,6 +1013,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2023/09/">2023-09</a>
 <li><a href="https://neue.cc/2023/07/">2023-07</a>
 <li><a href="https://neue.cc/2023/03/">2023-03</a>
 <li><a href="https://neue.cc/2023/01/">2023-01</a>

@@ -23,7 +23,365 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2014/12/08_496.html">VS2015+RoslynによるCodeRefactoringProviderの作り方と活用法</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2014/12/18_499.html">Unityのコルーチンの分解、或いはUniRxのMainThreadDispatcherについて</a></h1>
+<ul class="date"><li>2014-12-18</li></ul>
+<div class="entry_body"><p>この記事は<a href="http://qiita.com/advent-calendar/2014/unity">Unity Advent Calendar 2014</a>のための記事になります。昨日はkomiyakさんの<a href="http://d.hatena.ne.jp/komiyak/20141216/1418760578">Unity を使いはじめたばかりの頃の自分に伝えたい、Unity の基本 【2014年版】</a>でした。いやー、これはまとまってて嬉しい情報です。ところでカレンダー的には穴開けちゃってます（遅刻遅延！）、すみません……。</p>
+<p>さて、今回の内容ですが、私の作っている<a href="https://github.com/neuecc/UniRx">UniRx</a>というReactive Programming（バズワード of 2014！)のためのライブラリを、最近ありがたいことに結構使ってみたーという声を聞くので、Rxの世界とUnityの世界を繋ぐ根幹である、MainThreadDispatcherと、その前準備に必要なコルーチンについて書きます。</p>
+<h2>Coroutine Revisited</h2>
+<p>コルーチンとはなんぞや。なんて今更ですって！はい。とりあえず、Unityは基本的にシングルスレッドで動いています。少なくともスクリプト部分に関しては。Unityのコルーチンは、IEnumeratorでyield returnすると、その次の処理を次フレーム（もしくは一定秒数/完了後などなど）に回します。あくまでシングルスレッド、ということですね。挙動について。簡単な確認用スクリプトを貼っつけて見てみると……</p>
+<pre><code class="language-csharp">void Start()
+{
+    Debug.Log(&quot;begin-start:&quot; + Time.frameCount);
+    StartCoroutine(MyCoroutine());
+    Debug.Log(&quot;end-start&quot; + Time.frameCount);
+}
+
+IEnumerator MyCoroutine()
+{
+    Debug.Log(&quot;start-coroutine:&quot; + Time.frameCount);
+
+    yield return null;
+    Debug.Log(&quot;after-yield-null:&quot; + Time.frameCount);
+
+    yield return new WaitForSeconds(3);
+    Debug.Log(&quot;end-coroutine:&quot; + Time.frameCount);
+}
+</code></pre>
+<p>呼ばれる順番とframeCountを考えてみようクイズ！意外と引っかかるかもしれません。答えのほうですが……</p>
+<pre><code class="language-text">begin-start:1
+start-coroutine:1
+end-start:1
+after-yield-null:2
+end-coroutine:168
+</code></pre>
+<p>となります。最後の秒数のフレームカウントはどうでもいいとして、start-coroutineが呼ばれるのはend-startの前ってのがちょっとだけヘーってとこかしら。IEnumerator自体はUnity固有の機能でもなく、むしろC#の標準機能で、通常は戻り値を持ってイテレータを生成するのに使います（Pythonでいうところのジェネレータ）</p>
+<pre><code class="language-csharp">// 偶数のシーケンスを生成
+IEnumerable&lt;int&gt; EvenSequence(int from, int to)
+{
+    for (int i = from; i &lt;= to; i++)
+    {
+        if (i % 2 == 0)
+        {
+            yield return i;
+        }
+    }
+}
+
+void Run()
+{
+    var seq = EvenSequence(1, 10);
+
+    // シーケンスはforeachで消費可能
+    foreach (var item in seq)
+    {
+        Debug.Log(item);
+    }
+
+    // あるいはEnumeratorを取得し回す(foreachは↓のコードを生成する)
+    // Unityでのコルーチンでの利用され方はこっちのイメージのほうが近い
+    using (var e = seq.GetEnumerator())
+    {
+        while (e.MoveNext())
+        {
+            Debug.Log(e.Current);
+        }
+    }
+}
+</code></pre>
+<p>Unityのコルーチンとしてのイテレータの活用法は、戻り値を原則使わず(宣言がIEnumerator)、yield returnとyield returnの間に副作用を起こすために使うということですね。これはこれで中々ナイスアイディアだとは思ってます。</p>
+<p>言語システムとしてはC#そのままなので、誰かがIEnumeratorを消費しているということになります。もちろん、それは<a href="http://docs.unity3d.com/ScriptReference/MonoBehaviour.StartCoroutine.html">StartCoroutine</a>で、呼んだ瞬間にまずはMoveNext、その後はUpdateに相当するようなタイミングで毎フレームMoveNextを呼び続けているようなイメージ。</p>
+<p>擬似的にMonoBehaviourで再現すると</p>
+<pre><code class="language-csharp">public class CoroutineConsumer : MonoBehaviour
+{
+    public IEnumerator TargetCoroutine; // 何か外からセットしといて
+
+    void Update()
+    {
+        if (TargetCoroutine.MoveNext())
+        {
+            var current = TargetCoroutine.Current;
+            // 基本的にCurrent自体はそんな意味を持たないで次フレームに回すだけ
+            if (current == null)
+            {
+                // next frame
+            }
+            // ただしもし固有の何かが返された時はちょっとした別の挙動する
+            if (current is WaitForSeconds)
+            {
+                // なんか適当に秒数待つ（ThreadをSleepするんじゃなく挙動的には次フレームへ）
+            }
+            else if (current is WWW)
+            {
+                // isDoneになってるまで適当に待つ（ThreadをSleepするんじゃなく挙動的には次フレームへ）
+            }
+            // 以下略
+        }
+    }
+}
+</code></pre>
+<p>こんな感じでしょうか！yield returnで返す値が具体的にUnityのゲームループにおいてどこに差し込まれるかは、Unityのマニュアルの<a href="http://docs.unity3d.com/Manual/ExecutionOrder.html">Script Lifecycle Flowchart</a>の図を見るのが分かりやすい。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2014/12/unitylifecycle.jpg' alt='' />
+</p>
+<p>nullが先頭でWaitForEndOfFrameは末尾なのね、とか。yield returnで返して意味を持つ値は<a href="http://docs.unity3d.com/ScriptReference/YieldInstruction.html">YieldInstruction</a>、ということになっているはずではあるんですが、実際のとこWWWはYieldInstructionじゃないし、YieldInstruction自体はカスタマイズ不能で自分で書けるわけじゃないんで（イマイチすぎる……）なんだかなぁー。Lifecycle Flowchartに書かれていない中でyield可能なのは<a href="http://docs.unity3d.com/ScriptReference/AsyncOperation.html">AsyncOperation</a>かな？</p>
+<p>もしイテレータの挙動について更に詳しく知りたい人は、私の以前書いたスライド<a href="http://www.slideshare.net/neuecc/an-internal-of-linq-to-objects-29200657">An Internal of LINQ to Objects</a>の14Pを参照してくださいな。</p>
+<h2>UniRx.FromCoroutine</h2>
+<p>というわけかで（一旦）コルーチンの話はおしまい。ここからはUniRxの話。UniRxについては<a href="http://neue.cc/2014/08/23_476.html">neue cc - A Beginners Guide to Reactive Extensions with UniRx</a>あたりをどうぞ。UniRxはFromCoroutineメソッドにより、コルーチンをUniRxの基盤インターフェースであるIObservable&lt;T&gt;に変換します。</p>
+<pre><code class="language-csharp">// こんなのがあるとして
+IEnumerator CoroutineA()
+{
+    Debug.Log(&quot;a start&quot;);
+    yield return new WaitForSeconds(1);
+    Debug.Log(&quot;a end&quot;);
+}
+
+// こんなふうに使える
+Observable.FromCoroutine(CoroutineA)
+    .Subscribe(_ =&gt; Debug.Log(&quot;complete&quot;));
+    
+// 戻り値のあるバージョンがあるとして
+IEnumerator CoroutineB(IObserver&lt;int&gt; observer)
+{
+    observer.OnNext(100);
+    yield return new WaitForSeconds(2);
+    observer.OnNext(200);
+    observer.OnCompleted();
+}
+
+// こんなふうに合成もできる
+var coroutineA = Observable.FromCoroutine(CoroutineA);
+var coroutineB = Observable.FromCoroutine&lt;int&gt;(observer =&gt; CoroutineB(observer));
+
+// Aが終わった後にBの起動、Subscribeには100, 200が送られてくる
+var subscription = coroutineA.SelectMany(coroutineB).Subscribe(x =&gt; Debug.Log(x));
+
+// Subscribeの戻り値からDisposeを呼ぶとキャンセル可能
+// subscription.Dispose();
+</code></pre>
+<p>IObservable&lt;T&gt;になっていると何がいいかというと、合成可能になるところです。Aが終わった後にBを実行する、Bが失敗したらCを実行する、などなど。また、戻り値を返すことができるようになります。そして、コルーチンに限らず、あらゆるイベント、あらゆる非同期がIObservable&lt;T&gt;になるので、全てをシームレスに繋ぎ合わせることができる。そこが他のライブラリや手法と一線を画すRxの強みなんです、が、長くなるのでここでは触れません:)</p>
+<p>また、MonoBehaviour.StartCoroutineを呼ばなくてもコルーチンが起動しています。これは結構大きな利点だと思っていて、というのも、コルーチンを使うためだけにMonoBehaviourにする必要がなくなる。やはり普通のC#クラスのほうが取り回しが良いので、MonoBehaviourにする必要がないものはしないほうがいい。けれど、コルーチンは使いたい。そうした欲求に応えてくれます。</p>
+<p>更にFromCoroutine経由にするとEditor内部では通常は動かせないコルーチンを動かすことができます！（これについては後で説明します）</p>
+<p>といった応用例はそのうちやるということで、とりあえずFromCoroutineの中身を見て行きましょう。</p>
+<pre><code class="language-csharp">// Func&lt;IEnumerator&gt;はメソッド宣言的には「IEnumerator Hoge()」になる
+public static IObservable&lt;Unit&gt; FromCoroutine(Func&lt;IEnumerator&gt; coroutine, bool publishEveryYield = false)
+{
+    return FromCoroutine&lt;Unit&gt;((observer, cancellationToken) =&gt; WrapEnumerator(coroutine(), observer, cancellationToken, publishEveryYield));
+}
+
+// ↑のはWrapEnumeratorを介してこれになっている
+public static IObservable&lt;T&gt; FromCoroutine&lt;T&gt;(Func&lt;IObserver&lt;T&gt;, CancellationToken, IEnumerator&gt; coroutine)
+{
+    return Observable.Create&lt;T&gt;(observer =&gt;
+    {
+        var cancel = new BooleanDisposable();
+
+        MainThreadDispatcher.SendStartCoroutine(coroutine(observer, new CancellationToken(cancel)));
+
+        return cancel;
+    });
+}
+
+// WrapEnumeratorの中身は(ｵｪｪｪｪ
+static IEnumerator WrapEnumerator(IEnumerator enumerator, IObserver&lt;Unit&gt; observer, CancellationToken cancellationToken, bool publishEveryYield)
+{
+    var hasNext = default(bool);
+    var raisedError = false;
+    do
+    {
+        try
+        {
+            hasNext = enumerator.MoveNext();
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                raisedError = true;
+                observer.OnError(ex);
+            }
+            finally
+            {
+                var d = enumerator as IDisposable;
+                if (d != null)
+                {
+                    d.Dispose();
+                }
+            }
+            yield break;
+        }
+        if (hasNext &amp;&amp; publishEveryYield)
+        {
+            try
+            {
+                observer.OnNext(Unit.Default);
+            }
+            catch
+            {
+                var d = enumerator as IDisposable;
+                if (d != null)
+                {
+                    d.Dispose();
+                }
+                throw;
+            }
+        }
+        if (hasNext)
+        {
+            yield return enumerator.Current; // yield inner YieldInstruction
+        }
+    } while (hasNext &amp;&amp; !cancellationToken.IsCancellationRequested);
+
+    try
+    {
+        if (!raisedError &amp;&amp; !cancellationToken.IsCancellationRequested)
+        {
+            observer.OnNext(Unit.Default); // last one
+            observer.OnCompleted();
+        }
+    }
+    finally
+    {
+        var d = enumerator as IDisposable;
+        if (d != null)
+        {
+            d.Dispose();
+        }
+    }
+}
+</code></pre>
+<p>WrapEnumeratorの中身が長くてオェェェって感じなんですが何やってるかというと、元のコルーチンを分解して、Rx的に都合のいい形に再構築したコルーチンに変換してます。都合のいい形とは「キャンセル可能」「終了時（もしくは各yield時）にObserver.OnNextを呼ぶ」「全ての完了時にObserver.OnCompletedを呼ぶ」「エラー発生時にObserver.OnErrorを呼ぶ」を満たしているもの。コルーチン自体がC#の標準機能のままで、なにも特別なことをしていないなら、別に自分で回す(enumerator.MoveNextを手で呼ぶ)ことも、何も問題はない、わけです。</p>
+<p>そんなラップしたコルーチンを動かしているのがMainThreadDispatcher.SendStartCoroutine。今の<a href="https://github.com/neuecc/UniRx/blob/master/Assets/UniRx/Scripts/UnityEngineBridge/MainThreadDispatcher.cs">MainThreadDispatcher.cs</a>は諸事情あって奇々怪々なんですが、SendStartCoroutineのとこだけ取り出すと</p>
+<pre><code class="language-csharp">public sealed class MainThreadDispatcher : MonoBehaviour
+{
+    // 中略
+    
+    /// &lt;summary&gt;ThreadSafe StartCoroutine.&lt;/summary&gt;
+    public static void SendStartCoroutine(IEnumerator routine)
+    {
+#if UNITY_EDITOR
+        if (!Application.isPlaying) { EditorThreadDispatcher.Instance.PseudoStartCoroutine(routine); return; }
+#endif
+
+        if (mainThreadToken != null)
+        {
+            StartCoroutine(routine);
+        }
+        else
+        {
+            Instance.queueWorker.Enqueue(() =&gt; Instance.StartCoroutine_Auto(routine));
+        }
+    }
+
+    new public static Coroutine StartCoroutine(IEnumerator routine)
+    {
+#if UNITY_EDITOR
+        if (!Application.isPlaying) { EditorThreadDispatcher.Instance.PseudoStartCoroutine(routine); return null; }
+#endif
+
+        return Instance.StartCoroutine_Auto(routine);
+    }
+}
+</code></pre>
+<p>if UNITY_EDITORのところは後で説明するのでスルーしてもらうとして、基本的にはInstance.StartCoroutine_Autoです。ようはMainThreadDispatcherとは、シングルトンのMonoBehaviourであり、FromCoroutineはそいつからコルーチンを起動しているだけなのであった。なんだー、単純。汚れ仕事（コルーチンの起動、MonoBehaviourであること）をMainThreadDispatcherにだけ押し付けることにより、それ以外の部分が平和に浄化される！</p>
+<p>コルーチンの起動が一極集中して、それで実行効率とか大丈夫なの？というと存外大丈夫っぽいので大丈夫。実際、私の会社ではこないだ一本iOS向けにゲームをリリースしましたがちゃんと動いてます。しかしそうなるとStartCoroutineはMonoBehaviourのインスタンスメソッドではなく、静的メソッドであって欲しかった……。</p>
+<p>その他、SendStartCoroutineはスレッドセーフ（他スレッドから呼ばれた場合はキューに突っ込んでメインスレッドに戻ってから起動する）なのと、UnityEditorからの起動を可能にしています（EditorThreadDispatcher.Instance.PseudoStartCoroutine経由で起動する）。なので、普通にStartCoroutineを呼ぶ以上のメリットを提供できているかな、と。</p>
+<h2>UnityEditorでコルーチンを実行する</h2>
+<p>Editorでコルーチンを動かせないのは存外不便です。WWWも動かせないし……。UniRxではFromCoroutine経由で実行すると、内部でMainThreadDispatcher.SendStartCoroutine経由になることにより、Editorで実行できます。使い方は本当にFromCoroutineしてSubscribeするだけ、と、通常時のフローとまるっきり一緒です。ここで毎回エディターの時は、通常の時は、と書き分けるのはカッタルイですからね。汚れ仕事はMainThreadDispatcherが一手に引き受けています。そんな汚れ仕事はこんな感じの実装です。</p>
+<pre><code class="language-csharp">class EditorThreadDispatcher
+{
+    // 中略
+    
+    ThreadSafeQueueWorker editorQueueWorker= new ThreadSafeQueueWorker();
+
+    EditorThreadDispatcher()
+    {
+        UnityEditor.EditorApplication.update += Update;
+    }
+    
+    // 中略
+    
+    void Update()
+    {
+        editorQueueWorker.ExecuteAll(x =&gt; Debug.LogException(x));
+    }
+
+    // 中略
+
+    public void PseudoStartCoroutine(IEnumerator routine)
+    {
+        editorQueueWorker.Enqueue(() =&gt; ConsumeEnumerator(routine));
+    }
+
+    void ConsumeEnumerator(IEnumerator routine)
+    {
+        if (routine.MoveNext())
+        {
+            var current = routine.Current;
+            if (current == null)
+            {
+                goto ENQUEUE;
+            }
+
+            var type = current.GetType();
+            if (type == typeof(WWW))
+            {
+                var www = (WWW)current;
+                editorQueueWorker.Enqueue(() =&gt; ConsumeEnumerator(UnwrapWaitWWW(www, routine)));
+                return;
+            }
+            else if (type == typeof(WaitForSeconds))
+            {
+                var waitForSeconds = (WaitForSeconds)current;
+                var accessor = typeof(WaitForSeconds).GetField(&quot;m_Seconds&quot;, BindingFlags.Instance | BindingFlags.GetField | BindingFlags.NonPublic);
+                var second = (float)accessor.GetValue(waitForSeconds);
+                editorQueueWorker.Enqueue(() =&gt; ConsumeEnumerator(UnwrapWaitForSeconds(second, routine)));
+                return;
+            }
+            else if (type == typeof(Coroutine))
+            {
+                Debug.Log(&quot;Can't wait coroutine on UnityEditor&quot;);
+                goto ENQUEUE;
+            }
+
+        ENQUEUE:
+            editorQueueWorker.Enqueue(() =&gt; ConsumeEnumerator(routine)); // next update
+        }
+    }
+
+    IEnumerator UnwrapWaitWWW(WWW www, IEnumerator continuation)
+    {
+        while (!www.isDone)
+        {
+            yield return null;
+        }
+        ConsumeEnumerator(continuation);
+    }
+
+    IEnumerator UnwrapWaitForSeconds(float second, IEnumerator continuation)
+    {
+        var startTime = DateTimeOffset.UtcNow;
+        while (true)
+        {
+            yield return null;
+
+            var elapsed = (DateTimeOffset.UtcNow - startTime).TotalSeconds;
+            if (elapsed &gt;= second)
+            {
+                break;
+            }
+        };
+        ConsumeEnumerator(continuation);
+    }
+}
+</code></pre>
+<p>ようは、UnityEditor.EditorApplication.updateでジョブキューを回しています。コルーチン(Enumerator)を手動で分解して、EditorApplication.updateに都合の良い形に再編しています。yield return nullがあったらキューに突っ込んで次のupdateに回すことで、擬似的にStartCorotineを再現。WaitForSecondsだったらリフレクションで内部の秒数を取ってきて（ひどぅい）ぐるぐるループを展開。などなど。</p>
+<p>仕組み的には単純、なんですが結構効果的で便利かな、と。ユーザーは全くそれを意識する必要がないというのが一番いいトコですね。</p>
+<p>ちなみにアセットストアからダウンロードできるバージョンでは、まだこの仕組みは入ってません（すびばせん！）。GitHubの最新コードか、あとは、ええと、近いうちにアップデート申請しますので来年には使えるようになっているはずです。。。</p>
+<h2>まとめ</h2>
+<p>コルーチンをコルーチンたらしめているのは消費者であるStartCoroutineであって、IEnumerator自体はただのイテレータにすぎない。なので、分解も可能だし、他の形式に展開することもできる。</p>
+<p><a href="https://github.com/neuecc/UniRx">UniRx</a>経由でコルーチンを実行すると「色々なものと合成できる」「（複数の）戻り値を扱える」「キャンセルが容易」「MonoBehaviourが不要」「スレッドセーフ」「エディターでも実行可能」になる。いいことづくめっぽい！Reactive Programmingの力！そんな感じに、UniRxはなるべくシームレスにRxの世界とUnityの世界を繋げるような仕組みを用意しています。是非ダウンロードして、色々遊んでみてください。</p>
+</div>
+<h1><a href="https://neue.cc/2014/12/08_496.html">VS2015+RoslynによるCodeRefactoringProviderの作り方と活用法</a></h1>
 <ul class="date"><li>2014-12-08</li></ul>
 <div class="entry_body"><p>この記事は<a href="http://qiita.com/advent-calendar/2014/csharp">C# Advent Calendar 2014</a>のための記事になります。私は去年のAdvent Calendarでは<a href="http://neue.cc/2013/12/04_435.html">非同期時代のLINQ</a>というものを書いていました、うん、中々良い記事であった（自分で言う）。今年のテーマはRoslynです。</p>
 <p>先月に<a href="http://neue.cc/2014/11/20_485.html">VS2015のRoslynでCode Analyzerを自作する(ついでにUnityコードも解析する)</a>という記事を書きましたが、VS2015 PreviewではRoslynで作る拡張にもう一つ、Code Refactoringがあります。こちらも簡単に作れて、中々ベンリなので（前にVS2015のRoslynは以前から後退して「あんま大したことはできない」と言いましたが、それはそれでかなり役立ちです）、是非作っていきましょう。Code Analyzerと同じく非常に簡単に作れるのと、テンプレートがよくできていてちゃんとガイドになってるので、すんなり入れるかと思います。なお、こちらはCode Analyzerと違いNuGet配布やプロジェクト単位での参照は不可能、VSIXのみ。そこはちょっと残念……。</p>
@@ -2584,16 +2942,6 @@ VSのプロジェクト構造はUnityとミスマッチがある<br />
 <p>それでもVisual Studioは高い……？うーん、そもそもUnity Proのほうがずっと高いんですが(VS Proは単品をふつーに買って6万ぐらい、色々な購入モデルがあるので実質もっと安くはなるかな)、それはおいといて、私が<a href="http://www.buildinsider.net/">Build Insider</a>に寄稿した記事で<a href="http://www.buildinsider.net/small/bizspark/01">スタートアップ企業にマイクロソフト製品の開発ライセンスが無償提供されるBizSparkプログラム活用のススメ</a>(タイトルクソ長い！)で紹介しているBizSparkというプログラムでは、設立5年未満の企業ならVisual Studioを無償で利用することが可能です。実際BizSparkはとても良い、助かる、助かってた。学生さんなら<a href="http://www.microsoft.com/ja-jp/education/dreamspark.aspx">DreamSpark</a>という同様の学生支援プログラムがあります。</p>
 <p>C#自体、非常に良い言語なのですが、Visual Studioと合間れば相乗効果で数倍数十倍に更に良くなるので、(たとえUnityのC#が古いバージョンだったりiOSのせいでAOTで苦しんだりしつつも)、良きC#生活を満喫して欲しい/したいところですねー。</p>
 </div>
-<h1><a href="https://neue.cc/2014/04/02_449.html">Microsoft MVP for Visual C#を再々々受賞しました</a></h1>
-<ul class="date"><li>2014-04-02</li></ul>
-<div class="entry_body"><p>今年も受賞できました。4年目です。去年の受賞した頃は<a href="http://grani.jp/">謎社</a>が始動し、タイトルもリリースされ、新しい人が入社しだす頃でした。その頃はまだPHPで実装されていたのですが、C#に移行するプロジェクトをちょうど始めた頃です。</p>
-<blockquote>
-<p>C#による圧倒的な成果、C#だからこその強さ、というのを現実に示していく</p>
-</blockquote>
-<p>というのを所信表明として掲げたわけですが、この一年で、成果は出すことができました。C#への移行は成功し、その強さ、体制は誇ることができると思っています。とはいえまだ、やっとスタート地点に立てたばかり。世間への認知は全然されていないでしょう。もっともっと強く、私にしかできないことを。</p>
-<p>さて、個人として、MVPのありようというのはScott Hanslemanのアナウンス<a href="http://www.hanselman.com/blog/ChangesInTheMicrosoftMVPProgramMVPsForOpenSourceContributions.aspx">Changes in the Microsoft MVP Program - MVPs for Open Source Contributions</a>のアナウンスの通りかな、と。ただのMicrosoftの広告塔だけじゃない貢献をしなければならない。そしてコードを現実に落としこむ馬力が求められるのではないか、と。</p>
-<p>私はそうしてきたつもりですし、これからも、もっと、他の言語圏と較べても、より先進的に、そしてより実践的に。いつまでも.NETの、Microsoftのローカルな世界で閉じている場合ではない。C#こそが魅力的な選択であるということを、あらゆる角度から示し続けたいと思います。引き続き、今年もよろしくお願いします。</p>
-</div>
 <a href="https://neue.cc/8">Prev |</a>
 <a href="https://neue.cc/10">| Next</a>
 </div>
@@ -2617,6 +2965,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2023/09/">2023-09</a>
 <li><a href="https://neue.cc/2023/07/">2023-07</a>
 <li><a href="https://neue.cc/2023/03/">2023-03</a>
 <li><a href="https://neue.cc/2023/01/">2023-01</a>

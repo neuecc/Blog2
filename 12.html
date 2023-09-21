@@ -23,7 +23,164 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2013/03/06_399.html">C#とランダム</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2013/03/09_400.html">並列実行とSqlConnection</a></h1>
+<ul class="date"><li>2013-03-09</li></ul>
+<div class="entry_body"><p>どうも、ParallelやThreadな処理が苦痛度100なペチパーです。嘘です。空前のThreadLocalブームが来てたり来てなかったりする昨今です。あ、謎社の宣伝しますと<a href="http://corp.gree.net/jp/ja/news/press/2013/0308-01.html">グリーとグラニ、「GREE」におけるソーシャルゲームの提供などについて戦略的業務提携に合意</a>というわけで、ぐりとぐら、としかいいようがない昨今でもあります。その日に開催されていたGREEプラットフォームカンファレンスでは、謎社はC#企業になる！と大宣言したので、ちゃんと実現させていきたいところです、いや、むしろそのためにフル回転しています。</p>
+<p>そんな宣伝はおいておいて本題なのですけれど、SQL。データベース。大量にクエリ発行したい時など、パラレル実行したいの！インサートだったら当然BulkInsertが一番早いんですが、Updateとかね。シンドイんだよね。あとUpsert(Merge/ON DUPLICATE KEY UPDATE)とかも使っちゃったりしてね。そんなわけで、お手軽お気楽な手法としてはParallelがありますねー、.NETはこの辺本当に楽なんだよねー、ぴーHPはシラネ。</p>
+<p>で、実際パラレールにこんな感じに書くと……</p>
+<pre><code class="language-csharp">using (var connection = new SqlConnection(&quot;接続文字列&quot;))
+{
+    connection.Open();
+    Parallel.For(1, 1000, x =&gt;
+    {
+        var _ = connection.Query&lt;DateTime&gt;(&quot;select current_timestamp&quot;).First(); // Dapper
+    });
+}
+</code></pre>
+<p>落ちます。理由は単純明快でSqlConnectionはスレッドセーフじゃないから。というわけで、やるなら</p>
+<pre><code class="language-csharp">Parallel.For(1, 1000, x =&gt;
+{
+    using (var connection = new SqlConnection(&quot;接続文字列&quot;))
+    {
+        connection.Open();
+        var _ = connection.Query&lt;DateTime&gt;(&quot;select current_timestamp&quot;).First(); // Dapper
+    }
+});
+</code></pre>
+<p>となります、これなら絶対安全。でも、スレッドって基本的にコアの数とちょびっとしか立てられないわけだし、連続的に実行しているのだから、たとえコネクションプール行きだとかなんだりであっても、一々コネクションを開いて閉じてをするよりも、開きっぱで行きたいよね。</p>
+<p>ようするにSqlConnectionがスレッドセーフじゃないからいけない。これはどこかで聞いたような話です。先日<a href="http://neue.cc/2013/03/06_399.html">C#とランダム</a>で出したThreadLocalの出番ではないでしょうか！</p>
+<h2>ThreadLocal</h2>
+<p>というわけでスレッドセーフなSqlConnectionを作りましょう、ThreadLocalを使って。</p>
+<pre><code class="language-csharp">using (var connection = new ThreadLocal&lt;SqlConnection&gt;(() =&gt; { var conn = new SqlConnection(&quot;接続文字列&quot;); conn.Open(); return conn; }))
+{
+    Parallel.For(1, 1000, x =&gt;
+    {
+        var _ = connection.Value.Query&lt;DateTime&gt;(&quot;select current_timestamp&quot;).First(); // Dapper
+    });
+}
+</code></pre>
+<p>new SqlConnectionがThreadLocalに変わっただけのお手軽さ。これで、安全なんですって！本当に？本当に。で、実際こうして速度はどうなのかというと、私の環境で実行したところ、シングルスレッドで16秒、毎回new SqlConnectionするParallelで5秒、ThreadLocalなParallelで2秒でした。これは圧勝。幸せになれそう。</p>
+<h2>Disposeを忘れない、或いは忘れた</h2>
+<p>でも↑のコードはダメです。ダメな理由は、コネクションをDisposeしてないからです。ThreadLocalのDisposeは、あくまでThreadLocalのDisposeなのであって、中身のDisposeはしてくれてないのです。ここ忘れると悲劇が待ってます。でもFactoryで作ってる上にThreadで一意なValue、どうやってまとめてDisposeすればいいの！というと、trackAllValuesというオプションを有効にすると簡単に実現できます。</p>
+<pre><code class="language-csharp">using (var connection = new ThreadLocal&lt;SqlConnection&gt;(() =&gt; { var conn = new SqlConnection(&quot;接続文字列&quot;); conn.Open(); return conn; }
+    , trackAllValues: true)) // ThreadLocalの.Valuesプロパティの参照を有効化する
+{
+    Parallel.For(1, 1000, x =&gt;
+    {
+        var _ = connection.Value.Query&lt;DateTime&gt;(&quot;select current_timestamp&quot;).First(); // Dapper
+    });
+
+    // 生成された全てのConnectionを一括Dispose
+    foreach (var item in connection.Values.OfType&lt;IDisposable&gt;()) item.Dispose();
+}
+</code></pre>
+<p>この<a href="http://msdn.microsoft.com/ja-jp/library/hh139139.aspx">trackAllValuesが可能なThreadLocal</a>は.NET 4.5からです。それ以前の人は、残念でした……。謎社は遠慮なく.NET 4.5を使いますので全然問題ありません(</p>
+<h2>もう一つまとめて</h2>
+<p>とはいえ、なんか面倒くさいので、ちょっとラップしませう、以下のようなクラスを用意します。</p>
+<pre><code class="language-csharp">public static class DisposableThreadLocal
+{
+    public static DisposableThreadLocal&lt;T&gt; Create&lt;T&gt;(Func&lt;T&gt; valueFactory)
+        where T : IDisposable
+    {
+        return new DisposableThreadLocal&lt;T&gt;(valueFactory);
+    }
+}
+
+public class DisposableThreadLocal&lt;T&gt; : ThreadLocal&lt;T&gt;
+    where T : IDisposable
+{
+    public DisposableThreadLocal(Func&lt;T&gt; valueFactory)
+        : base(valueFactory, trackAllValues: true)
+    {
+
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        var exceptions = new List&lt;Exception&gt;();
+        foreach (var item in this.Values.OfType&lt;IDisposable&gt;())
+        {
+            try
+            {
+                item.Dispose();
+            }
+            catch (Exception e)
+            {
+                exceptions.Add(e);
+            }
+        }
+
+        base.Dispose(disposing);
+
+        if (exceptions.Any()) throw new AggregateException(exceptions);
+    }
+}
+</code></pre>
+<p>これを使うと</p>
+<pre><code class="language-csharp">using (var connection = DisposableThreadLocal.Create(() =&gt; { var conn = new SqlConnection(&quot;接続文字列&quot;); conn.Open(); return conn; }))
+{
+    Parallel.For(1, 1000, x =&gt;
+    {
+        var _ = connection.Value.Query&lt;DateTime&gt;(&quot;select current_timestamp&quot;).First(); // Dapper
+    });
+}
+</code></pre>
+<p>といったように、超シンプルに書けます。うん。いいね。</p>
+<h2>それAsync？</h2>
+<p>Asyncでドバッと発行してTask.WhenAll的なやり方も、接続が非スレッドセーフなのは変わらなくて、結構やりづらいんですよ……。それで、なんか色々細かくawaitしまくりで逆に遅くなったら意味ないし。それならドストレートに行ったほうがいいのでは感が若干ある。どうせThreadなんてそこそこ余ってるんだから（←そうか？）局所的にParallelってもいいぢゃないと思いたい、とかなんとかかんとか。</p>
+<h2>非.NET 4.5の場合</h2>
+<p>Parallel.For, ForEachに関しては、localInit, localFinallyというタスク内で一意になる変数を利用したオーバーロードを利用して、似たような雰囲気で書けます。正確には同じ挙動ではないですが、まぁまぁ悪くない結果が得られます。</p>
+<pre><code class="language-csharp">Parallel.For(1, 1000,
+    () =&gt;
+    {
+        // local init
+        var conn = new SqlConnection(&quot;接続文字列&quot;);
+        conn.Open();
+        return conn;
+    },
+    (x, state, connection) =&gt;
+    {
+        var _ = connection.Query&lt;DateTime&gt;(&quot;select current_timestamp&quot;).First(); // Dapper
+        return connection;
+    },
+    (connection) =&gt;
+    {
+        // local finally
+        connection.Dispose();
+    });
+</code></pre>
+<p>オーバーロードが結構地獄でシンドイですね！ここも簡単にラップしたものを作りましょう。</p>
+<pre><code class="language-csharp">public static class ParallelEx
+{
+    public static ParallelLoopResult DisposableFor&lt;TDisposable&gt;(long fromInclusive, long toExclusive, Func&lt;TDisposable&gt; resourceFactory, Action&lt;long, ParallelLoopState, TDisposable&gt; body)
+        where TDisposable : IDisposable
+    {
+        return Parallel.For(fromInclusive, toExclusive, resourceFactory, (item, state, resource) =&gt; { body(item, state, resource); return resource; }, disp =&gt; disp.Dispose());
+    }
+
+    public static ParallelLoopResult DisposableForEach&lt;T, TDisposable&gt;(IEnumerable&lt;T&gt; source, Func&lt;TDisposable&gt; resourceFactory, Action&lt;T, ParallelLoopState, TDisposable&gt; body)
+        where TDisposable : IDisposable
+    {
+        return Parallel.ForEach(source, resourceFactory, (item, state, resource) =&gt; { body(item, state, resource); return resource; }, disp =&gt; disp.Dispose());
+    }
+}
+</code></pre>
+<p>こうしたものを作れば、</p>
+<pre><code class="language-csharp">ParallelEx.DisposableFor(1, 1000,
+    () =&gt;
+    {
+        var conn = new var conn = new SqlConnection(&quot;接続文字列&quot;);
+        conn.Open();
+        return conn;
+    },
+    (x, state, connection) =&gt;
+    {
+        var _ = connection.Query&lt;DateTime&gt;(&quot;select current_timestamp&quot;).First(); // Dapper
+    });
+</code></pre>
+<p>まぁまぁ許せる、かな？</p>
+</div>
+<h1><a href="https://neue.cc/2013/03/06_399.html">C#とランダム</a></h1>
 <ul class="date"><li>2013-03-06</li></ul>
 <div class="entry_body"><p>古くて新しいわけはない昔ながらのSystem.Randomのお話。Randomのコンストラクタは二種類あって、seed引数アリの場合は必ず同じ順序で数値を返すようになります。</p>
 <pre><code class="language-csharp">// 何度実行しても同じ結果
@@ -1805,97 +1962,6 @@ alert(xml.toString(true)); // 引数にtrueを渡すとインデントつけて�
 <p>ところでしかし現状ltxml.jsはベータです。何故か。linq.jsがまだベータだからです。ver.3.0.3-Beta4ってなんだよクソが。すみませんすみません、なるべく早く正式リリース出来るよう鋭意努力します。NEETなので暇、じゃあないんですよねえ、残念ながら。でも急ぎます。さすがに！いやほんと私の作業ペースの遅さには我ながらどうかと思う感じですが、もうさすがに猶予ないですね！</p>
 <p>ちなみに7月31日に作ってるよー、ってメール貰って、そこから何度かやり取りしてました。ltxml.jsのコード自体、かなりパワフルにlinq.jsを使いこなしているので（私のアドバイスの賜物です！）そういう意味でも面白いですね。ちなみに、その時には8月中にlinq.jsリリースするって言ってたかなあ、今もう10月末ですねえ、どうなってるんでしょうねえ、ごめんなさいごめんなさい。</p>
 </div>
-<h1><a href="https://neue.cc/2012/10/21_385.html">既存JavaScriptをTypeScriptとして修正する方法</a></h1>
-<ul class="date"><li>2012-10-21</li></ul>
-<div class="entry_body"><p>JavaScriptはTypeScriptです。ほぼほぼ。.jsを.tsとして変更すれば動きます。というほど世の中甘くなくて、まあ、大抵は動きません。えー、なにそれ、欠陥品じゃないの？と思われるかもですが、いえ、結構単純な話です。例えばですが</p>
-<pre><code class="language-csharp">var x = 0;
-x = &quot;hogehoge&quot;;
-</code></pre>
-<p>このコード、JavaScriptとしては正しいですが、TypeScriptとしては間違っていてコンパイル通りません。xがnumberとして推論されるので、&quot;hogehoge&quot;が代入できないからです。じゃあどうするの？というと、</p>
-<pre><code class="language-csharp">var x: any = 0;
-x = &quot;hogehoge&quot;;
-</code></pre>
-<p>anyとして型定義してやればいいんですね。もしくは</p>
-<pre><code class="language-csharp">var x = &lt;any&gt;0;
-x = &quot;hogehoge&quot;;
-</code></pre>
-<p>でもいいですが。&lt;&gt;はキャストみたいなものです。ちなみに、こういったことの実例はTypeScriptのソースをダウンロードしてきて、\src\harness\external\json2.ts に、<a href="http://www.json.org/js.html">json2.js</a>をtsに変換した例が見れます。ほんの2, 3箇所anyの注釈を入れているだけで、ほぼほぼそのままですね。実際のところ、↑みたいなゆるふわキャストなんて、たとえJSといえど多用してるわけがないので、作業的な手間はあまりありません。やることは、コンパイルエラーの出た箇所をポチポチとモグラたたきするだけなので、楽ちん。</p>
-<h2>実際にやってみる</h2>
-<p>理屈上はそうですが、実際やってみるとどうなんでしょうねえ、ということで、linq.jsでやってみました。(なお、linq.jsの型定義自体は<a href="http://neue.cc/2012/10/12_382.html">linq.jsのTypeScript対応とTypeScript雑感</a>で手付けですでにやってあります)。まず.tsにしてコンパイルかけてみると、赤波線が全体に出てきてわけわからんオワタ！エラー90件！</p>
-<p class="noindent">
-<img src="http://neue.cc/wp-content/uploads/image/ts_linq_red.jpg" />
-</p>
-<p>で、まあ、こういう場合は問題は基底部分にあります。</p>
-<pre><code class="language-javascript">(function (root, undefined) {
-// 中略
-})(this);
-</code></pre>
-<p>問題なのはundefinedです。function(root, undefined) として定義しているのに、(this)ということで、呼んでないから。冷静に見てみれば、ただたんにメソッド呼ぶ引数が足りないぜ、って言ってるだけですな。ちなみにこのコード自体は、undefinedは代入可能な代物で破壊されている可能性があるから（あるわけないけど！）、安全なundefinedを作ろう、という古臭いイディオムです。</p>
-<p>エラーが90件もあってわけわかりませんが、一番最初のエラーが「Supplied parameters do not match any signature of call target」なので、やっぱり冷静に見てみれば、ちゃんと教えてくれていた、と。TypeScript優しいのね。</p>
-<p>なのでundefinedを抜けば真っ赤っ赤はなくなります。OK。だがまだエラーは続く。というかエラー件数は89件になっただけである。</p>
-<p>お次はEnumeratorがないぞ！というエラー。</p>
-<pre><code class="language-javascript">if (typeof Enumerator !== Types.Undefined) {
-if (typeof Windows === Types.Object &amp;&amp; typeof obj.first === Types.Function) {
-</code></pre>
-<p>このEnumeratorはIEのみに存在するオブジェクトで、Windows Script Hostで列挙するのに使ったり使わなかったりする、今では知らない人のほうが遥かに多いであろう謎オブジェクトです。Windowsのほうも同様に、Windows8用アプリケーションにしか存在しません。さて、これへの対処は、定義ファイルのない外部ライブラリを使う際と同じで、anyでdeclareします。ファイルの先頭に</p>
-<pre><code class="language-javascript">declare var Enumerator;
-declare var Windows
-</code></pre>
-<p>と書いておけばOK。しかしまだまだエラーは続くよ！該当箇所はここ。</p>
-<pre><code class="language-javascript">var Enumerable = function (getEnumerator) {
-    this.getEnumerator = getEnumerator;
-};
-
-// このUtilsで赤線
-Enumerable.Utils = {}; // container
-</code></pre>
-<p>このEnumerableが意図するところはコンストラクタです。new Enumerable()するためのものです。で、JavaScriptでは関数にもオブジェクトを生やせますが、TypeScriptでは生やせません。対処方法はまあ、面倒くさいのでEnumerableをanyにしましょう。</p>
-<pre><code class="language-javascript">var Enumerable: any = function (getEnumerator) {
-    this.getEnumerator = getEnumerator;
-};
-</code></pre>
-<p>これだけで割と一気に解決します！89件あったエラーが残りほんの数件に！any最強！dynamic！
-で、linq.jsでは同じようにOrderedEnumerableとArrayEnumerableというものが存在するので、同様にanyにしておきます。</p>
-<p>そんなわけで、なんとなくわかったと思いますが、ようするにエラーの出てるところを片っ端からanyにしていくだけです。ただしルート階層に近いものを優先的にany化すると、その下にぶら下がってるものは全部解決するので、意外とそんな手間じゃありません。</p>
-<p>あとは一番下にAMD対応もどきのとこがあるのですが、これはそもそも微妙なのでまるごと削除して解決（てきとー）。で、対応はほんとこれだけです。あっという間だし簡単ですなあ。TypeScriptのJavaScriptとの互換性は本物だ！</p>
-<h2>declarationsオプション</h2>
-<p>で、ここからが本題であって本題ではないのですが、TypeScriptはtsc -declarationsとオプションをつけてコンパイルすると、d.tsを吐いてくれます。ちゃんと型定義されたtsファイルならちゃんとしあd.tsを吐いてくれます。役立ちです。</p>
-<p>で、人間欲が出るもので、もしこれを、↑のように修正した.tsにかませてやるとどうなる？もし、たとえanyであっても定義テンプレを吐いてくれたら、そこから注釈入れてくだけですむわけで、随分と楽になりますよね？面倒くさい型定義よさようなら。</p>
-<p>というわけで、こいつをdeclarationsオプションをつけてコンパイルしましょう。</p>
-<pre><code class="language-text">tsc linq.js.ts -declarations
-</code></pre>
-<p>期待のlinq.js.d.tsの結果は</p>
-<pre><code class="language-javascript">var Enumerator;
-var Windows;
-</code></pre>
-<p>になります（笑）。はい、関数で丸ごと括った部分が消滅してしまいました。クソが。今回は定義ファイルが欲しいだけなので、関数で括る部分を除去して再度コンパイルすると</p>
-<pre><code class="language-javascript">var Enumerator;
-var Windows;
-var Functions: { Identity: (x: any) =&gt; any; True: () =&gt; bool; Blank: () =&gt; void; };
-var Types: { Boolean: string; Number: string; String: string; Object: string; Undefined: string; Function: string; };
-var Utils: { createLambda: (expression: any) =&gt; any; isIEnumerable: (obj: any) =&gt; bool; defineProperty: (target: any,methodName: any,value: any) =&gt; void; compare: (a: any,b: any) =&gt; number; dispose: (obj: any) =&gt; void; };
-var State: { Before: number; Running: number; After: number; };
-var IEnumerator: (initialize: any,tryGetNext: any,dispose: any) =&gt; void;
-var Yielder: () =&gt; void;
-var Enumerable: any;
-var OrderedEnumerable: any;
-var SortContext: any;
-var DisposableEnumerable: (getEnumerator: any,dispose: any) =&gt; void;
-var ArrayEnumerable: any;
-var WhereEnumerable: (source: any,predicate: any) =&gt; void;
-var WhereSelectEnumerable: (source: any,predicate: any,selector: any) =&gt; void;
-var Dictionary;
-var Lookup: (dictionary: any) =&gt; void;
-var Grouping: (groupKey: any,elements: any) =&gt; void;
-</code></pre>
-<p>外に出したくないもの(Yielderとか)は、まあ、あとで別途削除すればいいんですが、しかしそもそも肝心のEnumerableメソッドが全部出てないぞ！
-理由としては、ようするにanyつけちゃったから。うーん、これじゃ実用度ゼロですね。</p>
-<p>そもそもfunctionで定義したクラス（をコンストラクタとして使いたい）というのを、それがコンストラクタなのか関数なのかをどうやって区別するんだ？って話ですし、無理ですなー。(ファイル全てをなめてthis.してるのはクラスとか.prototype = hogehogeしてるのはクラスとか、曖昧な判定はできるでしょうけれど、それは危険ですしね)。</p>
-<p>夢は見ちゃダメ。でもMicrosoftならきっといつかはやってくれるはず！（実際、GWT用に空気読んでJavaScriptからJavaの定義を吐いてくれるものは存在するとか）</p>
-<h2>まとめ</h2>
-<p>プレーンなJavaScriptはほぼほぼTypeScriptになります。素晴らしい互換性です！一方、型定義自動生成のほうは無理でした。地道に頑張りましょう。</p>
-<p>あ、そうそう、今回の記事で言いたいのは別に表題通りの話じゃあないです。既存JSは既存JSとして使えばいいので、わざわざTypeScript化する必要なんて全然ありません。いえ、あります、ちゃんと型付けするならば。でも、今回のようにanyを付けて回る程度の話は全くの無意味です。じゃあどうでもいいかといえば、やっぱりそうじゃなくて、TypeScriptとJavaScriptの互換性というのはどういうものなのか、というとこは位置づけ的には大事ですからね、漠然とじゃあなく抑えておきたいところ。</p>
-</div>
 <a href="https://neue.cc/11">Prev |</a>
 <a href="https://neue.cc/13">| Next</a>
 </div>
@@ -1919,6 +1985,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2023/09/">2023-09</a>
 <li><a href="https://neue.cc/2023/07/">2023-07</a>
 <li><a href="https://neue.cc/2023/03/">2023-03</a>
 <li><a href="https://neue.cc/2023/01/">2023-01</a>
