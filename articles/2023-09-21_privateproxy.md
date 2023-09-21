@@ -1,4 +1,4 @@
-# PrivateProxy
+# .NET 8 UnsafeAccessor を活用したライブラリ PrivateProxy を公開しました
 
 PrivateProxyというライブラリを公開しました。つまるところ、privateフィールド/プロパティ/メソッドにアクセスするライブラリなのですが、.NET 8 のUnsafeAccessorという新機能を活用することでNo Reflection、ハイパフォーマンス、AOTセーフになっています。
 
