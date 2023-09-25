@@ -25,7 +25,7 @@ public partial struct SampleProxy;
 
 ```csharp
 // You can access like this.
-var sample = new SampleProxy();
+var sample = new Sample();
 sample.AsPrivateProxy()._field1 = 10;
 ```
 
