@@ -205,15 +205,20 @@ Utf8String.Format($"Double value is {123.456789:.###}");
 ただし、 `DateTime`, `DateTimeOffset`, `TimeSpan` に関しては `Utf8Formatter` を使わない処理をしているため、全てのターゲットプラットフォームでカスタム書式指定が利用可能です！
 
 ```csharp
-// .NET 8 supports all numeric custom format string but .NET Standard 2.1, .NET 6(.NET 7) does not.
-Utf8String.Format($"Double value is {123.456789:.###}");
-
 // DateTime, DateTimeOffset, TimeSpan support custom format string on all target plaftorms.
 // https://learn.microsoft.com/en-us/dotnet/standard/base-types/custom-date-and-time-format-strings
 Utf8String.Format($"Today is {DateTime.Now:yyyy-MM-dd}");
 ```
 
 とにかくDateTimeの書式指定がまともに出来ないのはZString/ZLoggerで一番辛かったところなので、それを改善できてとても良かった……。ただしこの対応により、DateTimeの変換性能が落ちているため、性能が最大限引き出せるのは .NET 8 となります。
+
+## Unity
+
+Unity対応はありません！いや、可能な限り私は .NET と Unityの両対応のライブラリを作りたいと思っていて、実際今までもそうしてきているわけですが、今回ばかりはどうにもならないのです。そもそもImproved Interpolated Stringsが C# 10.0 からで、Unityの現在のC#のバージョンは C# 9.0……！さすがにそれはどうにもならない。
+
+C# 9.0で止まってから結構長いんですよね。別にランタイムのバージョンは上げなくてもいいから、コンパイラのバージョンだけ上げて欲しいと切実に思いますが、まぁC# 10.0にしたらDefaultInterpolatedStringHandlerがなくて動作しないじゃんとかなるだろうから、結局はランタイムのバージョンアップもセットでやらなければならない……。
+
+Unityが C# 10.0 に対応したらすぐに対応させるつもりではあります！待ってます！
 
 ## Next
 
