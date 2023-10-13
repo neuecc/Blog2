@@ -23,7 +23,134 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2009/09/04_197.html">.NET Reactive Framework メソッド探訪第一回:FromEvent</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2009/09/07_198.html">.NET Reactive Framework メソッド探訪第二回:AnonymousEnumerable</a></h1>
+<ul class="date"><li>2009-09-07</li></ul>
+<div class="entry_body"><p>予定は常に変更されるもの、というわけで、今回はAnonymousEnumerableとAnonymousEnumeratorを見たいと思います。表に出てこない、internalのクラスな上に、内部でも全然使われていないので、見る必要はあんまりない。のですが、これと対になるAnonymousObservableとAnonymousObserverを見るにあたって、先に慣れ親しんだIEnumerable/Enumeratorで考えたほうが分かりやすかったので、これを先に考えます。</p>
+<pre><code class="language-csharp">class AnonymousEnumerable&lt;T&gt; : IEnumerable&lt;T&gt;
+{
+    private Func&lt;IEnumerator&lt;T&gt;&gt; getEnumerator;
+    public AnonymousEnumerable(Func&lt;IEnumerator&lt;T&gt;&gt; getEnumerator)
+    {
+        // 以下略
+}
+
+class AnonymousEnumerator&lt;T&gt; : IEnumerator&lt;T&gt;
+{
+    private Func&lt;T&gt; current;
+    private Action dispose;
+    private Func&lt;bool&gt; moveNext;
+
+    public AnonymousEnumerator(Func&lt;bool&gt; moveNext, Func&lt;T&gt; current, Action dispose)
+    {
+        this.moveNext = moveNext;
+        this.current = current;
+        this.dispose = dispose;
+    }
+
+    public T Current
+    {
+        get { return this.current(); }
+    }
+
+    public bool MoveNext()
+    {
+        return this.moveNext();
+    }
+    
+    // 以下略
+}
+</code></pre>
+<p>Reflectorで見ちゃってるので、一部だけ(ライセンス！)。ただ、どれも一行なので見るまでもなく何をやってるのか想像付くと思います。 お馴染みのインターフェイスを実装しているだけですが、その実装を全てコンストラクタで受ける関数に任せています。ようするにこれはどういうことなのかというと、実例としてEnumerable.RepeatとSelectをAnonymousEnumerableで実装してみるとこうなります。</p>
+<pre><code class="language-csharp">public static class Enumerable
+{
+    public static IEnumerable&lt;T&gt; Repeat&lt;T&gt;(T element, int count)
+    {
+        return new AnonymousEnumerable&lt;T&gt;(() =&gt;
+        {
+            var index = 0;
+            var current = default(T);
+            return new AnonymousEnumerator&lt;T&gt;(
+                () =&gt; // MoveNext
+                {
+                    if (index == 0) current = element;
+                    return (index++ &lt; count);
+                },
+                () =&gt; current, // Current
+                () =&gt; { } // Dispose
+            );
+        });
+    }
+    
+    // 実際のSelectは&lt;TSource,TResult&gt;ですが、都合により略
+    public static IEnumerable&lt;T&gt; Select&lt;T&gt;(this IEnumerable&lt;T&gt; source, Func&lt;T, T&gt; selector)
+    {
+        return new AnonymousEnumerable&lt;T&gt;(() =&gt;
+        {
+            var enumerator = source.GetEnumerator();
+            return new AnonymousEnumerator&lt;T&gt;(
+                () =&gt; enumerator.MoveNext(),
+                () =&gt; selector(enumerator.Current),
+                () =&gt; enumerator.Dispose()
+            );
+        });
+    }
+}
+</code></pre>
+<p>勿論、普通はyieldを使えばいいわけですが、もしyieldがなければ、こういう形で実装するのが簡潔でベスト、に見える。クロージャでコンパイラにクラス生成を任せているわけですねー。外部イテレータですが、外部のクラスに分割せず中に書けるため、すっきり分かりやすい。この発想はあったけどC#でやるという発想はなかったわ、というわけで結構感動しました。</p>
+<p>そうそう、この仕組みは<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript Library - Home">linq.js</a>と丸っきり同じなのです。感動ってのは、私の基本方針は間違ってなかったんだ！の裏付けでの喜びなので不純です。そのJavaScriptでの実装はこんな感じ。</p>
+<pre><code class="language-javascript">Linq.Object = function(getEnumerator)
+{
+    this.GetEnumerator = getEnumerator;
+}
+
+Linq.Enumerator = function(moveNext)
+{
+    this.Current = null;
+    this.MoveNext = moveNext;
+}
+
+Repeat: function(element, count)
+{
+    return new Linq.Object(function()
+    {
+        var index = 0;
+        return new Linq.Enumerator(function()
+        {
+            if (this.Current == null) this.Current = element;
+            return (index++ &lt; count);
+        });
+    });
+}
+
+Select: function(selector)
+{
+    var source = this;
+    selector = Linq.Utils.CreateFunctor(selector);
+
+    return new Linq.Object(function()
+    {
+        var enumerator = source.GetEnumerator();
+        var index = 0;
+
+        return new Linq.Enumerator(function()
+        {
+            if (enumerator.MoveNext())
+            {
+                this.Current = selector(enumerator.Current, index++);
+                return true;
+            }
+            else
+            {
+                return false;
+            }
+        });
+    });
+}
+</code></pre>
+<p>スコープが若干違うかなって感じですが、大体同じです。(Linq.ObjectはLinq.Enumerableに名前変えよう……)。JavaScriptだからこそ、yieldがなくてもスッキリ定義出来る！と思っていただけに、そっかあ、そういう手を使えば良かったのかと少しショックだったりして。ほんとC#は柔軟な言語で、むしろもうJavaScriptよりもLightWeightだよ！</p>
+<p>さて、次回はAnonymousObservableとAnonymousObserverを見てみることにします。勿論、予定は未定です。ていうかSubscribeはどうした、というと、Subscribeの中身はAnonymousObserverなので全然横道にそれてません、大丈夫です、まだ一直線です。</p>
+</div>
+<h1><a href="https://neue.cc/2009/09/04_197.html">.NET Reactive Framework メソッド探訪第一回:FromEvent</a></h1>
 <ul class="date"><li>2009-09-04</li></ul>
 <div class="entry_body"><p>まず、リアクティブフレームワークとは何ぞや、ということなのですが今のところ<a href="http://www.infoq.com/jp/news/2009/07/Reactive-Framework-LINQ-Events">InfoQ: .NETリアクティブフレームワーク（Rx）がLINQ to Eventsを可能にする</a>の記事ぐらいしか情報はありません。.NET 4.0に含まれる(かもしれない)ということ、現在のところSilverlight Toolkitの単体テストのところにこっそりと配置されていること。それだけです。紹介も、記事中にもリンクされていますが<a href="http://themechanicalbride.blogspot.com/2009/07/introducing-rx-linq-to-events.html">unfold: Introducing Rx (Linq to Events)</a>の一連の記事ぐらいしかありません。これの前文が中々に素敵です。</p>
 <blockquote>
@@ -842,17 +969,6 @@ class MyClass
 <p>画像の一枚目は一週間前のものなので、現在はW.ToLinqは廃止して、E.Fromで動くようになってます。何のこっちゃ。</p>
 <p>このご時世、WSHなんて下火、これからはPowerShellだよねー、って感じですが、それでも私はWSHで頑張る！ WSHでLinq書けるのかゴルァ、を合い言葉に。JavaScript好きだし。まあ、素のJScriptだとEnumeratorを被せなきゃいけなくて列挙処理がゴミで使う気になれないのは確かなのですが、そこをlinq.jsがあれば何とか出来るわけなので、全然WSHは現役で行ける、Windows7時代でも全然行ける、と思います、思いたいです。まあ、あとWindowsサイドバーガジェット(デスクトップガジェット)にも使えるので、もうちっと踏ん張っていきたいな、というところ。Web系で頑張るのは無意味なのでニッチを狙いだしたとかそういうことではありま、す。</p>
 </div>
-<h1><a href="https://neue.cc/2009/08/01_181.html">ver 1.3.0.5 バグ修正とか動かない人用とか色々</a></h1>
-<ul class="date"><li>2009-08-01</li></ul>
-<div class="entry_body"><ul>
-<li><a href="http://neue.cc/software/xboxinfotwit">neue cc - XboxInfoTwit</a></li>
-</ul>
-<p>動かない－、という人にログを出して貰ったお陰で、幾つか問題を潰せました。本当にありがとうございます。自分の環境で再現出来るエラーを潰せるのは当たり前。再現しないエラーを潰せないのは三流。というわけで三流な私はさっぱり分かりませんでした。分かってみれば、ああ、確かに問題だなーって感じなんですけどねえ。</p>
-<p>変更内容は「オフライン→オンライン時投稿のチェックを外していた場合、同期に失敗する不具合を修正」だそうです。えー、こんな初歩ミス埋め込んでたのー、っていうと、そうです、はい、埋め込んでました、はい。げふんげふん。これは酷い。そう、「実績解除」だけ利用できればいいや、って人が利用出来なかったのです、なんだってー。あともう一つ、「GamerTagの入力を大文字小文字を区別しないように変更」です。今まで区別していたので、例えばnEUEcCとか入力すると、同期出来てませんでした。これはいかんですね。いかんので、区別しないようにしました。</p>
-<p>ていうか、自分の環境で再現しない問題、じゃなくてただたんに例外ケースの見積もりが甘すぎなだけですなあ。もうちっと気を引き締めて書かないとダメですね。</p>
-<h2>追記</h2>
-<p>ver 1.3.0.6になりました。1.3.0.4以降は「+記号」が使えなかったっぽいので、それを直しました。ダメダメすぎて涙。</p>
-</div>
 <a href="https://neue.cc/24">Prev |</a>
 <a href="https://neue.cc/26">| Next</a>
 </div>
@@ -876,6 +992,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2023/10/">2023-10</a>
 <li><a href="https://neue.cc/2023/09/">2023-09</a>
 <li><a href="https://neue.cc/2023/07/">2023-07</a>
 <li><a href="https://neue.cc/2023/03/">2023-03</a>

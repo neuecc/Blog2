@@ -23,7 +23,194 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2011/03/10_309.html">Rx + MolesによるC#での次世代非同期モックテスト考察</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2011/03/17_310.html">DynamicAccessor - Chaining Assertion ver.1.4.0.0</a></h1>
+<ul class="date"><li>2011-03-17</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://chainingassertion.codeplex.com/" title="Chaining Assertion">Chaining Assertion - CodePlex</a></li>
+</ul>
+<p>テストブームはまだ続いています。さて、テスト可能性の高い設計は良いのですが、本来あるべきである設計を歪めて(単純なところでいえば、virtualである必要でないものをvirtualにするとか、privateであるべきものをprotectedにするとか、無駄なinterfaceとか、不自然な引数の取り方とか)テスト可能性を確保するのは、私は嫌だなー。などと思っていましたが、しかし、モックについては<a href="http://neue.cc/2011/03/10_309.html" title="neue cc - Rx + MolesによるC#での次世代非同期モックテスト考察">Molesを使うことで、最高の形で解決</a>しました。</p>
+<p>次に何を考えるべきかな、と浮かんだのはprivateのテスト。privateのテストは考えないという流儀もあるし、それは尤もだと思いますが、publicのものをテストするにも、ちょっと確認とりたかったり値を弄ってやりたかったりなど、触れると楽な場合もいっぱいあるので、出来るにこしたことはありません。MSTestにはAccessorの自動生成で完全なタイプセーフとIntelliSenseの保証をしてくれて、それはそれで大変素敵。なのですが、もう少し軽くテスト出来る機構を用意しました。MSTestへの依存はないので、NUnitでも他のテストフレームワークでも使えます。</p>
+<p>privateへのアクセスはリフレクションが常套手段ですが、C#4.0ならdynamicがあるよね。というわけで、dynamicで包んだアクセサを用意しました。dynamicにしたからってprivateのものは呼び出せないので、DynamicObjectで包んでリフレクション経由になるようにしています。</p>
+<h2>AsDynamic()</h2>
+<p>こんな感じで使えます。</p>
+<pre><code class="language-csharp">// こんなprivateばっかなクラスがあったとして
+public class PrivateMock
+{
+    private string privateField = &quot;homu&quot;;
+
+    private string PrivateProperty
+    {
+        get { return privateField + privateField; }
+        set { privateField = value; }
+    }
+
+    private string PrivateMethod(int count)
+    {
+        return string.Join(&quot;&quot;, Enumerable.Repeat(privateField, count));
+    }
+}
+
+// AsDynamic()をつけるだけでPrivateプロパティが呼べる
+var actual = new PrivateMock().AsDynamic().PrivateProperty;
+Assert.AreEqual(&quot;homuhomu&quot;, actual);
+
+// dynamicは拡張メソッドが呼べないのでIsを使う場合はキャストしてくださいな。
+(new PrivateMock().AsDynamic().PrivateMethod(3) as string).Is(&quot;homuhomuhomu&quot;);
+
+// 勿論setも出来ます（インデクサもいけます。ジェネリックメソッドも若干の制限付きですが呼べます）
+var mock = new PrivateMock().AsDynamic();
+mock.PrivateProperty = &quot;mogumogu&quot;;
+(mock.privateField as string).Is(&quot;mogumogu&quot;);
+</code></pre>
+<p>オブジェクトへの拡張メソッドにより、全てのオブジェクトに対しAsDynamic()が使える状態です。IntelliSense汚染なので通常だとあまり許容できることではないのですが、UnitTestなのでOKだろう、と。AsDynamic()後はDynamicObjectとして、全ての呼び出しがリフレクション経由となり、public/privateのメソッド/プロパティ/フィールド/インデクサに自由にアクセス可能となっています。見た目は普通と全く一緒で大変自然なのがdynamicの利点。</p>
+<p>dynamicの状態では拡張メソッドの呼び出しは不可能なので、IsによるAssertionを行う場合は、キャストして型を適用してやる必要があります。メンドクセーという場合はAssert.AreEqualなど、本来用意されているものはobjectが対象なので、そのまんま使えます。どちらでも好き好きでどうぞ。</p>
+<h2>ダイナミックとジェネリックとメソッド呼び出し</h2>
+<p>実装内部の話。DynamicObjectでTryInvokeMemberです。んで、最初はすんごく簡単に実装出来ると思ったんですよ！dynamicでリフレクション包むだけね、はいはい、余裕余裕、と。が、実際に書きだすとどうも引っかかる。オーバーロードが。ジェネリックが。型推論が。ふつーに呼んでるとうまくオーバーロードを解決してくれなくて、AmbiguousMatchException(あいまいな一致)を投げてくれます。なので、手動でマッチさせる必要があります。</p>
+<pre><code class="language-csharp">public override bool TryInvokeMember(InvokeMemberBinder binder, object[] args, out object result)
+{
+    var csharpBinder = binder.GetType().GetInterface(&quot;Microsoft.CSharp.RuntimeBinder.ICSharpInvokeOrInvokeMemberBinder&quot;);
+    if (csharpBinder == null) throw new ArgumentException(&quot;is not generic csharp code&quot;);
+
+    var typeArgs = (csharpBinder.GetProperty(&quot;TypeArguments&quot;).GetValue(binder, null) as IList&lt;Type&gt;).ToArray();
+    var method = MatchMethod(binder.Name, args, typeArgs);
+    result = method.Invoke(target, args);
+
+    return true;
+}
+
+private Type AssignableBoundType(Type left, Type right)
+{
+    return (left == null || right == null) ? null
+        : left.IsAssignableFrom(right) ? left
+        : right.IsAssignableFrom(left) ? right
+        : null;
+}
+
+private MethodInfo MatchMethod(string methodName, object[] args, Type[] typeArgs)
+{
+    // name match
+    var nameMatched = typeof(T).GetMethods(TransparentFlags)
+        .Where(mi =&gt; mi.Name == methodName)
+        .ToArray();
+    if (!nameMatched.Any()) throw new ArgumentException(string.Format(&quot;\&quot;{0}\&quot; not found : Type &lt;{1}&gt;&quot;, methodName, typeof(T).Name));
+
+    // type inference
+    var typedMethods = nameMatched
+        .Select(mi =&gt;
+        {
+            var genericArguments = mi.GetGenericArguments();
+
+            if (!typeArgs.Any() &amp;&amp; !genericArguments.Any()) // non generic method
+            {
+                return new
+                {
+                    MethodInfo = mi,
+                    TypeParameters = default(Dictionary&lt;Type, Type&gt;)
+                };
+            }
+            else if (!typeArgs.Any())
+            {
+                var parameterGenericTypes = mi.GetParameters()
+                    .Select(pi =&gt; pi.ParameterType)
+                    .Zip(args.Select(o =&gt; o.GetType()), Tuple.Create)
+                    .GroupBy(a =&gt; a.Item1, a =&gt; a.Item2)
+                    .Where(g =&gt; g.Key.IsGenericParameter)
+                    .Select(g =&gt; new { g.Key, Type = g.Aggregate(AssignableBoundType) })
+                    .Where(a =&gt; a.Type != null);
+
+                var typeParams = genericArguments
+                    .GroupJoin(parameterGenericTypes, x =&gt; x, x =&gt; x.Key, (_, Args) =&gt; Args)
+                    .ToArray();
+                if (!typeParams.All(xs =&gt; xs.Any())) return null; // types short
+
+                return new
+                {
+                    MethodInfo = mi,
+                    TypeParameters = typeParams
+                        .Select(xs =&gt; xs.First())
+                        .ToDictionary(a =&gt; a.Key, a =&gt; a.Type)
+                };
+            }
+            else
+            {
+                if (genericArguments.Length != typeArgs.Length) return null;
+
+                return new
+                {
+                    MethodInfo = mi,
+                    TypeParameters = genericArguments
+                        .Zip(typeArgs, Tuple.Create)
+                        .ToDictionary(t =&gt; t.Item1, t =&gt; t.Item2)
+                };
+            }
+        })
+        .Where(a =&gt; a != null)
+        .Where(a =&gt; a.MethodInfo
+            .GetParameters()
+            .Select(pi =&gt; pi.ParameterType)
+            .SequenceEqual(args.Select(o =&gt; o.GetType()), new EqualsComparer&lt;Type&gt;((x, y) =&gt;
+                (x.IsGenericParameter)
+                    ? a.TypeParameters[x].IsAssignableFrom(y)
+                    : x.Equals(y)))
+        )
+        .ToArray();
+
+    if (!typedMethods.Any()) throw new ArgumentException(string.Format(&quot;\&quot;{0}\&quot; not match arguments : Type &lt;{1}&gt;&quot;, methodName, typeof(T).Name));
+
+    // nongeneric
+    var nongeneric = typedMethods.Where(a =&gt; a.TypeParameters == null).ToArray();
+    if (nongeneric.Length == 1) return nongeneric[0].MethodInfo;
+
+    // generic--
+    var lessGeneric = typedMethods
+        .Where(a =&gt; !a.MethodInfo.GetParameters().All(pi =&gt; pi.ParameterType.IsGenericParameter))
+        .ToArray();
+
+    // generic
+    var generic = (typedMethods.Length == 1)
+        ? typedMethods[0]
+        : (lessGeneric.Length == 1 ? lessGeneric[0] : null);
+
+    if (generic != null) return generic.MethodInfo.MakeGenericMethod(generic.TypeParameters.Select(kvp =&gt; kvp.Value).ToArray());
+
+    // ambiguous
+    throw new ArgumentException(string.Format(&quot;\&quot;{0}\&quot; ambiguous arguments : Type &lt;{1}&gt;&quot;, methodName, typeof(T).Name));
+}
+
+private class EqualsComparer&lt;TX&gt; : IEqualityComparer&lt;TX&gt;
+{
+    private readonly Func&lt;TX, TX, bool&gt; equals;
+
+    public EqualsComparer(Func&lt;TX, TX, bool&gt; equals)
+    {
+        this.equals = equals;
+    }
+
+    public bool Equals(TX x, TX y)
+    {
+        return equals(x, y);
+    }
+
+    public int GetHashCode(TX obj)
+    {
+        return 0;
+    }
+}
+</code></pre>
+<p>泥臭い。LINQ的には普段あまり使わないGroupJoinや、SequenceEqualでのIEqualityComparerとか、ここぞとばかりに色々仕込んで実に楽しげになりました。何とも酷いゴリ押し。速度とかどうなのこれ、ただリフレクションを使っただけじゃないよね、というのは、UnitTestですから。だから、許容される。そうでなければ、やれない。</p>
+<p>名前からマッチ-&gt;型の当てはめ-&gt;実引数からマッチ-&gt;非ジェネリックメソッドを優先-&gt;引数が全てジェネリックでなければ優先-&gt;最終的にメソッドが一つにまで絞り込めなければエラー。コンパイラの行う、正確なオーバーロードの解決法はC#言語仕様書の7.5.3に書いてあります。従っていません。というか、outとかrefとか非対応だし、ジェネリックに関しても持ってる情報が足りなすぎてマッチしたくてもできない。特に痛いのはコード上での型が吹っ飛んでいて、GetTypeによる具象型しか取得できないこと。そのせいで、引数の複数の同一のTは、ほぼ同じ型同士でないとダメになってしまっていて（コード上で宣言しているインターフェイスの情報が取れないのでどうしょもない）。その他、入れ子なジェネリックの場合もコケます(対応させるの面倒くさい)。</p>
+<p>でも、ふつーの9割がたなシチュエーションでは動作するはずです。</p>
+<p>ちなみに、ジェネリックの型引数は通常、DynamicObjectのBinderでは取得出来ません。Binderの実際の型(の持つインターフェイス)であるICSharpInvokeOrInvokeMemberBinderのTypeArgumentsが持っているのですが、ICSharpInvokeOrInvokeMemberBinderがinternalのため、外側から手出しは出来ないのです。どうするかって、もうここまで来たら何も躊躇うことなくリフレクションです本当にありがとうございました。GetInterface(&quot;Microsoft.CSharp.RuntimeBinder.ICSharpInvokeOrInvokeMemberBinder&quot;);とか、負けたにも程がある。</p>
+<p>そんなわけで、ふつーに作ると存外面倒くさいっぽいです。いや、こんな泥臭くなるのは何かおかしい気はかなりしなくもないんですが、うーん。まあ、泥臭くてもライブラリ側で吸収出来るなら、それはそれでいいかな、と。結果だけを見れば。ライブラリが泥臭さを担保するかわりに、ユーザーはAsDynamic()だけで綺麗に呼び出せる。それはとっても嬉しいなって。</p>
+<h2>余談</h2>
+<p>そんなDynamicAccessorのテスト作るのにIsとかAssertEx.Throws、あって良かった。大変助かった。ExpectedExceptionAttributeなんて使ってられない。どっぐふーどどっぐふーど。個人的にはMSTestは凄い好きというか、テストツール選ぶのにあたって優先度が一番高い項目はIDE統合(デバッグ含むというかデバッグ最重要)なので、統合できてないものはその時点でアウトです(どれも、一手間加えれば統合出来るのでしょうけれど)。その上で、<a href="http://chainingassertion.codeplex.com/" title="Chaining Assertion">Chaining Assertion</a>を使えばMSTestの色々な不満が一気に解消出来て、最高に幸せだなあ、と、自画自賛。</p>
+<h2>まとめ</h2>
+<p>当初のIsだけでサクッと軽量なテスト～とかってノリは何処に行ったんでしょうか。ぐぬぬ。それでも、最大限のシンプルさは保ち続けている、と、思いたい。内部がどうあれ、外からはAsDynamic()が足されただけだし、それ自体もシンプルそのものですよね、ね？コンセプトはまだ守れてると、思いたい。</p>
+<p>ところで、dynamic使ってます？ぶっちけ全然使ってません。結局のところvarが最高に便利なわけで、dynamicは、例えば以前書いた<a href="http://dynamicjson.codeplex.com/" title="DynamicJson">DynamicJson</a>であったり、これのようなリフレクションであったりと、通常のC#とは違う場所との糊なわけで、そうそう出番のあるものでもない、ですねん。C#4.0の言語的な追加の最たるものはdynamicなわけですが、普段はそんな使わない代物なわけだと、言語的にはC#4.0はあんま変わらなかったねー、という印象で。LL的な視点から、C#にはdynamicで動的言語でもあるんだって？という意見をたまに見ますが、純C#上ではぶっちゃけほとんど使わないのでそんなでもない。</p>
+<p>じゃあなくてもいいか、というと、んー、まあ、このように、たまにある分には便利だし、言語的にもスムースに入り込んでいるので、良いのではないか、むしろ良いのではないか、とは思います。あんま使わないけどたまには思い出してあげると大変可愛い。</p>
+<p>そういえば私は<a href="http://ja.wikipedia.org/wiki/%E3%83%A1%E3%82%BF%E6%A7%8B%E6%96%87%E5%A4%89%E6%95%B0" title="メタ構文変数 - Wikipedia">メタ構文変数</a>としてhoge, huga, hageの順にhogehogeと使ってるのですが、Twiterでhomuにする。というのを見て、なんかいいな、とか思ってしまったので、当分はhomu, mogu, mamiの順に使おうかと思っている昨今。こーいうのは半年後ぐらいに、あちゃーという気持ちになるのが常なのですがー。</p>
+</div>
+<h1><a href="https://neue.cc/2011/03/10_309.html">Rx + MolesによるC#での次世代非同期モックテスト考察</a></h1>
 <ul class="date"><li>2011-03-10</li></ul>
 <div class="entry_body"><p>最近、妙にテストブームです。<a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>を作ったからですね。ライブラリドリブンデベロップメント。とりあえずでも何か作って公開すると、その分野への情報収集熱に火がつくよね。そして<a href="http://gihyo.jp/dev/serial/01/tdd/0014">テスト厨</a>へ。さて、ユニットテストで次に考えるべきは、モックの活用。C#でモックといえば<a href="http://code.google.com/p/moq/">Moq</a>が評価高い。メソッドチェーンとExpression Treeを活かしたモック生成は、なるほど、良さそうです。読み方も可愛いしね。もっきゅ。もっきゅ。</p>
 <p>というわけでスルーして(えー)<a href="http://research.microsoft.com/en-us/projects/pex/">Moles</a>を使いましょう。Microsoft Research謹製のモックフレームワークです。PexとのセットはMSDN Subscriptionが必要ですが、MolesのみならばFreeです。VS Galleryに置かれているので、VSの拡張機能マネージャーからでも検索に引っかかります。</p>
@@ -1166,101 +1353,6 @@ Enumerable.prototype.Select = function (selector)
 <p>とはいっても、公式では出来ないこと、出来ない付加価値は、まだまだ幾らでも足せるはずです！現時点でも無名関数の文字列ショートカット、WSH対応、vsdoc、大量の拡張メソッド、jQueryプラグイン化とやってきたし、これらは公式では出せないはず。で、まだネタはあります。今思っているのはClosure CompilerのAdvanced Optimizations対応、任意で配列のprototype拡張の追加、ですねえ。特に後者は、ちょっとしたことには大分便利になるはずだと思っています。</p>
 <p>あとは、もしかしたらlinq.jsがRxJSやl2o.jsに影響を与えたのではないか？と考えると、嬉しい話ですかねー。ふむふむ。ま、その辺も含めて今年のRx周りは激しく加速しそうですね。</p>
 </div>
-<h1><a href="https://neue.cc/2011/01/13_295.html">LINQの仕組みと遅延評価の基礎知識</a></h1>
-<ul class="date"><li>2011-01-13</li></ul>
-<div class="entry_body"><p>新年明けましておめでとうございます。その第一弾の記事は<a href="http://www.amazon.co.jp/gp/product/4774145165?ie=UTF8&tag=ilsgeometrati-22&linkCode=as2&camp=247&creative=7399&creativeASIN=4774145165">実践 F# 関数型プログラミング入門</a><img src="http://www.assoc-amazon.jp/e/ir?t=ilsgeometrati-22&l=as2&o=9&a=4774145165" width="1" height="1" border="0" alt="" style="border:none !important; margin:0px !important;" />の書評にしようと思っていたのですが、もう少し時間がかかりそうなので、せっかくの年始は基礎から考えようということで、LINQと遅延評価について最初から解説します。まあ、何をもって最初だとか基礎だとか言うのも難しいので私的な適当な基準で。つまり役に立たな（ry。なお、ここではLinq to Objects、IEnumerable&lt;T&gt;の連鎖についてのみ扱いますので、IQueryableについてはまた後日というか実のところ私はQueryableは全然分かってなくてやるやる詐欺が今も続いているといううがががが。</p>
-<h2>メソッドチェーン != return this</h2>
-<p>例によって単純なコードで。</p>
-<pre><code class="language-csharp">var query = Enumerable.Range(1, 10).Select(i =&gt; i * i).Take(5);
-foreach (var item in query)
-{
-    Console.WriteLine(item); // 1, 4, 9, 16, 25
-}
-</code></pre>
-<p>1から10を二乗したうちの先頭5つを出力という、それだけのコードです。foreachする場合のinの右側が長くなるのは個人的に好きじゃないので、わざわざ変数に置いたりするのをよくやるのですが、これは好みですかねえ。なのでリスト内包表記とかあんま好きじゃなかったりはする、記法的に。</p>
-<p>それはともかく、ドットで繋げていると実体が隠れてしまいがちなので、分解します。</p>
-<pre><code class="language-csharp">var rangeEnumerable = Enumerable.Range(1, 10);
-var selectEnumerable = rangeEnumerable.Select(i =&gt; i * i);
-var takeEnumerable = selectEnumerable.Take(5);
-foreach (var item in takeEnumerable)
-{
-    Console.WriteLine(item);
-}
-</code></pre>
-<p>変数だらけでゴチャゴチャして余計に分からない。良く分からないものは、とりま図で。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/linq_illustrate_whole.jpg">
-</p>
-<p>こうなってます。中に、一つ前のものを内包している新しいオブジェクトを返しています。メソッドチェーンというと所謂ビルダー的な、もしくはjQueryなんかを想像してしまってチェーン毎に内部の状態が変化して return this するか、もしくは完全に新しいものを生成して返す（array.filter.mapしたら.filterで完全に新しい配列が生成され返って、.mapでも、的な。DeepCopyも同じようなものですか）みたいなのを想像してしまう感もあるのですが、そのどちらでもない。中に仕舞い込んで新しい包を返す。実に副作用レスでピュアい。</p>
-<p>このことはデバッガで確認出来ます。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/linq_debugger_whole.jpg">
-</p>
-<p>面白いのはSelectの戻り値の型で、WhereSelectEnumerableIteratorとなっていて、名前のとおりWhereとSelectが統合されていたりします。これは、Where-&gt;Selectが頻出パターンのためパフォーマンス向上のためでしょうねえ。面白いですがユーザー的にはあまり気にすることではないので深追いしないで次へ。</p>
-<p>Takeの戻り値であるTakeIteratorはsourceとして中にSelectの戻り値であるWhereSelectEnumerableIteratorを抱えていて、Selectの戻り値はRangeの戻り値であるRangeIteratorを、中に抱えています。という連鎖が成り立っていることがしっかり確認できました。Visual Studioのデバッガは大変見やすくてよろしい。</p>
-<h2>遅延評価と実行</h2>
-<p>hogeEnumerableに包まれている状態では、まだ何も実行は開始されていません。そう、遅延評価！このままWhereやSkipを繋いでも、新たなhogeEnumerableで包んで返されるだけで実行はされません。ではいつ実行されるかといえば、IEnumerable&lt;T&gt;以外の、何らかの結果を要求した時です。それはToArrayであったり、Maxであったり、foreachであったり。</p>
-<p>foreachを実行した時の動きを、図（但し致命的に分かりづらい）で見ると……</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/linq_pull_cycle.jpg">
-</p>
-<p>まず最初は最外周のtakeEnumerableに対しGetEnumeratorを実行し、IEnumerator&lt;T&gt;を取り出します。そして取り出したIEnumerator&lt;T&gt;に対しMoveNextの実行をすると、その先ではまた中に抱えたIEnumerable&lt;T&gt;に対しGetEnumeratorでIEnumerator&lt;T&gt;を取り出し、の連鎖が大元(この場合はrangeEnumerable)に届くまで続きます。</p>
-<p>大元まで届いたら、いよいよMoveNextの結果が返されます。trueか、falseか。trueの場合は、通常は即座に現在値(Current)の取得も行うので、Currentが根本から下まで降りていくイメージとなります。あとは、どこかのMoveNextがfalseを返してくるまで、その繰り返し。今回はRangeが10個出力、Takeが5個出力なので、Rangeが5回分余りますがTakeで列挙は途中打ち切り。falseを流して終了させます。SumやCountなど値を返すものは、falseが届いたら結果を返しますが今回はforeachなのでvoid、何もなしで終了。</p>
-<h2>イテレータの実装</h2>
-<p>ついでなので、動作の実態であるイテレータも実装します。単純な、0から10までを返すだけのものを例として。</p>
-<pre><code class="language-csharp">public class ZeroToTenIterator : IEnumerator&lt;int&gt;
-{
-    private int current = -1;
-
-    public int Current
-    {
-        get { return current; }
-    }
-
-    public bool MoveNext()
-    {
-        return ++current &lt;= 10;
-    }
-
-    // 必要でなければ空でもいいや、という感じ
-    public void Dispose() { }
-
-    // TじゃないほうはTのほうを返すようにするだけでおk
-    object System.Collections.IEnumerator.Current { get { return Current; } }
-
-    // Resetは産廃なのでスルー、実装しなくていいです、Interfaceからも削られて欲しいぐらい
-    public void Reset() { throw new NotImplementedException(); }
-}
-
-// 使うときはこんな感じでしょーか
-// IEnumerator&lt;T&gt;利用時はusingも忘れないように……
-using (var e = new ZeroToTenIterator())
-{
-    while (e.MoveNext())
-    {
-        Console.WriteLine(e.Current);
-    }
-}
-</code></pre>
-<p>IEnumerator&lt;T&gt;ですが、見てきたとおり、中核となるのはMoveNextとCurrentです、といってもCurrentはキャッシュした値を中継するだけなので、実質実装しなければならないのはMoveNextだけ(場合によりDisposeも)。</p>
-<p>見たとおりに一行の超単純な、10超えるまでインクリメントでtrue、超えたらfalse。なんかとってもいい加減な感じで、falseだろうとMoveNext()を呼んだらCurrentの値がどんどん増加していっちゃって大丈夫か？というと、全然問題ない。と、いうのも、そういうのは利用側の問題であって実装側が気にする必要はないから。</p>
-<p>MoveNextする前のCurrentの値は保証されていないので使うな、であり、MoveNextがfalseを返した後のCurrentの値は保証されてないので使うな、です。大事なお約束です。お約束を守れない人は生イテレータを使うべからず。Linqのクエリ演算子やforeachは、そんな他所事を考えないで済むようになっているので、それらを使いましょう。生イテレータを取得したら負けです(拡張メソッド定義時は除く、つまりライブラリ的な局面以外では避けましょう)</p>
-<p>ちなみにStringのイテレータは列挙前/列挙後のCurrentへのアクセスで例外が飛び、List&lt;T&gt;は列挙前は0、列挙後も0にリセットされ、Enumerable.Rangeでは列挙後は最後の値が返る、といったように、実際に挙動はバラバラです。</p>
-<p>実装側が守らなければならないルールは、MoveNextが一度falseを返したら、以後はずっとfalseを返し続けること。で、その観点で、このZeroToTenIteratorを見ると、実のところ全然ダメです。MoveNextがint.MaxValue回呼び出されるとcurrentがオーバーフローしてint.MinValueになって、つまりはMoveNextの結果もfalseからtrueに変わってしまいます。腐ってますね。殺害されるべき。誰がそんなに呼ぶんだよ、という感じに普段はあんま気にしないゆとりな私ですが、いえいえ、こういう時ぐらいは気にしたりします。</p>
-<p>オーバーフローはうっかりで見落としがちなので、ヘラヘラゆとりゆとりと笑ってないで、普段から注意すべきだと自戒するこの頃。</p>
-<p>まあ、今時はイテレータの手実装なんてする必要ないのですがね！シンプルなものならばLinqの組み合わせで実現出来ますし、そうでないものはyield returnを使えばいいので。手実装じゃなきゃダメなシチュエーションってなにかある、かなあ？</p>
-<h2>まとめ</h2>
-<p>「return thisじゃなくて新しいオブジェクトを返してる」「配列的なイメージで扱えるけれど実体はストリームのほうが近い」「デバッガ素晴らしすぎる」「生禁止」の以上四点でした。</p>
-<p>Linq to ObjectsのJavaScript移植である<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js</a>も同じ仕組みでやっているので、そちらのコードのほうがブラックボックスでなく、また、素直に書いているので分かりやすくお薦め、かどうかは、微妙なところですんがー。ブラックボックスになっている部分(yield returnなど)を表に出しているので(というか出さないと実装出来ない)余計分かりにくい感も。</p>
-<p>で、基礎からのLinqといえば紹介したいシリーズが一つ。</p>
-<p>LondonのGooglerでMicrosoft MVPでC# in Depthの著者でStack Overflowで凄まじい解答量を誇るJon Skeet氏が、Blogで<a href="http://msmvps.com/blogs/jon_skeet/archive/tags/Edulinq/default.aspx">Reimplementing LINQ to Objects</a>と称して、これまた凄まじい勢いで再実装&amp;超詳細な解説をやっているので必見です。</p>
-<p>詳細、どころの話じゃなく詳細で大変ヤバ素晴らしすぎる。単純なサンプルコードと結果を貼ってメソッド紹介、などという記事とは一線を画しすぎるクオリティ。私もこういう記事を書いていきたいものです。こんな量とスピードの両立は超人すぎて無理ですが、今年は記事のクオリティは上げたいですね。</p>
-<iframe src="https://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=1935182471" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
-<iframe src="https://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=0672330792" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
-<p>C# in Depth 2nd Editionはつい二ヶ月前に出たばかりで、内容も良さそうですね、読んでみたい本です。しかし私の手元には積み本がいっぱいで、とほほ。で、本といえばもう一つ、C# 4.0 Unleashedがもうすぐ(2011/1/14、明日だね)出ます。これは著者がBart De Smet氏なので大注目です。<a href="http://community.bartdesmet.net/blogs/bart/Default.aspx" title="B# .NET Blog">B# .NET Blog</a>でキレキレのLinqコード、だけじゃなくILからSQLからあらゆる領域にエキスパートな凄さを見せているので超楽しみです。こちらは予約してあるので、届くのが本当に楽しみで（洋書なので届くのは月末予定のよう、F#本が読み終えた頃になる予定なのでちょうどいいー）。</p>
-<p>Bart氏は大学時代はベルギーのMicrosoft MVP for Visual C#、その後MicrosoftのWPFチームに入り、現在はCloud Programmability Team、つまりRxを開発しているチームに入ってます。氏が入ってからIQbservableとかヘンテコなのが次々と上がってきて、ますます目が離せない状態に。PDC10では<a href="http://player.microsoftpdc.com/Session/bfa72307-6534-41ad-bcf7-0f4fb9280515">LINQ, Take Two - Realizing the LINQ to Everything Dream</a>というセッションを行ってましたが、これは本当に必見。Linqの過去、そして未来を見る素晴らしいセッションでした。感動しすぎて3回ぐらい見直した。</p>
-<p>LINQは今後「ますます」重要になるので、しっかり土台を固めて、未来へ向かおう！</p>
-</div>
 <a href="https://neue.cc/17">Prev |</a>
 <a href="https://neue.cc/19">| Next</a>
 </div>
@@ -1284,6 +1376,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2023/10/">2023-10</a>
 <li><a href="https://neue.cc/2023/09/">2023-09</a>
 <li><a href="https://neue.cc/2023/07/">2023-07</a>
 <li><a href="https://neue.cc/2023/03/">2023-03</a>

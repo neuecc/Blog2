@@ -23,7 +23,182 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2023/09/21_privateproxy.html">.NET 8 UnsafeAccessor を活用したライブラリ PrivateProxy を公開しました</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2023/10/13_Utf8StringInterpolation.html">UTF8文字列生成を最適化するライブラリ Utf8StringInterpolation を公開しました</a></h1>
+<ul class="date"><li>2023-10-13</li></ul>
+<div class="entry_body"><p>Utf8StringInterpolationという新しいライブラリを公開しました！UTF8文字列の生成と書き込みに特化していて、動作をカスタマイズした文字列補間式によるC#コンパイラの機能を活用した生成と、StringBuilder的な連続的な書き込みの両方をサポートします。</p>
+<ul>
+<li><a href="https://github.com/Cysharp/Utf8StringInterpolation">Cysharp/Utf8StringInterpolation</a></li>
+</ul>
+<p>基本的な流れはこんな感じで、Stringを生成するのと同じように、UTF8を生成/書き込みできます。</p>
+<pre><code class="language-csharp">using Utf8StringInterpolation;
+
+// Create UTF8 encoded string directly(without encoding).
+byte[] utf8 = Utf8String.Format($&quot;Hello, {name}, Your id is {id}!&quot;);
+
+// write to IBufferWriter&lt;byte&gt;(for example ASP.NET HttpResponse.BodyWriter)
+Utf8String.Format(bufferWriter, $&quot;Today is {DateTime.Now:yyyy-MM-dd}&quot;); // support format
+
+// like a StringBuilder
+var writer = Utf8String.CreateWriter(bufferWriter);
+writer.Append(&quot;My Name...&quot;);
+writer.AppendFormat($&quot;is...? {name}&quot;);
+writer.AppendLine();
+writer.Flush();
+
+// Join, Concat methods
+var seq = Enumerable.Range(1, 10);
+byte[] utf8seq = Utf8String.Join(&quot;, &quot;, seq);
+</code></pre>
+<p>Cysharpから公開している <a href="https://github.com/Cysharp/ZString/">ZString</a> と非常に近いのですが、ZStringがString(UTF16), UTF8をサポートしていたのに対して、UTF8側のみを取り出して強化したようなイメージになります。何が強化なのかというと、C# 10.0から<a href="https://github.com/dotnet/csharplang/blob/main/proposals/csharp-10.0/improved-interpolated-strings.md">Improved Interpolated Strings</a>として、文字列補間式($&quot;foo{bar}baz&quot;)のパフォーマンスが大きく向上しました。具体的には、コンパイラが文字列補間式の構造を分解して、値が埋め込まれている箇所はGenericsのまま渡すようになりボクシングが消滅しました。つまりZStringでやっていたことではあるのですが、ZStringはC# 10.0以前のものですからね……！逆に言えば、これによってZStringは半分は不要となったわけです。</p>
+<p>もう半分、UTF8側に関しては依然として標準のサポートは薄い、というかほぼない状態です。しかし、Improved Interpolated Strings は文字列補間式での挙動を自由にカスタマイズできるという性質も追加されています。というわけで、文字列補間式を利用してUTF8を組み立てられるようにすればいいのではないか、というのがUtf8StringInterpolationのコンセプトであり、正しくZLoggerの後継として位置づけていることでもあります。</p>
+<pre><code class="language-csharp">// こういう文字列補間式を渡すと:
+// Utf8String.Format(ref Utf8StringWriter format)
+Utf8String.Format($&quot;Hello, {name}, Your id is {id}!&quot;);
+</code></pre>
+<pre><code class="language-csharp">// コンパイラが「コンパイル時」にこのような形に展開します。
+var writer = new Utf8StringWriter(literalLength: 20, formattedCount: 2);
+writer.AppendLiteral(&quot;Hello, &quot;);
+writer.AppendFormatted&lt;string&gt;(name);
+writer.AppendLiteral(&quot;, You id is &quot;);
+writer.AppendFormatted&lt;int&gt;(id);
+writer.AppendLiteral(&quot;!&quot;);
+</code></pre>
+<p>コンパイル時に展開してくれるというのは性能上非常に重要で、つまり<code>String.Format</code>のように実行時に文字列式のパースをしないで済む、わけです。また、ボクシングなしに全ての値を書き込みに呼んでくれます。</p>
+<p><code>[InterpolatedStringHandler]</code>を付与している<code>ref Utf8StringWriter</code> に <code>$&quot;{}&quot;</code>を渡すと、自動的に展開してくれるという仕様になっています。そのUtf8StringWriterは以下のような実装になっています。</p>
+<pre><code class="language-csharp">// internal struct writer write value to utf8 directly without boxing.
+[InterpolatedStringHandler]
+public ref struct Utf8StringWriter&lt;TBufferWriter&gt; where TBufferWriter : IBufferWriter&lt;byte&gt;
+{
+    TBufferWriter bufferWriter; // when buffer is full, advance and get more buffer
+    Span&lt;byte&gt; buffer;          // current write buffer
+
+    public void AppendLiteral(string value)
+    {
+        // encode string literal to Utf8 buffer directly
+        var bytesWritten = Encoding.UTF8.GetBytes(value, buffer);
+        buffer = buffer.Slice(bytesWritten);
+    }
+
+    public void AppendFormatted&lt;T&gt;(T value, int alignment = 0, string? format = null)
+        where T : IUtf8SpanFormattable
+    {
+        // write value to Utf8 buffer directly
+        while (!value.TryFormat(buffer, out bytesWritten, format))
+        {
+            Grow();
+        }
+        buffer = buffer.Slice(bytesWritten);
+    }
+}
+</code></pre>
+<p>.NET 8 の場合は、値が <a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.iutf8spanformattable?view=net-8.0">IUtf8SpanFormattable</a> という.NET 8から追加されたインターフェイスを実装している場合(intなど標準のプリミティブはほぼ実装されています）、直接TryFormatによりUTF8としてSpanに書き込みます。</p>
+<p>さすがに .NET 8 にしか対応していません！というのはエクストリームすぎるので、 .NET Standard 2.1, .NET 6(.NET 7)では <a href="https://learn.microsoft.com/en-us/dotnet/api/system.buffers.text.utf8formatter.tryformat?view=net-7.0">Utf8Formatter.TryFormat</a> を使うことで、同様の性能を担保しています。</p>
+<h2>Builder vs Writer</h2>
+<p>ZStringのときはStringBuilderに引っ張られすぎていて、Builderとして内部でバッファを抱えるようにしていたのですが、ちょっとUTF8的な利用ではイマイチだということが徐々に分かってきました。今の .NET の基本は <code>IBufferWriter&lt;byte&gt;</code> である。というのはついこないだのCEDEC 2023での発表 <a href="https://speakerdeck.com/neuecc/cedec-2023-modanhaipahuomansuc-number-2023-edition">モダンハイパフォーマンスC# 2023 Edition</a> でかなり語らせていただいたのですが</p>
+<iframe class="speakerdeck-iframe" frameborder="0" src="https://speakerdeck.com/player/055c0df858f44aafb4b017bb9c03c2e6" title="CEDEC 2023 モダンハイパフォーマンスC# 2023 Edition" allowfullscreen="true" style="border: 0px; background: padding-box padding-box rgba(0, 0, 0, 0.1); margin: 0px; padding: 0px; border-radius: 6px; box-shadow: rgba(0, 0, 0, 0.2) 0px 5px 40px; width: 100%; height: auto; aspect-ratio: 560 / 315;" data-ratio="1.7777777777777777"></iframe>
+<p>BuilderというよりもWriterとして構築すべきだな、ということに至りました。そこで <code>Utf8StringWriter</code> は基本的に<code>IBufferWriter&lt;byte&gt;</code>を受け取ってそれに書き込むという仕様となりました。</p>
+<pre><code class="language-csharp">public ref partial struct Utf8StringWriter&lt;TBufferWriter&gt;
+    where TBufferWriter : IBufferWriter&lt;byte&gt;
+{
+    Span&lt;byte&gt; destination;
+    TBufferWriter bufferWriter;
+    int currentWritten;
+
+    public Utf8StringWriter(TBufferWriter bufferWriter)
+    {
+        this.bufferWriter = bufferWriter;
+        this.destination = bufferWriter.GetSpan();
+    }
+
+    public void Flush()
+    {
+        if (currentWritten != 0)
+        {
+            bufferWriter.Advance(currentWritten);
+            currentWritten = 0;
+        }
+    }
+</code></pre>
+<p>バッファが足りなくなったときは拡大するのではなくて、Advanceして新たにGetSpanを呼んで新しいバッファを確保しにいくという形を取りました。StringBuilderと違ってFlushの概念が必要になってしまいましたが、パフォーマンス的には大きな向上を果たしています。</p>
+<p>Flushが必要ということを除けば、StringBuilderのように扱うことができます。</p>
+<pre><code class="language-csharp">var writer = Utf8String.CreateWriter(bufferWriter);
+
+// call each append methods.
+writer.Append(&quot;foo&quot;);
+writer.AppendFormat($&quot;bar {Guid.NewGuid}&quot;);
+writer.AppendLine();
+
+// finally call Flush(or Dispose)
+writer.Flush();
+</code></pre>
+<p>また、ちょっとStringBuilder的に使いたいだけの時に <code>IBufferWriter&lt;byte&gt;</code> を用意するのは面倒くさい！という場合のために、内部でプーリングを行っているバッファを使えるオーバーロードも用意しています。戻り値がバッファのコントローラーになっていて、ToArrayや他の<code>IBufferWriter&lt;byte&gt;</code>にコピーしたり<code>ReadOnlySpan&lt;byte&gt;</code>の取得ができます。</p>
+<pre><code class="language-csharp">// buffer must Dispose after used(recommend to use using)
+using var buffer = Utf8String.CreateWriter(out var writer);
+
+// call each append methods.
+writer.Append(&quot;foo&quot;);
+writer.AppendFormat($&quot;bar {Guid.NewGuid}&quot;);
+writer.AppendLine();
+
+// finally call Flush(no need to call Dispose for writer)
+writer.Flush();
+
+// copy to written byte[]
+var bytes = buffer.ToArray();
+
+// or copy to other IBufferWriter&lt;byte&gt;, get ReadOnlySpan&lt;byte&gt;
+buffer.CopyTo(otherBufferWriter);
+var writtenData = buffer.WrittenSpan;
+</code></pre>
+<p>その他、<code>Format</code>, <code>Join</code>, <code>Concat</code> メソッドなども <code>IBufferWriter&lt;byte&gt;</code> を受け取るオーバーロードと <code>byte[]</code>を返すオーバーロードの2種を用意しています。</p>
+<h2>.NET 8 と StandardFormat</h2>
+<p>値のフォーマット書式は、特にDateTimeでよく使うと思いますが、数値型などでも多くの書式が用意されています。<a href="https://learn.microsoft.com/ja-jp/dotnet/standard/base-types/formatting-types">.NET の数値、日付、列挙、その他の型の書式を設定する方法</a> や各種カスタム書式指定文字列は非常に便利です。</p>
+<p>しかし、UTF8に値を直接書き込む手段として従来用意されていた<a href="https://learn.microsoft.com/en-us/dotnet/api/system.buffers.text.utf8formatter.tryformat">Utf8Formatter.TryFormat</a>では、その標準的な書式指定文字列は使えませんでした！代わりに用意されたのが<a href="https://learn.microsoft.com/en-us/dotnet/api/system.buffers.standardformat">StandardFormat</a>なのですが、恐ろしく限定的なことしかできず(例えば'G', 'D', or 'X'のような一文字charの指定しかできない)、使い物にならないといっても過言ではないぐらいでした。</p>
+<p>ところが .NET 8 から追加された IUtf8SpanFormattable.TryFormat では、通常の書式指定文字列が帰ってきました！</p>
+<pre><code class="language-csharp">// Utf8Formatter.TryFormat
+static bool TryFormat (int value, Span&lt;byte&gt; destination, out int bytesWritten, System.Buffers.StandardFormat format = default);
+
+// .NET 8 IUtf8SpanFormattable.TryFormat
+bool TryFormat (Span&lt;byte&gt; utf8Destination, out int bytesWritten, ReadOnlySpan&lt;char&gt; format, IFormatProvider? provider);
+</code></pre>
+<p>パラメーターは非常に似ていますが、formatを文字列で受け取るようになっています。実際に比較してみるとこんな感じです。</p>
+<pre><code class="language-csharp">Span&lt;byte&gt; dest = stackalloc byte[16];
+int written = 0;
+
+// ParseできなくてExceptionがthrowされるので表現できない
+Utf8Formatter.TryFormat(123.456789, dest, out written, StandardFormat.Parse(&quot;.###&quot;));
+
+// 123.456
+123.456123.TryFormat(dest, out written, &quot;.###&quot;);
+
+
+// カスタム書式文字列は指定できないので例外！サポートしてるのは `G`, `R`, `l`, `O` だけ！
+Utf8Formatter.TryFormat(DateTime.Now, dest, out written, StandardFormat.Parse(&quot;yyyy-MM-dd&quot;));
+
+// もちろんちゃんと動作する
+DateTime.Now.TryFormat(dest, out written, &quot;yyyy-MM-dd&quot;);
+
+Console.WriteLine(Encoding.UTF8.GetString(dest.Slice(0, written)));
+</code></pre>
+<p>良かった、やと普通の世界が到達した……！これは ZString や、それを内部に使っていた <a href="https://github.com/Cysharp/ZLogger">ZLogger</a>で最もフラストレーションを感じていた点です。</p>
+<p>Utf8StringInterpolationは .NET 8 では全て IUtf8SpanFormattable で変換するようにしています。しかし、 .NET Standard 2.1, .NET 6, .NET 7では残念ながらUtf8Formatter利用となっているので、書式指定に関しては制限があります。数値に関してはターゲットプラットフォームによって動作したりしなかったりが発生します。</p>
+<pre><code class="language-csharp">// .NET 8 supports all numeric custom format string but .NET Standard 2.1, .NET 6(.NET 7) does not.
+Utf8String.Format($&quot;Double value is {123.456789:.###}&quot;);
+</code></pre>
+<p>ただし、 <code>DateTime</code>, <code>DateTimeOffset</code>, <code>TimeSpan</code> に関しては <code>Utf8Formatter</code> を使わない処理をしているため、全てのターゲットプラットフォームでカスタム書式指定が利用可能です！</p>
+<pre><code class="language-csharp">// .NET 8 supports all numeric custom format string but .NET Standard 2.1, .NET 6(.NET 7) does not.
+Utf8String.Format($&quot;Double value is {123.456789:.###}&quot;);
+
+// DateTime, DateTimeOffset, TimeSpan support custom format string on all target plaftorms.
+// https://learn.microsoft.com/en-us/dotnet/standard/base-types/custom-date-and-time-format-strings
+Utf8String.Format($&quot;Today is {DateTime.Now:yyyy-MM-dd}&quot;);
+</code></pre>
+<p>とにかくDateTimeの書式指定がまともに出来ないのはZString/ZLoggerで一番辛かったところなので、それを改善できてとても良かった……。ただしこの対応により、DateTimeの変換性能が落ちているため、性能が最大限引き出せるのは .NET 8 となります。</p>
+<h2>Next</h2>
+<p>さて、とはいえ、UTF8文字列を直接扱わなければならないケースというのは、別にそんなに多くはないでしょう。実際、私も本命は<a href="https://github.com/Cysharp/ZLogger">ZLogger</a>の大型バージョンアップでの利用を考えています。ZLoggerは今まではZStringベースでしたが、根本からデザインをやり直した新しいものを開発中です。その中の文字列化にUtf8StringInterpolationを使っています。</p>
+<p>といったように、アプリケーションの基盤レイヤーに差し込んであげると有効に機能するシチュエーションは色々あると思います。もちろん、直接使ってもらってもいいのですが……！？</p>
+</div>
+<h1><a href="https://neue.cc/2023/09/21_privateproxy.html">.NET 8 UnsafeAccessor を活用したライブラリ PrivateProxy を公開しました</a></h1>
 <ul class="date"><li>2023-09-21</li></ul>
 <div class="entry_body"><p>PrivateProxyというライブラリを公開しました。つまるところ、privateフィールド/プロパティ/メソッドにアクセスするライブラリなのですが、.NET 8 のUnsafeAccessorという新機能を活用することでNo Reflection、ハイパフォーマンス、AOTセーフになっています。</p>
 <ul>
@@ -1003,6 +1178,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2023/10/">2023-10</a>
 <li><a href="https://neue.cc/2023/09/">2023-09</a>
 <li><a href="https://neue.cc/2023/07/">2023-07</a>
 <li><a href="https://neue.cc/2023/03/">2023-03</a>

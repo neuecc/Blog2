@@ -23,7 +23,227 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2013/03/09_400.html">並列実行とSqlConnection</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2013/03/27_401.html">C#のラムダ式でyieldっぽい何かをawaitで代用する方法</a></h1>
+<ul class="date"><li>2013-03-27</li></ul>
+<div class="entry_body"><p>C#がインラインでyield書けないならawait使えばいいじゃない。と、偉い人は言いました。というわけで、こそこそっと開発がされているIxに、面白い機能が入りました（開発リポジトリ上だけなのでNuGetからダウンロードしても、まだ入ってません）。こんなのです。</p>
+<pre><code class="language-csharp">var hoge = &quot;あいうえお&quot;;
+
+var seq = EnumerableEx.Create&lt;int&gt;(async Yield =&gt;
+{
+    await Yield.Return(10);
+    await Yield.Return(100);
+
+    hoge = &quot;ふがふが&quot;; // インラインで書けるのでお外への副作用が可能
+
+    await Yield.Return(1000);
+});
+
+
+foreach (var item in seq)
+{
+    Console.WriteLine(item); // 10, 100, 1000
+}
+Console.WriteLine(hoge); // ふがふが
+</code></pre>
+<p>そう、yield return(っぽい何か)がラムダ式で、メソッド外部に出すことなく書けてしまうのです！これは素敵ですね？い、いや、なんか何やってるのか分からなすぎて黒魔術怖いって雰囲気も漂ってますね！しかし面白いものは面白いので、実装見ましょう。</p>
+<p><a href="http://rx.codeplex.com/SourceControl/changeset/8f1e73bca96e">add types iyielder, iawaitable, and iawait; add support for creating ienumerable from action<iyielder>.</a>ということで、まあ、ローカルで動かしたいんでコピペってきましょう。</p>
+<pre><code class="language-csharp">public static class EnumerableEx
+{
+    public static IEnumerable&lt;T&gt; Create&lt;T&gt;(Action&lt;IYielder&lt;T&gt;&gt; create)
+    {
+        if (create == null) throw new ArgumentNullException(&quot;create&quot;);
+
+        foreach (var x in new Yielder&lt;T&gt;(create))
+        {
+            yield return x;
+        }
+    }
+}
+
+public interface IYielder&lt;in T&gt;
+{
+    IAwaitable Return(T value);
+    IAwaitable Break();
+}
+
+public interface IAwaitable
+{
+    IAwaiter GetAwaiter();
+}
+
+public interface IAwaiter : ICriticalNotifyCompletion
+{
+    bool IsCompleted { get; }
+    void GetResult();
+}
+
+public class Yielder&lt;T&gt; : IYielder&lt;T&gt;, IAwaitable, IAwaiter, ICriticalNotifyCompletion
+{
+    private readonly Action&lt;Yielder&lt;T&gt;&gt; _create;
+    private bool _running;
+    private bool _hasValue;
+    private T _value;
+    private bool _stopped;
+    private Action _continuation;
+
+    public Yielder(Action&lt;Yielder&lt;T&gt;&gt; create)
+    {
+        _create = create;
+    }
+
+    public IAwaitable Return(T value)
+    {
+        _hasValue = true;
+        _value = value;
+        return this;
+    }
+
+    public IAwaitable Break()
+    {
+        _stopped = true;
+        return this;
+    }
+
+    public Yielder&lt;T&gt; GetEnumerator()
+    {
+        return this;
+    }
+
+    public bool MoveNext()
+    {
+        if (!_running)
+        {
+            _running = true;
+            _create(this);
+        }
+        else
+        {
+            _hasValue = false;
+            _continuation();
+        }
+
+        return !_stopped &amp;&amp; _hasValue;
+    }
+
+    public T Current
+    {
+        get
+        {
+            return _value;
+        }
+    }
+
+    public IAwaiter GetAwaiter()
+    {
+        return this;
+    }
+
+    public bool IsCompleted
+    {
+        get { return false; }
+    }
+
+    public void GetResult() { }
+
+
+    public void OnCompleted(Action continuation)
+    {
+        _continuation = continuation;
+    }
+
+    public void UnsafeOnCompleted(Action continuation)
+    {
+        _continuation = continuation;
+    }
+}
+</code></pre>
+<p>ほぅ、わけわからん？若干トリッキーなので、順を追っていきますか。asyncについて考える前に、まず、基本的なforeachのルール。実はIEnumerableを実装している必要はなくて、GetEnumeratorという名前のメソッドがあればいい。同様にMoveNextとCurrentというメソッドがあればIEnumerator扱いされる。なので、foreach (var x in new Yielder<T>(create)) されているYielderはIEnumerableじゃないし、GetEnumeratorでreturn thisされていますが、YielderはIEnumeratorでもない。でも、foreachでグルグル回せている、というわけです。挙動は通常のforeachと同じで、MoveNext→Current、といった形です。</p>
+<p>あと、インターフェイスが、IAwaitableとかいっぱい再定義されてて、ワケワカランのですけれど、そこまで意味あるわけじゃないです。これはラムダ式にYielderを渡すわけですが、そこで内部の諸々が呼べちゃうのはイクナイので隠ぺいする、程度の意味合いでしかないので、これを実装するのにインターフェイスの再定義が必要！というわけは全然ないです。</p>
+<p>で、コアになるのはMoveNext。</p>
+<pre><code class="language-csharp">public bool MoveNext()
+{
+    if (!_running)
+    {
+        _running = true;
+        _create(this);
+    }
+    else
+    {
+        _hasValue = false;
+        _continuation();
+    }
+
+    return !_stopped &amp;&amp; _hasValue;
+}
+</code></pre>
+<p>そもそもyield returnで生成されたメソッドが最初に実行されるのは、GetEnumeratorのタイミングではなく、GetEnumeratorされて最初のMoveNextが走った時、なので、ここが本体になっているのはセマンティクス的に問題なし。</p>
+<p>!_runnningは初回実行時の意味で、ここで_create(this)、によってラムダ式で書いた本体が走ります。</p>
+<pre><code class="language-csharp">var seq = EnumerableEx.Create&lt;int&gt;(async Yield =&gt;
+{
+    await Yield.Return(10);
+    // ↑のとこがまず実行され始める
+    await Yield.Return(100);
+    await Yield.Return(1000);
+});
+
+public IAwaitable Return(T value)
+{
+    _hasValue = true;
+    _value = value;
+    return this;
+}
+</code></pre>
+<p>まずはメソッド実行なのでReturn。これは値をセットして回っているだけ。そしてIAwaitableを返し、await。ここで流れは別のところに行きます。</p>
+<pre><code class="language-csharp">public bool IsCompleted
+{
+    get { return false; }
+}
+
+public void GetResult() { }
+
+
+public void OnCompleted(Action continuation)
+{
+    _continuation = continuation;
+}
+
+public void UnsafeOnCompleted(Action continuation)
+{
+    _continuation = continuation;
+}
+</code></pre>
+<p>まず完了しているかどうかの確認(IsCompleted)が走りますが、この場合は常にfalseで(そうしないと終了ということになってラムダ式のほうに戻ってこなくなっちゃう)。これによってUnsafeOnCompleted(ICriticalNotifyCompletionが実装されている場合はこっちが走る)でcontinuation(メソッド本体)が走る。で、「次回用」に変数保存して、MoveNext(create(this)したとこの位置)に戻ってくる。あとはMoveNextがtrueを返すのでCurrentで値取得して、それがyield returnされる。</p>
+<p>二度目のMoveNextでは</p>
+<pre><code class="language-csharp">public bool MoveNext()
+{
+    if (!_running)
+    {
+        _running = true;
+        _create(this);
+    }
+    else
+    {
+        _hasValue = false;
+        _continuation(); // ここが呼び出されて
+    }
+
+    return !_stopped &amp;&amp; _hasValue;
+}
+
+var seq = EnumerableEx.Create&lt;int&gt;(async Yield =&gt;
+{
+    await Yield.Return(10);
+    // ここから再度走り出す
+    await Yield.Return(100);
+    await Yield.Return(1000);
+});
+</code></pre>
+<p>といった感じになって、以下繰り返し。良く出来てますね！ていうか、asyncなのに非同期全く関係ないのが素敵。そう、asyncは別に非同期関係なく使えちゃうわけです。ここ大事なので繰り返しましょう。asyncは別に非同期関係なく使うことができます。</p>
+<h2>まとめ</h2>
+<p>async、フツーに使うのもそろそろ飽きてき頃だと思うので、弄って遊ぶのは大正義。実際に投下しだすかどうかは判断次第。あと、↑のはまだ大事な要素ができていないので絶対使いませんけれど。大事な要素はIDisposableであること。foreachで大事だと思ってるのはDisposeしてくれるとこ！だとも思っているので、それが実現できてないのはナイナー、と。</p>
+<p>そういえばAsyncについてですが、3/30の土曜に<a href="http://metrostyledev.net/index.php/event/20130330/">Room metro #15</a>でHttpClient(非同期の塊！)について話すので、まだ残席ありますので良ければお越しくだしあー。</p>
+</div>
+<h1><a href="https://neue.cc/2013/03/09_400.html">並列実行とSqlConnection</a></h1>
 <ul class="date"><li>2013-03-09</li></ul>
 <div class="entry_body"><p>どうも、ParallelやThreadな処理が苦痛度100なペチパーです。嘘です。空前のThreadLocalブームが来てたり来てなかったりする昨今です。あ、謎社の宣伝しますと<a href="http://corp.gree.net/jp/ja/news/press/2013/0308-01.html">グリーとグラニ、「GREE」におけるソーシャルゲームの提供などについて戦略的業務提携に合意</a>というわけで、ぐりとぐら、としかいいようがない昨今でもあります。その日に開催されていたGREEプラットフォームカンファレンスでは、謎社はC#企業になる！と大宣言したので、ちゃんと実現させていきたいところです、いや、むしろそのためにフル回転しています。</p>
 <p>そんな宣伝はおいておいて本題なのですけれど、SQL。データベース。大量にクエリ発行したい時など、パラレル実行したいの！インサートだったら当然BulkInsertが一番早いんですが、Updateとかね。シンドイんだよね。あとUpsert(Merge/ON DUPLICATE KEY UPDATE)とかも使っちゃったりしてね。そんなわけで、お手軽お気楽な手法としてはParallelがありますねー、.NETはこの辺本当に楽なんだよねー、ぴーHPはシラネ。</p>
@@ -1851,117 +2071,6 @@ WebRequest.RegisterPrefix(&quot;http://&quot;, webreq);
 <h2>まとめ</h2>
 <p>Fakes Frameworkは半端無く強力なので、とっとと全エディションに搭載されるといいなあ。Visual Studio 2012 SP1(いつ？)とかで、ね。いや、それじゃ遅すぎる、もっと早く！もっと早くに！Molesの頃はちょっと挙動に不安定さを感じた時もありましたが、さすがにプロダクト正式搭載なFakesは安定感もあってすっごくイイ。</p>
 </div>
-<h1><a href="https://neue.cc/2012/10/24_386.html">ltxml.js - LINQ to XML for JavaScript</a></h1>
-<ul class="date"><li>2012-10-24</li></ul>
-<div class="entry_body"><p>以前、<a href="http://www.slideshare.net/neuecc/linqjs-ver3-and-visual-studio-2012-in-javascript">linq.js ver.3</a>のセッションの時に、ちょびっとだけ触れたLINQ to XML for JavaScriptが公開されました！</p>
-<ul>
-<li><a href="http://openxmldeveloper.org/blog/b/openxmldeveloper/archive/2012/10/23/new-open-source-project-linq-to-xml-for-javascript.aspx">New Open Source Project: LINQ to XML for JavaScript</a></li>
-</ul>
-<p>作者は私ではなく、Eric White氏です。誰？ってことですが、元Microsoftの人です。氏の<a href="http://blogs.msdn.com/b/ericwhite/archive/tags/linq+to+xml/">MS時代のMSDNブログのLINQ to XMLタグ</a>には超DEEPなLINQ to XMLの使いこなしが書いてあって必見。というわけで、非常にLINQ to XMLに詳しい、というか、MSDNの<a href="http://msdn.microsoft.com/ja-jp/library/bb387098.aspx">LINQ to XMLの解説ドキュメント</a>を書いたのは氏だそうです。なので、詳しいとかそういう次元じゃなく、普通に中の人ということですね。</p>
-<h2>概要</h2>
-<p>そんなわけで、ltxml.jsとは、C#のXML操作ライブラリであるLINQ to XMLのJavaScript移植です。C#のLINQ to XMLがLINQ to Objectsの上に構築されている（ElementsやDescendantsの戻り値がIEnumerableとなり、LINQベースのクエリ操作となる）ように、ltxml.jsはLINQ to ObjectsのJavaScript移植である<a href="http://linqjs.codeplex.com/">linq.js</a>の上に構築されています。ltxml.jsのelementsやdescendantsは、linq.jsのwhereやselectなどのクエリ操作によってXMLを展開できます。</p>
-<p>C#版と構造はほとんど一緒です。ただし、JavaScriptの慣習に則りメソッド名がlowerCamelCaseであることと、プロパティが.getHoge()であること(ただしECMAScript 5に対応しているならば.hogeといったようにプロパティでアクセスできます)、オペレーターオーバーロードが存在しないことによる挙動の違い程度です。また、C#版よりも機能向上している面もあります。それは、私がlinq.jsにおいてC#のLINQ to Objectsで物足りないと思った機能を追加していたようなもの、でしょうか、多分ね、きっと。</p>
-<p>また、パフォーマンス上の考慮により、descendantsなどは、デフォルトは即時実行で配列（をEnumerableでラップしたもの）を返します。.lazy = trueをXElementなどに投下することで、完全な遅延実行になります。もし巨大なXMLを扱うのならば、遅延実行が効果を発揮するでしょう。通常考えられるサイズのXMLならば、デフォルトのとおり即時実行のほうが良好だと思われます。</p>
-<h2>使い方</h2>
-<p>ぶっきらぼうにも、ドキュメントがほとんどないですね！まあ、それは追々紹介されていくことでしょう。ともあれ現状は、ファイルをダウンロードするとltxmlTest.htmlというファイルがあって、それがユニットテスト兼サンプルになっているので、とりあえずそれを読みましょう。また、JavaScript特有の違いはあるものの、基本的にはC#のそれと等しいので、MSDNの<a href="http://msdn.microsoft.com/ja-jp/library/bb387098.aspx">LINQ to XMLの解説ドキュメント</a>がまんま使えないこともないです。</p>
-<p>ともあれ、まずは簡単なXMLをパースしてみましょう。</p>
-<pre><code class="language-javascript">var xml =
-    &quot;&lt;Contacts&gt;\
-        &lt;Contact&gt;\
-            &lt;Name&gt;Peter Hage&lt;/Name&gt;\
-            &lt;Phone&gt;206-555-0144&lt;/Phone&gt;\
-        &lt;/Contact&gt;\
-        &lt;Contact&gt;\
-            &lt;Name&gt;John Hoge&lt;/Name&gt;\
-            &lt;Phone&gt;106-333-2222&lt;/Phone&gt;\
-        &lt;/Contact&gt;\
-        &lt;/Contacts&gt;&quot;;
-
-// parseでただの文字列からLINQ to XMLのXElementに変換
-var xElem = Ltxml.XElement.parse(xml);
-
-// 子孫ノードのNameを選択し、値だけ抽出
-var names = xElem.descendants(&quot;Name&quot;)
-    .select(function (x) { return x.getValue(); })
-    .toArray();
-
-alert(names); // Peter Hage, John Hoge
-</code></pre>
-<p>descendants.selectといったように、LINQです！完全に！これをLINQと言わずして何をLINQと言うか！</p>
-<h2>名前空間</h2>
-<p>ltxml.jsの全てのクラスはLtxmlオブジェクトの下に格納されています。グローバルを汚さない。しかし、いちいちLtxml.XElementなどと呼ぶのは面倒くさい話です。以下のようなショートカットを先頭に用意するのをお薦めします。</p>
-<pre><code class="language-javascript">var XAttribute = Ltxml.XAttribute;
-var XCData = Ltxml.XCData;
-var XComment = Ltxml.XComment;
-var XContainer = Ltxml.XContainer;
-var XDeclaration = Ltxml.XDeclaration;
-var XDocument = Ltxml.XDocument;
-var XElement = Ltxml.XElement;
-var XName = Ltxml.XName;
-var XNamespace = Ltxml.XNamespace;
-var XNode = Ltxml.XNode;
-var XObject = Ltxml.XObject;
-var XProcessingInstruction = Ltxml.XProcessingInstruction;
-var XText = Ltxml.XText;
-var XEntity = Ltxml.XEntity;
-var XEnumerable = Ltxml.XEnumerable;
-</code></pre>
-<p>また、C#版ではEnumerableへの拡張メソッドとして用意されていた幾つかのメソッドは、ltxml.jsではEnumerableに追加されているasXEnumerableを呼び、XEnumerableへと変換することで、呼び出すことができます。しかし、もしそれを手間だと思う場合は、linq.jsのEnumerableを拡張することで、よりスムーズに接続することが可能です。ただし、C#版ではジェネリックによって区別されていましたが、JavaScriptではジェネリックが存在しないので、汎用性のないシーケンスの要素がltxml.jsに固有でなければならないメソッドをEnumerableに追加することとなります。また、removeなどは、他の人の拡張と名前が衝突する可能性が高いことなどにも注意。</p>
-<pre><code class="language-javascript">Enumerable.prototype.elements = Ltxml.XEnumerable.prototype.elements;
-Enumerable.prototype.ancestors = Ltxml.XEnumerable.prototype.ancestors;
-Enumerable.prototype.ancestorsAndSelf = Ltxml.XEnumerable.prototype.ancestorsAndSelf;
-Enumerable.prototype.attributes = Ltxml.XEnumerable.prototype.attributes;
-Enumerable.prototype.descendantNodes = Ltxml.XEnumerable.prototype.descendantNodes;
-Enumerable.prototype.descendantNodesAndSelf = Ltxml.XEnumerable.prototype.descendantNodesAndSelf;
-Enumerable.prototype.descendants = Ltxml.XEnumerable.prototype.descendants;
-Enumerable.prototype.descendantsAndSelf = Ltxml.XEnumerable.prototype.descendantsAndSelf;
-Enumerable.prototype.elements = Ltxml.XEnumerable.prototype.elements;
-Enumerable.prototype.nodes = Ltxml.XEnumerable.prototype.nodes;
-Enumerable.prototype.remove = Ltxml.XEnumerable.prototype.remove;
-</code></pre>
-<p>私個人としては、Enumerableへの拡張はそんなに薦められないかな、という感じですが、ヘヴィにXMLを処理する局面では、拡張したほうがサクサク書けて良いのではかとも思います。この辺は好みでどうぞ。</p>
-<h2>関数型構築</h2>
-<p>XMLを作るときは、コンストラクタで可変長引数として連鎖させます。これをLINQ to XMLでは<a href="http://msdn.microsoft.com/ja-jp/library/bb387019.aspx">関数型構築</a>と呼んでいます。</p>
-<pre><code class="language-javascript">var xml =
-    new XElement(&quot;root&quot;,
-        new XElement(&quot;user&quot;, new XAttribute(&quot;id&quot;, 1),
-            new XElement(&quot;age&quot;, 100)));
-
-// &lt;root&gt;&lt;user id = '1'&gt;&lt;age&gt;100&lt;/age&gt;&lt;/user&gt;&lt;/root&gt;
-alert(xml.toString()); // toStringで文字列化
-</code></pre>
-<p>閉じタグが不要であったり、安全であったり(JavaScriptだってカッコ閉じ忘れとかは警告入るからね）と、生文字列で組み立てるのに比べて、遥かに利点があります。また、要素がlinq.jsのEnumerableである場合も、きちんと展開されます。</p>
-<pre><code class="language-javascript">// C#と同様にEnumerable&lt;XElement&gt;は展開される
-var users = Enumerable.range(1, 10)
-    .select(function (x) {
-        return new XElement(&quot;user&quot;, new XAttribute(&quot;id&quot;, x),
-                   new XElement(&quot;age&quot;, x * x));
-    });
-
-var xml = new XElement(&quot;root&quot;, users);
-
-// &lt;root&gt;
-//   &lt;user id = '1'&gt;
-//     &lt;age&gt;1&lt;/age&gt;
-//   &lt;/user&gt;
-//   &lt;user id = '2'&gt;
-//     &lt;age&gt;4&lt;/age&gt;
-//   &lt;/user&gt;
-//   (略)
-// &lt;/root&gt;
-alert(xml.toString(true)); // 引数にtrueを渡すとインデントつけて整形
-</code></pre>
-<p>どうでしょう、イメージつきます？</p>
-<h2>用途</h2>
-<p>Eric White氏が<a href="http://ja.wikipedia.org/wiki/Office_Open_XML">OpenXML</a>(Officeのxlsxとかがそれ)の専門家ということで、JavaScript上でOfficeファイルを容易に扱うことが可能になるでしょう。つまり、サーバーサイドでのコンバート処理など不要に、JavaScriptだけでビューワーであたり要素抽出であったりが、完結する未来があります。なんて興奮する話でしょう！</p>
-<p>とはいえ、それはあまりにも専門的すぎて、実に面白いし役立つでしょうけれど、実際にそれでもって作り上げる側に周るのは極少数の人に違いありません。では、他にXMLを使う局面なんてあるのか？ふむ……。恐らく、ブラウザ上で動くアプリケーションにとって機会はないでしょう、どこもかしこもJSONに集約される！AJAXのXはXMLのX！だった時もありました。いや、今もそうでしょうけれど。</p>
-<p>では、どこに？というと、Node.jsはどうだろう？結局、未だにXMLのサービスなどは多いのだ。RSSはJSONにならないでしょう。サーバーサイドで行うならXMLは無視できないのだ。またはクライアントアプリでも、TitaniumやPhoneGapはどうだ？またはWindows 8のアプリケーションはJavaScriptで作ることができる。そこではまだまだXMLは現役に違いない。JavaScriptの活躍範囲がブラウザを超えていけばいくほど、残り続けるXMLに遭遇する機会は増える。</p>
-<p>AtomPub(ああ！今はもうあまり名前を聞かない！)の構築に、LINQ to XMLの関数型構築は役に立つことでしょう。とにかく言えることは、XMLは決して死んでいないし、望まれるか望まれないかはともかくとして、生き残り続けるでしょう。そのために、私達には強力な武器が必要なのです、LINQ to XMLという。</p>
-<p>もしくは、単純にHTMLビルダーとして使ったっていいかもしれない。HTMLはXMLなのだもの、ええ、大丈夫、そのようにも使えます。文字列連結してHTMLを組み立てるなんてしなくていい。また、もちろん、HTMLのDOM操作にだって、ね（でもDOMの操作ならば、きっとjQuery使いますね）</p>
-<h2>未来</h2>
-<p>ところでしかし現状ltxml.jsはベータです。何故か。linq.jsがまだベータだからです。ver.3.0.3-Beta4ってなんだよクソが。すみませんすみません、なるべく早く正式リリース出来るよう鋭意努力します。NEETなので暇、じゃあないんですよねえ、残念ながら。でも急ぎます。さすがに！いやほんと私の作業ペースの遅さには我ながらどうかと思う感じですが、もうさすがに猶予ないですね！</p>
-<p>ちなみに7月31日に作ってるよー、ってメール貰って、そこから何度かやり取りしてました。ltxml.jsのコード自体、かなりパワフルにlinq.jsを使いこなしているので（私のアドバイスの賜物です！）そういう意味でも面白いですね。ちなみに、その時には8月中にlinq.jsリリースするって言ってたかなあ、今もう10月末ですねえ、どうなってるんでしょうねえ、ごめんなさいごめんなさい。</p>
-</div>
 <a href="https://neue.cc/11">Prev |</a>
 <a href="https://neue.cc/13">| Next</a>
 </div>
@@ -1985,6 +2094,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2023/10/">2023-10</a>
 <li><a href="https://neue.cc/2023/09/">2023-09</a>
 <li><a href="https://neue.cc/2023/07/">2023-07</a>
 <li><a href="https://neue.cc/2023/03/">2023-03</a>
