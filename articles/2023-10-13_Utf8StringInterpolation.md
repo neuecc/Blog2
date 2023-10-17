@@ -124,7 +124,7 @@ var writer = Utf8String.CreateWriter(bufferWriter);
 
 // call each append methods.
 writer.Append("foo");
-writer.AppendFormat($"bar {Guid.NewGuid}");
+writer.AppendFormat($"bar {Guid.NewGuid()}");
 writer.AppendLine();
 
 // finally call Flush(or Dispose)
@@ -139,7 +139,7 @@ using var buffer = Utf8String.CreateWriter(out var writer);
 
 // call each append methods.
 writer.Append("foo");
-writer.AppendFormat($"bar {Guid.NewGuid}");
+writer.AppendFormat($"bar {Guid.NewGuid()}");
 writer.AppendLine();
 
 // finally call Flush(no need to call Dispose for writer)
