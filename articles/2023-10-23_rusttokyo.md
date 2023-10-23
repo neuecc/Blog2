@@ -10,7 +10,7 @@
 
 FFIとパフォーマンス
 ---
-Rustは速い！FFIは速い！ということが常に当てはまるわけでもなく、例えばGoのcgoはかなり遅いという話があったりします。[Why cgo is slow @ CapitalGo 2018](https://speakerdeck.com/filosottile/why-cgo-is-slow-at-capitalgo-2018)。このことは直近のRustのasyncの話[Why async Rust?](https://without.boats/blog/why-async-rust/)でも触れられていて、cgoの遅さはGoroutine(Green Thread)が影響を及ぼしているところもある、とされています。.NET でも[Green Threadを実験的に実装してみたというレポート](https://github.com/dotnet/runtimelab/blob/bec51070f1071d83f686be347d160ea864828ef8/docs/design/features/greenthreads.md)がついこないだ出ていたのですが、FFIの問題とか、まぁ諸々あってasync/awaitでいいじゃろ、という結論になっています。
+Rustは速い！FFIは速い！ということが常に当てはまるわけでもなく、例えばGoのcgoはかなり遅いという話があったりします。[Why cgo is slow @ CapitalGo 2018](https://speakerdeck.com/filosottile/why-cgo-is-slow-at-capitalgo-2018)。このことは直近のRustのasyncの話[Why async Rust?](https://without.boats/blog/why-async-rust/)でも触れられていて、cgoの遅さはGoroutine(Green Thread)が影響を及ぼしているところもある、とされています。.NET でも[Green Threadを実験的に実装してみたというレポート](https://github.com/dotnet/runtimelab/blob/bec51070f1071d83f686be347d160ea864828ef8/docs/design/features/greenthreads.md)がついこないだ出ていたのですが、FFIの問題とか、まぁ諸々あってasync/awaitでいいじゃろ、という結論になっています。技術はなんでもトレードオフなので、過剰にGreen Threadを持ち上げるのもどうかな、とは思いますね。
 
 で、C#のFFI速度ですが、こちらの[Testing FFI Hot Loop Overhead - Java, C#, PHP, and Go](https://vancan1ty.com/blog/post/52)という記事での比較ではFFIにおいては圧勝ということになっているので、まぁ、実際C#のFFIは速いほうということでいいんじゃないでしょーか（昔からWin32 APIを何かと叩く必要があったりとかいう事情もありますし）。
 
@@ -18,9 +18,9 @@ Rustは速い！FFIは速い！ということが常に当てはまるわけで�
 
 Zig, C++
 ---
-FFI目的でunsafeなRust中心になるぐらいなら[Zig](https://ziglang.org/ja/)のほうがいいんじゃない？というのは一理ある。というか最初はそう思ってZigを試したんですが、ちょーっと難しいですね。一理ある部分に関しては一理あるんですが、それ以外のところではRustのほうが上だという判断で、総合的にはRustを採用すべきだと至りました。
+FFI目的でunsafeなRust中心になるぐらいなら[Zig](https://ziglang.org/ja/)のほうがいいんじゃない？というのは一理ある。というか最初はそう思ってZigを試したんですが、今回は見送らせていただきます、と。一理ある部分に関しては一理あるんですが、それ以外のところではRustのほうが上だという判断で、総合的にはRustを採用すべきだと至りました。
 
-具体的には資料の中のRustの利点、これは資料中ではC++との比較という体にしていますが、Zigとの比較という意味もあります。標準公式のパッケージマネージャーがないし、開発環境の乏しさは、たとえZigが言語的にRustよりイージーだとしても、体感は正直言ってRustよりもハードでした。コンパイルエラーもRustは圧倒的にわかりやすいんですが、Zigはめちゃくちゃ厳しい……。
+具体的には資料の中のRustの利点、これは資料中ではC++との比較という体にしていますが、Zigとの比較という意味もあります。標準公式のパッケージマネージャーがないし、開発環境の乏しさは、たとえZigが言語的にRustよりイージーだとしても、体感は正直言ってRustよりもハードでした。コンパイルエラーもRustは圧倒的にわかりやすいんですが、Zigはめちゃくちゃ厳しい……。Rustはイージーとは言わないですが、開発環境の助けやcargoコマンドのシンプルさ、技術情報（本・ブログ・FAQ）の多さによって、入り口は意外と大変ではない、むしろ入りやすい部類とすら言える感じです。
 
 また、ZigはZigでありC/C++ではない。これはRustも同じでRustはRustでC/C++ではない、つまりCとZig(Rust)を連動させるには[bindgen](https://github.com/rust-lang/rust-bindgen)のようなものが必要なのですが、Zigのそれの安定性がかなり低い、パースできない.hが普通にチラホラある。rust-bindgenのIssue見ていると本当に色々なケースに対応させる努力を延々と続けていて、それがbindgenの信頼性（と実用性）に繋がっているわけで、Zigはまだまだその域には達していないな、と。
 
