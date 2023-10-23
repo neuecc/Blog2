@@ -23,7 +23,100 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2018/07/02_566.html">Microsoft MVP for Visual Studio and Development Technologies(C#)を再々々々々々々受賞しました</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2018/07/12_567.html">UniTask - Unity + async/awaitの完全でハイパフォーマンスな統合</a></h1>
+<ul class="date"><li>2018-07-12</li></ul>
+<div class="entry_body"><p>Unityでasync/await使えてハッピー。が、しかしまだ大々的に使われだしてはいないようです。理由の一つとして、Unityが標準でサポートする気が全くなさそう。少なくとも、Unityがフレームワークとしてasync/awaitには何一つ対応していない。async/awaitという道具立てだけじゃあ何もできないのです、フレームワークとして何らかのサポートがなければ機能しないわけですが、なんと、何もない……。</p>
+<p>何もないことの理由はわからないでもないです。パフォーマンス面で不満/不安もありそうですし、マルチスレッドはC# Job System使ってくれというのは理にかなっている（私もそちらが良いと思います、つまりTaskのマルチスレッドな機能は原則使わない）。とはいえ、async/awaitは便利なので、このまま、便利だけど性能は微妙だから控えようみたいな扱い（あ、それ知ってる、LINQだ）になるのは嫌なのよね。まぁLINQは局所的なので使わないのは簡単なのだけど（実際、最近は私もあまりLINQ書いてないぞ！遅いからね！）、async/awaitは割と上位に伝搬していって汚染気味になるので、そもそも一度どこかで使うと使わない、という選択肢が割と取りづらいので、ならいっそむしろ超究極パフォーマンスのasync/awaitを提供すればそれで全部解決なのである。</p>
+<p>という長ったらしい前置きにより、つまり超究極パフォーマンスのUnityのasync/await統合を提供するライブラリを作りました。場所は（面倒くさいので）UniRxに同梱です。というわけでなんと久しぶりにUniRxも更新しました……！(主にReactivePropertyが高速になりました、よかったよかった。PRとかIssueのチェックはこれからやります、いや、まず重い腰を上げたというのが何より大事なのですよ！)</p>
+<p><a href="https://github.com/neuecc/UniRx/">GitHub/UniRx</a> と、アセットストアに既に上がっています。</p>
+<h2>UniTask</h2>
+<p>何ができるか、について。</p>
+<pre><code class="language-csharp">// この名前空間はasync有効化と拡張メソッドの有効化に必須です
+using UniRx.Async;
+
+// UniTask&lt;T&gt;をasyncの戻り値にできます、これはより軽量なTask&lt;T&gt;の置き換えです
+// ゼロ（or 少しの)アロケーションと高速な実行速度を実現する、Unityに最適化された代物です
+async UniTask&lt;string&gt; DemoAsync()
+{
+    // Unityの非同期オブジェクトをそのまま待てる
+    var asset = await Resources.LoadAsync&lt;TextAsset&gt;(&quot;foo&quot;);
+
+    // .ConfigureAwaitでプログレスのコールバックを仕込んだりも可能
+    await SceneManager.LoadSceneAsync(&quot;scene2&quot;).ConfigureAwait(new Progress&lt;float&gt;(x =&gt; Debug.Log(x)));
+
+    // 100フレーム待つなどフレームベースの待機(フレームベースで計算しつつTimeSpanも渡せます)
+    // (次の更新でフレーム数での待機はDelayFrameに名前変えます）
+    await UniTask.Delay(100); // be careful, arg is not millisecond, is frame count
+
+    // yield return WaitForEndOfFrameのような、あるいはObserveOnみたいな
+    await UniTask.Yield(PlayerLoopTiming.PostLateUpdate);
+
+    // もちろんマルチスレッドで動作する普通のTaskも待てる（ちゃんとメインスレッドに戻ってきます）
+    await Task.Run(() =&gt; 100);
+
+    // IEnumeratorなコルーチンも待てる
+    await ToaruCoroutineEnumerator();
+
+    // こんなようなUnityWebRequestの非同期Get
+    async UniTask&lt;string&gt; GetTextAsync(UnityWebRequest req)
+    {
+        var op = await req.SendWebRequest();
+        return op.downloadHandler.text;
+    }
+
+    var task1 = GetTextAsync(UnityWebRequest.Get(&quot;http://google.com&quot;));
+    var task2 = GetTextAsync(UnityWebRequest.Get(&quot;http://bing.com&quot;));
+    var task3 = GetTextAsync(UnityWebRequest.Get(&quot;http://yahoo.com&quot;));
+
+    // 並列実行して待機、みたいなのも簡単に書ける。そして戻り値も簡単に受け取れる（これ実際使うと嬉しい）
+    var (google, bing, yahoo) = await UniTask.WhenAll(task1, task2, task3);
+
+    // タイムアウトも簡単にハンドリング
+    await GetTextAsync(UnityWebRequest.Get(&quot;http://unity.com&quot;)).Timeout(TimeSpan.FromMilliseconds(300));
+
+    // 戻り値はUniTask&lt;string&gt;の場合はstringを、他にUniTask（戻り値なし）、UniTaskVoid（Fire and Forget）もあります
+    return (asset as TextAsset)?.text ?? throw new InvalidOperationException(&quot;Asset not found&quot;);
+}
+</code></pre>
+<p>提供している機能は多岐にわたるのですが、</p>
+<ul>
+<li>Unityの非同期オブジェクトをawaitできるように拡張（最速で動くように細心の注意を払って対応させています）</li>
+<li>コルーチンやUniRxで出来るフレームベースのawaitサポート(Delay, Yield)</li>
+<li>戻り値をTupleで受け取れるWhenAll, どれが返ってきたかをindexで受け取れるWhenAny, 便利なTimeout</li>
+<li>標準のTaskよりも高速でアロケーションの少ないUniTask[T], UniTask, UniTaskVoid</li>
+</ul>
+<p>となっています。で、何が出来るのかと言うと、ようはコルーチンの完全な置き換えが可能です。async/awaitがあります、っていう道具立てだけだと、何もかもが足りないんですね。ちゃんと機能するようにフレームワーク側でサポートさせてあげるのは必須なのですが、前述の理由（？）どおり、Unityはサポートする気が1ミリもなさそうなので、代わりに必要だと思える全てを提供しました。</p>
+<h2>Taskを投げ捨てよ</h2>
+<p>目の付け所がいかれているので、Taskを投げ捨てることにしました。Taskってなんなの？というと、asyncにする場合戻り値がTaskで強要される、という型。そして究極パフォーマンスの実現として、このTaskがそもそも邪魔。なんでかっていうと、歴史的経緯によりそもそもTaskは図体がデカいのです。異様に高機能なのは（TaskSchedulerがどうだのLongRunningがどうだの)、ただたんなる名残（或いは負の遺産）でしかない。アドホックな対応を繰り返すことにより(言語/.NET Frameworkのバージョンアップの度に)コードパス的に小さくはなっていったのですが(async/awaitするためだけには不要な機能がてんこ盛りなのだ！)、もういっそ全部いらねーよ、という気にはなる。</p>
+<p>そこでC# 7.0です。C# 7.0からasyncの戻り値を任意の型に変更することが可能になりました。詳しくは言語仕様の<a href="https://github.com/dotnet/roslyn/blob/master/docs/features/task-types.md">Async Task Types in C#</a>に書いてありますが、Builderを実装することにより、なんとかなります。</p>
+<p>というわけで、UniRx.Asyncでは軽量のTaskであるUniTaskと、そのためのBuilderを完全自前実装して、Unityに最適化されたasync/awaitを実現しました。</p>
+<p>代わりにC# 7.0が必須のため、現状ではIncremental Compilerを導入する必要があります（現状のUnity 2017/2018はC# 6.0のため)</p>
+<img src="https://user-images.githubusercontent.com/46207/42524447-7586b728-84ab-11e8-8b3d-f48b73db3ae4.png" width=600 />
+<p>Incremental Compilerではなくても、恐らくUnity 2018の近いバージョンではC#のバージョン上がりそうな気配なので、先取りするのは悪くないでしょう。</p>
+<h2>PlayerLoop</h2>
+<p>UniRx.AsyncはUniRxに依存していません。そのため、GitHubのreleasesページではUniRxを含まないパッケージも提供しています。併せて使ったほうがお得なのは事実ですが、なしでも十分に機能します。</p>
+<p>さて、UniRxではMainThreadDispatcherというシングルトンのMonoBehaviourにMicroCoroutine(というイテレータを中央管理するもの)を駆動してもらっていましたが、今回スタンドアロンで動作させるため、別の手段を取りました。それがPlayerLoopです（詳しくは<a href="http://tsubakit1.hateblo.jp/entry/2018/04/17/233000">テラシュールブログの解説</a>が分かりやすい）。</p>
+<p>これをベースにUpdateループをフックして、await側に戻す処理を仕掛けています。</p>
+<h2>Multithreading</h2>
+<p>掲げたのはNo Task, No SynchronizationContext。何故かというと、そもそもUnityの非同期って、C++のエンジン側で駆動されていて、C#のスクリプティングレイヤーに戻ってくる際には既にメインスレッドで動くんですよね。例えば AsyncOperation.completed += action とか。コルーチンのyield retunもそうですね、PlayerLoop側で処理されている。ようするに、本来SynchronizationContextすら不要なのです、全てメインスレッドで動作するので。</p>
+<p>通常のC#はスレッドベースで、Windows FormsやWPF, ASP.NETなど諸々の事情を吸収するために存在していたわけですが、Unityだけで考えるなら完全に不要です。他のものにはないフレーム毎に駆動することと、本体がC#ではなくC++側にあるということが大きな大きな違いです。async/awaitやTask自体は汎用的にする必要があるため、それらの吸収層が必要（SynchronizationContext）なわけですが、当然ながらオーバーヘッドなので、取り除けるなら取り除いたほうが良いでしょう。そのために、UniTaskの独自実装も含めて、全てのコードパスを慎重に検討し、不要なものを消し去りました。</p>
+<p>UniTaskはどちらかというとJavaScript的（シングルスレッドのための非同期の入れ物）に近いです。Taskは、そうした非同期の入れ物に加えてマルチスレッドのためなどなど、とにかく色々なものが詰まりすぎていて、あまりよろしくはない。非同期とマルチスレッドは違います。明確に分けたほうが良いでしょうし、UnityではC# JobSystemを使ったほうが良いので、カジュアルな用途以外（まぁラクですからね）ではマルチスレッドとしてのTaskの出番は少なくなるでしょう。</p>
+<p>嬉しいこととして、スレッドを使わないのでWebGLでもasync/awaitが完全に動作します。</p>
+<h2>Rx vs Coroutine vs async/await</h2>
+<p>もう結論が出ていて、async/await一本でOK、です。まずRxには複数の側面があって、代表的にはイベントと非同期。そのうち非同期はasync/awaitのほうがハンドリングが用意です。そしてコルーチンによるフレームベースの処理に関してはUniTask.DelayやYieldが解決しました。ので、コルーチン→出番減る, async/await → 非同期, Rx → イベント処理 というように分離されていくと思われます。</p>
+<h2>C# Standard vs Unity</h2>
+<p>正直なところ私は別にUnityがC#スタンダードに添わなくてもいいと思ってるんですよね。繰り返しましが、Unityの本体はC++の実行エンジンのほうで、C#はスクリプティングレイヤーなので。C#側が主張するよりも、C++に寄り添うことを第一に考えたほうが、よい結果がもたらされると思っています。よりC#に、というならPure C#ゲームエンジンでないとならないですが、商業的にはほぼ全滅であることを考えると、Unityぐらいの按配が実際ちょうどいいのだろうな、と。理想もいいんですが、ビジネスとしての成功がないと全く意味がないので。</p>
+<p>と、いうわけで、C# JobSystemは大歓迎だしBurst Compilerは最高 of 最高なわけですが（そしてECSなんてそもそもオブジェクト指向ですらなくなる）、さて、Task。UniTaskの有用性や存在意義については、よくわかってもらえたと思います！そのうえで、それを分かったうえでもノンスタンダードな選択を取るべきなのか論は、それ自体は発生して然りです。</p>
+<p>まぁ、まずUnityだとそもそもC# 7.0が来たら片っ端からValueTask（という、TとTaskのユニオンがC# 7.0から追加された）に置き換え祭りは発生するでしょう。実際async祭りで組むと、「同期で動くTask」がどうしても多く発生してしまい、無駄なアロケーション感半端ないので、ValueTask主体のほうがよい。</p>
+<p>更にその上で.NET Core 2.1ではValueTaskにIValueTaskSourceという仕掛けが用意されて、これは何かと言うと、やっぱりasync/awaitの駆動においてTaskを無視するための仕組みです（現状はSystem.IO.Pipelinesというこれまたつい先週ぐらいに出た機能のみ対応）。そう、別にUnityだけじゃなくて通常の.NETでもTaskはオーバーヘッドと認識されているのだ……。</p>
+<p>つまりなんというか、そう、そもそもC#本流ですら割と迷走しているのだ……。存在すると思っているStandardなんてもはやないのだ……。てわけで、別にUniTask、いいんじゃない？とか思ってしまいますがどうでしょう。どうでしょうね、それはさすがにポジショントークすぎにしても。</p>
+<p>ようはポリシーとして、asyncで宣言した際に、TaskにするかValueTaskにするかUniTaskにするかを迫られます。逆に言えばそれだけです。あれ、意外と人畜無害。そう、意外と人畜無害なのです。よし、なら、とりまやってみるか。いいんじゃないかな？別に最悪、一括置換で戻したり進めたり割と容易なので。あと、ちなみに、UniTaskがUnityでデファクトスタンダードになれば、尚更迷う必要性はなくなるので、むしろ是非みんなでデファクトスタンダードまで持っていきましょう:)</p>
+<h2>まとめ</h2>
+<p>非同期革命の幕開け！そもそもこれぐらいやらないと世論は動かない、というのもあるので、フルセットでどーんと凄い（っぽい）（実際凄い）のを掲示することにはめちゃくちゃ意味があります。UniTaskが流行っても流行らなくても、この掲示にはめちゃくちゃ意味があるでしょう。UniRx.Asyncが何を実現したかを理解することは非常に重要です、教科書に出ますよ！</p>
+<p>それと、UniRx全然更新していなくてごめんなさい、があります。ごめんなさい。今回、ReactivePropertyのパフォーマンス向上を（ようやく）入れたり、今後はちゃんと面倒みていくのでまたよろしくおねがいします。</p>
+<p><a href="https://opencollective.com/unirx">Open Collective/UniRx</a>というところで寄付/スポンサー募集もはじめたので、よければ個人/企業で入れてくれると嬉しいですね……！今ならUniRxのGitHubページのファーストビューにロゴが出るので、特に企業などはアピールポイントです……！</p>
+</div>
+<h1><a href="https://neue.cc/2018/07/02_566.html">Microsoft MVP for Visual Studio and Development Technologies(C#)を再々々々々々々受賞しました</a></h1>
 <ul class="date"><li>2018-07-02</li></ul>
 <div class="entry_body"><p>新規は毎月で、更新は7月に統一という周期らしく、全然忘れていたのですが、当日はインターネット的にはそわそわした空気を感じたりなかったりはします。変わらず、Visual Studio and Development Technologies、つまりC#を受賞しました。</p>
 <img src='http://neue.cc/wp-content/uploads/2018/07/mvpring.jpg' alt='' />
@@ -2496,218 +2589,6 @@ public sealed class SampleModelFormatter : IMessagePackFormatter&lt;SampleModel&
 <p>MessagePack for C#は既に<a href="https://kuro-kishi.jp/">黒騎士と白の魔王</a>で全面的(Unityクライアント-gRPCサーバー間の通信と、サーバーサイドでのRedisへのシリアライズデータ格納）に使われているため、バグも概ね取り除かれていて、プロダクション環境で安心して使わえるレベルになっています。機能面でも、シリアライザに要求される幅広いシナリオに、ほとんど対応できるレベルになっています。というか、むしろ機能面でここまで揃ってるシリアライザも実際ないですね。JSON, Typeless, dynamic、そして拡張性。最強っぽい。細かいできることはまだ色々残っていますが(循環参照のサポートが一番大きいかな)、普通に使う限りは全く不便しないはずです。Unity向けにはコードジェネレータの利便性を高める（Macサポートとか）ってのがだいぶ優先度高めで未だに抜本的には手が出てません……。</p>
 <p>ASP.NET Core MVCサポートも、私が適当に書いたものよりも、<a href="https://www.strathweb.com/2017/06/using-messagepack-with-asp-net-core-mvc/">Using MessagePack with ASP.NET Core MVC</a>といったちゃんとした（ちゃんとした！）実装を用意してもらったりなど、採用してもらっていってるかなー、と思います。それ以外に<a href="https://github.com/neuecc/DatadogSharp">DatadogSharp</a>という私が現在書いているDatadog APM用のクライアントの通信もMessagePack for C#を用いています。<a href="https://github.com/aspnet/SignalR/issues/543">SignalRにMsgPack Protocolを採用する</a>という話もあるんですが、それは<a href="https://github.com/aspnet/SignalR/pull/587">強い署名がなかった</a>ので敗退したんですが、署名もしたしStream APIも入れたんで、機会あればもう少し粘りたいかな、といったところですね。</p>
 <p>ところで、今日（今日！）の<a href="http://gtmf.jp/2017/osaka/index.html">GTMF 2017 OSAKA</a>にて<a href="https://www.cri-mw.co.jp/">株式会社ＣＲＩ・ミドルウェア</a>さんと共に「「黒騎士と白の魔王」の CRIWARE 活用事例」というセッションを行います。大阪です。実はこの記事、東京-大阪の新幹線の中で書いてるんですねー。また、同じ内容を7/14の<a href="http://gtmf.jp/2017/tokyo/index.html">GTMF 2017 TOKYO</a>でも行いますので是非是非よろよろしくお願いします。懇親会などでもふらついていますので、よければ捕まえてやってください。</p>
-</div>
-<h1><a href="https://neue.cc/2017/04/06_551.html">C# 7.0 custom task-like の正しいフレームワークでの利用法</a></h1>
-<ul class="date"><li>2017-04-06</li></ul>
-<div class="entry_body"><p>例年、この頃はMVP更新が云々とかなのですが、今年からシステムが変わって更新時期に変動があるんで何もありませんが、一応まだ継続しています。それはともかくとして<a href="https://www.visualstudio.com/ja-jp/news/releasenotes/vs2017-relnotes">Visual Studio 2017</a>が出ました。会社でも全プロジェクトがVS2017に移行完了を果たして、代わり映えしないようで、タプル記法のデコンストラクションとか工夫すると結構便利だな、とか使い始めると色々発見があります。タプル記法やデコンストラクションの工夫に関しては、弊社エンジニアリングブログの<a href="http://engineering.grani.jp/entry/2017/04/06/163904">C# 7.0 が使えるようになったので ValueTuple を活用してみた</a>をどうぞ。</p>
-<p>そんな中で、私がはよ来てくれ……と願っていたC# 7.0の新機能は、task-likeです。<a href="https://github.com/dotnet/roslyn/issues/7169">Proposal: arbitrary task-like types returned from async methods</a>で延々と議論されていたようですが、これは何かというと、asyncでTask以外の型が返せるようになります。もともとC# 7.0からValueTaskが入って、async ValueTask&lt;T&gt; を返せるようになる必要があったついでに搭載されたみたいなものですが、色々何か出来そうですよね！？</p>
-<p>というわけで、早速有効に使えるシチュエーションを用意しました。というか早速投下しています。</p>
-<h2>task-likeがない場合の苦痛</h2>
-<p>現在、私は<a href="https://github.com/neuecc/MagicOnion">MagicOnion</a>という<a href="http://www.grpc.io/">gRPC</a>をベースにしたフレームワークを作っています。シリアライザはこないだ公開したエクストリーム速くて軽量な<a href="https://github.com/neuecc/MessagePack-CSharp/">MessagePack for C#</a>です。と、そういう細かいことはどうでもいいとして、MagicOnionではこんな風に書きます。</p>
-<pre><code class="language-csharp">// 定義を用意して
-public interface IMyFirstSerivce : IService&lt;IMyFirstSerivce&gt;
-{
-    UnaryResult&lt;int&gt; Sum(int x, int y);
-}
-
-public class MyFirstSerivce : ServiceBase&lt;IMyFirstSerivce&gt;, IMyFirstSerivce
-{
-    // これがサーバーで呼び出される実装になる
-    public UnaryResult&lt;int&gt; Sum(int x, int y)
-    {
-        var sum = x + y;
-        return UnaryResult(x + y);
-    }
-}
-
-static async Task Run()
-{
-    var channel = new Channel(&quot;localhost:1111&quot;, ChannelCredentials.Insecure);
-
-    // インターフェースで動的にクライアントを自動生成する
-    var client = MagicOnionClient.Create&lt;IMyFirstSerivce&gt;(channel);
-
-    // 自然な感じでサーバー - クライアント通信で受け取れる
-    var result = await client.Sum(10, 20);
-
-    Console.WriteLine(result);
-}
-</code></pre>
-<p>まぁまぁ自然な感じでいいじゃん？ってところですが、面倒くさいのは UnaryResult&lt;T&gt; を返さなければならないところ。そのため UnaryResuylt() というヘルパー関数を読んで包んだのをリターンする羽目になってます。これが地味に面倒くさい。return x + y; って書きたいじゃん、って。</p>
-<p>で、MagicOnionがUnaryResultを強制するには理由があって、多くの場合は戻り値そのものだけで良いんですが、場合によってはレスポンスヘッダを取りたいとかステータスコードを取りたいとか、そういうのに対応する必要があるんですね。</p>
-<pre><code class="language-csharp">// awaitしない
-var response = client.Sum(10, 20);
-
-// headerを取るとか
-var header = await response.ResponseHeadersAsync;
-
-// statusを取るとかしたかったりする
-var trailer = response.GetStatus();
-
-// 結果を取る場合。 await response はこれのショートカットでしかなかったりする
-var result = await response.ResponseAsync;
-</code></pre>
-<p>APIの触り心地に関してはものすごく考えたんですが、最終的にこの辺が妥協点になってくるかな、と。しょうがないね。さて、ではasyncになるとどうでしょう？</p>
-<pre><code class="language-csharp">public interface IMyFirstSerivce : IService&lt;IMyFirstSerivce&gt;
-{
-    Task&lt;UnaryResult&lt;string&gt;&gt; EchoAsync(string message);
-}
-
-public class MyFirstSerivce : ServiceBase&lt;IMyFirstSerivce&gt;, IMyFirstSerivce
-{
-    // サーバー側の書き味は普通、なんですが……
-    public async Task&lt;UnaryResult&lt;string&gt;&gt; EchoAsync(string message)
-    {
-        await Task.Delay(TimeSpan.FromSeconds(10));
-
-        return UnaryResult(message);
-    }
-}
-
-static async Task Run()
-{
-    var channel = new Channel(&quot;localhost:1111&quot;, ChannelCredentials.Insecure);
-    var client = MagicOnionClient.Create&lt;IMyFirstSerivce&gt;(channel);
-
-    // await await !!!
-    var result = await await client.EchoAsync(&quot;hogehoge&quot;);
-
-    // というのも、await一発でUnaryResultの取得になる
-    var response = await client.EchoAsync(&quot;takotako&quot;);
-
-    //  ようするにこれのショートカットはawait awaitになってしまうのだ……
-    var result2 = await response.ResponseAsync;
-}
-</code></pre>
-<p>注目はawait awaitです。なんと、await awaitという世にも奇っ怪な記述が合法として出てくるのであった、最悪……。</p>
-<h2>task-likeがある場合</h2>
-<p>そこでC# 7.0 task-likeですよ！</p>
-<pre><code class="language-csharp">// SyncもAsyncも共にUnaryResultとして定義
-public interface IMyFirstSerivce : IService&lt;IMyFirstSerivce&gt;
-{
-    UnaryResult&lt;int&gt; SumAsync(int x, int y);
-    UnaryResult&lt;string&gt; EchoAsync(string message);
-}
-
-public class MyFirstSerivce : ServiceBase&lt;IMyFirstSerivce&gt;, IMyFirstSerivce
-{
-    public async UnaryResult&lt;int&gt; SumAsync(int x, int y)
-    {
-        // UnaryResult()で囲む必要なし！やったー！
-        return x + y;
-    }
-
-    public async UnaryResult&lt;string&gt; EchoAsync(string message)
-    {
-        // 勿論awaitする場合も普通に
-        await Task.Delay(TimeSpan.FromSeconds(3));
-        return message;
-    }
-}
-
-static async Task Run()
-{
-    var channel = new Channel(&quot;localhost:1111&quot;, ChannelCredentials.Insecure);
-    var client = MagicOnionClient.Create&lt;IMyFirstSerivce&gt;(channel);
-
-    // 自然に扱える！
-    var result1 = await client.SumAsync(1, 100);
-    var result2 = await client.EchoAsync(&quot;hogehoge&quot;);
-}
-</code></pre>
-<p>UnaryResult()でのラップもawait awaitも不要です。非常に綺麗にすっきりと扱えるようになりました。あってヨカッタtask-like。かなり有意義に使えてると思いますです。</p>
-<p>これは何をやっているかというと、async UnaryResult の場合に独自のコード生成が入って、UnaryResult()の呼び出しを自動で行ってくれるようになってます。UnaryResult()でのラップやawait awaitもダルいのですが、地味に辛いのがTask&lt;UnaryResult&lt;T&gt;&gt;という、ジェネリクスが二階層になっているところですね。継承の連鎖が悪で少ないに越したことはないのと同様に、ジェネリクスのネストも、書き味的にも読み味的にも、少ないに越したことはないのです（ところでかんすーがたげんごの人は型をネストさせまくることの可読性低下にあまりにも無頓着すぎる気がとってもしてます、よくないね）。</p>
-<h2>警告を無視する</h2>
-<p>ところで、asyncでawaitなしだと警告がでます。CS1998 Async method lacks 'await' operators and will run synchronously というあれ。お薦めは、ガン無視することです。プロジェクト設定のほうで1998は警告「しない」にしちゃうのがいいでしょう。</p>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/24740077/4cb17432-1ada-11e7-8814-53860bbd526a.png" alt="image" /></p>
-<p>ずっと会社でasyncまみれになってン年間過ごして思ったのは、この警告いらないわ。別に。抵抗感あるかもとは思いますが、それでもなお無視したほうが幸せ度上がると思います。</p>
-<h2>task-likeの作り方</h2>
-<p>適当にやりました。いや、だってよくわからんし。なんで適当にAsyncTaskMethodBuilderに丸投げです。まぁこれはValueTaskのtask-likeと一緒です。ノリが同じなのでそれで動くと思ってたし、実際それで動いた。超絶手間なくtask-like対応できたわー。</p>
-<pre><code class="language-csharp">// 対象の型にAsyncMethodBuilder属性をつける
-[AsyncMethodBuilder(typeof(AsyncUnaryResultMethodBuilder&lt;&gt;))]
-public struct UnaryResult&lt;TResponse&gt;
-{
-}
-
-// こちらがその中身。基本AsyncTaskMethodBuilderに丸投げです。
-public struct AsyncUnaryResultMethodBuilder&lt;T&gt;
-{
-    private AsyncTaskMethodBuilder&lt;T&gt; methodBuilder;
-    private T result;
-    private bool haveResult;
-    private bool useBuilder;
-
-    public static AsyncUnaryResultMethodBuilder&lt;T&gt; Create()
-    {
-        return new AsyncUnaryResultMethodBuilder&lt;T&gt;() { methodBuilder = AsyncTaskMethodBuilder&lt;T&gt;.Create() };
-    }
-
-    public void Start&lt;TStateMachine&gt;(ref TStateMachine stateMachine) where TStateMachine : IAsyncStateMachine
-    {
-        methodBuilder.Start(ref stateMachine);
-    }
-
-    public void SetStateMachine(IAsyncStateMachine stateMachine)
-    {
-        methodBuilder.SetStateMachine(stateMachine);
-    }
-
-    public void SetResult(T result)
-    {
-        if (useBuilder)
-        {
-            methodBuilder.SetResult(result);
-        }
-        else
-        {
-            this.result = result;
-            haveResult = true;
-        }
-    }
-
-    public void SetException(Exception exception)
-    {
-        methodBuilder.SetException(exception);
-    }
-
-    public UnaryResult&lt;T&gt; Task
-    {
-        get
-        {
-            if (haveResult)
-            {
-                return new UnaryResult&lt;T&gt;(result);
-            }
-            else
-            {
-                useBuilder = true;
-                return new UnaryResult&lt;T&gt;(methodBuilder.Task);
-            }
-        }
-    }
-
-    public void AwaitOnCompleted&lt;TAwaiter, TStateMachine&gt;(ref TAwaiter awaiter, ref TStateMachine stateMachine)
-        where TAwaiter : INotifyCompletion
-        where TStateMachine : IAsyncStateMachine
-    {
-        useBuilder = true;
-        methodBuilder.AwaitOnCompleted(ref awaiter, ref stateMachine);
-    }
-
-    [SecuritySafeCritical]
-    public void AwaitUnsafeOnCompleted&lt;TAwaiter, TStateMachine&gt;(ref TAwaiter awaiter, ref TStateMachine stateMachine)
-        where TAwaiter : ICriticalNotifyCompletion
-        where TStateMachine : IAsyncStateMachine
-    {
-        useBuilder = true;
-        methodBuilder.AwaitUnsafeOnCompleted(ref awaiter, ref stateMachine);
-    }
-}
-</code></pre>
-<p>まぁ細かいことはいいんです、どうでも。</p>
-<h2>まとめ</h2>
-<p>C# 7.0は良い。というかMagicOnionはもはやC# 7.0が前提みたいな新世代フレームワークと化してますとかかんとか。MagicOnionは現在CM放送中（！）の<a href="https://kuro-kishi.jp/">黒騎士と白の魔王</a>でも全面採用しています。黒騎士ではHTTP/1 Web APIはほぼ使われてないのです。クライアント-サーバー間もサーバー-サーバー間も全てgRPC。時代はHTTP/2。圧倒的な次世代。gRPCも、Unityでも動くようにgRPCにかなりの魔改造を施したカスタム仕様で、かなりアグレッシブな感じです。</p>
-<p>その一端は<a href="https://unite.unity.com/ja/2017/tokyo">Unite 2017</a>でお話するつもりなので是非是非来てくださいな。もちろん、UniteはUnityのイベントなのでクライアントサイド中心の話なのでサーバー側(gRPC/MagicOnion)の話は少なめになりますが、近いうちに他のイベントでサーバー側でもお話できればな、と思ってます。ちょうど5月6月はクラウド系の大規模カンファレンスがラッシュでありますしね。</p>
 </div>
 <a href="https://neue.cc/4">Prev |</a>
 <a href="https://neue.cc/6">| Next</a>

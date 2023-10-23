@@ -23,7 +23,324 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2011/12/09_356.html">自家製拡張メソッド制作のすすめ だいx回 BufferWithPadding</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2011/12/10_357.html">.NETの標準シリアライザ(XML/JSON)の使い分けまとめ</a></h1>
+<ul class="date"><li>2011-12-10</li></ul>
+<div class="entry_body"><p>今年もAdvent Calendarの季節がやってきましたね。去年は私はC#とJavaScriptで書きましたが、今年はC#とSilverlightでやります。というわけで、この記事は<a href="http://atnd.org/events/22001">Silverlight Advent Calendar 2011</a>用のエントリです。前日は<a href="https://twitter.com/#!/Posaune">@posaune</a>さんの<a href="http://d.hatena.ne.jp/posaunehm/20111209/1323443047">SilverlightのListBoxでつくるいんちきHorizontalTextBlock </a>でした。</p>
+<p>今回の記事中のサンプルはSilverlight 4で書いています。が、Silverlight用という体裁を持つためにDebug.WriteLineで書いているというだけで、Silverlightらしさは皆無です！えー。.NET 4でもWindows Phone 7でも関係なく通じる話ですねん。</p>
+<h2>シリアライザを使う場面</h2>
+<p>概ね3つではないでしょうか。外部で公開されているデータ(APIをネット経由で叩くとか)をクラスに変換する。これは 自分の管理外→プログラム での片方向です。内部で持っているデータ(クラスのインスタンス)を保存用・復元用に相互変換する。これは プログラム←→自分の管理内 での双方向です。最後に、内部で持っているデータを公開用に変換する。これは プログラム→外部 での片方向。</p>
+<p>目的に応じてベストな選択は変わってきます。こっから延々と長ったらしいので、まず先に結論のほうを。</p>
+<ul>
+<li>外部APIを叩く→XML/XmlSerializer, JSON/DataContractJsonSerializer</li>
+<li>オブジェクトの保存・復元用→DataContractSerializer</li>
+<li>外部公開→さあ？</li>
+</ul>
+<p>外部公開のは、Silverlightの話じゃないので今回はスルーだ！<a href="http://msdn.microsoft.com/ja-jp/library/system.xml.linq.xstreamingelement.aspx">XStreamingElement</a>で組み上げてもいいし、何でもいいよ！WCFのテンプレにでも従えばいいんぢゃないでしょーか。</p>
+<h2>XmlSerializer</h2>
+<p>古くからあるので、シリアライザといったらこれ！という印象な方も多いのではないでしょうか。その名の通り、素直にXMLの相互変換をしてくれます。</p>
+<pre><code class="language-csharp">// こんなクラスがあるとして
+// (以降、断り書きなくPersonが出てきたらこいつを使ってると思ってください)
+public class Person
+{
+    public string Name { get; set; }
+    public int Age { get; set; }
+}
+</code></pre>
+<pre><code class="language-csharp">// データ準備
+var data = new Person { Name = &quot;山本山&quot;, Age = 99 };
+
+var serializer = new XmlSerializer(typeof(Person));
+using (var ms = new MemoryStream())
+{
+    serializer.Serialize(ms, data); // シリアライズ
+
+    // 結果確認出力
+    var xml = Encoding.UTF8.GetString(ms.ToArray(), 0, (int)ms.Length);
+    Debug.WriteLine(xml);
+
+    ms.Position = 0; // 巻き戻して……
+    var value = (Person)serializer.Deserialize(ms); // デシリアライズ
+    Debug.WriteLine(value.Name + &quot;:&quot; + value.Age); // 山本山:99
+}
+</code></pre>
+<pre><code class="language-xml">// 出力結果のXML
+﻿&lt;?xml version=&quot;1.0&quot; encoding=&quot;utf-8&quot;?&gt;
+&lt;Person xmlns:xsi=&quot;http://www.w3.org/2001/XMLSchema-instance&quot; xmlns:xsd=&quot;http://www.w3.org/2001/XMLSchema&quot;&gt;
+  &lt;Name&gt;山本山&lt;/Name&gt;
+  &lt;Age&gt;99&lt;/Age&gt;
+&lt;/Person&gt;
+</code></pre>
+<p>素直な使い勝手、素直な出力。いいですね。さて、しかし特に外部APIを叩いて手に入るXMLは名前PascalCaseじゃねーよ、とか属性の場合どうすんだよ、という場合も多いでしょう。細かい制御にはXmlAttributeを使います。</p>
+<pre><code class="language-csharp">[XmlRoot(&quot;people&quot;)]
+public class People
+{
+    [XmlElement(&quot;count&quot;)]
+    public int Count { get; set; }
+    [XmlArray(&quot;persons&quot;)]
+    [XmlArrayItem(&quot;person&quot;)]
+    public Person[] Persons { get; set; }
+}
+
+[XmlRoot(&quot;person&quot;)]
+public class Person
+{
+    [XmlElement(&quot;name&quot;)]
+    public string Name { get; set; }
+    [XmlAttribute(&quot;age&quot;)]
+    public int Age { get; set; }
+}
+</code></pre>
+<pre><code class="language-csharp">// データ準備
+var data = new People
+{
+    Count = 2,
+    Persons = new[]
+{
+    new Person { Name = &quot;山本山&quot;, Age = 99 },
+    new Person { Name = &quot;トマト&quot;, Age = 19 }
+}
+};
+var xml = @&quot;
+    &lt;people&gt;
+        &lt;count&gt;2&lt;/count&gt;
+        &lt;persons&gt;
+            &lt;person age=&quot;&quot;14&quot;&quot;&gt;
+                &lt;name&gt;ほむ&lt;/name&gt;
+            &lt;/person&gt;
+            &lt;person age=&quot;&quot;999&quot;&quot;&gt;
+                &lt;name&gt;いか&lt;/name&gt;
+            &lt;/person&gt;
+        &lt;/persons&gt;
+    &lt;/people&gt;&quot;;
+
+var serializer = new XmlSerializer(typeof(People));
+
+// シリアライズ
+using (var ms = new MemoryStream())
+{
+    serializer.Serialize(ms, data);
+    Debug.WriteLine(Encoding.UTF8.GetString(ms.ToArray(), 0, (int)ms.Length));
+}
+
+// デシリアライズ
+using (var sr = new StringReader(xml))
+{
+    var value = (People)serializer.Deserialize(sr);
+    foreach (var item in value.Persons)
+    {
+        Debug.WriteLine(item.Name + &quot;:&quot; + item.Age);
+    }
+}
+
+// 出力結果のXMLは↑に書いたXMLと同じようなものなので割愛
+</code></pre>
+<p>ちょっと属性制御が面倒ですが、それなりに分かりやすく書けます。他によく使うのは無視して欲しいプロパティを指定するXmlIgnoreかしら。さて、そんな便利なXmlSerializerですが、XML化するクラスに制限があります。有名所ではDictionaryがシリアライズできねえええええ！とか。小細工して回避することは一応可能ですが、そんな無理するぐらいなら使うのやめたほうがいいでしょう、シリアライザは別にXmlSerializerだけじゃないのだから。</p>
+<p>というわけで、XmlSerializerの利用シーンのお薦めは、ネットワークから外部APIを叩いて手に入るXMLをクラスにマッピングするところです。柔軟な属性制御により、マッピングできないケースは(多分)ないでしょう。いや、分かりませんが。まあ、ほとんどのケースでは大丈夫でしょう！しかし、LINQ to XMLの登場により、手書きで変換するのも十分お手軽なってしまったので、こうして分かりにくい属性制御するぐらいならXElement使うよ、というケースのほうが多いかもしれません。結局、XML構造をそのまま映すことしかできないので、より細かく変換できたほうが良い場合もずっとあって。</p>
+<p>実際、私はもう長いことXmlSerializer使ってない感じ。LINQ to XMLは偉大。</p>
+<h2>DataContractSerializer</h2>
+<p>割と新顔ですが、もう十分古株と言ってよいでしょう(どっちだよ)。XmlSerializerと同じくオブジェクトをXMLに変換するのですが、その機能はずっと強力です。Dictionaryだってなんだってシリアライズできますよ、というわけで、現在では.NETの標準シリアライザはこいつです。</p>
+<pre><code class="language-csharp">// データ準備
+var data = new Person { Name = &quot;山本山&quot;, Age = 99 };
+
+var serializer = new DataContractSerializer(typeof(Person));
+using (var ms = new MemoryStream())
+{
+    serializer.WriteObject(ms, data); // シリアライズ
+
+    // 結果確認出力
+    var xml = Encoding.UTF8.GetString(ms.ToArray(), 0, (int)ms.Length);
+    Debug.WriteLine(xml);
+
+    ms.Position = 0; // 巻き戻して……
+    var value = (Person)serializer.ReadObject(ms); // デシリアライズ
+    Debug.WriteLine(value.Name + &quot;:&quot; + value.Age); // 山本山:99
+}
+</code></pre>
+<pre><code class="language-xml">&lt;Person xmlns:i=&quot;http://www.w3.org/2001/XMLSchema-instance&quot; xmlns=&quot;http://schemas.datacontract.org/2004/07/SilverlightApplication34&quot;&gt;&lt;Age&gt;99&lt;/Age&gt;&lt;Name&gt;山本山&lt;/Name&gt;&lt;/Person&gt;
+</code></pre>
+<p>とまあ、使い勝手はXmlSerializerと似たようなものです。おお、出力されるXMLは整形されていません。整形して出力したい場合は</p>
+<pre><code class="language-csharp">// 出力を整形したい場合はXmlWriter/XmlWriterSettingsを挟む
+using (var ms = new MemoryStream())
+using (var xw = XmlWriter.Create(ms, new XmlWriterSettings { Indent = true }))
+{
+    serializer.WriteObject(xw, data);
+
+    xw.Flush();
+    var xml = Encoding.UTF8.GetString(ms.ToArray(), 0, (int)ms.Length);
+    Debug.WriteLine(xml);
+}
+</code></pre>
+<pre><code class="language-xml">﻿&lt;?xml version=&quot;1.0&quot; encoding=&quot;utf-8&quot;?&gt;
+&lt;Person xmlns:i=&quot;http://www.w3.org/2001/XMLSchema-instance&quot; xmlns=&quot;http://schemas.datacontract.org/2004/07/SilverlightApplication34&quot;&gt;
+  &lt;Age&gt;99&lt;/Age&gt;
+  &lt;Name&gt;山本山&lt;/Name&gt;
+&lt;/Person&gt;
+</code></pre>
+<p>さて、結果をXmlSerializerと見比べてみるとどうでしょう。名前空間が違います。SilverlightApplication34ってありますね。これは、私がこのXMLを出力するのに使ったSilverlightプロジェクトの名前空間です。ワシのConsoleApplicationは221まであるぞ（整理しろ）。さて、ではこのXMLをデシリアライズするのに、別のアプリケーション・別のクラスで使ってみるとどうでしょう？</p>
+<pre><code class="language-csharp">namespace TestSilverlightApp
+{
+    public class Person
+    {
+        public string Name { get; set; }
+        public int Age { get; set; }
+    }
+
+    public partial class MainPage : UserControl
+    {
+        public MainPage()
+        {
+            InitializeComponent();
+
+            var xml = @&quot;&lt;?xml version=&quot;&quot;1.0&quot;&quot; encoding=&quot;&quot;utf-8&quot;&quot;?&gt;
+            &lt;Person xmlns:i=&quot;&quot;http://www.w3.org/2001/XMLSchema-instance&quot;&quot; xmlns=&quot;&quot;http://schemas.datacontract.org/2004/07/SilverlightApplication34&quot;&quot;&gt;
+                &lt;Age&gt;99&lt;/Age&gt;
+                &lt;Name&gt;山本山&lt;/Name&gt;
+            &lt;/Person&gt;&quot;;
+
+            var serializer = new DataContractSerializer(typeof(Person));
+            using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(xml)))
+            {
+                // System.Runtime.Serialization.SerializationExceptionが起こってデシリアライズできない
+                // 名前空間 'http://schemas.datacontract.org/2004/07/TestSilverlightApp' の要素 'Person' が必要です。
+                // 名前が 'Person' で名前空間が 'http://schemas.datacontract.org/2004/07/SilverlightApplication34' の 'Element' が検出されました。
+                var value = (Person)serializer.ReadObject(ms);
+            }
+        }
+    }
+}
+</code></pre>
+<p>デシリアライズ出来ません。対象オブジェクトが名前空間によって厳密に区別されるからです。じゃあどうするのよ！というと、属性で名前空間を空、という指示を与えます。</p>
+<pre><code class="language-csharp">// DataContract属性をクラスにつけた場合は
+// そのクラス内のDataMember属性をつけていないプロパティは無視される
+[DataContract(Namespace = &quot;&quot;, Name = &quot;person&quot;)]
+public class Person
+{
+    [DataMember(Name = &quot;name&quot;)]
+    public string Name { get; set; }
+    [DataMember(Name = &quot;age&quot;)]
+    public int Age { get; set; }
+}
+</code></pre>
+<pre><code class="language-csharp">// こんなプレーンなXMLも読み込める
+var xml = @&quot;
+    &lt;person&gt;
+        &lt;age&gt;99&lt;/age&gt;
+        &lt;name&gt;山本山&lt;/name&gt;
+    &lt;/person&gt;&quot;;
+
+var serializer = new DataContractSerializer(typeof(Person));
+using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(xml)))
+{
+    var value = (Person)serializer.ReadObject(ms);
+    Debug.WriteLine(value.Name + &quot;:&quot; + value.Age);
+}
+</code></pre>
+<p>属性面倒くせー、ですけれど、まあしょうがない。そうすれば外部からのXMLも読み込めるし、と思っていた時もありました。以下のようなケースではどうなるでしょうか？Personクラスは↑のものを使うとして。</p>
+<pre><code class="language-csharp">// こんなさっきと少しだけ違うXMLがあるとして
+var xml = @&quot;
+    &lt;person&gt;
+        &lt;name&gt;山本山&lt;/name&gt;
+        &lt;age&gt;99&lt;/age&gt;
+    &lt;/person&gt;&quot;;
+
+var serializer = new DataContractSerializer(typeof(Person));
+using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(xml)))
+{
+    var value = (Person)serializer.ReadObject(ms);
+    Debug.WriteLine(value.Name + &quot;:&quot; + value.Age); // 結果は？？？
+}
+</code></pre>
+<p>これは出力結果は「山本山:0」になります。Ageが0、つまり復元されませんでした。なぜかというと、XMLを見てください。nameが先で、ageが、後。DataContractSerializerは規程された順序に強く従います。DataMember属性のOrderプロパティで順序を与えるか、与えない場合はアルファベット順(つまりAgeが先でNameが後)となります。この辺は<a href="http://msdn.microsoft.com/ja-jp/library/ms729813.aspx">データ メンバーの順序</a>に書かれています。</p>
+<p>と、いうような事情から、DataContractSerializerを外部XMLからの受け取りに使うのはお薦めしません。XmlSerializerなら順序無視なので大丈夫です。いや、普通は順序が変わったりなどしないだろう！と思わなくもなくもないけれど、意外とデタラメなのじゃないか、基本的にはお外からのデータが何もかも信用できるわけなどないのだ、とうがってしまい(TwitterのAPIとか胡散臭さいのを日常的に触っていると！)、厳しいかなって、思ってしまうのです。</p>
+<p>しかし、オブジェクトの保存・復元用にはDataContractSerializerは無類の強さを発揮します。例えば設定用のクラスを丸ごとシリアライズ・デシリアライズとかね。iniにして、じゃなくてフツーはXMLにすると思いますが、それです、それ。Dictionaryだってシリアライズできるし、引数なしコントラクタがないクラスだってシリアライズできちゃうんですよ？</p>
+<pre><code class="language-csharp">// とある引数なしコンストラクタがないクラス
+[DataContract]
+public class ToaruClass
+{
+    [DataMember]
+    public string Name { get; set; }
+
+    public ToaruClass(string name)
+    {
+        Name = name;
+    }
+}
+</code></pre>
+<pre><code class="language-csharp">var toaru = new ToaruClass(&quot;たこやき&quot;);
+
+var serializer = new DataContractSerializer(typeof(ToaruClass));
+using (var ms = new MemoryStream())
+{
+    serializer.WriteObject(ms, toaru); // シリアライズできるし
+
+    ms.Position = 0;
+    var value = (ToaruClass)serializer.ReadObject(ms); // デシリアライズできる
+
+    Debug.WriteLine(value.Name); // たこやき
+}
+</code></pre>
+<p>ただし、対象クラスにDataContract属性をつけてあげる必要はあります。つけてないとシリアライズもデシリアライズもできません。</p>
+<p>ちなみに何でコンストラクタがないのにインスタンス化出来るんだよ！というと、<a href="http://msdn.microsoft.com/ja-jp/library/system.runtime.serialization.formatterservices.getuninitializedobject.aspx">System.Runtime.Serialization.FormatterServices.GetUninitializedObject</a>を使ってインスタンス化しているからです（Silverlightの場合はアクセス不可能）。こいつはコンストラクタをスルーしてオブジェクトを生成する反則スレスレな存在です、というか反則です。チートであるがゆえに、対象クラスにはDataContract属性をつける必要があります。コンストラクタ無視してもいいよ、ということを保証してあげないとおっかない、というわけです。(GetUninitializedObjectメソッド自体は別に属性は不要で何でもインスタンス化できます、typeof(void)ですらインスタンス化できます、無茶苦茶である)</p>
+<p>なお、このGetUninitializedObjectが使われるのはDataContract属性がついているクラスのみです。DataContract属性がついていなければ、普通のコンストラクタが呼ばれるし、逆にDataContract属性がついていると、例え引数をうけないコンストラクタがあったとしても、GetUninitializedObject経由となりコンストラクタは無視されます。DataContract属性を付ける時はコンストラクタ内でシリアライズで復元できない副作用のある処理をすべきではない。ということに注意してください。</p>
+<p>また、.NET 4版ではprivateプロパティの値も復元できるのですが、Silverlightの場合は無理のようです。ということでフル.NETなら不変オブジェクトでもサクサク大勝利、と思ってたのですが、Silverlightでの不変オブジェクトのシリアライズ・デシリアライズは不可能のようです。保存したいなら、保存専用の代理のオブジェクトを立ててやるしかない感じでしょうかね。</p>
+<p>そんなわけで微妙な点も若干残りはしますが、オブジェクトを保存するのにはDataContractSerializerがお薦めです。</p>
+<h2>DataContractとSerializable</h2>
+<p>シリアライズ可能なクラス、の意味でDataContract属性をつけているわけですが、じゃあSerializable属性は？というと、えーと、SerializableはSilverlightでは入っていなかったりするとおり、過去の遺物ですね。なかったということで気にしないようにしましょう。</p>
+<h2>DataContractJsonSerializer</h2>
+<p>今時の言語はJSONが簡単に扱えなきゃダメです。XMLだけ扱えればいい、なんて時代は過ぎ去りました。しかしC#は悲しいことに標準では……。いや、いや、Silverlightには<a href="http://msdn.microsoft.com/ja-jp/library/system.json.aspx">System.Json</a>がありますね。しかし.NET 4にはありません(.NET 4.5とWinRTには入ります)。いや、しかし.NET 4には<a href="http://dynamicjson.codeplex.com/">DynamicJson</a>があります(それ出していいならJSON.NETがあるよ、で終わりなんですけどね)。が、Windows Phone 7には何もありません。ああ……。</p>
+<p>とはいえ、シリアライザならば用意されています。DataContractJsonSerializerです。</p>
+<pre><code class="language-csharp">// データ準備
+var data = new Person { Name = &quot;山本山&quot;, Age = 99 };
+
+var serializer = new DataContractJsonSerializer(typeof(Person));
+using (var ms = new MemoryStream())
+{
+    serializer.WriteObject(ms, data); // シリアライズ
+
+    // 結果確認出力
+    var xml = Encoding.UTF8.GetString(ms.ToArray(), 0, (int)ms.Length);
+    Debug.WriteLine(xml); // {&quot;Age&quot;:99,&quot;Name&quot;:&quot;山本山&quot;}
+
+    ms.Position = 0; // 巻き戻して……
+    var value = (Person)serializer.ReadObject(ms); // デシリアライズ
+    Debug.WriteLine(value.Name + &quot;:&quot; + value.Age); // 山本山:99
+}
+</code></pre>
+<p>使い勝手はDataContractSerializerと完全に一緒です。ただし、違う点が幾つか。名前空間が（そもそもJSONで表現不可能なので）なくなったのと、順序も関係なく復元可能です。</p>
+<pre><code class="language-csharp">var json1 = @&quot;{&quot;&quot;Name&quot;&quot;:&quot;&quot;山本山&quot;&quot;,&quot;&quot;Age&quot;&quot;:99}&quot;;
+var json2 = @&quot;{&quot;&quot;Age&quot;&quot;:99,&quot;&quot;Name&quot;&quot;:&quot;&quot;山本山&quot;&quot;}&quot;;
+
+var serializer = new DataContractJsonSerializer(typeof(Person));
+using (var ms1 = new MemoryStream(Encoding.UTF8.GetBytes(json1)))
+using (var ms2 = new MemoryStream(Encoding.UTF8.GetBytes(json2)))
+{
+    var value1 = (Person)serializer.ReadObject(ms1);
+    var value2 = (Person)serializer.ReadObject(ms2);
+
+    Debug.WriteLine(value1.Name + &quot;:&quot; + value2.Age);
+    Debug.WriteLine(value2.Name + &quot;:&quot; + value2.Age);
+}
+</code></pre>
+<p>というわけで、随分とDataContractSerializerよりも使い勝手が良い模様。いい話だなー。さて、難点は出力されるJSONの整形が不可能です。DataContractSerializerではXmlWriterSettingsで行えましたが、DataContractJsonSerializerではそれに相当するものがありません。というわけでヒューマンリーダブルな形で出力、とはならず、一行にドバーっとまとめて吐かれるのでかなり苦しい。</p>
+<p>もう一つ、これは本当に大したことない差なのでどうでもいいのですが、DataContractSerializerのほうが速いです。理由は単純でDataContractSerializerに一枚被せる形でDataContractJsonSerializerが実装されているから。その辺の絡みで.NET 4には<a href="http://msdn.microsoft.com/ja-jp/library/system.runtime.serialization.json.jsonreaderwriterfactory.aspx">JsonReaderWriterFactory</a>などがあって、これを直に触ってJSON→XML変換をするとLINQ to XMLを通したJSONの直接操作が標準ライブラリのみで可能なのですが、Silverlight/Windows Phone 7では残念なことに触ることができません。</p>
+<p>外部APIを叩いて変換する際に、シリアライズはお手軽で便利であると同時に、完全に同一の形のオブジェクトを用意しなければならなくて、かったるい側面もあります。LINQ to XML慣れしていると特に。そういった形でJSONを扱いたい場合、WP7では<a href="http://json.codeplex.com/">Json.NET</a>を使う、しかありません。使えばいいんぢゃないかな、どうせNuGetでサクッと入れられるのだし。</p>
+<p>とはいえまあ、そう言うほど使いづらいわけでもないので、標準のみでJSONを扱いたいという場合は、DataContractJsonSerializerが第一にして唯一の選択肢になります。</p>
+<h2>JavaScriptSerializer</h2>
+<p>.NET Framework 4.0 Client Profileでは使えないのですが、FullならばSystem.Web.Extensionを参照することでJavaScriptSerializerが使えます。もはや完全にSilverlightと関係ないのでアレですが、少し見てみましょう。</p>
+<pre><code class="language-csharp">var serializer = new JavaScriptSerializer();
+
+var target = new { Name = &quot;ほむほむ&quot;, Age = 14 };
+var json = serializer.Serialize(target); // stringを返す
+</code></pre>
+<p>Serializeで文字列としてのJSONを返す、というのがポイントです。それと、シリアライザ作成時にtypeを指定しません。また、匿名型もJSON化することが可能です（これはDataContractSerializerでは絶対無理）。ただし、コンストラクタのないクラスのデシリアライズは不可能です。</p>
+<p>中々使い勝手がいいですね！で、これは、リフレクションベースの非常に素朴な実装です。だから匿名型でもOKなんですねー。ちょっとした用途には非常に楽なのですが、Client Profileでは使えないこともありますし(ASP.NETで使うために用意されてる)、あまり積極的に使うべきものではないと思います。ちなみに、一時期ではObsoleteになっていてDataContractJsonSerializer使え、と出ていたのですが、またObsoleteが外され普通に使えるようになりました。やはり標準シリアライザとしてはDataContractJsonSerializerだけだと重すぎる、ということでしょうか。</p>
+<h2>バイナリとか</h2>
+<p>別にシリアライズってXMLやJSONだけじゃあないのですね。サードパーティ製に目を向ければ、色々なものがあります。特に私がお薦めなのは<a href="http://code.google.com/p/protobuf-net/">protobuf-net</a>。これはGoogleが公開しているProtocol Buffersという仕様を.NETで実装したものなのですが、とにかく速い。めちゃくちゃ速い。稀代のILマスターが書いているだけある恐ろしい出来栄えです。SilverlightやWP7版もあるので、Protocol Buffersの本来の用途というだけなく、幅広く使えるのではかとも思います。</p>
+<p>もう一つは国内だと最近目にすることの多い<a href="http://msgpack.org/">MessagePack</a>。以前に<a href="http://neue.cc/2010/05/29_261.html">.NET(C#)におけるシリアライザのパフォーマンス比較</a>を書いたときは振るわないスコアでしたが、最近別のC#実装が公開されまして、それは作者によるベンチ<a href="https://oikw.org/memo/2011/04/23/0">MessagePack for .NET (C#) を書いた</a>によると、protobuf-netよりも速いそうです。</p>
+<h2>Next</h2>
+<p>というわけでSilverlight枠でいいのか怪しかったですが、シリアライザの話でした。次は<a href="https://twitter.com/#!/ugaya40">@ugaya40</a>さんのWeakEventの話です。引き続きチェックを。あ、あと、Silverlight Advent Calendarはまだ埋まってない（！）ので、是非是非参加して、埋めてやってください。申し込みは<a href="http://atnd.org/events/22001">Silverlight Advent Calendar 2011</a>から。皆さんのエントリ、待ってます。どうやらちょうど今日Silverlight 5がリリースされたようなので、SL5の新機能ネタとかいいんじゃないでしょうか。</p>
+</div>
+<h1><a href="https://neue.cc/2011/12/09_356.html">自家製拡張メソッド制作のすすめ だいx回 BufferWithPadding</a></h1>
 <ul class="date"><li>2011-12-09</li></ul>
 <div class="entry_body"><p><a href="http://nuget.org/packages/Ix_Experimental-Main">Ix(Interactive Extensions)</a>は使っていますか？Rxから逆移植されてきている(IxのNuGet上のアイコンはRxのアイコンの逆向きなのですね)、LINQ to Objectsを更に拡張するメソッド群です。みんな大好きForEachなど、色々入っています。その中でも、私はBufferというものをよく使っています。Ixが参照できない場合は何度も何度も自作するぐらいに使いどころいっぱいあって、便利です。こんなの。</p>
 <pre><code class="language-csharp">// 指定個数分をまとめたIList&lt;T&gt;を返します
@@ -1778,49 +2095,6 @@ public static IObservable&lt;WebResponse&gt; GetResponseAsObservable(this WebReq
 <p>ただ、リソースの問題にだけは気をつけて！上で挙げた問題は、本質的にはFromAsyncPatternに限らず、リソース処理が引き離されている場合の全てで該当します。リソースを扱うのは難しい。とはいえ、全面的に問題になるのは、このFromAsyncPatternぐらいな気はします。Observable.Usingなども用意されているので、不用意にリソースをチェーン間で渡したりしなければ原則的には起こらない。けれど、そのFromAsyncPatternこそがリソースを扱うシチュエーションで最も使われるものなんですよね、とほほほ。</p>
 <p>キャンセル(Dispose)を不用意に呼ばなければ問題は起こらないといえば起こらないんですが(そのため、不適切に書いてしまっていても、多くのケースで問題が表面化することはないでしょう)、Switchのようなアプローチが取れなくなるのがどうにも。現状だと、とりあえず気をつけましょう、としか言いようがないので、気をつけましょう。もし何かうまい具合に動かないなあ、と思ったら、この辺を疑ってみると良いかもしれません。</p>
 <p>その辺難しいなあ、という場合は、近いうちに私の出すRx拡張ライブラリを使いましょう。特に考えなくても済むよう、色々配慮してあります。いつ出るの？というと、はい、最近ゴリゴリと書いてますんで(ブログがちょっと放置気味だった程度には)、必ず近いうちに出します。</p>
-</div>
-<h1><a href="https://neue.cc/2011/09/10_342.html">Re:FromEvent vs FromEventPattern</a></h1>
-<ul class="date"><li>2011-09-10</li></ul>
-<div class="entry_body"><p>現在のRxで最大の分かりにくいポイントになっているFromEventとFromEventPattern。以前に<a href="http://neue.cc/2011/07/06_332.html" title="neue cc - Rxでのイベント変換まとめ - FromEvent vs FromEventPattern">Rxでのイベント変換まとめ - FromEvent vs FromEventPattern</a>として軽くまとめましたが、改めて、詳細に考えてみたいと思います。なお、ここでいうFromEventPatternはWP7版のRxではFromEventを指しています（ここも分かりにくいポイントです）。そして、ここでいうFromEventはWP7版のRxには未搭載です、あらあらかしこ。</p>
-<p>ネタ元ですが、<a href="http://techblog.hilife-jp.info/2011/09/silverlight-5-3-doubleclicktrigger-rx.html?spref=tw" title="銀の光と藍い空: Silverlight 5 の新機能その3 番外編 DoubleClickTrigger をRxっぽくしてみた">銀の光と藍い空: Silverlight 5 の新機能その3 番外編 DoubleClickTrigger をRxっぽくしてみた</a>を拝見して、FromEventに関して実行時に例外が出るとのことなので、その部分の説明を書こうかと。最初コメント欄に書いたのですが、少しコメントにトチってしまったので、自分のブログに書かせていただきます、どうもすみません……。</p>
-<p>FromEventとFromEventPatternの最大の違いは、FromEventがAction&lt;EventArgs&gt;を対象にしていて、FromEventPatternはAction&lt;object, EventArgs&gt;を対象にしているということです。Action&lt;object, EventArgs&gt;は、つまりEventHandler。ではAction&lt;EventArgs&gt;って何なんだよ、というと、通常は存在しません。というのもeventはデリゲートなら何でもアリということに仕様上はなっていますが、慣例としてobject sender, EventArgs eを引数に持つデリゲートを選択しているはずですから。</p>
-<p>さて、デリゲート間には同じ引数の型・同じ戻り値の型を持っていても、型自体に互換性がないので（例えばEventHandlerとEventHandler&lt;T&gt;）、FromEventもFromEventPatternも、引数を3つ持つオーバーロードの第一引数は
-conversionという、デリゲートの型を変換するラムダ式を受け入れるようになっています。よって</p>
-<pre><code class="language-csharp">Observable.FromEventPattern&lt;MouseButtonEventHandler, MouseButtonEventArgs&gt;(
-    h =&gt; h.Invoke,
-    h =&gt; AssociatedObject.MouseLeftButtonDown += h,
-    h =&gt; AssociatedObject.MouseLeftButtonDown -= h);
-</code></pre>
-<p>これが、リフレクションなしで変換出来る形式になります。conversionが不要なオーバーロードもあるのですが(+=と-=を書くだけ)、それはリフレクションを使ってデリゲートの変換をしていて今一つ効率が悪いので、わざわざ+=, -=を書いているのだから、もう一手間かけて、 h =&gt; h.Invoke を書いておいたほうがお得です。（もし対象がEventHandler&lt;T&gt;の場合は事情が違ってconversionが不要なので+=と-=だけで済みます、この辺の事情の違いが面倒臭く混乱を招きがちなんですよね…… Rxチームには「便利そうだから」機能を追加する、とかやる前に、もう少し深く考えてくださいと苦情を言いたい）</p>
-<p>h =&gt; h.Invoke だけで何故変換出来ているのかを詳しく説明します。これは正しく書くのならば</p>
-<pre><code class="language-csharp">(EventHandler&lt;MouseButtonEventArgs&gt; h) =&gt; new MouseButtonEventHandler(h)
-</code></pre>
-<p>が正解です。(左側の型に関しては省略可能ですが、説明用には型を書いていたほうが分かりやすいので明記しておきます、また、この最初からEventHandler&lt;T&gt;であることが、対象がEventHandler&lt;T&gt;である場合はconversionが不要な理由になっています）。ただし、関数を直接渡すとコンパイラがデリゲートの型を変換してくれるため、h =&gt; h.Invokeを渡した場合は</p>
-<pre><code class="language-csharp">h =&gt; new MouseButtonEventHandler(h.Invoke)
-</code></pre>
-<p>という風に内部的には自動で整形してくれます。そのため、new MouseButtonEventHandlerを書く手間が省けるということになっています。h と h.Invoke はやってることは完全一緒なのですけど、この辺はコンパイラの仕組みの都合に合わせるという感じで。むしろ仕組みの隙間をついたやり方といいましょうか。</p>
-<p>では、FromEventなのですが、まず正しく変換出来る形を見ると</p>
-<pre><code class="language-csharp">Observable.FromEvent&lt;MouseButtonEventHandler, MouseButtonEventArgs&gt;(
-    h =&gt; (sender, e) =&gt; h(e),
-    h =&gt; AssociatedObject.MouseLeftButtonDown += h,
-    h =&gt; AssociatedObject.MouseLeftButtonDown -= h);
-</code></pre>
-<p>です。もし第一引数を省いた場合はAction&lt;EventArgs&gt;を探してリフレクションをかけるようになっていて、そして、通常はそんなイベントを使うことはないので、十中八九例外が出るのではかと思われます（だからこういう混乱を招くだけのオーバーロードを入れるなとRxチームには苦情を言いたい）。</p>
-<p>型まで明記すれば</p>
-<pre><code class="language-csharp">Action&lt;MouseButtonEventArgs&gt; h =&gt; (object sender, MouseEventArgs e) =&gt; h(e)
-</code></pre>
-<p>となっているわけで、senderを捨ててMouseEventArgsだけを引数に渡す独自のconversionを渡しています。これですが、FromEventPatternであっても</p>
-<pre><code class="language-csharp">h =&gt; (sender, e) =&gt; h(sender, e)
-</code></pre>
-<p>とも書けるので(つまるところ h.Invoke って何かといえば (sender, e) =&gt; h(sender,e) なのです)、それのsender抜きバージョンを渡しているということになります。</p>
-<p>わかりづらい？例えば</p>
-<pre><code class="language-csharp">.Subscribe(Console.WriteLine)
-.Subscribe(x =&gt; Console.WriteLine(x))
-</code></pre>
-<p>この二つはやってること一緒なんですよ、ということですね。ラムダ式が入れ子になるとワケガワカラナイ度が加速されるので、私は関数型言語erにはなれないな、と思ったり思わなかったり。</p>
-<h2>まとめ</h2>
-<p>ただたんに使うにあたっては、こんなことは知ってる必要はなくh =&gt; h.Invoke と h =&gt; (sender, e) =&gt; h(e) を定型句だと思って暗記してもらうだけで十分です。はい。本来は、こういう部分はちゃんと隠蔽されてたほうがいいんですけれど、まあ、C#の限界としてはそうはいかないというとこですね(F#だとイベントがもう少し扱いやすいんですが)。</p>
-<p>また、FromEventにせよFromEventPatternにせよFromAsyncPatternにせよ、実際に使うコードに直接書いてくにはノイズが多すぎるので、<a href="http://neue.cc/2011/07/06_332.html" title="neue cc - Rxでのイベント変換まとめ - FromEvent vs FromEventPattern">Rxでのイベント変換まとめ - FromEvent vs FromEventPattern</a>で書いたように、拡張メソッドに隔離するのを私はお薦めしています。そうこうして裏側で地道に努力することでF#とC#の壁を縮める！とかなんとかかんとか。</p>
 </div>
 <a href="https://neue.cc/14">Prev |</a>
 <a href="https://neue.cc/16">| Next</a>

@@ -23,7 +23,131 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2011/06/03_326.html">C#のMicro-ORM(Dapper, Massive, PetaPoco)について</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2011/06/06_327.html">Reactive ExtensionsとSQLの非同期実行</a></h1>
+<ul class="date"><li>2011-06-06</li></ul>
+<div class="entry_body"><p><a href="http://dbexecutor.codeplex.com/">DbExecutor</a>のパフォーマンスが十分トップクラスであることは、<a href="http://neue.cc/2011/06/03_326.html">こないだの計測</a>で分かりました。では次のステップはどこへ向かおう。IL生成を頑張っても、もうほんの少ししか稼げる余地は残ってない。ならば、もっと根本的なところから行こう。ええ、非同期IOを。DbExecutorは一応、拡張性を考慮してあるので継承して非同期対応しましょう。</p>
+<p>……ところで、この記事はAsyncDbExecutorの作り方、みたいになっていますが、読み取ってほしいのは「<a href="http://msdn.microsoft.com/en-us/data/gg577609">Reactive Extensions</a>の使い方」です。AsyncDbExecutorは、あくまでRxの利用法のサンプルにすぎません。DbExecutorなんて使わないしー、とか思わず、その辺を念頭において眺めてみてください。</p>
+<h2>BeginExecuteReader/EndExecuteReader</h2>
+<p>SqlServerならば<a href="http://msdn.microsoft.com/ja-jp/library/1a674khd.aspx">SqlCommand.BeginExecuteReaderメソッド</a>が使えます。IDbCommandにはないので、対象はSqlServer特化ということになってしまいますが、まあ、それはしょうがない(非同期対応してないDBもあるわけだし)。対応させる方法ですが、まずはDbExecutorを継承してコンストラクタを弄ります。</p>
+<pre><code class="language-csharp">public class AsyncDbExecutor : DbExecutor
+{
+    public AsyncDbExecutor(string connectionString)
+        : base(new SqlConnection(connectionString))
+    { }
+
+    public AsyncDbExecutor(SqlConnection connection)
+        : base(connection)
+    { }
+
+    public AsyncDbExecutor(string connectionString, IsolationLevel isolationLevel)
+        : base(new SqlConnection(connectionString), isolationLevel)
+    { }
+
+    public AsyncDbExecutor(SqlConnection connection, IsolationLevel isolationLevel)
+        : base(connection, isolationLevel)
+    { }
+}
+</code></pre>
+<p>通常のDbExecutorはIDbConnectionを受け入れるようにしていましたが、今回はSqlServer特化なのでSqlConnectionで。また、利便性を考えて生の接続文字列からも作れるようにしてやりました。IsolationLevelを受け入れるオーバーロードはTransaction処理する場合のためとなっています(別にTransactionScope使ってもいいですけどね)。あとは、非同期に対応するメソッドを作ってやれば良いだけ。</p>
+<h2>Reactive Extensions</h2>
+<p>BeginXxx-EndXxxがカッタルイのは分かりきっているので、当然のようにRxを持ち出します。</p>
+<pre><code class="language-csharp">// 引数が横に長いですがほとんど省略可能なので……
+public IObservable&lt;SqlDataReader&gt; ExecuteReaderAsyncRaw(string query, object parameter = null, CommandType commandType = CommandType.Text, CommandBehavior commandBehavior = CommandBehavior.Default)
+{
+    var cmd = (SqlCommand)this.PrepareExecute(query, commandType, parameter);
+    return Observable.FromAsyncPattern&lt;SqlDataReader&gt;(
+            (ac, o) =&gt; cmd.BeginExecuteReader(ac, o, commandBehavior), cmd.EndExecuteReader)
+        .Invoke()
+        .Finally(() =&gt; cmd.Dispose());
+}
+</code></pre>
+<p>this.PrepareExecuteですが、これはDbExecutorのprotectedメソッドで、クエリ文字列や匿名型で渡すパラメータからIDbCommandを生成します。こんなこともあろうかとちゃんとprotectedにしておいて良かった。そしてキャストですが、今回はconnectionは必ずSqlConnectionで(そうなるようコンストラクタを調整してある)、戻り値がSqlCommandであることが保証されているためアップキャストしてやります。そうしないと非同期APIが使えないですから。</p>
+<p>あとは、いつものように(？)FromAsyncPatternして、それとFinallyでcommandをDisposeしてやることを忘れないと気が効いてるかもり。利用する時は</p>
+<pre><code class="language-csharp">// async=trueを忘れずに
+var connstr = @&quot;Data Source=.;async=true;Initial Catalog=master;Integrated Security=True;&quot;;
+
+var executor = new AsyncDbExecutor(connstr);
+executor.ExecuteReaderAsyncRaw(&quot;select * from sys.tables&quot;)
+    .Finally(() =&gt; executor.Dispose()) // 接続のDisposeも忘れずに...
+    .Subscribe(dr =&gt;
+    {
+        while (dr.Read())
+        {
+            Console.WriteLine(dr.GetValue(0));
+        }
+    });
+</code></pre>
+<p>といった感じです。非同期APIはDisposeをどう仕込めばいいのかが悩ましいのですが、Rxなら簡単です、Finallyに突っ込めばいいだけ。同期APIでusingで囲むのと同じ感覚で、RxではFinallyに置いてください。非同期実行ということで、複数同時に走らせることも少なくないと思うのですが、その場合は全ての完了を自然に扱えるよう、結合して一本の流れにしてやる必要はあるでしょう。恐らくきっと。</p>
+<p>そういえば忘れてはいけないのは、非同期APIを使う場合は接続文字列にasync=trueが必要です。これについては<a href="http://msdn.microsoft.com/ja-jp/library/dd229385.aspx">ADO.NET 2.0 における非同期コマンド実行</a>によると</p>
+<blockquote>
+<p>非同期コマンドを使用するためには、コマンドが実行される接続は、接続文字列を async=true と指定して初期化する必要があります。 非同期メソッドが接続文字列に async=true と指定されていない接続を使用するコマンドで呼び出されると、例外がスローされます。</p>
+</blockquote>
+<blockquote>
+<p>所定の接続オブジェクトで同期コマンドのみを使用するとわかっている場合は、接続文字列に async キーワードを指定しないか、false に設定することをお勧めします。 非同期操作が有効になっている接続で同期操作を実行すると、リソースの利用率は著しく増大します。</p>
+</blockquote>
+<blockquote>
+<p>同期 API と非同期 API の両方が必要な場合は、可能であれば別々の接続を使用することをお勧めします。 これが不可能であれば、async=true を指定して開かれた接続で同期メソッドを使用することもできます。この場合、通常どおりに動作しますが、パフォーマンスは若干劣化します。</p>
+</blockquote>
+<p>とのことなので、少し気をつけたほうがいいかもしれません。まあ、Rx愛好家なら全てRxで非同期でやるに決まっているので(?)、別にasync=trueでも怖くありません。</p>
+<h2>SelectMany</h2>
+<p>しかし、生のDataReaderをwhileで回すとか、ダサ……。せっかくのRxなのだから値もPushで送ればいいぢゃない。</p>
+<pre><code class="language-csharp">IEnumerable&lt;IDataRecord&gt; EnumerateSqlDataReader(SqlDataReader reader)
+{
+    using (reader)
+    {
+        // Closeされるタイミングがコントロール出来ないので、IsClosedのチェックは必須
+        while (!reader.IsClosed &amp;&amp; reader.Read())
+        {
+            yield return reader;
+        }
+    }
+}
+
+// 前に定義したAsyncRawを呼んでSelectManyするだけ
+public IObservable&lt;IDataRecord&gt; ExecuteReaderAsync(string query, object parameter = null, CommandType commandType = CommandType.Text, CommandBehavior commandBehavior = CommandBehavior.Default)
+{
+    return ExecuteReaderAsyncRaw(query, parameter, commandType, commandBehavior)
+        .SelectMany(dr =&gt; EnumerateSqlDataReader(dr));
+}
+
+// 使うときはこんな感じ
+var executor = new AsyncDbExecutor(connstr);
+executor.ExecuteReaderAsync(&quot;select * from sys.tables&quot;)
+    .Select(dr =&gt; new
+    {
+        Name = dr.GetString(0),
+        ObjectId = dr.GetInt32(1)
+    })
+    .Finally(() =&gt; executor.Dispose())
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>実にLINQっぽく自然になりました。yield returnを使ったのは、IObservableのSelectManyはIEnumerableも受け入れて平らにしてくれるからです。これ、Observable.UsingとかObservable.Generateを使って、Rxだけで頑張ることも可能ではあるのですが、面倒くさいしゴチャゴチャします。なので、yield returnが使えるなら、使ってしまったほうが楽。この辺はIEnumerable&lt;T&gt;を生成するためのyield returnがあるように、IObservable&lt;T&gt;を生成するためのコンパイラサポートが欲しいところ。awaitが乗ればTaskからIObservableへの変換(は基本的に容易)なので、ある程度可能になるのかなあ、と思いつつ、謂わばAsyncEnumerableになることの難しさもあるので今のところ何とも言えません。</p>
+<p>ExecuteReaderAsyncがあればExecuteReaderAsyncRawいらないぢゃん！って感じですけれど、パフォーマンスのために非同期にするのに、SelectManyとかオーバーヘッドがあるのも嫌かなあ、と思う場合もあるかもなので、生のSqlDataReaderを返すものも残してあげるのもいいかな、とか思ったりはするところ。EnumerateSqlDataReaderのような拡張メソッドを別途定義してやれば、生のSqlDataReaderも、そう扱いが面倒というわけでもないですしね。いや、どうだろう……。</p>
+<h2>次バージョン</h2>
+<p>この調子でExecuteNonQueryやSelectなども書いていけば完成です。って、そういえばアクセサの動的生成＆キャッシュの部分はinternalで外から触れない(せいぜいPrepareExecuteだけ)からSelectは書けないぢゃん。うげげ。うーん、publicにするのもどうかと思うので、InternalVisibleToで対処しようかなあ。そんなわけで、このAsyncDbExecutorは今はまだアイディア段階で内容を詰めてませんが、もっとブラッシュアップさせて、次の<a href="http://dbexecutor.codeplex.com/">DbExecutor</a>の更新時に含めたいと思っています。Rxが必要という都合もあるので、本体とは別DLLで。勿論、NuGet対応で依存解決でインストール楽々、です。</p>
+<h2>ところで本当に速いの？</h2>
+<p>うん、分かりません。<a href="http://msdn.microsoft.com/ja-jp/library/dd229385.aspx">ADO.NET 2.0 における非同期コマンド実行</a>によれば</p>
+<blockquote>
+<p>ADO.NET/SqlClient の非同期コマンド実行サポートは、実際に、本当の意味での非同期ネットワーク I/O （共有メモリの場合は非ブロッキングのシグナル通知） を基礎としています。 ご要望が多ければ、いずれ内部実装について文書にしたいと思います。 ここでは、&quot;真の非同期&quot; を行っており、特定の I/O 操作が終わるまで待機しているブロックされたバックグラウンドのスレッドは存在しない、と申し上げておきます。Windows 2000/XP/2003 オペレーティング システムのオーバーラップ I/O 機能と I/O 完了ポートの機能を利用し、単一スレッド （または少数スレッド） によって、所定のプロセスに対する未処理の要求をすべて処理することを可能にしています。</p>
+</blockquote>
+<p>というわけで、まあ速いんじゃないかねえ、とは思うんですが、計らないことには分かりません。ベンチマークはAsyncDbExecutorのリリース時に、ちゃんと計ってみたいと思います。とりあえず非同期IOで万歳なNode.jsに負けてられませんからね(謎)。というのはともかく、この辺は以前にmono meetingでAzure Tableのパフォーマンスの話を聞いた時→資料:<a href="http://www.slideshare.net/takekazuomi/20110126-azure-monomeeting">20110126 azure table in mono meeting</a>全くサッパリだったこともあるので、ちゃんと調べたいとずっと思っていたのです(が、IOCPとかネイティブな話はさっぱり＆データベースの挙動の中身も全然なので、あくまで.NETな上層のほうで…… いずれは何とかしたいのですけれど、手一杯でどうにも)。</p>
+<p>やっぱ非同期が必須なのはサーバーサイドの話になるのですかねえ。IHttpAsyncHandlerとRx、とかそのうち書きたいのですが、そもそも私はASP.NETあんま分かりませんですよというところから始める必要があり。調べたいことがありすぎて積みタスクの山にうもれて完全死亡中。</p>
+<h2>デフォルトExecutor</h2>
+<p>最後に話は変わりますが、new DbExecutorするのに毎回コンストラクタにSqlConnection渡すのがダルいし不自然！という場合は、これまた継承して接続文字列が固定されたExecutorを用意すると良いです。</p>
+<pre><code class="language-csharp">public class HogeExecutor : DbExecutor
+{
+    public HogeExecutor()
+        : base(new SqlConnection(&quot;Data Source=hogehoge;&quot;))
+    { }
+
+    public HogeExecutor(IsolationLevel isolationLevel)
+        : base(new SqlConnection(&quot;Data Source=hogehoge;&quot;), isolationLevel)
+    { }
+}
+</code></pre>
+<p>中々悪くないのではないでしょーか。残念ながらStaticメソッドのほうは使えませんが。Staticメソッドのほうは、どうも上手いやり方が考えつかなくて色々と保留中。考えてはいるのですが。</p>
+</div>
+<h1><a href="https://neue.cc/2011/06/03_326.html">C#のMicro-ORM(Dapper, Massive, PetaPoco)について</a></h1>
 <ul class="date"><li>2011-06-03</li></ul>
 <div class="entry_body"><p>最近、巷という名の極一部で話題になっているMicro-ORMという分野。何それ？うーん、MicroなORマッパーです。まんまですが。Entity FrameworkがUltra Hugeだとしたら、その対極にあるような。定義としては「SQL本文は手書き、マッピングは自動」だけの機能を持つもの、といったところでしょうか。Microであるために「1ファイルのみ」を入れても良さそう。少なくとも、用語の発生元っぽい<a href="http://code.google.com/p/dapper-dot-net/" title="dapper-dot-net - Simple SQL object mapper for SQL Server - Google Project Hosting">Dapper</a>, <a href="https://github.com/robconery/massive" title="robconery/massive - GitHub">Massive</a>, <a href="http://www.toptensoftware.com/petapoco/" title="Topten Software">PetaPoco</a>は1ファイルのみです。</p>
 <p>他に、シンプルめなORマッパーを志している感じなのは<a href="https://github.com/markrendle/Simple.Data" title="markrendle/Simple.Data - GitHub">Simple.Data</a>や、そしてORマッパーじゃなくてただの実行機です！と言い張る私の作っている<a href="http://dbexecutor.codeplex.com/" title="DbExecutor - Simple and Lightweight Database Executor - Home">DbExecutor</a>などもMicro-ORMに入れちゃってもいいかしら？Simple.Dataは名前に反してあまりシンプルではない(MEF使ってる……)感じですが。DbExecutorは十分Microです！<a href="http://d.hatena.ne.jp/taedium/">id:taedium</a>さんの作られている<a href="http://soma.codeplex.com/" title="Soma - Sql Oriented MApping framework - Home">Soma</a>も比較的シンプルめなものに入るかしら……？</p>
@@ -1524,78 +1648,6 @@ Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetR
 <p>Bing APIの前は諸事情あってGoogleからのスクレイピングでした。スクレイピングはグレーだろうということで代替案をずっと探していて、何とかBingに落ち着きました。最初はどうにも使い物にならない、と思ったのですが、検索パラメータを色々変えて、ある程度望む結果が出るようにはなったかな、と。Bingは結構癖があって、調整大変ですね。その話は後日、WP7アプリが完成したときにでも……。</p>
 <p>コード的にはスクレイピングのほうも割と凝ってたんですけどねー、バッサリとゴミ箱行き。復活することは、ないかな。もったいないけどしょうがない。いつかそのうち紹介する日は、来るかも来ないかも。</p>
 <p>そんなわけで延々と足踏みしていて実装は相変わらず一歩も進んでませんが(！) 順調に制作は進行中なので乞うご期待。いやほんと。</p>
-</div>
-<h1><a href="https://neue.cc/2011/03/28_311.html">Widows Phone 7でアプリケーション名やバージョン番号をバインドする方法</a></h1>
-<ul class="date"><li>2011-03-28</li></ul>
-<div class="entry_body"><p>アプリケーション名の表示や、about画面に表示したいであろうバージョン番号、どうします？直書きのstringやリソースから？それもいいのですけれど、せっかくプロジェクトのプロパティ(AssemblyInfo.cs)で、アプリケーション名やバージョン番号を設定しているわけだから、そこから利用できたほうがいいですよね。</p>
-<p>というわけで、これらの情報はアセンブリから取得しましょう。</p>
-<pre><code class="language-csharp">public class AssemblyInfoData
-{
-    public static readonly AssemblyInfoData ExecutingAssembly = new AssemblyInfoData(Assembly.GetExecutingAssembly());
-
-    public string FileName { get; private set; }
-    public string Version { get; private set; }
-    public string FileVersion { get; private set; }
-    public string Title { get; private set; }
-    public string Description { get; private set; }
-    public string Configuration { get; private set; }
-    public string Company { get; private set; }
-    public string Product { get; private set; }
-    public string Copyright { get; private set; }
-    public string Trademark { get; private set; }
-    public string Culture { get; private set; }
-
-    public AssemblyInfoData(Assembly assembly)
-    {
-        var assemblyName = new AssemblyName(assembly.FullName);
-        FileName = assemblyName.Name;
-        Version = assemblyName.Version.ToString();
-
-        FileVersion = GetAttributeName&lt;AssemblyFileVersionAttribute&gt;(assembly, a =&gt; a.Version);
-        Title = GetAttributeName&lt;AssemblyTitleAttribute&gt;(assembly, a =&gt; a.Title);
-        Description = GetAttributeName&lt;AssemblyDescriptionAttribute&gt;(assembly, a =&gt; a.Description);
-        Configuration = GetAttributeName&lt;AssemblyConfigurationAttribute&gt;(assembly, a =&gt; a.Configuration);
-        Company = GetAttributeName&lt;AssemblyCompanyAttribute&gt;(assembly, a =&gt; a.Company);
-        Product = GetAttributeName&lt;AssemblyProductAttribute&gt;(assembly, a =&gt; a.Product);
-        Copyright = GetAttributeName&lt;AssemblyCopyrightAttribute&gt;(assembly, a =&gt; a.Copyright);
-        Trademark = GetAttributeName&lt;AssemblyTrademarkAttribute&gt;(assembly, a =&gt; a.Trademark);
-        Culture = GetAttributeName&lt;AssemblyCultureAttribute&gt;(assembly, a =&gt; a.Culture);
-    }
-
-    private string GetAttributeName&lt;T&gt;(Assembly assembly, Func&lt;T, string&gt; selector) where T : Attribute
-    {
-        var attr = assembly.GetCustomAttributes(typeof(T), true).Cast&lt;T&gt;().FirstOrDefault();
-        return (attr == null) ? &quot;&quot; : selector(attr);
-    }
-}
-</code></pre>
-<p>FileName, Versionはnew AssemblyNameに渡してから(WPFだとGetNameで直に取れるのですが、Silverlightだとセキュリティ違反で例外が飛ぶためこうする必要がある)、それ以外の値はカスタム属性から取得できます。また、任意のAssemblyの情報をコンストラクタに投げて取得出来るようになっていますが、どうせ必要なのは実行アセンブリの情報だけでしょ？ってことで、public staticなフィールドにExecutingAssemblyのデータを公開するようにしています。なので、コードからは、 AssemblyInfoData.ExecutingAssembly.Version とアクセスするだけで、簡単に取得できます。</p>
-<p>でも、コードから欲しいということはほとんどなくて、UIに表示するためだけに欲しいのですよね、こういう情報は。バインディングしましょう！まず、こんなクラスを用意します。</p>
-<pre><code class="language-csharp">public class AssemblyInfoDataBindingHelper
-{
-    public AssemblyInfoData Value { get { return AssemblyInfoData.ExecutingAssembly; } }
-}
-</code></pre>
-<p>何故これが必要かというと、WPFの場合は{x:static}でstatic変数もバインド出来るのですが、Silverlight/WP7ではバインド出来ないためです。いやあ、カッコ悪いですね、{x:static}欲しいですね、まあ、ないものはしょうがない。</p>
-<p>次にApp.xamlのApplication.Resourcesの中に</p>
-<pre><code class="language-xml">&lt;Application.Resources&gt;
-    &lt;!-- Applicationのところで xmlns:local=&quot;ネームスペース&quot; を宣言しておく--&gt;
-    &lt;local:AssemblyInfoDataBindingHelper x:Key=&quot;AssemblyInfoData&quot;/&gt;
-&lt;/Application.Resources&gt;
-</code></pre>
-<p>と書いてリソースを登録。準備はこれで完了で、あとはバインドするだけ。</p>
-<pre><code class="language-xml">&lt;TextBlock x:Name=&quot;ApplicationTitle&quot; Text=&quot;{Binding Value.Title, Source={StaticResource AssemblyInfoData}}&quot; Style=&quot;{StaticResource PhoneTextNormalStyle}&quot;/&gt;
-&lt;TextBlock x:Name=&quot;PageTitle&quot; Text=&quot;{Binding Value.Version, Source={StaticResource AssemblyInfoData}}&quot; Style=&quot;{StaticResource PhoneTextTitle1Style}&quot; /&gt;
-</code></pre>
-<p>と、以上です。これで下のような感じに</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/wp7asminfo.jpg">
-</p>
-<p>表示されました。ApplicationTitleにTitleは分かりますがPageTitleにVersionは丸っきりイミフ。ボタンは、何となく寂しいから置いただけで意味はないです気にしないで。</p>
-<p>AssemblyInfoDataクラスのコードは完全に独立して使い回しが効くので、コピペってどうぞご自由にお使いください。煮るなり焼くなり……、パブリックドメインで。</p>
-<h2>まとめ</h2>
-<p>といったのは、一応、今製作中のWP7アプリの一部です。順調に制作は遅れまくり。うむむ。今月中といきたかったのだけど、まーだずれ込みそう。その前は二月中のつもりだったのだけど、<a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>が思いの外引っ張りすぎて手を付けてる余裕がなかった。とにかく、4月中頃までには、マーケットプレイスで公開したいなあ。あとソースコードも公開します(というか既に製作中のがこっそり公開されてます)。Reactive Extensionsの実践例として、ただたんに非同期で使うというだけじゃなく、こういうケースで使える、コードはこうなる。というサンプルとして役立てればいいな、という思いで書いてますので、適当に待っていてください。</p>
-<p>人に見せるためのコード、というのを念頭に置きすぎていて、同じ場所のコードの修正ばかり繰り返していてアプリ全体としては一歩も製作が進まないという超鈍足状態に陥ってますが(コード書きの遅さに定評のある私です(ｷﾘｯ)、でも、書きなおす度に確実によくなっていく実感はあるので、最終的にそこそこ見せれるコードになるのではないかと思っています。少なくとも、部分的には面白い内容になるはずです。</p>
 </div>
 <a href="https://neue.cc/16">Prev |</a>
 <a href="https://neue.cc/18">| Next</a>

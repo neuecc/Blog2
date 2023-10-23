@@ -23,7 +23,219 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2017/03/13_550.html">C#(.NET, .NET Core, Unity, Xamarin)用の新しい高速なMessagePack実装</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2017/04/06_551.html">C# 7.0 custom task-like の正しいフレームワークでの利用法</a></h1>
+<ul class="date"><li>2017-04-06</li></ul>
+<div class="entry_body"><p>例年、この頃はMVP更新が云々とかなのですが、今年からシステムが変わって更新時期に変動があるんで何もありませんが、一応まだ継続しています。それはともかくとして<a href="https://www.visualstudio.com/ja-jp/news/releasenotes/vs2017-relnotes">Visual Studio 2017</a>が出ました。会社でも全プロジェクトがVS2017に移行完了を果たして、代わり映えしないようで、タプル記法のデコンストラクションとか工夫すると結構便利だな、とか使い始めると色々発見があります。タプル記法やデコンストラクションの工夫に関しては、弊社エンジニアリングブログの<a href="http://engineering.grani.jp/entry/2017/04/06/163904">C# 7.0 が使えるようになったので ValueTuple を活用してみた</a>をどうぞ。</p>
+<p>そんな中で、私がはよ来てくれ……と願っていたC# 7.0の新機能は、task-likeです。<a href="https://github.com/dotnet/roslyn/issues/7169">Proposal: arbitrary task-like types returned from async methods</a>で延々と議論されていたようですが、これは何かというと、asyncでTask以外の型が返せるようになります。もともとC# 7.0からValueTaskが入って、async ValueTask&lt;T&gt; を返せるようになる必要があったついでに搭載されたみたいなものですが、色々何か出来そうですよね！？</p>
+<p>というわけで、早速有効に使えるシチュエーションを用意しました。というか早速投下しています。</p>
+<h2>task-likeがない場合の苦痛</h2>
+<p>現在、私は<a href="https://github.com/neuecc/MagicOnion">MagicOnion</a>という<a href="http://www.grpc.io/">gRPC</a>をベースにしたフレームワークを作っています。シリアライザはこないだ公開したエクストリーム速くて軽量な<a href="https://github.com/neuecc/MessagePack-CSharp/">MessagePack for C#</a>です。と、そういう細かいことはどうでもいいとして、MagicOnionではこんな風に書きます。</p>
+<pre><code class="language-csharp">// 定義を用意して
+public interface IMyFirstSerivce : IService&lt;IMyFirstSerivce&gt;
+{
+    UnaryResult&lt;int&gt; Sum(int x, int y);
+}
+
+public class MyFirstSerivce : ServiceBase&lt;IMyFirstSerivce&gt;, IMyFirstSerivce
+{
+    // これがサーバーで呼び出される実装になる
+    public UnaryResult&lt;int&gt; Sum(int x, int y)
+    {
+        var sum = x + y;
+        return UnaryResult(x + y);
+    }
+}
+
+static async Task Run()
+{
+    var channel = new Channel(&quot;localhost:1111&quot;, ChannelCredentials.Insecure);
+
+    // インターフェースで動的にクライアントを自動生成する
+    var client = MagicOnionClient.Create&lt;IMyFirstSerivce&gt;(channel);
+
+    // 自然な感じでサーバー - クライアント通信で受け取れる
+    var result = await client.Sum(10, 20);
+
+    Console.WriteLine(result);
+}
+</code></pre>
+<p>まぁまぁ自然な感じでいいじゃん？ってところですが、面倒くさいのは UnaryResult&lt;T&gt; を返さなければならないところ。そのため UnaryResuylt() というヘルパー関数を読んで包んだのをリターンする羽目になってます。これが地味に面倒くさい。return x + y; って書きたいじゃん、って。</p>
+<p>で、MagicOnionがUnaryResultを強制するには理由があって、多くの場合は戻り値そのものだけで良いんですが、場合によってはレスポンスヘッダを取りたいとかステータスコードを取りたいとか、そういうのに対応する必要があるんですね。</p>
+<pre><code class="language-csharp">// awaitしない
+var response = client.Sum(10, 20);
+
+// headerを取るとか
+var header = await response.ResponseHeadersAsync;
+
+// statusを取るとかしたかったりする
+var trailer = response.GetStatus();
+
+// 結果を取る場合。 await response はこれのショートカットでしかなかったりする
+var result = await response.ResponseAsync;
+</code></pre>
+<p>APIの触り心地に関してはものすごく考えたんですが、最終的にこの辺が妥協点になってくるかな、と。しょうがないね。さて、ではasyncになるとどうでしょう？</p>
+<pre><code class="language-csharp">public interface IMyFirstSerivce : IService&lt;IMyFirstSerivce&gt;
+{
+    Task&lt;UnaryResult&lt;string&gt;&gt; EchoAsync(string message);
+}
+
+public class MyFirstSerivce : ServiceBase&lt;IMyFirstSerivce&gt;, IMyFirstSerivce
+{
+    // サーバー側の書き味は普通、なんですが……
+    public async Task&lt;UnaryResult&lt;string&gt;&gt; EchoAsync(string message)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(10));
+
+        return UnaryResult(message);
+    }
+}
+
+static async Task Run()
+{
+    var channel = new Channel(&quot;localhost:1111&quot;, ChannelCredentials.Insecure);
+    var client = MagicOnionClient.Create&lt;IMyFirstSerivce&gt;(channel);
+
+    // await await !!!
+    var result = await await client.EchoAsync(&quot;hogehoge&quot;);
+
+    // というのも、await一発でUnaryResultの取得になる
+    var response = await client.EchoAsync(&quot;takotako&quot;);
+
+    //  ようするにこれのショートカットはawait awaitになってしまうのだ……
+    var result2 = await response.ResponseAsync;
+}
+</code></pre>
+<p>注目はawait awaitです。なんと、await awaitという世にも奇っ怪な記述が合法として出てくるのであった、最悪……。</p>
+<h2>task-likeがある場合</h2>
+<p>そこでC# 7.0 task-likeですよ！</p>
+<pre><code class="language-csharp">// SyncもAsyncも共にUnaryResultとして定義
+public interface IMyFirstSerivce : IService&lt;IMyFirstSerivce&gt;
+{
+    UnaryResult&lt;int&gt; SumAsync(int x, int y);
+    UnaryResult&lt;string&gt; EchoAsync(string message);
+}
+
+public class MyFirstSerivce : ServiceBase&lt;IMyFirstSerivce&gt;, IMyFirstSerivce
+{
+    public async UnaryResult&lt;int&gt; SumAsync(int x, int y)
+    {
+        // UnaryResult()で囲む必要なし！やったー！
+        return x + y;
+    }
+
+    public async UnaryResult&lt;string&gt; EchoAsync(string message)
+    {
+        // 勿論awaitする場合も普通に
+        await Task.Delay(TimeSpan.FromSeconds(3));
+        return message;
+    }
+}
+
+static async Task Run()
+{
+    var channel = new Channel(&quot;localhost:1111&quot;, ChannelCredentials.Insecure);
+    var client = MagicOnionClient.Create&lt;IMyFirstSerivce&gt;(channel);
+
+    // 自然に扱える！
+    var result1 = await client.SumAsync(1, 100);
+    var result2 = await client.EchoAsync(&quot;hogehoge&quot;);
+}
+</code></pre>
+<p>UnaryResult()でのラップもawait awaitも不要です。非常に綺麗にすっきりと扱えるようになりました。あってヨカッタtask-like。かなり有意義に使えてると思いますです。</p>
+<p>これは何をやっているかというと、async UnaryResult の場合に独自のコード生成が入って、UnaryResult()の呼び出しを自動で行ってくれるようになってます。UnaryResult()でのラップやawait awaitもダルいのですが、地味に辛いのがTask&lt;UnaryResult&lt;T&gt;&gt;という、ジェネリクスが二階層になっているところですね。継承の連鎖が悪で少ないに越したことはないのと同様に、ジェネリクスのネストも、書き味的にも読み味的にも、少ないに越したことはないのです（ところでかんすーがたげんごの人は型をネストさせまくることの可読性低下にあまりにも無頓着すぎる気がとってもしてます、よくないね）。</p>
+<h2>警告を無視する</h2>
+<p>ところで、asyncでawaitなしだと警告がでます。CS1998 Async method lacks 'await' operators and will run synchronously というあれ。お薦めは、ガン無視することです。プロジェクト設定のほうで1998は警告「しない」にしちゃうのがいいでしょう。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/24740077/4cb17432-1ada-11e7-8814-53860bbd526a.png" alt="image" /></p>
+<p>ずっと会社でasyncまみれになってン年間過ごして思ったのは、この警告いらないわ。別に。抵抗感あるかもとは思いますが、それでもなお無視したほうが幸せ度上がると思います。</p>
+<h2>task-likeの作り方</h2>
+<p>適当にやりました。いや、だってよくわからんし。なんで適当にAsyncTaskMethodBuilderに丸投げです。まぁこれはValueTaskのtask-likeと一緒です。ノリが同じなのでそれで動くと思ってたし、実際それで動いた。超絶手間なくtask-like対応できたわー。</p>
+<pre><code class="language-csharp">// 対象の型にAsyncMethodBuilder属性をつける
+[AsyncMethodBuilder(typeof(AsyncUnaryResultMethodBuilder&lt;&gt;))]
+public struct UnaryResult&lt;TResponse&gt;
+{
+}
+
+// こちらがその中身。基本AsyncTaskMethodBuilderに丸投げです。
+public struct AsyncUnaryResultMethodBuilder&lt;T&gt;
+{
+    private AsyncTaskMethodBuilder&lt;T&gt; methodBuilder;
+    private T result;
+    private bool haveResult;
+    private bool useBuilder;
+
+    public static AsyncUnaryResultMethodBuilder&lt;T&gt; Create()
+    {
+        return new AsyncUnaryResultMethodBuilder&lt;T&gt;() { methodBuilder = AsyncTaskMethodBuilder&lt;T&gt;.Create() };
+    }
+
+    public void Start&lt;TStateMachine&gt;(ref TStateMachine stateMachine) where TStateMachine : IAsyncStateMachine
+    {
+        methodBuilder.Start(ref stateMachine);
+    }
+
+    public void SetStateMachine(IAsyncStateMachine stateMachine)
+    {
+        methodBuilder.SetStateMachine(stateMachine);
+    }
+
+    public void SetResult(T result)
+    {
+        if (useBuilder)
+        {
+            methodBuilder.SetResult(result);
+        }
+        else
+        {
+            this.result = result;
+            haveResult = true;
+        }
+    }
+
+    public void SetException(Exception exception)
+    {
+        methodBuilder.SetException(exception);
+    }
+
+    public UnaryResult&lt;T&gt; Task
+    {
+        get
+        {
+            if (haveResult)
+            {
+                return new UnaryResult&lt;T&gt;(result);
+            }
+            else
+            {
+                useBuilder = true;
+                return new UnaryResult&lt;T&gt;(methodBuilder.Task);
+            }
+        }
+    }
+
+    public void AwaitOnCompleted&lt;TAwaiter, TStateMachine&gt;(ref TAwaiter awaiter, ref TStateMachine stateMachine)
+        where TAwaiter : INotifyCompletion
+        where TStateMachine : IAsyncStateMachine
+    {
+        useBuilder = true;
+        methodBuilder.AwaitOnCompleted(ref awaiter, ref stateMachine);
+    }
+
+    [SecuritySafeCritical]
+    public void AwaitUnsafeOnCompleted&lt;TAwaiter, TStateMachine&gt;(ref TAwaiter awaiter, ref TStateMachine stateMachine)
+        where TAwaiter : ICriticalNotifyCompletion
+        where TStateMachine : IAsyncStateMachine
+    {
+        useBuilder = true;
+        methodBuilder.AwaitUnsafeOnCompleted(ref awaiter, ref stateMachine);
+    }
+}
+</code></pre>
+<p>まぁ細かいことはいいんです、どうでも。</p>
+<h2>まとめ</h2>
+<p>C# 7.0は良い。というかMagicOnionはもはやC# 7.0が前提みたいな新世代フレームワークと化してますとかかんとか。MagicOnionは現在CM放送中（！）の<a href="https://kuro-kishi.jp/">黒騎士と白の魔王</a>でも全面採用しています。黒騎士ではHTTP/1 Web APIはほぼ使われてないのです。クライアント-サーバー間もサーバー-サーバー間も全てgRPC。時代はHTTP/2。圧倒的な次世代。gRPCも、Unityでも動くようにgRPCにかなりの魔改造を施したカスタム仕様で、かなりアグレッシブな感じです。</p>
+<p>その一端は<a href="https://unite.unity.com/ja/2017/tokyo">Unite 2017</a>でお話するつもりなので是非是非来てくださいな。もちろん、UniteはUnityのイベントなのでクライアントサイド中心の話なのでサーバー側(gRPC/MagicOnion)の話は少なめになりますが、近いうちに他のイベントでサーバー側でもお話できればな、と思ってます。ちょうど5月6月はクラウド系の大規模カンファレンスがラッシュでありますしね。</p>
+</div>
+<h1><a href="https://neue.cc/2017/03/13_550.html">C#(.NET, .NET Core, Unity, Xamarin)用の新しい高速なMessagePack実装</a></h1>
 <ul class="date"><li>2017-03-13</li></ul>
 <div class="entry_body"><p>と、いうものを作りました。<a href="http://msgpack.org/">MessagePack</a>のC#版です。以前に作った<a href="https://github.com/neuecc/ZeroFormatter">ZeroFormatter</a>のコードをベースに、バイナリの読み書きをMsgPackのフォーマットに差し替えたものになります。MsgPackのライブラリはすでにあるじゃん(<a href="https://github.com/msgpack/msgpack-cli">MsgPack-Cli</a>)！ってことなんですが、パフォーマンスにかなり差があります。</p>
 <ul>
@@ -1545,286 +1757,6 @@ Profiler.EndSample();
 <h2>まとめ</h2>
 <p>で、現状はList&lt;T&gt;の列挙はどうすればいいのか、というと、まぁforでindexerでアクセスが安心の鉄板ではある。ForEachが内部配列に直接アクセスされるので速い説はなくはないですが、ForEachだとラムダ式のキャプチャに気を使わないと逆効果なので(詳しくは<a href="http://neue.cc/2016/01/06_525.html">Unityでのボクシングの殺し方、或いはラムダ式における見えないnewの見極め方</a>)、基本的には普通にforがいいと思います（なお、キャプチャのないように気を使えば、ForEachのほうが速度を稼げる余地はあります。理論上、正常になったforeachよりも良い場合があるため）</p>
 <p>理想的にはforeachであるべきだし、改革の時はまもなく！（5.5に↑のコンパイラアップグレードは入るっぽいですよ）。ちなみに、あくまでコンパイラのアップグレードなだけで、フレームワークのアップデートや言語バージョンのアップデートは今は含まれてはいない。段階的にやっていく話だと思うので、とりあえずはコンパイラがより良くなる、というだけでも良いと思ってます。というか全然良いです。素晴らしい。</p>
-</div>
-<h1><a href="https://neue.cc/2016/08/03_536.html">UniRx 5.4.0 - Unity 5.4対応とまだまだ最適化</a></h1>
-<ul class="date"><li>2016-08-03</li></ul>
-<div class="entry_body"><p>UniRx 5.4.0をリリースしました！ちょうどUnity 5.4もリリースされたので、5.4向けの修正(Warning取り除いただけですが)を出せて良かった。というわけで5.4正式対応です。リリースは前回が5月だったので3ヶ月ぶりです。5.2 -&gt; 5.3も3ヶ月だったので、今のとこ3ヶ月スパンになってますが偶然です。</p>
-<ul>
-<li><a href="https://github.com/neuecc/UniRx">GitHub/UniRx</a></li>
-<li><a href="https://www.assetstore.unity3d.com/jp/#!/content/17276">AssetStore/UniRx</a></li>
-</ul>
-<p>何が変わったのかというと</p>
-<pre><code class="language-txt">Add: Observable.FrameInterval
-Add: Observable.FrameTimeInterval
-Add: Observable.BatchFrame
-Add: Observable.Debug(under UniRx.Diagnostics namespace)
-Add: ObservableParticleTrigger and OnParticleCollisionAsObservable, OnParticleTriggerAsObservabl(after Unity 5.4) extension methods
-Add: UniRx.AsyncReactiveCommand
-Add: ReactiveCommand.BindToOnClick, `IObservable&lt;bool&gt;.BindToButtonOnClick`
-Add: UniRx.Toolkit.ObjectPool, AsyncObjectPool
-Add: UniRx.AsyncMessageBroker, asynchronous variation of MessageBroker
-Add: ObserveEveryValueChanged(IEqualityComparer) overload
-Add: `Observable.FromCoroutine(Func&lt;CancellationToken, IEnumerator&gt;)` overload
-Add: ObservableYieldInstruction.IsDone property
-Add: IPresenter.ForceInitialize(object argument)
-Improvement: Where().Select(), Select().Where() peformance was optimized that combine funcs at internal
-Improvement: MicroCoroutine performance was optimized that prevent refresh spike
-Improvement: Observable.Return performance was optimized that reduced memory cost
-Improvement: Observable.Return(bool) was optimzied perofmrance that allocate zero memory
-Improvement: Observable.ReturnUnit was optimzied perofmrance that allocate zero memory
-Improvement: Observable.Empty was optimzied perofmrance that allocate zero memory
-Improvement: Observable.Never was optimzied perofmrance that allocate zero memory
-Improvement: Observable.DelayFrame performance was optimized
-Improvement: UnityEqualityComparer.GetDefault peformance was optimized
-Improvement: AddTo(gameObject) dispose when ObservableTrigger is not activated
-Improvement: AddTo(gameObject/component) performance was optimized by use inner CompositeDisposable of ObservableDestroyTrigger
-Improvement: `FromCoroutine&lt;T&gt;(Func&lt;IObserver&lt;T&gt;, IEnumerator&gt;)` stops coroutine when subscription was disposed
-Improvement: ReactiveCollection, ReactiveDictionary implements dispose pattern
-Fix: ToYieldInstruction throws exception on MoveNext when reThrowOnError and has error 
-Fix: ObserveEveryValueChanged publish value immediately(this is degraded from UniRx 5.3)
-Fix: Prevent warning on Unity 5.4 at ObservableMonoBehaviour/TypedMonoBehaviour.OnLevelWasLoaded
-Fix: Remove indexer.set of IReadOnlyReactiveDictionary
-Breaking Changes: Does not guaranty MicroCoroutine action on same frame
-Breaking Changes: UniRx.Diagnostics.LogEntry was changed from class to struct for performance improvement
-</code></pre>
-<p>相変わらずへっぽこな英語はおいといてもらえるとして、基本的にはパフォーマンス改善、です。</p>
-<p><a href="http://neue.cc/2016/05/14_529.html">前回紹介したMicroCoroutine</a>を改良して、配列をお掃除しながら走査する（かつ配列走査速度は極力最高速を維持する）ようになったので、より安定感もましたかな、と。その他メモリ確保しないで済みそうなものは徹底的に確保しないようになど、しつっこく性能改善に努めました。あと新規実装オペレータに関しては性能に対する執拗度がかなり上がっていて、今回でいうとBatchFrameはギチギチに最適化した実装です。既存オペレータも実装甘いものも残ってはいるので、見直せるものは見なおしてみたいですねえ。</p>
-<p>また、9/13日に<a href="https://atnd.org/events/80089">Photon勉強会【Photon Server Deep Dive - PhotonWireの実装から見つめるPhoton Serverの基礎と応用、ほか】</a>で登壇するので、<a href="https://github.com/neuecc/PhotonWire">PhotonWire</a>ではUniRxもクライアント側でかなり使っているので、その辺もちょっと話したいなと思っていますので、Photonに興味ある方もない方も是非是非。Photon固有の話も勿論しますが、普通にUnityとリアルタイム通信エンジンについての考えや、UniRx固有の話なども含めていきますので。</p>
-<h2>Debug</h2>
-<p>Debugという直球な名前のオペレータが追加されました。標準では有効化されていなくて、<code>UniRx.Diagnostics</code>というマイナーな名前空間をusingするようで使えるようになります。実際どんな効果が得られるのかというと</p>
-<pre><code class="language-csharp">using UniRx.Diagnostics;
-
----
-
-// [DebugDump, Normal]OnSubscribe
-// [DebugDump, Normal]OnNext(1)
-// [DebugDump, Normal]OnNext(10)
-// [DebugDump, Normal]OnCompleted()
-{
-    var subject = new Subject&lt;int&gt;();
-
-    subject.Debug(&quot;DebugDump, Normal&quot;).Subscribe();
-
-    subject.OnNext(1);
-    subject.OnNext(10);
-    subject.OnCompleted();
-}
-
-// [DebugDump, Cancel]OnSubscribe
-// [DebugDump, Cancel]OnNext(1)
-// [DebugDump, Cancel]OnCancel
-{
-    var subject = new Subject&lt;int&gt;();
-
-    var d = subject.Debug(&quot;DebugDump, Cancel&quot;).Subscribe();
-
-    subject.OnNext(1);
-    d.Dispose();
-}
-
-// [DebugDump, Error]OnSubscribe
-// [DebugDump, Error]OnNext(1)
-// [DebugDump, Error]OnError(System.Exception)
-{
-    var subject = new Subject&lt;int&gt;();
-
-    subject.Debug(&quot;DebugDump, Error&quot;).Subscribe();
-
-    subject.OnNext(1);
-    subject.OnError(new Exception());
-}
-</code></pre>
-<p>シーケンス内で検出可能なアクション（OnNext, OnError, OnCompleted, OnSubscribe, OnCancel）が全てコンソールに出力されます。よくあるのが、何か値が流れてこなくなったんだけど→どこかで誰かがDispose済み(OnCompleted)とか、OnCompletedが実は呼ばれてたとかが見えるようになります。</p>
-<p>超絶ベンリな可視化！ってほどではないんですが、こんなものがあるだけでも、Rxで困ったときのデバッグの足しにはなるかなー、と。</p>
-<h2>BatchFrame</h2>
-<p>BatchFrameは特定タイミング後（例えばEndOfFrameまでコマンドまとめるとか）にまとめて発火するという、Buffer(Frame)のバリエーションみたいなものです。都度処理ではなくてまとめてから発火というのは、パフォーマンス的に有利になるケースが多いので、そのための仕組みです。Bufferでも代用できなくもなかったのですが、Bufferとは、タイマーの回るタイミングがBufferが空の時にスタートして、出力したら止まるというのが大きな違いですね。その挙動に合わせて最適化されています。</p>
-<pre><code class="language-csharp">// BatchFrame特定タイミング後にまとめられて発火
-// デフォルトは0フレーム, EndOfFrameのタイミング
-var s1 = new Subject&lt;Unit&gt;();
-var s2 = new Subject&lt;Unit&gt;();
-
-Observable.Merge(s1, s2)
-    .BatchFrame()
-    .Subscribe(_ =&gt; Debug.Log(Time.frameCount));
-
-Debug.Log(&quot;Before BatchFrame:&quot; + Time.frameCount);
-
-s1.OnNext(Unit.Default);
-s2.OnNext(Unit.Default);
-</code></pre>
-<p>実装的には、まとめる＆発火のTimerはコルーチンで待つようにしているのですが、今回はそのIEnumeratorを手実装して、適宜Resetかけて再利用することで、パイプライン構築後は一切の追加メモリ消費がない状態にしてます。</p>
-<h2>Optimize Combination</h2>
-<p>オペレータの組み合わせには、幾つかメジャーなものがあります。特に代表的なのはWhere().Select()でしょう。これはリスト内包表記などでも固有記法として存在するように、フィルタして射影。よくありすぎるパターンです。また、Where().Where()などのフィルタの連打やSelect().Select()などの射影の連打、そして射影してフィルタSelect().Where()などもよくみかけます（特にWhere(x =&gt; x != null)みたいなのは頻出すぎる！）。これらは、内部的に一つのオペレータとして最適化した合成が可能です。</p>
-<pre><code class="language-csharp">// Select().Select()
-onNext(selector1(selector2(x)));
-
-// Where().Where()
-if(predicate1(x) &amp;&amp; predicate2(x))
-{
-    onNext(x);
-}
-
-// Where().Select()
-if(predicate(x))
-{
-    onNext(selector(x));
-}
-
-// Select().Where()
-var v = selector(x);
-if(predicate(v))
-{
-    onNext(v);
-}
-</code></pre>
-<p>と、いうわけで、今回からそれらの結合を検出した場合に、内部的には自動的にデリゲートをまとめた一つのオペレータに変換して返すようになっています。</p>
-<h2>MessageBroker, AsyncMessageBroker</h2>
-<p>MessageBrokerはRxベースのインメモリPubSubです。Androidで<a href="http://qiita.com/yyaammaa/items/57d8baa1e80346e67e47">OttoからRxJavaへの移行ガイド</a>のような記事があるように、PubSubをRxベースで作るのは珍しいことではなく、それのUniRx版となってます。</p>
-<p>UniRxのMessageBrokerは「型」でグルーピングされて分配される仕組みにしています。</p>
-<pre><code class="language-csharp">// こんな型があるとして
-public class TestArgs
-{
-    public int Value { get; set; }
-}
-
----
-
-// Subscribe message on global-scope.
-MessageBroker.Default.Receive&lt;TestArgs&gt;().Subscribe(x =&gt; UnityEngine.Debug.Log(x));
-
-// Publish message
-MessageBroker.Default.Publish(new TestArgs { Value = 1000 });
-
-// AsyncMessageBroker is variation of MessageBroker, can await Publish call.
-
-AsyncMessageBroker.Default.Subscribe&lt;TestArgs&gt;(x =&gt;
-{
-    // show after 3 seconds.
-    return Observable.Timer(TimeSpan.FromSeconds(3))
-        .ForEachAsync(_ =&gt;
-        {
-            UnityEngine.Debug.Log(x);
-        });
-});
-
-AsyncMessageBroker.Default.PublishAsync(new TestArgs { Value = 3000 })
-    .Subscribe(_ =&gt;
-    {
-        UnityEngine.Debug.Log(&quot;called all subscriber completed&quot;);
-    });
-</code></pre>
-<p>AsyncMessageBrokerはMessageBrokerの非同期のバリエーションで、Publish時に全てのSubscriberに届いて完了したことを待つことができます。例えばアニメーション発行をPublishで投げて、Subscribe側ではそれの完了を単一のObservableで返す、Publish側はObservableになっているので、全ての完了を待ってSubscribe可能。みたいな。文字だけだとちょっと分かりにくいですが、使ってみれば結構簡単です。</p>
-<h2>UniRx.Toolkit.ObjectPool/AsyncObjectPool</h2>
-<p>UniRx.Toolkit名前空間は、本体とはあんま関係ないけれど、Rx的にベンリな小物置き場という感じのイメージでたまに増やすかもしれません。こういうのはあまり本体に置くべき「ではない」とも思っているのですが、Rxの内部を考慮した最適化を施したコードを書くのはそこそこ難易度が高いので、実用的なサンプル、のような意味合いも込めて、名前空間を隔離したうえで用意していってもいいのかな、と思いました。</p>
-<p>というわけで、最初の追加はObjectPoolです。ObjectPoolはどこまで機能を持たせ、どこまで汎用的で、どこまで特化させるべきかという範囲がかなり広くて、実装難易度が高いわけではないですが、好みのものに仕上げるのは難しいところです。なのでまぁプロジェクト毎に作りゃあいいじゃん、と思いつつもそれはそれで面倒だしねー、の微妙なラインなのでちょっと考えつくも入れてみました。</p>
-<pre><code class="language-csharp">// こんなクラスがあるとして
-public class Foobar : MonoBehaviour
-{
-    public IObservable&lt;Unit&gt; ActionAsync()
-    {
-        // heavy, heavy, action...
-        return Observable.Timer(TimeSpan.FromSeconds(3)).AsUnitObservable();
-    }
-}
-
-// それ専用のPoolを&lt;T&gt;で作る
-public class FoobarPool : ObjectPool&lt;Foobar&gt;
-{
-    readonly Foobar prefab;
-    readonly Transform hierarchyParent;
-
-    public FoobarPool(Foobar prefab, Transform hierarchyParent)
-    {
-        this.prefab = prefab;
-        this.hierarchyParent = hierarchyParent;
-    }
-
-    // 基本的にはこれだけオーバーロード。
-    // 初回のインスタンス化の際の処理を書く（特定のtransformに下げたりとかその他色々あるでしょふ）
-    protected override Foobar CreateInstance()
-    {
-        var foobar = GameObject.Instantiate&lt;Foobar&gt;(prefab);
-        foobar.transform.SetParent(hierarchyParent);
-
-        return foobar;
-    }
-
-    // 他カスタマイズする際はOnBeforeRent, OnBeforeReturn, OnClearをオーバーロードすればおｋ
-    // デフォルトでは OnBeforeRent = SetActive(true), OnBeforeReturn = SetActive(false) が実行されます
-
-    // protected override void OnBeforeRent(Foobar instance)
-    // protected override void OnBeforeReturn(Foobar instance)
-    // protected override void OnClear(Foobar instance)
-}
-
-public class Presenter : MonoBehaviour
-{
-    FoobarPool pool = null;
-
-    public Foobar prefab;
-    public Button rentButton;
-
-    void Start()
-    {
-        pool = new FoobarPool(prefab, this.transform);
-
-        rentButton.OnClickAsObservable().Subscribe(_ =&gt;
-        {
-            // プールから借りて
-            var foobar = pool.Rent();
-            foobar.ActionAsync().Subscribe(__ =&gt;
-            {
-                // 終わったらマニュアルで返す
-                pool.Return(foobar);
-            });
-        });
-    }
-}
-</code></pre>
-<p>基本的に手動で返しますし、貸し借りの型には何の手も入ってません！Rent後のトラッキングは一切されてなくて、手でReturnしろ、と。まあ、9割のシチュエーションでそんなんでいいと思うんですよね。賢くやろうとすると基底クラスがばら撒かれることになって、あまり良い兆候とは言えません。パフォーマンス的にも複雑性が増す分、どんどん下がっていきますし。</p>
-<p>どこがRxなのかというと、PreloadAsyncというメソッドが用意されていて、事前にプールを広げておくことができます。フリーズを避けるために毎フレームx個ずつ、みたいな指定が可能になっているので、その完了がRxで待機可能ってとこがRxなとこです。</p>
-<p>それと同期版の他に非同期版も用意されていて、それは CreateInstance/Rent が非同期になってます。</p>
-<p>MessageBrokerと同じくAsyncとそうでないのが分かれているのは、Asyncに統一すべき「ではない」から。統一自体は可能で、というのも同期はObservable.Returnでラップすることで非同期と同じインターフェイスで扱えるから。そのこと自体はいいんですが、パフォーマンス上のペナルティと、そもそもの扱いづらさ（さすがにTのほうがIObservable[T]より遙かに扱いやすい！）を抱えます。</p>
-<p>sync over asyncは、UniRx的にはバッドプラクティスになるかなあ。なので、同期版と非同期版とは、あえて分けて用意する。使い分ける。使う場合は極力同期に寄せる。ほうがいいんじゃないかな、というのが最近の見解です。</p>
-<p>なお、Rent, Returnというメソッド名はdotnet/corefxの<a href="https://github.com/dotnet/corefx/tree/master/src/System.Buffers">System.Buffers</a>から取っています。</p>
-<h2>AsyncReactiveCommand</h2>
-<p>というわけでこちらもsync/asyncの別分けパターンで非同期版のReactiveCommandです。ReactiveCommandは何がベンリなのか分からないって話なのですが、実はこっちのAsyncReactiveCommandはかなりベンリです！</p>
-<pre><code class="language-csharp">public class Presenter : MonoBehaviour
-{
-    public UnityEngine.UI.Button button;
-
-    void Start()
-    {
-        var command = new AsyncReactiveCommand();
-
-        command.Subscribe(_ =&gt;
-        {
-            // heavy, heavy, heavy method....
-            return Observable.Timer(TimeSpan.FromSeconds(3)).AsUnitObservable();
-        });
-
-        // after clicked, button shows disable for 3 seconds
-        command.BindTo(button);
-
-        // Note:shortcut extension, bind aync onclick directly
-        button.BindToOnClick(_ =&gt;
-        {
-            return Observable.Timer(TimeSpan.FromSeconds(3)).AsUnitObservable();
-        });
-    }
-}
-</code></pre>
-<p>interactableの状態をコード実行中、というかつまり<code>IO&lt;T&gt;</code>が返されるまでfalseにします。連打防止でThrottleFirstがよく使われますが、それをより正確にコントロールしたり、また、引数にIReactiveProperty[bool]を渡せて、それを複数のAsyncReactiveCommandで共有することで、特定のボタンを実行中は他のボタンも実行できない、のような実行可否のグルーピングが可能になります（例えばグローバルでUI用に一個持っておけば、ゲーム中でUIは単一の実行しか許可されない、的なことが可能になる）</p>
-<h2>PresenterBase再考</h2>
-<p>PresenterBase、Obsoleteはつけてないのですけれど、GitHub上のReadMeで非推奨の明言を入れました。賢い基底クラスは悪。なのです。POCO。それはUnityにおいても何事においても例外ではない。その原則からするとPresenterBaseは賢すぎたのでナシ of the Year。動きはする、動きはするんですが……。</p>
-<p>Model-View-Presenterパターン自体の否定ではなくて（それ自体は機能するとは思っています、ただし関心がModelにばかり向きがちですが、Viewは何か、Presenterは何か、についてもきちんと向き合わないとPresenterが奇形化するかなー、というのは実感としてある。ViewであるものをPresenterとして表現してアレゲになる、とか）、PresenterBaseというフレームワークのミスかな、とは。です。</p>
-<p>とりあえずいったん初期化順序が気になるシーンは手でInitializeメソッド立てて、それをAwake, Startの代わりにして、呼ばせる。いじょ。みたいな素朴な奴で十二分かなー、とオモッテマス。結局。メリットよりもデメリットのほうが大きすぎたかな。反省。</p>
-<p>この辺りに関してはアイディアはあるので、形にするまで、むー、ちょっと味噌汁で顔洗って出直してきます。</p>
-<h2>まとめ</h2>
-<p>あんまり大きな機能追加はなく細々とした変化なんですが、着々と良くはなっているかな、と！</p>
-<p>Rxに関してもバッドプラクティスを色々考えられるというか反省できる（おうふ……）ようになっては来たので、どっかでまとめておきたいですね。油断するとすぐリアクティブスパゲティ化するのはいくないところではある。強力なツールではあるんですが、やりすぎて自爆するというのは、どんなツールを使っても避けられないことではあるけれど、Rxがその傾向はかなり強くはある。</p>
-<p>まぁ、sync over asyncはいくないです。ほんと（思うところいっぱいある）。</p>
-<p>というわけかで繰り返しますが、9/13日に<a href="https://atnd.org/events/80089">Photon勉強会【Photon Server Deep Dive - PhotonWireの実装から見つめるPhoton Serverの基礎と応用、ほか】</a>で登壇するので、よければそちらも是非是非です。</p>
 </div>
 <a href="https://neue.cc/5">Prev |</a>
 <a href="https://neue.cc/7">| Next</a>
