@@ -23,7 +23,164 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2013/04/02_402.html">Microsoft MVP for Visual C#を再再受賞しました</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2013/04/05_403.html">CloudStructures - ローカルとクラウドのデータ構造を透過的に表現するC# + Redisライブラリ</a></h1>
+<ul class="date"><li>2013-04-05</li></ul>
+<div class="entry_body"><p>というものを作りました。インストールはNuGetから。</p>
+<ul>
+<li><a href="https://github.com/neuecc/CloudStructures">GitHub - CloudStructures</a></li>
+<li><a href="https://nuget.org/packages/CloudStructures/">PM&gt; Install-Package CloudStructures -Pre</a></li>
+</ul>
+<p>何を言ってるのかヨクワカラナイので、まずはコード例を。</p>
+<pre><code class="language-csharp">// こんなクラスがあるとして
+public class Person
+{
+    public string Name { get; private set; }
+    public List&lt;Person&gt; Friends { get; private set; }
+
+    public Person(string name)
+    {
+        Name = name;
+        Friends = new List&lt;Person&gt;();
+    }
+}
+
+// こんなのがいるとして
+var sato = new Person(&quot;さとう&quot;);
+
+// 人を足す
+sato.Friends.Add(new Person(&quot;やまだ&quot;));
+sato.Friends.Add(new Person(&quot;いとう&quot;));
+
+// 件数数える
+var friendCount = sato.Friends.Count;
+</code></pre>
+<p>これは普通にローカルで表現する場合です。実に普通です。では、次。</p>
+<pre><code class="language-csharp">// RedisServerの設定の表現
+public static class RedisServer
+{
+    public static readonly RedisSettings Default = new RedisSettings(&quot;127.0.0.1&quot;);
+}
+
+// こんなクラスがあるとして
+public class Person
+{
+    public string Name { get; private set; }
+    public RedisList&lt;Person&gt; Friends { get; private set; }
+
+    public Person(string name)
+    {
+        Name = name;
+        Friends = new RedisList&lt;Person&gt;(RedisServer.Default, &quot;Person-&quot; + Name);
+    }
+}
+
+// こんなのがいるとして
+var sato = new Person(&quot;さとう&quot;);
+
+// 人を足す
+await sato.Friends.AddLast(new Person(&quot;やまだ&quot;));
+await sato.Friends.AddLast(new Person(&quot;いとう&quot;));
+
+// 件数数える
+var friendCount = await sato.Friends.GetLength();
+</code></pre>
+<p>この場合、Redisを通してサーバー上にデータは保存されています。ですが、操作感覚はローカルにあるものとほぼほぼ同じです。違いは全ての操作が非同期なので、awaitするぐらい。</p>
+<h2>IAsyncList</h2>
+<p>これは、<a href="http://actorfx.codeplex.com/">Actor Framework for Windows Azure</a>のDistributed Collectionsに影響を受けています。ActorFxのそれは、SOURCE CODEを落としてdocsフォルダの Distributed Collections using the ActorFx.docx に色々書いてあって面白いので必読です。</p>
+<p>そして、ActorFxではSystem.Cloud.Collectionsとして(System名前空間！)、現状、以下のようなインターフェイスが定義されています（まだ変更の可能性大いにあり）。</p>
+<pre><code class="language-csharp">namespace System.Cloud.Collections
+{
+    public interface IAsyncCollection&lt;T&gt; : IObservable&lt;T&gt;
+    {
+        Task&lt;int&gt; CountAsync { get; }
+        Task&lt;bool&gt; IsReadOnlyAsync { get; }
+
+        Task AddAsync(T item);
+        Task ClearAsync();
+        Task&lt;bool&gt; ContainsAsync(T item);
+        Task CopyToAsync(T[] array, int arrayIndex);
+        Task&lt;bool&gt; RemoveAsync(T item);
+    }
+
+    public interface IAsyncList&lt;T&gt; : IAsyncCollection&lt;T&gt;
+    {
+        Task&lt;T&gt; GetItemAsync(int index);
+        Task SetItemAsync(int index, T value);
+        Task&lt;int&gt; IndexOfAsync(T item);
+        Task InsertAsync(int index, T item);
+        Task RemoveAtAsync(int index);
+
+        // Less chatty versions
+        Task AddAsync(IEnumerable&lt;T&gt; items);
+        Task RemoveRangeAsync(int index, int count);
+    }
+
+    public interface IAsyncDictionary&lt;TKey, TValue&gt; : IAsyncCollection&lt;KeyValuePair&lt;TKey, TValue&gt;&gt;
+    {
+        Task&lt;TValue&gt; GetValueAsync(TKey key);
+        Task SetValueAsync(TKey key, TValue value);
+        Task&lt;Tuple&lt;bool, TValue&gt;&gt; TryGetValueAsync(TKey key);
+
+        // No AddAsync - use SetValueAsync instead.  We have no atomic operation to add iff a value is not in the dictionary.
+        Task&lt;bool&gt; ContainsKeyAsync(TKey key);
+        Task&lt;bool&gt; RemoveAsync(TKey key);
+
+        // Bulk operations
+        Task&lt;ICollection&lt;TValue&gt;&gt; GetValuesAsync(IEnumerable&lt;TKey&gt; keys);
+        Task SetValuesAsync(IEnumerable&lt;TKey&gt; keys, IEnumerable&lt;TValue&gt; values);
+        Task RemoveAsync(IEnumerable&lt;TKey&gt; keys);
+
+        ICollection&lt;TKey&gt; Keys { get; }
+        ICollection&lt;TValue&gt; Values { get; }
+    }
+}
+</code></pre>
+<p>わくわくしてきません？私はこの定義を見た瞬間に衝撃を受けました。RxのIObservable&lt;T&gt;を見た時と同程度の衝撃かもわからない。Ax(ActorFx)の実装としてはCloudList, CloudDictionary, CloudStringDictionaryがありますが(基盤としてAzure Table)、見てすぐにRedisと結びついた。Redisの持つデータ構造、List, Hash, Set, SortedSetってこれじゃないか！って。こういう風に表現されたらどれだけ素敵な見た目になるか……！</p>
+<h2>Strings, Set, SortedSet, List, Hash, その他</h2>
+<p>というわけで、最初の例ではRedisListだけ出しましたが、StringsもSetもSortedSetもHashもあります。また、HashClassやMemoizedRedisStringといった特殊なものも幾つか用意してあります。</p>
+<pre><code class="language-csharp">// フィールドに持たなくても、ふつーにRedisClient的に使ってもいいよ
+var client = new RedisString&lt;string&gt;(RedisServer.Default, &quot;toaru-key&quot;);
+await client.Set(&quot;あいうえお!&quot;, expirySeconds: TimeSpan.FromMinutes(60).TotalSeconds);
+
+// RedisClassはRedisのHash構造をクラスにマッピングするもの
+var hito = new RedisClass&lt;Hito&gt;(RedisServer.Default, &quot;hito-1&quot;);
+await hito.SetField(&quot;Name&quot;, &quot;やまもと&quot;);
+await hito.Increment(&quot;Money&quot;, 100);
+
+var localHito = await hito.GetValue(); // Cloud -&gt; Localに落とす、的ないめーぢ
+</code></pre>
+<p>実際色々あるので見て回ってください！</p>
+<h2>ConnectionManagement</h2>
+<p>基盤的な機能として、BookSleeveの接続管理を兼ねています。</p>
+<pre><code class="language-csharp">// Redisの設定を表す
+var settings = new RedisSettings(host: &quot;127.0.0.1&quot;, port: 6379, db: 0);
+
+// BookSleeveはスレッドセーフで単一のコネクションを扱う
+// コネクションを一つに保ったり切断されていた場合の再接続などをしてくれる
+var conn = settings.GetConnection();
+
+
+// 複数接続はRedisGroupで管理できる
+var group = new RedisGroup(groupName: &quot;Cache&quot;, settings: new[]
+{
+    new RedisSettings(host: &quot;100.0.0.1&quot;, port: 6379, db: 0),
+    new RedisSettings(host: &quot;105.0.0.1&quot;, port: 6379, db: 0),
+});
+
+// keyを元に分散先のサーバーを決める（デフォルトはMD5をサーバー台数で割って決めるだけの単純な分散）
+var conn = group.GetSettings(&quot;hogehoge-100&quot;).GetConnection();
+
+// シリアライザはデフォルトではJSONとProtoBufを用意（未指定の場合はJSON）
+new RedisSettings(&quot;127.0.0.1&quot;, converter: new JsonRedisValueConverter());
+new RedisSettings(&quot;127.0.0.1&quot;, converter: new ProtoBufRedisValueConverter());
+</code></pre>
+<p>って、ここまで<a href="https://code.google.com/p/booksleeve/">BookSleeve</a>の説明がなかった！BookSleeveはRedisのライブラリで、非同期の操作のみを提供しています。CloudStructuresのRedis操作はBookSleeveに全部委ねてます。というかぶっちゃけ、かなり単純なラップがほとんどだったりします（！）。見せ方を変えただけ、です、よーするところ。</p>
+<p>んで、BookSleeveは斬新で非常に良いライブラリなのですけれど、操作が本当にプリミティブなものしかないので（全てのGetとSetがstringとbyte[]しかない、とかね）、ある程度、自分で作りこんでやらないと全く使えません。なので、この部分だけでも、結構使えるかなって思います。</p>
+<h2>Next</h2>
+<p>個人的にはすっごく面白いと思ってます。見せ方の違いでしかないわけですが、しかし、その見せ方の違いというのが非常に大事なのです。直感的、ですが、ある種奇抜なデザインなので、戸惑うとは思います。異色度合いで言ったら、以前に私の作ったReactivePropertyと同程度に異色かな、と。だからこそ、凄く大きな可能性を感じませんか？</p>
+<p>ちなみに、これは（いつものように）コンセプト止まりじゃなくて、実際に使う予定アリなので、しっかり育ててく気満々です。是非、試してみてもらえると嬉しいですね。</p>
+</div>
+<h1><a href="https://neue.cc/2013/04/02_402.html">Microsoft MVP for Visual C#を再再受賞しました</a></h1>
 <ul class="date"><li>2013-04-02</li></ul>
 <div class="entry_body"><p>今年も再受賞することができました。去年は某g社のフロントに立って、というのもあって、オフライン活動が割と非常に活発でした。ブログは量は減りましたし、中身も職業柄ウェブ系の要素が濃くなった感。とはいえ、内容自体は結構面白げなC#の内容になってたのではかしらん。基本的には、他で得られない情報や、ディープに踏み込んだ先の話、新しい考え。そういったのを提供し続けたいです。</p>
 <p>今年はもっともっと面白くしたい。去年に、私は</p>
@@ -1798,115 +1955,6 @@ Size:736
 <p>ところで、これはもともと、前職の<a href="http://gloops.com/">gloops</a>で使うつもりで用意していたのですが、辞めちゃったとかあったので、投入するところまでは行きませんでした。というわけで今のところ利用実績はないです！まあ、多分大丈夫だと思うんですがその辺は投下してみてもらわないと何とも言えません。要は勇気が自己責任。ともあれ、コードの公開を許可してくれたgloopsに感謝します。</p>
 <p>そんなこんなで、謎社でもC#でエクストリームな性能を求めたい方を求めております。パブリックに詳しく言えるのは予定は未定なので、そういったことをやりたいという方は、こっそり私のほうに聞いてくれると嬉しいですね。あ、これは割とマジな話ですよ。それとAzureの営業かけるなら今のうちなのでそれも私のほうまで（謎）</p>
 </div>
-<h1><a href="https://neue.cc/2012/11/28_388.html">Chaining Assertion 1.7.0.1 - 値比較の追加</a></h1>
-<ul class="date"><li>2012-11-28</li></ul>
-<div class="entry_body"><p>EqualsやGetHashCodeをオーバーライドするかと言ったら、そういう目的があるなら当然するし、そうでないならしない。という極当たり前なところに落ち着いたりはする。目的ってどういう時かといったら、LINQでDistinctの対象にしたい時とかですかね、まあ、よーするに値で比較したい！時です、まんまですね。</p>
-<p>なので、逆にそれ以外の用途であえてこれらをオーバーライドすることはないです。特にテストのためにオーバーライドというのは、はっきしいって、良くないって思ってます。Equalsというのはクラスとして非常に重要な意味のあるところなので、そこにテスト都合が混じりこむのはNGです。</p>
-<p>でも、テスト都合で値で比較したかったりは割とあるんですよね。じゃあどうするかって、まあ、ふつーにアサート側で構造比較したほうがいいでしょ、テスト都合なんだから。QUnitなんてdeepEqualが基本で、それが存外使いイイんですよ。</p>
-<p>と、いうよくわからない前振りですが、つまるところChaining Assertionに値で比較できるIsStructuralEqualを足しました。</p>
-<ul>
-<li><a href="http://chainingassertion.codeplex.com/">Chaining Assertion - CodePlex</a></li>
-</ul>
-<p>いやあ、一年ぶりの更新です！というか、もう一年前ですかー、早いものだ。もうAssert.ThatをDisるのも忘れてたぐらいに昔の話ですねー、あ、今も当然Assert.ThatとかFluent何ちゃらは嫌いですよ、と、それはさておき。かなり前の話なのでChaining Assertionについておさらい。メソッドチェーンな感じにさらさらっとAssertを書けるテスト補助ライブラリです。詳しくは<a href="http://neue.cc/2011/02/24_306.html">メソッドチェーン形式のテスト記述ライブラリ</a>という1.0出した時の説明をどうぞー。主にMSTestやNUnitに対応しています。勿論NuGetでも入りますのでChainingAssertionで検索を。</p>
-<p>今回追加したのはIsStructuralEqual(もしくはIsNotStructuralEqual)で、構造を再帰的に辿って値としての一致で比較します。</p>
-<pre><code class="language-csharp">// こんなクラスがあるとして
-class MyClass
-{
-    public int IntProperty { get; set; }
-    public string StrField;
-    public int[] IntArray { get; set; }
-    public SubMyClass Sub { get; set; }
-}
-
-class SubMyClass
-{
-    public DateTime Date { get; set; }
-}
-
-
-[TestMethod]
-public void TestMethod1()
-{
-    var mc1 = new MyClass
-    {
-        IntProperty = 100,
-        StrField = &quot;hoge&quot;,
-        IntArray = new[] { 1, 2, 3, 4, 5 },
-        Sub = new SubMyClass
-        {
-            Date = new DateTime(1999, 12, 31)
-        }
-    };
-
-    var mc2 = new MyClass
-    {
-        IntProperty = 100,
-        StrField = &quot;hoge&quot;,
-        IntArray = new[] { 1, 2, 3, 4, 5 },
-        Sub = new SubMyClass
-        {
-            Date = new DateTime(1999, 12, 31)
-        }
-    };
-
-    mc1.IsNot(mc2); // mc1とmc2は全て同じ値ですが、参照比較では当然違います
-
-    mc1.IsStructuralEqual(mc2); // IsStructuralEqualでは全てのプロパティを再帰的に辿って比較します
-}
-</code></pre>
-<p>なんのかんので便利で使っちゃいますね、多用しちゃいますね、きっと。ちなみに、ただたんに値比較したいだけなら、JSONにでもDumpして、文字列一致取ればいいだけなんですけれど。自前で辿ることによって、誤った箇所へのメッセージは割と親切かな、と思います。あとIEquatableの扱いとか型の扱いとか、ただのDumpとは色々若干と違うので、まあ、こちらのほうが望ましい具合な結果が得られると思います。</p>
-<pre><code class="language-csharp">var mc1 = new MyClass
-{
-    IntProperty = 100,
-    StrField = &quot;hoge&quot;,
-    IntArray = new[] { 1, 2, 3, 4, 5 },
-    Sub = new SubMyClass
-    {
-        Date = new DateTime(1999, 12, 31)
-    }
-};
-
-// 間違い探し！
-var mc2 = new MyClass
-{
-    IntProperty = 100,
-    StrField = &quot;hoge&quot;,
-    IntArray = new[] { 1, 2, 3, 100, 5 }, // 4番目が違う
-    Sub = new SubMyClass
-    {
-        Date = new DateTime(1999, 12, 31)
-    }
-};
-
-// 以下のようなエラーメッセージが出ます
-// is not structural equal, failed at MyClass.IntArray.[3], actual = 4 expected = 5
-mc1.IsStructuralEqual(mc2);
-
-// こんどはStrFieldが違う
-var mc3 = new MyClass
-{
-    IntProperty = 100,
-    StrField = &quot;hage&quot;,
-    IntArray = new[] { 1, 2, 3, 4, 5 },
-    Sub = new SubMyClass
-    {
-        Date = new DateTime(1999, 12, 31)
-    }
-};
-
-// 以下のようなエラーメッセージが出ます
-// is not structural equal, failed at MyClass.StrField, actual = hoge expected = hage
-mc1.IsStructuralEqual(mc3);
-
-</code></pre>
-<p>割と十分、分かりやすい。かな？</p>
-<p>コードは結構好き勝手感です。PropertyInfoとFieldInfoは共にMemberInfoを継承してるが、GetValueは同じメソッドシグネチャだけど、MemberInfoに定義されてるわけじゃなくてPropertyInfo, FieldInfoにそれぞれあるから共通でまとめられないよー→dynamicで受ければGetValue使えて大解決。とか、まあふつーのコードではやらないようなことも、UnitTest用だから若干の効率低下は無視でなんでもありで行くよ！というのが割と楽しいですね。</p>
-<h2>その他</h2>
-<p>ついでにjsakamotoさんからPull Request来ていたIsInstanceOfでメソッドチェーンできるようになったり(Pull Requestの放置に定評のある私です！というか初めてacceptしたわー)、IsTrueとIsFalseを足した(いやあ、Is(true)ってやっぱ面倒くさかったよ、あはは)りなどしました。</p>
-<p>さて、お次はWinRT対応とWindows Phone 8対応を、といったところなのですが、それはそのうち近いうちに！WinRT対応はねえ、リフレクション回りがドサッと変わってるので面倒といえば面倒なんですよねえ。まあ、勉強のためのちょうどいい題材ではあるので、手を付けたいとは思ってるのですけれど。</p>
-<p>あとね、正直NUnitはいいとしてもMbUnitやxUnit、SLやWP7に対応させるの超面倒くさい。やりすぎた。これのせいでちょっとした修正ですら大仕事なわけですよ。このメンテコスト最悪すぎる状態がどうにもねえ、それでいてNUnitはともかく、その他なんてほとんど使われてないですからねえ。分かってはいたのですが、こうシンドイと結構限界。というわけで、WP7とSilverlightは削除しました。この二つはもういらないぢゃん？さようなら……。</p>
-<p>ああ、あとFakes FrameworkのためのVerifierも入れたいしねえ、やりたいことは割と多いんですが、ニートもこれはこれでいて忙しくて手が回らないのですよー。</p>
-</div>
 <a href="https://neue.cc/11">Prev |</a>
 <a href="https://neue.cc/13">| Next</a>
 </div>
@@ -1930,6 +1978,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2023/12/">2023-12</a>
 <li><a href="https://neue.cc/2023/10/">2023-10</a>
 <li><a href="https://neue.cc/2023/09/">2023-09</a>
 <li><a href="https://neue.cc/2023/07/">2023-07</a>

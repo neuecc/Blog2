@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-2834006-1"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag() { dataLayer.push(arguments); }
+        gtag('js', new Date());
+        gtag('config', 'UA-2834006-1');
+    </script>
+    <meta charset="utf-8" />
+    <title>neue cc - ZLogger v2 による .NET 8活用事例 と Unity C# 11対応の紹介</title>
+    <link rel="shortcut icon" href="https://neue.cc/favicon.ico" />
+    <link rel="alternate" type="application/rss+xml" href="https://neue.cc/feed"/>
+	<link rel="stylesheet" href="https://neue.cc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
+    
+<meta property="og:url" content="https://neue.cc/2023/12/19_zlogger2.html" />
+<meta property="og:type" content="article" />
+<meta property="og:title" content="neue cc - ZLogger v2 による .NET 8活用事例 と Unity C# 11対応の紹介" />
+<meta property="og:description" content="C#用の新しい超高速＆低アロケーションの.NET用ロギングライブラリ、ZLogger v2を公開しました。v1からは何もかもを完全に作り替えた、最新のC#に合..." />
+
+ </head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <a href="https://neue.cc/"><div id="header"></div></a>
+        <div id="content"><h1><a href="https://neue.cc/2023/12/19_zlogger2.html">ZLogger v2 による .NET 8活用事例 と Unity C# 11対応の紹介</a></h1>
+<ul class="date"><li>2023-12-19</li></ul>
+<div class="entry_body"><p>C#用の新しい超高速＆低アロケーションの.NET用ロギングライブラリ、ZLogger v2を公開しました。v1からは何もかもを完全に作り替えた、最新のC#に合わせた新設計になっています。対応プラットフォームは.NET 8が最良ですが .NET Standard 2.0 以上、また Unity 2022.2 以上にも対応しています。.NET / Unityどちらもテキストメッセージと構造化ログの両方に対応しています。</p>
+<ul>
+<li><a href="https://github.com/Cysharp/ZLogger">Cysharp/ZLogger</a></li>
+</ul>
+<p>新設計のキーポイントはString Interpolationの全面採用によるクリーンなシンタックスとパフォーマンスの両立です。</p>
+<pre><code class="language-csharp">logger.ZLogInformation($&quot;Hello my name is {name}, {age} years old.&quot;);
+</code></pre>
+<p>といったように書いたコードは</p>
+<pre><code class="language-csharp">if (logger.IsEnabled(LogLvel.Information))
+{
+    var handler = new ZLoggerInformationInterpolatedStringHandler(30, 2, logger);
+    handler.AppendLiteral(&quot;Hello my name is &quot;);
+    handler.AppendFormatted&lt;string&gt;(name, 0, null, &quot;name&quot;);
+    handler.AppendLiteral(&quot;, &quot;);
+    handler.AppendFormatted&lt;int&gt;(age, 0, null, &quot;age&quot;);
+    handler.AppendLiteral(&quot; years old.&quot;);
+}
+</code></pre>
+<p>のようにコンパイル時に分解されます。フォーマット文字列を実行時ではなくコンパイル時に展開すること、パラメーターは<code>AppendFormatted&lt;T&gt;</code>の形でジェネリクスで受け取ることによりボクシングが発生しないなど、コードからも明らかに効率的なことが見てとれます。ちなみにコンストラクターの30は文字列の長さ、2はパラメーターの数を指していて、ここから必要な初期バッファ数を算出していることも効率化の一つに繋がっています。</p>
+<p>String Interpolation自体はC# 6.0から搭載されている機能ですが、文法上同じながら<a href="https://devblogs.microsoft.com/dotnet/string-interpolation-in-c-10-and-net-6/">C# 10.0から強化されたString Interpolation</a>が搭載されていて、カスタムのString Interpolationを提供することも可能になりました。</p>
+<p>こうして得られた文字列断片とパラメーターは、最終的には<a href="https://github.com/Cysharp/Utf8StringInterpolation">Cysharp/Utf8StringInterpolation</a>を通して文字列化せずに、直接UTF8としてStreamに書き込むことによって、高速化と低アロケーションを実現しています。</p>
+<p>また、Structured Loggingにおいても、System.Text.JsonのUtf8JsonWriterとタイトに結びつくことにより</p>
+<pre><code class="language-csharp">// 例えば {&quot;name&quot;:&quot;foo&quot;,age:33} のようにUtf8JsonWriterに書き込む
+
+// Source Generator版、実際どうなってるかのイメージがとても分かりやすい。
+public void WriteJsonParameterKeyValues(Utf8JsonWriter writer, JsonSerializerOptions jsonSerializerOptions)
+{
+    writer.WriteString(_jsonParameter_name, this.name);
+    writer.WriteNumber(_jsonParameter_age, this.age);
+}
+
+// StringInterpolation版、ちょっと遠回りな感じですがやってることは一緒。
+public void WriteJsonParameterKeyValues(Utf8JsonWriter writer, JsonSerializerOptions jsonSerializerOptions)
+{
+    for (var i = 0; i &lt; ParameterCount; i++)
+    {
+        ref var p = ref parameters[i];
+        writer.WritePropertyName(p.Name.AsSpan());
+        // MagicalBoxの説明は後述
+        if (!magicalBox.TryReadTo(p.Type, p.BoxOffset, jsonWriter, jsonSerializerOptions))
+        {
+            // ....
+        }
+    }
+}
+</code></pre>
+<p>やはり直接UTF8として書き込みます。Structured Loggingは最近のトレンドなので、色々な言語のロガーに実装されていますが、パフォーマンスを両立しつつ、ここまでクリーンなシンタックスで実現できているものは他にない！という感じなのでかなり良いのではないでしょうか。</p>
+<p>では実際ベンチマーク結果でどれぐらい？というと、アロケーションは少なくとも圧倒的です。</p>
+<p><img src="https://github.com/Cysharp/ZLogger/assets/46207/ab9c1f8b-a3b4-44fc-86aa-ba8dd6bdbe40" alt="image" /></p>
+<p>アロケーションは、という歯切れの悪い言い方をしているのは、念入りに高速になるよう設定したNLogが思ったよりも速かったせいですね、ぐぬぬ……。</p>
+<p>さて、ZLoggerの特徴のもう一つは、<a href="https://learn.microsoft.com/ja-jp/dotnet/core/extensions/logging">Microsoft.Extensions.Logging</a>の上に直接構築していることです。通常のロガーは独自のシステムを持っていて、Microsoft.Extensions.Loggingと繋げる場合はブリッジを通します。現実的なアプリケーションでは ASP .NETを使う場合などMicrosoft.Extensions.Loggingを避けることはほぼ不可能です。.NET 8からはOpenTelemetry対応の強化や<a href="https://learn.microsoft.com/en-us/dotnet/aspire/get-started/aspire-overview">Aspire</a>など、ますますMicrosoft.Extensions.Loggingの重要性は増しています。ZLogger v1と異なり、v2ではScopeなど、Microsoft.Extensions.Loggingの全機能に対応しています。</p>
+<p>そして例えばSerilogのブリッジライブラリの品質は（ソースコードも確認しましたが）かなり低く、実際のパフォーマンスの数字にも現れています。ZLoggerはそうしたオーバーヘッドが一切かかりません。</p>
+<p>また、デフォルトの設定も非常に重要です。ほとんどのロガーの標準設定は、例えばファイルストリームに書く場合は都度Flushするなど、かなり遅い設定が標準になっています。それを高速化するにはasync, bufferedを適切に調整する必要があり、かつ、取りこぼさないように終了時に確実にFlushさせる必要があるのですが、かなり難しいので、ほとんど標準設定のままの人も多いのではないでしょうか？ZLoggerではデフォルトで最高速になるように調整してあり、かつ、Microsoft.ExtensionsのDIのライフサイクルで最後のFlushも自動でかかるようになっているので、ApplicationBuilderなどでアプリケーションを構築した場合は何も意識しなくても取りこぼしは発生しません。</p>
+<p>なお、都度Flushのパフォーマンスはストレージの書き込み性能に強く依存するため、例えば最近のマシンのM.2 SSDは非常に高速なため、ローカルでベンチマークすると意外と遅くない、といったことを確認できるかもしれません。ただし、実際にアプリケーションを配置する、例えばクラウドサーバーのストレージ性能がそこまで高いことはないので、ローカルでの結果を過信しないほうがいいでしょう。</p>
+<h2>MagicalBox</h2>
+<p>ここからは、パフォーマンスを実現した幾つかのトリックを紹介します。v1から引き継いでいるのは<a href="https://devblogs.microsoft.com/dotnet/an-introduction-to-system-threading-channels/">System.Threading.Channels</a>を活用したasyncな非同期書き込みプロセスの作成と、<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.buffers.ibufferwriter-1"><code>IBufferWriter&lt;byte&gt;</code></a>による効率的なbufferedの利用による、Streamへの書き込み最適化ですが、説明は割愛します。</p>
+<p>JSON化のために、パラメーターはInterpolatedStringHandlerで、一時的に値として保持します。その場合に、<code>&lt;T&gt;</code>の値をどのように保持するか、という問題がでてきます。普通に考えると、<code>List&lt;object&gt;</code>といったようなobject型で保持することになります。</p>
+<pre><code class="language-csharp">[InterpolatedStringHandler]
+public ref struct ZLoggerInterpolatedStringHandler
+{
+    // あらゆる&lt;T&gt;の型を格納するためにobjectを使う、ボクシングが発生するので良くはない。
+    List&lt;object&gt; parameters = new ();
+
+    public void AppendFormatted&lt;T&gt;(T value, int alignment = 0, string? format = null, [CallerArgumentExpression(&quot;value&quot;)] string? argumentName = null)
+    {
+        parameters.Add((object)value);
+    }
+}
+</code></pre>
+<p>それを避けるために、ZLoggerではMagicalBoxという仕組みを用意しました。</p>
+<pre><code class="language-csharp">[InterpolatedStringHandler]
+public ref struct ZLoggerInterpolatedStringHandler
+{
+    // 魔法の箱に無限に詰め込む
+    MagicalBox magicalBox;
+    List&lt;int&gt; boxOffsets = new (); // 実際はこの辺は入念にキャッシュされています
+
+    public void AppendFormatted&lt;T&gt;(T value, int alignment = 0, string? format = null, [CallerArgumentExpression(&quot;value&quot;)] string? argumentName = null)
+    {
+        if(magicalBox.TryWrite(value, out var offset)) // boxingが発生しない！
+        {
+            boxOffsets.Add(offset);
+        }
+    }
+}
+</code></pre>
+<p>MagicalBoxはどんな型(unmanaged型に限る)でも、ボクシングなしに書き込むことができる。というコンセプトで、その実態は<code>byte[]</code>にUnsafe.Write、offsetを元にUnsafe.Readするというだけの代物です。</p>
+<pre><code class="language-csharp">internal unsafe partial struct MagicalBox
+{
+    byte[] storage;
+    int written;
+
+    public MagicalBox(byte[] storage)
+    {
+        this.storage = storage;
+    }
+
+    public bool TryWrite&lt;T&gt;(T value, out int offset)
+    {
+        if (RuntimeHelpers.IsReferenceOrContainsReferences&lt;T&gt;())
+        {
+            offset = 0;
+            return false;
+        }
+
+        Unsafe.WriteUnaligned(ref storage[written], value);
+        offset = written;
+        written += Unsafe.SizeOf&lt;T&gt;();
+        return true;
+    }
+
+    public bool TryRead&lt;T&gt;(int offset, out T value)
+    {
+        if (!RuntimeHelpers.IsReferenceOrContainsReferences&lt;T&gt;())
+        {
+            value = default!;
+            return false;
+        }
+
+        value = Unsafe.ReadUnaligned&lt;T&gt;(ref storage[offset]);
+        return true;
+    }
+}
+</code></pre>
+<p>この辺は<a href="https://github.com/Cysharp/MemoryPack">MemoryPack</a>での実装経験が元になっていて、うまく機能しています。</p>
+<p>なお、実際のコードでは<code>byte[] storage</code>の効率的な再利用や非ジェネリクスなRead対応、Enumへの特別対応が入ったりなど、もう少し<a href="https://github.com/Cysharp/ZLogger/blob/ccc3b0e6/src/ZLogger/Internal/MagicalBox.cs">複雑なコード</a>になってはいます。さすがに。</p>
+<h2>カスタムフォーマット文字列</h2>
+<p>ZLoggerのString Interpolationのいいところは、パラメーター値にメソッド呼び出しを含めると、LogLevelのチェックが入った後に呼び出されるので無駄な実行を防げるところです。</p>
+<pre><code class="language-csharp">// これは
+logger.ZLogDebug($&quot;Id {obj.GetId()}: Data: {obj.GetData()}.&quot;);
+
+// このようにLogLevelが有効かどうかチェックした後にメソッドが呼ばれる
+if (logger.IsEnabled(LogLvel.Debug))
+{
+    // snip...
+    writer.AppendFormatterd(obj.GetId());
+    writer.AppendFormatterd(obj.GetData());
+}
+</code></pre>
+<p>しかし、メソッド呼び出しをStructured Loggingに出力した場合、ZLoggerはC# 10.0以降から追加された<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.runtime.compilerservices.callerargumentexpressionattribute?view=net-8.0">CallerArgumentExpression</a>でパラメーター名を取得しているため、メソッド呼び出しの場合は &quot;obj.GetId()&quot; という微妙極まりない名前で出力されてしまいます。そこで、特殊なカスタムフォーマット文字列で別名を指定することができます。</p>
+<pre><code class="language-csharp">// @name で別名を付けられる
+logger.ZLogDebug($&quot;Id {obj.GetId():@id}: Data: {obj.GetData():@data}.&quot;);
+</code></pre>
+<p>ZLoggerでは、String Interpolationの本来の式に従って、&quot;,&quot;でアラインメント、&quot;:&quot;でフォーマット文字列を指定することができます。それに加えて特殊な指定として、フォーマット文字列を@から始めた場合はパラメーター名として出力します。</p>
+<p>@によるパラメーター名指定とフォーマット文字列は併用することができます。</p>
+<pre><code class="language-csharp">// Today is 2023-12-19.
+// {&quot;date&quot;:&quot;2023-12-19T11:25:34.3642389+09:00&quot;}
+logger.ZLogDebug($&quot;Today is {DateTime.Now:@date:yyyy-MM-dd}.&quot;);
+</code></pre>
+<p>もう一つ、共通の特殊なフォーマット文字列として&quot;json&quot;を指定するとJsonSerializeした形で出力できます（この辺はSerilogの持つ機能からインスパイアされました）</p>
+<pre><code class="language-csharp">var position = new { Latitude = 25, Longitude = 134 };
+var elapsed = 34;
+
+// {&quot;position&quot;:{&quot;Latitude&quot;:25,&quot;Longitude&quot;:134},&quot;elapsed&quot;:34}
+// Processed {&quot;Latitude&quot;:25,&quot;Longitude&quot;:134} in 034 ms.
+logger.ZLogInformation($&quot;Processed {position:json} in {elapsed:000} ms.&quot;);
+</code></pre>
+<p>特殊フォーマット文字列は、例えばログレベルやカテゴリー、日付を先頭/末尾に付与するためのPrefixFormatter/SuffixFormatterにも幾つか用意してあります。</p>
+<pre><code class="language-csharp">logging.AddZLoggerConsole(options =&gt;
+{
+    options.UsePlainTextFormatter(formatter =&gt;
+    {
+        // 2023-12-19 02:46:14.289 [DBG]......
+        formatter.SetPrefixFormatter($&quot;{0:utc-longdate} [{1:short}]&quot;, (template, info) =&gt; template.Format(info.Timestamp, info.LogLevel));
+    });
+});
+</code></pre>
+<p>Timestampには<code>longdate</code>, <code>utc-longdate</code>, <code>dateonly</code>など。LogLevelには<code>short</code>で3文字ログレベル表記(先頭の長さが一致するのでエディタで開いた時に読みやすくなる)へと変換されます。これら組み込みの特殊フォーマット文字列は、パフォーマンス最適化という意味合いもあります。例えばLogLevelは以下のようなコードになっているので、手で書式を作るよりも、事前組み込みのUTF8文字列で書き込むことで、絶対的に効率がよくなっています。</p>
+<pre><code class="language-csharp">static void AppendLogLevel(ref Utf8StringWriter&lt;IBufferWriter&lt;byte&gt;&gt; writer, ref LogLevel value, ref MessageTemplateChunk chunk)
+{
+    if (!chunk.NoAlignmentAndFormat)
+    {
+        if (chunk.Format == &quot;short&quot;)
+        {
+            switch (value)
+            {
+                case LogLevel.Trace:
+                    writer.AppendUtf8(&quot;TRC&quot;u8);
+                    return;
+                case LogLevel.Debug:
+                    writer.AppendUtf8(&quot;DBG&quot;u8);
+                    return;
+                case LogLevel.Information:
+                    writer.AppendUtf8(&quot;INF&quot;u8);
+                    return;
+                case LogLevel.Warning:
+                    writer.AppendUtf8(&quot;WRN&quot;u8);
+                    return;
+                case LogLevel.Error:
+                    writer.AppendUtf8(&quot;ERR&quot;u8);
+                    return;
+                case LogLevel.Critical:
+                    writer.AppendUtf8(&quot;CRI&quot;u8);
+                    return;
+                case LogLevel.None:
+                    writer.AppendUtf8(&quot;NON&quot;u8);
+                    return;
+                default:
+                    break;
+            }
+        }
+
+        writer.AppendFormatted(value, chunk.Alignment, chunk.Format);
+        return;
+    }
+
+    switch (value)
+    {
+        case LogLevel.Trace:
+            writer.AppendUtf8(&quot;Trace&quot;u8);
+            break;
+        case LogLevel.Debug:
+            writer.AppendUtf8(&quot;Debug&quot;u8);
+            break;
+        case LogLevel.Information:
+            writer.AppendUtf8(&quot;Information&quot;u8);
+            break;
+        case LogLevel.Warning:
+            writer.AppendUtf8(&quot;Warning&quot;u8);
+            break;
+        case LogLevel.Error:
+            writer.AppendUtf8(&quot;Error&quot;u8);
+            break;
+        case LogLevel.Critical:
+            writer.AppendUtf8(&quot;Critical&quot;u8);
+            break;
+        case LogLevel.None:
+            writer.AppendUtf8(&quot;None&quot;u8);
+            break;
+        default:
+            writer.AppendFormatted(value);
+            break;
+    }
+}
+</code></pre>
+<h2>.NET 8 XxHash3 + Non-GC Heap</h2>
+<p>.NET 8から<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.io.hashing.xxhash3">XxHash3</a>が追加されました。最速のハッシュアルゴリズムである<a href="https://github.com/Cyan4973/xxHash/">XxHash</a>の最新シリーズで、小さいデータから大きいデータまで、迷ったらほぼこれ一択で問題ないだろうという性能になっています。なお、利用にはNuGetから<code>System.IO.Hashing</code>が必要なので、逆に.NET 8ではなくNET Standard 2.0でも使えます。</p>
+<p>ZLoggerでも複数箇所で使っているのですが、その中から一例として、String Interpolationの文字列リテラルからキャッシュを取り出す処理の例を。</p>
+<pre><code class="language-csharp">// $&quot;Hello my name is {name}, {age} years old.&quot; が生成する文字列リテラルの並び(LiteralList)
+// [&quot;Hello my name is &quot;, &quot;name&quot;, &quot;, &quot;, &quot;age&quot;, &quot; years old.&quot;]
+// これからUTF8変換済みのキャッシュ(MessageSequence)を取り出すという処理
+static readonly ConcurrentDictionary&lt;LiteralList, MessageSequence&gt; cache = new();
+
+// 非.NET 8版
+#if !NET8_0_OR_GREATER
+
+struct LiteralList(List&lt;string?&gt; literals) : IEquatable&lt;LiteralList&gt;
+{
+    [ThreadStatic]
+    static XxHash3? xxhash;
+
+    public override int GetHashCode()
+    {
+        var h = xxhash;
+        if (h == null)
+        {
+            h = xxhash = new XxHash3();
+        }
+        else
+        {
+            h.Reset();
+        }
+
+        var span = CollectionsMarshal.AsSpan(literals);
+        foreach (var item in span)
+        {
+            h.Append(MemoryMarshal.AsBytes(item.AsSpan()));
+        }
+
+        // https://github.com/Cyan4973/xxHash/issues/453
+        // XXH3 64bit -&gt; 32bit, okay to simple cast answered by XXH3 author.
+        return unchecked((int)h.GetCurrentHashAsUInt64());
+    }
+
+    public bool Equals(LiteralList other)
+    {
+        var xs = CollectionsMarshal.AsSpan(literals);
+        var ys = CollectionsMarshal.AsSpan(other.literals);
+
+        if (xs.Length == ys.Length)
+        {
+            for (int i = 0; i &lt; xs.Length; i++)
+            {
+                if (xs[i] != ys[i]) return false;
+            }
+            return true;
+        }
+
+        return false;
+    }
+}
+
+#endif
+</code></pre>
+<p>XxHash3はclassなので(<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.hashcode?view=net-8.0">System.HashCode</a>みたいにstructが良かったなあ)、ThreadStaticで使いまわしつつ、GetHashCodeを生成しています。XxHash3はulongの出力しかありませんが、作者によると、32bitに落とす場合は特にXORとかかけることもなく直接落として問題ないそうです。</p>
+<p>ここまでが普通の使い方ですが、.NET 8版ではエクストリームな最適化を入れました。</p>
+<pre><code class="language-csharp">#if NET8_0_OR_GREATER
+
+struct LiteralList(List&lt;string?&gt; literals) : IEquatable&lt;LiteralList&gt;
+{
+    // literals are all const string, in .NET 8 it is allocated in Non-GC Heap so can compare by address.
+    // https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-8/#non-gc-heap
+    static ReadOnlySpan&lt;byte&gt; AsBytes(ReadOnlySpan&lt;string?&gt; literals)
+    {
+        return MemoryMarshal.CreateSpan(
+            ref Unsafe.As&lt;string?, byte&gt;(ref MemoryMarshal.GetReference(literals)),
+            literals.Length * Unsafe.SizeOf&lt;string&gt;());
+    }
+
+    public override int GetHashCode()
+    {
+        return unchecked((int)XxHash3.HashToUInt64(AsBytes(CollectionsMarshal.AsSpan(literals))));
+    }
+
+    public bool Equals(LiteralList other)
+    {
+        var xs = CollectionsMarshal.AsSpan(literals);
+        var ys = CollectionsMarshal.AsSpan(other.literals);
+
+        return AsBytes(xs).SequenceEqual(AsBytes(ys));
+    }
+}
+
+#endif
+</code></pre>
+<p><code>List&lt;string&gt;?</code>を<code>ReadOnlySpan&lt;byte&gt;</code>に変換して、それでXxHash3.HashToUInt64やSeqeunceEqualを一発で呼んでます。見るからにこちらのほうが効率的なわけですが、しかし、そもそも<code>List&lt;string&gt;?</code>を<code>ReadOnlySpan&lt;byte&gt;</code>に変換するのは合法なのか？と。この場合のstringの変換は、<code>ReadOnlySpan&lt;IntPtr&gt;</code>への変換という意味合いで、つまりヒープにあるstringのアドレスのリストへと変換しているという意図になります。</p>
+<p>そこまではいいとして、問題はアドレスの比較は危険すぎないか、ということです。まず第一に、stringは文字列として同一であっても実態は別のアドレスにある場合も多い。第二に、ヒープにあるstringのアドレスは固定されていない、移動することがあるということです。辞書のキーとしてGetHashCodeやEqualsを求めるなら、アプリケーション実行中は完全に固定されていなければなりません。</p>
+<p>ところが今回の利用例に着目すると、String Inteprolationで呼ばれるAppendLiteralはコンパイル時に <code>handler.AppendLiteral(&quot;Hello my name is &quot;);</code> のように、必ず定数で渡されています。そのため同じ実体を指すことが保証されています。</p>
+<pre><code class="language-csharp">[InterpolatedStringHandler]
+public ref struct ZLoggerInterpolatedStringHandler
+{
+    public void AppendLiteral([ConstantExpected] string s)
+}
+</code></pre>
+<p>一応保険として、.NET 8から有効化されている<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.diagnostics.codeanalysis.constantexpectedattribute?view=net-8.0">ConstantExpected</a>によって、定数だけが渡されることを明示しています。</p>
+<p>もう一つは、そうした定数の文字列は最初からインターン化されているのですが、そのインターン化された場所が移動しないことは.NET 8まで保証されていませんでした。ところが、.NET 8からはNon-GC Heapが導入されたため、移動しないことが保証されている、といえます。</p>
+<pre><code class="language-csharp">// .NET 8からは定数のGC.GetGenerationの結果がint.MaxValue(Non-GC Heapにいる)
+var str = &quot;foo&quot;;
+Console.WriteLine(GC.GetGeneration(str)); // 2147483647
+</code></pre>
+<p>これによって、C#だとどうしても避けられないUTF16 StringからUTF8 Stringへの変換を、限界まで高速化することができました。なお、Source Generator版ではこのルックアップコスト自体を削れているため、ベンチマーク結果が最速であった通り、より高速です。</p>
+<h2>.NET 8 IUtf8SpanFormattable</h2>
+<p>ZLoggerでは値を文字列を通さずUTF8に直接書き込むことをパフォーマンスの柱にしています。.NET 8から<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.iutf8spanformattable?view=net-8.0">IUtf8SpanFormattable</a>という、値の汎用的なUTF8への直接変換を可能にしたインターフェイスが追加されました。ZLoggerは.NET 8以前の.NET Standard 2.0にも対応させるために、intやdoubleなど基本的なプリミティブは特殊な対応によって、UTF8への直接書き込みを実現していますが、.NET 8の場合は対応範囲がより広がるため、できれば.NET 8がお薦めです。</p>
+<p>なお、IUtf8SpanFormattableはフォーマット文字列のalignmentには関知しないため、分離しているライブラリである<a href="https://github.com/Cysharp/Utf8StringInterpolation">Cysharp/Utf8StringInterpolation</a>では.NET Standard 2.0対応と同時に、alignment対応の機能も追加されたライブラリとなっています。</p>
+<h2>.NET 8 TimeProvider</h2>
+<p><a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.timeprovider?view=net-8.0">TimeProvider</a>は.NET 8から追加された時間に関するAPIの抽象化(TimeZone, Timerなども含む)となっていて、ユニットテスト等でも非常に役に立つ、今後の必須クラスです。TimeProviderは.NET 8未満でも<a href="https://www.nuget.org/packages/Microsoft.Bcl.TimeProvider/">Microsoft.Bcl.TimeProvider</a>を通して提供されているため、.NET Standard 2.0やUnityでも利用可能です。</p>
+<p>そこでZLoggerではZLoggerOptionsにTimerProviderを指定することで、ログ出力の時間を固定することができます。</p>
+<pre><code class="language-csharp">// Microsoft.Extensions.TimeProvider.TestingのFakeTimeProviderを使うとよりよい
+class FakeTime : TimeProvider
+{
+    public override DateTimeOffset GetUtcNow()
+    {
+        return new DateTimeOffset(1999, 12, 30, 11, 12, 33, TimeSpan.Zero);
+    }
+
+    public override TimeZoneInfo LocalTimeZone =&gt; TimeZoneInfo.Utc;
+}
+
+public class TimestampTest
+{
+    [Fact]
+    public void LogInfoTimestamp()
+    {
+        var result = new List&lt;string&gt;();
+        using var factory = LoggerFactory.Create(builder =&gt;
+        {
+            builder.AddZLoggerInMemory((options, _) =&gt;
+            {
+                options.TimeProvider = new FakeTime(); // TimeProviderをカスタムのものに設定
+                options.UsePlainTextFormatter(formatter =&gt;
+                {
+                    // Timestampを先頭に付与
+                    formatter.SetPrefixFormatter($&quot;{0} | &quot;, (template, info) =&gt; template.Format(info.Timestamp));
+                });
+            }, x =&gt;
+            {
+                x.MessageReceived += msg =&gt; result.Add(msg);
+            });
+        });
+
+        var logger = factory.CreateLogger&lt;TimestampTest&gt;();
+        logger.ZLogInformation($&quot;Foo&quot;);
+
+        Assert.Equal(&quot;1999-12-30 11:12:33.000 | Foo&quot;, result[0]);
+    }
+}
+</code></pre>
+<p>ログ出力の完全一致でのテストが必要……！などといった場合に有効に使うことができます。</p>
+<h2>Source Generator</h2>
+<p>Microsoft.Extensions.Loggingではハイパフォーマンスなログ出力のために<a href="https://learn.microsoft.com/ja-jp/dotnet/core/extensions/logger-message-generator">LoggerMessageAttribute</a>とSource Generatorが標準で提供されています。</p>
+<p>これは確かにUTF16文字列の生成では非常に優秀ですが、Structured Logging生成部分に関しては疑問符がつきます。</p>
+<pre><code class="language-csharp">// このpartial methodは
+[LoggerMessage(LogLevel.Information, &quot;My name is {name}, age is {age}.&quot;)]
+public static partial void MSLog(this ILogger logger, string name, int age, int other);
+
+// このクラスを生成する
+private readonly struct __MSLogStruct : global::System.Collections.Generic.IReadOnlyList&lt;global::System.Collections.Generic.KeyValuePair&lt;string, object?&gt;&gt;
+{
+    private readonly global::System.String _name;
+    private readonly global::System.Int32 _age;
+
+    public __MSLogStruct(global::System.String name, global::System.Int32 age)
+    {
+        this._name = name;
+        this._age = age;
+    }
+
+    public override string ToString()
+    {
+        var name = this._name;
+        var age = this._age;
+
+        return $&quot;My name is {name}, age is {age}.&quot;; // 文字列生成は高速そう（C# 10.0のString Interpolation Improvementsにベタ乗りなので言うことなし！）
+    }
+
+    public static readonly global::System.Func&lt;__MSLogStruct, global::System.Exception?, string&gt; Format = (state, ex) =&gt; state.ToString();
+
+    public int Count =&gt; 4;
+
+    // こちらがStrcuted Loggingのコードですが、ん……？
+    public global::System.Collections.Generic.KeyValuePair&lt;string, object?&gt; this[int index]
+    {
+        get =&gt; index switch
+        {
+            0 =&gt; new global::System.Collections.Generic.KeyValuePair&lt;string, object?&gt;(&quot;name&quot;, this._name),
+            1 =&gt; new global::System.Collections.Generic.KeyValuePair&lt;string, object?&gt;(&quot;age&quot;, this._age),
+            2 =&gt; new global::System.Collections.Generic.KeyValuePair&lt;string, object?&gt;(&quot;other&quot;, this._other),
+            3 =&gt; new global::System.Collections.Generic.KeyValuePair&lt;string, object?&gt;(&quot;{OriginalFormat}&quot;, &quot;My name is {name}, age is {age}.&quot;),
+
+            _ =&gt; throw new global::System.IndexOutOfRangeException(nameof(index)),  // return the same exception LoggerMessage.Define returns in this case
+        };
+    }
+
+    public global::System.Collections.Generic.IEnumerator&lt;global::System.Collections.Generic.KeyValuePair&lt;string, object?&gt;&gt; GetEnumerator()
+    {
+        for (int i = 0; i &lt; 4; i++)
+        {
+            yield return this[i];
+        }
+    }
+
+    global::System.Collections.IEnumerator global::System.Collections.IEnumerable.GetEnumerator() =&gt; GetEnumerator();
+}
+
+[global::System.CodeDom.Compiler.GeneratedCodeAttribute(&quot;Microsoft.Extensions.Logging.Generators&quot;, &quot;8.0.9.3103&quot;)]
+public static partial void MSLog(this global::Microsoft.Extensions.Logging.ILogger logger, global::System.String name, global::System.Int32 age)
+{
+    if (logger.IsEnabled(global::Microsoft.Extensions.Logging.LogLevel.Information))
+    {
+        logger.Log(
+            global::Microsoft.Extensions.Logging.LogLevel.Information,
+            new global::Microsoft.Extensions.Logging.EventId(764917357, nameof(MSLog)),
+            new __MSLogStruct(name, age),
+            null,
+            __MSLogStruct.Format);
+    }
+}
+</code></pre>
+<p><code>KeyValuePair&lt;string, object?&gt;</code> ということで、基本的に普通に作るとボクシングは避けられません、しょーがない。</p>
+<p>そこで、ZLoggerでは似たようなSource Generator属性である<code>ZLoggerMessageAttribute</code>を提供しています。これにより、UTF8最適化、ボクシングレスなJSONロギングを可能にしています。</p>
+<pre><code class="language-csharp">// LoggerMessageをZLoggerMessageに変えるだけ
+// なお、ZLoggerMessageのフォーマット文字列部分では、String Interpolation版と同じように@による別名やjsonによるJSON化も可能
+[ZLoggerMessage(LogLevel.Information, &quot;My name is {name}, age is {age}.&quot;)]
+static partial void ZLoggerLog(this ILogger logger, string name, int age);
+
+// このようなコードが生成される
+readonly struct ZLoggerLogState : IZLoggerFormattable
+{
+    // JSON用にJsonEncodedTextを事前生成
+    static readonly JsonEncodedText _jsonParameter_name = JsonEncodedText.Encode(&quot;name&quot;);
+    static readonly JsonEncodedText _jsonParameter_age = JsonEncodedText.Encode(&quot;age&quot;);
+
+    readonly string name;
+    readonly int age;
+
+    public ZLoggerLogState(string name, int age)
+    {
+        this.name = name;
+        this.age = age;
+    }
+
+    public IZLoggerEntry CreateEntry(LogInfo info)
+    {
+        return ZLoggerEntry&lt;ZLoggerLogState&gt;.Create(info, this);
+    }
+    
+    public int ParameterCount =&gt; 2;
+    public bool IsSupportUtf8ParameterKey =&gt; true;
+    public override string ToString() =&gt; $&quot;My name is {name}, age is {age}.&quot;;
+
+    // テキストメッセージはUTF8への直接書き込み
+    public void ToString(IBufferWriter&lt;byte&gt; writer)
+    {
+        var stringWriter = new Utf8StringWriter&lt;IBufferWriter&lt;byte&gt;&gt;(literalLength: 21, formattedCount: 2, bufferWriter: writer);
+
+        stringWriter.AppendUtf8(&quot;My name is &quot;u8); // u8でリテラルは直接書き込み
+        stringWriter.AppendFormatted(name, 0, null);
+        stringWriter.AppendUtf8(&quot;, age is &quot;u8);
+        stringWriter.AppendFormatted(age, 0, null);
+        stringWriter.AppendUtf8(&quot;.&quot;u8);            
+
+        stringWriter.Flush();
+    }
+
+    // JSON出力の場合はUtf8JsonWriterに直接書き込むことで完全にボクシング避け
+    public void WriteJsonParameterKeyValues(Utf8JsonWriter writer, JsonSerializerOptions jsonSerializerOptions, IKeyNameMutator? keyNameMutator = null)
+    {
+        // 型によって呼び出すメソッドは異なる(WriteString, WriteNumber, etc...)
+        writer.WriteString(_jsonParameter_name, this.name);
+        writer.WriteNumber(_jsonParameter_age, this.age);
+    }
+
+    // 以下にMessagePack対応などの拡張用のメソッドが実際には生成されますが省略
+} 
+
+static partial void ZLoggerLog(this global::Microsoft.Extensions.Logging.ILogger logger, string name, int age)
+{
+    if (!logger.IsEnabled(LogLevel.Information)) return;
+    logger.Log(
+        LogLevel.Information,
+        new EventId(-1, nameof(ZLoggerLog)),
+        new ZLoggerLogState(name, age),
+        null,
+        (state, ex) =&gt; state.ToString()
+    );
+}
+</code></pre>
+<p>Utf8JsonWriterに直接書く、また、キー名はJsonEncodedTextを事前に生成して持っておく、という仕様によってJSON化のパフォーマンスを最大化しています。</p>
+<p>また、Structured LoggingはJSONに限らず他のフォーマットもありえます。例えばMessagePackを利用することで、より小さく、より高速にすることができるでしょう。ZLoggerでは、そうしたJSON特化のようなビルトインではないプロトコルへの出力においてもボクシングを避けるためのインターフェイスが定義されています。</p>
+<pre><code class="language-csharp">public interface IZLoggerFormattable : IZLoggerEntryCreatable
+{
+    int ParameterCount { get; }
+
+    // メッセージ出力に使う
+    void ToString(IBufferWriter&lt;byte&gt; writer);
+
+    // JSON出力に使う
+    void WriteJsonParameterKeyValues(Utf8JsonWriter jsonWriter, JsonSerializerOptions jsonSerializerOptions, IKeyNameMutator? keyNameMutator = null);
+
+    // それ以外の構造化ログ出力に使う
+    ReadOnlySpan&lt;byte&gt; GetParameterKey(int index);
+    ReadOnlySpan&lt;char&gt; GetParameterKeyAsString(int index);
+    object? GetParameterValue(int index);
+    T? GetParameterValue&lt;T&gt;(int index);
+    Type GetParameterType(int index);
+}
+</code></pre>
+<p>ちょっと変わったインターフェイスになっていますが、以下のようなループを回すことでボクシングの発生をなくせます。</p>
+<pre><code class="language-csharp">for (var i in ParameterCount)
+{
+    var key = GetParameterKey(i);
+    var value = GetParameterValue&lt;int&gt;();
+}
+</code></pre>
+<p>こうした設計はADO.NETのIDataRecordの使い方と同じ設計です。また、Unityでもネイティブ→マネージドでの配列のアロケーションを避けるために、インデックス経由で取得することがよくあります。</p>
+<h2>Unity</h2>
+<p>UnityはUnity 2023の時点でも正式な対応C#のバージョンは9.0です。ZLoggerはC# 10.0以上のString Interpolationが大前提となっているので、普通は動きません。普通は。ところが、正式にアナウンスはされていないのですが <code>Unity 2022.2</code> から同梱されているコンパイラのバージョンが上がっていて、内部的にはC# 10.0でコンパイル可能になっていることを発見しました。</p>
+<p><code>csc.rsp</code> ファイルによってコンパイラオプションを渡すことができるので、そこで明示的に言語バージョンを指定してあげると、C# 10.0の全ての文法が利用可能になります。</p>
+<pre><code class="language-csharp">-langVersion:10
+</code></pre>
+<p>このままだと出力されるcsprojには依然として<code>&lt;LangVersion&gt;9.0&lt;/LangVersion&gt;</code>が指定されているため、IDE上ではC# 10.0で書けません。そこで<a href="https://github.com/Cysharp/CsprojModifier">Cysharp/CsprojModifier</a>を用いて、LangVersionを上書きしてしまいましょう。以下のような<code>LangVersion.props</code>というファイルを作成して、CsprojModifierに混ぜてもらえば、IDE上でもC# 10.0として記述できるようになります。</p>
+<pre><code class="language-xml">&lt;Project xmlns=&quot;http://schemas.microsoft.com/developer/msbuild/2003&quot;&gt;
+  &lt;PropertyGroup&gt;
+    &lt;LangVersion&gt;10&lt;/LangVersion&gt;
+    &lt;Nullable&gt;enable&lt;/Nullable&gt;
+  &lt;/PropertyGroup&gt;
+&lt;/Project&gt;
+</code></pre>
+<p>Unity向けには<code>AddZLoggerUnityDebug</code>という拡張を追加してあるので、</p>
+<pre><code class="language-csharp">// こんなグローバルのユーティリティーを用意してあげて
+public static class LogManager
+{
+    static ILoggerFactory loggerFactory;
+
+    public static ILogger&lt;T&gt; CreateLogger&lt;T&gt;() =&gt; loggerFactory.CreateLogger&lt;T&gt;();
+    public static readonly Microsoft.Extensions.Logging.ILogger Global;
+
+    static LogManager()
+    {
+        loggerFactory = LoggerFactory.Create(logging =&gt;
+        {
+            logging.SetMinimumLevel(LogLevel.Trace);
+            logging.AddZLoggerUnityDebug(); // log to UnityDebug
+        });
+        Global = loggerFactory.CreateLogger(&quot;Logger&quot;);
+
+        Application.exitCancellationToken.Register(() =&gt;
+        {
+            loggerFactory.Dispose(); // flush when application exit.
+        });
+    }
+}
+
+// 例えばこんな感じに使ってみる
+public class NewBehaviourScript : MonoBehaviour
+{
+    static readonly ILogger&lt;NewBehaviourScript&gt; logger = LogManager.CreateLogger&lt;NewBehaviourScript&gt;();
+
+    void Start()
+    {
+        var name = &quot;foo&quot;;
+        var hp = 100;
+        logger.ZLogInformation($&quot;{name} HP is {hp}.&quot;);
+    }
+}
+</code></pre>
+<blockquote>
+<p>なお、C# 10.0のString Interpolation性能向上の恩恵を受けれるのはZLogを使った場合のみの話で、通常のString生成にString Interpolationを使っても性能向上はしません。string生成の性能向上にはランタイムにDefaultInterpolatedStringHandlerが必要で、これは .NET 6 以上にのみ同梱されているからです。DefaultInterpolatedStringHandlerが存在しない場合は今まで通りのstring.Formatにフォールバックされるため、普通にボクシングされます。</p>
+</blockquote>
+<p>JSONによる構造化ログや出力のカスタマイズ、ファイルへの出力などにも全て対応しています。</p>
+<pre><code class="language-csharp">var loggerFactory = LoggerFactory.Create(logging =&gt;
+{
+    logging.AddZLoggerFile(&quot;/path/to/logfile&quot;, options =&gt;
+    {
+        options.UseJsonFormatter();
+    });
+});
+</code></pre>
+<p>そしてもう一つボーナスとして、<code>Unity 2022.3.12f1</code> 以上だとC#のコンパイラバージョンがもう少し上がっていて、<code>-langVersion:preview</code>を指定するとC# 11.0が使えます。また、ZLoggerのSource Generatorが自動で有効になっているので、<code>[ZLoggerMessage]</code>を使って生成することができます。</p>
+<pre><code class="language-csharp">public static partial class LogExtensions
+{
+    [ZLoggerMessage(LogLevel.Debug, &quot;Hello, {name}&quot;)]
+    public static partial void Hello(this ILogger&lt;NewBehaviourScript&gt; logger, string name);
+}
+</code></pre>
+<p>Source Generatorの生成するコードがC# 11.0を要求するので(UTF8 String Literalなどを多用しているため)、<code>[ZLoggerMessage]</code>が使えるのは<code>Unity 2022.3.12f1</code> 以上限定となります。</p>
+<p>なお、Unityには同種の標準ロギングライブラリとして<a href="https://docs.unity3d.com/Packages/com.unity.logging@1.2/manual/index.html">com.unity.logging</a>がリリースされています。同じように構造化ロギングやファイル出力が可能なほか、Source Generatorを使ってクラスそのものを自動生成して、メソッドのオーバーロードを引数に応じて生成することで値のボクシング避けをするといった、面白い設計をしていました。Burst云々という話がよく出てきますが、このSource Generatorの大胆な使い方のほうがパフォーマンスの肝だと思います。ZLoggerはC# 10.0のString Interpolationを活用しているわけですが、そういうアプローチでの回避策というのはちょっと考えたことがなかったので、かなり目から鱗です。パフォーマンス的にもかなり練られています。</p>
+<p>ZLoggerのほうがString Interpolationによる書き味は上、パフォーマンスは、まぁいい勝負するんじゃないかなとは思いたいんですが、どうでしょうね……？</p>
+<h2>NuGetForUnity</h2>
+<p>今回Unityへのライブラリの配布は<a href="https://github.com/GlitchEnzo/NuGetForUnity">NuGetForUnity</a>を採用しました。これは普通の.NETライブラリへの依存が多いものへの配布に非常に便利で、NuGetForUnityを入れたあとに、GUIでZLoggerをこうして入れると</p>
+<p><img src="https://github.com/Cysharp/Utf8StringInterpolation/assets/46207/5ce038b8-85be-4bed-97ec-17aec260fa84" alt="image" /></p>
+<p>こんなように依存関係も解決して、Assets/Packagesの下にDLLがばらまかれます。</p>
+<p><img src="https://github.com/Cysharp/Utf8StringInterpolation/assets/46207/62a71516-874e-4bc2-bc75-29bf0fac9dd8" alt="image" /></p>
+<p>Source Generatorが含まれている場合は、ちゃんと<code>RoslynAnalyzer</code>のラベルも付与してくれるので、そのままSource GeneratorもUnity上で有効化されています。</p>
+<p>良い点としては、やはり大量のマネージドDLLの管理を一括でやってくれることと、動作がシンプル（基本的には解決したファイルをAssets/Packagesにばらまくだけ)なのでやっていることがイメージつきやすいところです。同じようなツールとして<a href="https://github.com/xoofx/unitynuget">UnityNuGet</a>というものがあるのですが、そちらは独自レジストリに配布しているファイルを引っ張ってくるという作りなので、NuGetForUnity(MS公式のNuGetのレジストリから引っ張ってくる)のほうが素直な挙動で好ましく思います。</p>
+<p>反面、UnityEngine.dllに依存したコードやUnityのバージョンで分岐するコードは配りにくいところがあります。ZLoggerではそのためのファイル(ZLoggerUnityDebugLoggerProvider)は別途git参照で引っ張ってくるハイブリッド方式での配布としました。かなりバランスの良いやり方かなと思うんですがどうでしょう……？特にCysharpのライブラリはコア部分はUnity非依存のものが多いので、問題なければ今後のCysharpのライブラリはこの形式での配布を基本としていきたいところです。</p>
+<p>ライブラリ作者側としては、コア部分はDLLで配ることになるのでC# 12のままで良い（今まではUnityのためにC# 9にダウングレードさせて書いたりしてた）のが、とにかくとても楽ですね……！</p>
+<h2>まとめ</h2>
+<p>この記事は<a href="https://qiita.com/advent-calendar/2023/csharplang">C# Advent Calendar 2023</a>の12月3日分の記事となります。すごい遅刻ですが間に合ったので（？）よし。よくない。</p>
+<p>なお、ZLogger v2の作成にあたっては <a href="https://github.com/hadashiA/VContainer">VContainer</a> や <a href="https://github.com/hadashiA/VYaml">VYaml</a> で有名な <a href="https://twitter.com/hadashiA">@hadashiA</a> さんに、アイディア出しから細かい実装、度重なる仕様のちゃぶ台返しに付き合ってもらいました。今回のv2は非常に完成度高くなったと思うのですが、自分一人ではここまで達しなかったので大変感謝です。</p>
+<p>ともあれZLoggerは使いやすさでもパフォーマンスでも最強！のロガーに仕上がったと思いますので、是非使ってみてください。</p>
+</div></div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2024<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="https://neue.cc/2023/12/">2023-12</a>
+<li><a href="https://neue.cc/2023/10/">2023-10</a>
+<li><a href="https://neue.cc/2023/09/">2023-09</a>
+<li><a href="https://neue.cc/2023/07/">2023-07</a>
+<li><a href="https://neue.cc/2023/03/">2023-03</a>
+<li><a href="https://neue.cc/2023/01/">2023-01</a>
+<li><a href="https://neue.cc/2022/12/">2022-12</a>
+<li><a href="https://neue.cc/2022/11/">2022-11</a>
+<li><a href="https://neue.cc/2022/07/">2022-07</a>
+<li><a href="https://neue.cc/2022/05/">2022-05</a>
+<li><a href="https://neue.cc/2022/04/">2022-04</a>
+<li><a href="https://neue.cc/2022/02/">2022-02</a>
+<li><a href="https://neue.cc/2022/01/">2022-01</a>
+<li><a href="https://neue.cc/2021/12/">2021-12</a>
+<li><a href="https://neue.cc/2021/11/">2021-11</a>
+<li><a href="https://neue.cc/2021/08/">2021-08</a>
+<li><a href="https://neue.cc/2021/07/">2021-07</a>
+<li><a href="https://neue.cc/2021/05/">2021-05</a>
+<li><a href="https://neue.cc/2021/02/">2021-02</a>
+<li><a href="https://neue.cc/2020/12/">2020-12</a>
+<li><a href="https://neue.cc/2020/11/">2020-11</a>
+<li><a href="https://neue.cc/2020/10/">2020-10</a>
+<li><a href="https://neue.cc/2020/08/">2020-08</a>
+<li><a href="https://neue.cc/2020/07/">2020-07</a>
+<li><a href="https://neue.cc/2020/04/">2020-04</a>
+<li><a href="https://neue.cc/2020/01/">2020-01</a>
+<li><a href="https://neue.cc/2019/12/">2019-12</a>
+<li><a href="https://neue.cc/2019/09/">2019-09</a>
+<li><a href="https://neue.cc/2019/08/">2019-08</a>
+<li><a href="https://neue.cc/2019/07/">2019-07</a>
+<li><a href="https://neue.cc/2019/06/">2019-06</a>
+<li><a href="https://neue.cc/2019/05/">2019-05</a>
+<li><a href="https://neue.cc/2019/04/">2019-04</a>
+<li><a href="https://neue.cc/2018/12/">2018-12</a>
+<li><a href="https://neue.cc/2018/10/">2018-10</a>
+<li><a href="https://neue.cc/2018/08/">2018-08</a>
+<li><a href="https://neue.cc/2018/07/">2018-07</a>
+<li><a href="https://neue.cc/2018/05/">2018-05</a>
+<li><a href="https://neue.cc/2018/04/">2018-04</a>
+<li><a href="https://neue.cc/2018/01/">2018-01</a>
+<li><a href="https://neue.cc/2017/12/">2017-12</a>
+<li><a href="https://neue.cc/2017/09/">2017-09</a>
+<li><a href="https://neue.cc/2017/08/">2017-08</a>
+<li><a href="https://neue.cc/2017/07/">2017-07</a>
+<li><a href="https://neue.cc/2017/06/">2017-06</a>
+<li><a href="https://neue.cc/2017/04/">2017-04</a>
+<li><a href="https://neue.cc/2017/03/">2017-03</a>
+<li><a href="https://neue.cc/2016/12/">2016-12</a>
+<li><a href="https://neue.cc/2016/11/">2016-11</a>
+<li><a href="https://neue.cc/2016/10/">2016-10</a>
+<li><a href="https://neue.cc/2016/09/">2016-09</a>
+<li><a href="https://neue.cc/2016/08/">2016-08</a>
+<li><a href="https://neue.cc/2016/07/">2016-07</a>
+<li><a href="https://neue.cc/2016/06/">2016-06</a>
+<li><a href="https://neue.cc/2016/05/">2016-05</a>
+<li><a href="https://neue.cc/2016/04/">2016-04</a>
+<li><a href="https://neue.cc/2016/03/">2016-03</a>
+<li><a href="https://neue.cc/2016/01/">2016-01</a>
+<li><a href="https://neue.cc/2015/12/">2015-12</a>
+<li><a href="https://neue.cc/2015/11/">2015-11</a>
+<li><a href="https://neue.cc/2015/10/">2015-10</a>
+<li><a href="https://neue.cc/2015/09/">2015-09</a>
+<li><a href="https://neue.cc/2015/06/">2015-06</a>
+<li><a href="https://neue.cc/2015/05/">2015-05</a>
+<li><a href="https://neue.cc/2015/04/">2015-04</a>
+<li><a href="https://neue.cc/2015/03/">2015-03</a>
+<li><a href="https://neue.cc/2015/02/">2015-02</a>
+<li><a href="https://neue.cc/2015/01/">2015-01</a>
+<li><a href="https://neue.cc/2014/12/">2014-12</a>
+<li><a href="https://neue.cc/2014/11/">2014-11</a>
+<li><a href="https://neue.cc/2014/10/">2014-10</a>
+<li><a href="https://neue.cc/2014/09/">2014-09</a>
+<li><a href="https://neue.cc/2014/08/">2014-08</a>
+<li><a href="https://neue.cc/2014/07/">2014-07</a>
+<li><a href="https://neue.cc/2014/05/">2014-05</a>
+<li><a href="https://neue.cc/2014/04/">2014-04</a>
+<li><a href="https://neue.cc/2014/03/">2014-03</a>
+<li><a href="https://neue.cc/2014/01/">2014-01</a>
+<li><a href="https://neue.cc/2013/12/">2013-12</a>
+<li><a href="https://neue.cc/2013/11/">2013-11</a>
+<li><a href="https://neue.cc/2013/10/">2013-10</a>
+<li><a href="https://neue.cc/2013/09/">2013-09</a>
+<li><a href="https://neue.cc/2013/08/">2013-08</a>
+<li><a href="https://neue.cc/2013/07/">2013-07</a>
+<li><a href="https://neue.cc/2013/06/">2013-06</a>
+<li><a href="https://neue.cc/2013/05/">2013-05</a>
+<li><a href="https://neue.cc/2013/04/">2013-04</a>
+<li><a href="https://neue.cc/2013/03/">2013-03</a>
+<li><a href="https://neue.cc/2013/02/">2013-02</a>
+<li><a href="https://neue.cc/2013/01/">2013-01</a>
+<li><a href="https://neue.cc/2012/12/">2012-12</a>
+<li><a href="https://neue.cc/2012/11/">2012-11</a>
+<li><a href="https://neue.cc/2012/10/">2012-10</a>
+<li><a href="https://neue.cc/2012/09/">2012-09</a>
+<li><a href="https://neue.cc/2012/08/">2012-08</a>
+<li><a href="https://neue.cc/2012/07/">2012-07</a>
+<li><a href="https://neue.cc/2012/06/">2012-06</a>
+<li><a href="https://neue.cc/2012/05/">2012-05</a>
+<li><a href="https://neue.cc/2012/04/">2012-04</a>
+<li><a href="https://neue.cc/2012/03/">2012-03</a>
+<li><a href="https://neue.cc/2012/02/">2012-02</a>
+<li><a href="https://neue.cc/2012/01/">2012-01</a>
+<li><a href="https://neue.cc/2011/12/">2011-12</a>
+<li><a href="https://neue.cc/2011/11/">2011-11</a>
+<li><a href="https://neue.cc/2011/10/">2011-10</a>
+<li><a href="https://neue.cc/2011/09/">2011-09</a>
+<li><a href="https://neue.cc/2011/08/">2011-08</a>
+<li><a href="https://neue.cc/2011/07/">2011-07</a>
+<li><a href="https://neue.cc/2011/06/">2011-06</a>
+<li><a href="https://neue.cc/2011/05/">2011-05</a>
+<li><a href="https://neue.cc/2011/04/">2011-04</a>
+<li><a href="https://neue.cc/2011/03/">2011-03</a>
+<li><a href="https://neue.cc/2011/02/">2011-02</a>
+<li><a href="https://neue.cc/2011/01/">2011-01</a>
+<li><a href="https://neue.cc/2010/12/">2010-12</a>
+<li><a href="https://neue.cc/2010/11/">2010-11</a>
+<li><a href="https://neue.cc/2010/10/">2010-10</a>
+<li><a href="https://neue.cc/2010/09/">2010-09</a>
+<li><a href="https://neue.cc/2010/08/">2010-08</a>
+<li><a href="https://neue.cc/2010/07/">2010-07</a>
+<li><a href="https://neue.cc/2010/06/">2010-06</a>
+<li><a href="https://neue.cc/2010/05/">2010-05</a>
+<li><a href="https://neue.cc/2010/04/">2010-04</a>
+<li><a href="https://neue.cc/2010/03/">2010-03</a>
+<li><a href="https://neue.cc/2010/02/">2010-02</a>
+<li><a href="https://neue.cc/2010/01/">2010-01</a>
+<li><a href="https://neue.cc/2009/12/">2009-12</a>
+<li><a href="https://neue.cc/2009/11/">2009-11</a>
+<li><a href="https://neue.cc/2009/10/">2009-10</a>
+<li><a href="https://neue.cc/2009/09/">2009-09</a>
+<li><a href="https://neue.cc/2009/08/">2009-08</a>
+<li><a href="https://neue.cc/2009/07/">2009-07</a>
+<li><a href="https://neue.cc/2009/06/">2009-06</a>
+<li><a href="https://neue.cc/2009/05/">2009-05</a>
+<li><a href="https://neue.cc/2009/04/">2009-04</a>
+<li><a href="https://neue.cc/2009/03/">2009-03</a>
+<li><a href="https://neue.cc/2009/02/">2009-02</a>
+<li><a href="https://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul>
+<li>Index: <a href="https://neue.cc">neue.cc</a><li>
+<li>RSS feed: <a href="https://neue.cc/feed">neue.cc/feed</a><li>
+<li>Powered by: <a href="https://github.com/neuecc/Blog2">https://github.com/neuecc/Blog2</a>
+</ul></div>
+    </div>
+</body>

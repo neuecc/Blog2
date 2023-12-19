@@ -23,7 +23,113 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2010/07/07_266.html">IEnumerableのCastを抹殺するためのT4 Templateの使い方</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2010/07/16_267.html">XStreamingReader - Linq to Xml形式でのストリーミングXml読み込み</a></h1>
+<ul class="date"><li>2010-07-16</li></ul>
+<div class="entry_body"><p><a href="http://xstreamingreader.codeplex.com/" title="XStreamingReader - Streaming for Linq to Xml">CodePlex : XStreamingReader - Streaming for Linq to Xml</a></p>
+<p>1クラスライブラリシリーズ。もしくはストリーミングをIEnumerableに変換していこうシリーズ。またはシンプルだけど小粒でピリッと隙間にぴったりはまるシリーズ(を、目指したい)。といったわけで、100行程度ではあるのですが、表題の機能を持つコードをCodePlexに公開しました。それとおまけとして、XMLファイルからC#クラス自動生成T4 Templateも同梱。</p>
+<p>Linq to Xml風にXmlを読み込めるけれど、ツリーを構築せずストリームで、完全遅延評価で実行します。Linq to Xmlには、書き込み用にXStreamingElementというものがあるため、それと対比した読み込み用という位置付けのつもりです。メモリの厳しいモバイル機器や、巨大なXMLを読み込む際に使えるんじゃないかと思っています。</p>
+<h2>利用例</h2>
+<p>ぶっちゃけまるっきりXElementと同じです。例として<a href="http://weather.yahoo.co.jp/weather/public/rss.html">Yahoo!天気情報</a>のRSSから京都と東京を取り出し。</p>
+<pre><code class="language-csharp">// XElement
+var kyoto = XElement.Load(@&quot;http://rss.weather.yahoo.co.jp/rss/days/6100.xml&quot;)
+    .Descendants(&quot;item&quot;)
+    .Select(x =&gt; new
+    {
+        Title = (string)x.Element(&quot;title&quot;),
+        Description = (string)x.Element(&quot;description&quot;),
+        PubDate = (DateTime)x.Element(&quot;pubDate&quot;)
+    })
+    .Where(a =&gt; !a.Title.StartsWith(&quot;[PR]&quot;)) // itemが広告の場合は除外
+    .ToArray();
+
+// XStreamingReader
+var tokyo = XStreamingReader.Load(@&quot;http://rss.weather.yahoo.co.jp/rss/days/4410.xml&quot;)
+    .Descendants(&quot;item&quot;)
+    .Select(x =&gt; new
+    {
+        Title = (string)x.Element(&quot;title&quot;),
+        Description = (string)x.Element(&quot;description&quot;),
+        PubDate = (DateTime)x.Element(&quot;pubDate&quot;)
+    })
+    .Where(a =&gt; !a.Title.StartsWith(&quot;[PR]&quot;)) // itemが広告の場合は除外
+    .ToArray();
+</code></pre>
+<p>Load/Parseで生成し、ElementsやDescendantsで抽出。あとは、IEnumerable&lt;XElement&gt;となっているので、SelectしたりWhereしたり。完全にLinq to Xmlと同じAPIです。同じすぎてこれだけだと利点がさっぱり見えませんが、100%遅延評価＋ストリーミング読み込みで逐次生成という違いがあります。詳しくは次のセクションで。</p>
+<h2>バックグラウンド</h2>
+<p>Androidでは性能のためにDOMじゃなくてSAXでXML扱うんだ。という話を良く聞いて、確かにただデータ取るためだけにDOM構築ってのは嫌だし、そりゃ避けたい。対象がDOMなら素直にそう思いますが、しかし、もしそれがLinq to Xmlならどうだろう？Windows Phone 7だったらLinq to Xml使うに決まってるよ、と言いたいのですが、これってDOMと同じく、すぐに(LoadなりParseなりした直後)ツリーを構築しています。Elements()なりDescendants()なりの戻り値がIEnumerableなため、遅延評価かと思ってしまうわけですが、遅延評価されるのはツリーの探索が、というだけであって、構築自体は即時でされています。</p>
+<p>DOMに比べて軽量(という謳い文句)であることと、非常に軽々と書けるため抵抗感がないわけですが、考えてみれば Load.Descendants.Select みたいな、API叩いて何らかのクラスなり匿名型なりに変換するという程度の、しかしよくある定型作業は、わざわざツリー作る必要はなくストリーミングで取れるし、それならばストリーミングで取るべきではある。しかし、今時XmlReaderを直で触るなんて、時代への逆行のようなことはやりたくない。</p>
+<p>ストリームはIEnumerableに変換するのがLinq以降のC#の常識。というのを日々連呼しているので、今回はXmlReaderをIEnumerable&lt;T&gt;に変換しなければなりません。しかし、困ったのが、&lt;T&gt;のTを何にすればいいのか、ということ。ファイル読み込みなら一行のString。データベースなら、IDataRecord(<a href="http://neue.cc/2010/04/07_250.html">DbExecutorというライブラリ</a>としてCodePlexに公開しています)を用いましたが、XmlReaderだと適当なのが見当たらない。XmlReaderを直接渡すのは危なっかしいし、そもそも渡したところで面倒くさいことにかわりなくてダメだ。何か適切なコンテナが……。</p>
+<p>と、考えたり考えなかったりで、Twitterでもにょもにょと言っていたら</p>
+<blockquote>
+<p>@neuecc Linq to Xml を使うにしても XmlReaderからReadSubtreeで切り出した断片に対してかなー、XML全体をオンメモリさせる必然性がなければStreamから読んで処理した端からGCに捨てて貰えるようにしておきたいだけだけど<br />
+<a href="http://twitter.com/kazuk/status/18193188205">http://twitter.com/kazuk/status/18193188205</a></p>
+</blockquote>
+<p>うぉ！うぉぉぉぉぉ！なるほど、断片をXElementに変換してそれを渡せば、操作しやすいし感覚的にもXElement.Loadなどと変わらないしでベストだ！言われてみればそりゃそうだよねー、ですが全然頭になかった、まさにコロンブスの卵。こういうことがサラッと出てくることこそが、凄さだよね。</p>
+<p>と、感嘆しつつ、それそのまま頂き、というわけで、TをXElementにするという形で解決しました。</p>
+<pre><code class="language-csharp">public IEnumerable&lt;XElement&gt; Descendants(XName name)
+{
+    using (var reader = readerFactory())
+    {
+        while (reader.ReadToFollowing(name.LocalName, name.NamespaceName))
+        {
+            yield return XElement.Load(reader.ReadSubtree());
+        }
+    }
+}
+</code></pre>
+<p>Descendantsの実装はこんな感じで、断片から都度XElement生成しているという、それだけの単純明快な代物です。そのため挙動はXElement.Load.Descendantsと完全同一というわけじゃありません。例えばサブツリー中に同名の要素がある場合、XElementでDescendantsの場合はサブツリー中の要素も列挙しますが、XStreamingReaderではトップ要素のものだけが拾われます。</p>
+<p>他に注意点としては、それぞれのXElementは完全に独立しているため、ParentやNextNodeなどは全てnullです。よってAncestorsで先祖と比較しながらの複雑な抽出、などといったことも出来ません。TwitterのAPIのような、ウェブサービスとして用意されているXMLなら素直な構造なので問題はありませんが、<a href="http://neue.cc/2010/03/02_244.html">SGMLReaderでLinq to HTML</a>などといった場合は、結構複雑なクエリで抽出することになるため使えないでしょう。その場合は素直にXElement.Loadを使うのが良いと思います。</p>
+<h2>おまけ(Xml→自動クラス生成)</h2>
+<p>Xmlから人力でClass作るのって定型作業で面倒だよねー。ということで、自動生成するT4 Templateも同梱しました。プロパティ定義だけではなく(ちゃんとPascalCaseに直します)、コンストラクタにXElementを投げるとマッピングもしてくれます。つまりは、XStreamingReaderの仕様に合わせたものです。</p>
+<p>.ttの上の方にある3つの項目を適当に書き換えると</p>
+<pre><code class="language-csharp">string XmlString = new WebClient().DownloadString(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
+const string DescendantsName = &quot;status&quot;; // select class root
+const string Namespace = &quot;Twitter&quot;; // namespace
+</code></pre>
+<pre><code class="language-csharp">namespace Twitter
+{
+    public class Status
+    {
+        public string CreatedAt { get; set; }
+        public string Id { get; set; }
+        // snip...
+        public User User { get; set; }
+        public string Geo { get; set; }
+
+        public Status(XElement element)
+        {
+            this.CreatedAt = (string)element.Element(&quot;created_at&quot;);
+            this.Id = (string)element.Element(&quot;id&quot;);
+            this.User = new User(element.Element(&quot;user&quot;));
+            this.Geo = (string)element.Element(&quot;geo&quot;);
+        }
+    }
+    
+    public class User
+    {
+        public string Id { get; set; }
+        public string Name { get; set; }
+        public string ScreenName { get; set; }
+        // snip...
+        public string FollowRequestSent { get; set; }
+
+        public User(XElement element)
+        {
+            this.Id = (string)element.Element(&quot;id&quot;);
+            this.Name = (string)element.Element(&quot;name&quot;);
+            this.ScreenName = (string)element.Element(&quot;screen_name&quot;);
+            this.FollowRequestSent = (string)element.Element(&quot;follow_request_sent&quot;);
+        }
+    }
+}
+</code></pre>
+<p>こんなのが生成されます。型は全部stringになるので、手動で直してください。半自動生成。T4で生成→新しいクラスファイル作って生成結果をコピペ→型を直す。みたいな使い方をイメージしています。完全自動生成じゃないと変更に対する自動追随ってのが出来ないので、自動生成する意味が半減。しかし、型かあ、スキーマないと無理ですな。まあ、ウェブサービスのAPIなどは基本的には固定で変化がないでしょうから、ある程度は手間を省けるんじゃないかと思われます。</p>
+<h2>まとめ</h2>
+<p>断片とはいえ、XElement作るのは無駄じゃないの？というと、無駄ではあります。抽出したらすぐ用済みでポイなわけなので、純粋にパフォーマンスの観点から言えばXmlReaderを直で触ったほうが良いに決まっています。しかし、さすがにそこまで来ると無視して良いと思うわけです。例えばLinqで一時的な匿名型は使わないって？ああ、むしろLinqなんてやめて全部forループにでもします？言いだいたらキリがない。</p>
+<p>今回で大事なのは、ストリーミング化しても、決して使いやすさは損なわれていないということです。ツリー構築型と全く同じように快適に書ける。それが何より大切。「性能のために書きやすさが犠牲になるぐらいなら性能なんていらない！」と、現実は言えなくても心では言ってしまいます。ユーザー視点だと逆ですが……。ただ、中長期的には、スパゲティコードは開発者を幸せにしない→機能追加速度低下/洗練が鈍る→ユーザーも不幸せになる、のループが回るので綺麗さは重要。勿論、そこが性能上本当にボトルネックになっているならば気合入れて叩く必要がありますが、気分的に、もしくはマイクロベンチマーク的にちょっと性能Downな程度でパフォーマンスチューニングとか言い出すのならシバいてよし。</p>
+<p>といったわけかで、私なりにWindows Phone 7プログラミングへの準備を進めています。これで、準備になってる？……だと？ご冗談を。ですね、はい、すみません。開発キットのベータ版が出たので、次回はWindows Phone 7で何か作ろう紹介でも書く予定は未定。</p>
+</div>
+<h1><a href="https://neue.cc/2010/07/07_266.html">IEnumerableのCastを抹殺するためのT4 Templateの使い方</a></h1>
 <ul class="date"><li>2010-07-07</li></ul>
 <div class="entry_body"><p>.NET Framework 1.0の負の遺産、HogeCollection。それらの大半はIEnumerable&lt;T&gt;を実装していない、つまるところ一々Cast&lt;T&gt;しなければLinqが使えない。ほんとどうしょうもない。大抵のHogeCollectionは実質Obsoleteみたいなもので、滅多に使わないのだけれど、ただ一つ、RegexのMatchCollectionだけは頻繁に使うわけで、Castにイラつかされるので殺害したい。RegexにはMatchCollection、GroupCollection、CaptureCollectionという恐怖の連鎖が待っているので余計に殺したい。(ところで全く本題とは関係ないのですが、Captureは今ひとつ使い道がわからな……)</p>
 <pre><code class="language-csharp">// わざとらしい例ですが
@@ -1950,290 +2056,6 @@ var sum = $(&quot;input&quot;).toEnumerable()
 </code></pre>
 <p>割と便利。かな？具体例に乏しくて非常に説得力に欠ける感じですが、良ければ使ってやってください。</p>
 </div>
-<h1><a href="https://neue.cc/2010/04/11_252.html">Linq to ObjectsをJavaScriptに実装する方法</a></h1>
-<ul class="date"><li>2010-04-11</li></ul>
-<div class="entry_body"><p><a href="http://journal.mycom.co.jp/articles/2010/04/09/jsinq/index.html">JavaScriptでLINQを使おう - 複雑な検索処理を簡潔に記述する「JSINQ」</a>という記事が出ました。私は<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript Library">linq.js</a>という、同種のJavaScriptへのLINQ移植ライブラリを作成している人間のため、JSINQの人気っぷりに思わず嫉妬してしまった(笑)のですが、そういう感情は抜いておいてこの紹介記事は、今ひとつよろしくない。</p>
-<p>まず頂けないのが、列挙の方法。</p>
-<pre><code class="language-javascript">// 生のenumeratorを取り出して列挙するですって！？
-while (enumerator.moveNext()) {
-    var name = enumerator.current();
-    document.write(name + '&lt;br&gt;');
-}
-// eachが用意されているというのに！
-result.each(function(name) { document.write(name + &quot;&lt;br /&gt;&quot;) });
-</code></pre>
-<p>C#でもJavaでも、きっと他の言語でも、反復子をwhileループで回すなんて原始的なことは普通やりませんよね？ foreachに渡しますよね？ そんなわけでJSINQにはeachメソッドが用意されているのですが紹介記事は普通にスルー。「enumeratorでの列挙とeachでの列挙二つ紹介する」「enumeratorのみ紹介する」「eachのみ紹介する」の三択で、スペースの都合上一つしか紹介出来ないなら、eachのほうを紹介すべきでしょう。いやまあ、例が一個だったらしょうがないなあ、どうせJSINQのチュートリアルの上のほうから抜き取っただけだろうしー、と思うのですが、三個もenumerator取り出しの例を出されるとさすがにオイオイオイオイ、と突っ込みたくなる。</p>
-<p>もうひとつは、文字列によるクエリ構文を推しすぎ。JSINQの最大の特徴でもある部分なのでJSINQの紹介としては正しいのですが(JSINQのプロジェクトページでもそれをフィーチャーしてますしね)、LINQの紹介として見ると大変頂けない。.NETを知らない人(JavaScriptのライブラリなので、基本はJavaScriptの人が見るでしょう)がLinqを誤解してしまう要因になりうるので、こういった紹介は割とキツい。</p>
-<p>LINQとはLanguage Integrated Query(統合言語クエリ)であり、言語に統合されていてこそLinqなのです。文字列で与えたらSQLと一緒。LinqはしばしばSQLっぽく記述するもの、と誤認されているようですが、違います。文字列で与えていたSQL(こんな風にね、と最近作った<a href="http://neue.cc/2010/04/07_250.html" title="neue cc - DbExecutor - Linqで操作しやすいSQL実行ライブラリ">DbExecutor</a>というSQL実行簡易補助ライブラリをどさくさに紛れて紹介してみる)とは全く別物なのです。詳細は説明すると長くなるので省いちゃいます（え？）。理屈はともかく、言語に統合されていない状態でのSQLは書きやすいとはいえないわけですよ？</p>
-<pre><code class="language-javascript">var elements = document.getElementsByTagName('a');
-var enumerable = new jsinq.Enumerable(elements);
-
-var query = new jsinq.Query(' \
-    from e in $0 \
-    where e.href.indexOf(&quot;google.co.jp&quot;) &gt; -1 \
-    select e \
-');
-
-query.setValue(0, enumerable);
-var result = query.execute();
-
-var enumerator = result.getEnumerator();
-while (enumerator.moveNext()) {
-    var e = enumerator.current();
-    document.write(e.text + ': ' + e.href + '&lt;br&gt;');
-}
-</code></pre>
-<p>改行のために末尾に\を入れなければならない、不恰好なプレースホルダ、クエリコンパイルの必要性(executeメソッドの実行でメソッドチェーン形式に変換されます、面白いことにこの点まで.NET Frameworkの忠実な再現となっています(クエリ構文はメソッド構文の糖衣構文にすぎない))。というわけで、到底書きやすいとは言えません。この例を見て、長げーよ馬鹿、意味ねー、アホじゃねーの？普通にfor回した方が百億倍マシだろ、と思った人もいるでしょう。その通りです。素直に便利かも……とか思ったなら、物事はもう少し冷静に見るようにしてください。しかしメソッド構文(jQueryのようにメソッドチェーンで書く方法)ならこう書けます。</p>
-<pre><code class="language-javascript">var elements = document.getElementsByTagName('a');
-new jsinq.Enumerable(elements)
-    .where(function(e) { return e.href.indexOf(&quot;google.co.jp&quot;) &gt; -1 })
-    .each(function(e) { document.write(e.text + &quot;: &quot; + e.href + &quot;&lt;br&gt;&quot;) });
-</code></pre>
-<p>これなら納得で、割と使えるかもって感じではないでしょうか？ JSINQにおける文字列によるクエリ構文は、人を釣るためのただの餌です。そんな餌で俺様が釣られクマー。jSINQをJavaScriptライブラリとして使うのならば、メソッド構文のほうをお薦めします。クエリ構文はネタ、もしくはただの技術誇示にすぎません。よくやるなー、って感じで素晴らしいとは思いますが、実用性は皆無です。JSINQ自体はLinqの移植として割と良く出来ているので(何だこの上から目線)、文字列クエリ構文で試してみて使えないなー、と思ってしまった、もしくは紹介を見て文字列クエリ構文とかこのライブラリダメだろ、と思った人は、その辺は誤解なくどうぞ。</p>
-<h2>linq.js</h2>
-<p>LinqのJavaScript実装は他にもあります。一つは、ええと、私の作成しているlinq.jsです。売り文句はJSINQと同じくSystem.Enumerableとの完全なるAPI互換。.NET4までの範囲を全てカバーしています。更にその上に、Achiral, Ruby, Haskellなどから参考にした大量のメソッドが追加されていることと、Visual Studioで使う場合にはIntelliSenseが動作するファイルがあること、などなど「実用的に使う」ことを強く意識して作っています。手前味噌なのでアレですが、他のどのライブラリよりも使える度は高いと思っています。</p>
-<ul>
-<li><a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript Library">linq.js - LINQ for JavaScript Library</a> - プロジェクトページ</li>
-<li><a href="http://neue.cc/2009/04/04_145.html" title="neue cc - linq.js - JavaScript用LINQライブラリ">紹介と簡単なチュートリアル</a></li>
-<li><a href="http://neue.cc/2009/06/06_164.html" title="neue cc - 最もタメになる「初心者用言語」はVisualStudio(言語?)">入力補完に対応させたのでVSでの利用法紹介</a></li>
-<li><a href="http://neue.cc/category/software/linqjs" title="neue cc - linq.js">ブログ記事のlinq.jsカテゴリ</a>(最後の更新が去年の9月、がーん)</li>
-</ul>
-<p>更新が微妙に止まっているのですが、WindowsScriptHostで快適に使えるような追加ライブラリを作成中(と、9月に言ったっきり絶賛作業休止中、すみません、でもやる気はあるので遠くないうちに必ず出します)。あと、<a href="http://neue.cc/2010/03/18_247.html" title="neue cc - Reactive Extensions for JavaScript">Reactive Extensions for JavaScript</a>という、これまた.NET発のJavaScript移植ライブラリが出ているので、それとの協調動作も考えています。</p>
-<h2>Linqを自分で実装する</h2>
-<p>では本題。実際にLinqをJavaScriptで実装してみましょう。C#でSelectを実装してみたことはありますか？ 何のことはなく、たった1行で出来ちゃうんですよね。そんなわけで、実際のところ別に難しいことはありません。勿論、全てのAPIを網羅するのは面倒くさいですが、基本的な原理を掴んでおくとグッと利用法が広がるはずです。まずは、一番単純な、Array.prototypeに生やす方法を考えてみます。例としてmapとforEachを実装してみましょう。</p>
-<pre><code class="language-javascript">Array.prototype.map = function(selector) {
-    var result = [];
-    for (var i = 0; i &lt; this.length; i++)
-        result.push(selector(this[i]));
-    return result;
-}
-
-Array.prototype.forEach = function(action) {
-    for (var i = 0; i &lt; this.length; i++)
-        action(this[i], i); // with index
-}
-
-var array = [1, 2, 3, 4, 5, 6, 7, 8, 9];
-array.map(function(i) { return { Single: i, Double: i * 2} })
-     .forEach(function(a) { alert(a.Single + &quot;:&quot; + a.Double) });
-</code></pre>
-<p>配列を変形してforeach。非常に単純な代物ですが、単純が故にmapやfilterは便利ですよね、かなり多用します。C#における匿名型は、JavaScriptではそのままハッシュを返すことで実現されます。さて、このやり方には問題が二つあります。一つはビルトインオブジェクトのprototypeを拡張する、微妙なお行儀の悪さ。そこで、arrayを独自オブジェクトにくるんでやりましょう。</p>
-<pre><code class="language-javascript">function Enumerable(array) {
-    this.source = array;
-}
-
-Enumerable.prototype.map = function(selector) {
-    var result = [];
-    for (var i = 0; i &lt; this.source.length; i++)
-        result.push(selector(this.source[i]));
-    return new Enumerable(result);
-}
-
-Enumerable.prototype.filter = function(predicate) {
-    var result = [];
-    for (var i = 0; i &lt; this.source.length; i++)
-        if (predicate(this.source[i])) result.push(this.source[i]);
-    return new Enumerable(result);
-}
-
-Enumerable.prototype.reduce = function(func) {
-    var result = this.source[0];
-    for (var i = 1; i &lt; this.source.length; i++)
-        result = func(result, this.source[i]);
-    return result;
-}
-
-var array = [1, 2, 3, 4, 5, 6];
-var sum = new Enumerable(array)
-    .filter(function(i) { return i % 2 == 0 })
-    .map(function(i) { return i * i })
-    .reduce(function(x, y) { return x + y });
-alert(sum); // 56
-</code></pre>
-<p>配列を一旦包まなくてはならないのが煩わしいのですが、メソッドチェーンのコンボを決めて、気持ちよく列挙することが出来ます。この例ではFirefoxのfilter, map, reduceを再定義してみました(thisObjectの辺りはスルーしてますしreduceの引数なんかも違いますが)。1から6の配列のうち偶数のみを二乗して足し合わせる。答えは56。さて、しかしこの方式にも問題があります。Arrayのprototype拡張が抱えているもう一つの問題と同じですが、メソッドの一つ一つを通る度に無駄な中間配列を生成してしまっています。メソッドチェーンの形になっていると隠蔽されてしまうのですが、冷静に眺めてみればこういうことです。</p>
-<pre><code class="language-javascript">var array = [1, 2, 3, 4, 5, 6];
-var _array = [];
-for (var i = 0; i &lt; array.length; i++) {
-    if (array[i] % 2 == 0) _array.push(array[i]);
-}
-var __array = [];
-for (var i = 0; i &lt; _array.length; i++) {
-    __array.push(_array[i] * _array[i]);
-}
-var sum = __array[0];
-for (var i = 1; i &lt; __array.length; i++) {
-    sum += __array[i];
-}
-</code></pre>
-<p>さすがに、これはあまりのアホさと無駄さに死ね！と言いたくなりませんか？まあ、この程度は大したコストではないのも確かですし、これこそが富豪的プログラミングだ！といえば、そうだし、その辺はそんなに否定しません。些細なパフォーマンスチューニングにはあまり興味ありません。が、しかし、根本的な問題として、これだと無限リストが扱えません。無限リストとは無限に続くもの、例えば [0,1,2,...,9999,10000,...] 。そんなの使わないって？いやいや、使いこなすと存外便利ですよ？ そんなわけで、富豪とか云々を抜きにしても、ただのArrayラッパーは却下です。即時評価なfilterやmapなんて使いたくありません。.NET FrameworkのLinq to Objectsは遅延評価なので、無限リストも扱えますし中間配列といった無駄は出てきません。では遅延評価のリスト処理をどう実装しましょうか。無限リストを作る方法は色々あるでしょうが、ここはLinqの移植なのでC#でのやり方と同じくイテレータパターンを用います。</p>
-<pre><code class="language-javascript">IEnumerable = function(moveNext) {
-    this.getEnumerator = function() {
-        return { current: null, moveNext: moveNext }
-    }
-}
-
-// Generator
-Enumerable =
-{
-    toInfinity: function(from) {
-        if (from === undefined) from = 0;
-        return new IEnumerable(function() {
-            this.current = from++;
-            return true;
-        });
-    }
-}
-
-// select as map
-IEnumerable.prototype.select = function(selector) {
-    var source = this;
-    var enumerator = null;
-
-    return new IEnumerable(function() {
-        if (enumerator == null) enumerator = source.getEnumerator();
-        if (enumerator.moveNext()) {
-            this.current = selector(enumerator.current);
-            return true;
-        }
-        return false;
-    });
-}
-
-// 無限に2倍するリスト[0, 1, 4, 9, 16,...
-Enumerable.toInfinity().select(function(i) { return i * 2 });
-</code></pre>
-<p>LinqはIEnumerableオブジェクトの連鎖で成り立っています。また、return thisでメソッドチェーンをするわけではありません。selectを見てください。メソッドが呼ばれた時点では何も実行せずに、クロージャにより環境を保持した新しいIEnumerableを生成し、それを返しています。ではいつ実行されるのかというと、getEnumerator()が呼ばれ、それで取得されたenumeratorオブジェクトのmoveNext()を呼んだ時です。</p>
-<p>さて、しかしこのままではgetEnumeratr()で反復子を取得しての列挙しか出来なくて不便なので、forEachなどを定義してやる必要があります。また、無限リストが本当に無限のままでは困るので、停止させるものが必要です。というわけで、代表的なものを幾つか紹介します。</p>
-<pre><code class="language-javascript">IEnumerable = function(moveNext) {
-    this.getEnumerator = function() {
-        return { current: null, moveNext: moveNext }
-    }
-}
-
-// Generator
-Enumerable =
-{
-    from: function(array) {
-        return Enumerable.repeat(array)
-            .take(array.length)
-            .select(function(ar, i) { return ar[i] });
-    },
-
-    toInfinity: function(from) {
-        if (from === undefined) from = 0;
-        return new IEnumerable(function() {
-            this.current = from++;
-            return true;
-        });
-    },
-
-    repeat: function(element) {
-        return new IEnumerable(function() {
-            this.current = element;
-            return true;
-        });
-    }
-}
-
-// select as map
-IEnumerable.prototype.select = function(selector) {
-    var source = this;
-    var enumerator = null;
-    var index = -1;
-
-    return new IEnumerable(function() {
-        if (enumerator == null) enumerator = source.getEnumerator();
-        if (enumerator.moveNext()) {
-            this.current = selector(enumerator.current, ++index);
-            return true;
-        }
-        return false;
-    });
-}
-
-// where as filter
-IEnumerable.prototype.where = function(predicate) {
-    var source = this;
-    var enumerator = null;
-    var index = -1;
-
-    return new IEnumerable(function() {
-        if (enumerator == null) enumerator = source.getEnumerator();
-        while (enumerator.moveNext()) {
-            if (predicate(enumerator.current, ++index)) {
-                this.current = enumerator.current;
-                return true;
-            }
-        }
-        return false;
-    });
-}
-
-IEnumerable.prototype.take = function(count) {
-    var source = this;
-    var enumerator = null;
-    var index = -1;
-
-    return new IEnumerable(function() {
-        if (enumerator == null) enumerator = source.getEnumerator();
-        while (++index &lt; count &amp;&amp; enumerator.moveNext()) {
-            this.current = enumerator.current;
-            return true;
-        }
-        return false;
-    });
-}
-
-IEnumerable.prototype.toArray = function() {
-    var result = [];
-    var enumerator = this.getEnumerator();
-    while (enumerator.moveNext()) {
-        result.push(enumerator.current);
-    }
-    return result;
-}
-
-// 利用例
-
-// こんな配列があったとして
-var array = [1232, 421, 1, 2, 3412, 42, 4, 2, 45];
-// 偶数のもののみ二倍した新しい配列を生成
-var array2 = Enumerable.from(array)
-    .where(function(i) { return i % 2 == 0 })
-    .select(function(i) { return i * 2 })
-    .toArray();
-
-// 1-100の配列を作成
-var array3 = Enumerable.toInfinity(1).take(100).toArray();
-// &quot;&quot;のみの長さ100の配列を作成
-var array4 = Enumerable.repeat(&quot;&quot;).take(100).toArray();
-</code></pre>
-<p>生成用メソッドとして、配列を反復子に変換するfrom, 無限にインクリメントした整数を返すtoInfinity, 無限に同一要素を繰り返すrepeatを定義しました。メソッドチェーン用として関数を要素に適用させるselect, 関数でフィルタリングするwhere, 指定個数取得するtake。そしてメソッドチェーンを打ちきって通常使えるオブジェクトに変換するものとして、配列に変換するtoArrayを定義。</p>
-<p>fromがrepeatとtakeとselectの組み合わせで出来ているというのが、面白いところです。所謂Fill（配列の初期化）も、repeat-&gt;take-&gt;toArrayで出来てしまいます。小さなパーツを組み合わせてあらゆることを出来るようにするのがLinqの魅力です。</p>
-<p>速度？これが速いと思いますか？そうですねえ、見るからに、xxxですね。しかし、私はミリセカンド単位でのパフォーマンスチューニングにはあまり興味がありません。はいはい、富豪的富豪的。実際のとこGoogle Chrome使えばIE6の1000倍速くなるんだぜ！（数値は適当）。って感じなので、JavaScript側での最適化は、あまり……。とくにLinqではDOM操作とか重たいことをやるんではなくて、純粋に、連鎖の分だけ関数呼び出しが増えるって程度でしかないので、この程度のことでムダムダムダムダー、と言ってもしょうがない気がします。なので、そんなことは気にしないことにします。</p>
-<h2>ラムダ式もどき</h2>
-<p>function(x,y,...){return ...}は、長い。Firefoxならfunction() ... で書けるけれど、それでも長い。というわけで、linq.jsでは文字列でラムダ式風に記述出来るようにしています。</p>
-<pre><code class="language-javascript">var CreateLambda = function(expression) {
-    if (expression.indexOf(&quot;=&gt;&quot;) == -1) {
-        return new Function(&quot;$&quot;, &quot;return &quot; + expression);
-    }
-    else {
-        var expr = expression.match(/^[(\s]*([^()]*?)[)\s]*=&gt;(.*)/);
-        return new Function(expr[1], &quot;return &quot; + expr[2]);
-    }
-}
-
-var lambda = CreateLambda(&quot;i=&gt;i*i&quot;);
-var r = lambda(3); // 9
-
-E.Range(1,10).Where(&quot;$%2==0&quot;).Select(&quot;$*$&quot;) // linq.jsではこんな感じで書ける
-</code></pre>
-<p>「引数=&gt;式」で文字列を与えます。引数が一つ以下の場合は=&gt;を省略出来ると同時に、$が引数の値として使えるようになっています(Scalaの_とかこんな感じ、なはず)。実装は見た通り非常に単純で文字列分解してnew Functionに渡して関数作ってるだけ。これの難点は、クロージャにならないので、変数のキャプチャが出来ないことです。まあ、そういう時は諦めて無名関数作ってください。</p>
-<h2>まとめ</h2>
-<p>filterやmapやreduceが使えて、distinct(重複除去、いわゆるuniq)が使えて、遅延評価だったり、selectやwhereを何段もポコポコと追加出来るわけです。linq.jsはシンプルなライブラリです。派手な機能は一切ありません。ただ列挙して処理するメソッドしかありません。DOMなど一切触りません(DOMの列挙自体は可能なので、DOMノードを流してフィルタリングしたり加工したり、というのは有益でしょう)。ただ、それ故に、使い道は無限大です。</p>
-<p>微妙に更新止まってます、が、やる気はあります！まずはWSH対応から！と言いたいのですが、現在は何故か<a href="http://neue.cc/2010/02/18_242.html" title="neue cc - Re:Scheduled">Java移植の制作を進めています</a>。Javaにも素晴らしいLinq to Objectsの世界を、忠実移植で。というわけなのですが、これも先月ぐらいからやるやる詐欺中。中身は完全に出来上がっていて現在テストとJavaDoc書き中。今月中にはリリースしたい、ですね。先月も同じこと言ってましたが、まあ、着々と鈍足ながらも進んでいるので、近いうちにはお見せできるはずです。</p>
-<p>ともあれ、Linq to Objectsは大変素晴らしいので、C#な人はガンガン使って欲しいし、JavaScriptの人はlinq.jsを試して欲しいし、Javaな人はもう少し待ってください。私は、ええと、このサイトのC#カテゴリのほとんどがLinq絡みです、ひたすらに使い倒して、有用な使い方を紹介していけたらと思っています。</p>
-</div>
 <a href="https://neue.cc/20">Prev |</a>
 <a href="https://neue.cc/22">| Next</a>
 </div>
@@ -2257,6 +2079,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2023/12/">2023-12</a>
 <li><a href="https://neue.cc/2023/10/">2023-10</a>
 <li><a href="https://neue.cc/2023/09/">2023-09</a>
 <li><a href="https://neue.cc/2023/07/">2023-07</a>

@@ -23,7 +23,232 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2016/08/03_536.html">UniRx 5.4.0 - Unity 5.4対応とまだまだ最適化</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2016/08/05_537.html">C#のGCゴミとUnity(5.5)のコンパイラアップデートによるListのforeach問題解決について</a></h1>
+<ul class="date"><li>2016-08-05</li></ul>
+<div class="entry_body"><p>UnityにおいてList&lt;T&gt;のforeachは厳禁という定説から幾数年。しかしなんと現在Unityが取組中のコンパイラアップデートによって解決されるのだ！ついに！というわけで、実際どういう問題があって、どのように解決されるのかを詳しく見ていきます。</p>
+<h2>現状でのArrayのforeachとListのforeach</h2>
+<p>まずは現状確認。を、Unityのプロファイラで見てみます。以下の様なコードを書いて計測すると……。</p>
+<pre><code class="language-csharp">var array = new int[] { 1, 2, 3, 4, 5 };
+var list = new List&lt;int&gt; { 1, 2, 3, 4, 5 };
+
+// ボタンを叩いて計測開始
+button.OnClickAsObservable().Subscribe(_ =&gt;
+{
+    Profiler.BeginSample(&quot;GCAllocCheck:Array&quot;);
+    foreach (var item in array) { }
+    Profiler.EndSample();
+
+    Profiler.BeginSample(&quot;GCAllocCheck:List&quot;);
+    foreach (var item in list) { }
+    Profiler.EndSample();
+
+    // プロファイラでそこ見たいのでサッと止める。
+    Observable.NextFrame(FrameCountType.EndOfFrame).Subscribe(__ =&gt;
+    {
+        EditorApplication.isPaused = true;
+    });
+});
+</code></pre>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/17413233/5cca8302-5abb-11e6-820c-50b05ea98df4.png" alt="image" /></p>
+<p>Unityのプロファイラは使いやすくて便利。というのはともかく、なるほどListは40B消費している（注：Unity上でコンパイラした時のみの話で、普通のC#アプリなどでは0Bになります。詳しくは後述）。おうふ……。ともあれ、なぜListのforeachでは40Bの消費があるのか。ってところですよね。foreach、つまりGetEnumeratorのせいに違いない！というのは、半分合ってて半分間違ってます。つまり100%間違ってます。</p>
+<h2>GetEnumeratorとforeach</h2>
+<p>foreachはコンパイラによってGetEnumerator経由のコードに展開されます。</p>
+<pre><code class="language-csharp">// このコードは
+foreach(var item in list)
+{
+}
+
+// こう展開される
+using (var e = list.GetEnumerator())
+{
+    while (e.MoveNext())
+    {
+        var item = e.Current;
+    }
+}
+</code></pre>
+<p>GetEnumerator、つまり IEnumerator&lt;T&gt; はクラスなので、ヒープに突っ込まれてるに違いない。はい。いえ。だったらArrayだって突っ込まれてるはずじゃないですかー？</p>
+<pre><code class="language-csharp">// こんなコードを動かしてみると
+
+Profiler.BeginSample(&quot;GCAllocCheck:Array.GetEnumerator&quot;);
+array.GetEnumerator();
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:List.GetEnumerator&quot;);
+list.GetEnumerator();
+Profiler.EndSample();
+</code></pre>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/17413202/34d11a0a-5abb-11e6-8932-7ed0704ae72c.png" alt="image" /></p>
+<p>そう、むしろArrayは32B確保していてListはむしろ0なのだ。どっちも直感的には変てこ。</p>
+<h2>配列とforeachの最適化</h2>
+<p>配列をforeachで回すとコンパイラが、forループに展開します。</p>
+<pre><code class="language-csharp">// このコードは
+foreach (var item in array)
+{
+
+}
+
+// こうなる
+for (int i = 0; i &lt; array.Length; i++)
+{
+    var item = array[i];
+}
+</code></pre>
+<p>ちなみに配列のループを回すときは明確にLengthを使うと良いです。というのも、配列の境界チェック（自動で入る）が実行時に消せます。</p>
+<pre><code class="language-csharp">// こっちよりも
+var len = array.Length;
+for (int i = 0; i &lt; len; i++)
+{
+    var item = array[i];
+}
+
+//  こっちのほうが速い
+for (int i = 0; i &lt; array.Length; i++)
+{
+    var item = array[i];
+}
+</code></pre>
+<p>詳しくは<a href="https://blogs.msdn.microsoft.com/clrcodegeneration/2009/08/13/array-bounds-check-elimination-in-the-clr/">Array Bounds Check Elimination in the CLR</a>をどうぞ。ようするに基本的には配列はforeachで回しておけばおｋ、indexを別途使う場合があるなら、Lengthで回すことを心がけるとベター。というところでしょうか。（もっというと配列の要素は構造体であると、更にベターなパフォーマンスになります。また、配列は色々特別なので、配列 vs Listで回す速度を比較すれば配列のほうがベタベターです）</p>
+<h2>List&lt;T&gt;のGetEnumeratorへの最適化</h2>
+<p>list.GetEnumeratorが0Bの理由は、ここにクラスライブラリ側で最適化が入っているからです。と、いうのも、List&lt;T&gt;.GetEnumeratorの戻り値はIEnumerator&lt;T&gt;ではなくて、<a href="https://msdn.microsoft.com/ja-jp/library/x854yt9s.aspx">List&lt;T&gt;.Enumerator</a>という構造体になっています。そう、特化して用意された素敵構造体なのでGCゴミ行きしないのだ。なので、これをわざとらしくtry-finallyを使ったコードで回してみると</p>
+<pre><code class="language-csharp">Profiler.BeginSample(&quot;GCAllocCheck:HandConsumeEnumerator&quot;);
+
+var e = list.GetEnumerator();
+try
+{
+    while (e.MoveNext())
+    {
+        var item = e.Current;
+    }
+}
+finally
+{
+    e.Dispose();
+}
+
+Profiler.EndSample();
+</code></pre>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/17413965/68a816f0-5abe-11e6-9720-ee68fdf6bdc8.png" alt="image" /></p>
+<p>0Bです。そう、理屈的にはforeachでも問題ないはずなんですが……。ここでちゃんと正しくforeachで「展開された」後のコードを書いてみると</p>
+<pre><code class="language-csharp">using (var e = list.GetEnumerator())
+{
+    while (e.MoveNext())
+    {
+        var item = e.Current;
+    }
+}
+</code></pre>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/17414045/c793eb76-5abe-11e6-88f1-e7964fb03180.png" alt="image" /></p>
+<p>40B。なんとなくわかってきました！？</p>
+<h2>using展開のコンパイラバグ</h2>
+<p>「List&lt;T&gt;をforeachで回すとGCゴミが出るのはUnityのコンパイラが古いせいでバグッてるから」というのが良く知られている話ですが、より正しい理解に変えると、「構造体のIDisposableに対するusingの展開結果が最適化されていない（仕様に基づいていない）」ということになります。この辺の話は<a href="http://www.ecma-international.org/publications/standards/Ecma-334.htm">ECMA-334 C# Language Specification</a>にも乗っているので、C#コンパイラの仕様に対するバグと言ってしまうのは全然良いのかな？</p>
+<p>どういうことかというと、現状のUnityのコンパイラはこういうコードになります。</p>
+<pre><code class="language-csharp">var e = list.GetEnumerator();
+try
+{
+    while (e.MoveNext())
+    {
+        var item = e.Current;
+    }
+}
+finally
+{
+    var d = (IDisposable)e; // ここでBoxing
+    d.Dispose(); // 本来は直接 e.Dispose() というコードでなければならない
+}
+</code></pre>
+<p>そう、全体的に良い感じなのに、最後の最後、Disposeする時にIDisposableに<a href="https://msdn.microsoft.com/ja-jp/library/yz2be5wk.aspx">ボックス化</a>してしまうので、そこでGCゴミが発生するというのが結論です。そして、これは最新のmonoコンパイラなどでは直っています、というか<a href="https://bugzilla.novell.com/show_bug.cgi?id=571010">2010年の時点で直ってます</a>。どんだけ古いねん、Unityのコンパイラ……。</p>
+<h2>40Bの出処</h2>
+<p>ゴミ発生箇所は分かったけれど、せっかくなのでもう少し。サイズが40Bの根拠はなんなの？というところについて。まずは色々なもののサイズを見ていきましょうー。</p>
+<pre><code class="language-csharp">// こんなのも用意した上で
+struct EmptyStruct
+{
+}
+
+struct RefStruct
+{
+    public object o;
+}
+
+class BigClass
+{
+    public long X;
+    public long Y;
+    public long Z;
+}
+---
+
+// 色々チェックしてみる
+Profiler.BeginSample(&quot;GCAllocCheck:object&quot;);
+var _0 = new object();
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:class&quot;);
+var _1 = new BigClass();
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:int&quot;);
+var _2 = 99;
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:int.boxing&quot;);
+object _3 = 99;
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:emptyStruct&quot;);
+var _4 = new EmptyStruct();
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:emptyStruct.boxing&quot;);
+object _5 = new EmptyStruct();
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:bool.boxing&quot;);
+object _6 = true;
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:float.boxing&quot;);
+object _7 = 0.1f;
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:double.boxing&quot;);
+object _8 = 0.1;
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:refStruct.boxing&quot;);
+object _9 = new RefStruct();
+Profiler.EndSample();
+</code></pre>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/17415884/9e004e78-5ac6-11e6-8709-8b1ed441fddf.png" alt="image" /></p>
+<p>なるほどなるほど。当たり前ですがstructのままのは0B。EmptyStructやboolなど最小1バイトのboxingは17B(ほえ？）、int(4バイト)が20Bでdouble(8バイト)や参照を一個持たせた(IntPtr - 64bit環境において8バイト)構造体が24B。classにlongを3つめたのが40B。そしてobjectが16B。つまり。つまり、最小が16Bで、そこからフィールドのそれぞれの要素のサイズが加算されるということです。</p>
+<p>この16 bytesがどこから来ているかというと、<a href="https://www.simple-talk.com/dotnet/net-framework/object-overhead-the-hidden-net-memory-allocation-cost/">オブジェクトのヘッダ</a>です。ああ、なるほどそういう……。</p>
+<p>さて、これを踏まえてListのEnumeratorのフィールドを見てみると</p>
+<pre><code class="language-csharp">public struct Enumerator : IEnumerator, IDisposable, IEnumerator&lt;T&gt;
+{
+	private List&lt;T&gt; l;
+	private int next;
+	private int ver;
+	private T current;
+</code></pre>
+<p>ヘッダ16B + IntPtrの8B + intの4B + intの4B + Tがintの場合は4B = 36B。40じゃないじゃん、ってところは、32以降は8Bずつ埋まってくっぽ、実質33Bだと40B, 41Bだと48Bという感じ。といったところから40Bの消費になっていたということですね！</p>
+<h2>Experimental Scripting Previews</h2>
+<p>ついにコンパイラアップデートのPreviewがやってきた！<a href="http://forum.unity3d.com/forums/experimental-scripting-previews.107/">Experimental Scripting Previews</a>にて、コンパイラのアップデートプロジェクトも始まっています。そして今のところ5.3.5p8-csharp-compiler-upgradeが配られています。</p>
+<p>というわけで早速、冒頭の配列とListのforeachをかけてみると……</p>
+<pre><code class="language-csharp">Profiler.BeginSample(&quot;GCAllocCheck:Array&quot;);
+foreach (var item in array) { }
+Profiler.EndSample();
+
+Profiler.BeginSample(&quot;GCAllocCheck:List&quot;);
+foreach (var item in list) { }
+Profiler.EndSample();
+</code></pre>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/17416914/62c1d0d4-5acb-11e6-9008-d1410e996e7a.png" alt="image" /></p>
+<p>やった！これで問題nothingですね！（実際は計測時は初回にListのほうに32B取られててあれれ？となったんですが、コンパイル後のIL見ても正常だし、まぁ二回以降叩いたのは↑画像の通りになったので、よしとしておこ……）</p>
+<h2>まとめ</h2>
+<p>で、現状はList&lt;T&gt;の列挙はどうすればいいのか、というと、まぁforでindexerでアクセスが安心の鉄板ではある。ForEachが内部配列に直接アクセスされるので速い説はなくはないですが、ForEachだとラムダ式のキャプチャに気を使わないと逆効果なので(詳しくは<a href="http://neue.cc/2016/01/06_525.html">Unityでのボクシングの殺し方、或いはラムダ式における見えないnewの見極め方</a>)、基本的には普通にforがいいと思います（なお、キャプチャのないように気を使えば、ForEachのほうが速度を稼げる余地はあります。理論上、正常になったforeachよりも良い場合があるため）</p>
+<p>理想的にはforeachであるべきだし、改革の時はまもなく！（5.5に↑のコンパイラアップグレードは入るっぽいですよ）。ちなみに、あくまでコンパイラのアップグレードなだけで、フレームワークのアップデートや言語バージョンのアップデートは今は含まれてはいない。段階的にやっていく話だと思うので、とりあえずはコンパイラがより良くなる、というだけでも良いと思ってます。というか全然良いです。素晴らしい。</p>
+</div>
+<h1><a href="https://neue.cc/2016/08/03_536.html">UniRx 5.4.0 - Unity 5.4対応とまだまだ最適化</a></h1>
 <ul class="date"><li>2016-08-03</li></ul>
 <div class="entry_body"><p>UniRx 5.4.0をリリースしました！ちょうどUnity 5.4もリリースされたので、5.4向けの修正(Warning取り除いただけですが)を出せて良かった。というわけで5.4正式対応です。リリースは前回が5月だったので3ヶ月ぶりです。5.2 -&gt; 5.3も3ヶ月だったので、今のとこ3ヶ月スパンになってますが偶然です。</p>
 <ul>
@@ -1432,89 +1657,6 @@ MultilineReactivePropertyAttribute
 <p>ところで半年前、今年6月に<a href="http://neue.cc/2015/06/20_514.html">第一回UniRx勉強会を開催しました</a>が、第二回の需要ってありますか？もしありましたら、その前に発表者が必要！なので、是非話したい！人は、私のTwitterかメールかに連絡ください。開催するにも発表者いなければ開催もなにもないですからね……！</p>
 <p>ついでにもはや触れちゃいけない扱いの気がしなくもない<a href="http://asecon.unity3d.jp/">Unity アセットコンテスト</a>というのに応募していたのですが結果発表……。</p>
 </div>
-<h1><a href="https://neue.cc/2015/12/13_522.html">Roslyn C# Scriptingによる実行できるコンフィグの手法と実活用例</a></h1>
-<ul class="date"><li>2015-12-13</li></ul>
-<div class="entry_body"><p>Advent Calendar大遅刻組です。というわけで<a href="http://qiita.com/advent-calendar/2015/csharp">C# Advent Calendar 2015</a>の10日目です！なんで遅刻したかというと、記事のネタのためのライブラリを作るのに思いの外時間がかかってしまったから…… コンセプトも固まってたしプロト実装も済んでたんですが、最終的な形に落としこむのが想定よりちょっと割と大変だった……。すびばせんすびばせん。</p>
-<p>どうやらC# Advent Calendarは2011年から書いてるので5回目ですね、へぇー。過去を振り返ると<a href="http://neue.cc/2011/12/16_359.html">Modern C# Programming Style Guide</a>、モダンつってもC# 4.0時代ですが、今ぱっと見直すと別にここで言ってることは今も変わらないですね、これに5.0, 6.0の話を足せばいいだけの話で。2012年は<a href="http://neue.cc/2012/12/03_389.html">MemcachedTranscoder - C#のMemcached用シリアライザライブラリ</a>ということで、このライブラリは別に私自身も使ってないので割とどうでもいー、んですが、まぁシリアライザにまつわる諸々についての知見が少しは入ってる模様。2013年の<a href="http://neue.cc/2013/12/04_435.html">非同期時代のLINQ</a>はいい話だなー、これがC# 5.0のModern Styleの追記差分みたいなもので、実際、今現在においては超絶大事な部分。2014年は<a href="http://neue.cc/2014/12/08_496.html">VS2015+RoslynによるCodeRefactoringProviderの作り方と活用法</a>で、C# 6.0ではないですが、その世代ではAnalyzerは中心になってくるので、これがC# 6.0の差分といってもいいでしょう。多分きっと。</p>
-<h2>Roslyn C# Scripting</h2>
-<p>Roslyn、Compiler as a Serviceとか言ってましたが、やっぱスクリプティングが華形だと思うのです。が、しかし。が、しかし。今の今までRoslynに関する話題で、Scripting APIに関するお話はあまり上ってませんでした。理由は単純で、今の今まで未完成品だったから。先月末に出たVisual Studio 2015 Update 1でC# Interactiveが、そして同時にNuGetでも<a href="https://www.nuget.org/packages/Microsoft.CodeAnalysis.CSharp.Scripting">Microsoft.CodeAnalysis.CSharp.Scripting</a>で、現在は1.1.1が配布されることにより（ところでこれのパッケージ名が中々定まらなくて実際これであってるのか不安だけどLast updatedが2015/12/3なのでこれでいいでしょう、まだDL数が405ですけど！）やっと全てのピースが揃った感じです。</p>
-<p>Scriptingについてのドキュメントは、RoslynのWikiにある2つのページを見ておけば十分でしょう。<a href="https://github.com/dotnet/roslyn/wiki/Interactive-Window">Interactive-Window</a>には、csxの仕様っぽいもの、特殊なDirectiveの説明があります(#rとか#loadとか)。<a href="https://github.com/dotnet/roslyn/wiki/Scripting-API-Samples">Scripting-API-Samples</a>にはプログラムから触った時のAPIとしてどんなものを持ってるか、どういう風に使えるかが書いてあります。かなりシンプルなので、そんな難しくなくすぐ使えます。</p>
-<p>ちなみにC# Interactiveはまだまだ全然使えないって感じなので、期待するほどのものでもないですね。csxもエディタサポートが実質、シンタックスハイライトぐらいなので厳すぃ。黙って<a href="https://www.linqpad.net/">LINQPad</a>使いましょう、課金しましょう。</p>
-<h2>Roslyn時代のコンフィグ</h2>
-<p>最近というか数年前からずっと構造化ログにご執心で、<a href="http://neue.cc/2015/11/03_520.html">EtwStream - ETW/EventSourceのRx化 + ビューアーとしてのLINQPad統合</a>というのを作ってたんですが、今回はそれに、ファイル等への出力プラグイン(Sink)と外部サービス(EtwStream.Service)を作りました。アプリケーションから出力されるログは、ETWというWindows内部に流れてる高速なロギングストリーム機構を通して、別プロセスのEtwStream.Serviceで受け取ります。ログは特に最近ではファイル出力など比較的安定性が保証されているものだけでなく、ネットワークを通じて配信するケースも少なくありません。ログの扱いが別プロセスに別れることにより、アプリケーションに与える影響が少なくなるほか、アプリケーションの状態(アプリ自体の終了/デプロイでの入れ替わり等)に気を配る必要もなくなります。</p>
-<p>というのが外部サービスであることの意義なのですが、問題はコンフィグです。コンフィグ。元々EtwStreamはObservableEventListenerという、IObservble&lt;LogEvent&gt;の形でログをストリームで受け取り、それをRxで自由にフィルタしたりグルーピングしたりマージしたりなんでも出来ますよね、という究極の自由度がウリでした。しかしコンフィグです、Rxのその柔軟性をコンフィグで実現するのは不可能です。物凄く機能を削った単純なSubscribeで我慢するか、あるいは超絶複雑なXMLでそれっぽいものを構築するか(log4netやNLogのXMLコンフィグが死ぬほど難解で複雑なのは、ログのルーティング自体が複雑で、それをコンフィグで表現することが困難だということなのです）になります。</p>
-<p>せっかく、ログを現代的なReactive Extensionで表現することができたのに、外部サービスにした途端に破棄しなければならないのか。それでいいわけがなく、そこでC# Scriptingの出番になります。EtwStream.Serviceはコンフィグをconfiguration.csxとして、以下のように書きます。</p>
-<pre><code class="language-csharp">// configuration.csx
-
-// 5秒 or 1000件でバッファリング(ふつーのRxのBufferを利用)
-// 出力フォーマットは普通にFunc&lt;TraceEvent, string&gt;で整形できる！
-ObservableEventListener.FromTraceEvent(&quot;SampleEventSource&quot;)
-    .Buffer(TimeSpan.FromSeconds(5), 1000, EtwStreamService.TerminateToken)
-    .LogToFile(&quot;log.txt&quot;, x =&gt; $&quot;[{DateTime.Now.ToString(&quot;yyyy/MM/dd hh:mm:ss&quot;)}][{x.Level}]{x.DumpPayload()}&quot;, Encoding.UTF8, autoFlush: false)
-    .AddTo(EtwStreamService.Container);
-</code></pre>
-<p>基本的に完全にC#そのものなので、全てのRxのメソッドが使えて自由に合成・ルーティングが可能です。これはIn-Processで書いてる際（普通のロガーとしてC#コードで埋め込む場合）もOut-Of-Process Serviceでコンフィグとして書く場合も（ほぼ）同じコードで表現できるということです。もちろんC#で書けるということは、 System.Configuration.ConfigurationManager.AppSettings から設定を引っ張ってきたり、ネットワーク通信して何か引っ張ってきたりとかも自由自在やりたいほーだいです。</p>
-<p>例えばこれをNLogで表現すると</p>
-<pre><code class="language-xml">&lt;targets&gt;
-    &lt;default-wrapper xsi:type=&quot;BufferingWrapper&quot; bufferSize=&quot;1000&quot; flushTimeout=&quot;5000&quot; /&gt;
-    &lt;target name=&quot;file&quot; xsi:type=&quot;File&quot; fileName=&quot;log.txt&quot; keepFileOpen=&quot;true&quot;
-		layout=&quot;[${date:format=yyyy/MM/dd hh\:mm\:ss}][${level}]${message}&quot; /&gt;
-&lt;/targets&gt;
-&lt;rules&gt;
-    &lt;logger name=&quot;*&quot; minlevel=&quot;Debug&quot; writeTo=&quot;file&quot; /&gt;
-&lt;/rules&gt;
-</code></pre>
-<p>になります。NLogの独自フォーマットルールに従って書く必要があるし、メッセージ書式も独自テンプレートになります。とはいえ、これはまだ単体なので遥かにマシで、色々複合的なことをやろうとするとすぐに膨れ上がって意味不明なことになるのは、みんな経験のあることなのではないでしょうか？</p>
-<p>バイナリが<a href="https://github.com/neuecc/EtwStream/releases/tag/EtwStream.Service">EtwStream/releases/EtwStream.Service</a>に転がってるので、是非ちょっとだけ遊んでみてくださいな。</p>
-<h2>仕組み</h2>
-<p>csxをEvaluateしてるだけです。基本的にcsxの実行は即座に終わります、ObservableEventListenerをSubscribeしているだけですから。しかし、csxが終了してもSubscribeは生き続けています！（言われてみると当たり前のようで、最初はそうなの？と違和感はありました）。それにより、流れてくるログは（別スレッド上の)ObservableEventListenerを流れて、csx上のRxを通りcsx上でのSubscribeにより処理され続けます。というわけで、EtwStream.Serviceのcsxは、ただのXMLコンフィグがcsxに変わっただけ、ではなく、このcsxはコンフィグのようでコンフィグじゃなく、実行コードそのものなのです！</p>
-<p>終了処理に関しては、ホスト側から渡しているTerminateTokenと、AddToを通してSubscriptionを登録していることにより制御されています。csxの評価としての実行が終わっていても、裏で生き続けている限り同じ参照を持っているので、ホスト側から干渉することが可能です。なので、ServiceのStopイベント時にはTerminateTokenにCancel命令をホストが出すことにより、Rxの残ってるBufferが送り出され、AddToで受け取っているSubscriptionを待つことにより、溜まったログの処理が完了するまで待機するといった、安全な終了処理を可能にしています。この辺はRxをフル活用してパイプライン組んだ成果ということで。</p>
-<h2>再びエディタとしてのLINQPad</h2>
-<p>さて、csxで書けるところのイイトコロはC#なのでコンパイルエラーも検出できるしシンタックスハイライトもあるし、などなど、なのですが、エディタサポートは……。Visual Studio 2015のUpdate 1によって確かにシンタックスハイライトはついた、が、それだけ……。IntelliSenseもDLL読み込ませたり色々しなければなので実質使えないみたいなもので厳しい……。</p>
-<p>そこで出てくるのがLINQPad。</p>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/11766813/037c7376-a1db-11e5-9f74-8b4aeec20c5b.png" alt="image" /></p>
-<p>EtwStream.LINQPadには、EtwStream.Serviceのcsxで渡されてくるEtwStreamServiceクラスのShim成分が入っているので、csxと互換性があって、LINQPadで実際にコンパイルできる/動かして確認した結果をcsxに持っていくことが可能です。（というようなことが出来るようにAPIを調整したんです……）。C# Interactiveが使い物にならならいなら使い物になるまで我慢する、のではなくて、一時凌ぎでもなんでも、他の現実的な解法を探すのが正すぃ。クソだクソだと文句だけ言ってても何も動きませんしね。必要なのは今この場でどうするか、それだけ。</p>
-<h2>Topshelf</h2>
-<p>Windowsサービスの実装には<a href="https://github.com/Topshelf/Topshelf">Topshelf</a>というライブラリを用いています。これは、最高に良いです。もはやこれなしでWindowsサービスを実装するのは考えられません！Visual Studioのテンプレートからふつーにサービスを作ると、なんかゴチャゴチャしたのが吐かれてよくわからない上に実行も面倒だし（いちいちinstallしたくないでしょ？）デバッグも困難だし、実にヤバい最低な開発環境。Topshelfで作るとコンソールアプリケーションと同じ感覚で作れます。また、成果物のexeは、そのまんまふつーにコンソールアプリケーションとしても動くので、EtwStream.Serviceの場合、ビューアーとしてLINQPadを要求していましたが、EtwStream.Service.exeを実行すれば普通にビューアーになります(csxで書き出し先をConsole(LogToConsole)にすれば色分けもしてくれる）。サービスとしてのインストールは「install」をつけて実行するだけ。素晴らしい。</p>
-<p>日本語では<a href="https://84zume.wordpress.com/2014/03/23/topshelf/">Windowsサービスを楽に開発～TopShelf～</a>や<a href="http://tech.guitarrapc.com/entry/2015/05/13/015406">TopShelf によるWindowsサービスの配置をDSCで自動化してみよう</a>に説明ありますが、本当に簡単なので、サービスを作る機会がある人は是非使ってみてください。超お薦め。</p>
-<h2>ファイル出力時のロガーのパフォーマンス</h2>
-<p>今回ロガーを全部自作する都合上、さすがに単純なファイル書き出しと、ローテーションするファイル書き出しは用意しとかないとなぁ、ということで作ったんですが(FileSink, RollingFileSink)、作ってる上でなんとなく気づいたことなど。</p>
-<p>そもそもファイルに吐くっていうこと自体がレガスィーで好きじゃないんですが、それはそれとしてもやはり重要なのは間違いありませんし、普通に使います。で、特にInProcessでのロギングの場合、これに気を配らないと普通にパフォーマンス上のボトルネックになってしまったりするわけですねー。さて、で、パフォーマンスは設定が全てです。とりあえず、バッファリングと非同期の二つのオプションを探しましょう。まず、ファイルに吐く場合のパフォーマンスはバッファするかしないかで全く変わるし、逆にバッファさえすればよほどタコな実装じゃない限りはそんな差はなくふつーに性能出ます（多分）。もう一点はasyncですね、これは別に大抵は非同期I/Oじゃなくて別スレッドで書くってだけのパターンなんですが、これが有効だとロガーの動作がアプリケーション自体に一切影響しなくなりますので。まぁバッファを有効にしてれば、例えば1000件に一回書く設定だったら1/1000回以外は書き込み処理に時間喰われることはなくなるので、ほぼ無視できてあってもなくても大差なくなるんですが、（起こるかもしれない）ちょっとしたスパイクは抑制できるかもしれません。また、あえてバッファはオフにしてasyncだけオン（+即時Flush)にすれば、ログが中々Flushされなくてリアルタイムで確認したいのにイライラ、というのがなくなって良いかもしれません。この辺は好みとか要件しだいで。</p>
-<p>とりあえず言えるのはデフォの設定がどうなってるかはともかく、ノーバッファでノーエーシンクだと当然のように遅いです。更に設定によってはファイルストリームを都度閉じるか開きっぱがオプションになってるものもありますが、これは当然、開きっぱじゃないとゲロ遅いです。そういう項目がオプションにある場合は注意しましょう。デフォが都度閉じるだったりしてね……(NLogがそうです。NLogのデフォルトは安全寄りに倒し過ぎでパフォーマンスがヤヴァいことになってるので、NLog使う場合はそれなりに弄ったほうがいいでしょう。かといって他のロガーもそう変わりはなくて、大抵はそれなりに弄らないと遅いです）</p>
-<p>かわりに、バッファや非同期ってのはログの消失の危険性があります。書いた瞬間には保存されてないってことですからね、アプリケーション終了への耐性が低くなります。気の利いたロガーは、可能な限り、終了を検知して(AppDomainが消える時のイベントとかをハンドリングして)、残ってるバッファを出力しに行ったり非同期の終了を待機しに行ってくれたりはしますが、パーフェクトではありません。例えば<a href="https://msdn.microsoft.com/en-us/library/system.appdomain.processexit.aspx">AppDomain.ProcessExit</a>のタイムアウトは既定で2秒です。2秒以内にフラッシュが完了する保証はないわけで、そこで完了できなければログロストです。</p>
-<p>それを避けるには、「パフォーマンス低下を承知してバッファや非同期オプションを使わない」というのも手ですが、EtwStreamは更に2つの選択肢を提供してます。一つは「Out-Of-Process Serviceでのログ収集」。ETWへのログ出力はほぼノーコストで即時に吐けるのでアプリケーションへの影響は一切無い上に、それを外部サービスで取り出せば、出力側の終了の影響を全く受けません。ただし当然、受け取る側の外部サービスが死んだらロストするという危険性はありますがね！そこに関しては知らんがなというかshoganaiというか精一杯堅牢性を高めますとしか言い様がないですにぇ。</p>
-<p>もう一つは、プログラム的に終了が完全に待機できるSubscriptionシステム。もともとEtwStreamは設定をC#で、Rxで書く必要があるので、購読状態に関して100%コントロールできます。というわけでその辺に仕掛けを入れといて</p>
-<pre><code class="language-csharp">static void Main()
-{
-    // ApplicationStartの部分でこの2つを用意する
-    var cts = new CancellationTokenSource();
-    var container = new SubscriptionContainer();
-    
-    // でログの設定する
-    ObservableEventListener.FromTraceEvent(&quot;SampleEventSource&quot;)
-        .Buffer(TimeSpan.FromSeconds(5), 1000, cts.Token)
-        .LogToFile(&quot;log.txt&quot;, x =&gt; $&quot;[{DateTime.Now.ToString(&quot;yyyy/MM/dd hh:mm:ss&quot;)}][{x.Level}]{x.DumpPayload()}&quot;, Encoding.UTF8, autoFlush: false)
-        .AddTo(container);
-        
-    // --- 実際にアプリが動いてる部分 --- //
-        
-    // アプリが終了した時のイベントのところでハンドリングする(Form_ClosedでもApplication_Endでもなんでもいいですが)
-    cts.Cancel(); // CancellationTokenのCancelによりBufferの残りが吐き出される
-    container.Dispose(); // Subscriptionの完了を待機する
-}
-</code></pre>
-<p>といった風にすれば、100%コントロールされて停止時のログ処理を完了させられます。csxでもEtwStreamService.TerminateTokenとか渡していたのと同じことをやればいいということで。</p>
-<p>100%コントロールできる代わりに、逆にEtwStreamは自分でコントロールしないかぎりは、気の利いた終了の検知とか組み込んでないので、待たなければふつーにバッファは消えます。これに関しては、10年前はゴテゴテとブラックボックスの中で気の利いたことをしてくれるのが正義だったかもしれませんが、2015年の現代では仕組みはシンプルに、薄くしたうえで、自分でコントロールさせるのが正義だと思ってます。そういう流儀。どっちが正しいってこともないですが、まぁ、今風なんじゃないかな？</p>
-<p>ついでに言えば、EtwStreamのFileSinkやRollingFileSinkのパフォーマンスはバッファしてる前提同士で比較しても、他のよりも高い性能を誇ります。理由は幾つかあって、そもそも性能を意識して書いてるから。というのと、.NET 4.6以外をサポートする気がないのでasync/awaitやTPL全開でコードを書いてるから。オプション自体も同期処理は一切なくて、書き出しは非同期I/Oのみに限定などの割り切り。そして、通常はログフォーマット整形などに独自テンプレート的なのを挟まなきゃいけないところを、csxのお陰でFuncで処理できるため、そもそもコードパスに一切のオーバーヘッドがない。C# Scriptingによるコンフィグはパフォーマンスにも寄与するわけです。</p>
-<p>しかしまぁ、Javaでは<a href="https://github.com/Netflix/blitz4j/wiki/Blitz4j-at-a-glance">Blitz4j</a>や<a href="http://logging.apache.org/log4j/2.x/manual/async.html">log4j2のAsynchronous Logger</a>などのスピード競争があるのに、.NETの牧歌的なこと、といった感じは否めませんねぇ。そんなだから私のとりあえずの雑実装でもfastestになってしまうわけで……。</p>
-<h2>出力先</h2>
-<p>EtwStreamが提唱するのは構造化ログ(Structured/Semantic Log)ですし、テキストログが終着点ではありません！テキストログは無視して、構造化されたペイロードを、そのまま<a href="https://azure.microsoft.com/ja-jp/services/event-hubs/">Azure EventHubs</a>や<a href="https://aws.amazon.com/jp/kinesis/">Amazon Kinesis</a>、<a href="https://cloud.google.com/bigquery/">Google BigQueryのStreaming Insert</a>に流して、ただたんに溜めるのではなくて、即座に分析可能な状態にするのが理想形です。特にお薦めなのは、というか弊社で使ってるのはGoogle BigQueryです。事例として<a href="http://googlecloudplatform-japan.blogspot.jp/2015/12/google-cloud-platform-using-csharp.html">株式会社グラニの Google Cloud Platform 導入事例: 「using CSharp;」という軸と BigQuery の活用で、先進性を求め続ける。</a>を掲載してもらいました:)</p>
-<p>今のとこEtwStream用のBigQuerySinkはないんですが（！）そのうち公開するかされるかするんじゃないでしょーか多分きっと。（本当はそれも作って持ってきたかったんですがもう完全に時間切れでして、すでに大遅刻だし……）。そういえばあとFromTraceEventでRegisteredTraceEventが取れるようになりました。これはつい数日前のTraceEventライブラリのアップデートでそうなったから、というだけなんですが、今まで取れてなかったんですよねー。これで大丈夫。というのと、SLABのOut-of-Process Serviceじゃダメな理由に.NET 4.6からEventSourceに追加されたself-describing events（超重要！）に対応してないとか色々あるんですが、そういった話はまたの機会にでも。</p>
-<h2>まとめ</h2>
-<p>ロガーの未来はこうあるべきだ、という構想自体は1年以上前からあったんですが、Roslyn C# Scripting APIが正式リリースされてやっと作れた！あと、基本的にはMicrosoft Patterns &amp; Practicesの<a href="https://github.com/mspnp/semantic-logging">Semantic Logging Application Block(SLAB)</a>の影響が濃くはあるんですが、更新されなすぎだし、v3はElastic Search + LogStash + Kibana on Azureとか言ってて、マジで終わってるなという感じでもはや見限るしかない……。P&amp;Pは相変わらず本当にやっぱダメですねーという残念さ加減。なにがPatterns &amp; Practicesだよっていう。</p>
-<p>csxでコンフィグするライブラリとして<a href="https://github.com/config-r/config-r">ConfigR</a>というのがあるんですが、XMLをcsxで置き換えるだけじゃ、あんま意味がないかな。必要なのは、コンフィグができることじゃなくて、それそのものが実行されて自走することだというのに気づいたので、使うことはなかったし、多分他のアプリケーションでもConfigRを使うことはないと思います。XMLはいうて設定ファイルとしては悪くないんですよねー、XSLTなんかもやり過ぎなければ良い機構ですし。逆にJSONを設定ファイルとして使うのは最低最悪なチョイス(なのでDNXへのやる気が0.1ミリも起きない)</p>
-<p>何れにせよ、徐々にではあるでしょうが、csxの面白い活用例というのはどんどん出てくるのではないかと思います、と言いたいんですがfsxが別に対して面白い活用はされてないことを考えるとそんなに出てこないかもしれませんね、とも思いますが、いえいや面白い活用例はやっぱ出てくるかもしれません。batをcsxにしましたとかってだけだと別に面白くもないし意味もそんなにないですからねー、まぁあってもいいけど。もっと本質的に変わるような事例が増えてくれれば何よりです。</p>
-</div>
 <a href="https://neue.cc/6">Prev |</a>
 <a href="https://neue.cc/8">| Next</a>
 </div>
@@ -1538,6 +1680,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2023/12/">2023-12</a>
 <li><a href="https://neue.cc/2023/10/">2023-10</a>
 <li><a href="https://neue.cc/2023/09/">2023-09</a>
 <li><a href="https://neue.cc/2023/07/">2023-07</a>

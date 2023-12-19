@@ -23,7 +23,155 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2013/09/30_425.html">謎社が一周年を迎えました。</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2013/10/10_429.html">asyncの落とし穴Part3, async voidを避けるべき100億の理由</a></h1>
+<ul class="date"><li>2013-10-10</li></ul>
+<div class="entry_body"><p>だいぶ前から時間経ってしまいましたが、非同期の落とし穴シリーズPart3。ちなみにまだ沢山ネタはあるんだから！どこいっても非同期は死にますからね！</p>
+<h2>async void vs async Task</h2>
+<p>自分で書く場合は、必ずasync Taskで書くべき、というのは非同期のベストプラクティスで散々言われていることなのですけれど、理由としては、まず、voidだと、終了を待てないから。voidだと、その中の処理が軽かろうと重かろうと、終了を感知できない。例外が発生しても分からない。投げっぱなし。これがTaskになっていれば、awaitで終了待ちできる。例外を受け取ることができる。await Task.WhenAllで複数同時に走らせたのを待つことができる。はい、async Taskで書かない理由のほうがない。</p>
+<p>んじゃあ何でasync voidが存在するかというと、イベントがvoidだから。はい。button_clickとか非同期対応させるにはvoidしかない。それだけです。なので、自分で書く時は必ずasync Taskで。async voidにするのはイベントだけ。これ絶対。</p>
+<h2>ASP.NET + async voidで死ぬ</h2>
+<p>それでもasync voidをうっかり使っちゃうとどうなるでしょう？終了を待てないだけとか、そんなんならいいんですよ、でも、ASP.NETでasync void使うと死にます。文字通りに死にます。アプリケーションが。じゃあ、ASP.NET MVCで試してみましょうか。WebForms？しらね。</p>
+<pre><code class="language-csharp">public async void Sinu()
+{
+    await Task.Delay(TimeSpan.FromSeconds(1));
+}
+
+public ActionResult Index()
+{
+    Sinu();
+
+    return View();
+}
+</code></pre>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/10/async_void_is_dead_1.jpg' />
+</p>
+<p>死にました！警告一切ないのに！って、ああ、そうですね、async=&quot;true&quot;にしないとですね、まぁそれはないのですけれど、はい、Task&lt;ActionResult&gt;を返しましょう。そうすればいいんでしょ？</p>
+<pre><code class="language-csharp">public async void Sinu()
+{
+    await Task.Delay(TimeSpan.FromSeconds(1));
+}
+
+public async Task&lt;ActionResult&gt; Index()
+{
+    Sinu();
+
+    return View();
+}
+</code></pre>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/10/async_void_is_dead_2.jpg' />
+</p>
+<p>はい、死にました！非同期操作が保留中に非同期のモジュールとハンドラーが完了しちゃいましたか、しょーがないですね。しょーがない、のか……？</p>
+<p>で、これの性質の悪いところは、メソッド呼び出しの中に一個でもasync voidがあると詰みます。</p>
+<pre><code class="language-csharp">// こんなクソクラスがあるとして
+public class KusoClass
+{
+    public async void Sinu()
+    {
+        await Task.Delay(TimeSpan.FromSeconds(1)); // 1じゃなく5ね。
+    }
+}
+
+// この一見大丈夫そうなメソッドを
+public async Task Suteki()
+{
+    // ここでは大丈夫
+    await Task.Delay(TimeSpan.FromSeconds(1));
+
+    // これを実行したことにより……
+    new KusoClass().Sinu();
+
+    // ここも実行されるし
+    await Task.Delay(TimeSpan.FromSeconds(1));
+}
+
+// このアクションから呼び出してみると
+public async Task&lt;ActionResult&gt; Index()
+{
+    // これを呼び出してちゃんと待機して
+    await Suteki();
+
+    // ここも実行されるのだけれど
+    await Task.Delay(TimeSpan.FromSeconds(1));
+
+    return View();
+}
+</code></pre>
+<p>死にます。ただし、上で5秒待機を1秒待機に変えれば、動きます。なぜかというと、KusoClass.Sinuを実行のあとに2秒待機があってViewを返してるので、Viewを返すまでの間にKusoClass.Sinuの実行が完了するから。そう、View返すまでに完了してればセーフ。してなければ死亡。まあ、ようするに、死ぬってことですね結局やっぱり。何故かたまに死ぬ、とかいう状況に陥ると、むしろ検出しづらくて厄介極まりないので、死ぬなら潔く死ねって感じ。検出されずそのまま本番環境に投下されてしまったら……！あ、やった人がいるとかいないとかいるらしい気がしますが気のせい。</p>
+<p>呼び出し階層の奥底にasync voidが眠ってたら死ぬとか、どーせいという話です。どーにもならんです。なので、共通ライブラリとか絶対async void使っちゃダメ。あるだけで死んでしまうのですから。</p>
+<h2>FireAndForget</h2>
+<p>さて、投げっぱなしの非同期メソッドを使いたい場合、どうすればいいんでしょう？</p>
+<pre><code class="language-csharp">public async Task ToaruAsyncMethod()
+{
+    await Task.Delay(TimeSpan.FromSeconds(1));
+    Debug.WriteLine(&quot;hoge&quot;);
+}
+
+public async Task&lt;ActionResult&gt; Index()
+{
+    // 待機することなく投げっぱなしにしたいのだけど警告が出る！
+    ToaruAsyncMethod();
+
+    return View();
+}
+</code></pre>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/10/async_uzai.jpg' />
+</p>
+<p>あー、警告ウザす警告ウザす。その場合、しょうがなく変数で受けたりします。</p>
+<pre><code class="language-csharp">public async Task&lt;ActionResult&gt; Index()
+{
+    // 警告抑制のため
+    var _ = ToaruAsyncMethod();
+
+    return View();
+}
+</code></pre>
+<p>はたしてそれでいーのか。いやよくない。それに、やっぱこれだと例外発生した時に捉えられないですしね。TaskScheduler.UnobservedTaskExceptionに登録しておけば大丈夫ですけれど（＆これは登録必須ですが！）。というわけで、以下の様なものを用意しましょう。</p>
+<pre><code class="language-csharp">// こんな拡張メソッドを用意すると
+public static class TaskEx
+{
+    // ロガーはここではNLogを使うとします
+    private static readonly NLog.Logger logger = NLog.LogManager.GetCurrentClassLogger();
+
+    /// &lt;summary&gt;
+    /// 投げっぱなしにする場合は、これを呼ぶことでコンパイラの警告の抑制と、例外発生時のロギングを行います。
+    /// &lt;/summary&gt;
+    public static void FireAndForget(this Task task)
+    {
+        task.ContinueWith(x =&gt; 
+        {
+            logger.ErrorException(&quot;TaskUnhandled&quot;, x.Exception);
+        }, TaskContinuationOptions.OnlyOnFaulted);
+    }
+}
+
+// こんな投げっぱなしにしたい非同期メソッドを呼んでも
+public async Task ToaruAsyncMethod()
+{
+    await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+    Debug.WriteLine(&quot;hoge&quot;);
+    throw new Exception();
+}
+
+public ActionResult Index()
+{
+    ToaruAsyncMethod().FireAndForget(); // こうすれば警告抑制＆例外ロギングができる
+            
+    return View();
+}
+</code></pre>
+<p>いいんじゃないでしょうか？</p>
+<p>ところで、ToaruAsyncMethodに.ConfigureAwait(false)をつけてるのは理由があって、これつけないと死にます。理由は、覚えてますか？<a href="http://neue.cc/2013/07/02_412.html">asyncの落とし穴Part2, SynchronizationContextの向こう側</a>に書きましたが、リクエストが終了してHttpContextが消滅した状態でawaitが完了するとNullReferenceExceptionが発生するためです。</p>
+<p>そして、これで発生するNullReferenceExceptionは、FireAndForget拡張メソッドを「通りません」。こうなると、例外が発生したことはUnobservedTaskExceptionでしか観測できないし、しかも、そうなるとスタックトレースも死んでいるため、どこで発生したのか全く分かりません。Oh...。</p>
+<p>たとえFireAndForgetで警告が抑制できたとしても、非同期の投げっぱなしは細心の注意を払って、呼び出しているメソッド階層の奥底まで大丈夫であるという状態が確認できていて、ようやく使うことができるのです。うげぇぇ。それを考えると、ちゃんと警告してくれるのはありがたいね、って思うのでした。</p>
+<h2>まとめ</h2>
+<p>voidはまぢで死ぬ。投げっぱなしも基本死ぬ。</p>
+<p>では何故、<a href="http://neue.cc/2013/09/30_425.html">我々</a>は非同期を多用するのか。それはハイパフォーマンスの実現には欠かせないからです。それだけじゃなく、asyncでしか実現できないイディオムも山のようにあるので。いや、こんなの全然マシですよ、大袈裟に書きましたがasync void使わないとか当たり前なのでそこ守れば大丈夫なんですよ（棒）。じゃあ何でasync voidなんてあるんだよとか言われると、イベント機構があるからしょうがないじゃん（ﾎﾞｿﾎﾞｿ）、とか悲しい顔にならざるを得ない。</p>
+<p>というわけで、弊社は非同期でゴリゴリ地雷踏みたいエンジニアを大募集してます。ほんと。</p>
+</div>
+<h1><a href="https://neue.cc/2013/09/30_425.html">謎社が一周年を迎えました。</a></h1>
 <ul class="date"><li>2013-09-30</li></ul>
 <div class="entry_body"><p class="noindent">
 <img src='http://neue.cc/wp-content/uploads/2013/09/nazo_mon_640.jpg' />
@@ -1762,163 +1910,6 @@ var groups = CloudStructuresConfigurationSection.GetSection().ToRedisGroups();
 </code></pre>
 <p>こんなふぅーにRxで包むことで、相当使いやすさがアップします。感動した。</p>
 </div>
-<h1><a href="https://neue.cc/2013/04/05_403.html">CloudStructures - ローカルとクラウドのデータ構造を透過的に表現するC# + Redisライブラリ</a></h1>
-<ul class="date"><li>2013-04-05</li></ul>
-<div class="entry_body"><p>というものを作りました。インストールはNuGetから。</p>
-<ul>
-<li><a href="https://github.com/neuecc/CloudStructures">GitHub - CloudStructures</a></li>
-<li><a href="https://nuget.org/packages/CloudStructures/">PM&gt; Install-Package CloudStructures -Pre</a></li>
-</ul>
-<p>何を言ってるのかヨクワカラナイので、まずはコード例を。</p>
-<pre><code class="language-csharp">// こんなクラスがあるとして
-public class Person
-{
-    public string Name { get; private set; }
-    public List&lt;Person&gt; Friends { get; private set; }
-
-    public Person(string name)
-    {
-        Name = name;
-        Friends = new List&lt;Person&gt;();
-    }
-}
-
-// こんなのがいるとして
-var sato = new Person(&quot;さとう&quot;);
-
-// 人を足す
-sato.Friends.Add(new Person(&quot;やまだ&quot;));
-sato.Friends.Add(new Person(&quot;いとう&quot;));
-
-// 件数数える
-var friendCount = sato.Friends.Count;
-</code></pre>
-<p>これは普通にローカルで表現する場合です。実に普通です。では、次。</p>
-<pre><code class="language-csharp">// RedisServerの設定の表現
-public static class RedisServer
-{
-    public static readonly RedisSettings Default = new RedisSettings(&quot;127.0.0.1&quot;);
-}
-
-// こんなクラスがあるとして
-public class Person
-{
-    public string Name { get; private set; }
-    public RedisList&lt;Person&gt; Friends { get; private set; }
-
-    public Person(string name)
-    {
-        Name = name;
-        Friends = new RedisList&lt;Person&gt;(RedisServer.Default, &quot;Person-&quot; + Name);
-    }
-}
-
-// こんなのがいるとして
-var sato = new Person(&quot;さとう&quot;);
-
-// 人を足す
-await sato.Friends.AddLast(new Person(&quot;やまだ&quot;));
-await sato.Friends.AddLast(new Person(&quot;いとう&quot;));
-
-// 件数数える
-var friendCount = await sato.Friends.GetLength();
-</code></pre>
-<p>この場合、Redisを通してサーバー上にデータは保存されています。ですが、操作感覚はローカルにあるものとほぼほぼ同じです。違いは全ての操作が非同期なので、awaitするぐらい。</p>
-<h2>IAsyncList</h2>
-<p>これは、<a href="http://actorfx.codeplex.com/">Actor Framework for Windows Azure</a>のDistributed Collectionsに影響を受けています。ActorFxのそれは、SOURCE CODEを落としてdocsフォルダの Distributed Collections using the ActorFx.docx に色々書いてあって面白いので必読です。</p>
-<p>そして、ActorFxではSystem.Cloud.Collectionsとして(System名前空間！)、現状、以下のようなインターフェイスが定義されています（まだ変更の可能性大いにあり）。</p>
-<pre><code class="language-csharp">namespace System.Cloud.Collections
-{
-    public interface IAsyncCollection&lt;T&gt; : IObservable&lt;T&gt;
-    {
-        Task&lt;int&gt; CountAsync { get; }
-        Task&lt;bool&gt; IsReadOnlyAsync { get; }
-
-        Task AddAsync(T item);
-        Task ClearAsync();
-        Task&lt;bool&gt; ContainsAsync(T item);
-        Task CopyToAsync(T[] array, int arrayIndex);
-        Task&lt;bool&gt; RemoveAsync(T item);
-    }
-
-    public interface IAsyncList&lt;T&gt; : IAsyncCollection&lt;T&gt;
-    {
-        Task&lt;T&gt; GetItemAsync(int index);
-        Task SetItemAsync(int index, T value);
-        Task&lt;int&gt; IndexOfAsync(T item);
-        Task InsertAsync(int index, T item);
-        Task RemoveAtAsync(int index);
-
-        // Less chatty versions
-        Task AddAsync(IEnumerable&lt;T&gt; items);
-        Task RemoveRangeAsync(int index, int count);
-    }
-
-    public interface IAsyncDictionary&lt;TKey, TValue&gt; : IAsyncCollection&lt;KeyValuePair&lt;TKey, TValue&gt;&gt;
-    {
-        Task&lt;TValue&gt; GetValueAsync(TKey key);
-        Task SetValueAsync(TKey key, TValue value);
-        Task&lt;Tuple&lt;bool, TValue&gt;&gt; TryGetValueAsync(TKey key);
-
-        // No AddAsync - use SetValueAsync instead.  We have no atomic operation to add iff a value is not in the dictionary.
-        Task&lt;bool&gt; ContainsKeyAsync(TKey key);
-        Task&lt;bool&gt; RemoveAsync(TKey key);
-
-        // Bulk operations
-        Task&lt;ICollection&lt;TValue&gt;&gt; GetValuesAsync(IEnumerable&lt;TKey&gt; keys);
-        Task SetValuesAsync(IEnumerable&lt;TKey&gt; keys, IEnumerable&lt;TValue&gt; values);
-        Task RemoveAsync(IEnumerable&lt;TKey&gt; keys);
-
-        ICollection&lt;TKey&gt; Keys { get; }
-        ICollection&lt;TValue&gt; Values { get; }
-    }
-}
-</code></pre>
-<p>わくわくしてきません？私はこの定義を見た瞬間に衝撃を受けました。RxのIObservable&lt;T&gt;を見た時と同程度の衝撃かもわからない。Ax(ActorFx)の実装としてはCloudList, CloudDictionary, CloudStringDictionaryがありますが(基盤としてAzure Table)、見てすぐにRedisと結びついた。Redisの持つデータ構造、List, Hash, Set, SortedSetってこれじゃないか！って。こういう風に表現されたらどれだけ素敵な見た目になるか……！</p>
-<h2>Strings, Set, SortedSet, List, Hash, その他</h2>
-<p>というわけで、最初の例ではRedisListだけ出しましたが、StringsもSetもSortedSetもHashもあります。また、HashClassやMemoizedRedisStringといった特殊なものも幾つか用意してあります。</p>
-<pre><code class="language-csharp">// フィールドに持たなくても、ふつーにRedisClient的に使ってもいいよ
-var client = new RedisString&lt;string&gt;(RedisServer.Default, &quot;toaru-key&quot;);
-await client.Set(&quot;あいうえお!&quot;, expirySeconds: TimeSpan.FromMinutes(60).TotalSeconds);
-
-// RedisClassはRedisのHash構造をクラスにマッピングするもの
-var hito = new RedisClass&lt;Hito&gt;(RedisServer.Default, &quot;hito-1&quot;);
-await hito.SetField(&quot;Name&quot;, &quot;やまもと&quot;);
-await hito.Increment(&quot;Money&quot;, 100);
-
-var localHito = await hito.GetValue(); // Cloud -&gt; Localに落とす、的ないめーぢ
-</code></pre>
-<p>実際色々あるので見て回ってください！</p>
-<h2>ConnectionManagement</h2>
-<p>基盤的な機能として、BookSleeveの接続管理を兼ねています。</p>
-<pre><code class="language-csharp">// Redisの設定を表す
-var settings = new RedisSettings(host: &quot;127.0.0.1&quot;, port: 6379, db: 0);
-
-// BookSleeveはスレッドセーフで単一のコネクションを扱う
-// コネクションを一つに保ったり切断されていた場合の再接続などをしてくれる
-var conn = settings.GetConnection();
-
-
-// 複数接続はRedisGroupで管理できる
-var group = new RedisGroup(groupName: &quot;Cache&quot;, settings: new[]
-{
-    new RedisSettings(host: &quot;100.0.0.1&quot;, port: 6379, db: 0),
-    new RedisSettings(host: &quot;105.0.0.1&quot;, port: 6379, db: 0),
-});
-
-// keyを元に分散先のサーバーを決める（デフォルトはMD5をサーバー台数で割って決めるだけの単純な分散）
-var conn = group.GetSettings(&quot;hogehoge-100&quot;).GetConnection();
-
-// シリアライザはデフォルトではJSONとProtoBufを用意（未指定の場合はJSON）
-new RedisSettings(&quot;127.0.0.1&quot;, converter: new JsonRedisValueConverter());
-new RedisSettings(&quot;127.0.0.1&quot;, converter: new ProtoBufRedisValueConverter());
-</code></pre>
-<p>って、ここまで<a href="https://code.google.com/p/booksleeve/">BookSleeve</a>の説明がなかった！BookSleeveはRedisのライブラリで、非同期の操作のみを提供しています。CloudStructuresのRedis操作はBookSleeveに全部委ねてます。というかぶっちゃけ、かなり単純なラップがほとんどだったりします（！）。見せ方を変えただけ、です、よーするところ。</p>
-<p>んで、BookSleeveは斬新で非常に良いライブラリなのですけれど、操作が本当にプリミティブなものしかないので（全てのGetとSetがstringとbyte[]しかない、とかね）、ある程度、自分で作りこんでやらないと全く使えません。なので、この部分だけでも、結構使えるかなって思います。</p>
-<h2>Next</h2>
-<p>個人的にはすっごく面白いと思ってます。見せ方の違いでしかないわけですが、しかし、その見せ方の違いというのが非常に大事なのです。直感的、ですが、ある種奇抜なデザインなので、戸惑うとは思います。異色度合いで言ったら、以前に私の作ったReactivePropertyと同程度に異色かな、と。だからこそ、凄く大きな可能性を感じませんか？</p>
-<p>ちなみに、これは（いつものように）コンセプト止まりじゃなくて、実際に使う予定アリなので、しっかり育ててく気満々です。是非、試してみてもらえると嬉しいですね。</p>
-</div>
 <a href="https://neue.cc/10">Prev |</a>
 <a href="https://neue.cc/12">| Next</a>
 </div>
@@ -1942,6 +1933,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2023/12/">2023-12</a>
 <li><a href="https://neue.cc/2023/10/">2023-10</a>
 <li><a href="https://neue.cc/2023/09/">2023-09</a>
 <li><a href="https://neue.cc/2023/07/">2023-07</a>
