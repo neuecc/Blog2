@@ -23,7 +23,224 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2010/10/21_282.html">XboxInfoTwit - ver.2.3.0.1</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2010/11/05_283.html">実践例から見るReactive Extensinosを用いた非同期処理</a></h1>
+<ul class="date"><li>2010-11-05</li></ul>
+<div class="entry_body"><p>私は<a href="http://neue.cc/software/xboxinfotwit" title="neue cc - XboxInfoTwit">XboxInfoTwit</a>という、Xbox.comからデータをスクレイピングで取り出してTwitterに投稿するという、大変不届き者なアプリケーションを公開しています。お陰様で認証者数も2500人を超えて、割と活況。このアプリケーションでのデータ取得ですが、正規なルートでの情報取得ならばAPI叩けば一発、というケースも少なくないですが、いかんせんルートがアレなので一回の取得で取れる情報は断片。あちらこちらから値を受け渡し組み立てなければならないという、入り組んだ通信手順になっています。これを、もし全部非同期でやろうとしたら目眩がするなあ。ふむ。そこでReactive Extensions。むしろ良いネタがあるじゃないか！というわけでクローラーのコア部分を完全非同期 + Reactive Extensinosで全面的に書きなおしてみました。</p>
+<p><a href="https://bitbucket.org/neuecc/xboxinfotwitcore" title="neuecc / XboxInfoTwitCore / overview – Bitbucket">neuecc / XboxInfoTwitCore / overview – Bitbucket</a></p>
+<p>dllでライブラリという形体を取っていますが、基本的には誰にも使い道がないものかと思われます。というわけで、このXboxInfoTwitCoreの内容自体はどうでもいいとスルーして、この現実的な課題(？)にReactive Extensinosがどう簡単にしてくれたかを見ていきます。</p>
+<h2>非同期通信の連続</h2>
+<p>まずは、手順について図で。最近、パワーポイントでのポンチ絵を書く練習を兼ねて、しかしこんなヘタクソで大丈夫か？？</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/xboxinfotwitcore_flow.jpg">
+</p>
+<p>プレイ状況の取得は、<a href="http://live.xbox.com/ja-jp/MyXbox/Profile" title="プロフィール - Xbox.com">MyXbox/Profile</a>から取得、実績内容の取得はそこからゲームのタイトルIDを取り出して、個別のゲーム画面のURLを作り取得。最終的には両者を結合してデータを作り出します。ただし、ログイン前にMyXbox/Profileにアクセスすると認証フォームにリダイレクトされるので、そこでごそごそと処理してlive.comの認証クッキーを取得する必要があります。この認証クッキー取得が若干ややこしい。一度分かってしまえばそんなでもないのですけれど、ちょびっと嫌らしい造りになっています(恐らくこの認証部分はWindows Liveで共通だと思うので、SkyDriveをモニョモニョしたい、など考えている人は参考にでもどうぞ)</p>
+<p>ちなみに非同期のPOSTってのは、BeginGetRequestStreamで非同期でRequestStreamを呼び出して書き込む(POST)してから、BeginGetResponseで非同期でレスポンスを取得するので、ネスト量2倍。クッキー認証部分だけで、普通に書くと7つぐらいネストするわけです……。</p>
+<h2>Asynchronus Query</h2>
+<p>細部を見る前に、最終的にどうなったか、を。</p>
+<pre><code class="language-csharp">var fetcher = new LiveTokenFetcher(&quot;userid&quot;, &quot;password&quot;);
+var locale = new Locale(&quot;ja-JP&quot;, &quot;日本&quot;);
+
+// 非同期クエリ組み立て
+var asyncQuery =
+    from crawler in
+        from cookie in fetcher.GetLoginCookie(new XboxUrlBuilder(locale).Profile())
+        select new XboxInfoCrawler(cookie, locale)
+    from pi in crawler.GetPlayerInfo()
+    from ai in pi.GameInfo.TitleId != 0
+        ? crawler.GetAchievement(pi.GameInfo.TitleId)
+        : Observable.Return&lt;AchievementInfo&gt;(null)
+    select pi.Tap(x =&gt; x.GameInfo.AchievementInfo = ai); // Tapについては解説しな...い
+
+// 実行
+asyncQuery.Subscribe(pi =&gt; Console.WriteLine(&quot;{0} - {1}&quot;, pi.GamerTag, pi.PlayerState));
+</code></pre>
+<p>(私にしては珍しく)クエリ構文を使っていますが、こう見ると本当に、非同期処理がLinqに統合された形で問い合わせられる、ということが良く伝わるのではないでしょうか？処理の順序が一見イミフ、というのは慣れの問題です！解説します。</p>
+<p>GetLoginCookie、GetPlayerInfo、GetAchievementがIObservable&lt;T&gt;を返す、非同期処理。GetLoginCookieはポンチ絵で言うところの、クッキー取得で、GetPlayerInfoが中央左、GetAchievementが中央右で、最後のselectがマージというわけです。ややこしくネストするはずの非同期が非常にあっさりと記述できました。</p>
+<h2>GETとPOSTの連続</h2>
+<p>一番面倒くさいログインクッキー取得の部分について。</p>
+<pre><code class="language-csharp">public IObservable&lt;CookieCollection&gt; GetLoginCookie(string url)
+{
+    return Observable.Defer(() =&gt; CreateWebRequest(url).GetResponseAsObservable())
+        .Select(res =&gt; res.TransformResponseHtml(xml =&gt; new
+        {
+            Cookie = ConstructCookie(res.Headers[&quot;Set-Cookie&quot;]),
+            PostUrl = GetPostUrl(xml),
+            PPFT = GetInputValue(xml, &quot;PPFT&quot;),
+            PPSX = GetInputValue(xml, &quot;PPSX&quot;)
+        }))
+        .SelectMany(a =&gt; CreateWebRequest(a.PostUrl, MethodType.Post, a.Cookie)
+            .UploadValues(new Dictionary&lt;string, string&gt;
+            {
+                {&quot;LoginOptions&quot;, &quot;3&quot;},
+                {&quot;PPFT&quot;, a.PPFT},
+                {&quot;PPSX&quot;, a.PPSX},
+                {&quot;PwdPad&quot;, PwdPadBase.Substring(0, PwdPadBase.Length - password.Length)},
+                {&quot;login&quot;, loginId},
+                {&quot;passwd&quot;, password}
+            }))
+        .Select(res =&gt; res.TransformResponseHtml(xml =&gt; new
+        {
+            PostUrl = GetPostUrl(xml),
+            Anon = GetInputValue(xml, &quot;ANON&quot;),
+            T = GetInputValue(xml, &quot;t&quot;)
+        }))
+        .SelectMany(a =&gt; CreateWebRequest(a.PostUrl, MethodType.Post)
+            .Tap(r =&gt; r.AllowAutoRedirect = false)
+            .UploadValues(new Dictionary&lt;string, string&gt;
+            {
+                {&quot;ANON&quot;, a.Anon},
+                {&quot;t&quot;,Uri.EscapeDataString(a.T)}
+            }))
+        .Select(res =&gt; ConstructCookie(res.Headers[&quot;Set-Cookie&quot;]));
+}
+</code></pre>
+<p>となってます。長くて一瞬ウゲ、となりますが、基本的にはSelectとSelectManyしか使っていません。Selectは流れてくる値を変換。SelectManyは、次の非同期処理の実行。そう覚えて貰えれば、どうでしょう？</p>
+<p>先頭から見るとurl(MyXbox/Profile)に対して非同期でのGetResponseを開始。認証フォームにリダイレクトされるので、HTMLをスクレイピングしてPOSTに必要なデータ(PPFT,PPSXなど)を集める。そして非同期でポスト(UploadValuesは、詳細はソースコードを参照してもらうとして非同期で投稿してIObservable&lt;WebResponse&gt;を返す自前定義の拡張メソッドです)。続いて、スクレイピングして次のPOSTに必要なデータ(ポスト先URL,Anon,T)を生成、そして再びUploadValuesで非同期ポスト。するとWebResponseに認証クッキーがあるので、ヘッダーの&quot;Set-Cookie&quot;からクッキーを取ってCookieCollectionを生成したものを返す。</p>
+<p>となってます。流れるように！また、最後がSelectで終わっているように、流れは終わっていません。利用者が、ここから更に非同期での流れを繋いでいくわけです。</p>
+<h2>SelectとSelectMany、そしてクエリ構文</h2>
+<p>御大層なことを言いつつ、SelectとSelectManyしか使ってないじゃないか！というと、はい、その通りです。それでいいんです。ふつーのシチュエーションでの非同期処理って、そういうものでしょう？データを加工するSelectと、ネストをフラットにするSelectMany。これだけ覚えれば十分であり、そして、役立ちなのです。</p>
+<p>ところで、冒頭の例で（メソッド構文信者な私が）何でクエリ構文を使ったかというと、そこそこ綺麗に見えるかなー、とか思ったのともう一つは、割と必要に迫られたから。書き方は色々あります。例えばクエリ構文をベースにするなら、他にも</p>
+<pre><code class="language-csharp">// クエリ構文とメソッド構文を混ぜるのも時には分かりやすさに繋がる
+from crawler in fetcher.GetLoginCookie(new XboxUrlBuilder(locale).Profile())
+                       .Select(cookie =&gt; new XboxInfoCrawler(cookie, locale))
+from pi in crawler.GetPlayerInfo() // 以下略
+
+// select intoを使うことで完全フラットに流すことも可能です
+from cookie in fetcher.GetLoginCookie(new XboxUrlBuilder(locale).Profile())
+select new XboxInfoCrawler(cookie, locale) into crawler
+from pi in crawler.GetPlayerInfo() // 以下略
+</code></pre>
+<p>と出来るでしょう。特に後者のselect intoを使った書き方は冒頭のものより良いかもしれません。ネストして順番が上下するのは複雑さの現れになりますから。では、メソッド構文で書くと？</p>
+<pre><code class="language-csharp">var asyncQ = fetcher.GetLoginCookie(new XboxUrlBuilder(locale).Profile())
+    .Select(cookie =&gt; new XboxInfoCrawler(cookie, locale)) // クッキーをラップしたもの
+    .SelectMany(crawler =&gt; crawler.GetPlayerInfo())
+    .SelectMany(playerInfo =&gt; crawler.GetAchievement(playerInfo.GameInfo.TitleId));
+    // と、書きたいのですが、SelectManyでplayerInfoに変換されているのでcrawlerはスコープ外でこうは書けない！
+</code></pre>
+<p>SelectManyは、前方の値が使えません。GetLoginCookieのように前の値は一切使わないのならば何ら問題ないのですが、GetAchievement（実績取得）はクッキーとGetPlayerInfoで得られたタイトルIDの&quot;両方&quot;が必要。この両方、というシチュエーションの時に、上から流れて変形するだけのSelectManyだと非常に、書きづらい。ではメソッド構文ではどうするか、というと、クエリ構文のように考える。</p>
+<pre><code class="language-csharp">var asyncQ = fetcher.GetLoginCookie(new XboxUrlBuilder(locale).Profile())
+    .Select(cookie =&gt; new XboxInfoCrawler(cookie, locale))
+    .SelectMany(crawler =&gt; crawler.GetPlayerInfo().Select(playerInfo =&gt;
+        new { crawler, playerInfo })
+    .SelectMany(a =&gt; a.crawler.GetAchievement(a.playerInfo.GameInfo.TitleId)));
+</code></pre>
+<p>下側のフローに二つ以上の値を持ち越したいのならば、二つ以上の値を格納した匿名型を作ればいいぢゃない。ということですね。クエリ構文の実態もこうなっています。正直、メソッド構文でこれを書くのは二つだけならまだいいですが、幾つも繋いでいくとなると相当汚くなるので、これはもう素直にクエリ構文の出番だな、と私は思いました。</p>
+<p>奇怪なるクエリ構文の実態については<a href="http://d.hatena.ne.jp/ufcpp/20080304/1204633735" title="多重 from の展開結果 - ++C++; // 管理人の日記">多重 from の展開結果 - ++C++; // 管理人の日記</a>で書かれています。って、よくみるとTrackbackに昔の私が送ってますね、ふむふむ、<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">Linq to ObjectsのJavaScript移植であるlinq.js</a>で書くとこうなるようですよ？</p>
+<pre><code class="language-csharp">// クエリ
+var apart = Enumerable.Range(1, 5);
+var query = apart
+   .SelectMany(function(baker){ return apart
+   .SelectMany(function(cooper){ return apart
+   .SelectMany(function(fletcher){ return apart
+   .SelectMany(function(miller){ return apart
+   .Select(function(smith){ return {
+       baker: baker, cooper: cooper, fletcher: fletcher, miller: miller, smith: smith}})})})})})
+   .Where(&quot;Enumerable.From($).Distinct('$.Value').Count() == 5&quot;)
+   .Where(&quot;$.baker != 5&quot;)
+   .Where(&quot;$.cooper != 1&quot;)
+   .Where(&quot;$.fletcher != 1 &amp;&amp; $.fletcher != 5&quot;)
+   .Where(&quot;$.miller &gt; $.cooper&quot;)
+   .Where(&quot;Math.abs($.smith - $.fletcher) != 1&quot;)
+   .Where(&quot;Math.abs($.fletcher - $.cooper) != 1&quot;);
+
+// 出力
+var result = Enumerable.From(query.Single()) // 答えは一つなのでSingle,そしてobjectをKeyValuePair[]に分解
+   .OrderBy(&quot;$.Value&quot;)
+   .ToString(&quot;, &quot;, &quot;$.Key + ':' + $.Value&quot;); // シーケンスを文字列に結合
+
+alert(result); // smith:1, cooper:2, baker:3, fletcher:4, miller:5
+</code></pre>
+<p>linq.jsは&quot;完全な&quot;移植なので、.NETで動くコードが動かない、ということはありません。JavaScriptにもLinqの革命を！と、宣伝はさておき、SelectManyで下方に値を持ち出しているのに、毎回匿名型を作っていません。SelectManyのresultSelectorの部分でネストさせることで、値を下の方まで持ち運ぶ事が可能です。これはJavaScriptだけでなくC#でのLinq/Rxでも有効です。一つのパターンというかテクニックというか。C#ではわざわざこんなことやるぐらいならクエリ構文使えという気がしますが、クエリ構文の使えないReactive Extensions for JavaScript(RxJS)では活きるかもしれません。</p>
+<p>ただ、この手のインデントの細工による対策は、IDEの自動整形と相性悪いんですよね。上のSelectManyのものも、コードフォーマッタにかけるとボロボロに崩れ去ります。基本的には私は、インデントは機械任せでやるべき。人が調整するものではないし調整してはならない。と思っているので、残念ながら上記テクニックは使うことはないかもなー、いや、どうだろう、積極的にはやらないという程度かしら。</p>
+<h2>The Future of C#(async/await)</h2>
+<p>つい数日前に開催されたPDC2010で、C#設計者のAnders Hejlsbergが、The Future of C#と題してC#5.0(とは言ってませんが、恐らくそうなる)のFeatureを語りました。一つは今まで言われていたCompiler as a Service。もう一つが、asynchronusの言語統合。C# 2.0でのyield returnによるIEnumerable<T>生成のようなコンパイル時生成で非同期をコードの見た目上、完全に同期のように扱うことが出来ます。</p>
+<p><a href="http://msdn.microsoft.com/en-us/vstudio/async.aspx" title="Asynchronous Programming for C# and Visual Basic">Asynchronous Programming for C# and Visual Basic</a>にてVisual Studio Async CTPが出ていて既に試してみることが可能なので(要：英語版VS2010)、実際にXboxInfoTwitCoreをasync/awaitで書き直してみました。全体はbitbucketのリポジトリ上にあるので興味あればそちらもどうぞ。以下は、ログインクッキーを取得する部分。</p>
+<pre><code class="language-csharp">private async static Task&lt;WebResponse&gt; UploadValuesAsync(WebRequest request, IDictionary&lt;string, string&gt; parameters)
+{
+    var bytes = parameters.ToQueryParameter().Pipe(Encoding.UTF8.GetBytes);
+    using (var stream = await request.GetRequestStreamAsync())
+    {
+        await stream.WriteAsync(bytes, 0, bytes.Length);
+    }
+    return await request.GetResponseAsync();
+}
+
+public async Task&lt;CookieCollection&gt; GetLoginCookie(string url)
+{
+    var res = await CreateWebRequest(url).GetResponseAsync();
+    var prepare = res.TransformResponseHtml(xml =&gt; new
+    {
+        Cookie = ConstructCookie(res.Headers[&quot;Set-Cookie&quot;]),
+        PostUrl = GetPostUrl(xml),
+        PPFT = GetInputValue(xml, &quot;PPFT&quot;),
+        PPSX = GetInputValue(xml, &quot;PPSX&quot;)
+    });
+
+    var req2 = CreateWebRequest(prepare.PostUrl, MethodType.Post, prepare.Cookie);
+    var res2 = await UploadValuesAsync(req2, new Dictionary&lt;string, string&gt;
+    {
+        {&quot;LoginOptions&quot;, &quot;3&quot;},
+        {&quot;PPFT&quot;, prepare.PPFT},
+        {&quot;PPSX&quot;, prepare.PPSX},
+        {&quot;PwdPad&quot;, PwdPadBase.Substring(0, PwdPadBase.Length - password.Length)},
+        {&quot;login&quot;, loginId},
+        {&quot;passwd&quot;, password}
+    });
+
+    var prepare2 = res2.TransformResponseHtml(xml =&gt; new
+    {
+        PostUrl = GetPostUrl(xml),
+        Anon = GetInputValue(xml, &quot;ANON&quot;),
+        T = GetInputValue(xml, &quot;t&quot;)
+    });
+
+    var req3 = CreateWebRequest(prepare2.PostUrl, MethodType.Post);
+    req3.AllowAutoRedirect = false;
+
+    var res3 = await UploadValuesAsync(req3, new Dictionary&lt;string, string&gt;
+    {
+        {&quot;ANON&quot;,prepare2.Anon},
+        {&quot;t&quot;,Uri.EscapeDataString(prepare2.T)}
+    });
+
+    return ConstructCookie(res3.Headers[&quot;Set-Cookie&quot;]);
+}
+</code></pre>
+<p>まあ見事にベッタベタに書かれているのが良く見えますねえ。このasync/awaitですが、非同期として扱うものにasyncを宣言したメソッドを用意。あとは同期のように書くだけ。yield returnのかわりにawait + XxxAsync と書くだけ。それで、まるで同期のように書けてしまいます。あまりにもお手軽。魔法のように。Silverlightのネック（そして初心者キラー）なところは、分かりづらい非同期でしたが、ウルトラC的に解決……。</p>
+<p>この発表を見た時は普通にショックで、更に一日経って冷静に考えると更にショックで寝こむ勢いでしたね(笑) 正直なところ、被ります。単純な非同期の簡易化という点だけで考えればめっちゃ被ります。それはTaskとRxが被るよねー、Rxのほうが書きやすいっすよー、とか少し前に言っていた程度にはモロ被ります。実際問題Taskはあまり使いやすいとは言えないのですが、コンパイラサポートがガッツシ来てしまったら、それは話は別ですな。</p>
+<p>勿論、RxのメリットはIEnumerable&lt;T&gt;や、イベントやタイマーなどの他のIObservable&lt;T&gt;とのシームレスな連携にもあるので、非同期を利用するシーンにおいてasync/awaitが完全に置き換えるもの、とは言いませんけれど。そして、私はそういった統合っぷりに魅力を感じているのでasync/awaitはあまり使わないかなー、という気がしてなくはないのですが、ちょっとその辺、判断が難しい。</p>
+<p>さて、ところで両者を置き換えるのは非常に簡単です。戻り値がTask&lt;T&gt;かIObservable&lt;T&gt;か。RxではSelectManyだった位置にawaitを置く。それだけです。これは覚えておいて損はないかもです。そういう意味でも普通にかぶってるよな、とか思いつつ。awaitが分かればRx-SelectManyも簡単だし、その逆もまた然り。</p>
+<h2>SilverlightとWindows Phone 7</h2>
+<p>Silverlightは同期APIがないので、Rxで組むことで互換性が狙えます。このXboxInfoTwitCoreはフル非同期・フルRxなので、Silverlight/Windows Phone 7にも対応させ、られませんでした！えー。CookieExceptionが発生したり取れる最終的なCookieが何か違ったりと、Cookieが鬼門すぎて無理でした、とほほほ。マジワケワカラン。ええと、一応はWPF-Silverlight-WP7で完全なコード共有を実現する、という点もRxの強力な武器であり、使う理由になるとは思っています。それを示したかったのですが、うーむ。完全に同一なファイルで非同期としての挙動は問題なく取れているのですが、実際にデータが出せないとねえ……。カッコワルイ。</p>
+<h2>SgmlReader for Silverlight/Windows Phone 7</h2>
+<p>XboxInfoTwitCoreではHtml to Xml変換にSgmlReaderを使用しています。<a href="http://neue.cc/2010/03/02_244.html" title="neue cc - C#でスクレイピング:HTMLパース(Linq to Html)のためのSGMLReader利用法">以前に紹介を書きました</a>が、これは本当に重宝します。ストリームとXElement.Loadの間に置くことで、不正なXMLである(ためXElement.Loadに渡すと例外が発声する)ネット上のHTMLをLinq to Xmlで扱えるようになります。しかし、元のコードベースが古いのと開発が活況とは言い難い状況であるために、SilverlightやWindows Phone 7に対応していません。大変困った。困ったので、Silverlight/Windows Phone 7で動くように少々コード弄ったところ、問題なく動いた！ので、こちらもbitbucketにあげときました。</p>
+<p><a href="http://bitbucket.org/neuecc/sgmlreader.sl" title="neuecc / SgmlReader.SL / overview – Bitbucket">neuecc / SgmlReader.SL / overview – Bitbucket</a></p>
+<p>基本的にはデスクトップ版と全く同じ感覚で使えます。</p>
+<pre><code class="language-csharp">var req = WebRequest.Create(&quot;http://google.com/&quot;);
+req.BeginGetResponse(ar =&gt;
+{
+    var res = req.EndGetResponse(ar);
+    using (var stream = res.GetResponseStream())
+    using (var sr = new StreamReader(stream))
+    using (var sgmlReader = new SgmlReader { DocType = &quot;HTML&quot;, CaseFolding = CaseFolding.ToLower, InputStream = sr })
+    {
+        var xml = XElement.Load(sgmlReader); // これ。
+        Dispatcher.BeginInvoke(() =&gt; MessageBox.Show(xml.ToString()));
+    }
+}, null);
+</code></pre>
+<p>プロパティにURLを渡すと例外で落ちます(同期通信は許可されていません！)。というわけで、WebRequestなどから非同期でウェブからStreamを取り出して、それをInputStreamプロパティに渡すという形を取ってください。この制限は、SilverlightではXElement.Load(&quot;url&quot;)が許可されていないのと同じことです。</p>
+<h2>XboxInfoTwitの今後</h2>
+<p>ここまで見てくれた人がXboxInfoTwit本体の利用者とは思えません！のですが、とりあえず書きますと、コア部分は書き換わったので、あとはGUIというか設定画面を複数言語に対応させてCodePlexで公開。を目指しています。が、いかんせんGUIは難敵です……。今のXboxInfoTwitも一応WPFなんですが見よう見まねで組んだXAMLで汚いので、きっちりと綺麗に書き換えたい、のですが、それをやるにはあまりにもWPF/XAMLの知識がなさすぎる。そのため、今日明日でフル改装で公開！というわけにもいきません。もう少し時間がかかりそうです。</p>
+<p>Twitterへの投稿に関しては、以前書いた<a href="http://reactiveoauth.codeplex.com/" title="ReactiveOAuth">ReactiveOAuth</a>(完全なRxベースのOAuthライブラリ)があるので、シームレスに統合出来そう（こちらも幾つか課題が溜まっているので更新しないと……）。あとは、今使ってる自動アップデートプログラムがタコな出来なので、これも作り直したいなあ。なんて思っていたり。</p>
+<h2>まとめ</h2>
+<p>ふつーの非同期で書いてネストしまくりで、こんなの書いてられないだろほれみろバーカバーカ、とか言ってみたかったのですが気力がなくてそれは断念。ともあれ、今ある非同期の厳しさへの現実解として、Rxはアリ、です。非同期処理が、かなり綺麗にLinqクエリとして溶け込む様は分かるのではないかと思います。C#5.0のasync/awaitと比較してみても、awaitの位置にSelectMany、というだけの話ですしね。そして何よりも、async/awaitは今日明日に出るわけじゃないのです！ Visual Studio 2005 -&gt; 2008 -&gt; 2010のペースで考えるならば2013年。まだ2年も先です。</p>
+<p>async/awaitがないから「しょうがなく」使う、ってスタンスもアレゲ。いえいえ、喜んで使うのです。Rxならではのメリットが、当然あります。ただの非同期処理の一本化というだけに終わらず、イベントやタイマーなど他のソースとの融合は魅力です。そう、そもそも、Rxの持つ側面は3つ。「Asynchronus」「Event」「Pull to Push」。ここ最近はAsynchronusのことしか書いてなかったですが、他の2つのほうも見逃せないというか、むしろRxは最初はLinq to Eventsとして紹介されていたぐらいだしEventのほうがメインですよ？</p>
+<p>ところで話は全く変わりますが、Bitbucket使い始めました。バージョン管理は当然Mercurialです。Mercurialは非常にいいです。もうSubversionは使う気になれない。Team Foundation Serverは使ったことないので知らないけれど(あれはオールインワンなところに価値がある気がしつつ、まあ、重量級ですよね)Mercurialのサクサク感は、バージョン管理はしっくりこないんです！とかほざいていた私にガツーンとバージョン管理がないともう生きていけない！ちょっとしたプロジェクトもhg initするし！な心構えに変えさせる威力がありました。あとちょっとした変更でもローカルでコミット、な素敵さとか。</p>
+<p><a href="http://tortoisehg.bitbucket.org/">TortoiseHg</a>は、若干UIの導線がイケてないとは思いつつ、まあまあ使いやすく(日本語化もデフォルトでされています←要環境変数にLANG=ja)、Visual Studio拡張の<a href="http://visualhg.codeplex.com/">VisualHG</a>も素敵な使い勝手。というか、UI部分はTortoiseHgを呼び出しているだけというシンプルさがいい。私はEclipse下では<a href="http://www.vectrace.com/mercurialeclipse/">Mercurial Eclipse</a>を使ってますが、こちらは独自にがっつし作りこんであって、それが今一つな使い勝手で。私はVisual Hgの方向性を支持します。</p>
+<p>最後に、毎回嘘っぱちな次回予告ですが（SelectManyの解説をすると言い続けて半年以上経過）、ポーリングをイベントとしてRx化してPushで共通化とか何とかかんとか、を予定。引き続き題材はXboxInfoほげほげを使うつもりです。乞うご期待しない。</p>
+</div>
+<h1><a href="https://neue.cc/2010/10/21_282.html">XboxInfoTwit - ver.2.3.0.1</a></h1>
 <ul class="date"><li>2010-10-21</li></ul>
 <div class="entry_body"><ul>
 <li><a href="http://neue.cc/software/xboxinfotwit" title="neue cc - XboxInfoTwit">neue cc - XboxInfoTwit</a></li>
@@ -1892,216 +2109,6 @@ Aggregate系
 <p>ていうか改めてHaskellは偉大。でも、取っ付きやすさは大事。難しげなことを簡単なものとして甘く包んで掲示したLinqは、凄い。Rxも、取っ付きづらいFunctional Reactive Programmingを、Linqというお馴染みの土台に乗せたことで理解までの敷居を相当緩和させた。素晴らしい仕事です。</p>
 <p>難しいことが簡単に出来る、というのがLinqのキモで、Rxも同じ。難しかったこと(イベントの合成/非同期)が簡単にできる。それが大事だし、その事をちゃんと伝えていきたいなあ。そして、Realworldでの実践例も。そのためにはアプリケーション書かなければ。アプリケーション、書きたいです……。書きます。</p>
 <p>そういえばついでに、Rx一周年ということで、大体一年分の記事が溜まった(そしてロクに書いてないことが判明した)のと、少し前にlinq.jsのRT祭りがあった熱に浮かされて、応募するだけならタダ理論により10月期のMicrosoft MVPに応募しちゃったりなんかしました。恥ずかしぃー。分野にLinqがあれば！とか意味不明なことを思ったのですが、当然無いのでC#です、応募文句は、linq.js作った(DL数累計たった1000)と、Rx紹介書いてる、の二つだけって無理ですね明らかに。これから割と詳細に活動内容を書いて、送らなきゃいけないのですが、オール空白状態。応募したことに泣きたくなってきたよ、とほほ。</p>
-</div>
-<h1><a href="https://neue.cc/2010/07/19_268.html">Windows Phone 7 + Reactive ExtensionsによるXml取得</a></h1>
-<ul class="date"><li>2010-07-19</li></ul>
-<div class="entry_body"><p>Windows Phone 7にはReactive Extensionsが標準搭載されていたりするのだよ！なんだってー！と、いうわけで、Real World Rx。じゃないですけれど、Rxを使って非同期処理をゴニョゴニョとしてみましょう。ネットワークからデータ取って何とかする、というと一昔前はRSSリーダーがサンプルの主役でしたが、最近だとTwitterリーダーなのでしょうね。というわけで、Twitterリーダーにします。といっても、ぶっちゃけただたんにデータ取ってリストボックスにバインドするだけです。そしてGUI部分は<a href="http://www.atmarkit.co.jp/fdotnet/scottgublog/20100324phone7app/phone7app.html" title="Silverlightを使用してWindows Phone 7でTwitterアプリケーションを構築 － ＠IT">Silverlightを使用してWindows Phone 7でTwitterアプリケーションを構築 － ＠IT</a>のものを丸ごと使います。手抜き！というわけで、差分としてはRxを使うか否かといったところしかありません。</p>
-<p>なお、別に全然Windows Phone 7ならでは！なことはやらないので、WPFでもSilverlightでも同じように書けます。ちょっとしたRxのサンプルとしてどうぞ。今回は出たばかりの<a href="http://developer.windowsphone.com/" title="Windows Phone for Developers | Windows Phone: Developer Home">Windows Phone Developer Tools Beta</a>を使います。Windows Phone用のBlendがついていたりと盛り沢山。</p>
-<h2>Xmlを読み込む</h2>
-<p>とりあえずLinq to XmlなのでXElement.Load(string uri)ですね。違います。そのオーバーロードはSilverlightでは使えないのであった。えー。なんでー。とはまあ、つまり、同期系APIの搭載はほとんどなくて、全部非同期系で操作するよう強要されているわけです。XElement.Loadは同期でネットワークからXMLを引っ張ってくる→ダウンロード時間中はUI固まる→許すまじ！ということのようで。みんな大好きBackgroundWorkerたん使えばいいぢゃない、みたいなのは通用しないそうだ。</p>
-<p>MSDNにお聞きすれば<a href="http://msdn.microsoft.com/ja-jp/library/cc645034(VS.95).aspx" title="方法 : LINQ to XML で任意の URI の場所から XML ファイルを読み込む">方法 : LINQ to XML で任意の URI の場所から XML ファイルを読み込む</a>とあります。ネットワークからデータを取ってくるときはWebClient/HttpWebRequest使えというお話。</p>
-<p>では、とりあえず、MainPage.xamlにペタペタと書いて、MessageBox.Showで確認していくという原始人な手段を取っていきましょう。XElementの利用にはSystem.Xml.Linqの参照が別途必要です。</p>
-<pre><code class="language-csharp">public MainPage()
-{
-    InitializeComponent();
-    
-    var wc = new WebClient();
-    wc.OpenReadCompleted += (sender, e) =&gt;
-    {
-        var elem = XElement.Load(e.Result); // e.ResultにStreamが入ってる
-        MessageBox.Show(elem.ToString()); // 確認
-    };
-    wc.OpenReadAsync(new Uri(&quot;http://twitter.com/statuses/public_timeline.xml&quot;)); // 非同期読み込み呼び出し開始
-}
-</code></pre>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/winphone7_emulator.jpg">
-</p>
-<p>別に難しいこともなくすんなりと表示されました。簡単なことが簡単に書けるって素晴らしい。で、WebClientのプロパティをマジマジと見ていると<a href="http://msdn.microsoft.com/ja-jp/library/system.net.webclient.allowreadstreambuffering(v=VS.95).aspx" title="WebClient.AllowReadStreamBuffering プロパティ (System.Net)">AllowReadStreamBuffering</a>なんてものが。trueの場合はメモリにバッファリングされる。うーん、せっかくなので完全ストリーミングでやりたいなあ。これfalseならバッファリングなしってことですよね？じゃあ、バッファリング無しにしてみますか。</p>
-<pre><code class="language-csharp">var wc = new WebClient();
-wc.AllowReadStreamBuffering = false; // デフォはtrueでバッファリングあり、今回はfalseに変更
-wc.OpenReadCompleted += (sender, e) =&gt;
-{
-    try
-    {
-        var elem = XElement.Load(e.Result); // ここで例外出るよ！
-    }
-    catch (Exception ex)
-    {
-        // Read is not supporeted on the main thread when buffering is disabled.
-        MessageBox.Show(ex.ToString());
-    }
-};
-</code></pre>
-<p>例外で死にました。徹底して同期的にネットワーク絡みの処理が入るのは許しません、というわけですね、なるほど。じゃあ別スレッドでやるよ、ということでとりあえずThreadPoolに突っ込んでみた。</p>
-<pre><code class="language-csharp">wc.OpenReadCompleted += (sender, e) =&gt;
-{
-    ThreadPool.QueueUserWorkItem(_ =&gt;
-    {
-        try
-        {
-            var elem = XElement.Load(e.Result);
-            MessageBox.Show(elem.ToString()); // 今度はここで例外！
-        }
-        catch(Exception ex)
-        {
-            // Invalid cross-thread access.
-            Debug.WriteLine(ex.ToString());
-        }
-    });
-};
-</code></pre>
-<p>読み込みは出来たけど、今度はMessageBox.Showのところで、Invalid Cross Thread Accessで死んだ。そっか、MessageBoxもUIスレッドなのか。うーむ、世の中難しいね！というわけで、とりあえずDispatcher.BeginInvokeしますか。</p>
-<pre><code class="language-csharp">wc.OpenReadCompleted += (sender, e) =&gt;
-{
-    ThreadPool.QueueUserWorkItem(_ =&gt;
-    {
-        var elem = XElement.Load(e.Result);
-        Dispatcher.BeginInvoke(() =&gt; MessageBox.Show(elem.ToString()));
-    });
-};
-</code></pre>
-<p>これで完全なストリームで非同期呼び出しでのXmlロードが出来たわけですね。これは面倒くさいし、Invoke系の入れ子が酷いことになってますよ、うわぁぁ。</p>
-<h2>Rxを使う</h2>
-<p>というわけで、非Rxでやると大変なのがよく分かりました。そこでRxの出番です。標準搭載されているので、参照設定を開きMicrosoft.Phone.ReactiveとSystem.Observableを加えるだけで準備完了。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/winphone7_reactive_ref.jpg">
-</p>
-<pre><code class="language-csharp">var wc = new WebClient { AllowReadStreamBuffering = false };
-
-Observable.FromEvent&lt;OpenReadCompletedEventArgs&gt;(wc, &quot;OpenReadCompleted&quot;)
-    .ObserveOn(Scheduler.ThreadPool) // ThreadPoolで動かすようにする
-    .Select(e =&gt; XElement.Load(e.EventArgs.Result))
-    .ObserveOnDispatcher() // UIスレッドに戻す
-    .Subscribe(x =&gt; MessageBox.Show(x.ToString()));
-
-wc.OpenReadAsync(new Uri(&quot;http://twitter.com/statuses/public_timeline.xml&quot;));
-</code></pre>
-<p>非常にすっきり。Rxについて説明は、必要か否か若干悩むところですが説明しますと、イベントをLinq化します。今回はOpenReadCompletedイベントをLinqにしました。Linq化すると何が嬉しいって、ネストがなくなることです。非常に見やすい。更にRxの豊富なメソッド群を使えば普通ではやりにくいことがいとも簡単に出来ます。今回はObserveOnを使って、どのスレッドで実行するかを設定しました。驚くほど簡単に、分かりやすく。メソッドの流れそのままです。</p>
-<h2>FromAsyncPattern</h2>
-<p>WebClientだけじゃなく、ついでなのでHttpWebRequestでもやってみましょう。(HttpWebRequest)WebRequest.Create()死ね、といつも言ってる私ですが、SilverlightにはWebRequest.CreateHttpでHttpWebRequestが作れるじゃありませんか。何ともホッコリとします。微妙にこの辺、破綻した気がしますがむしろ見なかったことにしよう。</p>
-<pre><code class="language-csharp">var req = WebRequest.CreateHttp(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
-req.AllowReadStreamBuffering = false;
-req.BeginGetResponse(ar =&gt;
-{
-    using (var res = req.EndGetResponse(ar))
-    using (var stream = res.GetResponseStream())
-    {
-        var x = XElement.Load(res.GetResponseStream());
-        Dispatcher.BeginInvoke(() =&gt; MessageBox.Show(x.ToString()));
-    }
-}, null);
-</code></pre>
-<p>非同期しかないのでBeginXxx-EndXxxを使うのですが、まあ、結構面倒くさい。そこで、ここでもまたRxの出番。BeginXxx-EndXxx、つまりAPM(Asynchronus Programming Model:非同期プログラミングモデル)の形式の非同期メソッドをラップするFromAsyncPatternが使えます。</p>
-<pre><code class="language-csharp">var req = HttpWebRequest.CreateHttp(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
-req.AllowReadStreamBuffering = false;
-
-Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)
-    .Invoke() // 非同期実行開始(Invoke()じゃなくて()でもOKです、ただのDelegateなので)
-    .Select(res =&gt; XElement.Load(res.GetResponseStream()))
-    .ObserveOnDispatcher()
-    .Subscribe(x =&gt; MessageBox.Show(x.ToString()));
-</code></pre>
-<p>ラップは簡単で型として戻り値を指定してBeginXxxとEndXxxを渡すだけ。あとはそのまま流れるように書けてしまいます。普通だと面倒くさいはずのHttpWebRequestのほうがWebClientよりも素直に書けてしまう不思議！FromAsyncPatter、恐ろしい子。WebClient+FromEventは先にイベントを設定してURLで発動でしたが、こちらはURLを指定してから実行開始という、より「同期的」と同じように書ける感じがあって好き。WebClient使うのやめて、みんなHttpWebRequest使おうぜ！（ふつーのアプリのほうでは逆のこと言ってるのですががが）</p>
-<p>ところで、非同期処理の実行開始タイミングはInvokeした瞬間であって、Subscribeした時ではありません。どーなってるかというと、ぶっちゃけRxは実行結果をキャッシュしてます。細かい話はまた後日ちゃんと紹介するときにでも。</p>
-<h2>バインドする</h2>
-<p>GUIはScottGu氏のサンプルを丸々頂いてしまいます。リロードボタンを押したらPublicTLを呼ぶだけ、みたいなのに簡略化してしまいました。</p>
-<pre><code class="language-xml">&lt;Grid x:Name=&quot;LayoutRoot&quot; Background=&quot;Transparent&quot;&gt;
-    &lt;Grid.RowDefinitions&gt;
-        &lt;RowDefinition Height=&quot;Auto&quot;/&gt;
-        &lt;RowDefinition Height=&quot;*&quot;/&gt;
-    &lt;/Grid.RowDefinitions&gt;
-
-    &lt;Button Grid.Row=&quot;0&quot; Height=&quot;72&quot; Width=&quot;200&quot; Content=&quot;Reload&quot; Name=&quot;Reload&quot;&gt;&lt;/Button&gt;
-    &lt;ListBox Grid.Row=&quot;1&quot; Name=&quot;TweetList&quot; DataContext=&quot;{Binding}&quot;&gt;
-        &lt;ListBox.ItemTemplate&gt;
-            &lt;DataTemplate&gt;
-                &lt;StackPanel Orientation=&quot;Horizontal&quot;&gt;
-                    &lt;Image Source=&quot;{Binding Image}&quot; Height=&quot;73&quot; Width=&quot;73&quot; VerticalAlignment=&quot;Top&quot; /&gt;
-                    &lt;StackPanel Width=&quot;350&quot;&gt;
-                        &lt;TextBlock Text=&quot;{Binding Name}&quot; Foreground=&quot;Red&quot; /&gt;
-                        &lt;TextBlock Text=&quot;{Binding Text}&quot; TextWrapping=&quot;Wrap&quot; /&gt;
-                    &lt;/StackPanel&gt;
-                &lt;/StackPanel&gt;
-            &lt;/DataTemplate&gt;
-        &lt;/ListBox.ItemTemplate&gt;
-    &lt;/ListBox&gt;
-&lt;/Grid&gt;
-</code></pre>
-<p>あとは、ボタンへのイベント設定と、Twitterのクラスを作る必要があります。</p>
-<pre><code class="language-csharp">public class TwitterStatus
-{
-    public long Id { get; set; }
-    public string Text { get; set; }
-    public string Name { get; set; }
-    public string Image { get; set; }
-
-    public TwitterStatus(XElement element)
-    {
-        Id = (long)element.Element(&quot;id&quot;);
-        Text = (string)element.Element(&quot;text&quot;);
-        Name = (string)element.Element(&quot;user&quot;).Element(&quot;screen_name&quot;);
-        Image = (string)element.Element(&quot;user&quot;).Element(&quot;profile_image_url&quot;);
-    }
-}
-
-public partial class MainPage : PhoneApplicationPage
-{
-    public MainPage()
-    {
-        InitializeComponent();
-        Reload.Click += new RoutedEventHandler(Reload_Click); // XAMLに書いてもいいんですけど。
-    }
-
-    void Reload_Click(object sender, RoutedEventArgs e)
-    {
-        var req = HttpWebRequest.CreateHttp(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
-        req.AllowReadStreamBuffering = false;
-
-        Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)
-            .Invoke()
-            .Select(res =&gt; XElement.Load(res.GetResponseStream()))
-            .Select(x =&gt; x.Descendants(&quot;status&quot;).Select(xe =&gt; new TwitterStatus(xe)))
-            .ObserveOnDispatcher()
-            .Subscribe(ts =&gt; TweetList.ItemsSource = ts);
-    }
-}
-</code></pre>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/winphone7_tweet.jpg">
-</p>
-<p>実行するとこんな具合に表示されます。簡単ですねー。ただ、これだとリロードで20件しか表示されないので、リロードしたら継ぎ足されるように変更しましょう。</p>
-<h2>イベントを合成する</h2>
-<p>継ぎ足しの改善、のついでに、一定時間毎に更新も加えよう。基本は一定時間毎に更新だけど、リロードボタンしたら任意のタイミングでリロード。きっとよくあるパターン。Reload.Click+=でハンドラ足すのはやめて、その部分もFromEventでObservable化してしまいましょう。そして一定時間毎のイベント発動はObservable.Timerで。</p>
-<pre><code class="language-csharp">// 30秒毎もしくはリロードボタンクリックでPublicTimeLineを更新
-Observable.Merge(
-        Observable.Timer(TimeSpan.Zero, TimeSpan.FromSeconds(30), Scheduler.NewThread).Select(_ =&gt; (object)_),
-        Observable.FromEvent&lt;RoutedEventArgs&gt;(Reload, &quot;Click&quot;).Select(_ =&gt; (object)_))
-    .SelectMany(_ =&gt;
-    {
-        var req = HttpWebRequest.CreateHttp(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
-        req.AllowReadStreamBuffering = false;
-        return Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)();
-    })
-    .Select(res =&gt; XStreamingReader.Load(res.GetResponseStream()))
-    .SelectMany(x =&gt; x
-        .Descendants(&quot;status&quot;)
-        .Select(xe =&gt; new TwitterStatus(xe))
-        .Reverse()) // 古い順にする
-    .Scan((before, current) =&gt; before.Id &gt; current.Id ? before : current) // 最後に通した記事よりも古ければ通さない(で、同じ記事を返す)
-    .DistinctUntilChanged(t =&gt; t.Id) // 同じ記事が連続して来た場合は何もしないでreturn
-    .ObserveOnDispatcher()
-    .Subscribe(t =&gt; TweetList.Items.Insert(0, t)); // Insertだって...
-</code></pre>
-<p>流れるようにメソッド足しまくるの楽しい！楽しすぎて色々足しすぎて悪ノリしている感が否めません、とほほ。解説しますと、まず一行目のMerge。これは複数本のイベントを一本に統一します。統一するためには型が同じでなければならないのですが、今回はTimer(long)と、Click(RoutedEventArgs)なのでそのままでは合成出来ません。どちらも発火タイミングが必要なだけでlongもRoutedEventArgsも不必要なため、Objectにキャストしてやって合流させました。</p>
-<p>こういう場合、Linq to Objectsなら.Cast&lt;object&gt;()なんですよね。Castないんですか？というと、一応あるにはあるんですが、実質無いようなもので。というわけで、今のところキャストしたければ.Select(<em>=&gt;(object)</em>)を使うしかありません。多分。もっとマシなやり方がある場合は教えてください。</p>
-<p>続いてSelectMany。TimerもしくはClickは発火のタイミングだけで、後ろに流すのはFromAsyncPatternのデータ。こういった、最初のイベントは発火タイミングにだけ使って、実際に流すものは他のイベントに摩り替える（例えばマウスクリックで発動させて、あとはマウスムーブを使うとか）というのは定型文に近い感じでよく使うことになるんじゃないかと思います。SelectMany大事。</p>
-<p>XMLの読み込み部は、せっかくなので、こないだ作ったバッファに貯めこむことなくXmlを読み込める<a href="http://neue.cc/2010/07/16_267.html" title="neue cc - XStreamingReader - Linq to Xml形式でのストリーミングXml読み込み">XStreamingReader</a>を使います。こんな風に、XMLを読み取ってクラスに変換する程度ならXElement.Loadで丸々全体のツリーを作るのも勿体無い。XStreamingReaderなら完全ストリーミングでクラスに変換出来ますよー。という実例。</p>
-<p>その下は更にもう一個SelectMany。こっちはLinq to Objectsのものと同じ意味で、IEnumerableを平たくしています。で、ScanしたDistinctUntilChangedして（解説が面倒になってきた）先頭にInsert（ちょっとダサい）。これで古いものから上に足される = 新しい順番に表示される、という形になりました。XAML側のListBoxを直に触ってInsertとか、明らかにダサい感じなのですが、まあ今回はただのサンプルなので見逃してください。</p>
-<p>RxのMergeに関しては、後日他のイベント合流系メソッド(CombineLatest, Zip, And/Then/Plan/Join)と一緒に紹介したいと思っています。合流系大事。</p>
-<h2>まとめ</h2>
-<p>驚くほどSilverlightで開発簡単。っぽいような印象。C#書ける人ならすぐにとっかかれますねー。素晴らしい開発環境だと思います。そして私は同時に、Silverlight全然分かってないや、という現実を改めて突きつけられて参ってます。XAMLあんま書けない。Blend使えない。MVVM分からない。モバイル開発云々の前に、基本的な技量が全然欠けているということが良く分かったし、それはそれで良い収穫でした。この秋なのか冬なのかの発売までには、ある程度は技術を身につけておきたいところです。</p>
-<p>そしてそれよりなにより開発機欲すぃです。エミュレータの起動も速いし悪くないのですが、やっぱ実機ですよ、実機！配ってくれぇー。</p>
 </div>
 <a href="https://neue.cc/19">Prev |</a>
 <a href="https://neue.cc/21">| Next</a>

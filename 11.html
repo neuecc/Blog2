@@ -23,7 +23,169 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2013/10/10_429.html">asyncの落とし穴Part3, async voidを避けるべき100億の理由</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2013/10/31_430.html">.NETのコレクション概要とImmutable Collectionsについて</a></h1>
+<ul class="date"><li>2013-10-31</li></ul>
+<div class="entry_body"><p>先週の土曜日に、<a href="http://atnd.org/event/E0019986">「プログラミング .NET Framework 第4版 」座談会</a>でOverview of the .NET Collection Framework and Immutable Collectionsとして、コレクションフレームワークと<a href="http://www.nuget.org/packages/Microsoft.Bcl.Immutable/">Immutable Collections</a>について話してきました。</p>
+<iframe src="https://www.slideshare.net/slideshow/embed_code/27589446" width="597" height="400" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC;border-width:1px 1px 0;margin-bottom:5px" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="https://www.slideshare.net/neuecc/overview-of-the-net-collection-framework-and-immutable-collections" title="Overview of the .Net Collection Framework and Immutable Collections" target="_blank">Overview of the .Net Collection Framework and Immutable Collections</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>案外コレクションについてまとまった話って、ない(or .NET 4.5からReadOnly系が入ってきて、話が更新されているもの)ので、資料として役に立つのではないかと思います。</p>
+<h2>Collection Framework</h2>
+<p>前半部分ですが、これのジューヨーなところはILinqable&lt;T&gt;、じゃなくて(スライド資料では出てないのでナンノコッチャですが)、ReadOnly系の取り扱いですね。MutableとReadOnlyが枝分かれしている理由とか対処方法とか、が伝えたかった点です。いやあ、コレクション作る時は両方実装しよう！とかしょうもないですねえ、shoganaiのですねぇ……。</p>
+<p>IEnumerable&lt;T&gt;とIReadOnlyCollection&lt;T&gt;の差異は実体化されていない「可能性がある」かどうか。で、なのでメソッドの引数などで内部で実体化されてるのを前提にほげもげしたい場合は、IReadOnlyCollection&lt;T&gt;を受け取るほうが望ましいといえば望ましいのですが、汎用的にIEnumerableのままで……という場合は、以下のようなメソッドを用意しとくといいでしょう。</p>
+<pre><code class="language-csharp">/// &lt;summary&gt;
+/// sourceが遅延状態の場合、実体化して返し、既に実体化されている場合は何もせずそれ自身を返します。
+/// &lt;/summary&gt;
+/// &lt;param name=&quot;source&quot;&gt;対象のシーケンス。&lt;/param&gt;
+/// &lt;param name=&quot;nullToEmpty&quot;&gt;trueの場合、sourceがnull時は空シーケンスを返します。falseの場合はArgumentNullExceptionを吐きます。&lt;/param&gt;
+public static IEnumerable&lt;T&gt; Materialize&lt;T&gt;(this IEnumerable&lt;T&gt; source, bool nullToEmpty = true)
+{
+    if (nullToEmpty &amp;&amp; source == null)
+    {
+        return Enumerable.Empty&lt;T&gt;();
+    }
+    else
+    {
+        if (source == null) throw new ArgumentNullException(&quot;sourceがnullです&quot;);
+    }
+
+    if (source is ICollection&lt;T&gt;)
+    {
+        return source;
+    }
+    if (source is IReadOnlyCollection&lt;T&gt;)
+    {
+        return source;
+    }
+
+    return source.ToArray();
+}
+</code></pre>
+<p>こんなのを作って、冒頭で呼べば、二度読みなどもOKに。</p>
+<pre><code class="language-csharp">public static void Hoge&lt;T&gt;(IEnumerable&lt;T&gt; source)
+{
+    source = source.Materialize(); // ここで実体化する
+
+    // あとは好きに書けばいいのではないでせうか
+}
+</code></pre>
+<p>どうでしょ。また、二度読みなら列挙したらキャッシュして、再度読む時はそっから読んでくれればいいのに！というリクエストあるかと思います。それは一般的には<a href="http://ja.wikipedia.org/wiki/%E3%83%A1%E3%83%A2%E5%8C%96">メモ化(Memoization)</a>といいます。というわけで、シーケンスに実装してみましょう。</p>
+<pre><code class="language-csharp">public static IEnumerable&lt;T&gt; Memoize&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    if (source == null) throw new ArgumentNullException(&quot;sourceがnull&quot;);
+    return new MemoizedEnumerable&lt;T&gt;(source);
+}
+
+class MemoizedEnumerable&lt;T&gt; : IEnumerable&lt;T&gt;, IDisposable
+{
+    readonly IEnumerable&lt;T&gt; source;
+    readonly List&lt;T&gt; cache = new List&lt;T&gt;();
+    bool cacheComplete = false;
+    IEnumerator&lt;T&gt; enumerator;
+
+    public MemoizedEnumerable(IEnumerable&lt;T&gt; source)
+    {
+        this.source = source;
+    }
+
+    public IEnumerator&lt;T&gt; GetEnumerator()
+    {
+        if (enumerator == null) enumerator = source.GetEnumerator();
+        return new Enumerator(this);
+    }
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+    {
+        return GetEnumerator();
+    }
+
+    public void Dispose()
+    {
+        if (enumerator != null) enumerator.Dispose();
+    }
+
+    class Enumerator : IEnumerator&lt;T&gt;
+    {
+        readonly MemoizedEnumerable&lt;T&gt; enumerable;
+        int index = 0;
+
+        public Enumerator(MemoizedEnumerable&lt;T&gt; enumerable)
+        {
+            this.enumerable = enumerable;
+        }
+
+        public T Current { get; private set; }
+
+        public void Dispose()
+        {
+
+        }
+
+        object System.Collections.IEnumerator.Current
+        {
+            get { return Current; }
+        }
+
+        public bool MoveNext()
+        {
+            if (index &lt; enumerable.cache.Count)
+            {
+                Current = enumerable.cache[index];
+                index++;
+                return true;
+            }
+
+            if (enumerable.cacheComplete) return false;
+
+            if (enumerable.enumerator.MoveNext())
+            {
+                Current = enumerable.enumerator.Current;
+                enumerable.cache.Add(Current);
+                index++;
+                return true;
+            }
+
+            enumerable.cacheComplete = true;
+            enumerable.enumerator.Dispose();
+            return false;
+        }
+
+        public void Reset()
+        {
+            throw new NotSupportedException(&quot;Resetは産廃&quot;);
+        }
+    }
+}
+</code></pre>
+<p>こうしておけば、</p>
+<pre><code class="language-csharp">// hoge:xが出力されるのは1回だけ
+var seq = Enumerable.Range(1, 5)
+    .Select(x =&gt;
+    {
+        Console.WriteLine(&quot;hoge:&quot; + x);
+        return x;
+    })
+    .Memoize();
+
+// なんど
+foreach (var item in seq.Zip(seq, (x, y) =&gt; new { x, y }).Take(4))
+{
+    Console.WriteLine(item);
+}
+
+// ぐるぐるしても一度だけ
+foreach (var item in seq.Zip(seq, (x, y) =&gt; new { x, y }))
+{
+    Console.WriteLine(item);
+}
+</code></pre>
+<p>といった感じ。Materializeより合理的といえば合理的だし、そうでないといえばそうでない感じです。私はMaterializeのほうが好み。というのもMemoizeは完了していないEnumeratorを保持しなければいけない関係上、Disposeの扱いがビミョーなんですよ、そこが結構引っかかるので。</p>
+<p>あと、IEnumerable&lt;T&gt;ですが、スレッドセーフではない。そう、IEnumerable&lt;T&gt;にはスレッドセーフの保証は実はない。というのを逆手に取ってる（まぁ、それはあんまりなので気になる人はlockかけたりしましょう）。ちなみにReadOnlyCollectionだってラップ元のシーケンスが変更されたらスレッドセーフじゃない。そして、スレッドセーフ性が完璧に保証されているのがImmutable Collections。という話につながったりつながらなかったり。</p>
+<h2>Immutable Collections</h2>
+<p>Immutable Collectionsは実装状況が.NET Framework Blogで随時触れられていて、リリース時の<a href="http://blogs.msdn.com/b/dotnet/archive/2013/09/25/immutable-collections-ready-for-prime-time.aspx">Immutable collections ready for prime time</a>を読めば、なんなのかっては分かるのではかと。その上で私が今回で割と酸っぱく言いたかったのは、ReadOnly「ではない」ってことです。そして結論はアリキタリに使い分けよう、という話でした。</p>
+<p>セッション後の話とかTwitterで、バージョニングされたコレクションって捉えるといいんじゃないの？と意見頂いたのですが、なるほどしっくりきそうです。</p>
+<h2>スピーカー予定</h2>
+<p>今後ですが、大阪です！12/14、<a href="http://vshtc.doorkeeper.jp/events/6781">第3回 LINQ勉強会</a>で発表する予定なので、関西圏の人は是非是非どうぞ。セッションタイトルは「An Internal of LINQ to Objects」を予定しています。これを聞けばLINQ to ObjectsのDeep Diveの部分は全部OK、といった内容にするつもりです。もう初心者向けってこともないので、完全に上級者がターゲットで。</p>
+</div>
+<h1><a href="https://neue.cc/2013/10/10_429.html">asyncの落とし穴Part3, async voidを避けるべき100億の理由</a></h1>
 <ul class="date"><li>2013-10-10</li></ul>
 <div class="entry_body"><p>だいぶ前から時間経ってしまいましたが、非同期の落とし穴シリーズPart3。ちなみにまだ沢山ネタはあるんだから！どこいっても非同期は死にますからね！</p>
 <h2>async void vs async Task</h2>
@@ -1792,123 +1954,6 @@ declare var Enumerable: linqjs.Enumerable;
 <p>6月は何故かいっぱいイベントに出ることになっています。6/8の<a href="http://www.buildinsider.net/event/offline/01">Build Insider OFFLINE</a>、そこで「.NET最先端技術によるハイパフォーマンスウェブアプリケーション」についてお話します。もう席は満席となってしまいましたが、Ustreamでの中継も行われるようですので、よろしければそちらで見ていただければと思います。</p>
 <p>また、6/11~14あたりに、<a href="http://csharp-users.jp/">C#ユーザー会</a>で何か話すそうです。何か。何でしょうね。一節によるとPHP被害者友の会（？）だとか・</p>
 <p>そして6/22に<a href="http://atnd.org/event/E0015958">つくばC#勉強会</a>でThe History of LINQと題して、何か話すそうです。はい。つくばいいですね！素晴らしいですぅー。つくば勉強会はまだまだ残席あるようなので、みんな参加しよう！登壇者も募集しているようですので、登壇もしよう！</p>
-</div>
-<h1><a href="https://neue.cc/2013/04/24_404.html">RxとRedisを用いたリモートPub/Sub通信</a></h1>
-<ul class="date"><li>2013-04-24</li></ul>
-<div class="entry_body"><p>今日から始まった<a href="http://www.buildinsider.net/">Build Insider</a>で、RedisとBookSleeveの記事を書きました - <a href="http://www.buildinsider.net/small/rediscshap/01">C#のRedisライブラリ「BookSleeve」の利用法</a>。Redis、面白いし、Windowsで試すのも想像以上に簡単なので、是非是非試してみて欲しいです。そして何よりもBookSleeve！使うと、強制的に全てがasyncになるので、C# 5.0でのコーディングの仕方のトレーニングになる（笑）。にちじょー的にasync/awaitを使い倒すと、そこから色々アイディアが沸き上がっきます。ただたんにsyncがasyncになった、などというだけじゃなく、アプリケーションの造りが変わります。そういう意味では、Taskは結構過小評価されてるのかもしれないな、なんて最近は思っています。</p>
-<p>さて、RedisにはPub/Sub機能がついているわけですが、Pub/Sub→オブザーバーパターン→Rx！これはティンと来た！と、いうわけで、これ、Rxに乗せられました、とても自然に。というわけで、□□を○○と見做すシリーズ、なCloudStructuresにRx対応を載せました。</p>
-<ul>
-<li><a href="https://github.com/neuecc/CloudStructures">GitHub - CloudStructures</a></li>
-<li><a href="https://nuget.org/packages/CloudStructures/">PM&gt; Install-Package CloudStructures -Pre</a></li>
-</ul>
-<p>追加したクラスはRedisSubject&lt;T&gt;。これはSubjectやAsyncSubjectなどと同じく、ISubject&lt;T&gt;になっています。IObservableであり、IObserverでもある代物。とりあえず、コード例を見てください。</p>
-<pre><code class="language-csharp">var settings = new RedisSettings(&quot;127.0.0.1&quot;);
-
-var subject = new RedisSubject&lt;string&gt;(settings, &quot;PubSubTest&quot;);
-
-// SubscribeはIObservable&lt;T&gt;なのでRxなLINQで書ける
-var a = subject
-    .Select(x =&gt; DateTime.Now.Ticks + &quot; &quot; + x)
-    .Subscribe(x =&gt; Console.WriteLine(x));
-
-var b = subject
-    .Where(x =&gt; !x.StartsWith(&quot;A&quot;))
-    .Subscribe(x =&gt; Console.WriteLine(x), () =&gt; Console.WriteLine(&quot;completed!&quot;));
-
-// IObserverなのでOnNext/OnError/OnCompletedでメッセージ配信
-subject.OnNext(&quot;ABCDEFGHIJKLM&quot;);
-subject.OnNext(&quot;あいうえお&quot;);
-subject.OnNext(&quot;なにぬねの&quot;);
-
-Thread.Sleep(200); // 結果表示を待つ...
-
-a.Dispose(); // UnsubscribeはDisposeで
-subject.OnCompleted(); // OnCompletedを受信したSubscriberもUnsubscribeされる
-</code></pre>
-<p>はい、別になんてこともない極々フツーのRxのSubjectです。が、しかし、これはネットワークを通って、Redisを通して、全てのSubscriberへとメッセージを配信しています。おお～。いやまあ、コードの見た目からじゃあそういうの分からないので何も感動するところもないのですが、とにかく、本当に極々自然に普通に、しかし、ネットワークを超えます。この、見た目何も変わらずに、というところがいいところなわけです。</p>
-<p>Subscribeする側はIObservableなので別にフツーに合成していけますし、Publishする側もIObserverなので、Subscribeにしれっと潜り込ませたりしても構わない。もう、全然、普通にインメモリなRxでやる時と同じことが、できます。</p>
-<p>オワリ。地味だ。</p>
-<p>う、うーん。ほ、ほらほら！！</p>
-<pre><code class="language-csharp">// ネットワーク経由
-var settings = new RedisSettings(&quot;xx.xxx.xxx.xxx&quot;);
-
-var subject = new RedisSubject&lt;DateTime&gt;(settings, &quot;PubSubTest&quot;);
-
-// publisherはこちらのコード
-while (true)
-{
-    Console.ReadLine();
-    var now = DateTime.Now;
-    Console.WriteLine(now.Ticks);
-    subject.OnNext(now);
-}
-
-// subscriberはこちらのコードを動かす
-subject.Subscribe(x =&gt;
-{
-    var now = DateTime.Now;
-    Console.Write(x.Ticks + &quot; =&gt; &quot; + now.Ticks);
-    Console.WriteLine(&quot; | &quot; + (now - x));
-});
-</code></pre>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/redis_network_pubsub.jpg">
-</p>
-<p>というわけで、実際にネットワーク経由(AWS上に立てたRedisサーバーを通してる)で動かしてみた結果がこんな感じです。ネットワークを超えたことで用法は幾らでもある！夢膨らみまくり！</p>
-<p>で、↑のコードは遅延時間のチェックを兼ねてるのですが、概ね、0.03秒ぐらい。たまにひっかかって0.5秒超えてるのがあって、ぐぬぬですが。実際のとこRedis/Linuxの設定で結構変わってくるところがあるので、その辺は煮詰めてくださいといったところでしょうか。</p>
-<p>ともあれチャットとかなら全然問題なし、ゲームでもアクションとかタイミングにシビアじゃないものなら余裕ですね、ボードゲームぐらいなら全く問題ない。ちょっとしたMMOぐらいならいけるかも。これからはネットワーク対戦はRedisで、Rxで！！！</p>
-<h2>余談</h2>
-<p>CloudStructuresですが、.configからの設定読み込み機能も地味につけました。</p>
-<pre><code class="language-xml">&lt;configSections&gt;
-    &lt;section name=&quot;cloudStructures&quot; type=&quot;CloudStructures.Redis.CloudStructuresConfigurationSection, CloudStructures&quot; /&gt;
-&lt;/configSections&gt;
-
-&lt;cloudStructures&gt;
-    &lt;redis&gt;
-        &lt;group name=&quot;cache&quot;&gt;
-            &lt;add host=&quot;127.0.0.1&quot; /&gt;
-            &lt;add host=&quot;127.0.0.2&quot; port=&quot;1000&quot; /&gt;
-        &lt;/group&gt;
-        &lt;group name=&quot;session&quot;&gt;
-            &lt;add host=&quot;127.0.0.1&quot; db=&quot;2&quot; valueConverter=&quot;CloudStructures.Redis.ProtoBufRedisValueConverter, CloudStructures&quot; /&gt;
-        &lt;/group&gt;
-    &lt;/redis&gt;
-&lt;/cloudStructures&gt;
-</code></pre>
-<pre><code class="language-csharp">// これで設定を読み込める
-var groups = CloudStructuresConfigurationSection.GetSection().ToRedisGroups();
-</code></pre>
-<p>色々使いやすくなってきて良い感じじゃあないでしょーか。</p>
-<h2>コールバック撲滅</h2>
-<p>そうそう、最後に実装の話を。元々BookSleeveのPub/Sub購読はコールバック形式です。「public Task Subscribe(string key, Action&lt;string, byte[]&gt; handler)」handlerはstringがキー, byte[]が送られてくるオブジェクトを指します。コールバック is ダサい。コールバック is 扱いにくい。ので、コールバックを見かけたらObservableかTaskに変換することを考えましょう！それがC# 5.0世代の常識です！</p>
-<p>というわけで、以下のようにして変換しました。</p>
-<pre><code class="language-csharp">public IDisposable Subscribe(IObserver&lt;T&gt; observer)
-{
-    var channel = Connection.GetOpenSubscriberChannel();
-
-    var disposable = System.Reactive.Disposables.Disposable.Create(() =&gt;
-    {
-        channel.Unsubscribe(Key).Wait();
-    });
-
-    // ここが元からあるコールバック
-    channel.Subscribe(Key, (_, xs) =&gt;
-    {
-        using (var ms = new MemoryStream(xs))
-        {
-            var value = RemotableNotification&lt;T&gt;.ReadFrom(ms, valueConverter);
-            value.Accept(observer); // この中でobserverのOnNext/OnError/OnCompletedが叩かれる
-            if (value.Kind == NotificationKind.OnError || value.Kind == NotificationKind.OnCompleted)
-            {
-                disposable.Dispose(); // ErrorかCompletedでもUnsubscribeしますん
-            }
-        }
-    }).Wait();
-
-    return disposable; // もしDisposableが呼ばれたらUnsubscribeしますん
-}
-</code></pre>
-<p>こんなふぅーにRxで包むことで、相当使いやすさがアップします。感動した。</p>
 </div>
 <a href="https://neue.cc/10">Prev |</a>
 <a href="https://neue.cc/12">| Next</a>
