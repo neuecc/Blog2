@@ -23,7 +23,49 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2013/10/31_430.html">.NETのコレクション概要とImmutable Collectionsについて</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2013/11/15_434.html">GlimpseによるRedis入出力の可視化とタイムライン表示</a></h1>
+<ul class="date"><li>2013-11-15</li></ul>
+<div class="entry_body"><p>空前の<a href="http://getglimpse.com/">Glimpse</a>ブーム！Glimpse最高！これ入れてないASP.NET開発はレガシー！というわけで、<a href="http://grani.jp/">グラニ a.k.a. 謎社</a>でも激しく使用を開始しています。さて、ではGlimpseとは何ぞやか、という話は今回は、しません（！）。それは誰かがしてくれます(ﾁﾗｯ。今回は本題のRedis周りのGlimpse拡張について。</p>
+<h2>CloudStructures 0.6</h2>
+<p>グラニではRedisライブラリとしてBookSleeve + <a href="https://github.com/neuecc/CloudStructures">CloudStructures</a>を利用しています。RedisやBookSleeveについては、<a href="http://www.buildinsider.net/small/rediscshap/01">C#のRedisライブラリ「BookSleeve」の利用法</a>を読んでね！何故BookSleeveだけじゃないのかというと、BookSleeveだけだと使いづらいからです。例えるなら、BookSleeveはRedisドライバであり、ADO.NETみたいなもの。CloudStructuresはO/R(Object/Redis)マッパーであり、Dapperのようなもの。といった関係性で捉えてもらえればあってます。で、CloudStructuresは私謹製です。</p>
+<p>今回Glimpseと連携させて使いやすくログ吐きするのに若干足りてなかったので、出力用のインターフェイス ICommandTracer を破壊的変更かけてがっつし変えちゃってます。というわけでバージョン0.6に更新。破壊的変更、ま、まだ0.xだし……。0.xとはいえ、CloudStructuresはグラニのプロダクション環境下で激しく使われてます。もんのすごい量のメッセージを捌いている（BookSleeve開発元のStackOverflowよりも遥かに捌いているはず）、秒間で数万とか数十万とかのクエリ数を、なので実績は十二分にあると言えるでしょう。</p>
+<p>今回からリポジトリにCloudStructures.Demo.Mvcというプロジェクトを入れているので、実環境でどういう風に使えばいいのかとか、Glimpseでどう表示されるのかが分かるようになってますので、使う時は参考にどうぞ。</p>
+<h2>Glimpseによる表示</h2>
+<p>今回からCloudStructuresによるRedisアクセスを可視化できるように、Glimpseプラグインが別途インストールできるようになりました。NuGet上で <a href="https://www.nuget.org/packages/Glimpse.CloudStructures.Redis/">Glimpse.CloudStructures.Redis</a>から入れればおｋ。インストール後、Glimpseを有効にし、ICommandTracerにGlimpse.CloudStructures.Redis.RedisProfilerを渡してやると（Web.configからの設定の仕方などはCloudStructures.Demo.Mvcを見て下さい）、以下のようになります。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/11/glimpse_redis_tab.jpg' />
+</p>
+<p>Redisタブが追加され、Redisで、どのコマンドでどのキーで実行したか、何を送って何を受け取れたか、かかった時間。それらが一覧表示されます。また、重複コマンド・キーで発行した場合は警告表記になります（一番下のオレンジの）</p>
+<p>とにかく、通信が全部見える。中身含めて。圧倒的に捗ります。これがないなんて、盲目で歩いているに等しかった。ありえない。もう、戻れない。見えるっては、いいことですねぇ、ほんと。</p>
+<p>更に、Glimpse標準のTimelineタブに統合されていて、これが超絶最高です。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/11/glimpse_timeline.jpg' />
+</p>
+<p>5つ連なってる部分、これは非同期に並列アクセスされています。コードは</p>
+<pre><code class="language-csharp">var ids = new[] { 12, 3124, 51, 636, 6714 };
+var rand = new Random();
+            
+await Task.WhenAll(ids.Select(async x =&gt;
+{
+    await RedisGroups.Demo.String&lt;int&gt;(&quot;TestInc.Id.&quot; + x).Increment(rand.Next(1, 10));
+}).ToArray());
+</code></pre>
+<p>のようになっているわけですが、これ、もし同期アクセスだったら、同時に動くことなく、この分だけタイムラインが右に長くなるわけです。可視化されることで全て非同期！全てパイプライン！効率的に、高速に、というのがとてもわかりやすく見えます。実際、グラニではこういった一気に叩いてWhenAllというパターンを多用して高速なレスポンスを実現しています。ここまでASP.NET MVCの非同期コントローラーを死ぬほど使い倒している企業は、世界でも稀なのではないか、というレベルで非同期祭りやってます。（そして時に地雷踏みつつ前進してます）。</p>
+<h2>Glimpseについてもうちょっとだけ</h2>
+<p>実際のところGlimpse、ただ入れただけだとあんまり嬉しいことはないでしょう。色々なサーバーの情報が見えると言ったって、そんなの一度だけ見れば十分だしー、で終わってしまったり。ただ情報がありゃあいいってものじゃなくて、何の情報が必要か、が大事。でも、Glimpseってカスタマイズが容易なんですね。だから、その会社にとって、そのアプリケーションにとって大事な情報を流しこむことができる。大事な情報を流しこむようにすることで「頻繁に使うものではない」から「頻繁に使うもの」に変える。そうすることで、手放せないものとなります。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/11/glimpse_original_tab.jpg' />
+</p>
+<p>これはグラニで実際に使っているタブですが、Log, PlatformAPI, Redis, SQL Explainは弊社が独自に作成したタブです。以前に<a href="http://neue.cc/2013/07/30_420.html">Http, SQL, Redisのロギングと分析・可視化について</a>という記事を書きましたが、そこで、外部へのアクセスをフックする仕組みは作ってあったので、それぞれでGlimpseにデータ流すように変えただけです。これによりRedis, Http, SQLの全てがタブで全て見えるし、Timelineにも出てくるのでボトルネックが一目瞭然に。過度な通信なども一発で分かる。</p>
+<p>SQL Explainはリクエスト中で発行された全てのSQLに対してexplainを発行し結果を表示しています(うちはMySQLを使っているのでexplainです、SQL Serverならそれ用のコマンド打てば同様以上のことが当然可能です)。これにより、将来ボトルネックになるクエリが早期発見できます。</p>
+<p>explainとか面倒だから全てに律儀に打ったりしないし、*ms以上遅いクエリは警告するとかやったって、開発環境のデータ量だと無意味だったりするでしょう。だから、全てのクエリに対して自動でexplainをかけてやって、怪しそうなもの(using filesortとか)は最初から警告してあげる。これで、クソクエリの早期撲滅が可能となります。</p>
+<p>ちなみにMiniProfilerとの使い分けですが、うちではむしろもうMiniProfilerイラナクね？の方向で進んでます。ちょっとまだGlimpse、足りてないところもあるのですが、割と直ぐに解決しそうだし、むしろMiniProfiler動かしてるとHistoryが汚れるのでGlimpseにとって邪魔なのですよね。</p>
+<h2>まとめ</h2>
+<p>といったように、グラニではより開発しやすい環境を作ることに全力を注いでいます。なんと今だと<a href="http://next.rikunabi.com/company/cmi3321608001/">アプリケーションエンジニア・インフラエンジニア・フロントエンドエンジニアを募集中</a>だそうですよ！←求人広告記事ﾀﾞｯﾀﾉｶｰ、ｲﾔｿﾝﾅｺﾄﾅｲﾃﾞｽｹﾄﾞﾈ。なんか敷居高杉と思われてるかもですが、アプリエンジニアに関しては割とそんなことなく、基準は最低限LINQ to Objects知ってる程度からなので気楽にどうぞ。最近、オフィスを六本木ヒルズに移転しまして、ハードウェア環境も充実しているので、そちらの面でも開発しやすいかな、と。モニタも27インチ(2560x1440)をトリプルですしドリンク無料飲み放題ですし。</p>
+<p>ソフトウェア側も良さそうならどんどんバシバシ変えてます。Glimpseも最初は導入されてませんでしたが、後から入れていますしね。ASP.NET MVCも早速5へ。この辺の姿勢は初期の文化が大事だと思っているので、絶対緩めないのを信条にしています。</p>
+<p>なお、Glimpseの導入や独自タブの作成、ならびにGlimpse.CloudStructures.Redisの作成は、私がやったわけではありません！私がやったのはSQL Explainタブの作成とICommandTracerの改変、Glimpse.CloudStructures.Redisを社外に出せるよう依存部分の除去しただけでして。そんなわけで皆で一岩となって改革してるんですよー、とっても刺激的でいい職場です。私にとっても。←ﾔｯﾊﾟﾘ求人広告記事ﾀﾞｯﾀﾉｶｰ、ｲﾔｿﾝﾅｺﾄﾅｲﾃﾞｽﾖ。</p>
+</div>
+<h1><a href="https://neue.cc/2013/10/31_430.html">.NETのコレクション概要とImmutable Collectionsについて</a></h1>
 <ul class="date"><li>2013-10-31</li></ul>
 <div class="entry_body"><p>先週の土曜日に、<a href="http://atnd.org/event/E0019986">「プログラミング .NET Framework 第4版 」座談会</a>でOverview of the .NET Collection Framework and Immutable Collectionsとして、コレクションフレームワークと<a href="http://www.nuget.org/packages/Microsoft.Bcl.Immutable/">Immutable Collections</a>について話してきました。</p>
 <iframe src="https://www.slideshare.net/slideshow/embed_code/27589446" width="597" height="400" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC;border-width:1px 1px 0;margin-bottom:5px" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="https://www.slideshare.net/neuecc/overview-of-the-net-collection-framework-and-immutable-collections" title="Overview of the .Net Collection Framework and Immutable Collections" target="_blank">Overview of the .Net Collection Framework and Immutable Collections</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
@@ -1939,22 +1981,6 @@ declare var Enumerable: linqjs.Enumerable;
 <p>珍しく既にスライドは完成していまして、「Static vs Dynamic」「Type for IntelliSense」「Type for Refactoring」「Debugger is Power」「LINQ vs array_xxx」「Razor:Template Engine Revolution」といったようなタイトルが並んでますので、気になった方はどーぞ。</p>
 <p>ああ、そう、あとA vs Bにおいて、全てにおけてAのほうがいい、なんてことは絶対にないんですね。どこかしらかはBのほうがよかったり、BならXxxなのに、とかいうようなことも出てくるでしょう。何がどれだけ自分に、自分達に良いのかの選択をしてくのが肝要なので、その選択を考えるための道具になればいいかと思ってます。</p>
 </div>
-<h1><a href="https://neue.cc/2013/05/27_405.html">HttpClient詳解、或いはAsyncOAuthのアップデートについて</a></h1>
-<ul class="date"><li>2013-05-27</li></ul>
-<div class="entry_body"><p>すっかり忘れていたわけではないですが、ちょっとかなり前、3/30の<a href="http://metrostyledev.net/index.php/event/20130330/">Room metro #15</a>にて、HttpClient詳解という、HttpClientについてのセッションを行いました。</p>
-<iframe src="https://www.slideshare.net/slideshow/embed_code/17899218" width="597" height="400" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC;border-width:1px 1px 0;margin-bottom:5px" allowfullscreen webkitallowfullscreen mozallowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="http://www.slideshare.net/neuecc/httpclient" title="HttpClient詳解、或いは非同期の落とし穴について" target="_blank">HttpClient詳解、或いは非同期の落とし穴について</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
-<p>HttpClientは、使えば使うほど、もうWebRequestやWebClientに戻りたくないわー、という非常に秀逸な、完全にこれからのスタンダードになる代物なので、きっちり習得しましょう。</p>
-<p>或いは非同期の落とし穴について、ということで、async/awaitでも顕在の、いや、async/awaitだからこそ現れるデッドロックの問題と回避方法についても紹介しています。はまる時ははまっちゃうんですよねー、これ、何気に地味に実は。それなりに痛い目みました、私も。</p>
-<h2>PCL版のRC</h2>
-<p>HttpClientは現在.NET 4.5とWindows Store Appsのほうに標準搭載されていますが、それ以外でも使うために、Portable Class Libraryとしての提供がされています。そして、5/22に<a href="http://blogs.msdn.com/b/dotnet/archive/2013/05/22/portable-httpclient-is-now-available-as-rc.aspx">Portable HttpClient is now available as RC</a>としてRC版がリリースされました！</p>
-<p>こないだまでのBeta版だと、AsyncOAuthを使ってTiwtterのストリーミングAPIを読む時に、awaitすると全く戻ってこなくなるという現象がありました。これはAsyncOAuthが悪いのかHttpClientが悪いのか調べたんですが、結果としてHttpClientのバグでした。HttpClientは内部で通信にWebRequestを使っているのですが、それのAllowReadStreamBufferingとAllowWriteStreamBufferingをfalseにセットしなければならないのに、何もセットしない（ことによって結果的にtrueになっている）状態でした。すると、ストリーミングAPIを読むのにバッファを取ろうとして、当然ストリーミングなのでオワリがないので永遠に帰ってこないという……。</p>
-<p>ちゃんとバグ報告したら（偉い！←自分で言う）、今回のRC版で直してくれたようです、多分。とりあえずWP8のEmulatorで試した限りでは、ちゃんとストリーミングAPI動きました。よかったよかった。というわけで、AsyncOAuthもver.0.6.4として、新しいHttpClientに依存するようにアップデートしておきました。なお、AsyncOAuthについては<a href="http://neue.cc/2013/02/27_398.html">AsyncOAuth - C#用の全プラットフォーム対応の非同期OAuthライブラリ</a>を読んでくださいな。</p>
-<p>そういえば同時に、というか4/17にですが、.NET4などでもasync/awaitを使えるようにする<a href="http://blogs.msdn.com/b/bclteam/archive/2013/04/17/microsoft-bcl-async-is-now-stable.aspx">Microsoft.Bcl.Async</a>はStableになってました。これで気兼ねなくasync使える！</p>
-<h2>6月の予定</h2>
-<p>6月は何故かいっぱいイベントに出ることになっています。6/8の<a href="http://www.buildinsider.net/event/offline/01">Build Insider OFFLINE</a>、そこで「.NET最先端技術によるハイパフォーマンスウェブアプリケーション」についてお話します。もう席は満席となってしまいましたが、Ustreamでの中継も行われるようですので、よろしければそちらで見ていただければと思います。</p>
-<p>また、6/11~14あたりに、<a href="http://csharp-users.jp/">C#ユーザー会</a>で何か話すそうです。何か。何でしょうね。一節によるとPHP被害者友の会（？）だとか・</p>
-<p>そして6/22に<a href="http://atnd.org/event/E0015958">つくばC#勉強会</a>でThe History of LINQと題して、何か話すそうです。はい。つくばいいですね！素晴らしいですぅー。つくば勉強会はまだまだ残席あるようなので、みんな参加しよう！登壇者も募集しているようですので、登壇もしよう！</p>
-</div>
 <a href="https://neue.cc/10">Prev |</a>
 <a href="https://neue.cc/12">| Next</a>
 </div>
@@ -1978,6 +2004,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/01/">2024-01</a>
 <li><a href="https://neue.cc/2023/12/">2023-12</a>
 <li><a href="https://neue.cc/2023/10/">2023-10</a>
 <li><a href="https://neue.cc/2023/09/">2023-09</a>

@@ -23,7 +23,207 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2011/12/16_359.html">Modern C# Programming Style Guide</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2011/12/21_360.html">RxとパフォーマンスとユニットテストとMoles再び</a></h1>
+<ul class="date"><li>2011-12-21</li></ul>
+<div class="entry_body"><p><a href="http://atnd.org/events/21988">C# Advent Calendar 2011</a>、順調に進んでいますね。どのエントリも力作で大変素晴らしいです。私はこないだ<a href="http://neue.cc/2011/12/16_359.html">Modern C# Programming Style Guide</a>というものを書きました。はてブ数は現段階で45、うーん、あまり振るわない……。私の力不足はともかくとしても、他の言語だったらもっと伸びてるだろうに、と思うと、日本のC#の現状はそんなものかなあ、はぁ、という感じではあります。はてブが全てではない（むしろ斜陽？）とはいえ、Twitterでの言及数などを見ても、やっぱまだまだまだまだまだまだ厳しいかなあ、といったところ。Unityなどもあって、見ている限りだと人口自体は着実に増えている感じではありますけれど、もっともっと、関心持ってくれる人が増えるといいな。私も微力ながら尽力したいところです。</p>
+<p>ところで、<a href="http://d.hatena.ne.jp/ZOETROPE/">id:ZOETROPE</a>さんのAdvent Calendarの記事、<a href="http://d.hatena.ne.jp/ZOETROPE/20111220#1324392149">Reactive Extensionsでセンサプログラミング</a>が大変素晴らしい！センサー、というと私だとWindows Phone 7から引っ張ってくるぐらいしか浮かばないのですが（最近だとKinectもHotですか、私は全然触れてませんが……）おお、USB接続のレンジセンサ！完全に門外漢な私としては、そういうのもあるのか！といったぐらいなわけですが、こうしてコード見させていただくと、実践的に使うRxといった感じでとてもいいです。</p>
+<p>記事中で扱われているトピックも幅広いわけですが、まず、パフォーマンスに関しては少し補足を。@okazukiさんの<a href="http://d.hatena.ne.jp/okazuki/20111214/1323828027">見せてもらおうじゃないかReactive Extensionsの性能とやらを！ その２</a>のコメント欄でもちょっと言及したのですが、この測り方の場合、Observable.Rangeに引っ張られているので、ベンチマークの値はちょっと不正確かな、と思います。</p>
+<pre><code class="language-csharp">// 1000回イベントが発火(発火の度に長さ3000のbyte配列が得られる)を模写
+static IObservable&lt;byte[]&gt; DummyEventsRaised()
+{
+    return Observable.Repeat(new byte[3000], 1000, Scheduler.Immediate);
+}
+
+// 配列をバラす処理にObservable.Rangeを用いた場合
+static IObservable&lt;byte&gt; TestObservableRange()
+{
+    return Observable.Create&lt;byte&gt;(observer =&gt;
+    {
+        return DummyEventsRaised()
+            .Subscribe(xs =&gt;
+            {
+                Observable.Range(0, xs.Length, Scheduler.Immediate).ForEach(x =&gt; observer.OnNext(xs[x]));
+            });
+    });
+}
+
+// 配列をバラす処理にEnumerable.Rangeを用いた場合(ForEachはIxのもの)
+static IObservable&lt;byte&gt; TestEnumerableRange()
+{
+    return Observable.Create&lt;byte&gt;(observer =&gt;
+    {
+        return DummyEventsRaised()
+            .Subscribe(xs =&gt;
+            {
+                Enumerable.Range(0, xs.Length).ForEach(x =&gt; observer.OnNext(xs[x]));
+            });
+    });
+}
+
+// SelectManyでバラす場合
+static IObservable&lt;byte&gt; TestSelectMany()
+{
+    return DummyEventsRaised().SelectMany(xs =&gt; xs);
+}
+
+static void Main(string[] args)
+{
+    // ベンチマーク補助関数
+    Action&lt;Action, string&gt; bench = (action, label) =&gt;
+    {
+        var sw = Stopwatch.StartNew();
+        action();
+        Console.WriteLine(&quot;{0,-12}{1}&quot;, label, sw.Elapsed);
+    };
+
+    // 配列をばらすケースは再度連結する(ToList)
+    bench(() =&gt; TestObservableRange().ToList().Subscribe(), &quot;Ob.Range&quot;);
+    bench(() =&gt; TestEnumerableRange().ToList().Subscribe(), &quot;En.Range&quot;);
+    bench(() =&gt; TestSelectMany().ToList().Subscribe(), &quot;SelectMany&quot;);
+    // 配列をばらして連結せず直接処理する場合
+    bench(() =&gt; TestSelectMany().Subscribe(), &quot;DirectRx&quot;);
+    // byte[]をばらさず直接処理する場合
+    bench(() =&gt; DummyEventsRaised().Subscribe(xs =&gt; { foreach (var x in xs);}), &quot;DirectLoop&quot;);
+
+    // 実行結果
+    // Ob.Range    00:00:02.2619670
+    // En.Range    00:00:00.2600460
+    // SelectMany  00:00:00.2701137
+    // DirectRx    00:00:00.0852836
+    // DirectLoop  00:00:00.0152816
+}
+</code></pre>
+<p>得られる配列をダイレクトに処理するとして、Observable.Rangeで配列のループを回すと論外なほど遅い。のですが、しかし、この場合ですとEnumerable.Rangeで十分なわけで、そうすれば速度は全然変わってきます（もっと言えば、ここではEnumerable.Rangeではなくforeachを使えば更に若干速くなります）。更に、これは配列を平坦化している処理とみなすことができるので、observerを直に触らず、SelectManyを使うこともできますね。そうすれば速度はほとんど変わらず、コードはよりすっきり仕上がります。</p>
+<p>と、いうわけで、遅さの原因はObservable.Rangeです。Rangeが遅いということはRepeatやGenerateなども同様に遅いです。遅い理由は、値の一つ一つをISchedulerを通して流しているから。スケジューラ経由であることは大きな柔軟性をもたらしていますが、直にforeachするよりもずっとずっと遅くなる。なので、Enumerableで処理出来る局面ならば、Enumerableを使わなければなりません。これは、使うほうがいい、とかではなくて、圧倒的な速度差となるので、絶対に、Enumerableのほうを使いましょう。</p>
+<p>また、一旦配列をバラして、再度連結というのは、無駄極まりなく、大きな速度差にも現れてきます。もし再度連結しないでそのまま利用(ベンチ結果：DirectRx)すれば直接ループを回す(ベンチ結果：DirectLoop)よりも5倍程度の遅さで済んでいます。このぐらいなら許容範囲と言えないでしょうか？とはいえ、それでも、遅さには違いないわけで、避けれるのならば避けたほうがよいでしょう。</p>
+<p>ZOETROPEさんの記事にあるように、ここはばらさないほうが良い、というのが結論かなあ、と思います。正しくは上流ではばらさない。一旦バラしたものは復元不可能です。LINQで、パイプラインで処理を接続することが可能という性質を活かすのならば、なるべく後続で自由の効く形で流してあげたほうがいい。アプリケーション側でバラす必要があるなら、それこそSelectMany一発でばらせるのだから。</p>
+<p>例えばWebRequestで配列状態のXMLを取ってくるとします。要素は20個あるとしましょう。最初の文字列状態だけを送られてもあまり意味はないので、XElement.Parseして、実際のクラスへのマッピングまではやります。例えばここではPersonにマッピングするとして、長さ1のIObservable&lt;Person[]&gt;です。しかし、それをSelectManyして長さ20のIObservable&lt;Person&gt;にはしないほうがいい。ここでバラしてしまうと長さという情報は消滅してしまうし、一回のリクエスト単位ではなくなるのも不都合が生じやすい。もしアプリケーション的にフラットになっていたほうが都合が良いのなら、それはまたそれで別のメソッドとして切り分けましょう。</p>
+<h2>成功と失敗の一本化</h2>
+<p>ZOETROPEさんの記事の素晴らしいのは、通常のルート(DataReceived)と失敗のルート(ErrorReceived)を混ぜあわせているところ！これもまたイベントの合成の一つの形なわけなんですねー。こういう事例はWebClientのDownloadStringAsyncのような、EAP(Eventbased Asynchronous Programming)をTaskCompletionSourceでラップしてTaskに変換する <a href="http://msdn.microsoft.com/ja-jp/library/ee622454.aspx">方法: タスクに EAP パターンをラップする</a>←なんかゴチャゴチャしていますが、TrySetCanceled, TrySetException, TrySetResultで結果を包んでいます、というのと似た話だと見なせます。</p>
+<p>WebClientではEventArgsがCancelledやErrorといったステータスを持っているのでずっと単純ですが、SerialPortではエラーは別のイベントでやってくるのですね。というわけで、私もラップしてみました。</p>
+<pre><code class="language-csharp">public static class SerialPortExtensions
+{
+    // 面倒くさいけれど単純なFromEventでのイベントのRx化
+    public static IObservable&lt;SerialDataReceivedEventArgs&gt; DataReceivedAsObservable(this SerialPort serialPort)
+    {
+        return Observable.FromEvent&lt;SerialDataReceivedEventHandler, SerialDataReceivedEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; serialPort.DataReceived += h, h =&gt; serialPort.DataReceived -= h);
+    }
+
+    public static IObservable&lt;SerialErrorReceivedEventArgs&gt; ErrorReceivedAsObservable(this SerialPort serialPort)
+    {
+        return Observable.FromEvent&lt;SerialErrorReceivedEventHandler, SerialErrorReceivedEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; serialPort.ErrorReceived += h, h =&gt; serialPort.ErrorReceived -= h);
+    }
+
+    // DataReceived(プラスbyte[]化)とErrorReceivedを合成する
+    public static IObservable&lt;byte[]&gt; ObserveReceiveBytes(this SerialPort serialPort)
+    {
+        var received = serialPort.DataReceivedAsObservable()
+            .TakeWhile(e =&gt; e.EventType != SerialData.Eof) // これでOnCompletedを出す
+            .Select(e =&gt;
+            {
+                var buf = new byte[serialPort.BytesToRead];
+                serialPort.Read(buf, 0, buf.Length);
+                return buf;
+            });
+
+        var error = serialPort.ErrorReceivedAsObservable()
+            .Take(1) // 届いたらすぐに例外だすので長さ1として扱う（どうせthrowするなら関係ないけど一応）
+            .Do(x =&gt; { throw new Exception(x.EventType.ToString()); });
+
+        return received.TakeUntil(error); // receivedが完了した時に同時にerrorをデタッチする必要があるのでMergeではダメ
+    }
+}
+</code></pre>
+<p>成功例と失敗例を合成して一本のストリーム化。また、DataReceivedはそのままじゃデータすっからかんなので、Selectでbyte[]に変換してあげています。これで、ObserveReceiveBytes拡張メソッドを呼び出すだけで、かなり扱いやすい形になっている、と言えるでしょう。パフォーマンスも、これなら全く問題ありません。</p>
+<h2>MolesとRx</h2>
+<p>と、ドヤ顔しながら書いていたのですが、とーぜんセンサーの実物なんて持ってませんので動作確認しようにもできないし。ま、まあ、そういう時はモックとか用意して、ってSerialDataReceivedEventArgsはパブリックなコンストラクタないし、ああもうどうすればー。と、そこで出てくるのが<a href="http://research.microsoft.com/en-us/projects/moles/">Moles - Isolation framework</a>。以前に<a href="http://neue.cc/2011/03/10_309.html">Rx + MolesによるC#での次世代非同期モックテスト考察</a>という記事で紹介したのですが、めちゃくちゃ強力なモックライブラリです。パブリックなコンストラクタがないとか関係なくダミーのインスタンスを生成可能だし、センサーのイベントだから作り出せないし、なんてこともなく自由にダミーのイベントを発行しまくれます。</p>
+<pre><code class="language-csharp">[TestClass]
+public class SerialPortExtensionsTest : ReactiveTest
+{
+    [TestMethod, HostType(&quot;Moles&quot;)]
+    public void ObserveReceiveBytesOnCompleted()
+    {
+        // EventArgsを捏造！
+        var chars = new MSerialDataReceivedEventArgs() { EventTypeGet = () =&gt; SerialData.Chars };
+        var eof = new MSerialDataReceivedEventArgs() { EventTypeGet = () =&gt; SerialData.Eof };
+        // SerialPort::BytesToRead/SerialPort::Readで何もしない
+        MSerialPort.AllInstances.BytesToReadGet = (self) =&gt; 0;
+        MSerialPort.AllInstances.ReadByteArrayInt32Int32 = (self, buffer, offset, count) =&gt; 0;
+
+        var scheduler = new TestScheduler();
+
+        // 時間10, 20, 30, 40でSerialData.Charsのイベントを、時間50でEofのイベントを発行
+        MSerialPortExtensions.DataReceivedAsObservableSerialPort = _ =&gt; scheduler.CreateHotObservable(
+                OnNext(10, chars),
+                OnNext(20, chars),
+                OnNext(30, chars),
+                OnNext(40, chars),
+                OnNext(50, eof))
+            .Select(x =&gt; (SerialDataReceivedEventArgs)x);
+
+        // 走らせる(戻り値のbyte[]はどうでもいいので無視するためUnitに変換)
+        var result = scheduler.Start(() =&gt; new SerialPort().ObserveReceiveBytes().Select(_ =&gt; Unit.Default), 0, 0, 100);
+
+        result.Messages.Is(
+            OnNext(10, Unit.Default),
+            OnNext(20, Unit.Default),
+            OnNext(30, Unit.Default),
+            OnNext(40, Unit.Default),
+            OnCompleted&lt;Unit&gt;(50));
+    }
+
+    [TestMethod, HostType(&quot;Moles&quot;)]
+    public void ObserveReceiveBytesOnError()
+    {
+        // EventArgsを捏造！
+        var chars = new MSerialDataReceivedEventArgs() { EventTypeGet = () =&gt; SerialData.Chars };
+        var eof = new MSerialDataReceivedEventArgs() { EventTypeGet = () =&gt; SerialData.Eof };
+        // SerialPort::BytesToRead/SerialPort::Readで何もしない
+        MSerialPort.AllInstances.BytesToReadGet = (self) =&gt; 0;
+        MSerialPort.AllInstances.ReadByteArrayInt32Int32 = (self, buffer, offset, count) =&gt; 0;
+
+        var scheduler = new TestScheduler();
+
+        // 時間10, 20, 30, 40でSerialData.Charsのイベントを、時間50でEofのイベントを発行
+        MSerialPortExtensions.DataReceivedAsObservableSerialPort = _ =&gt; scheduler.CreateHotObservable(
+                OnNext(10, chars),
+                OnNext(20, chars),
+                OnNext(30, chars),
+                OnNext(40, chars),
+                OnNext(50, eof))
+            .Select(x =&gt; (SerialDataReceivedEventArgs)x);
+
+        /* ↑までOnCompletedのものと共通 */
+
+        // 時間35でErrorのイベントを発行
+        MSerialPortExtensions.ErrorReceivedAsObservableSerialPort = _ =&gt; scheduler.CreateHotObservable(
+            OnNext&lt;SerialErrorReceivedEventArgs&gt;(35, new MSerialErrorReceivedEventArgs()));
+
+        // 走らせる(戻り値のbyte[]はどうでもいいので無視するためUnitに変換)
+        var result = scheduler.Start(() =&gt; new SerialPort().ObserveReceiveBytes().Select(_ =&gt; Unit.Default), 0, 0, 100);
+
+        // Exceptionの等値比較ができないので、バラしてAssertする
+        result.Messages.Count.Is(4);
+
+        result.Messages[0].Is(OnNext(10, Unit.Default));
+        result.Messages[1].Is(OnNext(20, Unit.Default));
+        result.Messages[2].Is(OnNext(30, Unit.Default));
+
+        result.Messages[3].Value.Kind.Is(NotificationKind.OnError);
+        result.Messages[3].Time.Is(35);
+    }
+}
+</code></pre>
+<p>アサーションに使っているIsメソッドは、いつも通り<a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>です。</p>
+<p>Molesがいくら強力だとは言っても、イベントをそのまま乗っ取るのはデリゲートの差し替えなどで、割と面倒だったりします。しかし、FromEventでラップしただけのIObservable&lt;T&gt;を用意しておくと…… それを差し替えるだけで済むので超簡単になります。イベント発行については、TestScheduler(Rx-Testingを参照しておく)で、仮想時間で発行する値を作ってしまうと楽です。こういう、任意の時間で任意の値、というダミーの用意もFromEventでラップしただけのIObservable&lt;T&gt;があると、非常に簡単になります。</p>
+<p>あとは、scheduler.Startで走らせると(3つの引数はそれぞれcreated, subscribed, disposedの仮想時間、何も指定しないと…… 実は0始まり「ではない」ことに注意。100,200,1000がデフォなので、0はすっ飛ばされています)、その戻り値で結果を受け取って、Messagesに記録されているので、それにたいしてアサートメソッドをしかける。</p>
+<p>実に簡単ですね！Molesの力とRxの力が組み合わさると、イベントのテストが恐ろしく簡単になります。素敵じゃないでしょうか？</p>
+<h2>まとめ</h2>
+<p>テストなしで書いてたコードは、Molesでテスト走らせたら間違ってました。TakeWhileの条件が==だったのと、Mergeで結合していたり……。はっはっは、ちゃんとユニットテストは書かないとダメですね！そして、Molesのお陰でちゃんと動作するコードが書けたので恥を欠かなくてすみました、やったね。</p>
+</div>
+<h1><a href="https://neue.cc/2011/12/16_359.html">Modern C# Programming Style Guide</a></h1>
 <ul class="date"><li>2011-12-16</li></ul>
 <div class="entry_body"><p><a href="http://atnd.org/events/21988">C# Advent Calendar 2011</a>、ということで、C# 4.0時代のプログラミングスタイルについて説明してみます。モダン、というけれど、某書のように変態的なことじゃなくて、むしろ基本的な話のほうです。こういったものはナマモノなので、5.0になればまた変わる、6.0になればまた変わる。変わります。古い話を間に受けすぎないこと(歴史を知るのは大事だけど、そのまま信じるのは別の話)、常に知識をリフレッシュするようにすること。そういうのが大事よね。でも、だからってモダンに書けなきゃダメ！なんてことはありません。ただ、知ること、少しずつ変えていくこと、そういうのは大事よね、って。</p>
 <p>ところでしかし、私の主観がかなり入っているので、その辺は差っ引いてください。</p>
@@ -1930,224 +2130,6 @@ protected override void OnNavigatedTo(System.Windows.Navigation.NavigationEventA
 <p>仕上がりはかなり良いと、興奮しています。この長い記事！興奮を伝えたいという気持ちでいっぱいだからです。今後も、利用シーンの模索と合わせて、どんどん進化させていくつもりです。初回リリースですし、というのもありますが、コアコンセプトの実現と、使い勝手としてのAPIの錬成に力を注いだので、それ以外の部分の研究が疎かになっているというのは否めませんので、そこのところの強化も行なっていきます。また、JavaScriptへの移植もノリ気なので、まず<a href="http://knockoutjs.com/">Knockout.js</a>を試して、その上に構築させたいなあ、とか考えています。</p>
 <p>ところで、10/8土曜日、明日の<a href="http://silverlightsquare.com/index.php/tokyo04.html">Silverlightを囲む会in東京#4</a>の一番最後に、少し、デモ中心でお話をするつもりなので（最後のオマケなのでほんの少しだけですけどね)良ければ見に来てください。ギリギリではありますが、まだ申し込みも出来ると思います。また、もしよければ会場/懇親会でつかまえて聞いてくれたりすると泣いて喜びます。会場に来れなくてもIIJさんのSmooth Streamingで超高画質な配信が行われると思われますので、そちらでも是非是非。</p>
 </div>
-<h1><a href="https://neue.cc/2011/09/23_345.html">SL/WP7のSilverlight Unit Test Frameworkについて少し深く</a></h1>
-<ul class="date"><li>2011-09-23</li></ul>
-<div class="entry_body"><p>の、前に少し。<a href="http://dynamicjson.codeplex.com/" title="DynamicJson">DynamicJson</a>と<a href="http://linqcomparer.codeplex.com/" title="AnonymousComparer - lambda compare selector for Linq">AnonymousComparer</a>をNuGetに登録しました。どちらも.csファイル一個のお手軽クラスですが、NuGetからインストール可能になったことで、より気楽に使えるのではかと思います。機能説明は省略。</p>
-<p>そして、昨日の今日ですが<a href="http://chainingassertion.codeplex.com/" title="Chaining Assertion">Chaining Assertion</a>を<a href="http://archive.msdn.microsoft.com/silverlightut" title="Silverlight Unit Test Framework - Home">Silverlight Unit Test Framework</a>に対応させました。リリースのバージョンは1.6.0.1ということで。NuGetでは<a href="http://nuget.org/List/Packages/ChainingAssertion-SL">ChainingAssertion-SL</a>と<a href="http://nuget.org/List/Packages/ChainingAssertion-WP7">ChainingAssertion-WP7</a>になります。</p>
-<h2>Silverlight Unit Test Framework</h2>
-<p>Silverlightで使う場合は(WP7じゃなくてね、という意味です)、一応<a href="http://silverlight.codeplex.com/" title="Silverlight Toolkit">Silverlight Toolkit</a>に同梱という話ではあるのですが、テンプレートなどの用意が面倒くさいので、NuGet経由で入れるのが最も楽のようです。<a href="http://nuget.org/List/Packages/Silverlight.UnitTest" title="NuGet gallery">Install-Package Silverlight.UnitTest</a>で。</p>
-<p>まず、Silverlightアプリケーションを新規作成。Webサイトでのホストはなしでいいです。それとブラウザで実行させる必要もないので、プロジェクトのプロパティからOut of Browserに変更してしまいましょう。次に、NuGetからInstall-Package Silverlight.UnitTest。これでライブラリの参照と、ApplicationExtensions.cs(イニシャライズ用拡張メソッド)、UnitTest.cs（テスト用テンプレ）が追加されているはずです。次にApp.xaml.csのStartupを以下のように書き換えます。</p>
-<pre><code class="language-csharp">private void Application_Startup(object sender, StartupEventArgs e)
-{
-    // this.StartTestRunnerDelayed();
-    this.StartTestRunnerImmediate();
-}
-</code></pre>
-<p>StartTestRunnerDelayedはテストランナー起動時に実行オプション（指定属性のもののみ実行するなど）を選択可能にするもの、Immediateはすぐに全テストを実行する、というものです。どちらかを選択すればOK。それで、とりあえず実行(Ctrl+F5)してみれば、テストランナーが立ち上がって、デフォテンプレに含まれるUnitTest.csのものが実行されているんじゃないかしらん。あとは、それを適宜書き換えていけばよし。なお、テンプレのテストクラスはSilverlightTestを継承していますが、これは必ずしも継承する必要はありません。後述しますが、Asynchronousのテストを行いたいときは必須ですが、そうでないならば、普通にMSTestでの場合と同じように、[TestClass]と[TestMethod]属性がついているものがテスト対象になっています。</p>
-<p>なお、MainPage.xaml/.xaml.csは不要なので削除してしまってOK。StartTestRunnerによって、参照DLLのほうに含まれるxamlが呼ばれているためです。</p>
-<h2>WP7の場合。</h2>
-<p>一応NuGetにも用意されてるっぽい(silverlight.unittest.wp7)んですが、動きませんでした。ので、今のところ手動で色々用意する必要があります。詳しくは<a href="http://d.hatena.ne.jp/okazuki/20110911/1315736690" title="Windows Phone 7用の単体テストツール？ その２「使ってみた」 - かずきのBlog@Hatena">Windows Phone 7用の単体テストツール？ その２「使ってみた」 - かずきのBlog@Hatena</a>に全部書いてあるのでそちらを参照のことということで。参照するためのDLLを拾ってくる→App.xaml.cs、ではなくてMainPage.xaml.csを書き換える、という、Silverlight版とやることは一緒なのですけどね。こういう状況なのはMangoのSDKがベータだったからとかなんとかのせいだとは思うので、近いうちに解決するのではかと、楽観視したいところです。</p>
-<h2>Chaining Assertionを使ってみる</h2>
-<p><a href="http://neue.cc/2011/09/20_344.html" title="neue cc - Chaining Assertion ver 1.6.0.0">Chaining Assertion ver 1.6.0.0</a>の解説で紹介した失敗結果が丁寧に表示されるよー、をチェックしてみませう。</p>
-<pre><code class="language-csharp">// こんなクラスがあるとして
-public class Person
-{
-    public int Age { get; set; }
-    public string FamilyName { get; set; }
-    public string GivenName { get; set; }
-}
- 
-[TestClass]
-public class ToaruTest
-{
-    [TestMethod]
-    public void PersonTest()
-    {
-        // こんなPersonがあるとすると
-        var person = new Person { Age = 50, FamilyName = &quot;Yamamoto&quot;, GivenName = &quot;Tasuke&quot; };
-        // こんな風にメソッドチェーンで書ける(10歳以下でYamadaTarouであることをチェックしてます)    
-        // 実際の値は50歳でYamamotoTasukeなので、このアサーションは失敗するでしょう
-        person.Is(p =&gt; p.Age &lt;= 10 &amp;&amp; p.FamilyName == &quot;Yamada&quot; &amp;&amp; p.GivenName == &quot;Tarou&quot;);
-    }
-}
-</code></pre>
-<p class="noindent">
-    <img src="http://neue.cc/wp-content/uploads/image/persontestwp7.jpg">
-</p>
-<p>はい、ちゃんと表示されます。Chaining Assertionを使うと、メソッドチェーンスタイルで、実際の値.Is(期待値の条件)というように、 簡潔な記述でテストを書くことが出来るのがうりです。また、失敗時には、この場合personの値を詳細に出力してくれるので、何故失敗したのかが大変分かりやすい。もし、普通に書くと以下のようになりますが、</p>
-<pre><code class="language-csharp">// もし普通に書く場合
-var person = new Person { Age = 50, FamilyName = &quot;Yamamoto&quot;, GivenName = &quot;Tasuke&quot; };
-Assert.IsTrue(person.Age &lt;= 10);
-Assert.AreEqual(&quot;Yamada&quot;, person.FamilyName);
-Assert.AreEqual(&quot;Tarou&quot;, person.GivenName);
-</code></pre>
-<p>まず、Assert.IsTrueでは失敗時にperson.Ageの値を出してくれないので、確認が面倒です。また、この場合、Personが正しいかをチェックしたいわけなので、FamilyNameやGivenNameも同時に判定して欲しいところですが、Ageを判定した時点で失敗のため、そこでテストは終了してしまうため、FamilyNameやGivienNameの実際の値を知ることは出来ません。</p>
-<p>などなどの利点があるので、<a href="http://chainingassertion.codeplex.com/" title="Chaining Assertion">Chaining Assertion</a>はお薦めです！この記事はSilverlight Unit Test Frameworkの紹介の体をとっていますが、実態はChaining Assertionの宣伝記事ですからね(ｷﾘｯ</p>
-<h2>非同期テストをしてみる</h2>
-<p>Silverlightといったら非同期は避けて通れない。というわけで、Silverlight Unit Test Frameworkには非同期をテストできる機構が備わっています。[Asynchronous]というように、Asynchronous属性をつければそれだけでOK。と、思っていた時もありました。実際に試してみると全然違って、独特なシステムのうえにのっかっていて、かなり面倒くさかった……。</p>
-<p>準備。まず、非同期テストをしたいクラスはSilverlightTestクラスを継承します。そしてAsynchronous属性をつけます。すると、そのテストメソッドはTestCompleteが呼ばれるか例外を検知するまでは、終了しなくなります。というわけで、こんな感じ。</p>
-<pre><code class="language-csharp">[TestClass]
-public class ToaruTest : SilverlightTest
-{
-    [TestMethod]
-    [Asynchronous]
-    public void AsyncTest()
-    {
-        var req = WebRequest.Create(&quot;http://www.google.co.jp/&quot;);
-        req.BeginGetResponse(ar =&gt;
-        {
-            try
-            {
-                req.EndGetResponse(ar)
-                    .ResponseUri.ToString()
-                    .Is(&quot;http://www.google.co.jp/&quot;);
-            }
-            catch (Exception ex)
-            {
-                EnqueueCallback(() =&gt; { throw ex; }); // 例外はテスト用スレッドに投げる必要がある
-                return;
-            }
-
-            // ↓は定型句なので、EnqueueTestComplete(); という単純化されたのが用意されている
-            EnqueueCallback(() =&gt; TestComplete()); // 何事もなければ終了でマーク
-        }, null);
-    }
-}
-</code></pre>
-<p>このUnitTestの非同期は、独自のスレッドモデル（のようなもの）で動いていて、Dispatcherのようなキューにたいしてアクションを放り投げてあげる必要があります。別スレッドからUIスレッドは触れないように、「成功(TestComplete)」か「失敗(例外発生)」を伝えるには、EnqueueCallbackを経由しなければなりません。この辺はDispatcher.BeginInvokeするようなもの、と考えるといいかもしれません。</p>
-<p>上のは少し原理に忠実にやりすぎた。まるごとEnqueueCallbackしてしまえばスレッドを意識する必要性は少しだけ減ります。</p>
-<pre><code class="language-csharp">[TestMethod, Asynchronous]
-public void AsyncTest()
-{
-    var req = WebRequest.Create(&quot;http://www.google.co.jp/404&quot;); //404なので例外出してくれる
-    req.BeginGetResponse(ar =&gt;
-    {
-        EnqueueCallback(() =&gt; req.EndGetResponse(ar)
-            .ResponseUri.ToString()
-            .Is(&quot;http://www.google.co.jp/&quot;));
-
-        EnqueueTestComplete();
-    }, null);
-}
-</code></pre>
-<p>といっても、これは非常に単純なケースなだけであって、複雑なケースを書くとどんどん泣きたくなっていくでしょう……。一応、Enqueueには他にEnqueueConditionalという、条件式がtrueになるまで待機し続けるというものが用意されているので、若干制御はできなくもないんですが、あんまりできるとは言い難い仕組みがあります。詳しくは述べませんというか、別に使いやすいシステムじゃないのでどうでもいいです。</p>
-<h2>Rxを使ってみる</h2>
-<p>結果・もしくは例外を別のスレッドシステムに投げる。どこかで聞いたことあるような。ここでティンと来るのは<a href="http://msdn.microsoft.com/en-us/data/gg577609">Reactive Extensions</a>のObserveOnDispatcherです。Dispatcher.BeginInvokeのかわりにEnqueueCallback。丸っきりそっくり。なので、ObserveOnTestQueueのようなメソッドが作れれば、非常に使い勝手がいいんじゃないか。と思い浮かぶわけです。</p>
-<p>と、浮かんだ人は実に素敵な発想力を持っていますね。浮かんだのは私じゃなくて海外の人です。はい。<a href="http://blog.richardszalay.com/2011/08/08/writing-asynchronous-unit-tests-with-rx-and-the-silverlight-unit-testing-framework/" title="Writing asynchronous unit tests with Rx and the Silverlight Unit Testing Framework | Richard Szalay">Writing asynchronous unit tests with Rx and the Silverlight Unit Testing Framework | Richard Szalay</a>に、実装が書かれています。</p>
-<p>そのRxによるScheduler実装を使うと(WP7版なのでSystem.ObservableとMicrosoft.Phone.Reactiveも参照してください)</p>
-<pre><code class="language-csharp">[TestMethod, Asynchronous]
-public void AsyncTest()
-{
-    var req = WebRequest.Create(&quot;http://www.google.co.jp/&quot;);
-    Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse,req.EndGetResponse)()
-        .ObserveOnTest(this)
-        .Subscribe(r =&gt; 
-            r.ResponseUri.ToString().Is(&quot;http://www.google.co.jp/&quot;),
-            () =&gt; TestComplete());
-}
-</code></pre>
-<p>EnqueueCallbackの管理がなくなり、非常に簡単に記述できました。Rxのスケジューラのシステムの柔軟さの賜物ですね。これはRxの素晴らしい応用例だと本当に感動しました。Richard Szalayさんに乾杯。それと、私がこの記事を知ったのは<a href="http://www.infoq.com/jp/news/2011/09/Rx-Silverlight-Tests" title="InfoQ: Rx と Silverlight で非同期テストを記述する">InfoQ: Rx と Silverlight で非同期テストを記述する</a>からなので、紹介したInfoQと、そして翻訳した勇 大地さんにも大変感謝します。</p>
-<h2>Silverlightの場合</h2>
-<p>Richard SzalayさんのコードはWP7のMicrosoft.Phone.Reactiveのためのものなので、Silverlight用Rxの場合はそのままでは動きません。はい。残念ながら、WP7版RxとDataCenter版Rxとでは、互換性がかなり崩壊しているので、そのまま動くことなんてないんです。悲しいですねえ……。これに関しては<a href="http://techblog.hilife-jp.info/2011/09/rx-silverlight-web.html" title="銀の光と藍い空: 「Rx と Silverlight で非同期テストを記述する」をWeb版にも使えるようにしたい!">銀の光と藍い空: 「Rx と Silverlight で非同期テストを記述する」をWeb版にも使えるようにしたい!</a>に書かれていますが、Silverlight用に移植してあげればよいようです。</p>
-<p>既に、上記記事で田中さんが移植されているのですが、二番煎じに書いてみました（と、※欄で書いたものを流用です、毎回、流用させてもらっていてすみません……）</p>
-<pre><code class="language-csharp">public static class TestHarnessSchedulerObservableExtensions
-{
-    public static IObservable&lt;T&gt; ObserveOnTestHarness&lt;T&gt;(this IObservable&lt;T&gt; source, WorkItemTest workItemTest)
-    {
-        return source.ObserveOn(new TestHarnessScheduler(workItemTest));
-    }
-
-    public static IDisposable RunAsyncTest&lt;T&gt;(this IObservable&lt;T&gt; source, WorkItemTest workItemTest, Action&lt;T&gt; assertion)
-    {
-        return source.ObserveOnTestHarness(workItemTest).Subscribe(assertion, () =&gt; workItemTest.TestComplete());
-    }
-}
-
-public class TestHarnessScheduler : IScheduler, IDisposable
-{
-    readonly WorkItemTest workItemTest;
-    readonly CompositeDisposable subscriptions;
-
-    public TestHarnessScheduler(WorkItemTest workItemTest)
-    {
-        var completionSubscription =
-            Observable.FromEventPattern&lt;TestMethodCompletedEventArgs&gt;(
-                h =&gt; workItemTest.UnitTestHarness.TestMethodCompleted += h,
-                h =&gt; workItemTest.UnitTestHarness.TestMethodCompleted -= h)
-            .Take(1)
-            .Subscribe(_ =&gt; Dispose());
-
-        this.subscriptions = new CompositeDisposable(completionSubscription);
-        this.workItemTest = workItemTest;
-    }
-
-    public void Dispose()
-    {
-        subscriptions.Dispose();
-    }
-
-    public DateTimeOffset Now
-    {
-        get { return DateTimeOffset.Now; }
-    }
-
-    public IDisposable Schedule&lt;TState&gt;(TState state, DateTimeOffset dueTime, Func&lt;IScheduler, TState, IDisposable&gt; action)
-    {
-        return Schedule(state, dueTime - Now, action);
-    }
-
-    public IDisposable Schedule&lt;TState&gt;(TState state, TimeSpan dueTime, Func&lt;IScheduler, TState, IDisposable&gt; action)
-    {
-        if (subscriptions.IsDisposed) return Disposable.Empty;
-
-        workItemTest.EnqueueDelay(dueTime);
-        return Schedule(state, action);
-    }
-
-    public IDisposable Schedule&lt;TState&gt;(TState state, Func&lt;IScheduler, TState, IDisposable&gt; action)
-    {
-        if (subscriptions.IsDisposed) return Disposable.Empty;
-
-        var cancelToken = new BooleanDisposable();
-
-        workItemTest.EnqueueCallback(() =&gt;
-        {
-            if (!cancelToken.IsDisposed) action(this, state);
-        });
-
-        subscriptions.Add(cancelToken);
-        return Disposable.Create(() =&gt; subscriptions.Remove(cancelToken));
-    }
-}
-</code></pre>
-<p>Richard Szalayさんのコードが非常に素晴らしく、あらゆるケースへのキャンセルに対して完全に考慮されているという感じなので、そのまま持ってきました。実際のところ、テスト用なので「例外発生/TestCompleteが呼ばれる」で実行自体が終了してしまうわけなので、こうもギチギチに考えなくてもいいのではかなー、とか緩いことを思ってしまいますが、まあ、よく出来ているならよく出来ているままに使わさせてもらいます。</p>
-<p>メソッド名は、ObserveOnTestHarnessに変更しました。ObserveOnTestだけだと何かイマイチかなー、と思いまして。それと、時間のスケジューリングは、NotSupportedではなくて、EnqueueDelayというのものがあるので、それを使うことにしてみました。それと、ObserveOn -&gt; Subscribe -&gt; onCompletedにTestCompleteが定形文句なので、それらをひとまとめにしたRunAsyncTestを追加。こんな風に書けます。</p>
-<pre><code class="language-csharp">var req = WebRequest.Create(&quot;http://www.google.co.jp/444&quot;);
-Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)()
-    .RunAsyncTest(this, res =&gt; 
-        res.ResponseUri.ToString().Is(&quot;http://www.google.co.jp/&quot;));
-</code></pre>
-<p>定形文句が減る、つまりうっかりミスで書き忘れて死亡というのがなくなる、というのはいいことです。</p>
-<h2>通常のMSTestの場合</h2>
-<p>ところで、もしSilverlight/WP7固有の機能は使っていなくて、WPFでも利用出来るようなコードならば、コードをリンク共有の形でWPF側に持っていってしまって、そこでテスト実行してしまうと非常に楽です。まず第一に、MSTestやNUnitなどの通常のテストフレームワークが使えるため、Visual Studio統合やCIが簡単に行えます。第二に、非同期のテストが(Rxを使った場合)更に簡単になります。</p>
-<pre><code class="language-csharp">[TestMethod]
-public void AsyncTest()
-{
-    var req = WebRequest.Create(&quot;http://www.google.co.jp/&quot;);
-    var result = Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)()
-        .First(); // First()で同期的に待機して値が取れる。複数の場合はToEnumerable().ToArray()で。
-
-    result.ResponseUri.ToString().Is(&quot;http://www.google.co.jp/&quot;);
-}
-</code></pre>
-<p>FirstやToEnumerable.ToArrayにより、同期的に待機することが出来るので、簡単にテストすることができます。通常のコードは同期的待機はすべきではないのですが、こうしたユニットテストの場合は便利に使えます。</p>
-<p>じゃあSilverlightのユニットテストでも待機できるのはないか？というと、それはできません。理由は<a href="http://neue.cc/2010/10/14_280.html">Windows Phone 7で同期APIを実現するたった つの冴えないやり方</a>で書いたのですが、WebRequestなどのネットワーク問い合わせは、一度Dispatcherに積まれて、現在のメソッドを抜けた後に実行開始されるので、テスト実行スレッドで同期的に待って値を取り出すことは不可能なのです。</p>
-<p>こういった細部の違いもあるので、コード共有してMSTestでチェックするのは楽でいいのですが、やはりSilverlight/WP7の実際の環境で動かされるユニットテストのほうも必要不可欠かなー、と。どこまでやるか、にもよりますが。</p>
-<h2>まとめ</h2>
-<p><a href="http://chainingassertion.codeplex.com/" title="Chaining Assertion">Chaining Assertion</a>は便利なので是非試してみてね！</p>
-<p>なお、Rxを使うとTestScheduler(時間を好きなように進められる)やITestableObserver(通知の時間と値を記録できる)といった、イベント/非同期のテストを強力に支援する仕組みが備わっているので、それらと併用することで、より簡単に、もしくは今までは不可能だったことを記述できるようになります。それはまた後日そのうち。</p>
-<p>SL/WP7のテストは、本当はIDE統合されてるといいんですけどねー。まあ、エミュレータ動かさなければならないので、しょうがないかな、というところもありますけれど。その辺も次期VisualStudioでは改善されるのかされないのか、怪しいところです。現在DeveloperPreviewで出ているVS11は、特に何も手をつけられてる感じがしないので、そのままな可能性はなきにしもあらず。どうなるかしらん。async/awaitが入ることだし、色々変わってくるとは思うんですけれど。</p>
-</div>
 <a href="https://neue.cc/14">Prev |</a>
 <a href="https://neue.cc/16">| Next</a>
 </div>
@@ -2171,6 +2153,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/01/">2024-01</a>
 <li><a href="https://neue.cc/2023/12/">2023-12</a>
 <li><a href="https://neue.cc/2023/10/">2023-10</a>
 <li><a href="https://neue.cc/2023/09/">2023-09</a>

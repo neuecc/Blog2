@@ -23,7 +23,167 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2015/02/16_505.html">LightNode 1.0、或いはWeb APIでのGlimpseの使い方</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2015/03/25_508.html">グラニのC#フレームワークの過去と未来、現代的なASP.NETライブラリの選び方</a></h1>
+<ul class="date"><li>2015-03-25</li></ul>
+<div class="entry_body"><p><a href="http://www.buildinsider.net/event/meetup/grani01">Build Insider MEETUP with Grani</a>というイベントで、グラニのC#フレームワーク（というほどのものはない！）の今までとこれからってのを話しました。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/46267391" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/a-framework-for-light-up-applications-of-grani" title="A framework for light up applications of grani" target="_blank">A framework for light up applications of grani</a> </strong> from <strong><a href="//www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>そのうちBuild Insiderで文字起こしとか公開されると思います。</p>
+<p>2015年の今、どういうライブラリを選んだか、とかNLog大脱却、とかって話が見どころですかね。うちの考えるモダンなやり方、みたいな感じです。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2015/03/dotnetlibraries2015.png' alt='' />
+</p>
+<p>実際、<a href="https://msdn.microsoft.com/ja-jp/library/system.diagnostics.tracing.eventsource.aspx">EventSource</a>や<a href="https://msdn.microsoft.com/en-us/library/dn440729.aspx">Semantic Logging Application Block</a>は良いと思いますので、触ってみるといいですね。少なくとも、イマドキにハイパーヒューマンリーダブル非構造化テキストログはないかなぁ、といったところです。</p>
+<p>スライドにしたら判別不能になったOWINのStartup部分も置いておきます、参考までに。</p>
+<pre><code class="language-csharp">// 開発環境用Startup（本番では使わないミドルウェア/設定込み）
+public class Startup
+{
+    public void Configuration(IAppBuilder app)
+    {
+        app = new ProfilingAppBuilder(app); // 内製Glimpse表示用AppBuilderラッパー(Middlewareトラッカー)
+        app.EnableGlimpse(); // Glimpse.LightNdoe同梱ユーティリティ
+        app.Use&lt;GlobalLoggingMiddleware&gt;(); // 内製ロギングミドルウェア
+        app.Use&lt;ShowErrorMiddleware&gt;(); // 内製例外時表示ミドルウェア
+
+        app.Map(&quot;/api&quot;, builder =&gt;
+        {
+            var option = new LightNodeOptions(AcceptVerbs.Get | AcceptVerbs.Post,
+                new LightNode.Formatter.Jil.JilContentFormatter(),
+                new LightNode.Formatter.Jil.GZipJilContentFormatter())
+            {
+                OperationCoordinatorFactory = new GlimpseProfilingOperationCoordinatorFactory(),
+                ErrorHandlingPolicy = ErrorHandlingPolicy.ThrowException,
+                OperationMissingHandlingPolicy = OperationMissingHandlingPolicy.ThrowException,
+            };
+
+            builder.UseLightNode(option);
+        });
+        // Indexはデバッグ画面に回す
+        app.MapWhen(x =&gt; x.Request.Path.Value == &quot;/&quot; || x.Request.Path.Value.StartsWith(&quot;/DebugMenu&quot;), builder =&gt;
+        {
+            builder.UseFileServer(new FileServerOptions()
+            {
+                EnableDefaultFiles = true,
+                EnableDirectoryBrowsing = false,
+                FileSystem = new PhysicalFileSystem(@&quot;.\DebugMenu&quot;),
+            });
+        });
+        // それ以外は全部404
+        app.MapWhen(x =&gt; !x.Request.Path.Value.StartsWith(&quot;/Glimpse.axd&quot;, StringComparison.InvariantCultureIgnoreCase), builder =&gt;
+        {
+            builder.Run(ctx =&gt;
+            {
+                ctx.Response.StatusCode = 404;
+                return Grani.Threading.TaskEx.Empty;
+            });
+        });
+    }
+}
+</code></pre>
+<p>インデックスでアクセスすると表示するページはGlimpse.axdと、シングル全画面ページで表示できるローンチ部分へのリンクを貼っつけてあります。</p>
+<pre><code class="language-xml">&lt;!DOCTYPE html&gt;
+&lt;html xmlns=&quot;http://www.w3.org/1999/xhtml&quot;&gt;
+&lt;head&gt;
+    &lt;title&gt;Debug Index&lt;/title&gt;
+&lt;/head&gt;
+&lt;body&gt;
+    APIのデバッグ&lt;br /&gt;
+    &lt;p&gt;
+        &lt;a href=&quot;../../Glimpse.axd?n=glimpse_redirect_popup&quot;&gt;Glimpse Launch&lt;/a&gt;
+    &lt;/p&gt;
+    &lt;p&gt;
+        &lt;a href=&quot;../../glimpse.axd&quot;&gt;Glimpse Config&lt;/a&gt;
+    &lt;/p&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+</code></pre>
+<p>まぁ、こういうのあると、Glimpseへのアクセスが近くで非常に便利です。</p>
+<p>あと最後に、OWINでやるならこーいうのどうでしょう、というWeb.config。Owin Middlewareと機能重複して鬱陶しいからHttpModule丸ごと消そうぜ、という過激派な案ですにゃ。</p>
+<pre><code class="language-xml">&lt;?xml version=&quot;1.0&quot; encoding=&quot;utf-8&quot;?&gt;
+
+&lt;!-- OWIN向けウェブコン --&gt;
+&lt;!-- Glimpse系のはリリース時にはxsltでまるっと消す --&gt;
+&lt;configuration&gt;
+    &lt;configSections&gt;
+        &lt;section name=&quot;glimpse&quot; type=&quot;Glimpse.Core.Configuration.Section, Glimpse.Core&quot; /&gt;
+    &lt;/configSections&gt;
+    &lt;connectionStrings configSource=&quot;&lt;!-- 接続文字列は外部に回す(DebugとReleaseでxsltで変換して別参照見るように) --&gt;&quot; /&gt;
+    &lt;appSettings&gt;
+        &lt;!-- なんかここに書いたり外部ファイルとmergeしたり:) --&gt;
+    &lt;/appSettings&gt;
+    &lt;system.web&gt;
+        &lt;!-- system.web配下のは片っ端から消してしまう --&gt;
+        &lt;httpModules&gt;
+            &lt;clear /&gt;
+            &lt;add name=&quot;Glimpse&quot; type=&quot;Glimpse.AspNet.HttpModule, Glimpse.AspNet&quot; /&gt;
+        &lt;/httpModules&gt;
+        &lt;httpHandlers&gt;
+            &lt;clear /&gt;
+            &lt;add path=&quot;glimpse.axd&quot; verb=&quot;GET&quot; type=&quot;Glimpse.AspNet.HttpHandler, Glimpse.AspNet&quot; /&gt;
+        &lt;/httpHandlers&gt;
+        &lt;roleManager&gt;
+            &lt;providers&gt;
+                &lt;clear /&gt;
+            &lt;/providers&gt;
+        &lt;/roleManager&gt;
+        &lt;customErrors mode=&quot;Off&quot; /&gt;
+        &lt;trace enabled=&quot;false&quot; /&gt;
+        &lt;sessionState mode=&quot;Off&quot; /&gt;
+        &lt;httpRuntime targetFramework=&quot;4.5&quot; requestPathInvalidCharacters=&quot;&quot; /&gt;
+        &lt;globalization culture=&quot;ja-jp&quot; uiCulture=&quot;ja-jp&quot; /&gt;
+        &lt;!-- リリース時にxsltでfalseにする --&gt;
+        &lt;compilation debug=&quot;true&quot; /&gt;
+    &lt;/system.web&gt;
+    &lt;system.webServer&gt;
+        &lt;validation validateIntegratedModeConfiguration=&quot;false&quot; /&gt;
+        &lt;globalModules&gt;
+            &lt;clear /&gt;
+        &lt;/globalModules&gt;
+        &lt;modules&gt;
+            &lt;!-- モジュールも全消し --&gt;
+            &lt;remove name=&quot;OutputCache&quot; /&gt;
+            &lt;remove name=&quot;Session&quot; /&gt;
+            &lt;remove name=&quot;UrlRoutingModule-4.0&quot; /&gt;
+            &lt;!-- 以下デフォで読まれるモジュール名が延々と続く(system.webServer下は一括clearが使えなくて辛い)... --&gt;
+            &lt;add name=&quot;Glimpse&quot; type=&quot;Glimpse.AspNet.HttpModule, Glimpse.AspNet&quot; preCondition=&quot;integratedMode&quot; /&gt;
+        &lt;/modules&gt;
+        &lt;handlers&gt;
+            &lt;add name=&quot;Glimpse&quot; path=&quot;glimpse.axd&quot; verb=&quot;GET&quot; type=&quot;Glimpse.AspNet.HttpHandler, Glimpse.AspNet&quot; preCondition=&quot;integratedMode&quot; /&gt;
+        &lt;/handlers&gt;
+    &lt;/system.webServer&gt;
+    &lt;!-- おまじない（笑）セクション --&gt;
+    &lt;system.net&gt;
+        &lt;connectionManagement&gt;
+            &lt;add address=&quot;*&quot; maxconnection=&quot;1024&quot; /&gt;
+        &lt;/connectionManagement&gt;
+        &lt;settings&gt;
+            &lt;servicePointManager expect100Continue=&quot;false&quot; useNagleAlgorithm=&quot;false&quot; /&gt;
+        &lt;/settings&gt;
+    &lt;/system.net&gt;
+    &lt;!-- WebServiceでやるならPersistResultsで（当然このセクションもリリースでは消す） --&gt;
+    &lt;glimpse defaultRuntimePolicy=&quot;PersistResults&quot; endpointBaseUri=&quot;~/Glimpse.axd&quot;&gt;
+        &lt;tabs&gt;
+            &lt;ignoredTypes&gt;
+                &lt;add type=&quot;Glimpse.AspNet.Tab.Cache, Glimpse.AspNet&quot; /&gt;
+                &lt;add type=&quot;Glimpse.AspNet.Tab.Routes, Glimpse.AspNet&quot; /&gt;
+                &lt;add type=&quot;Glimpse.AspNet.Tab.Session, Glimpse.AspNet&quot; /&gt;
+                &lt;add type=&quot;Glimpse.Core.Tab.Trace, Glimpse.Core&quot; /&gt;
+            &lt;/ignoredTypes&gt;
+        &lt;/tabs&gt;
+        &lt;runtimePolicies&gt;
+            &lt;ignoredTypes&gt;
+                &lt;add type=&quot;Glimpse.Core.Policy.ControlCookiePolicy, Glimpse.Core&quot; /&gt;
+                &lt;add type=&quot;Glimpse.Core.Policy.StatusCodePolicy, Glimpse.Core&quot; /&gt;
+                &lt;add type=&quot;Glimpse.Core.Policy.AjaxPolicy, Glimpse.Core&quot; /&gt;
+                &lt;add type=&quot;Glimpse.AspNet.Policy.LocalPolicy, Glimpse.AspNet&quot; /&gt;
+                &lt;add type=&quot;Glimpse.Core.Tab.Trace, Glimpse.Core&quot; /&gt;
+            &lt;/ignoredTypes&gt;
+        &lt;/runtimePolicies&gt;
+    &lt;/glimpse&gt;
+&lt;/configuration&gt;
+</code></pre>
+<p>Web API的なサービスでもGlimpse使えるよ！ってのはもっと知ってほしいかしらん。その辺は<a href="http://neue.cc/2015/02/16_505.html">LightNode 1.0、或いはWeb APIでのGlimpseの使い方</a>で詳しく解説しています。</p>
+</div>
+<h1><a href="https://neue.cc/2015/02/16_505.html">LightNode 1.0、或いはWeb APIでのGlimpseの使い方</a></h1>
 <ul class="date"><li>2015-02-16</li></ul>
 <div class="entry_body"><p>こないだ、Redisクライアントの<a href="http://neue.cc/2015/02/06_504.html">CloudStructuresを1.0にしたばかり</a>ですが、今回は大昔に作った自作Web APIフレームワークのLightNodeを1.0にしました。なんでドタバタやってるのかというと、<a href="https://github.com/aspnet/XRE">.NET XRE</a>(ASP.NET vNext)を様子見してたんですが、そろそろ今年一年どうしていくかの態度を決めなければならなくて、結論としては、OWINで行くことにしたからです。ちゃんちゃん。その辺の理由なんかは後ほど。</p>
 <p>さて、<a href="http://getglimpse.com/">Glimpse</a>です。なにはなくともGlimpseです。イマドキでC#でウェブ作るんなら、まずはGlimpse入れましょう。絶対必須です。使ったことないんなら今すぐ使ってください。圧倒的なVisual Profiling！ボトルネックが一目瞭然。コンフィグも一覧されるので、普段気にしていなかったところも丸見え。データアクセスが何やってるかも一発で分かる。ちなみに、競合としては昔あったMiniProfilerは窓から投げ捨てましょう。ASP.NET開発はもはやGlimpse以前と以後で分けられると言っても過言ではない。</p>
@@ -2257,315 +2417,6 @@ public void OnNext(T value)
 <p>Immutable Collectionsは、まぁ、実際のとこガチッと使えるシーンがはまるケースはぶっちけあんまないと思います！コレクションとしての重要度は 普通のジェネリックコレクション＞コンカレントコレクション＞超えられない壁＞イミュータブルコレクション でしょうし、使うコレクションを探す場合も、そこから順番で考えたほうが良いでしょふ。<a href="http://neue.cc/2013/10/31_430.html">neue cc - .NETのコレクション概要とImmutable Collectionsについて</a>でも書いたのですけれど、別にイミューラブルコレクション＝速い、というのは大間違いです。むしろかなりピーキーで、性能特性をしっかり考えないと全く使いこなせません。</p>
 <p>それでも今回のように使えるかもしれない！？ような局面というもの自体は存在するので、覚えておいて損はないと思います。次の.NET Frameworkに標準で入るのかどうかは今のところ分かりませんが、多分入るんじゃないかなー、Roslynで使いたいようだしー、って感じなので先取りしちゃりましょう！</p>
 </div>
-<h1><a href="https://neue.cc/2014/08/23_476.html">A Beginners Guide to Reactive Extensions with UniRx</a></h1>
-<ul class="date"><li>2014-08-23</li></ul>
-<div class="entry_body"><p>どうも始めましての人は始めまして、<a href="https://twitter.com/neuecc">@neuecc</a>といいます。この記事は<a href="http://unityassetjp.doorkeeper.jp/events/12843">Unity アセット真夏のアドベントカレンダー 2014 Summer！</a>というイベントの23日目です。クリスマスのアレ！真夏に……！しかしクリスマスのアレは比較的脱落も少なくのないのですが、これは見事ーに続いてます。しかも日付が変わった瞬間に公開されることの多いこと多いこと。〆切というのは23:59:59だと思っている私には辛い話です……。さて、前日はnaichiさんの<a href="http://naichilab.blogspot.jp/2014/08/unity.html">【うに部屋】Unityのゲーム投稿サイトにアセット検索機能を付けてみた</a>でした。便利でいいですねー、UniRxも使ったアセットとして沢山並ぶ日が来ると、いいなぁ。</p>
-<h2>Reactive Programming</h2>
-<p>とは。と、ここで7/30に行われた<a href="http://unityassetjp.doorkeeper.jp/events/12698">【第1回】UnityアセットまみれのLT大会</a>で使ったスライドが！</p>
-<iframe src="//www.slideshare.net/slideshow/embed_code/37494141" width="597" height="486" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="https://www.slideshare.net/neuecc/reactive-programming-by-unirxfor-asynchronous-event-processing" title="Reactive Programming by UniRx for Asynchronous &amp; Event Processing" target="_blank">Reactive Programming by UniRx for Asynchronous &amp; Event Processing</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
-<p>LTということで制限時間5分だったんですが当然終わるわけなくて凄まじく早口でまくしたてて強引に終わらせたせいで、全くワカラン！という感想を頂きましたありがとうございますごめんなさい。簡単にかいつまみますと、</p>
-<p>Reactive Programmingはガートナーのハイプサイクル（記事では2013ですがこないだ出た<a href="https://www.gartner.com/doc/2810920">2014年版のApplication Development</a>でもOn the Riseに入っています）や<a href="http://www.thoughtworks.com/radar">Thought Works Technology Rader</a>といった有名な技術指標にもラインナップされるほど、注目を浴びている技術です。Scala周辺からも<a href="http://www.reactivemanifesto.org/">The Reactive Manifesto</a>といった文章が出ていますし、JavaでReactive Programmingを実現する<a href="https://github.com/ReactiveX/RxJava">RxJava</a>はGitHubのStarが2995、Objective-C用の<a href="https://github.com/ReactiveCocoa/ReactiveCocoa">ReactiveCocoa</a>は5341、JavaScriptでも<a href="https://github.com/Reactive-Extensions/RxJS">RxJS</a>が1792、<a href="https://github.com/baconjs/bacon.js/">bacon.js</a>が2864と、知名度・注目度、使われている度は非常に大きくなっています。</p>
-<p>Reactive Programming自体は別に近年始まったわけでもなく、昔からたまに盛り上がっては消え、って感じなので、<a href="http://jigokuno.com/eid_316.html">「へぇ～この技術2年前くらいに流行ってたよね 2年前くらい前に見たわ」</a>って思う人もいるかもですが、大事なのは、ちゃんと実用に乗った、ということです。実験的なライブラリの段階はとうに超えて、RxJavaやReactiveCocoaの知名度が示す通り、完全に実用レベルに乗りました。</p>
-<p>UniRxは<a href="http://msdn.microsoft.com/en-us/data/gg577609">Reactive Extensions(Rx)</a>というMicrosoftの開発した.NET用のライブラリ（現在はOSS化）を私がUnity用に移植したものです。現在のReactive(Rx)Hogeの源流は、この.NETのRxにあります。ほとんどのライブラリから言及され、原理原則や用語はRx.NETに従っていることが多い。というわけでRx.NETは革命的に素晴らしいわけなのです、が、しかし、Unityでは動きません。それはRx.NETが本来のC#の機能を全面的に使いすぎてUnityのC#では動かせないから……。少なくともiOSのAOT問題を全く突破できない……。</p>
-<p>が、どうしてもUnityで使いたいので移植（といってもソースコードレベルではほとんど自前で書いてるのでインターフェイスと挙動を合わせているという感じで割と書き下ろしです、一部は純粋に移植してますが）＋UnityはUnityで.NETとは異なるところもあるので、Unityで使って自然になるような改良を施したのがUniRxになります。</p>
-<ul>
-<li>GitHub - <a href="https://github.com/neuecc/UniRx">neuecc/UniRx</a></li>
-<li>AssetStore - <a href="http://u3d.as/content/neuecc/uni-rx-reactive-extensions-for-unity/7tT">UniRx - Reactive Extensions for Unity</a> (無料)</li>
-</ul>
-<p>ムリョーですよ、ムリョー。FREE！。私はLINQやRxの大ファンなんで、とにかく使ってもらいたい欲求のほうが強くて。そして勿論、自分で使えない状態にも耐えられなくて！気になったらGitHubでStarつけてください（Star乞食）、勿論AssetStoreのほうでもいいですよ:)</p>
-<p>UniRxは非同期やイベント処理をReactive Programmingの概念を元に大きく簡単にします。Unityにも非同期ライブラリ、イベントライブラリは沢山あります。それらと比べたUniRxの強みは「Rxであるということ」です。Reactive Programmingは現状かなりブームになっているとおりに、その手法の正しさ、威力に関しては実証済みです。また、手法やメソッド名などが同一であるということは、既に普及しているRx系のライブラリのドキュメントがまんま使えます。そしてUniRxで学んだやり方は他のプラットフォームに移っても同じように使えるでしょう。ネイティブAndroid(RxJava)でもネイティブiOS(ReactiveCocoa)でも.NET(Rx.NET)でもJavaScript(RxJS)でも、そういった先々への応用性もまた、選ぶべき理由になると思います。</p>
-<h2>Introduction</h2>
-<p>前置きが長い！さて、この記事を出すちょっと前に<a href="http://ninjinkun.hatenablog.com/entry/introrxja">【翻訳】あなたが求めていたリアクティブプログラミング入門</a>という素晴らしい記事が翻訳されました！はてブでも500以上集まってましたし、実際めっちゃ良い記事です。この記事はRxJSを用いて具体的な説明を行っていますが、勿論UniRxでも同様のことができます（というわけで、結論んとしては↑の記事読んでもらえればいいんでさー、とか投げてみたい）。ちょっとやってみましょう。最初の例はダブルクリックの検出です。</p>
-<pre><code class="language-csharp">using System;
-using UniRx;
-using UnityEngine;
-
-public class Intro : MonoBehaviour
-{
-    void Start()
-    {
-        // 左クリックのストリーム
-        var clickStream = Observable.EveryUpdate()
-            .Where(_ =&gt; Input.GetMouseButtonDown(0));
-
-        // Buffer:250ミリ秒以内に連続してクリックされたものをまとめる
-        clickStream.Buffer(clickStream.Throttle(TimeSpan.FromMilliseconds(250)))
-            .Select(xs =&gt; xs.Count) // 250ミリ秒以内検出したクリック数
-            .Where(x =&gt; x &gt;= 2) // 2個以上のみにフィルタ
-            .Subscribe(_ =&gt; Debug.Log(&quot;ダブルクリックされた！&quot;)); // foreachみたいな
-    }
-}
-</code></pre>
-<p>このスクリプト(Intro.cs)をMainCameraでもなんでも適当な何かに貼り付けてもらえれば、画面のどこでもダブルクリックされればログに流れます。</p>
-<p>この例は6行しかない単純なものですが、多くの要素が詰め込まれています！そして、実際、詰め込まれすぎていてかなり難しい！わからん！というわけで真面目に分解していきます。</p>
-<h2>Rx is LINQ</h2>
-<p>Rxについてまとめると「時間軸に乗るストリームに対するLINQ」です。時魔法です。先の記事でも「FRPは非同期データストリームを用いるプログラミングである」といってました。(ﾄﾞﾔｧするわけですが、私は遥か昔、<a href="http://www.slideshare.net/neuecc/reactive-extensions-8049041">2011年の時点で同じこと言ってました</a>からね！)。このことさえピンと来れば割としっくり来るんですが、同時にこれがしっくり来るというところまでが敷居となる。ところが、RxはこのことをLINQとして表現することによりグッと敷居を下げました。なんだ、LINQと一緒じゃん！って。え、LINQがワカラナイ？それは、普通にC#の必須技術なので是非学んでください！(色々種類ありますがLINQ to Objectsだけでいいです。以前に@ITで<a href="http://www.atmarkit.co.jp/fdotnet/chushin/greatblogentry_06/greatblogentry_06_01.html">LINQの仕組み＆遅延評価の正しい基礎知識</a>を書いたり<a href="http://www.slideshare.net/neuecc/an-internal-of-linq-to-objects-29200657">An Internal of LINQ to Objects</a>というスライドで発表したりしてるんで読んでください)</p>
-<p>簡単に同じように見れることを説明すると、LINQ to Objectsでは</p>
-<pre><code class="language-csharp">new[] { 1, 2, 3, 4, 5 }
-    .Where(x =&gt; x % 2 == 0)
-    .Select(x =&gt; x * x); 
-</code></pre>
-<p>のように、配列をフィルタリングして別の形に射影できます。</p>
-<p><img src="http://neue.cc/wp-content/uploads/image/unirx_lto.jpg" alt="" /></p>
-<p>配列、int[]の横軸は当然ながら長さです。Rxは時間を横軸に取ることができます。どういうことか、というと、例えば何かをタップするというイベントは図にしたらこういう表現ができます。</p>
-<p><img src="http://neue.cc/wp-content/uploads/image/unirx_tapevent.jpg" alt="" /></p>
-<p>ということは、同様にWhereしたりSelectしたりできる。</p>
-<p><img src="http://neue.cc/wp-content/uploads/image/unirx_rxtime.jpg" alt="" /></p>
-<p>少しピンと来ました？さて、配列はnew[]{}やGetComponentsなどで手に入れることができますが、Rxで扱うためのイベントストリーム(IObservable&lt;T&gt;、ちなみにLINQ to Objectsは配列をIEnumerable&lt;T&gt;として扱う)はどこに転がっているのか。UniRxにおいて一番お手軽なのはObservable.EveryUpdateです。ゲームループは、ループというぐらいに1フレーム毎にUpdateが毎回呼ばれるサイクルなわけですが(参考：<a href="http://docs.unity3d.com/Manual/ExecutionOrder.html">Script Lifecycle Flowchart</a>)、つまり60fpsなら1/60秒毎に発生する時間軸にのったイベントとみなせられます。一度、時間軸上に乗るイベントとみなせられれば、それは全て無条件にRxで取り扱えます。</p>
-<p>実際のところ、イベントに限らずあらゆるものがRxに見せかけることができます。非同期だってx秒後に一度だけ発生するイベントと考えれば？配列は0秒で沢山の値が発行されるイベントと考えれば？Unityのコルーチン(IEnumerator)だって乗せられる。</p>
-<p><img src="http://neue.cc/wp-content/uploads/image/rx_everythingevent.jpg" alt="" /></p>
-<p>全てのものをRx化(IObservable化)すれば、あとは好きなようにLINQのメソッドで合成してしまえる。あらゆる素材(イベント・非同期・配列・コルーチン)を鍋(IObservable)に突っ込んで、料理(Where, Select, etc...)して食べる(Subscribe)。というのがRxの基本の基です。料理方法は色々あるので、そこが次のキモですね。</p>
-<h2>Composable</h2>
-<p>というわけでclickStreamがマウスの左クリックのストリームになったということは分かったでしょうか！？</p>
-<pre><code class="language-csharp">var clickStream = Observable.EveryUpdate()
-    .Where(_ =&gt; Input.GetMouseButtonDown(0));
-</code></pre>
-<p>左クリックがあったフレームだけにフィルタリングしているということですねー。では次は？</p>
-<pre><code class="language-csharp">clickStream.Buffer(clickStream.Throttle(TimeSpan.FromMilliseconds(250)))
-</code></pre>
-<p>Rxの利点として、イベントが変数として扱えることです。どういうことか、戻り値にすることもできるし、フィールドやプロパティとして公開することもできるし、自分自身と結合することもできる。というわけで、clickStreamが二個出てるのは、自分との合成なんですね（わっかりづらい！）</p>
-<p>そこまではいいとしてThrottleが分かりづらい！Throttleは一定時間毎(この場合は250ミリ秒)に値が観測できなかったら値を流す、という挙動です。</p>
-<p><img src="http://neue.cc/wp-content/uploads/image/unirx_throttle.jpg" alt="" /></p>
-<p>スロットル、流れてくる値を絞り込んでいるんですね。Rxは時間軸上に乗っているので、こうした時間関係を扱うメソッドが豊富です。Sample（一定時間毎のもののみを流す）、Delay（一定時間後に流す）、Timeout（一定時間たっても値がなければエラーにする）、Buffer（一定時間の間値を溜めてから流す）などなど。一見分かりづらいですが、そもそも普通にも書きづらい、そういったものがメソッド一発で書けるというのもRxの魅力です。</p>
-<p>じゃあどういうことかというと、もうまだるっこしいので全部のせますが</p>
-<p><img src="http://neue.cc/wp-content/uploads/image/rx_introall.jpg" alt="" /></p>
-<p>ThrottleしたものをBufferしているのは、値が流れてくるまで値を溜める（そして配列にして後続に流す）、ということです。あとはSelectで配列の個数、つまり250ミリ秒の間にクリックされた回数に変形して、Whereでフィルタリング（ダブルクリック、つまり2個以上ならばOK）。なるほどねー？</p>
-<p>ちなみにコレは(250ミリ秒以内に)クリックされ続けてるとずっと実行されません。最後にクリックされてから250ミリ秒後に、その間に2回以上クリックされてると実行される。が正しい表現でしょうか。この動作が望ましい場合もあれば望ましくない場合もある、ダブルクリックと一口でいっても定義は案外複雑なので、その辺はチューンしてみてください。その辺もclickStream.Timestamp()や.TimeInterval()でその時刻や前との差分なんかが簡単に取れます。</p>
-<h2>Subscribeって？</h2>
-<p>Subscribeはforeachです。配列をforeachで消費するように、RxではSubscribeで消費する。イベントストリームなのだからeventのSubscribe（購読）。foreachしなければ配列は動かないように、RxもSubscribeしなければ始まりません！（というのは正確には語弊があり、ObservableにはHotとColdという性質があり、HotはSubscribeしなくても動いている、とかかんとか、とかがありますが今は無視します）。RxにおけるSubscribeは、値・エラー・完了を一手に受け取ります。</p>
-<pre><code class="language-csharp">Observable.EveryUpdate() // 0, 1, 2, 3, 4, 5, 6, 7, 8,....
-    .Take(5)
-    // .Do(x =&gt; { if(x == 3) throw new Exception(); } )
-    .Subscribe(
-        x =&gt; Debug.Log(x + &quot;Frame&quot;), // OnNext
-        ex =&gt; Debug.Log(&quot;Exception!&quot; + ex), // OnError
-        () =&gt; Debug.Log(&quot;Complete!&quot;)); // OnCompleted
-</code></pre>
-<p>通常、イベントに終わりはありませんが、Rxのイベントストリームは終わりを持たせることができます。Takeは値をx個取得したら強制的に終点ということにするもの。長さ5のイベントストリーム。というわけで↑のコードはOnNextが5回呼ばれた後にOnCompletedが呼ばれます。もしDo(値が通った時にメソッドを実行する)のコメントアウトを外すと、OnNextが3回呼ばれた後にOnErrorが呼ばれます。この場合はOnCompletedは呼ばれません。なお、OnNext/OnError/OnCompletedはどれも書いても書かなくてもいいです（その場合はOnErrorはグローバルに例外をそのままthrow、OnNextとOnCompletedは何もしない、ということになる）</p>
-<p>Rxのイベントストリームは以下の原則に必ず従います。これは他のRx系列のReactive Programmingライブラリも同じものを採用しています。</p>
-<pre><code class="language-text">OnNext* (OnError | Oncompleted)?
-</code></pre>
-<p>OnNextが0回以上呼ばれた後に、OnErrorもしくはOnCompletedが1回または0回よばれます。</p>
-<p>購読ということは解除(Unsubscribe)はあるのか、というと、あります！Subscribeの戻り値は必ずIDisposeableで、それをDisposeすることが解除になります。</p>
-<pre><code class="language-csharp">var subscription = Observable.Interval(TimeSpan.FromSeconds(1))
-    .Subscribe(_ =&gt; Debug.Log(&quot;hogehoge!&quot;));
-
-Observable.EveryUpdate()
-    .Where(_ =&gt; Input.GetMouseButtonDown(0))
-    .Take(1)
-    .Subscribe(_ =&gt; subscription.Dispose());
-</code></pre>
-<p>Intervalはx秒毎に値を発行するというもの、↑の例では1秒おきにhogehoge!と表示されます。もし左クリックがあったら、その戻り値をDisposeしているので、これで値の発行は止まります。Take(1)なので、左クリックを監視するストリームもTake(1)が終わったら自動的にEveryUpdateの監視を解除しています。</p>
-<pre><code class="language-csharp">var subscription = Observable.Interval(TimeSpan.FromSeconds(1))
-    .Subscribe(_ =&gt; Debug.Log(&quot;hogehoge!&quot;));
-
-Observable.EveryUpdate()
-    .Where(_ =&gt; Input.GetMouseButtonDown(0))
-    .Take(1)
-    .Subscribe(_ =&gt; subscription.Dispose());
-</code></pre>
-<p>この形式の何がいいか、というと、入れ物に入れてまとめて購読解除できます。</p>
-<pre><code class="language-csharp">CompositeDisposable eventResources = new CompositeDisposable();
-
-void Start()
-{
-    Observable.Interval(TimeSpan.FromSeconds(1))
-        .Subscribe(_ =&gt; Debug.Log(&quot;hogehoge!&quot;))
-        .AddTo(eventResources);
-
-    Observable.EveryUpdate()
-        .Where(_ =&gt; Input.GetMouseButtonDown(0))
-        .Subscribe(_ =&gt; Debug.Log(&quot;click!&quot;))
-        .AddTo(eventResources);
-}
-
-void OnDestroy()
-{
-    eventResources.Dispose();
-}
-</code></pre>
-<p>CompositeDisposableはIList[IDisposable]みたいなもので、IDisposableをまとめて突っ込めます。AddToはメソッドチェーンのまま突っ込めるようにするUniRxの定義している拡張メソッド。こうしてためておいて、Destroyでまとめて解除、ができます。こうした変数で扱えるという性質により、イベントの管理がかなり容易になっています。勿論、文字列で止めて、などもない完全なタイプセーフですしね。</p>
-<p>余談：片方のストリームが発動したら止める、という処理は割と定形なので明示的にsubscriptionをDisposeするようなコードを書かなくても、TakeUntilが使える。</p>
-<pre><code class="language-csharp">Observable.Interval(TimeSpan.FromSeconds(1))
-    .TakeUntil(Observable.EveryUpdate().Where(_ =&gt; Input.GetMouseButtonDown(0)))
-    .Subscribe(_ =&gt; Debug.Log(&quot;hogehoge!&quot;));
-</code></pre>
-<p>色々あるってことです！メソッド一覧を眺めて使い道を考えよう！</p>
-<h2>非同期について</h2>
-<p>Unityにある素敵な素敵なコルーチンはあまり素敵ではない。WWWでyieldできて非同期扱えてサイコー、ではない。なんで？C#のyieldが非同期を扱うためのものじゃないから。try-catchできないからyield return StartCoroutineしたら例外はあの世に飛んでいく。それを避けるためにWWWのようにwww.textとwww.errorを持つようにあらゆる非同期はどうでもいいコンテナを持たなければならなくて？そしてそもそもIEnumeratorは戻り値を持てない。だから戻り値を持たせたかったらコールバックの形に返るしかない。酷い、酷い、醜悪な話だ。</p>
-<pre><code class="language-csharp">// こんなこるーちんを用意して
-IEnumerator GetGoogle(Action&lt;string&gt; onCompleted, Action&lt;Exception&gt; onError)
-{
-    var www = new WWW(&quot;http://google.com/&quot;);
-    yield return www;
-
-    if (!www.error) onError(new Exception(www.error));
-    else onCompleted(www.text);
-}
-
-// なんかダラダラしてる
-IEnumerator OnMouseDown()
-{
-    string result;
-    Exception error;
-    yield return StartCoroutine(GetGoogle(x =&gt; result = x, x =&gt; error = x));
-    if(error != null) { /* なんかする */ }
-
-    string result2;
-    Exception error2;
-    yield return StartCoroutine(GetGoogle(x =&gt; result2 = x, x =&gt; error2 = x));
-    if(error2 != null) { /* なんかする */ }
-}
-</code></pre>
-<p>基本的に破綻している。別に分離しないで単純に単純なWWWを延々と連鎖している限りは、少しはまともに綺麗になるかもしれないけれど、それは処理を分離できないという問題を産む。一つの巨大な無駄にデカいCoroutineと重複コードを避けられない。何れにせよコルーチンは非同期を扱うためのベストソリューションでは全くない(ところでNode.jsはyieldで立派に上手く非同期を扱っているじゃないか！と思う方もいるかもしれませんが、アレはyieldが戻り値を返しているから可能であって、どちらかといえばC# 5.0のasync/awaitに近い。C#のyield returnとは少し別物)</p>
-<p>Rxならどう書くか？全てをObservableの連鎖フローに変換する。</p>
-<pre><code class="language-csharp">// xが完了したらそれでy、完了したらzのダウンロードの連鎖のフローをLINQクエリ式で
-var query = from x in ObservableWWW.Get(&quot;http://google.co.jp/&quot;)
-            from y in ObservableWWW.Get(x)
-            from z in ObservableWWW.Get(y)
-            select new { x, y, z };
-
-// Subscribe = &quot;最後に全部まとまったあとの&quot;コールバック(ネストしないから処理が楽)
-query.Subscribe(x =&gt; Debug.Log(x), ex =&gt; Debug.LogException(ex));
-</code></pre>
-<p>メソッドチェーン（もしくはクエリ式）で、コールバックのネスト数を最小に抑えてフロー化、一体となって処理する。</p>
-<p>また、並列ダウンロードなども簡単に行えるのは大きな利点かもしれない。</p>
-<pre><code class="language-csharp">var parallel = Observable.WhenAll(
-    ObservableWWW.Get(&quot;http://google.com/&quot;),
-    ObservableWWW.Get(&quot;http://bing.com/&quot;),
-    ObservableWWW.Get(&quot;http://unity3d.com/&quot;));
-
-var cancel = parallel.Subscribe(xs =&gt;
-{
-    Debug.Log(xs[0]); // google
-    Debug.Log(xs[1]); // bing
-    Debug.Log(xs[2]); // unity
-});
-
-// これでキャンセルできる
-cancel.Dispose();
-</code></pre>
-<p>こんな風に並べて簡単に並列処理できます。また、全てのRxのSubscribeは戻り値をDisposeすることでキャンセルできる。文字列でStopCoroutineする時代はさようなら。</p>
-<h2>コルーチンについて</h2>
-<p>と、コルーチンを腐しましたが、しかし実際コルーチンは素晴らしいツールだと思っています。フレームワークネイティブの機構であり、それはやはり強いのです。無理にRxで全部書くことはまったくもって完全に&quot;可能&quot;なのですが、それよりは素直にコルーチンで書いて、Rxはそれをまとめることに徹してみればいい。コルーチンもイベントと同じく一つの素材。と考えればイイ。</p>
-<pre><code class="language-csharp">public IObservable&lt;string&gt; AsyncA(string msg)
-{
-    return Observable.FromCoroutine(observer =&gt; AsyncA(msg, observer));
-}
-
-// 戻り値のあるコルーチン(IObserverがコールバックを扱うコンテナとして考える、値通知とエラー通知、両方を内包する)
-private IEnumerator AsyncACore(string msg, IObserver&lt;string&gt; observer)
-{
-    Debug.Log(&quot;a start&quot;);
-    yield return new WaitForSeconds(1);
-    observer.OnNext(msg); // 値を通知
-    observer.OnCompleted();
-    Debug.Log(&quot;a end&quot;);
-}
-
-public IObservable&lt;string&gt; AsyncB()
-{
-    return Observable.FromCoroutine(AsyncBCore);
-}
-
-// 戻り値のないコルーチン
-private IEnumerator AsyncBCore()
-{
-    Debug.Log(&quot;b start&quot;);
-    yield return new WaitForEndOfFrame();
-    Debug.Log(&quot;b end&quot;);
-}
-
-// こんな使い方
-var cancel = AsyncA()
-    .SelectMany(_ =&gt; AsyncB())
-    .Subscribe();
-
-// 例によってコルーチンを止めたければ戻り値をDisposeする
-cancel.Dispose();
-</code></pre>
-<p>Observable.FromCoroutineによって変換できて、あとは好きなように合成できる。FromCoroutineは戻り値があってもなくてもOK。作る時にお薦めなのはIEnumeratorはprivateにして、変換後のIObservableのほうだけをpublicにすること。</p>
-<h2>uGUI</h2>
-<p>iOS用のReactiveCocoaが非常に受け入れられているように、リアクティブプログラミングはGUIとの相性が非常に良いです。そこでUniRx ver.4.5では既にUnityの新GUIシステムに対応！.AsObservable()と書くだけで変換できます。例えば</p>
-<pre><code class="language-csharp">GetComponentInChildren&lt;Button&gt;().AsObservable()
-    .Subscribe(x =&gt; Debug.Log(&quot;クリックされた！&quot;));
-</code></pre>
-<p>のように書けます。詳しい話はいつか！</p>
-<h2>そのうち書く何か（予告！）</h2>
-<p>「Pull vs Push」RxはPush型。Pull型のアーキテクチャはFindGameObjectsで探してきて何かする、もしくはなんとかManagerでオブジェクトを維持して、何れにせよそれらで蓄えて配列上のものに対して処理をグルッと書く。RxはPush型、何かして欲しい何かを各GameObject自身が通知する。ようするにイベント。イベントと違うのはRxならばイベントの集合体を圧倒的にコントロールしやすいこと（沢山のイベントストリームを処理するためのメソッドがある！）。本来、必要な時に必要な情報だけを送ってくるPush型のほうが、必要かどうかを取得してから考える必要のあるPull型よりもパフォーマンスも良くなる可能性が高いし。しかし生のイベントはコントロールが難しすぎて中々使えなかった。それをRxが解き放つ。とかうんたらかんたら。</p>
-<h2>学習リソース</h2>
-<p>UniRxの特徴として、Reactive Extensions系の学習リソースを流用できることが上げられますが、実際<a href="https://github.com/ReactiveX/RxJava/wiki%5D">RxJavaのWiki</a>は非常にお薦めです。沢山あるメソッドの説明が図入りで説明されていて非常に分かりやすい、例えば<a href="https://github.com/ReactiveX/RxJava/wiki/Filtering-Observables">Filtering Observables</a>とか。</p>
-<p>また、<a href="http://introtorx.com/">Introduction to Rx</a>は非常に充実したチュートリアルを提供し、<a href="http://rxmarbles.com/">RxMarbles: Interactive diagrams of Rx Observables</a> ではインタラクティブにメソッドの挙動を確認できます。</p>
-<p>こうしたリソースにひたすらタダ乗り出来るのが強い！</p>
-<h2>更新履歴。</h2>
-<p>さて、いまさらですが、UniRxの最初の発表日は2014/04/19に開催された<a href="http://sumaben.jp/?KantoSpecial02Xamarin">すまべん特別編「Xamarin 2.0であそぼう！」@関東</a>での発表でした。</p>
-<iframe src="//www.slideshare.net/slideshow/embed_code/33704749" width="597" height="486" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="https://www.slideshare.net/neuecc/unityrx-reactive-extensions-for-unity" title="UniRx - Reactive Extensions for Unity" target="_blank">UniRx - Reactive Extensions for Unity</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
-<p>この時にGitHubにリポジトリを公開して、アセットストアに審査出し。そこから審査に3回ほどこけて、一月後に2014年05月28日に公開されました、わーぱちぱち。ってしかしブログに解説書く書く詐欺で解説を書かないでいました、ほげえ。だからこの記事が最初の解説記事なんですねー、えー……。なんとなく書かないでいたのは、次のバージョンではもっと良くなってるから！を延々と繰り返してたから説。特に大きく変わったのがver.4.3（ちなみにUniRxのバージョンが4始まりなのは、審査にこける度に間違ってメジャーバージョンを上げちゃってたからです、気付いた時には戻せず……）</p>
-<pre><code class="language-txt">ver 4.3 - 2014/7/2
-
-Fix iOS AOT Safe totally
-MainThreadSchedule's schedule(dueTime) acquired time accuracy
-MainThreadDispatcher avoid deadlock at recursive call
-Add Observable.Buffer(count, skip)
-Change OfType, Cast definition
-Change IScheduler definition
-Add AotSafe Utilities(AsSafeEnumerable, WrapValueToClass)
-Change Unit, TimeInterval and Timestamped to class(for iOS AOT)
-Add Examples/Sample7_OrchestratIEnumerator.cs
-</code></pre>
-<p><a href="http://neue.cc/2014/07/01_474.html">Unity + iOSのAOTでの例外の発生パターンと対処法</a>という記事を書いて、そこそこ反響あったのですが、その成果を突っ込んでます。というわけで、このバージョンでiOSのAOT問題を大きく解決しました。そしてver4.4。</p>
-<pre><code class="language-txt">ver 4.4 - 2014/7/30
-
-Add : Observable.FromEvent
-Add : Observable.Merge Overload(params IObservable[TSource][] / IEnumerable[IObserable[TSource]])
-Add : Observable.Buffer Overload(timeSpan, timeShift)
-Add : IDisposable.AddTo
-Add : ObservableLogger(UniRx.Diagnostics)
-Add : Observable.StartAsCoroutine
-Add : MainThreadDispatcher.RegisterUnhandledExceptionCallback
-Add : Examples/Sample08, Sample09, Sample10, Sample11
-Performance Improvment : Subject[T], OnNext avoids copy and lock
-Performance Improvment : MainThreadDispatcher, avoids copy on every update
-Change : Observable.ToCoroutine -&gt; ToAwaitableEnumerator
-Fix : ObservableMonoBehaviour's OnTriggerStay2D doesn't pass Collider2D
-</code></pre>
-<p>機能的にはObservableLoggerを入れたのとIDisposable.AddToでリソース管理のガイドを示したのが大きいんですが、一番大きいのはパフォーマンス改善かなあ、と。ガチで使うと大量に出てくるSubject[T]や、絶対経由することになるMainThreadScheduler/Disptacherの性能を限界まで向上させたので、あまりネックになることはないのではかな、と。で、公開まだなver4.5。</p>
-<pre><code class="language-txt">ver 4.5 - 2014/8/19(アセットストアへは審査中)
-
-Add : ObservableWWW Overload(byte[] postData)
-Add : Observable.Buffer Overload(windowBoundaries)
-Add : LazyTask - yieldable value container like Task
-Add : Observable.StartWith
-Add : Observable.Distinct
-Add : Observable.DelaySubscription
-Add : UnityEvent.AsObservable - only for Unity 4.6 uGUI
-Add : UniRx.UI.ObserveEveryValueChanged(Extension Method)
-Add : RefCountDisposable
-Add : Scheduler.MainThreadIgnoreTimeScale - difference with MainThreadScheduler, not follow Unity Timescale
-Add : Scheduler.DefaultSchedulers - can configure default scheduler for any operation
-Fix : DistinctUntilChanged iOS AOT issue.
-Fix : Remove IObservable/IObserver/ISubject's covariance/contravariance(Unity is not support)
-Fix : UnityDebugSink throws exception when called from other thread
-Fix : Remove compiler error for Windows Phone 8/Windows Store App
-Breaking Change : MainThreadSchduler follow Unity Timescale
-Breaking Change : All Timebased operator's default scheduler changed to MainThreadScheduler
-Breaking Change : Remove TypedMonoBehaviour.OnGUI for performance improvment
-Performance Improvment : AsyncSubject[T]
-Performance Improvment : CurrentThreadScheduler
-Performance Improvment : MainThreadScheduler
-</code></pre>
-<p>本当はこの記事と同時にアセットストアでも公開！と行きたかったんですが審査がまだー……。uGUI対応のイベントハンドリングを足したり、UIで使うの見越したUniRx.UI.ObserveEveryValueChangedの追加とか、uGUIへの対応を見越した基礎部分を足してっていってる感じですね。こうしたUIでの利用法はuGUIのノウハウと共に貯めていきたい/公開していきたいと思っています。</p>
-<p>あと凄く大きいのが時間ベースのメソッドで使われるデフォルトのスケジューラをScheduler.MainThreadに変えたことで、ふつーに使う分には全てがUnityのTimescaleの影響下にあるシングルスレッドで動く状態になるので、違和感というかハマりどころ(ObserverOnMainThreadしなかったから死んだ！オマジナイにObserveOnMainThreadって書きまくったせいで性能が！）を消せたのかなー、と思います。ここは本家Rxとは当然デフォルトが違うことになりますが、Unityネイティブに寄せるべきだろう、という判断です。</p>
-<p>あと地味にWindows Phone 8やWindows Store Appにも対応しました。いや、最初のバージョンでは対応してたんですが機能足してるうちに、どうやらコンパイル通らなくなってしまっていて……。Platform切り替えないと気づけないのが辛いですねえ、<a href="http://unity3d.com/unity/cloud-build">Unity Cloud Build</a>のWindows Phone対応はよ！いちおう「We’ll be adding more platforms as the service matures.」ってあるので、適当に待ちましょう。そもそもBetaの現状は重すぎてそういう次元ですらないですしね。</p>
-<p>次回更新では、現状ExecuteInEditModeでは動かないので、それに対応したものを出す予定です。</p>
-<h2>最後に</h2>
-<p>と、いうわけでどうでしょう？使ってみたくなってもらえれば幸いです。怒涛の更新のとおりにやる気はかなりあります、というか私は<a href="http://grani.jp/">グラニ</a>という会社のCTOをしているんですが（CM放送などをした「神獄のヴァルハラゲート」が代表作です）、開発中の次のプロダクトに投下していて、実プロダクトで使う気満々というかドッグフーディングというか、ともあれ現状「枯れてない」というのは否定出来ないのですが、基本的なバグは既に概ね殺せているのではかなぁ、と、そこは信頼してくれると嬉しいですね。今回はUniRxの初めての記事だったので基礎の基礎的な話になりましたが（そうか？）、今後は応用的な記事などもどんどん出していきます。</p>
-<p>Reactive Extensions自体は、私は2011年には@ITに<a href="http://www.atmarkit.co.jp/fdotnet/introrx/introrx_01/introrx_01_01.html">連載：Reactive Extensions（Rx）入門</a>という記事を書いていたり、そもそも2009年に最初のベータ版が出た時から追っかけて記事を書き続けていたりと<a href="http://neue.cc/category/programming/rx">neue.cc/category/programming/rx</a>、5年間延々とRxを触っているので、さすがにかなり詳しいのではないかと自負するところです（ちなみに最初の記事は<a href="http://neue.cc/2009/09/04_197.html">.NET Reactive Framework メソッド探訪第一回:FromEvent</a>でした。そう、当初はReactive Frameworkって名前だったんですね、更にもっと源流は<a href="http://en.wikipedia.org/wiki/Microsoft_Live_Labs_Volta">Microsoft Live Labs Volta</a>になります)。</p>
-<p>繰り返しますが日本ではReactive Programmingのブームは定期的に起こっては消え（最初のほうでバズったのは2010年の<a href="http://maoe.hatenadiary.jp/entry/20100109/1263059731">やさしいFunctional reactive programming（概要編）</a>でしょうか）、って感じですが、Microsoftは理論やプロトタイプに留まらず延々と改良を続け、完全に実用ベースに載せ、本物のブームを作り上げたことには本当に感嘆します。勿論、ブーム自体はMicrosoftよりは、そこから波及していったRxJavaやReactiveCocoaの貢献が非常に大きいです。私もUniRxで、Reactive Programingの強力さをUnityでも示し、大きなブームが巻き起こせればなあ、なんて野望は抱いていますね！</p>
-<p>UniRxへの質問があれば、<a href="https://github.com/neuecc/UniRx/issues">GitHubのIssues</a>や<a href="http://forum.unity3d.com/threads/unirx-reactive-extensions-for-unity.248535/">UnityのForumに立ててあるスレッド</a>でもぜひぜひですが、そこでは英語でお願いしたいのでちょっと敷居がー、ということであれば、普通にTwitterの<a href="https://twitter.com/neuecc">@neuecc</a>宛てに気楽に言ってください。またはTwitterで「UniRx」で常時検索してますんで独り言みたいな感じでポストしてもらえればチェックします。</p>
-<p>あと会社単位でも、会社間交流ということで共催の社内勉強会などできれば嬉しいかなー、と思ってますので、是非グラニと勉強会やりたいという方いらっしゃいましたらお声がけください。今までもKLabさん - <a href="http://young.blog.jp.klab.com/archives/37630043.html">2014年3月度ALMレポート(株式会社グラニ様との合同開催)</a>やドリコムさん等と行ってきています。グラニのUnity以外の技術、というか現状はそちらがメインなのですが、というのはgihyo.jpの<a href="http://gihyo.jp/dev/serial/01/grani/0001">グラニがC#にこだわる理由</a>という記事を見て頂ければなのですが、サーバーサイドをPHPやPython、RubyじゃなくてC#(Windows Server + ASP.NET)でやる、というのが強みです。勿論、今後クライアントサイドもC#(Unity)でやっていきます。</p>
-<p>さて、明日は<a href="http://yaseino.hatenablog.com/">野生の男</a>さんの「無料アセットで簡単IBL！」です。楽しみ楽しみー、ではでは！</p>
-</div>
 <a href="https://neue.cc/8">Prev |</a>
 <a href="https://neue.cc/10">| Next</a>
 </div>
@@ -2589,6 +2440,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/01/">2024-01</a>
 <li><a href="https://neue.cc/2023/12/">2023-12</a>
 <li><a href="https://neue.cc/2023/10/">2023-10</a>
 <li><a href="https://neue.cc/2023/09/">2023-09</a>
