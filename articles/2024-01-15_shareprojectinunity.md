@@ -38,7 +38,7 @@ MagicOnionに限らずですが、.NETとUnityとの間でソースコードを�
 </Project>
 ```
 
-最新手法と銘打った理由として.NET 8(以降に同梱されてるコンパイラ)は[成果物の出力レイアウトを変更する](https://learn.microsoft.com/en-us/dotnet/core/sdk/artifacts-output)ことができるようになりました。なぜこれが必要かというと、通常、ビルドするとbin, objがcsprojのディレクトリに吐かれるわけですが、Unityでパッケージ参照するとそのbin, objまで取り込んでしまって大問題なんですね。ArtifactsPathを設定することでbin, objの出力場所を変更できます、そして[Unityのアセットインポートにおける命名規則](https://docs.unity3d.com/Manual/SpecialFolders.html)のうち`.`か`~`で始まってるファイルまたはフォルダは無視されます。というわけで、`.artifacts`をbin, objの出力場所に変えることで、Unityから参照しても問題ない構成になりました。
+最新手法と銘打った理由として.NET 8(以降に同梱されてるコンパイラ)は[成果物の出力レイアウトを変更する](https://learn.microsoft.com/en-us/dotnet/core/sdk/artifacts-output)ことができるようになりました。なぜこれが必要かというと、通常、ビルドするとbin, objがcsprojのディレクトリに吐かれるわけですが、Unityでパッケージ参照するとそのbin, objまで取り込んでしまって大問題なんですね。ArtifactsPathを設定することでbin, objの出力場所を変更できます、そして[Unityのアセットインポートにおける命名規則](https://docs.unity3d.com/Manual/SpecialFolders.html)のうち`.`か`~`で始まってるファイルまたはフォルダは無視されます。というわけで、bin, objの出力場所を`.artifacts`に変えることで、Unityから参照しても問題ない構成になりました。
 
 もう少し作業が必要で、次にcsprojを開いて、以下の行を追加しておきます。
 
