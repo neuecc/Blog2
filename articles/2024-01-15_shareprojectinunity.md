@@ -120,7 +120,7 @@ Unity用ライブラリのNuGet配布のための開発時環境設定
 
 で、そこで、やはりローカルパッケージ参照です。ただし今回は`package.json`のみで、asmdefは配りません。そして`bin/Debug/netstandard2.0`(2.1でもいい)にpackage.jsonを置いて、package.jsonとpackage.json.metaのみgitの管理下に置きます。
 
-実際のリポジトリ: [https://github.com/Cysharp/R3/tree/main/src/R3/bin/Debug/netstandard2.0(https://github.com/Cysharp/R3/tree/main/src/R3/bin/Debug/netstandard2.0)
+実際のリポジトリ: [https://github.com/Cysharp/R3/tree/main/src/R3/bin/Debug/netstandard2.0](https://github.com/Cysharp/R3/tree/main/src/R3/bin/Debug/netstandard2.0)
 
 手元のフォルダの状況:  
 ![image](https://github.com/Cysharp/MagicOnion/assets/46207/2c8f7cb4-08ea-459c-abcc-6a251a063cb2)
