@@ -102,6 +102,8 @@ referencesとかはお好きな感じで。
 
 これでいい具合に取り扱うことができました！
 
+![image](https://github.com/Cysharp/R3/assets/46207/ed8c1d20-fd8a-4e6c-afe5-2350d3fa2860)
+
 さらに一歩進んで、サーバー側のslnでUnity側のcsprojも一緒に管理したいんだよなあ、とかやりたい場合は[Cysharp/SlnMerge](https://github.com/Cysharp/SlnMerge/)を使うとよいでしょう。
 
 ![image](https://github.com/Cysharp/SlnMerge/assets/46207/6b70bfda-5f80-42c0-9acc-ca3922f22c52)
