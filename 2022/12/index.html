@@ -41,7 +41,7 @@
 <p>というわけで来年はいっぱいやることがある！今年に悔いが残るとすれば、Cysharpとして現在、自称革命的なサービス（？）を作ってるんですが、それの進捗があまり良くなかったことですかねえ。原因としては私がOSS関連でフラフラしててプロジェクトマネージャー/プロダクトオーナーとして1ミリも機能いてなかったせいなのですが！反省。PM的な話は昔からずっと反省し続けてるので一向に進歩してないですね……。そこに脳みそ注ぎ込む余力がないのだと言い訳してますが……。</p>
 <p>そんなわけで、来年こそは革命的サービスもリリースするので期待していてください。OSS関連も革命的なものをどかどか投下する予定なので、引き続きCysharpは時代の最先端を全力疾走していきます。</p>
 </div>
-<h1><a href="https://neue.cc/2022/12/16_IncrementalSourceGenerator.html">2022年のC# (Incremental) Source Generator開発手法</a></h1>
+<h1><a href="https://neue.cc/2022/12/16_IncrementalSourceGenerator.html">2022年(2024年)のC# Incremental Source Generator開発手法</a></h1>
 <ul class="date"><li>2022-12-16</li></ul>
 <div class="entry_body"><p>このブログでもSource GeneratorやAnalyzerの開発手法に関しては定期的に触れてきていて、新しめだと</p>
 <ul>
@@ -49,10 +49,11 @@
 <li><a href="https://neue.cc/2021/05/08_600.html">2021/05/07 - 2021年のC# Roslyn Analyzerの開発手法、或いはUnityでの利用法</a></li>
 </ul>
 <p>という記事を出していますが、今回 <a href="https://github.com/Cysharp/MemoryPack/">MemoryPack</a> の実装で比較的大規模にSource Generatorを使ってみたことで、より実践的なノウハウが手に入りました。また、開発環境も年々良くなっていることや、Unityのサポート状況も強化されているので、状況を一通りまとめてみようと思いました。Source Generatorは非常に強力で、今後必須の開発技法になるので（少なくとも私はもうIL書きません！）是非、この機会に手を出して頂ければです。</p>
+<p>また、オリジナルは2022年状況の話でしたが、Unity関連でアップデートがあったので2024年の状況として、その辺りを書き換えました。</p>
 <h2>Microsoft.CodeAnalysis.CSharpのバージョン問題</h2>
 <p>Source Generatorを作成するには <a href="https://www.nuget.org/packages/Microsoft.CodeAnalysis.CSharp/">Microsoft.CodeAnalysis.CSharp</a>を参照したライブラリを作ればいい、のですが、ここで大事なのはバージョンです。何も考えずに最新を入れると動かないという罠が待ってます。Source Generatorは、インストールされている .NET のバージョンや IDEのコンパイラバージョンと深く紐づいています。.NETのバージョンだけ上げてもダメで、特にVisual Studioの場合は.NETのバージョンと独立して、同梱されているコンパイラのバージョンがあり、それと合わせる必要があります。Unityの場合も同じく、Unityに含まれるC#コンパイラのバージョン(/Editor/Data/DotNetSdkRoslyn/Microsoft.CodeAnalysis.CSharp.dll)を精査する必要があります。使わているバージョンよりも高いバージョンのものを参照すると、動かないという理屈です。</p>
 <p>Visual Studioのバージョンとの紐づきは <a href="https://learn.microsoft.com/ja-jp/visualstudio/extensibility/roslyn-version-support">.NET コンパイラ プラットフォーム パッケージ バージョン リファレンス</a>を見れば分かりますが、現状の私のオススメは <code>4.3.0</code>。これは最小サポートバージョンがVisual Studio 2022 Version 17.3ということで、VS2019は切り捨てでいいでしょう。VS2022使ってるなら、とりあえずそこまでアップデートしてくれ、ということで。古ければ古いほどカバーできる範囲が広がっていい！ようでいて、古ければ古いほど、新しい言語機能の解析ができないなどの問題があるので、お薦めはできません、むしろ何も問題がなければ新しければ新しいほどいいぐらいです。4.3.0がおすすめな最大の理由としては、<code>SyntaxValueProvider.ForAttributeWithMetadataName</code> という、後で説明しますが、Source Generator作成の際に必須とも言える便利メソッドが追加されていることです。C# 11, C# 12の新言語機能部分の解析が必要になる場合は、必然的にアップデートしなければなりませんが。</p>
-<p>そしてもう一つ<code>4.3.0</code>がおすすめな理由としてUnityへの対応があります。Unityの場合は公式にC#コンパイラのバージョンが何であるかのリストはないので、自分で調べていく必要がありますが、とりあえず<a href="https://docs.unity3d.com/Manual/roslyn-analyzers.html">Roslyn analyzers and source generators</a>という公式ドキュメントによると「must use Microsoft.CodeAnalysis 3.8」、というわけで3.8じゃないと動かないぞ、と脅しをかけてきてます。が、実際はちょくちょくアップデートされていて、バージョンを調べていくとUnity 2022.3.0にはRoslyn 4.1.0、そしてUnity 2022.3.12f以降には4.3.0が搭載されているようです。実際、ちゃんと4.3.0で動きます。2024-01-19更新時点でのLTSはUnity 2022.3で、パッチバージョンあげてもらえば4.3.0になるので、これは4.3.0解禁ということでいいでしょう（？）</p>
+<p>そしてもう一つ<code>4.3.0</code>がおすすめな理由としてUnityへの対応があります。Unityの場合は公式にC#コンパイラのバージョンが何であるかのリストはないので、自分で調べていく必要がありますが、とりあえず<a href="https://docs.unity3d.com/Manual/roslyn-analyzers.html">Roslyn analyzers and source generators</a>という公式ドキュメントによると「must use Microsoft.CodeAnalysis 3.8」、というわけで3.8じゃないと動かないぞ、と脅しをかけてきてます。が、実際はちょくちょくアップデートされていて、バージョンを調べていくとUnity 2022.3.0にはRoslyn 4.1.0、そしてUnity 2022.3.12f1以降には4.3.0が搭載されているようです。実際、ちゃんと4.3.0で動きます。2024-01-19更新時点でのLTSはUnity 2022.3で、パッチバージョンあげてもらえば4.3.0になるので、これは4.3.0解禁ということでいいでしょう（？）</p>
 <p>Microsoft.CodeAnalysis.CSharpのバージョンは大きく分けて 3.* と 4.* があり、3.* はv1の <code>ISourceGenerator</code>、4.* はv2である <code>IIncrementalGenerator</code> が使えます。</p>
 <p><a href="https://github.com/dotnet/roslyn/blob/main/docs/features/incremental-generators.md">Incremental Generators</a>は、性能面で大きく改善されている他、作りやすさも大きく上がっているため、現状は Incremental Generators で作ることを最優先で考えたほうがいいでしょう。登場の黎明期では、IDEのバージョン問題があったために、3.* と 4.* の両方のSource Generatorを作って一緒にNuGetパッケージングする、という（かなりややこしい）手法が取られたこともありましたが、もう .NET 7も登場した2022年、も終わろうとしている現在ですので、 3.* は切り捨ててしまってもいいと考えています。</p>
 <p>ただしUnityは除く。と思っていましたがUnity 2022.2, Unity 2023.1 からは4.1.0のコンパイラが搭載されていますし、2022.3.12f1以降は4.3.0なので、もうUnity含めても3.* の切り捨てはアリだと考えています。</p>
