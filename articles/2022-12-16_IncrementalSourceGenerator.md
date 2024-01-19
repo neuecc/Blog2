@@ -11,15 +11,15 @@ Microsoft.CodeAnalysis.CSharpのバージョン問題
 ---
 Source Generatorを作成するには [Microsoft.CodeAnalysis.CSharp](https://www.nuget.org/packages/Microsoft.CodeAnalysis.CSharp/)を参照したライブラリを作ればいい、のですが、ここで大事なのはバージョンです。何も考えずに最新を入れると動かないという罠が待ってます。Source Generatorは、インストールされている .NET のバージョンや IDEのコンパイラバージョンと深く紐づいています。.NETのバージョンだけ上げてもダメで、特にVisual Studioの場合は.NETのバージョンと独立して、同梱されているコンパイラのバージョンがあり、それと合わせる必要があります。Unityの場合も同じく、Unityに含まれるC#コンパイラのバージョン(/Editor/Data/DotNetSdkRoslyn/Microsoft.CodeAnalysis.CSharp.dll)を精査する必要があります。使わているバージョンよりも高いバージョンのものを参照すると、動かないという理屈です。
 
-Visual Studioのバージョンとの紐づきは [.NET コンパイラ プラットフォーム パッケージ バージョン リファレンス](https://learn.microsoft.com/ja-jp/visualstudio/extensibility/roslyn-version-support)を見れば分かりますが、現状の私のオススメは `4.3.1` です（現時点での最新は `4.4.0` ）。これは最小サポートバージョンがVisual Studio 2022 Version 17.3ということで、VS2019は切り捨てでいいでしょう。VS2022使ってるなら、とりあえずそこまでアップデートしてくれ、ということで。古ければ古いほどカバーできる範囲が広がっていい！ようでいて、古ければ古いほど、新しい言語機能の解析ができないなどの問題があるので、お薦めはできません、むしろ何も問題がなければ新しければ新しいほどいいぐらいです。4.3.1がおすすめな最大の理由としては、`SyntaxValueProvider.ForAttributeWithMetadataName` という、後で説明しますが、Source Generator作成の際に必須とも言える便利メソッドが追加されていることです。`4.4.0` だとC# 11解析サポートが追加されている、はずなのですが公式ドキュメントのほうにVisual Studioとの対応関係がまだ追加されていないというのもあり手を出しにくい……。
+Visual Studioのバージョンとの紐づきは [.NET コンパイラ プラットフォーム パッケージ バージョン リファレンス](https://learn.microsoft.com/ja-jp/visualstudio/extensibility/roslyn-version-support)を見れば分かりますが、現状の私のオススメは `4.3.0`。これは最小サポートバージョンがVisual Studio 2022 Version 17.3ということで、VS2019は切り捨てでいいでしょう。VS2022使ってるなら、とりあえずそこまでアップデートしてくれ、ということで。古ければ古いほどカバーできる範囲が広がっていい！ようでいて、古ければ古いほど、新しい言語機能の解析ができないなどの問題があるので、お薦めはできません、むしろ何も問題がなければ新しければ新しいほどいいぐらいです。4.3.0がおすすめな最大の理由としては、`SyntaxValueProvider.ForAttributeWithMetadataName` という、後で説明しますが、Source Generator作成の際に必須とも言える便利メソッドが追加されていることです。C# 11, C# 12の新言語機能部分の解析が必要になる場合は、必然的にアップデートしなければなりませんが。
 
-Unityの場合は公式にC#コンパイラのバージョンが何であるかのリストはないので、自分で調べていく必要がありますが、とりあえず[Roslyn analyzers and source generators](https://docs.unity3d.com/Manual/roslyn-analyzers.html)という公式ドキュメントによると「must use Microsoft.CodeAnalysis 3.8」、というわけで3.8じゃないと動かないぞ、と脅しをかけてきてます。が、実際は現状のLTS環境では3.9が搭載されているようなので、3.9を使ったほうがいいでしょう。例えばUnity 2021.3は3.9が入っていて、実際ちゃんと3.9でも動きますし、APIが3.8と3.9でかなり変わっているので、3.9で作ったほうが楽です。ドキュメントは更新が遅れて最新の話が反映されていない場合が往々にあるので、正しい現状把握は重要ですね。
+そしてもう一つ`4.3.0`がおすすめな理由としてUnityへの対応があります。Unityの場合は公式にC#コンパイラのバージョンが何であるかのリストはないので、自分で調べていく必要がありますが、とりあえず[Roslyn analyzers and source generators](https://docs.unity3d.com/Manual/roslyn-analyzers.html)という公式ドキュメントによると「must use Microsoft.CodeAnalysis 3.8」、というわけで3.8じゃないと動かないぞ、と脅しをかけてきてます。が、実際はちょくちょくアップデートされていて、バージョンを調べていくとUnity 2022.3.0にはRoslyn 4.1.0、そしてUnity 2022.3.12f以降には4.3.0が搭載されているようです。実際、ちゃんと4.3.0で動きます。2024-01-19更新時点でのLTSはUnity 2022.3で、パッチバージョンあげてもらえば4.3.0になるので、これは4.3.0解禁ということでいいでしょう（？）
 
 Microsoft.CodeAnalysis.CSharpのバージョンは大きく分けて 3.* と 4.* があり、3.* はv1の `ISourceGenerator`、4.* はv2である `IIncrementalGenerator` が使えます。
 
 [Incremental Generators](https://github.com/dotnet/roslyn/blob/main/docs/features/incremental-generators.md)は、性能面で大きく改善されている他、作りやすさも大きく上がっているため、現状は Incremental Generators で作ることを最優先で考えたほうがいいでしょう。登場の黎明期では、IDEのバージョン問題があったために、3.* と 4.* の両方のSource Generatorを作って一緒にNuGetパッケージングする、という（かなりややこしい）手法が取られたこともありましたが、もう .NET 7も登場した2022年、も終わろうとしている現在ですので、 3.* は切り捨ててしまってもいいと考えています。
 
-ただしUnityは除く。調べたところUnityでは Unity 2022.2, Unity 2023.1 から、4.1.0のコンパイラが搭載されているようなので、そこを最小ターゲットにすればIncremental Generatorを動かすこともできなくはないのですが、さすがに攻めすぎなので、Unityをターゲットにする場合のみ 3.* で生成したものを配布する、といった形がいいのではないかと思っています。 3.* と 4.* 版の両方を作るという手間はありますが、NuGetパッケージングのややこしさには手を出さなくてもいい。ぐらいが現状の落としどころじゃないでしょうか。
+ただしUnityは除く。と思っていましたがUnity 2022.2, Unity 2023.1 からは4.1.0のコンパイラが搭載されていますし、2022.3.12f1以降は4.3.0なので、もうUnity含めても3.* の切り捨てはアリだと考えています。
 
 最小プロジェクトとデバッグ実行
 ---
@@ -47,7 +47,7 @@ Source Generator開発は、デバッグ環境をきっちり構築できてい�
 	</PropertyGroup>
 
 	<ItemGroup>
-		<PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.3.1" />
+		<PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.3.0" />
 	</ItemGroup>
 
 </Project>
@@ -125,7 +125,7 @@ ForAttributeWithMetadataName
 ---
 細かい説明に行く前に、基本的な流れの説明を。Source Generatorは、通常、なにか適当な属性がついているpartial classやpartial methodを探して、それに対して追加のpartial class/methodを生成する、という流れになります。原理的には属性がついていなくてもいいですが、勝手に何かを生成されるとわけわかんなくて困るので、ユーザーに明示的に生成を指示させるような流れにすべき、ということで、起点は属性付与だけと考えていいでしょう。
 
-そんなわけでSource Generatorでまずやることは、属性が付与されてるclass/methodを探し出すことなのですが、Roslyn 4.3.1からは `SyntaxValueProvider.ForAttributeWithMetadataName` というメソッドで一発で探し出すことができるようになりました。
+そんなわけでSource Generatorでまずやることは、属性が付与されてるclass/methodを探し出すことなのですが、Roslyn 4.3.0からは `SyntaxValueProvider.ForAttributeWithMetadataName` というメソッドで一発で探し出すことができるようになりました。
 
 というわけで、小さなサンプル用ジェネレーターとして、classのToStringをrecordのように自動実装するジェネレーターを作ってみます。
 
@@ -629,73 +629,11 @@ NuGetパッケージング
 
 Unity対応
 ---
-まずIncremental Source Generator使えないし ForAttributeWithMetadataName も使えないしちくしょーって感じですが、とはいえそこまで差分が多いわけでもないのでやってきましょう。
-
-まず、簡易的な ForAttributeWithMetadataName っぽいものを用意します。MemoryPackでは以下のコードを使ってます。
-
-```csharp
-class SyntaxContextReceiver : ISyntaxContextReceiver
-{
-    internal static ISyntaxContextReceiver Create()
-    {
-        return new SyntaxContextReceiver();
-    }
-
-    public HashSet<TypeDeclarationSyntax> ClassDeclarations { get; } = new();
-
-    public void OnVisitSyntaxNode(GeneratorSyntaxContext context)
-    {
-        var node = context.Node;
-        if (node is ClassDeclarationSyntax
-                    or StructDeclarationSyntax
-                    or RecordDeclarationSyntax
-                    or InterfaceDeclarationSyntax)
-        {
-            var typeSyntax = (TypeDeclarationSyntax)node;
-            if (typeSyntax.AttributeLists.Count > 0)
-            {
-                var attr = typeSyntax.AttributeLists.SelectMany(x => x.Attributes)
-                    .FirstOrDefault(x =>
-                    {
-                        var packable = x.Name.ToString() is "MemoryPackable" or "MemoryPackableAttribute" or "MemoryPack.MemoryPackable" or "MemoryPack.MemoryPackableAttribute";
-                        if (packable) return true;
-                        return false;
-                    });
-                if (attr != null)
-                {
-                    ClassDeclarations.Add(typeSyntax);
-                }
-            }
-        }
-    }
-}
-```
-
-ざっくりしてる感じですが、機能はするのでよしとしておきましょう。次にSourceGenerator と IncrementalGenerator を共通化するContextを用意しておきます。
-
-```csharp
-// share context for SourceGenerator and IncrementalGenerator
-public interface IGeneratorContext
-{
-    CancellationToken CancellationToken { get; }
-    void ReportDiagnostic(Diagnostic diagnostic);
-    void AddSource(string hintName, string source);
-}
-```
-
-そして、最初のサンプルコードでいうところのEmit部分を↑のIGeneratorContextを使うようにしてファイル分離、そしてCompile Includeで.csを参照するようにします。MemoryPackでは以下のようにしています。
-
-```xml
-<ItemGroup>
-    <Compile Include="../MemoryPack.Generator/**/*.cs" Exclude="**/obj/**;**/MemoryPackGenerator.cs;**/*TypeScript*.cs" />
-</ItemGroup>
-```
-
-大事なのはプロジェクト分離しないこと、ですね！NuGetパッケージングのところでも書きましたがAnalyzer(Source Generator)でごちゃごちゃした依存作ると面倒臭さが跳ね上がるので、シングルアセンブリに収まるように作るべし、ということです。
-
-あとは[Unityのマニュアル](https://docs.unity3d.com/Manual/roslyn-analyzers.html)通りにビルド済みdllを配置してRoslynAnalyzerとしてLabel設定したmetaを置いておけば、UPMのgit参照とかでも、特に何もせずに自動で認識されます。dllの配置場所はUnityの公式のジェネレーター(例えば com.unity.properties とか)がRuntime配下にいるので、Editorではなく、Runtime側に配置することとしています。
+Incremental Generatorを前提にするなら、特に通常の.NET版とやることは変わりません。[Unityのマニュアル](https://docs.unity3d.com/Manual/roslyn-analyzers.html)通りにビルド済みdllを配置してRoslynAnalyzerとしてLabel設定したmetaを置いておけば、UPMのgit参照とかでも、特に何もせずに自動で認識されます。dllの配置場所はUnityの公式のジェネレーター(例えば com.unity.properties とか)がRuntime配下にいるので、Editorではなく、Runtime側に配置することとしています。
 
 なお、Unity用限定のSource Generatorを作る場合でも、通常の .NET のライブラリとして扱い、普通に .NET ライブラリとしての開発環境やユニットテストプロジェクトを作ったほうが良いでしょう。普通に作るにもかなり環境をしっかり作らないと大変なので、Unity限定だから！みたいな気持ちで挑むとしんどみが爆発します。
+
+また、ライブラリの配布として[NuGetForUnity](https://github.com/GlitchEnzo/NuGetForUnity)を使ってNuGet経由で落としてきた場合は自動的にRoslynAnalyzerのLabelを張ってくれます、便利！
 
 まとめ
 ---
