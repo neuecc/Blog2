@@ -1,4 +1,4 @@
-# 2022年のC# (Incremental) Source Generator開発手法
+# 2022年(2024年)のC# Incremental Source Generator開発手法
 
 このブログでもSource GeneratorやAnalyzerの開発手法に関しては定期的に触れてきていて、新しめだと
 
@@ -7,13 +7,15 @@
 
 という記事を出していますが、今回 [MemoryPack](https://github.com/Cysharp/MemoryPack/) の実装で比較的大規模にSource Generatorを使ってみたことで、より実践的なノウハウが手に入りました。また、開発環境も年々良くなっていることや、Unityのサポート状況も強化されているので、状況を一通りまとめてみようと思いました。Source Generatorは非常に強力で、今後必須の開発技法になるので（少なくとも私はもうIL書きません！）是非、この機会に手を出して頂ければです。
 
+また、オリジナルは2022年状況の話でしたが、Unity関連でアップデートがあったので2024年の状況として、その辺りを書き換えました。
+
 Microsoft.CodeAnalysis.CSharpのバージョン問題
 ---
 Source Generatorを作成するには [Microsoft.CodeAnalysis.CSharp](https://www.nuget.org/packages/Microsoft.CodeAnalysis.CSharp/)を参照したライブラリを作ればいい、のですが、ここで大事なのはバージョンです。何も考えずに最新を入れると動かないという罠が待ってます。Source Generatorは、インストールされている .NET のバージョンや IDEのコンパイラバージョンと深く紐づいています。.NETのバージョンだけ上げてもダメで、特にVisual Studioの場合は.NETのバージョンと独立して、同梱されているコンパイラのバージョンがあり、それと合わせる必要があります。Unityの場合も同じく、Unityに含まれるC#コンパイラのバージョン(/Editor/Data/DotNetSdkRoslyn/Microsoft.CodeAnalysis.CSharp.dll)を精査する必要があります。使わているバージョンよりも高いバージョンのものを参照すると、動かないという理屈です。
 
 Visual Studioのバージョンとの紐づきは [.NET コンパイラ プラットフォーム パッケージ バージョン リファレンス](https://learn.microsoft.com/ja-jp/visualstudio/extensibility/roslyn-version-support)を見れば分かりますが、現状の私のオススメは `4.3.0`。これは最小サポートバージョンがVisual Studio 2022 Version 17.3ということで、VS2019は切り捨てでいいでしょう。VS2022使ってるなら、とりあえずそこまでアップデートしてくれ、ということで。古ければ古いほどカバーできる範囲が広がっていい！ようでいて、古ければ古いほど、新しい言語機能の解析ができないなどの問題があるので、お薦めはできません、むしろ何も問題がなければ新しければ新しいほどいいぐらいです。4.3.0がおすすめな最大の理由としては、`SyntaxValueProvider.ForAttributeWithMetadataName` という、後で説明しますが、Source Generator作成の際に必須とも言える便利メソッドが追加されていることです。C# 11, C# 12の新言語機能部分の解析が必要になる場合は、必然的にアップデートしなければなりませんが。
 
-そしてもう一つ`4.3.0`がおすすめな理由としてUnityへの対応があります。Unityの場合は公式にC#コンパイラのバージョンが何であるかのリストはないので、自分で調べていく必要がありますが、とりあえず[Roslyn analyzers and source generators](https://docs.unity3d.com/Manual/roslyn-analyzers.html)という公式ドキュメントによると「must use Microsoft.CodeAnalysis 3.8」、というわけで3.8じゃないと動かないぞ、と脅しをかけてきてます。が、実際はちょくちょくアップデートされていて、バージョンを調べていくとUnity 2022.3.0にはRoslyn 4.1.0、そしてUnity 2022.3.12f以降には4.3.0が搭載されているようです。実際、ちゃんと4.3.0で動きます。2024-01-19更新時点でのLTSはUnity 2022.3で、パッチバージョンあげてもらえば4.3.0になるので、これは4.3.0解禁ということでいいでしょう（？）
+そしてもう一つ`4.3.0`がおすすめな理由としてUnityへの対応があります。Unityの場合は公式にC#コンパイラのバージョンが何であるかのリストはないので、自分で調べていく必要がありますが、とりあえず[Roslyn analyzers and source generators](https://docs.unity3d.com/Manual/roslyn-analyzers.html)という公式ドキュメントによると「must use Microsoft.CodeAnalysis 3.8」、というわけで3.8じゃないと動かないぞ、と脅しをかけてきてます。が、実際はちょくちょくアップデートされていて、バージョンを調べていくとUnity 2022.3.0にはRoslyn 4.1.0、そしてUnity 2022.3.12f1以降には4.3.0が搭載されているようです。実際、ちゃんと4.3.0で動きます。2024-01-19更新時点でのLTSはUnity 2022.3で、パッチバージョンあげてもらえば4.3.0になるので、これは4.3.0解禁ということでいいでしょう（？）
 
 Microsoft.CodeAnalysis.CSharpのバージョンは大きく分けて 3.* と 4.* があり、3.* はv1の `ISourceGenerator`、4.* はv2である `IIncrementalGenerator` が使えます。
 
