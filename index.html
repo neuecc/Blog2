@@ -28,7 +28,294 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2024/01/15_shareprojectinunity.html">.NETプロジェクトとUnityプロジェクトのソースコード共有最新手法</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2024/02/27_R3.html">R3 - C#用のReactive Extensionsの新しい現代的再実装</a></h1>
+<ul class="date"><li>2024-02-27</li></ul>
+<div class="entry_body"><p>先日、新しいC#用のReactive Extensionsの実装としてR3を正式公開しました！R3は<a href="https://github.com/dotnet/reactive">Rx for .NET</a>を第一世代、<a href="https://github.com/neuecc/UniRx">UniRx</a>を第二世代とした場合の、第三世代のRxという意味で命名しています。Rxとしてのコア部分(ほぼdotnet/reactiveと同様)は.NET共通のライブラリとして提供し、各プラットフォーム特化のカスタムスケジューラーやオペレーターは別ライブラリに分けるという形により、全ての.NETプラットフォーム向けのコアライブラリと、各種フレームワーク Unity, Godot, Avalonia, WPF, WinForms, WinUI3, Stride, LogicLooper, MAUI, MonoGame 向けの拡張ライブラリを提供しています。</p>
+<ul>
+<li><a href="https://github.com/Cysharp/R3">GitHub - Cysharp/R3</a></li>
+</ul>
+<p>幾つかの破壊的変更を含むため、ドロップインリプレースメントではないですが、dotnet/reactiveやUniRxからの移行も現実的に可能な範囲に収めてあります。この辺は語彙や操作がLINQ的に共通化されているというRxの良いところで、そこのところは大きく変わりはありません。思ったよりも何も変わっていない、といったような印象すら抱けるかもしれませんが、そう思っていただければ、それはそれでR3の設計としては大成功ということになります。</p>
+<p>なので基本的なところはRxですし、使えるところも変わりないです。よって、押さえておくべきことは、なぜ今R3という新たな実装が必要になったかということと、Rx for .NET, UniRxとの違いはどこかということです。（新規の人は何も考えず使ってください……！）</p>
+<h2>Rxの歴史と vs async/await</h2>
+<p>Rx使ってますか？という問いに、使ってません、と答える人も増えてきました。別にこれは.NETやUnityだけの話ではなく、JavaでもSwiftでもKotlinでも。明らかにプレゼンスが低下しています。なぜか？というと、それはもう簡単です。async/awaitが登場したから。.NETのReactive Extensionsが初登場したのは2009年。C# 3.0, .NET Framework 3.5の頃であり、対応プラットフォームもSilverlightやWindows Phoneといった、今はもう消滅したプラットフォームも並んでくるような時代。もちろん、async/await(初登場はC# 5.0, 2012年)も存在していません。まだTaskすら導入されていなかった頃です。余談ですがReactive Extensionsの&quot;Extensions&quot;は、先行して開発されていた<a href="https://en.wikipedia.org/wiki/Parallel_Extensions">Parallel Extensions</a>(Parallel LINQやTask Parallel Library, .NET Framework 4.0で追加された)から名前が取られたとされています。</p>
+<p>Rxは、まず、言語サポートのない場合の非同期処理の決定版として、あらゆる言語に普及し一世を風靡しました。単機能なTaskやPromiseよりも、豊富なオペレーターを備えたRxのほうが使いやすいし遥かに強力！私も当時はTPLいらね、とRxに夢中になったものです。しかしasync/awaitが言語に追加されて以降の結果はご存じの通り。async/awaitこそが非同期処理の決定版として、これまたC#からあらゆる言語に普及し、非同期処理におけるスタンダードとなりました。（ちなみにF#こそが発祥だって言う人もいますが、国内海外問わず当時のF#コミュニティのC# async/awaitへの反発と難癖の数々はよーく覚えているので、あ、そうですか、ぐらいの感じです。awaitないしね）</p>
+<p>async/awaitが普及したことにより、とりあえず非同期処理のためにRxを入れるという需要はなくなり、Rxの採用率は下がっていったのであった。UnityにおいてのRxのスタンダードであった<a href="https://github.com/neuecc/UniRx/">UniRx</a>の開発者である私も、別にそれに固執することはなく、むしろゲームエンジン(Unity)に特化したasync/awaitランタイムが必要であると素早く認知し、Unityにおいて必要な条件(C# 7.0)が揃ったタイミングで即座に<a href="https://github.com/Cysharp/UniTask">UniTask</a>を開発し、今ではUniTaskは絶対に入れるけどUniRxは入れない、といった開発者も増えてきました。</p>
+<h2>Rxの価値の再発見</h2>
+<p>そもそもRxって別に非同期処理のためだけのシステムではないですよね？LINQ to Everythingではあったけれど、むしろEverythingというのはノイズで、分離するものは分離したほうがいい、最適なものはそれを使ったほうがいい。Rxを非同期処理のために使うべきではないし、長さ1のObservableはTaskで表現したほうが、分かりやすさにおいてもパフォーマンスにおいても利点がある。そうなるとRxにはasync/awaitと統合されたAPIが必要で、それはObservableはモナドだからSelectManyにTaskを渡せることもできるだとか、そんなどうでもいいことではない。真剣にasync/awaitと共存するRxを考えてみると、手を加えなければならないAPIは多数ある。</p>
+<p>単純にawaitできるだけでは現実のアプリケーション開発には少し足りない。そこで非同期/並列処理に関しては様々なライブラリが考案されてきました、Rxだけではなく<a href="https://learn.microsoft.com/ja-jp/dotnet/standard/parallel-programming/dataflow-task-parallel-library">TPL Dataflow</a>など色々ありましたが、それらを好んで今から使おうとする人もいないでしょう。そして今は2024年、勝者は決まりました。言語サポートの<a href="https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/generate-consume-asynchronous-stream">IAsyncEnumerable</a>と<a href="https://devblogs.microsoft.com/dotnet/an-introduction-to-system-threading-channels/">System.Threading.Channels</a>がベストです。また、これらはバックプレッシャーの性質も内包しているため、RxJavaなどにあるバックプレッシャーに関するオペレーターは.NETには不要でしょう。もう少し具体的なI/Oに関する処理が必要なら<a href="https://learn.microsoft.com/ja-jp/dotnet/standard/io/pipelines">System.IO.Pipelines</a>を選べば、最大のパフォーマンスを発揮できます。</p>
+<p>非同期LINQはあってもいいけれど、実際の非同期ストリームのシナリオからするとLINQ to Objectsと違い利用頻度も少ないので、別に積極的に導入したいというほどの代物ではない(なお、これは私はUniTaskに<a href="https://github.com/Cysharp/UniTask/tree/809d23e/src/UniTask/Assets/Plugins/UniTask/Runtime/Linq">UniTaskAsyncEnumerableとLINQ</a>を自分で実装して提供している上での発言です)。Rxの夢の一つとして分散クエリ(IQbservable)がありましたが、それも、現代での勝者は<a href="https://graphql.org/">GraphQL</a>になるでしょう。分散システムという点では<a href="https://kubernetes.io/">Kubernetes</a>が普及し、RPCとしては<a href="https://grpc.io/">gRPC</a>がスタンダードとして君臨し、<a href="https://learn.microsoft.com/en-us/dotnet/orleans/">Orleans</a>, <a href="https://getakka.net/">Akka.NET</a>, <a href="https://learn.microsoft.com/en-us/aspnet/core/signalr/introduction">SignalR</a>, <a href="https://github.com/Cysharp/MagicOnion">MagicOnion</a>といったような選択肢のバリエーションもあります。</p>
+<p>今は様々なテクノロジーが覇権を争った2009年ではない。現代で<a href="https://azure.microsoft.com/ja-jp/products/service-fabric">Service Fabric</a>を選ぶ人などいないように、今からそこに乗り出して勝ち筋を見出すのは難しい。そうした分散処理に進むことはRxの未来ではない。と、私は考えています。Rxを生み出したのがCloud Programmability Teamであるからといって、Cloudで活用できるようにすることが原点で正しいなどということもないだろう。もちろん、未来は複数あってもいいので、私が示すRxの未来の選択肢の一つがR3だと思ってもらえればよいです。</p>
+<p>ではRxの価値はどこにあるのか、というと、原点に立ち返ってインメモリのメッセージングをLINQで処理するLINQ to Eventsにあると考えます。特にクライアントサイド、UIに対する処理は、現代でもRxが評価されているポイントであり、Rx Likeな、しかしより言語に寄り添い最適化されている<a href="https://kotlinlang.org/docs/flow.html">Kotlin Flow</a>や<a href="https://developer.apple.com/documentation/combine">Swift Combine</a>といった選択肢が現役で存在しています。UIだけではなく、複雑で大量のイベントが飛び交うゲームアプリケーションにおいても、ゲームエンジン(Unity)で使われているUniRxの開発者として、非常に有益であることを実感しています。オブザーバーパターンやeventの有意義さは疑う余地のないところですし、そこでRxがbetter event、オブザーパーパターンの決定版として使えることもまた変わらないわけです。</p>
+<h2>R3での再構築</h2>
+<p>最初に、Rxとしてのインターフェイスを100%維持しながらレガシーAPIの削除や新APIの追加をすべきか、それとも根本から変更すべきかを悩みました。しかし（私が問題だと考えている）すべての問題を解決するには抜本的な変更が必要だし、Kotlin FlowやSwift Combineの成功事例もあるので、旧来のRxとの互換性に囚われず、.NET 8, C# 12という現代のC#環境に合わせて再構築された、完全に新しいRxであるべきという路線に決めました。</p>
+<p>といっても、最終的にはインターフェイスにそこまで大きな違いはありません。</p>
+<pre><code class="language-csharp">public abstract class Observable&lt;T&gt;
+{
+    public IDisposable Subscribe(Observer&lt;T&gt; observer);
+}
+
+public abstract class Observer&lt;T&gt; : IDisposable
+{
+    public void OnNext(T value);
+    public void OnErrorResume(Exception error);
+    public void OnCompleted(Result result); // Result is (Success | Failure)
+}
+</code></pre>
+<p>パッと見だとOnErrorがOnErrorResumeになったことと、interfaceではなくてabstract classになったこと、ぐらいでしょうか。どうしても変更したかった点の一つがOnErrorで、パイプライン上で例外が起きると購読解除されるという挙動はRxにおける<a href="https://www.infoq.com/presentations/Null-References-The-Billion-Dollar-Mistake-Tony-Hoare/">billion-dollar mistake</a>だと思っていました。R3では例外はOnErrorResumeに流れて、購読解除されません。かわりにOnCompletedに、SuccessまたはFailureを表すResultが渡ってくるようになっていて、こちらでパイプラインの終了が表されています。</p>
+<p><code>IObservable&lt;T&gt;/IObserver&lt;T&gt;</code>の定義は<code>IEnumerble&lt;T&gt;/IEnumerator&lt;T&gt;</code>と密接に関わっていて、数学的双対であると称しているのですが、実用上不便なところがあり、その最たるものがOnErrorで停止することです。なぜ不便かというと、<code>IEnumerable&lt;T&gt;</code>のforeachの例外発生と<code>IObservable&lt;T&gt;</code>の例外発生では、ライフタイムが異なることに起因します。foreachの例外発生はそこでイテレーターの消化が終わり、必要があればtry-catchで処理して、リトライが必要なら再度Enumeratorを取得し直せばいいわけですが、ObservableのSubscribeは違う。必要があればCatchしてRetryすればいい、というものではない。イベントの購読の寿命は長く、例外発生でも停止しないで欲しいと思うことは不自然ではない。通常のeventで例外が発生したとて停止することはないうえに、Rxの場合はオペレーターチェーンの都合上、パイプライン中に例外が発生する可能性が常にある(SelectやWhereすればFuncが例外を出す可能性がある)。イベントの代替、あるいは上位互換として考えると、例外で停止するほうが不自然になってしまいます。</p>
+<p>そして、Rxにおいて停止したイベントを再購読するというのは非常に難しい！Observableにはeventと異なり、完了するという概念がある。完了したIObservableを購読すると即座にOnError | OnCompletedが呼ばれる。それにより自動的な再購読は、完了済みのシーケンスを再購読しにかかる危険性がある。もちろんそうなれば無限ループであり、それを判定し正しくハンドリングする術もない。Stack OverflowにはRx/Combine/FlowのUI購読で再購読するにはどうすればいいですか？のような質問が多数あり、そしてその回答は非常に複雑なコードの記述を要求していたりします。現実はRepeat/Retryだけで解決していない！</p>
+<p>そこで、そもそも例外で停止しないように変更しました。OnErrorという命名のままでは従来の停止する動作と混同する可能性があるため、かわりにOnErrorResumeという名前に変えています。これで再購読に関する問題は全て解決します。更にこの変更には利点があり、停止する→停止しないの挙動変更は不可能ですが(Disposeチェーンが走ってしまうので状態を復元できないので全体の再購読以外に手段がない)、停止しない→停止するへの挙動変更は非常に簡単でパフォーマンスもよく実装できます。OnErrorResumeが来たらOnCompleted(Result.Failure)に変換するオペレーターを用意するだけですから（標準でOnErrorResumeAsFailureというオペレーターを追加してあります）。</p>
+<p>Rx自体が複雑なコントラクトを持つ(OnErrorかOnCompletedはどちらか一つしか発行されない、など)わりに、インターフェースは実装上の保証がないので、従来のRxは正しく実装するのが難しいという問題がありました。SourceのSubscribeが遅延される場合は、先行して返却されるDisposableを正しくハンドリングする必要がある(SingleAssignmentDisposableを使う）などといったことも、正しく理解することは難しいでしょう。asbtract class化することにより大部分のコントラクトを保証し、独自実装が容易になっています。</p>
+<p>そして最大の理由は、全ての購読が中央管理されることです。全てのSubscribeは必ず基底クラスのSubscribe実装を通ります。これにより、購読のトラッキングが可能になりました。例えば以下のような形で表示できます。</p>
+<p><img src="https://github.com/Cysharp/ZLogger/assets/46207/149abca5-6d84-44ea-8373-b0e8cd2dc46a" alt="image" /></p>
+<blockquote>
+<p>これはUnity向けの拡張Windowですが、Godot用にも存在するほか、APIとして提供しているためログに出したり任意のタイミングで取得したり、独自の可視化を作ることも可能です</p>
+</blockquote>
+<p>TaskにはParallel Debuggerがありますが（これもTaskが基底クラス側でs_asyncDebuggingEnabledの時に中央管理している）、Rxの購読の可視化は、それよりも遥かに重要でしょう。イベントの購読リークはつきもので、開発終盤に必死に探し回る羽目になりますが、R3ならもう不要です！圧倒的開発効率アップ！</p>
+<p>R3ではこうした購読の管理、リーク防止については最重要視していて、Observable Trackerによる全ての購読の追跡の他に、概念として「全てのObservableは完了することができる」ようにしました。</p>
+<p>Rxにおける購読の管理の基本はIDisposableをDisposeすることです。が、購読を解除する方法は実はそれだけではなく、OnError | OnCompletedが流れることでも解除されるようになっています（IObservableのコントラクトが保証しているわけではないですが実装上そうなっている、R3では必ずそうなるように基底クラス側で保証するようにした）。つまりシーケンスの上流(OnError | OnCompletedの発行)と下流(Dispose)、両面からハンドリングすることでリークをより確実に防ぐことができます。</p>
+<p>対応として過剰に思うかもしれませんが、実際のアプリケーションを開発してきた経験からいうと、購読管理は過剰なぐらいがちょうどいい。そうした思想から、R3では、今までOnCompletedを発行する手段のなかったObservable.FromEventやObservable.Timer、EveryUpdateなども、OnCompletedを発行可能にしました。なお、発行方法はCancellationTokenを渡すことで、これもasync/await以降に多用（あるいは濫用）されるようになったCancellationTokenを活用する現代的なAPI設計です。また、こうした全てのObservableは完了する、という思想があるため、SubjectのDisposeも標準でOnCompletedを発行するように変更しました。</p>
+<h2>ISchedulerを再考する</h2>
+<p>Rxの時空を移動するマジックを実現する機構がISchedulerです。TimerやObserveOnに渡すことで、任意の場所(ThreadやDispatcher、PlayerLoopなど)・時間に値を移動させることができます。</p>
+<pre><code class="language-csharp">public interface IScheduler
+{
+    DateTimeOffset Now { get; }
+
+    IDisposable Schedule&lt;TState&gt;(TState state, Func&lt;IScheduler, TState, IDisposable&gt; action);
+    IDisposable Schedule&lt;TState&gt;(TState state, TimeSpan dueTime, Func&lt;IScheduler, TState, IDisposable&gt; action);
+    IDisposable Schedule&lt;TState&gt;(TState state, DateTimeOffset dueTime, Func&lt;IScheduler, TState, IDisposable&gt; action);
+}
+</code></pre>
+<p>そして、実は破綻しています。Rxのソースコードを見たことがあるなら気づいているかもしれませんが、初期のうちから追加の別の定義が用意されています。例えばThreadPoolSchedulerは以下のようなインターフェイスを実装しています。</p>
+<pre><code class="language-csharp">public interface ISchedulerLongRunning
+{
+    IDisposable ScheduleLongRunning&lt;TState&gt;(TState state, Action&lt;TState, ICancelable&gt; action);
+}
+
+public interface ISchedulerPeriodic
+{
+    IDisposable SchedulePeriodic&lt;TState&gt;(TState state, TimeSpan period, Func&lt;TState, TState&gt; action);
+}
+
+public interface IStopwatchProvider
+{
+    IStopwatch StartStopwatch();
+}
+
+public abstract partial class LocalScheduler : IScheduler, IStopwatchProvider, IServiceProvider
+{
+}
+
+public sealed class ThreadPoolScheduler : LocalScheduler, ISchedulerLongRunning, ISchedulerPeriodic
+{
+}
+</code></pre>
+<p>そして、以下のような呼び出しがなされています。</p>
+<pre><code class="language-csharp">public static IStopwatch StartStopwatch(this IScheduler scheduler)
+{
+    var swp = scheduler.AsStopwatchProvider();
+    if (swp != null)
+    {
+        return swp.StartStopwatch();
+    }
+
+    return new EmulatedStopwatch(scheduler);
+}
+
+private static IDisposable SchedulePeriodic_&lt;TState&gt;(IScheduler scheduler, TState state, TimeSpan period, Func&lt;TState, TState&gt; action)
+{
+    var periodic = scheduler.AsPeriodic();
+    if (periodic != null)
+    {
+        return periodic.SchedulePeriodic(state, period, action);
+    }
+
+    var swp = scheduler.AsStopwatchProvider();
+    if (swp != null)
+    {
+        var spr = new SchedulePeriodicStopwatch&lt;TState&gt;(scheduler, state, period, action, swp);
+        return spr.Start();
+    }
+    else
+    {
+        var spr = new SchedulePeriodicRecursive&lt;TState&gt;(scheduler, state, period, action);
+        return spr.Start();
+    }
+}
+</code></pre>
+<p>ようは生のISchedulerを使わないケースがそれなりにあります。なぜ使われないのか、というと、パフォーマンス上の問題で、IScheduler.Scheduleは単発の実行しか定義されていなくて、複数回の呼び出しは再帰的にScheduleを呼べばいいじゃんという発想なわけですが、都度IDisposableを生成するなどパフォーマンス的に問題がある。ので、それを回避するためにISchedulerPeriodicなどが用意されたのでした。</p>
+<p>それなら、もうISchedulerではなく、実態をまともに反映されたものを使ったほうがいいんじゃないか？と思ったときに出てきたのが.NET 8で追加された<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.timeprovider?view=net-8.0">TimeProvider</a>で、これならISchedulerが行っていたことをより効率的にできることを発見しました。</p>
+<pre><code class="language-csharp">public abstract class TimeProvider
+{
+    // use these.
+    public virtual ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period);
+    public virtual long GetTimestamp();
+}
+</code></pre>
+<p>CreateTimerで生成されるITimerはISchedulerPeriodicで行える機能を十分持っているほか、ワンタイムの実行を繰り返す(<code>Schedule&lt;TState&gt;(TState state, TimeSpan dueTime, Func&lt;IScheduler, TState, IDisposable&gt; action)</code>)のシナリオにおいても、ITimerを使いまわせるため、dotnet/reactiveのThreadPoolSchedulerよりも効率的です(ThreadPoolSchedulerは都度<code>new Timer()</code>している)。</p>
+<p>現在時間の取得に関しては、<code>DateTimeOffset IScheduler.Now</code>のようにTimeProviderも<code>DateTimeOffset TimeProvider.GetUtcNow()</code>がありますが、使っているのは<code>long GetTimestamp</code>だけです。というのも、オペレーターの実装に必要なのはTicksだけなので、わざわざDateTimeOffsetに包むようなオーバーヘッドはないほうが良いので、生のTicksを扱って時間を計算します。</p>
+<p>DateTimeOffset.NowはOSのシステム時刻の変更の影響を受ける可能性もあるので、そういう点でもDateTimeOffsetを介さないGetTimestamp(標準では<code>Stopwatch.GetTimestamp()</code>からの高解像度タイマーが利用される)経由が良いでしょう。</p>
+<p>ISchedulerのもう一つの問題として、同期的な処理を行う<code>ImmediateScheduler</code>や<code>CurrentScheduler</code>がいます。これらにTimerやDelayなど時間系の処理を任せるとThread.Sleepするという、使うべきではない非同期コードのエミュレーションをするので、つまり、同期的なSchedulerは存在が悪なのでないほうがいいでしょう。R3では完全に消し、TimeProviderを指定するということは必ず非同期的な呼び出しであるということを徹底しました。</p>
+<p><code>ImmediateScheduler</code>や<code>CurrentScheduler</code>の問題はそれだけじゃなくて、そもそもパフォーマンスが致命的に悪いという問題があります。</p>
+<p><img src="https://github.com/Cysharp/ZLogger/assets/46207/68a12664-a840-4725-a87c-8fdbb03b4a02" alt="image" /></p>
+<blockquote>
+<p><code>Observable.Range(1, 10000).Subscribe()</code> の結果</p>
+</blockquote>
+<p><code>CurrentScheduler</code>はともかく、<code>ImmediateScheduler</code>の結果が悪いのは直観に反するかもしれません。dotnet/reactiveの<code>ImmediateScheduler</code>は、Scheduleされるたびに<code>new AsyncLockScheduler()</code>し、<code>AsyncLockScheduler</code>が呼び出す基底クラス<code>LocalScheduler</code>のコンストラクターが<code>SystemClock.Register</code>し、それは<code>lock</code>し<code>new WeakReference&lt;LocalScheduler&gt;(scheduler)</code>し、<code>HashSet.Add</code>します。毎回。パフォーマンスが悪いのも当然です。</p>
+<p>Rangeなんてめったに使わないから大丈夫と思いきや、実は意外なところで<code>ImmediateScheduler</code>はちょくちょく使われています。代表的なのが<code>Merge</code>で、これは<code>IScheduler</code>が無指定の場合は<code>ImmediateScheduler</code>を使うため、場合によってはかなりの呼び出す回数になる可能性があります。実際、dotnet/reactiveをサーバーアプリケーションで使用した際に、MergeとImmediateSchedulerが原因でサーバーのメモリ使用量のかなりを占めたことがありました。その時はカスタムの軽量なスケジューラーを作成し、直接指定することで徹底的に<code>ImmediateScheduler</code>を避けることで何とかしました。Next dotnet/reactiveがあるなら、<code>ImmediateScheduler</code>のパフォーマンスの改善は真っ先に行う必要があります。</p>
+<p>ところで、TimeProviderの採用によって、<a href="https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.extensions.time.testing.faketimeprovider?view=dotnet-plat-ext-8.0">Microsoft.Extensions.Time.Testing.FakeTimeProvider</a>を使い、標準的な手法でユニットテストが容易になったことも嬉しいところでしょう。</p>
+<h2>FrameProvider</h2>
+<p>他のRxでは見かけないがUniRxで絶大な効果を発揮したものとして、フレームベースのオペレーター郡があります。一定フレーム後に実行する<code>DelayFrame</code>や次フレームで実行する<code>NextFrame</code>、毎フレーム発行するファクトリーである<code>EveryUpdate</code>や、毎フレーム値を監視する<code>EveryValueChanged</code>など、ゲームエンジンで利用するにあたって便利なオペレーターが揃っています。</p>
+<p>そこで気づいたのが、時間とフレームは概念的には似たものであり、ゲームエンジンだけでなく、UI処理ではメッセージループやレンダリングループという形で、様々なフレームワークに存在している。そこで、R3では新しくTimerProviderと対になるFrameProviderという形でフレームベースの処理を抽象化しました。これによってUnityだけに提供されていたフレームベースのオペレーターが、C#が動作するあらゆるフレームワーク(WinForms, WPF, WinUI3, MAUI, Godot, Avalonia, Stride, etc...)で動作せることができるようになりました。</p>
+<pre><code class="language-csharp">public abstract class FrameProvider
+{
+    public abstract long GetFrameCount();
+    public abstract void Register(IFrameRunnerWorkItem callback);
+}
+
+public interface IFrameRunnerWorkItem
+{
+    // true, continue
+    bool MoveNext(long frameCount);
+}
+</code></pre>
+<p>R3ではTimeProviderを要求するオペレーターがある場合、全てに対となる***Frameオペレーターを実装しました。</p>
+<ul>
+<li>Return &lt;-&gt; ReturnFrame</li>
+<li>Yield &lt;-&gt; YieldFrame</li>
+<li>Interval &lt;-&gt; IntervalFrame</li>
+<li>Timer &lt;-&gt; IntervalFrame</li>
+<li>Interval &lt;-&gt; IntervalFrame</li>
+<li>Chunk &lt;-&gt; ChunkFrame</li>
+<li>Debounce &lt;-&gt; DebounceFrame</li>
+<li>Delay &lt;-&gt; DelayFrame</li>
+<li>DelaySubscription &lt;-&gt; DelaySubscriptionFrame</li>
+<li>ObserveOn(TimeProvider) &lt;-&gt; ObserveOn(FrameProvider)</li>
+<li>Replay &lt;-&gt; ReplayFrame</li>
+<li>Skip &lt;-&gt; SkipFrame</li>
+<li>SkipLast &lt;-&gt; SkipLastFrame</li>
+<li>SubscribeOn(TimeProvider) &lt;-&gt; SubscribeOn(FrameProvider)</li>
+<li>Take &lt;-&gt; TakeFrame</li>
+<li>TakeLast &lt;-&gt; TakeLastFrame</li>
+<li>ThrottleFirst &lt;-&gt; ThrottleFirstFrame</li>
+<li>ThrottleFirstLast &lt;-&gt; ThrottleFirstLastFrame</li>
+<li>ThrottleLast &lt;-&gt; ThrottleLastFrame</li>
+<li>Timeout &lt;-&gt; TimeoutFrame</li>
+</ul>
+<h2>async/await Integration</h2>
+<p>まず、既存のRxにおいて良くない点である単一の値を返すObservableを徹底的に排除しました。FirstはFirstAsyncになり、<code>Task&lt;T&gt;</code>を返します。AsyncSubjectはなくなり、TaskCompletionSourceを使ってくださいというスタイルです。</p>
+<p>そのうえで、現在のC#コードは日常的に非同期のコードが返ってきます、が、基本的にはRxは同期コードしか受け取りません。うっかりすればFireAndForget状態になるし、SelectManyに混ぜるだけでは十分とはいえません。そこで、Where/Select/Subscribeに特殊なメソッド群を用意しました。</p>
+<p>| Name | ReturnType |
+| --- | --- |
+| <strong>SelectAwait</strong>(this <code>Observable&lt;T&gt;</code> source, <code>Func&lt;T, CancellationToken, ValueTask&lt;TResult&gt;&gt;</code> selector, <code>AwaitOperations</code> awaitOperations = AwaitOperation.Sequential, <code>bool</code> configureAwait = true, <code>bool</code> cancelOnCompleted = true, <code>int</code> maxConcurrent = -1) | <code>Observable&lt;TResult&gt;</code> |
+| <strong>WhereAwait</strong>(this <code>Observable&lt;T&gt;</code> source, <code>Func&lt;T, CancellationToken, ValueTask&lt;Boolean&gt;&gt;</code> predicate, <code>AwaitOperations</code> awaitOperations = AwaitOperation.Sequential, <code>bool</code> configureAwait = true, <code>bool</code> cancelOnCompleted = true, <code>int</code> maxConcurrent = -1) | <code>Observable&lt;T&gt;</code> |
+| <strong>SubscribeAwait</strong>(this <code>Observable&lt;T&gt;</code> source, <code>Func&lt;T, CancellationToken, ValueTask&gt;</code> onNextAsync, <code>AwaitOperations</code> awaitOperations = AwaitOperation.Sequential, <code>bool</code> configureAwait = true, <code>bool</code> cancelOnCompleted = true, <code>int</code> maxConcurrent = -1) | <code>IDisposable</code> |
+| <strong>SubscribeAwait</strong>(this <code>Observable&lt;T&gt;</code> source, <code>Func&lt;T, CancellationToken, ValueTask&gt;</code> onNextAsync, <code>Action&lt;Result&gt;</code> onCompleted, <code>AwaitOperations</code> awaitOperations = AwaitOperation.Sequential, <code>bool</code> configureAwait = true, <code>bool</code> cancelOnCompleted = true, <code>int</code> maxConcurrent = -1) | <code>IDisposable</code> |
+| <strong>SubscribeAwait</strong>(this <code>Observable&lt;T&gt;</code> source, <code>Func&lt;T, CancellationToken, ValueTask&gt;</code> onNextAsync, <code>Action&lt;Exception&gt;</code> onErrorResume, <code>Action&lt;Result&gt;</code> onCompleted, <code>AwaitOperations</code> awaitOperations = AwaitOperation.Sequential, <code>bool</code> configureAwait = true, <code>bool</code> cancelOnCompleted = true, <code>int</code> maxConcurrent = -1) | <code>IDisposable</code> |</p>
+<pre><code class="language-csharp">public enum AwaitOperation
+{
+    /// &lt;summary&gt;All values are queued, and the next value waits for the completion of the asynchronous method.&lt;/summary&gt;
+    Sequential,
+    /// &lt;summary&gt;Drop new value when async operation is running.&lt;/summary&gt;
+    Drop,
+    /// &lt;summary&gt;If the previous asynchronous method is running, it is cancelled and the next asynchronous method is executed.&lt;/summary&gt;
+    Switch,
+    /// &lt;summary&gt;All values are sent immediately to the asynchronous method.&lt;/summary&gt;
+    Parallel,
+    /// &lt;summary&gt;All values are sent immediately to the asynchronous method, but the results are queued and passed to the next operator in order.&lt;/summary&gt;
+    SequentialParallel,
+    /// &lt;summary&gt;Send the first value and the last value while the asynchronous method is running.&lt;/summary&gt;
+    ThrottleFirstLast
+}
+</code></pre>
+<p>SelectAwait, WhereAwait, SubscribeAwaitは非同期メソッドを受け取り、その非同期メソッドが実行されている間に届く値に対する処理のパターンを6パターン用意しました。Sequentialはいったんキューにためて非同期メソッドが完了したら新しい値を送ります。Dropは実行中に届いた値は全て捨てます、これはイベントハンドリングで多重Submit防止などに使えます。Switchは<code>Observable&lt;Observable&gt;.Switch</code>と同様、Parallelは並列実行するもので<code>Observable&lt;Observable&gt;.Merge</code>と同様、ですがわかりやすいでしょう。並列実行数も指定できます。SequentialParallelは並列実行しつつ、後続に流す値は届いた順序で保証します。ThrottleFirstLastは非同期メソッド実行中の最初の値と最後の値を送ります。</p>
+<p>更に、以下の時間系のフィルタリングメソッドも非同期メソッドを受け取るようになっています。</p>
+<p>| Name | ReturnType |
+| --- | --- |
+| <strong>Debounce</strong>(this <code>Observable&lt;T&gt;</code> source, <code>Func&lt;T, CancellationToken, ValueTask&gt;</code> throttleDurationSelector, <code>Boolean</code> configureAwait = true) | <code>Observable&lt;T&gt;</code> |
+| <strong>ThrottleFirst</strong>(this <code>Observable&lt;T&gt;</code> source, <code>Func&lt;T, CancellationToken, ValueTask&gt;</code> sampler, <code>Boolean</code> configureAwait = true) | <code>Observable&lt;T&gt;</code> |
+| <strong>ThrottleLast</strong>(this <code>Observable&lt;T&gt;</code> source, <code>Func&lt;T, CancellationToken, ValueTask&gt;</code> sampler, <code>Boolean</code> configureAwait = true) | <code>Observable&lt;T&gt;</code> |
+| <strong>ThrottleFirstLast</strong>(this <code>Observable&lt;T&gt;</code> source, <code>Func&lt;T, CancellationToken, ValueTask&gt;</code> sampler, <code>Boolean</code> configureAwait = true) | <code>Observable&lt;T&gt;</code> |</p>
+<p>async/awaitは現代のC#に欠かせないコードですが、可能な限りスムーズにRxと統合されるように腐心しました。</p>
+<h2>名前付けのルール</h2>
+<p>R3では幾つかのメソッドの名前がdotnet/rectiveやUniRxから変更されています。例えば以下のものです。</p>
+<ul>
+<li><code>Buffer</code> -&gt; <code>Chunk</code></li>
+<li><code>StartWith</code> -&gt; <code>Prepend</code></li>
+<li><code>DistinctUntilChanged(selector)</code> -&gt; <code>DistinctUntilChangedBy</code></li>
+<li><code>Throttle</code> -&gt; <code>Debounce</code></li>
+<li><code>Sample</code> -&gt; <code>ThrottleLast</code></li>
+</ul>
+<p>この変更の理由について説明しましょう。</p>
+<p>まず、.NETにおいてLINQスタイルのライブラリを作成する場合に最優先すべき名前はLINQ to Objects(Enumerable)に実装されているメソッド名です。<code>Buffer</code>がなぜ<code>Chunk</code>に変更されたかというと、.NET 6からEnumerable.Chunkが追加され、その機能がBufferと同じだからです。RxのほうがChunkの登場より遥か前なので、名前が違うのはどうにもならないのですが、何のしがらみもないのなら名称はLINQ to Objectsに合わせなければならない。よって、Chunk一択です。PrependやDistinctUntilChangedByも同様です。</p>
+<p><code>Throttle</code>が<code>Debounce</code>に変更されたことには抵抗があるかもしれません。これは、そもそも世の中のスタンダードは<code>Debounce</code>だからです。Rx系で<code>Debounce</code>を<code>Throttle</code>という名前でやってるのはdotnet/reactiveだけです。世の中のRxの始祖はRxNetなのだから変えなきゃいけない謂われはない、と突っぱねることも正義ではあるんですが、もはや多勢に無勢の少数派なので、長いものに巻かれることもまた正しい。</p>
+<p><code>Debounce</code>に変えた理由はそれだけではなく、<code>ThrottleFirst</code> / <code>ThrottleLast</code>の存在もあります。これらはサンプリング期間の最初の値を採用する、または最後の値を採用する、というもので対になっています。で、(dotnet/reactiveの)Throttleは全然違う挙動なわけです、なのにThrottleという名前は混乱するでしょう。そももそもdotnet/reactiveにはThrottleFirstが存在せず、ThrottleLastに相当するSampleのみが存在するので大丈夫なのですが、ThrottleFirst/ThrottleLastを採用するなら、必然的に名前は<code>Debounce</code>にせざるを得ません。どちらかというとdotnet/reactiveの機能不足が悪い。</p>
+<p><code>Sample</code>に関してはFirst/Lastという名前と機能の対称性から<code>ThrottleLast</code>という名前に変更しました。dotnet/reactiveではFirstが存在しないのでSampleでも良かったのですが、<code>ThrottleFirst</code>を採用するなら、必然的に名前は<code>ThrottleLast</code>になります。</p>
+<p><code>Sample</code>の名前は残して<code>ThrottleLast</code>のエイリアスにするという折衷案もあるのですが(RxJavaなどはそうなっています)、同じ機能の別名があるとユーザーは混乱します。世の中には<code>sample</code>と<code>throttleLast</code>の違いってなんですか？みたいな質問がそれなりにあります。ただでさえ複雑なRx、無用な混乱を避けるためにもエイリアスは絶対にやめるべき。SelectをMap、WhereをFilterにマッピングするみたいなエイリアスは愚かの極みです。</p>
+<h2>プラットフォーム向けデフォルトスケジューラー</h2>
+<p>dotnet/reactiveにおいてデフォルトのスケジューラーはほとんど固定です。正確には<code>IPlatformEnlightenmentProvider</code>や<code>IConcurrencyAbstractionLayer</code>というのものを適切に実装すれば、ある程度挙動を差し替えることも可能なのですが、無駄に複雑なうえに<code>[EditorBrowsable(EditorBrowsableState.Never)]</code>で隠されているしで、まともに使うことはほとんど想定されていないように見えます。</p>
+<p>しかし、TimerやDelayなどはWPFであればDispatcherTimerで、UnityではPlayerLoop上のTimerで動くと、自動的にメインスレッドにディスパッチしてくれるので、ほとんどの場合でObserveOnが不要になるので便利ですしパフォーマンス上も有利に働きます。</p>
+<p>R3ではシンプルにデフォルトのTimeProvider/FrameProviderを差し替えられるようにしました。</p>
+<pre><code class="language-csharp">public static class ObservableSystem
+{
+    public static TimeProvider DefaultTimeProvider { get; set; } = TimeProvider.System;
+    public static FrameProvider DefaultFrameProvider { get; set; } = new NotSupportedFrameProvider();
+}
+</code></pre>
+<p>アプリケーション起動時に差し替えれば、そのアプリケーション上でベストなスケジューラーがデフォルト利用されます。</p>
+<pre><code class="language-csharp">// 例えばWPFの場合はDispatcher系がセットされるので自動的にUIスレッドに戻ってくる
+public static class WpfProviderInitializer
+{
+    public static void SetDefaultObservableSystem(Action&lt;Exception&gt; unhandledExceptionHandler)
+    {
+        ObservableSystem.RegisterUnhandledExceptionHandler(unhandledExceptionHandler);
+        ObservableSystem.DefaultTimeProvider = new WpfDispatcherTimerProvider();
+        ObservableSystem.DefaultFrameProvider = new WpfRenderingFrameProvider();
+    }
+}
+
+// Unityの場合はPlayerLoopベースのものが使用されるのでThreadPoolを避けれる
+public static class UnityProviderInitializer
+{
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterAssembliesLoaded)]
+    public static void SetDefaultObservableSystem()
+    {
+        SetDefaultObservableSystem(static ex =&gt; UnityEngine.Debug.LogException(ex));
+    }
+
+    public static void SetDefaultObservableSystem(Action&lt;Exception&gt; unhandledExceptionHandler)
+    {
+        ObservableSystem.RegisterUnhandledExceptionHandler(unhandledExceptionHandler);
+        ObservableSystem.DefaultTimeProvider = UnityTimeProvider.Update;
+        ObservableSystem.DefaultFrameProvider = UnityFrameProvider.Update;
+    }
+}
+</code></pre>
+<p>dotnet/reactiveがデフォルトスケジューラーを変更できないのは、あまり、多種のプラットフォームをサポートしているとは言い難いでしょう。</p>
+<pre><code class="language-csharp">internal static class SchedulerDefaults
+{
+    internal static IScheduler ConstantTimeOperations =&gt; ImmediateScheduler.Instance;
+    internal static IScheduler TailRecursion =&gt; ImmediateScheduler.Instance;
+    internal static IScheduler Iteration =&gt; CurrentThreadScheduler.Instance;
+    internal static IScheduler TimeBasedOperations =&gt; DefaultScheduler.Instance;
+    internal static IScheduler AsyncConversions =&gt; DefaultScheduler.Instance;
+}
+</code></pre>
+<p>特にAOTのシナリオやWeb向けパブリッシュ(WASM)では、ThreadPoolが使えなくて絶対に避けたいという状況もあります。そこでSchedulerDefaults.TimeBasedOperationsが実質ThreadPoolSchedulerに固定されているのは厳しいと言わざるを得ません。</p>
+<h2>Pull IAsyncEnumerable vs Push Observable</h2>
+<p><code>IAsyncEnumerable</code>(またはUniTaskの<code>IUniTaskAsyncEnumerable</code>)は、Pullベースの非同期シーケンス。RxはPushベースの非同期シーケンス。似てます。LINQ的なことができるのも似てます。どちらを使うべきかがケースバイケースなのは当然だとして、じゃあそのケースってのはなんなのか、いつどちらを使えばいいのか。という判断基準は欲しいところです。</p>
+<p>基本的には裏にバッファー（キュー）があるものはPullベースが向いていると思うので、ネットワーク系のシナリオなんかは<code>IAsyncEnumerable</code>を使っていくといいんじゃないでしょーか。で、実際、<code>System.IO.Pipelines</code>や<code>System.Threading.Channels</code>によって自然と使う機会が出てきます。</p>
+<p>Rxは、やはりイベント関連ですね。ようするに、源流のソースにとって自然な表現を選ぶべき、ということです。生のイベント、OnMoveであったりOnClickであったりなどは、完全にPushで、そこにバッファーはないわけです。ということは、Rxで扱うほうが自然です。間にキューを挟んで<code>IAsyncEnumerable</code>で扱うこともできますが、不自然ですよね。あるいはキューを介さないことにより意図的に値をDropするという表現をすることもできますが、やはりそれも不自然です。不自然ということはたいていはパフォーマンスも良くないし、分かりやすくもない。つまり、良くない。だから、イベント関連はRxで扱いましょう。R3ならasync/awaitとの統合によって、非同期処理中のバッファリングや値のドロップなどは明示的にオペレーターで指定することができます。それは、分かりやすく、パフォーマンスも良い。R3を使っていきましょう。</p>
+<h2>C#パフォーマンス勉強会</h2>
+<p>4/27に<a href="https://cs-reading.connpass.com/event/309714/">C#パフォーマンス勉強会</a>という勉強会が大阪で（大阪で！）開催されます。私は「R3のコードから見る実践LINQ実装最適化・コンカレントプログラミング実例」というタイトルで、R3の！実装の！パフォーマンス上の工夫を！徹底的に解説しようと思っているので、参加できる方はぜひぜひです。関西へは滅多に行かないので貴重な機会ということなのでよろしくお願いします！</p>
+<h2>まとめ</h2>
+<p>色々言いましたが、オリジナルのRx.NETの作者達には感謝しかありません。改めて、やはりRxのアイディアの素晴らしさや、各種オペレーターの整理された機能には目を見張るものがあります。幾つかの部分の実装は古くなってしまっていますが、実装クオリティも高いと思います。私自身も最初期から使ってきたし、熱狂してきました。そして、現在のメンテナーにも感謝します。常に変わっていく環境の中で、多く使われているライブラリを維持することはとても大変なことです。</p>
+<p>しかし、だからこそ、Rxの価値を復活させたかった。そして、再構築するならば、できるのは私しかいないと思った。最初期からのRxの歴史と実装を知っていて、自分でRxそのものの実装(UniRx)を行い、それが世の中に広く使われることで多くのユースケースや問題点を知り、自分自身もゲームタイトルの実装で大規模に使われるRxのアプリケーション側にも関わり、Rxと対となるasync/awaitの独自ランタイム(UniTask)を実装し、それも世の中に広く使われていることで、この領域に関してのあらゆる知見がある。</p>
+<p>上のほうでも言いましたが、未来は複数あってもいいので、私が示すRxの未来の一つがR3だと思ってもらえればよいです。dotnet/reactiveにもまた別の進化と未来がある。かもしれません。</p>
+<p>そのうえでR3は置き換えられるだけのポテンシャルと、可能性を見せることができたと思っています。実装には自信あり、です。今回UniRxの実績があったからというのもあり、プレビュー公開時から多くのフィードバックがもらえたことは嬉しかったです(UniTask初公開時は、Unityのコンパイラを実験的コンパイラに差し替える必要があるとかいうエクストリーム仕様だったせいか、しばらくの間は誰も使ってくれなかったというか意義を分かってくれなかったので……）。</p>
+<p>移行に関するシナリオも最大限配慮したつもりではあるので、是非使ってみてください……！</p>
+</div>
+<h1><a href="https://neue.cc/2024/01/15_shareprojectinunity.html">.NETプロジェクトとUnityプロジェクトのソースコード共有最新手法</a></h1>
 <ul class="date"><li>2024-01-15</li></ul>
 <div class="entry_body"><p><a href="https://github.com/Cysharp/MagicOnion/">MagicOnionのv6</a>が先日リリースされました。</p>
 <p>メジャーバージョンアップとして大きな違いは、<a href="https://github.com/Cysharp/YetAnotherHttpHandler">Cysharp/YetAnotherHttpHandler</a>を正式リリースし、これを通信層の標準ライブラリ化しました。インストール手順も複雑で、サポートも切れていたgRPC C-Coreとはさようならです。正式リリースにあたってプレビューに存在していたクラッシュ問題などが解消されています。</p>
@@ -1969,541 +2256,6 @@ Console.WriteLine(sum); // 5050
 <p>というわけで来年はいっぱいやることがある！今年に悔いが残るとすれば、Cysharpとして現在、自称革命的なサービス（？）を作ってるんですが、それの進捗があまり良くなかったことですかねえ。原因としては私がOSS関連でフラフラしててプロジェクトマネージャー/プロダクトオーナーとして1ミリも機能いてなかったせいなのですが！反省。PM的な話は昔からずっと反省し続けてるので一向に進歩してないですね……。そこに脳みそ注ぎ込む余力がないのだと言い訳してますが……。</p>
 <p>そんなわけで、来年こそは革命的サービスもリリースするので期待していてください。OSS関連も革命的なものをどかどか投下する予定なので、引き続きCysharpは時代の最先端を全力疾走していきます。</p>
 </div>
-<h1><a href="https://neue.cc/2022/12/16_IncrementalSourceGenerator.html">2022年(2024年)のC# Incremental Source Generator開発手法</a></h1>
-<ul class="date"><li>2022-12-16</li></ul>
-<div class="entry_body"><p>このブログでもSource GeneratorやAnalyzerの開発手法に関しては定期的に触れてきていて、新しめだと</p>
-<ul>
-<li><a href="https://neue.cc/2020/12/15_597.html">2020/12/15 - UnitGenerator - C# 9.0 SourceGeneratorによるValueObjectパターンの自動実装とSourceGenerator実装Tips</a></li>
-<li><a href="https://neue.cc/2021/05/08_600.html">2021/05/07 - 2021年のC# Roslyn Analyzerの開発手法、或いはUnityでの利用法</a></li>
-</ul>
-<p>という記事を出していますが、今回 <a href="https://github.com/Cysharp/MemoryPack/">MemoryPack</a> の実装で比較的大規模にSource Generatorを使ってみたことで、より実践的なノウハウが手に入りました。また、開発環境も年々良くなっていることや、Unityのサポート状況も強化されているので、状況を一通りまとめてみようと思いました。Source Generatorは非常に強力で、今後必須の開発技法になるので（少なくとも私はもうIL書きません！）是非、この機会に手を出して頂ければです。</p>
-<p>また、オリジナルは2022年状況の話でしたが、Unity関連でアップデートがあったので2024年の状況として、その辺りを書き換えました。</p>
-<h2>Microsoft.CodeAnalysis.CSharpのバージョン問題</h2>
-<p>Source Generatorを作成するには <a href="https://www.nuget.org/packages/Microsoft.CodeAnalysis.CSharp/">Microsoft.CodeAnalysis.CSharp</a>を参照したライブラリを作ればいい、のですが、ここで大事なのはバージョンです。何も考えずに最新を入れると動かないという罠が待ってます。Source Generatorは、インストールされている .NET のバージョンや IDEのコンパイラバージョンと深く紐づいています。.NETのバージョンだけ上げてもダメで、特にVisual Studioの場合は.NETのバージョンと独立して、同梱されているコンパイラのバージョンがあり、それと合わせる必要があります。Unityの場合も同じく、Unityに含まれるC#コンパイラのバージョン(/Editor/Data/DotNetSdkRoslyn/Microsoft.CodeAnalysis.CSharp.dll)を精査する必要があります。使わているバージョンよりも高いバージョンのものを参照すると、動かないという理屈です。</p>
-<p>Visual Studioのバージョンとの紐づきは <a href="https://learn.microsoft.com/ja-jp/visualstudio/extensibility/roslyn-version-support">.NET コンパイラ プラットフォーム パッケージ バージョン リファレンス</a>を見れば分かりますが、現状の私のオススメは <code>4.3.0</code>。これは最小サポートバージョンがVisual Studio 2022 Version 17.3ということで、VS2019は切り捨てでいいでしょう。VS2022使ってるなら、とりあえずそこまでアップデートしてくれ、ということで。古ければ古いほどカバーできる範囲が広がっていい！ようでいて、古ければ古いほど、新しい言語機能の解析ができないなどの問題があるので、お薦めはできません、むしろ何も問題がなければ新しければ新しいほどいいぐらいです。4.3.0がおすすめな最大の理由としては、<code>SyntaxValueProvider.ForAttributeWithMetadataName</code> という、後で説明しますが、Source Generator作成の際に必須とも言える便利メソッドが追加されていることです。C# 11, C# 12の新言語機能部分の解析が必要になる場合は、必然的にアップデートしなければなりませんが。</p>
-<p>そしてもう一つ<code>4.3.0</code>がおすすめな理由としてUnityへの対応があります。Unityの場合は公式にC#コンパイラのバージョンが何であるかのリストはないので、自分で調べていく必要がありますが、とりあえず<a href="https://docs.unity3d.com/Manual/roslyn-analyzers.html">Roslyn analyzers and source generators</a>という公式ドキュメントによると「must use Microsoft.CodeAnalysis 3.8」、というわけで3.8じゃないと動かないぞ、と脅しをかけてきてます。が、実際はちょくちょくアップデートされていて、バージョンを調べていくとUnity 2022.3.0にはRoslyn 4.1.0、そしてUnity 2022.3.12f1以降には4.3.0が搭載されているようです。実際、ちゃんと4.3.0で動きます。2024-01-19更新時点でのLTSはUnity 2022.3で、パッチバージョンあげてもらえば4.3.0になるので、これは4.3.0解禁ということでいいでしょう（？）</p>
-<p>Microsoft.CodeAnalysis.CSharpのバージョンは大きく分けて 3.* と 4.* があり、3.* はv1の <code>ISourceGenerator</code>、4.* はv2である <code>IIncrementalGenerator</code> が使えます。</p>
-<p><a href="https://github.com/dotnet/roslyn/blob/main/docs/features/incremental-generators.md">Incremental Generators</a>は、性能面で大きく改善されている他、作りやすさも大きく上がっているため、現状は Incremental Generators で作ることを最優先で考えたほうがいいでしょう。登場の黎明期では、IDEのバージョン問題があったために、3.* と 4.* の両方のSource Generatorを作って一緒にNuGetパッケージングする、という（かなりややこしい）手法が取られたこともありましたが、もう .NET 7も登場した2022年、も終わろうとしている現在ですので、 3.* は切り捨ててしまってもいいと考えています。</p>
-<p>ただしUnityは除く。と思っていましたがUnity 2022.2, Unity 2023.1 からは4.1.0のコンパイラが搭載されていますし、2022.3.12f1以降は4.3.0なので、もうUnity含めても3.* の切り捨てはアリだと考えています。</p>
-<h2>最小プロジェクトとデバッグ実行</h2>
-<p>Source Generator開発は、デバッグ環境をきっちり構築できていないとかなり大変です。なので環境構築をしっかりやってから挑みましょう。ここではWindowsのVisual Studio 2022を使った場合の説明のみしますが、他の環境でも、同等のことができるようにしておかないとめちゃくちゃ大変です。</p>
-<p>まず「.NET Compiler Platform SDK」を入れましょう。標準では入ってないので。入れておかなくても開発はできるのですが、デバッグ起動ができなくなるため、ほぼ必須と思ってください。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/207808216-9b65a422-5cd5-4a74-99a8-8635c65437c6.png" alt="image" /></p>
-<p>次に、「netstandard2.0」のクラスライブラリプロジェクトを作成します。え、2022年にもなってnetstandard2.0なの？なんで？standard2.1やnet7じゃダメなの？という感じですが、そもそもVisual Studioが .NET Frameworkで動いているというしょっぱい事情があり、Source Generatorプロジェクトはnetstandard2.0で作る必要があるという制限があります。使えるクラスライブラリが少なくて辛い感もありますが我慢です。</p>
-<pre><code class="language-xml">&lt;Project Sdk=&quot;Microsoft.NET.Sdk&quot;&gt;
-
-	&lt;PropertyGroup&gt;
-		&lt;TargetFramework&gt;netstandard2.0&lt;/TargetFramework&gt;
-		&lt;ImplicitUsings&gt;enable&lt;/ImplicitUsings&gt;
-		&lt;Nullable&gt;enable&lt;/Nullable&gt;
-
-		&lt;!-- LangVersionは明示的に書いておこう --&gt;
-		&lt;LangVersion&gt;11&lt;/LangVersion&gt;
-		&lt;!-- Analyzer(Source Generator)ですという設定 --&gt;
-		&lt;IsRoslynComponent&gt;true&lt;/IsRoslynComponent&gt;
-		&lt;AnalyzerLanguage&gt;cs&lt;/AnalyzerLanguage&gt;
-	&lt;/PropertyGroup&gt;
-
-	&lt;ItemGroup&gt;
-		&lt;PackageReference Include=&quot;Microsoft.CodeAnalysis.CSharp&quot; Version=&quot;4.3.0&quot; /&gt;
-	&lt;/ItemGroup&gt;
-
-&lt;/Project&gt;
-</code></pre>
-<pre><code class="language-csharp">using Microsoft.CodeAnalysis;
-
-namespace SourceGeneratorSample;
-
-[Generator(LanguageNames.CSharp)]
-public partial class SampleGenerator : IIncrementalGenerator
-{
-    public void Initialize(IncrementalGeneratorInitializationContext context)
-    {
-        // Providerシリーズ
-        // context.AdditionalTextsProvider
-        // context.AnalyzerConfigOptionsProvider
-        // context.CompilationProvider
-        // context.MetadataReferencesProvider
-        // context.ParseOptionsProvider
-        // context.SyntaxProvider
-
-        // Registerシリーズ
-        // context.RegisterImplementationSourceOutput
-        // context.RegisterPostInitializationOutput
-        // context.RegisterSourceOutput
-    }
-}
-</code></pre>
-<p>これで無のSource Generatorができたので（contextの解説は準備が一通り終わったらします）、次に、このGeneratorを参照するConsoleAppを適当に作成します。</p>
-<pre><code class="language-xml">&lt;Project Sdk=&quot;Microsoft.NET.Sdk&quot;&gt;
-
-	&lt;PropertyGroup&gt;
-		&lt;OutputType&gt;Exe&lt;/OutputType&gt;
-		&lt;TargetFramework&gt;net7.0&lt;/TargetFramework&gt;
-		&lt;ImplicitUsings&gt;enable&lt;/ImplicitUsings&gt;
-		&lt;Nullable&gt;enable&lt;/Nullable&gt;
-	&lt;/PropertyGroup&gt;
-
-	&lt;ItemGroup&gt;
-		&lt;ProjectReference Include=&quot;..\SourceGeneratorSample\SourceGeneratorSample.csproj&quot;&gt;
-			&lt;OutputItemType&gt;Analyzer&lt;/OutputItemType&gt;
-			&lt;ReferenceOutputAssembly&gt;false&lt;/ReferenceOutputAssembly&gt;
-		&lt;/ProjectReference&gt;
-	&lt;/ItemGroup&gt;
-
-&lt;/Project&gt;
-</code></pre>
-<p>Source Generatorのプロジェクト参照では、OutputItemTypeとReferenceOutputAssemblyの設定を追加で手書きしてください。</p>
-<p>次にまたSource Generator側のプロジェクトに戻って、プロジェクトのプロパティから「デバッグ起動プロファイルUIを開く」を選んでください。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/208009373-a5f32edb-998b-4fde-844b-f67b52da8747.png" alt="image" /></p>
-<p>既にあるプロファイルは削除した上で、左上の「新しいプロファイルの作成」から「Roslyn Component」を選択。ここでRoslyn Componentが出てこない場合は、「.NET Compiler Platform SDK」を入れているかどうかの確認と、csprojに<code>&lt;IsRoslynComponent&gt;true&lt;/IsRoslynComponent&gt;</code>を追加しているかどうかの確認をしてください。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/208009505-a6e86403-c42c-4f0b-bf53-97c5e42d367d.png" alt="image" /></p>
-<p>そしてTarget Projectに、先ほど作成したSource Generatorを参照しているコンソールアプリプロジェクトを選びます。プロジェクトが選べない場合は、対象プロジェクトがSource GeneratorをAnalyzerとしてのプロジェクト参照をしているかどうかを確認してください。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/208009562-74d267c6-584e-43fd-93a5-c180b1c4de1e.png" alt="image" /></p>
-<p>これで準備が完了で、Source Generatorをデバッグ実行(F5)すると、対象コンソールアプリプロジェクトを引っ掛けた状態で起動するようになります。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/208011024-62d3cae7-08f7-45d3-b910-312b3137d663.png" alt="image" /></p>
-<p>あとは、ひたすら、Generatorのコードを書いていくだけです、めでたし。</p>
-<h2>ForAttributeWithMetadataName</h2>
-<p>細かい説明に行く前に、基本的な流れの説明を。Source Generatorは、通常、なにか適当な属性がついているpartial classやpartial methodを探して、それに対して追加のpartial class/methodを生成する、という流れになります。原理的には属性がついていなくてもいいですが、勝手に何かを生成されるとわけわかんなくて困るので、ユーザーに明示的に生成を指示させるような流れにすべき、ということで、起点は属性付与だけと考えていいでしょう。</p>
-<p>そんなわけでSource Generatorでまずやることは、属性が付与されてるclass/methodを探し出すことなのですが、Roslyn 4.3.0からは <code>SyntaxValueProvider.ForAttributeWithMetadataName</code> というメソッドで一発で探し出すことができるようになりました。</p>
-<p>というわけで、小さなサンプル用ジェネレーターとして、classのToStringをrecordのように自動実装するジェネレーターを作ってみます。</p>
-<pre><code class="language-csharp">using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
-
-namespace SourceGeneratorSample;
-
-[Generator(LanguageNames.CSharp)]
-public partial class SampleGenerator : IIncrementalGenerator
-{
-    public void Initialize(IncrementalGeneratorInitializationContext context)
-    {
-        // PostInitializationOutputでSource Generatorでしか使わない属性を出力
-        context.RegisterPostInitializationOutput(static context =&gt;
-        {
-            // C# 11のRaw String Literal便利
-            context.AddSource(&quot;SampleGeneratorAttribute.cs&quot;, &quot;&quot;&quot;
-namespace SourceGeneratorSample;
-
-using System;
-
-[AttributeUsage(AttributeTargets.Class, AllowMultiple = false, Inherited = false)]
-internal sealed class GenerateToStringAttribute : Attribute
-{
-}
-&quot;&quot;&quot;);
-        });
-
-        var source = context.SyntaxProvider.ForAttributeWithMetadataName(
-            &quot;SourceGeneratorSample.GenerateToStringAttribute&quot;, // 引っ掛ける属性のフルネーム
-            static (node, token) =&gt; true, // predicate, 属性で既に絞れてるので特別何かやりたいことがなければ基本true
-            static (context, token) =&gt; context); // GeneratorAttributeSyntaxContextにはNode, SemanticModel(Compilation), Symbolが入ってて便利
-
-        // 出力コード部分はちょっとごちゃつくので別メソッドに隔離
-        context.RegisterSourceOutput(source, Emit);
-    }
-</code></pre>
-<p>Initializeメソッドの行数の短さ！というわけで、Source Generator作り自体はかなり簡単になりました。ここまでがSourceGeneratorとして属性を引っ掛けて何かするための準備部分の全てであり、過去の諸々に比べると明らかに改善されています。</p>
-<p>ただし、そうして抽出したところを加工して何かする部分は特に変わりないので、気合で頑張っていきましょう。↑のコードの続きは以下のものになります。</p>
-<pre><code class="language-csharp">    static void Emit(SourceProductionContext context, GeneratorAttributeSyntaxContext source)
-    {
-        // classで引っ掛けてるのでTypeSymbol/Syntaxとして使えるように。
-        // SemaintiModelが欲しい場合は source.SemanticModel
-        // Compilationが欲しい場合は source.SemanticModel.Compilation から
-        var typeSymbol = (INamedTypeSymbol)source.TargetSymbol;
-        var typeNode = (TypeDeclarationSyntax)source.TargetNode;
-
-        // ToStringがoverride済みならエラー出す
-        if (typeSymbol.GetMembers(&quot;ToString&quot;).Length != 0)
-        {
-            context.ReportDiagnostic(Diagnostic.Create(DiagnosticDescriptors.ExistsOverrideToString, typeNode.Identifier.GetLocation(), typeSymbol.Name));
-            return;
-        }
-
-        // グローバルネームスペース対応漏れするとたまによく泣くので気をつける
-        var ns = typeSymbol.ContainingNamespace.IsGlobalNamespace
-            ? &quot;&quot;
-            : $&quot;namespace {typeSymbol.ContainingNamespace};&quot;;
-
-        // 出力ファイル名として使うので雑エスケープ
-        var fullType = typeSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)
-            .Replace(&quot;global::&quot;, &quot;&quot;)
-            .Replace(&quot;&lt;&quot;, &quot;_&quot;)
-            .Replace(&quot;&gt;&quot;, &quot;_&quot;);
-
-        // Field/Propertyを抽出する
-        var publicMembers = typeSymbol.GetMembers() // MethodがほしければOfType&lt;IMethodSymbol&gt;()などで絞る
-            .Where(x =&gt; x is (IFieldSymbol or IPropertySymbol)
-                         and { IsStatic: false, DeclaredAccessibility: Accessibility.Public, IsImplicitlyDeclared: false, CanBeReferencedByName: true })
-            .Select(x =&gt; $&quot;{x.Name}:{{{x.Name}}}&quot;); // MyProperty:{MyProperty}
-
-        var toString = string.Join(&quot;, &quot;, publicMembers);
-
-        // C# 11のRaw String Literalを使ってText Template的な置換(便利)
-        // ファイルとして書き出される時対策として &lt;auto-generated/&gt; を入れたり
-        // nullable enableしつつ、nullable系のwarningがウザいのでdisableして回ったりなどをテンプレコードとして入れておいたりする
-        var code = $$&quot;&quot;&quot;
-// &lt;auto-generated/&gt;
-#nullable enable
-#pragma warning disable CS8600
-#pragma warning disable CS8601
-#pragma warning disable CS8602
-#pragma warning disable CS8603
-#pragma warning disable CS8604
-
-{{ns}}
-
-partial class {{typeSymbol.Name}}
-{
-    public override string ToString()
-    {
-        return $&quot;{{toString}}&quot;;
-    }
-}
-&quot;&quot;&quot;;
-
-        // AddSourceで出力
-        context.AddSource($&quot;{fullType}.SampleGenerator.g.cs&quot;, code);
-    }
-}
-
-// DiagnosticDescriptorは大量に作るので一覧性のためにもまとめておいたほうが良い
-public static class DiagnosticDescriptors
-{
-    const string Category = &quot;SampleGenerator&quot;;
-
-    public static readonly DiagnosticDescriptor ExistsOverrideToString = new(
-        id: &quot;SAMPLE001&quot;,
-        title: &quot;ToString override&quot;,
-        messageFormat: &quot;The GenerateToString class '{0}' has ToString override but it is not allowed.&quot;,
-        category: Category,
-        defaultSeverity: DiagnosticSeverity.Error,
-        isEnabledByDefault: true);
-}
-</code></pre>
-<p>作り方のポイントとしては、Source Generator(Analyzer)で使うものにはSyntaxNodeとISymbolの二系統があって、SyntaxNodeは文字列としてのソースコードの構造を指していて、ISymbolはコンパイルされた状態での型の中間状態を指します。情報を取ったりするにはISymbolのほうが圧倒的にやりやすいので、基本的にはSymbolを辿って処理していきます。SyntaxNodeは、エラーの波線表示の位置を示したりする時のみに使うという感じですね。</p>
-<p>では、これをビルドして、Visual Studioを、再起動します……！というのも、ConsoleApp1側ではSource Generatorを掴みっぱなしになってしまうので、プロジェクト参照でのSource Generatorの更新ができないからです。今回AttributeをGenerator側で追加しているので、再起動してそれの生成を含めてあげる必要があります。今後もConsoleApp1側での動作確認が必要な際は、定期的に再起動する羽目になります。ただしデバッグ起動では更新されたコードで動くので、大きな変動がなければそのまま作業を進められます。といった、IDEを再起動しなきゃいけないシチュエーションなのかしなくてもいいのか、の切り分けが求められます……。</p>
-<p>ConsoleApp1側で以下のようなテスト型を用意して</p>
-<pre><code class="language-csharp">using SourceGeneratorSample;
-
-var mc = new MyClass() { Hoge = 10, Bar = &quot;tako&quot; };
-Console.WriteLine(mc);
-
-[GenerateToString]
-public partial class MyClass
-{
-    public int Hoge { get; set; }
-    public string? Bar { get; set; }
-}
-</code></pre>
-<p>Source Generator側でデバッグ実行です。いったんの出力の確認でお薦めなのは、AddSourceの直前あたりにブレークポイント貼って見ることですかね。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/208027141-ae09c996-a7a4-4780-bce0-8a9e22727a5e.png" alt="image" /></p>
-<p>そうして何度かデバッグ実行を繰り返して、理想となるコードが吐けるように調整していって、そして、最終的にそれで大丈夫かどうかはコンパイラ通さないとわからんので、Visual Studioを再起動してConsoleApp1側でコンパイル走らせて、みたいなことになりますね。この段階で問題が出ると、Visual Studio再起動祭りになるのでダルい！</p>
-<p>問題なく吐けていれば、ソリューションエクスプローラーで生成コードを確認することができます。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/208027544-81eb7279-aef7-48ff-8241-fa6fa2b4efa3.png" alt="image" /></p>
-<p>以上、基本的な流れでした！C# 11のRaw String Literalsのお陰で別途テンプレートエンジンを用いなくても、テンプレート的な処理をC#のコード中に埋め込めるようになったのが、かなり楽になりました。（ただしif や for が埋め込めるわけではないので、複雑なものを書く場合はそれなりの工夫は必要）。</p>
-<p>Source Generatorの良いところはAnalyzerも兼ねているところで、今回はToStringが既に定義されている場合はエラーにするという処理を入れているのですが</p>
-<p><img src="https://user-images.githubusercontent.com/46207/208030486-1baf9e07-c22e-4c40-8c0c-7b968180ee58.png" alt="image" /></p>
-<p>属性でどうこうする系ってどうしても今までは実行時エラーになりがちだったのですが、エディット時に間違って定義をばんばん教えてあげられるようになったのは親切度が相当上がっています。</p>
-<h2>IncrementalGeneratorInitializationContext詳解</h2>
-<p>Incremental Generatorの強みは複数のProviderを繋げてパイプラインを作れるところ、ではあるのですが、基本的なことは SyntaxProvider.ForAttributeWithMetadataName がほとんど全部やってくれるから、特に考えなくてもいいかな……。</p>
-<p>ではあるんですが、細かい処理をしたい場合にはいくつか必要になりますので、Provider見ていきましょう。</p>
-<ul>
-<li>AdditionalTextsProvider</li>
-</ul>
-<p>AdditionalTextsProviderは、AdditionalFilesを読み取るのに使います。<a href="https://github.com/dotnet/roslyn-analyzers/blob/main/src/Microsoft.CodeAnalysis.BannedApiAnalyzers/BannedApiAnalyzers.Help.md">BannedApiAnalyzers</a>などでも活用されていますが、例えばコンフィグを渡したいケースなどに有用です。</p>
-<p>例えば <code>sampleGenerator.config.json</code> を読み取りたい、といったケースを考えますと、ConsoleApp1側ではこういったcsprojとファイルを用意するとして</p>
-<pre><code class="language-xml">&lt;ItemGroup&gt;
-	&lt;AdditionalFiles Include=&quot;sampleGenerator.config.json&quot; /&gt;
-&lt;/ItemGroup&gt;
-</code></pre>
-<p>AdditionalTextsProviderを使ってこんな風に読み取っていきます。</p>
-<pre><code class="language-csharp">var configuration = context.AdditionalTextsProvider.Select((text, token) =&gt;
-    {
-        if (text.Path.EndsWith(&quot;sampleGenerator.config.json&quot;)) return text.GetText(token);
-        return null;
-    })
-    .Where(x =&gt; x != null)
-    .Collect(); //雑Collect
-
-// sampleにあったやつ
-var types = context.SyntaxProvider.ForAttributeWithMetadataName(
-      &quot;SourceGeneratorSample.GenerateToStringAttribute&quot;,
-      static (node, token) =&gt; true,
-      static (context, token) =&gt; context)
-    .Collect(); //雑Collect
-
-var source = configuration.Combine(types);  // くっつける
-
-context.RegisterSourceOutput(source, static (context, source) =&gt;
-{
-    var configJson = source.Left.FirstOrDefault();
-    var types = source.Right;
-    foreach (var type in types)
-    {
-        // よしなに処理
-    }
-});
-</code></pre>
-<p>なるほどコードが増えた？</p>
-<p>まず、Providerが触った直後のやつは <code>IncrementalValuesProvider&lt;T&gt;</code> になります。そしてCollectすると <code>IncrementalValueProvider&lt;ImmutableArray&lt;T&gt;&gt;</code> になります。違いはImmutableArray、ではなくて、 ValueProvider と ValuesProvider のほうです。ValueProviderの状態だと(IObservableみたいに)複数値が流れてくるのですが、ValuesProviderの状態だと、ImmutableArrayとして一塊になったものが一発流れてきます。</p>
-<p>で、複数ProviderをCombineで繋いで、RegsiterSourceOutputに流し込むという流れになるわけですが、ValueとValuesが混在してるとCombineの型合わせがめちゃくちゃ大変です……！なんかよくわからんがCombineできない！の原因は型が合わないせいなのですね。というわけで雑にCollectしておくと合わせやすくなるので良いです。</p>
-<p>というわけで、こんな感じで次のProvider行きましょう。</p>
-<ul>
-<li>AnalyzerConfigOptionsProvider</li>
-</ul>
-<p>GlobalOptionsと、AdditionalTextやSyntaxTreeに紐付けられたオプションを引っ張るGetOptionsがあります。例えばMemoryPackではcsprojのオプションから取り出すために使いました。</p>
-<p>こういう記述をして</p>
-<pre><code class="language-xml">&lt;ItemGroup&gt;
-    &lt;CompilerVisibleProperty Include=&quot;MemoryPackGenerator_SerializationInfoOutputDirectory&quot; /&gt;
-&lt;/ItemGroup&gt;
-&lt;PropertyGroup&gt;
-    &lt;MemoryPackGenerator_SerializationInfoOutputDirectory&gt;$(MSBuildProjectDirectory)\MemoryPackLogs&lt;/MemoryPackGenerator_SerializationInfoOutputDirectory&gt;
-&lt;/PropertyGroup&gt;
-</code></pre>
-<p>こんな風に取り出すことができる( <code>build_property.</code> が接頭辞に必要)みたいな。</p>
-<pre><code class="language-csharp">var outputDirProvider = context.AnalyzerConfigOptionsProvider
-    .Select((configOptions, token) =&gt;
-    {
-        if (configOptions.GlobalOptions.TryGetValue(&quot;build_property.MemoryPackGenerator_SerializationInfoOutputDirectory&quot;, out var path))
-        {
-            return path;
-        }
-
-        return (string?)null;
-    });
-</code></pre>
-<p>csproj側があんま書きやすい感じじゃないので、AdditionalFilesでjsonを渡すのとどちらがいいのか、みたいなのは考えどころですね。こちらだとcsproj内のマクロが使える（出力パスとか）のはいいところかもしれません。</p>
-<ul>
-<li>CompilationProvider</li>
-</ul>
-<p>Compilationが拾える最重要Provider、のはずが <code>ForAttributeWithMetadataName</code> がくっつけてくれるので用無し。</p>
-<ul>
-<li>MetadataReferencesProvider</li>
-</ul>
-<p>読み込んでるDLLの情報が拾えます。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/208037687-47a65304-e8d9-42cb-bdd6-f88ea622bc03.png" alt="image" /></p>
-<p>そんな使わないかも。</p>
-<ul>
-<li>ParseOptionsProvider</li>
-</ul>
-<p>csprojを解析した情報が取れます。例えば言語バージョンやプリプロセッサシンボルから、.NETのバージョンを取り出したりできます。</p>
-<pre><code class="language-csharp">var parseOptions = context.ParseOptionsProvider.Select((parseOptions, token) =&gt;
-{
-    var csOptions = (CSharpParseOptions)parseOptions;
-    var langVersion = csOptions.LanguageVersion;
-    var net7 = csOptions.PreprocessorSymbolNames.Contains(&quot;NET7_0_OR_GREATER&quot;);
-    return (langVersion, net7);
-});
-</code></pre>
-<p>つまり、言語バージョンや.NETのバージョン別の出し分けに使える、ということですね。細かくやると面倒くさいのであんまギチギチにやらないほうがいいとは思いますが、どうしてもそういう処理が必要なシチュエーションでは使えます。というか実際MemoryPackではこれで出し分けしています。scoped ref(C# 11)やfile scoped namespace(C# 10)、static abstract method(.NET 7)という切り分けですねー。</p>
-<ul>
-<li>SyntaxProvider</li>
-</ul>
-<p><code>ForAttributeWithMetadataName</code> を叩くためのやつ。</p>
-<ul>
-<li>RegisterPostInitializationOutput</li>
-</ul>
-<p>ここからはRegisterシリーズですが、PostInitializeationOutputは、Source Generatorのためのマーカーとしてしか使わない属性をinternal classとして解析走らせる前に出力しておきたい、というやつですね。<a href="https://github.com/Cysharp/UnitGenerator/">UnitGenerator</a>では <code>UnitOfAttribute</code> をそういった形で吐き出しています（なので結果としてUnitGeneratorを使ったプロジェクトはUnitGeneratorへの依存DLLはなし、ということになる）。一方でMemoryPackで使ってる属性 <code>MemoryPackableAttribute</code> は、<code>MemoryPack.Core.dll</code>に含めているので、RegisterPostInitializationOutputは使っていません。どうせReader/Writerとかの他の依存が必要になるので、属性だけ依存なしにしてもしょーがないですからね。</p>
-<ul>
-<li>RegisterSourceOutput</li>
-</ul>
-<p>Providerを繋げて、実際にSource Generateさせるやつ。大事というか必須。</p>
-<ul>
-<li>RegisterImplementationSourceOutput</li>
-</ul>
-<p>ドキュメントが一切ない上に、なんか想定通りの動きをしていないような私の想定が悪いのか、まぁよくわからないけどよくわからないのでよくわからないです。ドキュメントも無なので、とりあえず無視しておきましょう。</p>
-<h2>ユニットテスト</h2>
-<p>厳密にやるとキリがないので、そこそこゆるふわ感覚でやるようにしてます。もちろんTDDなんてしません。基本的な考え方としては、ユニットテストプロジェクトがAnalyzerとして開発中のSource Generatorプロジェクトをプロジェクト参照して、ソース生成されるようにしておいて、ユニットテストでは、その生成されたコードが期待通り動いているかのテストをする、みたいな雰囲気で良いんじゃないかと思います。生成ソースコードの中身をチェックして一致するか、みたいなのはちょっと手間が無駄にかかりすぎるので……。</p>
-<p>テストプロジェクトはxUnitと、補助ライブラリとして<a href="https://fluentassertions.com/">FluentAssertion</a>を好んで使っています。また、GlobalUsingにテスト系の名前空間を突っ込んでおくと気持ち楽です。</p>
-<pre><code class="language-xml">&lt;Project Sdk=&quot;Microsoft.NET.Sdk&quot;&gt;
-
-	&lt;PropertyGroup&gt;
-		&lt;TargetFramework&gt;net7.0&lt;/TargetFramework&gt;
-		&lt;ImplicitUsings&gt;enable&lt;/ImplicitUsings&gt;
-		&lt;Nullable&gt;enable&lt;/Nullable&gt;
-		&lt;IsPackable&gt;false&lt;/IsPackable&gt;
-	&lt;/PropertyGroup&gt;
-
-	&lt;ItemGroup&gt;
-		&lt;PackageReference Include=&quot;FluentAssertions&quot; Version=&quot;6.7.0&quot; /&gt;
-		&lt;PackageReference Include=&quot;Microsoft.CodeAnalysis.CSharp&quot; Version=&quot;4.4.0&quot; /&gt;
-		&lt;PackageReference Include=&quot;Microsoft.NET.Test.Sdk&quot; Version=&quot;17.3.1&quot; /&gt;
-		&lt;PackageReference Include=&quot;xunit&quot; Version=&quot;2.4.2&quot; /&gt;
-		&lt;PackageReference Include=&quot;xunit.runner.visualstudio&quot; Version=&quot;2.4.5&quot;&gt;
-			&lt;IncludeAssets&gt;runtime; build; native; contentfiles; analyzers; buildtransitive&lt;/IncludeAssets&gt;
-			&lt;PrivateAssets&gt;all&lt;/PrivateAssets&gt;
-		&lt;/PackageReference&gt;
-	&lt;/ItemGroup&gt;
-
-	&lt;ItemGroup&gt;
-		&lt;ProjectReference Include=&quot;..\SourceGeneratorSample\SourceGeneratorSample.csproj&quot;&gt;
-			&lt;OutputItemType&gt;Analyzer&lt;/OutputItemType&gt;
-            &lt;!-- ReferenceOutputAssemblyをtrueにする! --&gt;
-			&lt;ReferenceOutputAssembly&gt;true&lt;/ReferenceOutputAssembly&gt;
-		&lt;/ProjectReference&gt;
-	&lt;/ItemGroup&gt;
-
-	&lt;ItemGroup&gt;
-		&lt;Using Include=&quot;Xunit&quot; /&gt;
-		&lt;Using Include=&quot;Xunit.Abstractions&quot; /&gt;
-		&lt;Using Include=&quot;FluentAssertions&quot; /&gt;
-	&lt;/ItemGroup&gt;
-
-&lt;/Project&gt;
-</code></pre>
-<p>後述しますが C# 11の内部コンパイルを行うために参照する Microsoft.CodeAnalysis.CSharp は 4.4.0 です。</p>
-<pre><code class="language-csharp">namespace SourceGeneratorSample.Tests;
-
-public class ToStringTest
-{
-    [Fact]
-    public void Basic()
-    {
-        var mc = new MyClass() { Hoge = 33, Huga = 99 };
-        mc.ToString().Should().Be(&quot;Hoge:33, Huga:99&quot;);
-    }
-}
-
-[GenerateToString]
-public partial class MyClass
-{
-    public int Hoge { get; set; }
-    public int Huga { get; set; }
-}
-</code></pre>
-<p>とりあえずこれをテストすればOK、と。なんか生成結果が更新されてない気がして無限にTestがこけるんだが？という時は、例によってVisual Studio再起動です。</p>
-<p>Source Generatorのいいところとして、生成コードへのステップ実行も可能ということで、なんかよーわからん挙動だわーという時はデバッガでどんどん突っ込んでいくといいでしょう。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/208041286-54162ad8-fe1a-41d6-a1f2-37e0dd19c533.png" alt="image" /></p>
-<p>正常に動くケースはこれで概ねいいんですが、Analyzerとしてコンパイルエラーを出すようなケースをテストしたい場合は、もう一捻り必要です。対応としては <code>CSharpGeneratorDriver</code> というのが標準で用意されていて、それにソースコード渡せばいい、という話なのですが、少し手間なのは、元になるCSharpCompilationを作らなければいけない、というところで。この辺もよしなに見てくれる便利ジェネレーターユニットテストヘルパーライブラリみたいなのもありますが、原理原則を知るためにも、ここは手で書いてみましょう。</p>
-<p>というわけで、こういうヘルパーを用意してみます。</p>
-<pre><code class="language-csharp">using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.Diagnostics;
-using System.IO;
-using System.Linq;
-using System.Runtime.CompilerServices;
-
-namespace MemoryPack.Tests.Utils;
-
-public static class CSharpGeneratorRunner
-{
-    static Compilation baseCompilation = default!;
-
-    [ModuleInitializer]
-    public static void InitializeCompilation()
-    {
-        // running .NET Core system assemblies dir path
-        var baseAssemblyPath = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
-        var systemAssemblies = Directory.GetFiles(baseAssemblyPath)
-            .Where(x =&gt;
-            {
-                var fileName = Path.GetFileName(x);
-                if (fileName.EndsWith(&quot;Native.dll&quot;)) return false;
-                return fileName.StartsWith(&quot;System&quot;) || (fileName is &quot;mscorlib.dll&quot; or &quot;netstandard.dll&quot;);
-            });
-
-        var references = systemAssemblies
-            // .Append(typeof(Foo).Assembly.Location) // 依存DLLがある場合はそれも追加しておく
-            .Select(x =&gt; MetadataReference.CreateFromFile(x))
-            .ToArray();
-
-        var compilation = CSharpCompilation.Create(&quot;generatortest&quot;,
-            references: references,
-            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
-
-        baseCompilation = compilation;
-    }
-
-    public static Diagnostic[] RunGenerator(string source, string[]? preprocessorSymbols = null, AnalyzerConfigOptionsProvider? options = null)
-    {
-        // NET 7 + C# 11
-        if (preprocessorSymbols == null)
-        {
-            preprocessorSymbols = new[] { &quot;NET7_0_OR_GREATER&quot; };
-        }
-        var parseOptions = new CSharpParseOptions(LanguageVersion.CSharp11, preprocessorSymbols: preprocessorSymbols);
-        var driver = CSharpGeneratorDriver.Create(new SourceGeneratorSample.SampleGenerator()).WithUpdatedParseOptions(parseOptions);
-        if (options != null)
-        {
-            driver = (Microsoft.CodeAnalysis.CSharp.CSharpGeneratorDriver)driver.WithUpdatedAnalyzerConfigOptions(options);
-        }
-
-        var compilation = baseCompilation.AddSyntaxTrees(CSharpSyntaxTree.ParseText(source, parseOptions));
-
-        driver.RunGeneratorsAndUpdateCompilation(compilation, out var newCompilation, out var diagnostics);
-
-        // combine diagnostics as result.
-        var compilationDiagnostics = newCompilation.GetDiagnostics();
-        return diagnostics.Concat(compilationDiagnostics).ToArray();
-    }
-}
-</code></pre>
-<p>CSharpGeneratorDriver.Create して AddSyntaxTrees して RunGeneratorsAndUpdateCompilation して diagnostics を取り出す。というだけなのですが、Compilationを作るところに癖があります、というか Compilation に渡すDLLをかき集めるのが微妙に面倒くさいです。net7の依存関係のDLLを全部持ってくる、とかが一発でできないんですね。素直に typeof().Assembly.Location だけだと全然持ってこれないため、ディレクトリから漁ってくるという処理をいれています。</p>
-<p>これを使ってテスト書くと、こんな感じでしょうか。</p>
-<pre><code class="language-csharp">    [Fact]
-    public void ERROR_SAMPLE001()
-    {
-        // C#11のRaw String Literals本当に便利
-        var result = CSharpGeneratorRunner.RunGenerator(&quot;&quot;&quot;
-using SourceGeneratorSample;
-
-[GenerateToString]
-public partial class MyClass
-{
-    public int Hoge { get; set; }
-    public int Huga { get; set; }
-
-    public override string ToString()
-    {
-        return &quot;hogemoge&quot;;
-    }
-}
-&quot;&quot;&quot;);
-
-        result.Length.Should().Be(1);
-        result[0].Id.Should().Be(&quot;SAMPLE001&quot;);
-    }
-</code></pre>
-<p>厳密にやるなら、エラーの波線をどこに敷いているかのチェックをすべし、みたいな話もあるのですが、私的にはまぁ面倒くさいのでちゃんと狙ったエラーが出せてるかどうかをDiangnositcsのIdを拾うぐらいでいいかな、みたいな感じでやってます。</p>
-<h2>NuGetパッケージング</h2>
-<p>というわけで <code>dotnet pack</code> するわけですが、 追加でコンフィグ仕込む必要があります。</p>
-<pre><code class="language-csharp">&lt;Project Sdk=&quot;Microsoft.NET.Sdk&quot;&gt;
-
-	&lt;PropertyGroup&gt;
-		&lt;TargetFramework&gt;netstandard2.0&lt;/TargetFramework&gt;
-		&lt;ImplicitUsings&gt;enable&lt;/ImplicitUsings&gt;
-		&lt;Nullable&gt;enable&lt;/Nullable&gt;
-		&lt;LangVersion&gt;11&lt;/LangVersion&gt;
-
-		&lt;!-- NuGetPackのための追加をもりもり --&gt;
-		&lt;IsRoslynComponent&gt;true&lt;/IsRoslynComponent&gt;
-		&lt;AnalyzerLanguage&gt;cs&lt;/AnalyzerLanguage&gt;
-		&lt;IncludeBuildOutput&gt;false&lt;/IncludeBuildOutput&gt;
-		&lt;DevelopmentDependency&gt;true&lt;/DevelopmentDependency&gt;
-		&lt;IncludeSymbols&gt;false&lt;/IncludeSymbols&gt;
-		&lt;SuppressDependenciesWhenPacking&gt;true&lt;/SuppressDependenciesWhenPacking&gt;
-	&lt;/PropertyGroup&gt;
-
-	&lt;ItemGroup&gt;
-		&lt;PackageReference Include=&quot;Microsoft.CodeAnalysis.CSharp&quot; Version=&quot;4.3.1&quot; /&gt;
-	&lt;/ItemGroup&gt;
-
-	&lt;!-- 出力先を analyzers/dotnet/cs にする --&gt;
-	&lt;ItemGroup&gt;
-		&lt;None Include=&quot;$(OutputPath)\$(AssemblyName).dll&quot; Pack=&quot;true&quot; PackagePath=&quot;analyzers/dotnet/cs&quot; Visible=&quot;false&quot; /&gt;
-	&lt;/ItemGroup&gt;
-&lt;/Project&gt;
-</code></pre>
-<p>外部依存DLLがいたりすると(例えばJSON .NET使いたいとか！)もう少し面倒くさくなるので、外部依存DLLは使わないようにしましょう！というのが第一原則になります。どうしても使いたい場合は頑張ってください。</p>
-<h2>Unity対応</h2>
-<p>Incremental Generatorを前提にするなら、特に通常の.NET版とやることは変わりません。<a href="https://docs.unity3d.com/Manual/roslyn-analyzers.html">Unityのマニュアル</a>通りにビルド済みdllを配置してRoslynAnalyzerとしてLabel設定したmetaを置いておけば、UPMのgit参照とかでも、特に何もせずに自動で認識されます。dllの配置場所はUnityの公式のジェネレーター(例えば com.unity.properties とか)がRuntime配下にいるので、Editorではなく、Runtime側に配置することとしています。</p>
-<p>なお、Unity用限定のSource Generatorを作る場合でも、通常の .NET のライブラリとして扱い、普通に .NET ライブラリとしての開発環境やユニットテストプロジェクトを作ったほうが良いでしょう。普通に作るにもかなり環境をしっかり作らないと大変なので、Unity限定だから！みたいな気持ちで挑むとしんどみが爆発します。</p>
-<p>また、ライブラリの配布として<a href="https://github.com/GlitchEnzo/NuGetForUnity">NuGetForUnity</a>を使ってNuGet経由で落としてきた場合は自動的にRoslynAnalyzerのLabelを張ってくれます、便利！</p>
-<h2>まとめ</h2>
-<p>C#に最初にこの手の機構が登場したのは2014年、 <a href="https://neue.cc/2014/11/20_485.html">VS2015のRoslynでCode Analyzerを自作する(ついでにUnityコードも解析する)</a> といった記事も書いていたのですが、まぁ正直めっっっちゃくちゃ作りづらかったんですね。</p>
-<p>で、現代、この2022年のSource Generator開発はめっっっっちゃくちゃ作りやすくなってます。もちろん、Roslyn自体の知識が必要で、そしてRoslynはドキュメントが無なので、どちらかというとIntelliSenseから勘をどう働かせるかという勝負になっていて、それはそれで大変ではあるのですが、しかし本当に作りやすくなったな、と思います。もちろんそしてIL.Emitよりも遥かに作りやすいし、パフォーマンスも良い。もうEmitの時代は終わりです。もはや黒魔術を誇る時代でもないのです！動的コード生成の民主化！</p>
-<p>というわけで、どしどしコード生成していきましょう……！私も今温めてるアイディアが3つぐらいあるので、どんどんリリースしていきたいと思ってます。</p>
-</div>
 <a href="https://neue.cc/2">| Next</a>
 </div>
         <div id="side">
@@ -2526,6 +2278,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/02/">2024-02</a>
 <li><a href="https://neue.cc/2024/01/">2024-01</a>
 <li><a href="https://neue.cc/2023/12/">2023-12</a>
 <li><a href="https://neue.cc/2023/10/">2023-10</a>

@@ -23,7 +23,93 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2010/04/23_254.html">linq.js ver 2.0 / jquery.linq.js - Linq for jQuery</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2010/04/29_255.html">C#とLinq to JsonとTwitterのChirpUserStreamsとReactive Extensions</a></h1>
+<ul class="date"><li>2010-04-29</li></ul>
+<div class="entry_body"><p>何か盛り沢山になったのでタイトルも盛り沢山にしてみました。SEO(笑)</p>
+<p>最近話題のTwitterの<a href="http://apiwiki.twitter.com/ChirpUserStreams" title="Twitter API Wiki / ChirpUserStreams">ChirpUserStreams</a>を使ってみましょー。ChirpUserStreamsとは、自分のタイムラインのあらゆる情報がストリームAPIによりリアルタイムで取得出来る、というもの。これを扱うには、まずはストリームをIEnumerable化します。そのまま扱うよりも、一度IEnumerable化すると非常に触りやすくなる、というのがLinq時代の鉄則です。C#でのストリームAPIの取得方法は以前にも記事にしましたが、かなり汚かったのでリライト。WebClient愛してる。</p>
+<pre><code class="language-csharp">public static IEnumerable&lt;XElement&gt; ConnectChirpStream(string username, string password)
+{
+    const string StreamApiURL = &quot;http://chirpstream.twitter.com/2b/user.json&quot;;
+
+    var wc = new WebClient() { Credentials = new NetworkCredential(username, password) };
+    using (var stream = wc.OpenRead(StreamApiURL))
+    using (var reader = new StreamReader(stream))
+    {
+        var query = reader.EnumerateLines() // 1行に1JSONなのです
+            .Where(s =&gt; !string.IsNullOrEmpty(s)) // 空文字が来るので除去
+            .Select(s =&gt; // 文字列JSONからXElementへ変換
+            {
+                using (var jsonReader = JsonReaderWriterFactory.CreateJsonReader(Encoding.Default.GetBytes(s), XmlDictionaryReaderQuotas.Max))
+                    return XElement.Load(jsonReader);
+            });
+
+        foreach (var item in query) yield return item; // 無限列挙
+    }
+}
+
+// StreamReaderの補助用拡張メソッド(あると大変便利)
+public static IEnumerable&lt;string&gt; EnumerateLines(this StreamReader streamReader)
+{
+    while (!streamReader.EndOfStream)
+    {
+        yield return streamReader.ReadLine();
+    }
+}
+</code></pre>
+<p>中々シンプルに書けます。C#もLLと比べても全然引けを取らないでしょう(誰に言ってる)。ChirpUserStreamsはJSONでしか取れないのですが、StreamAPIではXmlよりもJSONのほうが使い易いので、JSONだけでも全然問題ありません。とはいえ、C#でJSONはちょっと扱いにくいんだよねー？と思いきや、意外に普通に標準ライブラリだけで何とかなりました。</p>
+<p>参照設定にSystem.Runtime.Serializationを加えます(注：VS2008ではSystem.ServiceModel.Webを参照設定に加えてください)。この参照で通常使うのはDataContractJsonSerializerだと思いますが、もう一つ、JsonReaderWriterFactoryというクラスが用意されていて、このReaderはJSONをXmlReaderとして扱うことが出来ます。この図式は以前の<a href="http://neue.cc/2010/03/02_244.html" title="neue cc - C#でスクレイピング:HTMLパース(Linq to Html)のためのSGMLReader利用法">Linq to HtmlのためのSGMLReader利用法</a>と同じです。そのままXElementに流しこめば、JSONをXmlとして扱って、Linq to Jsonが成り立ちます。</p>
+<p>さて、StreamAPIなのでEndOfStreamは来ない。繋ぎっぱなし、つまりはConnectChirpStreamメソッドは無限リストになります。この中には色々な情報が混ぜこぜになって来ます。投稿した、という他にも、誰かをフォローした、何かをふぁぼった、何かをリツイートした、などなどなどなど。クライアントソフト作るなら、当然どの情報も漏れ無く扱いたいわけですが、どうしましょう？foreachでグルッと回して、ifで分ける、しか、ない、かもですね？ しかしそれは敗北です。退化です。foreachを使ったら負けだと思っている。</p>
+<p>ところで突然に、今のところ思う<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx">Reactive Extensions for .NET (Rx)</a>を使うメリットは3つ。「複雑になりがちな複数イベントの合成」「同じく複雑になりがちな非同期処理のLinq化」そして、「列挙の分配」。従来型のLinqでは、一回の列挙には一個の処理しか挟めませんでした。例えば、MaxとCountを同時に取得する方法はなかった。MaxとCountを別々に二度列挙するか、または旧態依然なやり方、つまりforeachでグルグルと回してMaxとCountを手動で計算するかしかなかった。それはIEnumerableがPullモデルなためで、PushモデルのIObservableならば、出来ないこともない。</p>
+<p>では、Rxでこのストリームを分配してみましょう。</p>
+<pre><code class="language-csharp">static void Main(string[] args)
+{
+    // IEnumerableをIObservableに変換し、Publish(Connectするまで列挙されない(ので分配が可能になる))
+    var connecter = ConnectChirpStream(&quot;username&quot;, &quot;password&quot;)
+        .ToObservable()
+        .Publish();
+
+    // 1件目は必ず自分のフレンドのIDリストが来るらしいっぽいのでまるっと保存
+    HashSet&lt;int&gt; friendList;
+    connecter.Take(1).Subscribe(x =&gt; friendList = new HashSet&lt;int&gt;(
+        x.Element(&quot;friends&quot;).Elements().Select(id =&gt; (int)id)));
+
+    // どんなのが来るのかよく分からないのでモニタ用にテキストにまるっと保存
+    var sw = new StreamWriter(&quot;streamLog.txt&quot;) { AutoFlush = true };
+    connecter.Subscribe(x =&gt; sw.WriteLine(x));
+
+    // userがあるなら普通の投稿(ってことにしておく)
+    connecter.Where(x =&gt; x.Element(&quot;user&quot;) != null)
+        .Select(x =&gt; new
+        {
+            Text = x.Element(&quot;text&quot;).Value,
+            Name = x.Element(&quot;user&quot;).Element(&quot;screen_name&quot;).Value
+        })
+        .Subscribe(a =&gt; Console.WriteLine(a.Name + &quot;:&quot; + a.Text));
+
+    // favoriteとかretweetは &quot;event&quot;:&quot;favorite&quot; というJSONが来る
+    var events = connecter.Where(x =&gt; x.Element(&quot;event&quot;) != null);
+
+    // favoriteの場合の処理
+    events.Where(x =&gt; x.Element(&quot;event&quot;).Value == &quot;favorite&quot;)
+        .Subscribe(x =&gt; Console.WriteLine(x)); // favorite用の何か処理
+    // retweetの場合の処理
+    events.Where(x =&gt; x.Element(&quot;event&quot;).Value == &quot;retweet&quot;)
+        .Subscribe(x =&gt; Console.WriteLine(x)); // retweet用の何か処理
+
+
+    // 同期か非同期かは、ToObservableの引数で変わる。デフォルトは同期
+    // Scheduler.ThreadPoolを引数に入れるとThreadPoolで非同期になる
+    connecter.Connect(); // 列挙開始
+}
+</code></pre>
+<p>ID一覧取得、テキスト保存、投稿時処理、Fav時処理、リツイート時処理の5つへの分配が非常にスマートに出来ました。ToObservable、Publish、Connect。たったこれだけで一つストリームを複数に分配することが出来ます。普通にそれぞれをWhereだのSelectだの、独立してLinqでコネコネ出来ました。で、何が嬉しいかっていうと、それぞれが完全に独立していて見やすいってのは勿論あります。あと、部品化されてるので外部に分割しやすくなるんですね、物凄く。組み合わせたりもしやすいし。</p>
+<h2>結論</h2>
+<p>Rxヤバい。というわけで、みんなRx触ろう！ .NET Framework 4.0ではRxで使うIObservableとIObserverインターフェイスが搭載されています。インターフェイスだけでどうすんだよボケ、っていうと、実際のところどうにもなりませんね、たはー。それでもインターフェイスだけ先行搭載ということは、RxはDevLabs内だけで終わる実験的プロジェクトではなく、必ず標準搭載するから安心しろよ！というメッセージだと受け取ることにしました。きっと.NET Framework 4.0 SP1には標準搭載されます。される、と、いいなあ。ちなみにRxは初期の頃と結構変わってますし、まだ変わるかも。でも、だからこそ、それに付き合うのも楽しいってものですよ？</p>
+<p>ああ、あと、ChirpUserStreamsもヤバいですね。リアルタイムでゴリゴリ迫ってくる感覚は素敵というか、なんか別次元のメディアになった感じでもあります。今、新規にTwitterクライアント作るならStreamAPI完全対応すれば差別化出来て良いですね！私は作りませんが。ただ、ストリームAPIとRxは相性良いと思うので、ストリームAPI時代の到来と同時にRx時代も到来！する、かなあ？</p>
+<h2>ToDo</h2>
+<p><a href="http://neue.cc/2010/04/23_254.html" title="neue cc - linq.js ver 2.0 / jquery.linq.js - Linq for jQuery">linq.jsがようやく一段落した</a>ので、Rxの紹介もまたやっていきたいですねー(すみません、かなり長いこと放置していて)。ToObservableによる列挙の分配は中々に強烈なので、linq.jsとRxJSを橋渡しするようなコードというかJSというかも用意したいなあ（軽く作ってみたんですが、RxJSでもPublishで分配出来て中々に威力ありそうでした）。うーん、考えてみるとやることはいっぱいあるねえ。適当に待っていてください。</p>
+</div>
+<h1><a href="https://neue.cc/2010/04/23_254.html">linq.js ver 2.0 / jquery.linq.js - Linq for jQuery</a></h1>
 <ul class="date"><li>2010-04-23</li></ul>
 <div class="entry_body"><p class="noindent">
 <object width="640" height="385"><param name="movie" value="http://www.youtube.com/v/vOk7x1aHeEI&hl=ja_JP&fs=1&rel=0&color1=0x3a3a3a&color2=0x999999&hd=1"></param><param name="allowFullScreen" value="true"></param><param name="allowscriptaccess" value="always"></param><embed src="http://www.youtube.com/v/vOk7x1aHeEI&hl=ja_JP&fs=1&rel=0&color1=0x3a3a3a&color2=0x999999&hd=1" type="application/x-shockwave-flash" allowscriptaccess="always" allowfullscreen="true" width="640" height="385"></embed></object>
@@ -1373,58 +1459,6 @@ ArrayList&lt;Integer&gt; list = Enumerable.from(array)
 <p>2010年の1月。これが<a href="http://neue.cc/2010/01/15_235.html" title="neue cc - デスクトップシアター for Windows 7杯">neue cc - デスクトップシアター for Windows 7杯</a>の写真で、今の環境です。9.1chなのですが、AVアンプを変えたので全方位を横一列に取り囲んでの9.1chじゃなくて、フロント上部に2台設置しての9.1chという環境に変わりました。このハイトスピーカーの置き方は最近出た<a href="http://www.dolby.co.jp/consumer/technology/dolby_pro_logic_iiz.html" title="ドルビープロロジックIIz">ドルビープロロジックIIz</a>という規格によるもので、徐々に増えて行くんじゃないかと思っています。まあ、あとは再びクアドラプルモディスプレイ環境に戻ったり、ノートPCがあるから5画面だよ、といった感じであったり、今までの集大成的なものになっています。</p>
 <p>といったわけで、駆け足で振り返ってみました。やっぱ2002-2006の間の写真がないのが痛い。絶対後悔するので、写真はちゃんと残しておきましょう、まる。ブログにアップしておけば、サルベージも容易でいいね！ていうか、実際2002年の写真以外はローカルに残ってなくて全部ウェブから引っ張ってきたのですが……。やっててよかったWebサイト。あと、写真がちっとも上達しないのが酷い。むむむ。</p>
 </div>
-<h1><a href="https://neue.cc/2010/02/04_240.html">AnonymousComparer - ver.1.2.0.0</a></h1>
-<ul class="date"><li>2010-02-04</li></ul>
-<div class="entry_body"><ul>
-<li><a href="http://linqcomparer.codeplex.com/">AnonymousComparer - lambda compare selector for Linq</a></li>
-</ul>
-<p>AnonymousComparerを再度バージョンアップしました。ダウンロードは上記リンク先、CodePlexからどうぞ。バグがなければ、これで最後だと思います。いやもう内容的には出尽くしたかな、と。更新内容はIComparer&lt;T&gt;を作成可能にしました。また、OrderByでIComparer&lt;T&gt;を利用するものへ、拡張メソッドを追加しました。</p>
-<pre><code class="language-csharp">// こんなシーケンスがあるとして、IComparer&lt;T&gt;を使用してその場で自由に比較を指定したい
-var seq = new[] { 1, 2, 3 };
-// IComparer&lt;T&gt;を作る
-var comparer = AnonymousComparer.Create&lt;int&gt;((x, y) =&gt; y - x);
-seq.OrderBy(x =&gt; x, comparer);
-// OrderBy/ThenByに拡張メソッドが追加されているので、型推論が効いたまま書けます
-// List.Sort(Comparison)みたいなイメージですかね
-seq.OrderBy(x =&gt; x, (x, y) =&gt; y - x); // 3, 2, 1
-seq.OrderByDescending(x =&gt; x, (x, y) =&gt; y - x); // 1, 2, 3
-</code></pre>
-<p>LinqにはDescendingが用意されているので、あまり使い道はなさそうですね。私もOrderByのICompare&lt;T&gt;オーバーロードを使いたいと思ったシチュエーションが今までにありませんし……。第一引数がkeySelectorなので、それで十分用を足せちゃうのですよね。それにしても、DescendingでIComparerを指定した場合の結果は紛らわしくていかんですな。</p>
-<p>さて、更新内容はもう一つあって、むしろこっちのほうが重要なのですが、compareKeySelectorを利用したオーバーロード(Linq演算子への拡張メソッドは全部それです)で、シーケンスにnullが含まれている場合にnullで落ちるのを修正しました。今回からはヌルぽで落ちません。どういうこっちゃ、というと説明しづらいのでコードで。</p>
-<pre><code class="language-csharp">class MyClass
-{
-    public int MyProperty { get; set; }
-
-    public override string ToString()
-    {
-        return &quot;Prop = &quot; + MyProperty;
-    }
-}
-
-static void Main()
-{
-    var array = new[]
-    {
-        new MyClass{MyProperty=1},
-        null,
-        new MyClass{MyProperty=2},
-        null,
-        new MyClass{MyProperty=1}
-    };
-    var r1 = array.Count(); // 5
-    var r2 = array.Distinct().Count(); // 4 (nullが重複として消える)
-    foreach (var item in array.Distinct(mc =&gt; mc.MyProperty))
-    {
-        Console.WriteLine((item == null) ? &quot;ヌルぽ&quot; : item.ToString());
-    }
-    // 出力結果は
-    // Prop = 1
-    // ヌルぽ
-    // Prop = 2
-}
-</code></pre>
-<p>といった感じです。分かったような分からないような？</p>
-</div>
 <a href="https://neue.cc/21">Prev |</a>
 <a href="https://neue.cc/23">| Next</a>
 </div>
@@ -1448,6 +1482,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/02/">2024-02</a>
 <li><a href="https://neue.cc/2024/01/">2024-01</a>
 <li><a href="https://neue.cc/2023/12/">2023-12</a>
 <li><a href="https://neue.cc/2023/10/">2023-10</a>

@@ -23,7 +23,98 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2018/10/31_570.html">株式会社Cysharpを設立しました</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2018/12/25_571.html">UniTask(UniRx.Async)から見るasync/awaitの未来</a></h1>
+<ul class="date"><li>2018-12-25</li></ul>
+<div class="entry_body"><p><a href="https://qiita.com/advent-calendar/2018/c-sharp">C# Advent Calendar 2018</a>大遅刻会です。間に合った。間に合ってない。ごめんなさい……。今回ネタとして、改めてコード生成に関して、<a href="http://neue.cc/2017/12/04_560.html">去年は「動的」な手法を解説した - Introduction to the pragmatic IL via C#</a>ので、現代的な「静的」な手法について説明してみよう、と考えていたのですが、そういえばもう一つ大遅刻がありました。</p>
+<p>7月に<a href="http://neue.cc/2018/07/12_567.html">UniTask - Unity + async/awaitの完全でハイパフォーマンスな統合</a>という記事を出して、リリースしたUniTaskですが、その後もちょこちょこと更新をしていて、内部実装含め当初よりもかなり機能強化されています。といった諸々を含めて、<a href="https://connpass.com/event/95696/">Unity 非同期完全に理解した勉強会</a>で話してきました。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/key/BtNztL3wrlBCWN" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/deep-dive-asyncawait-in-unity-with-unitaskunirxasync" title="Deep Dive async/await in Unity with UniTask(UniRx.Async)" target="_blank">Deep Dive async/await in Unity with UniTask(UniRx.Async)</a> </strong> </div>
+<p>9月！更新内容の告知もしてなければ、この発表のフォローアップもしてない！最近はこうした文章仕事がめっちゃ遅延するようになってしまいました、めっちゃよくない傾向です。来年はこの辺もなんとかしていきたい。</p>
+<p>と、いうわけで、予定を変えてUniRx.Asyncについて、というか、それだとUnity Advent Calendarに書けよって話になるので、UniRx.Asyncは独自のTask生態系を作っている、これは.NET Core 2.1からのValueTaskの拡張であるIValueTaskSourceに繋がる話なので、その辺を絡めながら見ていってもらえると思います。</p>
+<h2>Incremental Compilerが不要に</h2>
+<p>告知が遅延しまくっている間にUnity 2018.3が本格リリースされて、標準でC# 7.xに対応したため、最初のリリース時の注釈のような別途Incremental Compiler(preview)を入れる必要がなくなりました。Incremental Compiler、悪くはないのですが、やっぱpreviewで怪しい動きもしていたため、標準まんまで行けるのは相当嬉しいです。というわけで今まで敬遠していた人も早速試しましょう。</p>
+<h2>new Progress[T] is Evil</h2>
+<p>これは普通の.NETにも言える話なのですが、C#のasync/awaitの世界観では進捗状況はIProgress[T]で通知していくということになっています(別にAction[T]でよくね？そっちのほうが速いし、説はある)。進捗はReport(T value)メソッドで通知していくことになりますが、こいつは<a href="https://referencesource.microsoft.com/#mscorlib/system/progress.cs,92">必ずSynchronizationContext.Post経由で値を送ります</a>。これがどういうことかというと、Unityだとfloatを使う、つまりIProgress[float]で表現する場合が多いはずですが、なんと、ボックス化します。(If T is a value type, it will get boxed here.)じゃねーよボケが。アホか。これはオプションで回避不能なので、new Progress[T]は地雷だと思って「絶対に」使わないようにしましょう。</p>
+<p>代わりにUniRx.AsyncではProgress.Createを用意しました。これはSynchronizationContextを使いません。もしSyncContext経由で同期したいならマニュアルでやってくれ。Unityの場合、進捗が取れるシチュエーションはメインスレッド上のはずなので、ほとんどのケースでは不要なはずです。</p>
+<p>こういった、あらゆる箇所での.NET標準の余計なお世話を観察し、Unityに適した形に置き直していくことをUniRx.Asyncではやってるので、async/await使うならUniRx.Asyncを使ったほうがいいのです。標準のも、今の時代で設計するならこうはなってないと思うんですけどね、まぁ時代が時代なのでshoganai。</p>
+<h2>コルーチンの置き換えとして</h2>
+<p>コルーチン、或いはRxでできた処理は、改めて全部精査して、全てasync/awaitで実装できるようにしました。</p>
+<pre><code class="language-txt">Add UniTask.WaitUntil
+Add UniTask.WaitWhile
+Add UniTask.WaitUntilValueChanged
+Add UniTask.WaitUntilValueChangedWithIsDestroyed
+Add UniTask.SwitchToThreadPool
+Add UniTask.SwitchToTaskPool
+Add UniTask.SwitchToMainThread
+Add UniTask.SwitchToSynchronizationContext
+Add UniTask.Yield
+Add UniTask.Run
+Add UniTask.Lazy
+Add UniTask.Void
+Add UniTask.ConfigureAwait
+Add UniTask.DelayFrame
+Add UniTask.Delay(..., bool ignoreTimeScale = false, ...) parameter
+</code></pre>
+<p>概ね名前からイメージ付くでしょう、イメージ通りの挙動をします。こんだけ用意しておきゃほとんど困らないはず（逆に言えば、標準のasync/awaitには何もありません）</p>
+<p>ちなみにSwitchTo***は、最初のVisual Studio Async CTP(お試しエディション)に搭載されていたメソッドで、すぐに廃止されました。というのも、async/awaitが自動でスレッド(SynchronizationContext)をコントロールするというデザインになったからですね。あまりにも最初期すぎる話なのでこの辺の話が残っているものも少ないのですが、ちゃんと<a href="https://ufcpp.wordpress.com/2011/04/13/async-ctp-refresh/">岩永さんのブログには残っていた</a>ので大変素晴らしい。</p>
+<p>UniRx.Asyncでは不要なオーバーヘッドを避けるため（そもそも特にUnityだとメインスレッド張り付きの場合のほうが多い）、自動でSynchronizationContextを切り替えることはせず、必要な場合に手動で変更してもらうというデザインを取っています。というか、今からasync/await作り直すなら絶対こうなったと思うんだけどなぁ、どうなんでしょうねぇ。ちょっとSynchronizationContextに夢見すぎだった時代＆Windows Phone 7（うわー）とかの要請が強すぎたせいっていう時代背景は感じます。</p>
+<h2>Everything is awaitable</h2>
+<p>考えられるありとあらゆるものをawait可能にしました。AsyncOperationだけじゃなくてWWWやJobHandle（そう、C# Job Systemもawaitできます！）、そしてReactivePropertyやReactiveCommand、uGUI Events(button.OnClickAsyncなど)からMonoBehaviour Eventsまで。</p>
+<p>さて、AsyncOpeartionなど長さ1の非同期処理がawait可能なら、そらそーだ、って話なのですが、イベントがawait可能ってどういうこっちゃ、というところはあります。</p>
+<pre><code class="language-csharp">// ようするところこんな風に待てる
+async UniTask TripleClick(CancellationToken token)
+{
+    await button.OnClickAsync(token);
+    await button.OnClickAsync(token);
+    await button.OnClickAsync(token);
+    Debug.Log(&quot;Three times clicked&quot;);
+}
+</code></pre>
+<p>コレに関してはスライドに書いておきましたが、「複雑なイベントの合成」をする際に、Rxよりも可読性良く書ける可能性があります。</p>
+<p>Rxは「複雑なイベントハンドリング」を簡単にするものじゃなかったの！？という答えは、YesでもありNoでもありで、複雑なものは複雑で、難しいものは難しいままです。イベントハンドリングは手続き的に記述出来ない（イベントコールバックが飛び飛びになる)ため、コールバックを集約させて合成できるRxが、素のままでやるより効果的だったわけですが、async/awaitはイベントコールバックを手続き的に記述できるため、C#のネイティブのコントロールフロー(for, if, whileなど)や自然な変数の保持が可能になります。これは関数合成で無理やり実現するよりも、可読性良く実現できる可能性が高いです。</p>
+<p>単純なものをasync/awaitで記述するのは、それはそれで効率やキャンセルに関する対応を考慮しなければならなくて、正しく処理するのは地味に難易度が高かったりするので、基本的にはRxで、困ったときの必殺技として手段を知っている、ぐらいの心持ちが良いでしょう</p>
+<pre><code class="language-csharp">async UniTask TripleClick(CancellationToken token)
+{
+    // 都度OnClick/token渡しするよりも最初にHandlerを取得するほうが高効率
+    using (var handler = button.GetAsyncClickEventHandler(token))
+    {
+        await handler.OnClickAsync();
+        await handler.OnClickAsync();
+        await handler.OnClickAsync();
+        Debug.Log(&quot;Three times clicked&quot;);
+    }
+}
+</code></pre>
+<p>↑こういう色々なことを考えるのが面倒くさい。</p>
+<h2>Exception/Cancellationの扱いをより強固に</h2>
+<p>UniTaskでは未処理の例外はUniTaskScheduler.UnobservedTaskExceptionによって設定されている未処理例外ハンドラによって処理されます（デフォルトはロギング）。これは、UniTaskVoid、或いはUniTask.Forgetを呼び出している場合は即時に、そうでない場合はUniTaskがGCされた時に未処理例外ハンドラを呼びます。</p>
+<p>async/awaitが持つべきステータスは「正常な場合」「エラーの場合」「キャンセルの場合」の3つがあります。しかし、async/awaitならびにC#の伝搬システムは、正常系は戻り値、異常系は例外の二択しかないため、「キャンセルの場合」の表現としてawaitされた元にはOperationCanceledExceptionが投げられます。よって、例外の中で、OperationCanceledExceptionは「特別な例外」です。デフォルトではこの例外が検出されて未処理の場合は、未処理例外ハンドラを無視します。何もしません。キャンセルは定形の処理だと判断して、無視します。</p>
+<p>また、例外を使うためパフォーマンス上の懸念もあります。そこで、UniTask.SuppressCancellationThrowを使うことで、対象のUniTaskが例外の発生源であれば（throw済みで上の階層に伝搬されたものではない)、例外の送出ではなく、Tupleでの戻り値としてキャンセルを受け取り、例外発生のコストを抑えることができます。これはイベントハンドリングなどの場合に有用です、が、正しく使うことは内部をかなりのレベルで理解していないといけないため、ぶっちゃけムズい。ただたんにSuppressCancellationThrowを使うだけでパフォーマンスOKというわけにはいかんのだ。というわけで、どうしてもパフォーマンス的に困ったときのための逃げ道、ぐらいに思っておいてください。</p>
+<h2>UniTaskTracker</h2>
+<p>とはいえなんのかんのでTaskがリークしてしまったり、想像以上に多く起動してしまっていたりもあるでしょう。UnityのEditor拡張でトラッキングウィンドウを用意したので、すべて追跡できます。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/50421527-abf1cf80-0883-11e9-928a-ffcd47b8c454.png" alt="image" /></p>
+<p>こういうのRxにも欲しいわー。そうですね、なんか実装方法は考えてみようかとは思いますが一ミリも期待しないで待たないでください。</p>
+<h2>IValueTaskSourceでWhenAllを進化させる</h2>
+<p>.NET CoreのC#はTaskとValueTaskに分かれているわけですが、面倒くせーから全てValueTaskでいーじゃん、というわけにはいきません(なお、私の意見は全部ValueTaskでいいと思ってます、というのも使い分けなんて実アプリ開発でできるわけないから）。そうはいかない一番大きな理由はWhenAllで、このTaskで最も使われる演算子であろうWhenAllは、Taskしか受け取らないので、Taskへの変換が必要になってきます。せっかくValueTaskなのにモッタイナイ。じゃあValueTask用のWhenAllを作ればいいじゃん、というとそれも無理で、Task.WhenAllはTaskのinternalなメソッドに依存して最適化が施されているので、外部からはどうしても非効率的なWhenAllしか作れない仕様になっています（クソですね！）。</p>
+<p>が、しかし、そもそもWhenAllってあんま効率的じゃなくないっすか？というのがある。と、いうのも、<a href="https://referencesource.microsoft.com/#mscorlib/system/threading/Tasks/Task.cs,6055">配列を受け取るAPI</a>でも、まず保守的にコピーしてるんですよね。可変長引数でWhenAll(new[]{ foo, bar, baz })みたいに渡してもコピーされてるとか馬鹿らしい！あと、WhenAllの利用シーンでもう一つ多いのが WhenAll(source.Select(x =&gt; x.FooAsync()))のような、元ソース起点に非同期メソッドを呼んで、それを全部待つ、みたいなシチュエーション。なんかねー、別に配列作んなくてもいいじゃん、みたいな気になるんですよね。</p>
+<p>と、そこでIValueTaskSourceの出番で、Task(ValueTaskですが)の中身を完全に自分の実装に置き換えることができるようになった、のがIValueTaskSourceです。よって、真に効率的なValueTaskに最適化されたうえで↑のような事情を鑑みたWhenAll作れるじゃん、って。思ったわけですよ。</p>
+<p>そこでMagicOnionでは(UniRx.Asyncじゃないのかよって、IValueTaskSourceはUnityの話じゃないですから！)<a href="https://github.com/Cysharp/MagicOnion/blob/master/src/MagicOnion/Utils/ReservedWhenAllPromise.cs">ReservedWhenAllPromise</a>というカスタムなWhenAllを用意してみました。</p>
+<pre><code class="language-csharp">var promise = new WhenAllPromise(source.Length);
+foreach (var item in source)
+{
+    promise.Add(item.FooAsync());
+}
+await promise.AsValueTask();
+</code></pre>
+<p>のように書けます。つまり何かと言うと、WhenAllに必要なのは「個数」で、個数が最初から確定しているなら、それを渡せばいいし、WhenAll自体の駆動に配列は必要ないので、随時Addしてあげてもいいわけです。これで、一切配列を使わない効率的なWhenAllが実装できました。めでたし。</p>
+<p>他にも型が異なるTaskをawaitするのにValueTupleで受け取りたい、というのをTask.WhenAllを介さずにその個数に最適化したWhenAllを用意するとか、やりたい放題にめっちゃ最適化できるわけです。</p>
+<p>と、いうのも踏まえて、(サーバーサイドC#における)アプリケーションのTaskの定義はValueTaskで統一しちゃっていいと思うし、そのかわりに幾つかの最適化したValueTask用のWhenAllを用意しましょう。というのが良い未来なんじゃないかなー、って思ってます。(このValueTask用のWhenAllのバリエーションはCysharpとして作ったらOSSで公開するので、こちらは期待して待っててください！）</p>
+<h2>まとめ</h2>
+<p>UniRx.AsyncナシでUnityにasync/awaitを持ち込んで使いこなすのはかなりの無理ゲーなので、よほどUnity以外で使い込んできた経験がある、とかでなければ、素直に使って頂ければと思います。また、そうでなくてもUnity向けに完全に作り直しているUniTaskの存在価値というのは、スライドのほうで十分理解してもらえてるのではとも思っています。</p>
+<p>別にCLRの実装は至高のものだ！ってこたぁ全然なくて、時代とかもあるんで、後の世に作り直されるこたぁ往々にめっちゃある。Microsoftのハイパーエンジニアが練りに練ったものだろうがなんだろうが、永遠に輝き続けるコードなんてあんまなく、時代が経ちゃあどれだけ丁寧に作られたものでも滅びるんです。人間もプログラムも老化には逆らえない（WPFなんて何年前のUIフレームワークなんでしょう!)。というわけで、あんまり脳みそ固くせず、自分の意志で時々に見直して考えてみるといいんじゃないでしょうか。(古の)Microsoftよりも(現代の観点では)私のほうが正しい、とか自信持って言っておきましょう。</p>
+<p>さて、UniRx.Asyncは(UniRxも)まだまだ完成しきってるとは言えない、のにドキュメント放置、更新放置で例によって半年ぐらい来てしまったのですが、その間は<a href="http://neue.cc/2018/10/31_570.html">株式会社Cysharpを設立しました</a>であったり、<a href="http://tech.cygames.co.jp/archives/3181/">MagicOnionのリブート</a>であったり、結構わたわたしてしまったところがありなのですが、ようやく諸々落ち着いてきたので、また腰据えて改善に取り組んでいきたいと思います。まぁドキュメントが全然足りないんですけど(UniRx.Asyncの機能は、かなり膨大なのです……)。</p>
+<p>C#的にも、自分でTaskの全域を見つめ直して作り直すという経験を通して得られたものも多かったので、今回の記事もそうですが、Unity関係なくasync/awaitを使っていく上で使える話は色々出せていければというところですね。ではまた次回の更新の時まで！次こそはすぐブログ書きますから！</p>
+</div>
+<h1><a href="https://neue.cc/2018/10/31_570.html">株式会社Cysharpを設立しました</a></h1>
 <ul class="date"><li>2018-10-31</li></ul>
 <div class="entry_body"><p><img src="https://user-images.githubusercontent.com/46207/47785837-3e2a9b00-dd4d-11e8-9393-376094de3cf9.png" alt="image" /></p>
 <p><a href="https://www.cygames.co.jp/press/press-18879/">株式会社Cygames、技術開発子会社を立ち上げ　株式会社Cysharp設立のお知らせ</a></p>
@@ -1933,126 +2024,6 @@ while (reader.Read())
 <p>が、Amazon AuroraではX-Protocolは使えないし、あまり使えるようになる気配も見えないので、あえて書く意味は、それなりにあるんじゃないかしらん。ちゃんと完成すればね……！それと.NET CoreなどLinux環境下などでも.NET使ってくぞー、みたいな流れだと、当然データベースはMySQL(やPostgreSQL)のほうが多くなるだろう、というのは自然なことですが、そこでDBなども含めたトータルなパフォーマンスでは.NET、遅いっすね！ってなるのはめっちゃ悔しいじゃないですか。でも実際そうなるでしょう。だから、高速なMySQLドライバーというのは、これからの時代に必要なもののはずなのです。</p>
 <p>公開しないほうがお蔵入りになる可能性が高いので、公開しました。あとは私の頑張りにご期待下さい。</p>
 </div>
-<h1><a href="https://neue.cc/2017/07/11_555.html">C#におけるTypeをキーにした非ジェネリック関数の最適化法</a></h1>
-<ul class="date"><li>2017-07-11</li></ul>
-<div class="entry_body"><p><a href="https://github.com/neuecc/MicroResolver/">MicroResolver</a> 2.3.3！というわけで、例によってバージョンがデタラメになるんですが、アップデートしてました。MicroResolverとその解説については以前のブログ記事 <a href="http://neue.cc/2017/07/09_554.html">MicroResolver - C#最速のDIコンテナライブラリと、最速を支えるメタプログラミングテクニック</a> をどうぞ。そして、<a href="https://github.com/danielpalme/IocPerformance">オフィシャルな(?)ベンチマーク結果</a>でも、それなりに勝利を収めています。</p>
-<p>|<strong>Container</strong>|<strong>Singleton</strong>|<strong>Transient</strong>|<strong>Combined</strong>|<strong>Complex</strong>|<strong>Property</strong>|<strong>Generics</strong>|<strong>IEnumerable</strong>|
-|:------------|------------:|------------:|-----------:|----------:|:------------|----------:|--------------:|
-|<strong>No</strong>|61<br/>53|68<br/>62|83<br/>103|90<br/>82|119<br/>99|73<br/>79|177<br/>139|
-|<strong><a href="https://github.com/JSkimming/abioc">abioc 0.6.0</a></strong>|<strong>27</strong><br/><strong>37</strong>|<strong>31</strong><br/><strong>57</strong>|<strong>48</strong><br/>84|63<br/>72|<br/>|<br/>|741<br/>506<br/>|
-|<strong><a href="https://github.com/autofac/Autofac">Autofac 4.6.0</a></strong>|749<br/>623|707<br/>554|1950<br/>1832|6510<br/>6472|6527<br/>6417|1949<br/>1563|7715<br/>5635|
-|<strong><a href="https://bitbucket.org/dadhi/dryioc">DryIoc 2.10.4</a></strong>|29<br/>42|38<br/>63|55<br/>80|<strong>62</strong><br/><strong>70</strong>|82<br/>92|50<br/>84|<strong>259</strong><br/><strong>184</strong>|
-|<strong><a href="https://github.com/ipjohnson/Grace">Grace 6.2.1</a></strong>|<strong>27</strong><br/>38|35<br/>58|49<br/>82|67<br/>75|87<br/>94|<strong>46</strong><br/>77|265<br/>194|
-|<strong><a href="https://blogs.msdn.com/b/bclteam/p/composition.aspx">Mef2 1.0.30.0</a></strong>|239<br/>167|254<br/>174|332<br/>256|528<br/>317|1188<br/>680|261<br/>429|1345<br/>758|
-|<strong><a href="https://github.com/neuecc/MicroResolver">MicroResolver 2.3.3</a></strong>|31<br/><strong>37</strong>|35<br/>59|58<br/><strong>77</strong>|92<br/>86|<strong>43</strong><br/><strong>66</strong>|<br/>|285<br/>203|
-|<strong><a href="http://ninject.org">Ninject 3.2.2.0</a></strong>|5192<br/>3216|16735<br/>11856|44930<br/>30318|131301*<br/>84559*|112654*<br/>76631*|48775<br/>27198|102856*<br/>68908*|
-|<strong><a href="https://simpleinjector.org">SimpleInjector 4.0.8</a></strong>|66<br/>68|77<br/>70|103<br/>103|129<br/>105|212<br/>146|75<br/>82|795<br/>451|
-|<strong><a href="http://msdn.microsoft.com/unity">Unity 4.0.1</a></strong>|2517<br/>1375|3761<br/>1962|10161<br/>5372|27963<br/>16013|29064<br/>16150|<br/>|43685<br/>23347|</p>
-<p>前回の結果はジェネリック版だったのですが、やっぱ物言いがつきまして、非ジェネリック版でやれよ、という話になりました。で、2.0.0は非ジェネリック版で負けちゃってたのです。うーん、そこそこ気を使ってたはずなんですが、負けちゃった。ジェネリック版なら勝ってるんだぜ！とか主張するのは激ダサなので、なんとかして、非ジェネリック版の最適化を進めました。そして、なんとか幾つかのものは勝利を収めました。いや、普通に幾つかのでは負けてるじゃん、って話もありますが、概ね高水準だし、そこは許してください（？）、ジェネリック版なら勝ってるし（ダサい）。理論上、何やればこれ以上に縮められるかは分かってはいるんですけどねー。</p>
-<p>というわけで今回は非ジェネリック関数の最適化法について、です。まず、MicroResolverは(ZeroFormtterやMessagePack for C#もそうですが）ジェネリック版を全てのベースにしています。</p>
-<pre><code class="language-csharp">// というクラスが生成される
-public class ObjectResolver_Generated1
-{
-    // というコードが生成される
-    public override T Resolve&lt;T&gt;()
-    {
-        return Cache&lt;T&gt;.factory(); // Func&lt;T&gt;.Invoke()
-    }
-}
-</code></pre>
-<p>Tを元にしてデリゲートを探して、それをInvokeする。その最速系がジェネリックタイプキャッシングだという話でした。非ジェネリックの場合は、Typeをハッシュキーにして、デリゲートを探さなければなりません。ここでMicroResolverの初期の実装ではオレオレハッシュテーブルを作って対処しました。</p>
-<pre><code class="language-csharp">// こんな構造体を定義しておいて
-struct HashTuple
-{
-    public Type type;
-    public Func&lt;object&gt; factory;
-}
- 
-// これがハッシュテーブルの中身、基本的に固定配列が最強です
-private HashTuple[][] table;
- 
-// Resolve&lt;T&gt; は、つまりFunc&lt;T&gt; なわけですが、これはFuncの共変を使って直接 Func&lt;object&gt; に変換できます
-// ExpressionTree経由で上からデリゲートを生成して変換する、という手が一般に使われますが、
-// それは関数呼び出しが一つ増えるオーバーヘッドですからね！
-// というわけで、MicroResolverのRegister&lt;T&gt;のTにはclass制約がかかってます
-table[hash][index] = new Func&lt;object&gt;(Resolve&lt;T&gt;);
- 
-// で実際に呼び出すばやい
-public object Resolve(Type type)
-{
-    var hashCode = type.GetHashCode();
-    var buckets = table[hashCode % table.Length];
- 
-    // チェイン法によるハッシュテーブルの配列は、拡縮を考えなくていいので連結リストではなく固定サイズの配列
-    // 当然これがループ的には最速だし、ついでに.Lengthで回せるので配列の境界チェックも削れる
-    for (int i = 0; i &lt; buckets.Length; i++)
-    {
-        if (buckets[i].type == type)
-        {
-            return buckets[i].factory();
-        }
-    }
- 
-    throw new MicroResolverException(&quot;Type was not dound, Type: &quot; + type.FullName);
-}
-</code></pre>
-<p>理屈的には全く良さそうです！しかし、この実装では「遅くて」他のDIライブラリに対してベンチマークで敗北したのです。敗北！許せない！というわけで、ここから更に改善していきましょう。限界まで最適化されているように見えて、まだまだ余地があるのです。目を皿のようにして改善ポイントを探してみましょう！</p>
-<h2>非ジェネリック関数はジェネリック関数のラップではない</h2>
-<p>当たり前ですが、ラップにしたらラップしているという点でのオーバーヘッドがかかり、遅くなります。↑のコードはラップではないように見えて、ラップだったのです。どーいうことかというと</p>
-<pre><code class="language-csharp">// new Func&lt;object&gt;(Resolve&lt;T&gt;) で生成したデリゲートは、こういう呼ばれ順序になる
-object Resolve(Type type) =&gt; T Resolve() =&gt; Cache&lt;T&gt;.factory()
-
-// そう、短縮できますよね、こういう風に
-object Resolve(Type type) =&gt; Cache&lt;T&gt;.factory()
-
-// つまりこういう風に、生のデリゲートを直接登録しちゃえばよかったのです
-table[hash][index] = (Func&lt;object&gt;)Cache&lt;T&gt;.factory();
-
-// ちなみにExpressionTreeで生成する場合は、もっと呼ばれる段数が多くなるので、理屈として一番遅いですね
-object Resolve(Type type) =&gt; (object)Resolve() =&gt; T Resolve() =&gt; Cache&lt;T&gt;.factory()
-</code></pre>
-<p>これはもう先入観として非ジェネリックはジェネリックのラップで作らなきゃいけない、と思いこんでいたせいで、全体のコード生成のパスを見渡してみれば、直接渡してあげても良かったんですね。これで、ジェネリック版も非ジェネリック版も、どちらもどちらかのラップではない、ネイティブなスピードを手に入れることができました。</p>
-<p>ちなみにジェネリック版が非ジェネリック版のラップの場合は、Typeのルックアップのコストがどちらも必ずかかってしまうので（ジェネリック版がネイティブなスピードにならない）、とても良くないパターンです。</p>
-<h2>ハッシュテーブルを最適化する</h2>
-<p>一件、このケースに特化した最速なハッシュテーブルに見えて、既にアルゴリズム的に遅かったのです。剰余が。modulo is too slow。</p>
-<pre><code class="language-csharp">// これがゲロ遅い
-var buckets = table[hashCode % table.Length];
-
-// こうすれば良い(ただしテーブルサイズは2のべき乗である必要があります！)
-var buckets = table[hashCode &amp; (table.Length - 1)];
-
-// もちろんテーブルサイズは固定なので、予め -1 したのは変数に持っておきましょう
-var buckets = table[hashCode &amp; tableLengthMinusOne];
-</code></pre>
-<p>割と純粋なデータ構造とアルゴリズムのお話ですが、ハッシュテーブルのサイズはどうするのが高速なのか問題、で、テーブルサイズが2のべき乗の場合にはビット演算を使って、低速な剰余を避けることが可能です。ハッシュテーブルに関しては「英語版の」ほうのWikipediaが例によって詳しいです - <a href="https://en.wikipedia.org/wiki/Hash_table">Hash table - Wikipedia</a>。</p>
-<p>.NETのDictionaryはテーブルサイズとして素数を使っています、そのため剰余が避けられません。今回の最初の実装も.NETのものを参考に作っていたので剰余をそのまんま剰余で残してしまったんですねえ。ただし2のべき乗のほうも弱点はあって、ハッシュ関数が悪い場合に、偏りが生じやすくなるとのこと。素数のほうがそれを避けやすい。ので、一般の実装としてやるなら.NETのDictionaryが素数を使うのは最適なチョイスとも思えます。ただ、今回はTypeのGetHashCode、はそれなりにしっかり分散されてるもの（だと思われる）なので、2のべき乗をチョイスするのが効果的といえるでしょう。この辺を弄れるのも、汎用コレクションを使わない利点ですね。まぁ、エクストリームなパフォーマンスを求めるなら、という話ですが。</p>
-<p>あとは衝突しなければしないほど高速（衝突したらforループ回る回数が多くなる)なので、テーブルに対するload factorは相当余裕のある感じの設定にしました。かなりスカスカ。まぁ、別にちょっと余計なぐらいでもいいでしょう。</p>
-<p>TypeがKeyで、Value側がジェネリックで自由に変更可能な、汎用な固定サイズハッシュテーブルの実装は<a href="https://github.com/neuecc/MicroResolver/blob/master/src/MicroResolver/Internal/FixedTypeKeyHashtable.cs">FixedTypeKeyHashtable.cs</a>に置いておきますんで、使えるケースがありそうな人は是非どうぞ。ハヤイデス。Keyは別にType以外にしてもいいんですが、汎用にするとIEqualityComaprer経由で呼ばなきゃいけなくてオーバーヘッドがあるので、もしKeyを他のに変えたければ、そこだけ変えた特化実装を別途用意するのが良いでしょう。Value側は気にする必要はないんですけどね。あと、KeyのGetHashCodeの性質には注意したほうがいいかもです（上述の通り、素数ではないので性質に影響されやすい）</p>
-<h2>まとめ</h2>
-<p>どちらの対策も同じように効果絶大でした。どっちも普通だったらそこまで大したことないようなことなんですけどね、マイクロベンチマークで超極小の差を競い合ってる状況では、この差が死ぬほどでかい。というわけで、もう完全に限界の領域。とはいえ、まだまだIoC Performance的には、Singletonには明確に改善の余地があって、事前に生成済みインスタンスを渡してあげるオーバーロードを用意して、その場合は直接埋め込んじゃえばいいとか、そういうこともできます。これは幾つかのDIライブラリがやってますね。役に立たないとは言わないけれど、基本的にはベンチマークハックっぽくて好きくないですが、まぁ、まぁ。</p>
-<p>非ジェネリックに関しては type == type を削る余地が残ってます（信頼性は若干犠牲にしますが、事実上問題にならない）。どうやって、というと、登録すべきTypeが全部既知なんですよね、コード生成時に。つまり、非ジェネリック版ももっとアグレッシブにコード生成する余地があり、ハッシュテーブルのルックアップ部分まで含めてコード生成すれば、より改善され（る余地があ）るということです。擬似コードでいえば</p>
-<pre><code class="language-csharp">// こういうコードを生成する
-object Resolve(Type type)
-{
-    var hashCode = type.GetHashCode();
-    switch(hashCode)
-    {
-        case 341414141:
-            // もしハッシュコードが同一のものがあった場合は、生成時に追加でifを入れる
-            // ただし通常そんなことは起こらない + 同一ハッシュコードの別タイプが来るケースはほぼない、のでtypeの真の同一値比較を省く
-            return new Transient1(); // この中でインライン生成する
-        case 643634533:
-            return HogeSingleton.Value; // シングルトンは値をそのままルックアップするだけ
-        // 以下、型は全て既知でハッシュコードも全部知っているので、羅列する
-    }
-}
-</code></pre>
-<p>ってコードを作ればいいわけです。こういうのは、まさに動的コード生成の強みを120%活かすって感じで面白くはあります。</p>
-<p>ただしintの数値がバラバラの場合は「C#コンパイラが」二分探索コードを作るので - <a href="http://engineering.grani.jp/entry/2017/02/20/175816">C#のswitch文のコンパイラ最適化について - Grani Engineering Blog</a>、IL生成でこれやるのはかなり骨の折れる仕事です。しかも、二分探索と高速化したハッシュテーブルでは、かなりいい勝負が出来ている状態なので、あえてここまでやるのはちょっと、ってとこもあります。でも、生成部分まで完全にインライン化するのは効果大なので、やればきっと速くなりそうです（でも生成コードサイズはクソデカくなりそうだ）。このアプローチはabiocというIoCライブラリが取っていて、なので実際に最速のパフォーマンスを出せているわけですね。abiocのコード生成はIL EmitではなくRoslynを使っているので、こういった「C#コンパイラ」がやる仕事を簡単に記述できます。アプローチとして面白いやりかたです。</p>
-<p>というわけで（？）理論値に挑んだわけですが、どうでしょう。速いコードって実は難しいコードではなくて、コードパスが短いコードが速くなるわけです、どうしても、そりゃそうだ、と。複雑なことをどうやって短い命令数のコード（短いコードという意味ではない）で表現するか。実行時にのみ知りうる情報を使ったコード生成技術を駆使することで、最短のパスを作り込んでいく。そういうことなんですね。</p>
-<p>そのうえで、超基本的なアルゴリズムの話が残ってたりするところがあったりで、コンピューターの世界はモダンになったようで、実はあまり変わってないね、という側面もあったりで面白い感じです。</p>
-<p>C#は簡単に遅いコードが書ける言語だし、正直割と痛感しているところもあるのですが、とはいえかなりの部分で高速に仕上げる余地が残っている言語でもあります（テンプレートメタプログラミングはできませんが！）。ILを自由に弄れる技術が身につくと「理論上存在する想像する最高のコード」に到れる道のりがグッと広がるので、ぜひぜひ習得してみるのも面白いかと思います。</p>
-</div>
 <a href="https://neue.cc/4">Prev |</a>
 <a href="https://neue.cc/6">| Next</a>
 </div>
@@ -2076,6 +2047,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/02/">2024-02</a>
 <li><a href="https://neue.cc/2024/01/">2024-01</a>
 <li><a href="https://neue.cc/2023/12/">2023-12</a>
 <li><a href="https://neue.cc/2023/10/">2023-10</a>
