@@ -5,7 +5,7 @@
     <link>http://neue.cc/</link>
     <description>C# Technical Blog</description>
     <language>ja</language>
-    <lastBuildDate>Wed, 28 Feb 2024 12:44:28 +0900</lastBuildDate>
+    <lastBuildDate>Fri, 01 Mar 2024 18:01:19 +0900</lastBuildDate>
     <item>
       <guid isPermaLink="true">https://neue.cc/2024/02/27_R3.html</guid>
       <link>https://neue.cc/2024/02/27_R3.html</link>
@@ -141,7 +141,7 @@ private static IDisposable SchedulePeriodic_&amp;lt;TState&amp;gt;(IScheduler sc
 &lt;/code&gt;&lt;/pre&gt;
 &lt;p&gt;CreateTimerで生成されるITimerはISchedulerPeriodicで行える機能を十分持っているほか、ワンタイムの実行を繰り返す(&lt;code&gt;Schedule&amp;lt;TState&amp;gt;(TState state, TimeSpan dueTime, Func&amp;lt;IScheduler, TState, IDisposable&amp;gt; action)&lt;/code&gt;)のシナリオにおいても、ITimerを使いまわせるため、dotnet/reactiveのThreadPoolSchedulerよりも効率的です(ThreadPoolSchedulerは都度&lt;code&gt;new Timer()&lt;/code&gt;している)。&lt;/p&gt;
 &lt;p&gt;現在時間の取得に関しては、&lt;code&gt;DateTimeOffset IScheduler.Now&lt;/code&gt;のようにTimeProviderも&lt;code&gt;DateTimeOffset TimeProvider.GetUtcNow()&lt;/code&gt;がありますが、使っているのは&lt;code&gt;long GetTimestamp&lt;/code&gt;だけです。というのも、オペレーターの実装に必要なのはTicksだけなので、わざわざDateTimeOffsetに包むようなオーバーヘッドはないほうが良いので、生のTicksを扱って時間を計算します。&lt;/p&gt;
-&lt;p&gt;DateTimeOffset.NowはOSのシステム時刻の変更の影響を受ける可能性もあるので、そういう点でもDateTimeOffsetを介さないGetTimestamp(標準では&lt;code&gt;Stopwatch.GetTimestamp()&lt;/code&gt;からの高解像度タイマーが利用される)経由が良いでしょう。&lt;/p&gt;
+&lt;p&gt;DateTimeOffset.UtcNowはOSのシステム時刻の変更の影響を受ける可能性もあるので、そういう点でもDateTimeOffsetを介さないGetTimestamp(標準では&lt;code&gt;Stopwatch.GetTimestamp()&lt;/code&gt;からの高解像度タイマーが利用される)経由が良いでしょう。&lt;/p&gt;
 &lt;p&gt;ISchedulerのもう一つの問題として、同期的な処理を行う&lt;code&gt;ImmediateScheduler&lt;/code&gt;や&lt;code&gt;CurrentScheduler&lt;/code&gt;がいます。これらにTimerやDelayなど時間系の処理を任せるとThread.Sleepするという、使うべきではない非同期コードのエミュレーションをするので、つまり、同期的なSchedulerは存在が悪なのでないほうがいいでしょう。R3では完全に消し、TimeProviderを指定するということは必ず非同期的な呼び出しであるということを徹底しました。&lt;/p&gt;
 &lt;p&gt;&lt;code&gt;ImmediateScheduler&lt;/code&gt;や&lt;code&gt;CurrentScheduler&lt;/code&gt;の問題はそれだけじゃなくて、そもそもパフォーマンスが致命的に悪いという問題があります。&lt;/p&gt;
 &lt;p&gt;&lt;img src="https://github.com/Cysharp/ZLogger/assets/46207/68a12664-a840-4725-a87c-8fdbb03b4a02" alt="image" /&gt;&lt;/p&gt;
@@ -150,6 +150,9 @@ private static IDisposable SchedulePeriodic_&amp;lt;TState&amp;gt;(IScheduler sc
 &lt;/blockquote&gt;
 &lt;p&gt;&lt;code&gt;CurrentScheduler&lt;/code&gt;はともかく、&lt;code&gt;ImmediateScheduler&lt;/code&gt;の結果が悪いのは直観に反するかもしれません。dotnet/reactiveの&lt;code&gt;ImmediateScheduler&lt;/code&gt;は、Scheduleされるたびに&lt;code&gt;new AsyncLockScheduler()&lt;/code&gt;し、&lt;code&gt;AsyncLockScheduler&lt;/code&gt;が呼び出す基底クラス&lt;code&gt;LocalScheduler&lt;/code&gt;のコンストラクターが&lt;code&gt;SystemClock.Register&lt;/code&gt;し、それは&lt;code&gt;lock&lt;/code&gt;し&lt;code&gt;new WeakReference&amp;lt;LocalScheduler&amp;gt;(scheduler)&lt;/code&gt;し、&lt;code&gt;HashSet.Add&lt;/code&gt;します。毎回。パフォーマンスが悪いのも当然です。&lt;/p&gt;
 &lt;p&gt;Rangeなんてめったに使わないから大丈夫と思いきや、実は意外なところで&lt;code&gt;ImmediateScheduler&lt;/code&gt;はちょくちょく使われています。代表的なのが&lt;code&gt;Merge&lt;/code&gt;で、これは&lt;code&gt;IScheduler&lt;/code&gt;が無指定の場合は&lt;code&gt;ImmediateScheduler&lt;/code&gt;を使うため、場合によってはかなりの呼び出す回数になる可能性があります。実際、dotnet/reactiveをサーバーアプリケーションで使用した際に、MergeとImmediateSchedulerが原因でサーバーのメモリ使用量のかなりを占めたことがありました。その時はカスタムの軽量なスケジューラーを作成し、直接指定することで徹底的に&lt;code&gt;ImmediateScheduler&lt;/code&gt;を避けることで何とかしました。Next dotnet/reactiveがあるなら、&lt;code&gt;ImmediateScheduler&lt;/code&gt;のパフォーマンスの改善は真っ先に行う必要があります。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;code&gt;SystemClock.Register&lt;/code&gt;をしている理由としては、&lt;code&gt;DateTimeOffset.UtcNow&lt;/code&gt;とシステム時刻の変更の監視のためのようです。つまり、最初からDateTimeOffsetではなくlongを使えば、このような致命的なパフォーマンス低下も招きませんでした。これもまたISchedulerのインターフェイス定義の失敗理由の一つです。&lt;/p&gt;
+&lt;/blockquote&gt;
 &lt;p&gt;ところで、TimeProviderの採用によって、&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.extensions.time.testing.faketimeprovider?view=dotnet-plat-ext-8.0"&gt;Microsoft.Extensions.Time.Testing.FakeTimeProvider&lt;/a&gt;を使い、標準的な手法でユニットテストが容易になったことも嬉しいところでしょう。&lt;/p&gt;
 &lt;h2&gt;FrameProvider&lt;/h2&gt;
 &lt;p&gt;他のRxでは見かけないがUniRxで絶大な効果を発揮したものとして、フレームベースのオペレーター郡があります。一定フレーム後に実行する&lt;code&gt;DelayFrame&lt;/code&gt;や次フレームで実行する&lt;code&gt;NextFrame&lt;/code&gt;、毎フレーム発行するファクトリーである&lt;code&gt;EveryUpdate&lt;/code&gt;や、毎フレーム値を監視する&lt;code&gt;EveryValueChanged&lt;/code&gt;など、ゲームエンジンで利用するにあたって便利なオペレーターが揃っています。&lt;/p&gt;
@@ -189,7 +192,7 @@ public interface IFrameRunnerWorkItem
 &lt;li&gt;Timeout &amp;lt;-&amp;gt; TimeoutFrame&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h2&gt;async/await Integration&lt;/h2&gt;
-&lt;p&gt;まず、既存のRxにおいて良くない点である単一の値を返すObservableを徹底的に排除しました。FirstはFirstAsyncになり、&lt;code&gt;Task&amp;lt;T&amp;gt;&lt;/code&gt;を返します。AsyncSubjectはなくなり、TaskCompletionSourceを使ってくださいというスタイルです。&lt;/p&gt;
+&lt;p&gt;まず、既存のRxにおいて良くない点である単一の値を返すObservableを徹底的に排除しました。これらはasync/awaitを使うべきで、単一の値を返したり、単一の値を期待して合成するようなオペレーターはバッドプラクティスに誘うノイズです。FirstはFirstAsyncになり、&lt;code&gt;Task&amp;lt;T&amp;gt;&lt;/code&gt;を返します。AsyncSubjectはなくなり、TaskCompletionSourceを使ってください。&lt;/p&gt;
 &lt;p&gt;そのうえで、現在のC#コードは日常的に非同期のコードが返ってきます、が、基本的にはRxは同期コードしか受け取りません。うっかりすればFireAndForget状態になるし、SelectManyに混ぜるだけでは十分とはいえません。そこで、Where/Select/Subscribeに特殊なメソッド群を用意しました。&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;strong&gt;SelectAwait&lt;/strong&gt;(this &lt;code&gt;Observable&amp;lt;T&amp;gt;&lt;/code&gt; source, &lt;code&gt;Func&amp;lt;T, CancellationToken, ValueTask&amp;lt;TResult&amp;gt;&amp;gt;&lt;/code&gt; selector, &lt;code&gt;AwaitOperation&lt;/code&gt; awaitOperation = Sequential, ...)&lt;/li&gt;
@@ -215,13 +218,26 @@ public interface IFrameRunnerWorkItem
 }
 &lt;/code&gt;&lt;/pre&gt;
 &lt;p&gt;SelectAwait, WhereAwait, SubscribeAwaitは非同期メソッドを受け取り、その非同期メソッドが実行されている間に届く値に対する処理のパターンを6パターン用意しました。Sequentialはいったんキューにためて非同期メソッドが完了したら新しい値を送ります。Dropは実行中に届いた値は全て捨てます、これはイベントハンドリングで多重Submit防止などに使えます。Switchは&lt;code&gt;Observable&amp;lt;Observable&amp;gt;.Switch&lt;/code&gt;と同様、Parallelは並列実行するもので&lt;code&gt;Observable&amp;lt;Observable&amp;gt;.Merge&lt;/code&gt;と同様、ですがわかりやすいでしょう。並列実行数も指定できます。SequentialParallelは並列実行しつつ、後続に流す値は届いた順序で保証します。ThrottleFirstLastは非同期メソッド実行中の最初の値と最後の値を送ります。&lt;/p&gt;
-&lt;p&gt;更に、以下の時間系のフィルタリングメソッドも非同期メソッドを受け取るようになっています。&lt;/p&gt;
+&lt;p&gt;更に、以下の時間系のフィルタリングメソッドなども非同期メソッドを受け取るようになっています。&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;strong&gt;Debounce&lt;/strong&gt;(this &lt;code&gt;Observable&amp;lt;T&amp;gt;&lt;/code&gt; source, &lt;code&gt;Func&amp;lt;T, CancellationToken, ValueTask&amp;gt;&lt;/code&gt; throttleDurationSelector, ...)&lt;/li&gt;
 &lt;li&gt;&lt;strong&gt;ThrottleFirst&lt;/strong&gt;(this &lt;code&gt;Observable&amp;lt;T&amp;gt;&lt;/code&gt; source, &lt;code&gt;Func&amp;lt;T, CancellationToken, ValueTask&amp;gt;&lt;/code&gt; sampler, ...)&lt;/li&gt;
 &lt;li&gt;&lt;strong&gt;ThrottleLast&lt;/strong&gt;(this &lt;code&gt;Observable&amp;lt;T&amp;gt;&lt;/code&gt; source, &lt;code&gt;Func&amp;lt;T, CancellationToken, ValueTask&amp;gt;&lt;/code&gt; sampler, ...)&lt;/li&gt;
 &lt;li&gt;&lt;strong&gt;ThrottleFirstLast&lt;/strong&gt;(this &lt;code&gt;Observable&amp;lt;T&amp;gt;&lt;/code&gt; source, &lt;code&gt;Func&amp;lt;T, CancellationToken, ValueTask&amp;gt;&lt;/code&gt; sampler, ...)&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Chunk&lt;/strong&gt;(this Observable&lt;T&gt; source, Func&amp;lt;T, CancellationToken, ValueTask&amp;gt; asyncWindow, ...)&lt;/li&gt;
 &lt;/ul&gt;
+&lt;p&gt;例えばChunkの非同期関数版を使えば、固定時間ではなくてランダム時間でチャンクを生成するといった複雑な処理を、自然に簡単に書けるようになります。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;Observable.Interval(TimeSpan.FromSeconds(1))
+    .Index()
+    .Chunk(async (_, ct) =&amp;gt;
+    {
+        await Task.Delay(TimeSpan.FromSeconds(Random.Shared.Next(0, 5)), ct);
+    })
+    .Subscribe(xs =&amp;gt;
+    {
+        Console.WriteLine(string.Join(&amp;quot;, &amp;quot;, xs));
+    });
+&lt;/code&gt;&lt;/pre&gt;
 &lt;p&gt;async/awaitは現代のC#に欠かせないコードですが、可能な限りスムーズにRxと統合されるように腐心しました。&lt;/p&gt;
 &lt;p&gt;Retry関連もasync/awaitを活用することで、よりベターなハンドリングができます。まず、以前のRxはパイプライン丸ごとのリトライしか出来ませんでしたが、async/awaitを受け入れられるR3なら、非同期メソッド実行単位でのリトライができます。&lt;/p&gt;
 &lt;pre&gt;&lt;code class="language-csharp"&gt;button.OnClickAsObservable()
