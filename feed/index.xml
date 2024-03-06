@@ -5,7 +5,7 @@
     <link>http://neue.cc/</link>
     <description>C# Technical Blog</description>
     <language>ja</language>
-    <lastBuildDate>Sat, 02 Mar 2024 18:06:29 +0900</lastBuildDate>
+    <lastBuildDate>Wed, 06 Mar 2024 13:22:20 +0900</lastBuildDate>
     <item>
       <guid isPermaLink="true">https://neue.cc/2024/02/27_R3.html</guid>
       <link>https://neue.cc/2024/02/27_R3.html</link>
@@ -148,8 +148,8 @@ private static IDisposable SchedulePeriodic_&amp;lt;TState&amp;gt;(IScheduler sc
 &lt;blockquote&gt;
 &lt;p&gt;&lt;code&gt;Observable.Range(1, 10000).Subscribe()&lt;/code&gt; の結果&lt;/p&gt;
 &lt;/blockquote&gt;
-&lt;p&gt;&lt;code&gt;CurrentScheduler&lt;/code&gt;はともかく、&lt;code&gt;ImmediateScheduler&lt;/code&gt;の結果が悪いのは直観に反するかもしれません。dotnet/reactiveの&lt;code&gt;ImmediateScheduler&lt;/code&gt;は、Scheduleされるたびに&lt;code&gt;new AsyncLockScheduler()&lt;/code&gt;し、&lt;code&gt;AsyncLockScheduler&lt;/code&gt;が呼び出す基底クラス&lt;code&gt;LocalScheduler&lt;/code&gt;のコンストラクターが&lt;code&gt;SystemClock.Register&lt;/code&gt;し、それは&lt;code&gt;lock&lt;/code&gt;し&lt;code&gt;new WeakReference&amp;lt;LocalScheduler&amp;gt;(scheduler)&lt;/code&gt;し、&lt;code&gt;HashSet.Add&lt;/code&gt;します。毎回。パフォーマンスが悪いのも当然です。&lt;/p&gt;
-&lt;p&gt;Rangeなんてめったに使わないから大丈夫と思いきや、実は意外なところで&lt;code&gt;ImmediateScheduler&lt;/code&gt;はちょくちょく使われています。代表的なのが&lt;code&gt;Merge&lt;/code&gt;で、これは&lt;code&gt;IScheduler&lt;/code&gt;が無指定の場合は&lt;code&gt;ImmediateScheduler&lt;/code&gt;を使うため、場合によってはかなりの呼び出す回数になる可能性があります。実際、dotnet/reactiveをサーバーアプリケーションで使用した際に、MergeとImmediateSchedulerが原因でサーバーのメモリ使用量のかなりを占めたことがありました。その時はカスタムの軽量なスケジューラーを作成し、直接指定することで徹底的に&lt;code&gt;ImmediateScheduler&lt;/code&gt;を避けることで何とかしました。Next dotnet/reactiveがあるなら、&lt;code&gt;ImmediateScheduler&lt;/code&gt;のパフォーマンスの改善は真っ先に行う必要があります。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;CurrentScheduler&lt;/code&gt;はともかく、&lt;code&gt;ImmediateScheduler&lt;/code&gt;の結果が悪いのは直観に反するかもしれません。dotnet/reactiveの&lt;code&gt;ImmediateScheduler&lt;/code&gt;は、Scheduleされるたびに&lt;code&gt;new AsyncLockScheduler()&lt;/code&gt;し、&lt;code&gt;AsyncLockScheduler&lt;/code&gt;が呼び出す基底クラス&lt;code&gt;LocalScheduler&lt;/code&gt;のコンストラクターが&lt;code&gt;SystemClock.Register&lt;/code&gt;し、それは&lt;code&gt;lock&lt;/code&gt;し&lt;code&gt;new WeakReference&amp;lt;LocalScheduler&amp;gt;(scheduler)&lt;/code&gt;し、&lt;code&gt;HashSet.Add&lt;/code&gt;します。パフォーマンスが悪いのも当然です(ただし再帰的な呼び出し時には都度&lt;code&gt;SingleAssignmentDisposable&lt;/code&gt;を生成するだけに抑えられてはいます、それでも多いですが)&lt;/p&gt;
+&lt;p&gt;Rangeなんてめったに使わないから大丈夫と思いきや、実は意外なところで&lt;code&gt;ImmediateScheduler&lt;/code&gt;はちょくちょく使われています。代表的なのが&lt;code&gt;Merge&lt;/code&gt;で、これは&lt;code&gt;IScheduler&lt;/code&gt;が無指定の場合は&lt;code&gt;ImmediateScheduler&lt;/code&gt;を使うため、頻繁な購読を繰り返す作りになっていると、かなりの呼び出す回数になる可能性があります。実際、dotnet/reactiveをサーバーアプリケーションで使用した際に、MergeとImmediateSchedulerが原因でサーバーのメモリ使用量のかなりを占めたことがありました。その時はカスタムの軽量なスケジューラーを作成し、直接指定することで徹底的に&lt;code&gt;ImmediateScheduler&lt;/code&gt;を避けることで何とかしました。Next dotnet/reactiveがあるなら、&lt;code&gt;ImmediateScheduler&lt;/code&gt;のパフォーマンスの改善は真っ先に行う必要があります。&lt;/p&gt;
 &lt;blockquote&gt;
 &lt;p&gt;&lt;code&gt;SystemClock.Register&lt;/code&gt;をしている理由としては、&lt;code&gt;DateTimeOffset.UtcNow&lt;/code&gt;とシステム時刻の変更の監視のためのようです。つまり、最初からDateTimeOffsetではなくlongを使えば、このような致命的なパフォーマンス低下も招きませんでした。これもまたISchedulerのインターフェイス定義の失敗理由の一つです。&lt;/p&gt;
 &lt;/blockquote&gt;
@@ -224,6 +224,9 @@ public interface IFrameRunnerWorkItem
 &lt;li&gt;&lt;strong&gt;ThrottleFirst&lt;/strong&gt;(this &lt;code&gt;Observable&amp;lt;T&amp;gt;&lt;/code&gt; source, &lt;code&gt;Func&amp;lt;T, CancellationToken, ValueTask&amp;gt;&lt;/code&gt; sampler, ...)&lt;/li&gt;
 &lt;li&gt;&lt;strong&gt;ThrottleLast&lt;/strong&gt;(this &lt;code&gt;Observable&amp;lt;T&amp;gt;&lt;/code&gt; source, &lt;code&gt;Func&amp;lt;T, CancellationToken, ValueTask&amp;gt;&lt;/code&gt; sampler, ...)&lt;/li&gt;
 &lt;li&gt;&lt;strong&gt;ThrottleFirstLast&lt;/strong&gt;(this &lt;code&gt;Observable&amp;lt;T&amp;gt;&lt;/code&gt; source, &lt;code&gt;Func&amp;lt;T, CancellationToken, ValueTask&amp;gt;&lt;/code&gt; sampler, ...)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;また、Chunkも同様に非同期メソッドを受け取るほか、SkipUntilには非同期メソッドと、Task, CancellationTokenを受け取れるようになっています。&lt;/p&gt;
+&lt;ul&gt;
 &lt;li&gt;&lt;strong&gt;SkipUntil&lt;/strong&gt;(this &lt;code&gt;Observable&amp;lt;T&amp;gt;&lt;/code&gt; source, &lt;code&gt;CancellationToken&lt;/code&gt; cancellationToken)&lt;/li&gt;
 &lt;li&gt;&lt;strong&gt;SkipUntil&lt;/strong&gt;(this &lt;code&gt;Observable&amp;lt;T&amp;gt;&lt;/code&gt; source, &lt;code&gt;Task&lt;/code&gt; task)&lt;/li&gt;
 &lt;li&gt;&lt;strong&gt;SkipUntil&lt;/strong&gt;(this &lt;code&gt;Observable&amp;lt;T&amp;gt;&lt;/code&gt; source, &lt;code&gt;Func&amp;lt;T, CancellationToken, ValueTask&amp;gt;&lt;/code&gt; asyncFunc, ...)&lt;/li&gt;

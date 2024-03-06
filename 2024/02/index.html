@@ -161,8 +161,8 @@ private static IDisposable SchedulePeriodic_&lt;TState&gt;(IScheduler scheduler,
 <blockquote>
 <p><code>Observable.Range(1, 10000).Subscribe()</code> の結果</p>
 </blockquote>
-<p><code>CurrentScheduler</code>はともかく、<code>ImmediateScheduler</code>の結果が悪いのは直観に反するかもしれません。dotnet/reactiveの<code>ImmediateScheduler</code>は、Scheduleされるたびに<code>new AsyncLockScheduler()</code>し、<code>AsyncLockScheduler</code>が呼び出す基底クラス<code>LocalScheduler</code>のコンストラクターが<code>SystemClock.Register</code>し、それは<code>lock</code>し<code>new WeakReference&lt;LocalScheduler&gt;(scheduler)</code>し、<code>HashSet.Add</code>します。毎回。パフォーマンスが悪いのも当然です。</p>
-<p>Rangeなんてめったに使わないから大丈夫と思いきや、実は意外なところで<code>ImmediateScheduler</code>はちょくちょく使われています。代表的なのが<code>Merge</code>で、これは<code>IScheduler</code>が無指定の場合は<code>ImmediateScheduler</code>を使うため、場合によってはかなりの呼び出す回数になる可能性があります。実際、dotnet/reactiveをサーバーアプリケーションで使用した際に、MergeとImmediateSchedulerが原因でサーバーのメモリ使用量のかなりを占めたことがありました。その時はカスタムの軽量なスケジューラーを作成し、直接指定することで徹底的に<code>ImmediateScheduler</code>を避けることで何とかしました。Next dotnet/reactiveがあるなら、<code>ImmediateScheduler</code>のパフォーマンスの改善は真っ先に行う必要があります。</p>
+<p><code>CurrentScheduler</code>はともかく、<code>ImmediateScheduler</code>の結果が悪いのは直観に反するかもしれません。dotnet/reactiveの<code>ImmediateScheduler</code>は、Scheduleされるたびに<code>new AsyncLockScheduler()</code>し、<code>AsyncLockScheduler</code>が呼び出す基底クラス<code>LocalScheduler</code>のコンストラクターが<code>SystemClock.Register</code>し、それは<code>lock</code>し<code>new WeakReference&lt;LocalScheduler&gt;(scheduler)</code>し、<code>HashSet.Add</code>します。パフォーマンスが悪いのも当然です(ただし再帰的な呼び出し時には都度<code>SingleAssignmentDisposable</code>を生成するだけに抑えられてはいます、それでも多いですが)</p>
+<p>Rangeなんてめったに使わないから大丈夫と思いきや、実は意外なところで<code>ImmediateScheduler</code>はちょくちょく使われています。代表的なのが<code>Merge</code>で、これは<code>IScheduler</code>が無指定の場合は<code>ImmediateScheduler</code>を使うため、頻繁な購読を繰り返す作りになっていると、かなりの呼び出す回数になる可能性があります。実際、dotnet/reactiveをサーバーアプリケーションで使用した際に、MergeとImmediateSchedulerが原因でサーバーのメモリ使用量のかなりを占めたことがありました。その時はカスタムの軽量なスケジューラーを作成し、直接指定することで徹底的に<code>ImmediateScheduler</code>を避けることで何とかしました。Next dotnet/reactiveがあるなら、<code>ImmediateScheduler</code>のパフォーマンスの改善は真っ先に行う必要があります。</p>
 <blockquote>
 <p><code>SystemClock.Register</code>をしている理由としては、<code>DateTimeOffset.UtcNow</code>とシステム時刻の変更の監視のためのようです。つまり、最初からDateTimeOffsetではなくlongを使えば、このような致命的なパフォーマンス低下も招きませんでした。これもまたISchedulerのインターフェイス定義の失敗理由の一つです。</p>
 </blockquote>
@@ -237,6 +237,9 @@ public interface IFrameRunnerWorkItem
 <li><strong>ThrottleFirst</strong>(this <code>Observable&lt;T&gt;</code> source, <code>Func&lt;T, CancellationToken, ValueTask&gt;</code> sampler, ...)</li>
 <li><strong>ThrottleLast</strong>(this <code>Observable&lt;T&gt;</code> source, <code>Func&lt;T, CancellationToken, ValueTask&gt;</code> sampler, ...)</li>
 <li><strong>ThrottleFirstLast</strong>(this <code>Observable&lt;T&gt;</code> source, <code>Func&lt;T, CancellationToken, ValueTask&gt;</code> sampler, ...)</li>
+</ul>
+<p>また、Chunkも同様に非同期メソッドを受け取るほか、SkipUntilには非同期メソッドと、Task, CancellationTokenを受け取れるようになっています。</p>
+<ul>
 <li><strong>SkipUntil</strong>(this <code>Observable&lt;T&gt;</code> source, <code>CancellationToken</code> cancellationToken)</li>
 <li><strong>SkipUntil</strong>(this <code>Observable&lt;T&gt;</code> source, <code>Task</code> task)</li>
 <li><strong>SkipUntil</strong>(this <code>Observable&lt;T&gt;</code> source, <code>Func&lt;T, CancellationToken, ValueTask&gt;</code> asyncFunc, ...)</li>
