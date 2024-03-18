@@ -23,7 +23,159 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2011/06/30_331.html">Reactive Extensions v1.0安定版リリース</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2011/07/06_332.html">Rxでのイベント変換まとめ - FromEvent vs FromEventPattern</a></h1>
+<ul class="date"><li>2011-07-06</li></ul>
+<div class="entry_body"><p><a href="http://msdn.microsoft.com/en-us/data/gg577609">Reactive Extensions</a>の機能の一つに.NETにおけるイベントをIObservable&lt;T&gt;に変換する、というものがあります。<a href="http://msdn.microsoft.com/en-us/library/hh242978(v=VS.103).aspx">Bridging with Existing .NET Events</a>。そして、そのためのメソッドがFromEventでした。ところが最近のRxでは二つ、FromEventとFromEventPatternが用意されています。この差異は何なのでしょうか？</p>
+<p>結論としては、過去のRx(このサイトの古い記事や他のサイトの過去の記事などで触れられている)やWindows Phone 7でのFromEventはFromEventPatternに改名されました。後続にEventPatternという(object Sender, TEventArgs EventArgs)を持つ.NETのイベントの引数そのものを渡すものです。そして、空席になったFromEventに新しく追加されたFromEvent(紛らわしい！)は、EventArgsだけを送ります。それ以外の差異はありません。</p>
+<p>つまるところFromEventは FromEventPattern.Select(e =&gt; e.EventArgs) ということになります。なら、それでいいぢゃん、何も混乱を生む(WP7のFromEventがFromEventPatternである、というのは致命的よねえ)ことはないよ、とは思うのですが、パフォーマンスの問題でしょうかね。確かに、Senderは必要なく使うのはEventArgsだけの場合が多い。それなのに、毎回EventPatternを生成していたり、Selectというメソッド呼び出しが入るのは無駄です。</p>
+<p>そもそもインスタンスに対してFromEventで包むということは、クロージャでsenderは変数としていつでもどこでも使えてしまうのですよね、そもそも、そもそも。そういう意味でも送られてくるのはEventArgsだけでいいのであった。というわけで、基本的にはFromEventでいいと思います。</p>
+<h2>FromEventPatternについて</h2>
+<p>では、改めてFromEventPatternを復習します(WP7の人はFromEventで考えてください)。<a href="http://msdn.microsoft.com/en-us/library/hh229705(v=VS.103).aspx">Observable.FromEventPattern(TEventArgs) Method (Object, String) (System.Reactive.Linq)</a>にサンプルコードがあるのですけれどね。そうそう、MSDNのリファレンスには、一部のメソッド/一部のオーバーロードにはサンプルコードがあります。全部ではないのがミソです、見て回って発掘しましょう。まあ、というわけで、とりあえずそのFileSystemWatcherで。</p>
+<pre><code class="language-csharp">// FileSystemWatcherは指定フォルダを監視して、変化があった場合にイベントを通知します
+// 例えばCreatedイベントはファイルが作成されたらイベントが通知されます
+var fsw = new FileSystemWatcher(@&quot;C:\&quot;, &quot;*.*&quot;) { EnableRaisingEvents = true };
+
+// FromEventPatternその1、文字列でイベント名指定
+Observable.FromEventPattern&lt;FileSystemEventArgs&gt;(fsw, &quot;Created&quot;)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+
+// FromEventPatternその2、静的なイベントをイベント名指定(WP7にはない)
+Observable.FromEventPattern&lt;ConsoleCancelEventArgs&gt;(typeof(Console), &quot;CancelKeyPress&quot;)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.SpecialKey));
+</code></pre>
+<p>一番馴染み深いと思うのですが、文字列でイベント名を指定するものです。その2のほうはあまり見ないかもしれませんが、静的イベントに対しての指定も可能です。これら文字列指定によるメリットは、比較的シンプルであること。デメリットは、リフレクションを使うので若干遅い・スペルミスへの静的チェックが効かない・リファクタリングが効かない、といった、リフレクション系のデメリットそのものとなります。</p>
+<p>リフレクションしかないの？というと、勿論そんなことはありません。</p>
+<pre><code class="language-csharp">// FromEventPatternその3、EventHandlerに対する変換
+var current = AppDomain.CurrentDomain;
+Observable.FromEventPattern(h =&gt; current.ProcessExit += h, h =&gt; current.ProcessExit -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs));
+
+// FromEventPatternその4、EventHandler&lt;T&gt;に対する変換
+Observable.FromEventPattern&lt;ContractFailedEventArgs&gt;(
+        h =&gt; Contract.ContractFailed += h, h =&gt; Contract.ContractFailed -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.Message));
+
+// FromEventPatternその5、独自イベントハンドラに対する変換
+Observable.FromEventPattern&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; new FileSystemEventHandler(h),
+        h =&gt; fsw.Created += h,
+        h =&gt; fsw.Created -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+</code></pre>
+<p>イベントの登録と削除を行うためのラムダ式を渡してやります。その3とその4は比較的分かりやすいのではないでしょうか。その5の第一引数が謎いのですが、これはconversionです。C#の型システムの都合上、そのまんまだと独自イベントハンドラを処理出来ないので、型を変換してやる必要があるという定型句。</p>
+<p>数あるFromEventPatternのオーバーロードの中で、一番多く使うのはその5だと思います。何故なら、C#のイベントは独自イベントハンドラになっていることが多いから。はっきしいって、最低です。EventHandler&lt;T&gt;を使ってくれてさえいれば、こんな苦労はしなくて済むというのに。独自イベントハンドラは100害あって一利なし。え、WPFとか.NET標準がイベントハンドラは独自のものを使ってる？それは、WPFが悪い、.NET設計の黒歴史、悪しき伝統。</p>
+<p>それと、もはや独自デリゲートも最低です。FuncやActionを使いましょう。C#のデリゲートはメソッドの引数や戻り値が一致していようが、型が違ったら別のものとして扱われます。そのことによる不都合は、↑で見たように、あるんです。極力ジェネリックデリゲートを使いましょう。そうすれば、こんな腐った目に合わなくても済みます。</p>
+<p>ところで、その5は、もう少しだけ記述が短くなります。</p>
+<pre><code class="language-csharp">// FromEventPatternその5、第一引数別解、こう書くと短くて素敵
+Observable.FromEventPattern&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; h.Invoke,
+        h =&gt; fsw.Created += h,
+        h =&gt; fsw.Created -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+</code></pre>
+<p>h.Invoke。というのは、割とhそのものなわけですが、しかしInvokeと書くことで型が変換されます。この辺はコンパイラの都合上のマジックというか何というか。そういうものだと思えばいいのではかと。その5のスタイルで書くときは、この書き方をすると良いと思います。で、まだオーバーロードがあって</p>
+<pre><code class="language-csharp">// その6
+Observable.FromEventPattern&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; fsw.Created += h, h =&gt; fsw.Created -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.FullPath));
+</code></pre>
+<p>conversionが不要で書けたりもします。一見素晴らしい、のですが、これ、中でなにやってるかというとconversionに相当するものをリフレクションで生成してるだけだったりして。そのため、なるべくconversionを使うオーバーロードのほうを使ったほうがよいでしょう。h =&gt; h.Invokeを書くだけですしね。このオーバーロードは紛らわしいだけで存在意義が不明すぎる。</p>
+<h2>FromEventについて</h2>
+<p>と、長々と見てきましたが、ではFromEventのほうも。</p>
+<pre><code class="language-csharp">// FromEvent
+Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; (sender, e) =&gt; h(e),
+        h =&gt; fsw.Created += h,
+        h =&gt; fsw.Created -= h)
+    .Subscribe(e =&gt; Console.WriteLine(e.FullPath));
+
+// FromEventPatternその5(比較用)
+Observable.FromEventPattern&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+        h =&gt; (sender, e) =&gt; h(sender, e),
+        h =&gt; fsw.Created += h,
+        h =&gt; fsw.Created -= h)
+    .Select(e =&gt; e.EventArgs)
+    .Subscribe(e =&gt; Console.WriteLine(e.FullPath));
+</code></pre>
+<p>というわけで、FromEventPatternのその5に近いわけですが、conversionでEventArgsしか渡していない、という点が差異ですね。なので、後続にはsenderが伝わってこず、EventArgsしか通りません。まあ、senderは、↑の例ですとfswでどこでも使えるので、そもそも不要なわけで、これで良いかと思います。</p>
+<p>ところでFromEventも色々なオーバーロードがあるにはあるんですが、私の頭では存在意義が理解できなかったので無視します。挙動とかは理解したんですが、なんというか、存在する必要性、有効な利用法がさっぱり分からなかったのです……。まあ、多分、あんま意味ないと思うので気にしないでもいいかと。</p>
+<h2>拡張メソッドに退避させよう</h2>
+<p>FromEventにせよFromEventPatternにせよ、長いです。長い上に定型句です。なので、拡張メソッドに退避させると、スッキリします。例えば、今まで見てきたFileSystemWatcherだったら</p>
+<pre><code class="language-csharp">// .NETのFromEventなら IObservable&lt;TEventArgs&gt;
+// .NETのFromEventPatternなら IObservable&lt;EventPattern&lt;TEventArgs&gt;&gt;
+// WP7のFromEventなら IObservable&lt;IEvent&lt;TEventArgs&gt;&gt;
+// を返す拡張メソッド群を用意する。
+// 命名規則はイベント名AsObservableがIntelliSenseの順序的にお薦め
+public static class FileSystemWatcherExtensions
+{
+    public static IObservable&lt;FileSystemEventArgs&gt; CreatedAsObservable(this FileSystemWatcher watcher)
+    {
+        return Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; watcher.Created += h, h =&gt; watcher.Created -= h);
+    }
+
+    public static IObservable&lt;FileSystemEventArgs&gt; DeletedAsObservable(this FileSystemWatcher watcher)
+    {
+        return Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; watcher.Deleted += h, h =&gt; watcher.Deleted -= h);
+    }
+
+    public static IObservable&lt;RenamedEventArgs&gt; RenamedAsObservable(this FileSystemWatcher watcher)
+    {
+        return Observable.FromEvent&lt;RenamedEventHandler, RenamedEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; watcher.Renamed += h, h =&gt; watcher.Renamed -= h);
+    }
+
+    public static IObservable&lt;FileSystemEventArgs&gt; ChangedAsObservable(this FileSystemWatcher watcher)
+    {
+        return Observable.FromEvent&lt;FileSystemEventHandler, FileSystemEventArgs&gt;(
+            h =&gt; (sender, e) =&gt; h(e), h =&gt; watcher.Changed += h, h =&gt; watcher.Changed -= h);
+    }
+}
+</code></pre>
+<pre><code class="language-csharp">var fsw = new FileSystemWatcher(@&quot;C:\&quot;, &quot;*.*&quot;) { EnableRaisingEvents = true };
+
+// 例えば、ただ変更をロギングしたいだけなんだよ、という場合の結合
+// FromEventを外出ししていることによって、すっきり書ける
+Observable.Merge(
+        fsw.CreatedAsObservable(),
+        fsw.DeletedAsObservable(),
+        fsw.ChangedAsObservable(),
+        fsw.RenamedAsObservable())
+    .Subscribe(e =&gt; Console.WriteLine(e.ChangeType + &quot;:&quot; + e.Name));
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/fsw_intellisense.jpg">
+</p>
+<p>といった形です。また、普通に+-でのイベント以外のものへの登録も可能です。例えば</p>
+<pre><code class="language-csharp">// LayoutRootはWPFの一番外枠の&lt;Grid Name=&quot;LayoutRoot&quot;&gt;ということで。
+Observable.FromEvent&lt;MouseButtonEventHandler, MouseButtonEventArgs&gt;(
+        h =&gt; (sender, e) =&gt; h(e),
+        h =&gt; LayoutRoot.AddHandler(UIElement.MouseDownEvent, h),
+        h =&gt; LayoutRoot.RemoveHandler(UIElement.MouseDownEvent, h))
+    .Subscribe(e =&gt; Debug.WriteLine(e.ClickCount));
+</code></pre>
+<p>こんな形のものもObservable化が可能です。</p>
+<h2>イベントの解除</h2>
+<p>Subscribeの戻り値はIDisposableで、Disposeを呼ぶことでイベントが解除されます。</p>
+<pre><code class="language-csharp">// アタッチ
+var events = Observable.Merge(
+        fsw.CreatedAsObservable(),
+        fsw.DeletedAsObservable(),
+        fsw.ChangedAsObservable(),
+        fsw.RenamedAsObservable())
+    .Subscribe(e =&gt; Console.WriteLine(e.ChangeType + &quot;:&quot; + e.Name));
+
+// デタッチ(合成などをしていて、元ソースが複数ある場合も、すべて解除されます)
+events.Dispose();
+</code></pre>
+<p>Rxのこの仕組みは、従来に比べて圧倒的にイベントの解除がやりやすくなっていると思います。</p>
+<h2>まとめ</h2>
+<p>非同期の説明ばかりしてきていて、イベントはすっかり置き去りだったことを、まずはゴメンナサイ。少し前からFromEvent周りは大きな仕様変更が入ったわけですが、ようやくまともに解説できました。基本中のキの部分であるここが、過去のリソースがそのまま適用出来ないという最悪の自体に陥っていたので、とりあえずこれで何とか、でしょうかどうでしょうか。</p>
+<p>小さなこととはいえ、WP7との互換性が絶えているのが痛いのですが、その辺どうにかならなかったのかねー、とは思います。けれど、このEventArgsだけ送るFromEvent自体は良いと思います。 .Select(e =&gt; e.EventArgs) が定型句だったので、こういった変更は喜ばしい限り。それと、今まで思っていた、ぶっちゃけラムダ式とかRxでイベント登録するならsenderって不要じゃね？に対する答え(その通りで、完全に不要)を出してくれたのが嬉しい。</p>
+<p>さて、変換できるのはいいけれど、じゃあどこで使うのがいいの？という話がいつもありません。次回は、時間周りと絡めて、その辺のお話が出来ればと思いますが、いつも次回予告が達成されたことはないので、別のことを書くでしょう←ダメぢゃん。</p>
+</div>
+<h1><a href="https://neue.cc/2011/06/30_331.html">Reactive Extensions v1.0安定版リリース</a></h1>
 <ul class="date"><li>2011-06-30</li></ul>
 <div class="entry_body"><p><a href="http://blogs.msdn.com/b/rxteam/archive/2011/06/29/first-official-release.aspx">Reactive Extensions v1.0 Stable and v1.1 Experimental available now!</a> ということで、今までも安定版だの正式だの何なり言っていましたが、今回こそ、本当に本当に正式リリース、v1.0だそうです。整理されたドキュメント、多くのチュートリアルビデオ、<a href="http://enumeratethis.com/2011/06/29/rx-performance-improvements/">大幅なパフォーマンス改善</a>、そして、よくテストされた(かどうかは不明)安定版としてのライブラリ本体。全てが整いました。さあ、使いましょう！実際のプロダクトに！</p>
 <ul>
@@ -1226,154 +1378,6 @@ static void Main(string[] args)
 <p>あと、静的チェッカが上手く機能するように書くには静的チェッカが必要なのも。当たり前？うーん、静的チェッカなしで、ただ普通にContractsを書いているだけじゃあダメなのかな？契約自体は成立していてリライターは通るけど静的チェッカ使うと警告だらけ。みたいな形になりがちで。Standardで書いてPremiumでチェックしたら涙目の落差が激しすぎて、じゃあ結局は静的チェッカ必須なの？でもそれPremium以上じゃん、というのが残念で。そうなるとStandardにも欲しいねえ、静的チェッカー。</p>
 <p>でも、ちょっと気の利いたGuard句として、事前条件だけで画面半分が埋まるような事態が緩和されるなら、それはとっても嬉しいなって。まずは、その程度から始めよう。順を追ってステップアップすればいいのだから。</p>
 </div>
-<h1><a href="https://neue.cc/2011/04/20_317.html">Expression Treeのこね方・入門編 - 動的にデリゲートを生成してリフレクションを高速化</a></h1>
-<ul class="date"><li>2011-04-20</li></ul>
-<div class="entry_body"><p>Expression Treeは、IQueryableの中心、Code as Dataなわけですが、それ以外にも用途は色々あります。ただたんに名前を取り出すだけ(考えてみると贅沢な使い方よね)とか、デリゲートを生成したりとか。varはLinqのために導入されたものだからそれ以外に無闇に使うのは良くない(ｷﾘｯ とか言う人は、式木も同じ考えなんですかね、匿名型へも同じ態度で？導入された、そして発展させたのはLinqだとしても、別にそれ以外に使ってもいいんだよって。縛られた考えイクナイ。</p>
-<p>というわけで、今更に、初歩からの式木再入門。特に.NET 4から大幅に拡張されて式だけじゃなく文までいけるようになって、何でも表現出来るようになりました。式木の用途は多岐に渡るわけですが、今回はリフレクションの高速化をお題にしたいと思います。プロパティ名の文字列からPropertyInfoを取ってGetValueといったように、動的に値のGet/Setをするわけですが、それを動的コード生成で高速化しよう！</p>
-<p>方針としては、プロパティアクセスのデリゲートを生成します。GetだったらFunc&lt;object, object&gt;を作って、引数が対象インスタンス、戻り値が取得結果の値、といった具合です。まんまPropertyInfoのGetValueがデリゲートになったもの、といった具合。</p>
-<p>では、実際に書きながら見ていきます。というわけで、私の書き方などりを順を追って。まず、何をやりたいかを明確にするため、実際のコードで、具体的なラムダ式を書いてコンパイル通します。</p>
-<pre><code class="language-csharp">// 適当なクラス
-class MyClass
-{
-    public int MyProperty { get; set; }
-}
-
-static void Main(string[] args)
-{
-    // これで書くと(.NET 4以降の)代入やループはサポートされてないので、Funcでも全然いいです
-    // ただ、デバッガで生成された式の結果が見えるので、Expressionでコンパイル通せたほうが楽かな
-    Expression&lt;Func&lt;object, object&gt;&gt; expr =
-        target =&gt; ((MyClass)target).MyProperty;
-}
-</code></pre>
-<p>コンパイル通るということは、それで書けるということ。机上で、頭の中だけで考えてもいいことありません。ささっとコンパイラ使いませう。そして一旦デバッガでexprを覗いてみますと</p>
-<pre><code class="language-csharp">// ToString()
-// target =&gt; Convert(Convert(target).MyProperty)
-
-// DebugView
-.Lambda #Lambda1&lt;System.Func`2[System.Object,System.Object]&gt;(System.Object $target) {
-    (System.Object)((Program+MyClass)$target).MyProperty
-}
-</code></pre>
-<p>Expressionで宣言して書くというのは、コンパイラがコンパイル時に式木を生成するということです。見た目はFuncに毛が生えた程度なのに、コンパイル結果は大違い。なんて恐ろしい！そして、なんて素晴らしい！ともあれ、結果から逆算してくのが手っ取り早い。大枠は機械生成に任せてしまって、微調整だけを手動でやればいいわけで。無から作るのは大変ですが、枠組みが出来ているなら簡単だもの。このToStringとDebugViewは大変便利です。なお、リフレクタで生成結果を見るという夢のない方法もあります。</p>
-<p>上記結果から、具体的な成分に置き換えた、何を書くのかの式をイメージ。</p>
-<pre><code class="language-csharp">// (object target) =&gt; (object)((T)target).PropertyName
-</code></pre>
-<p>もう、あとは機械的に置き換えていくだけ！というわけで、具体的にこねこねしていきますが、まずパラメータとラムダ本体を用意します。この二つは、最終的にデリゲートの生成を目指した式木の作成では定型句みたいなものなので何も考えず用意。</p>
-<pre><code class="language-csharp">// まず、引数のパラメータとLambda本体を書く
-var target = Expression.Parameter(typeof(object), &quot;target&quot;);
-
-var lambda = Expression.Lambda&lt;Func&lt;object, object&gt;&gt;(
-    /* body */
-    , target);
-</code></pre>
-<p>基本的に、埋めやすいところから埋めていくのがいいのではないかなー。そして、Expressionは最後の引数が一番埋めやすいので、外から内に向かって書いていくことになります。最初のLambdaは、引数パラメータを最初に置いてしまって、bodyは後回しにする。というわけで、これで左辺は終了しました。次は右辺。外周から構築されるので、まずobjectへのキャスト。これはExpression.Convertです。</p>
-<pre><code class="language-csharp">var lambda = Expression.Lambda&lt;Func&lt;object, object&gt;&gt;(
-    Expression.Convert(
-        /* body */
-        , typeof(object))
-    , target);
-</code></pre>
-<p>当然ですが、ちゃんとインデントつけたほうがいいです。カンマ前置は気持ち悪いですが、こうして後ろから埋めていく時は、こっちのほうが書きやすいかなー。気持ち悪ければ最後にまとめて直せばいいのではないかと。</p>
-<p>次はTへのキャスト、ではなくプロパティ呼び出し。実行の順番はTにキャスト→プロパティ呼び出し→objectにキャストですからね。プロパティ呼び出しはExpression.Property。ですが、フィールドも似たようなものだし、幸いExpressionには両者を区別しないPropertyOrFieldがあるので、そちらを使いましょう。名前はstringで渡しますが、とりあえず&quot;PropertyName&quot;で。</p>
-<pre><code class="language-csharp">var lambda = Expression.Lambda&lt;Func&lt;object, object&gt;&gt;(
-    Expression.Convert(
-        Expression.PropertyOrField(
-            /* body */
-            , &quot;PropertyName&quot;)
-        , typeof(object))
-    , target);
-</code></pre>
-<p>最後は((T)target)。(T)は後で置き換えるとして、とりあえずMyClassにしておきますか。targetは、最初に作った右辺のパラメータです。</p>
-<pre><code class="language-csharp">var target = Expression.Parameter(typeof(object), &quot;target&quot;);
-
-var lambda = Expression.Lambda&lt;Func&lt;object, object&gt;&gt;(
-    Expression.Convert(
-        Expression.PropertyOrField(
-            Expression.Convert(
-                target
-                , typeof(MyClass))
-            , &quot;PropertyName&quot;)
-        , typeof(object))
-    , target);
-</code></pre>
-<p>埋まった！埋まったらとりあえずまずコンパイル。するとPropertyNameはMyClassにないよ、と例外出て終了。ふむふむ。ところで、ここでチェック入るんですね、へー。それでは、別関数に分けることを意識して、(ようやく)変数用意しますか。</p>
-<pre><code class="language-csharp">// あとで関数の引数にするとして
-var type = typeof(MyClass);
-var propertyName = &quot;MyProperty&quot;;
-
-var target = Expression.Parameter(typeof(object), &quot;target&quot;);
-
-var lambda = Expression.Lambda&lt;Func&lt;object, object&gt;&gt;(
-    Expression.Convert(
-        Expression.PropertyOrField(
-            Expression.Convert(
-                target
-                , type)
-            , propertyName)
-        , typeof(object))
-    , target);
-</code></pre>
-<p>コンパイル通ったー。そしたら、とりあえずデバッガでlambda変数を観察。ToString結果とDebugViewプロパティを見るといいでしょう。</p>
-<pre><code class="language-csharp">// lambda.ToString()
-target =&gt; Convert(Convert(target).MyProperty)
-
-// lambda.DebugView
-.Lambda #Lambda1&lt;System.Func`2[System.Object,System.Object]&gt;(System.Object $target) {
-    (System.Object)((Program+MyClass)$target).MyProperty
-}
-</code></pre>
-<p>問題なさそうですね！この二つは作るときに非常に便利なので、大きめのを書くときは断片を書いてこれでチェック、みたいにするといいかも。では、最後にデリゲート生成(Compile)を。</p>
-<pre><code class="language-csharp">// デリゲート生成！
-var func = lambda.Compile();
-
-// てすと
-var test = new MyClass { MyProperty = 200 };
-var result = func(test);
-Console.WriteLine(result);
-</code></pre>
-<p>というわけでした。DynamicMethodでILもにゃもにゃ(敷居高すぎ！)とか、Delegate.CreateDelegateだのでもにゃもにゃ(面倒くさい！)に比べると、随分素直に書けて素敵。.NET 4.0からはブロックやループなど、式だけではなく全ての表現が可能になったので、動的コード生成が身近になりました。</p>
-<p>Setのほうも同様な感じに書けます。</p>
-<pre><code class="language-csharp">// (object target, object value) =&gt; ((T)target).memberName = (U)value
-static Action&lt;object, object&gt; CreateSetDelegate(Type type, string memberName)
-{
-    var target = Expression.Parameter(typeof(object), &quot;target&quot;);
-    var value = Expression.Parameter(typeof(object), &quot;value&quot;);
-
-    var left =
-        Expression.PropertyOrField(
-            Expression.Convert(target, type), memberName);
-
-    var right = Expression.Convert(value, left.Type);
-
-    var lambda = Expression.Lambda&lt;Action&lt;object, object&gt;&gt;(
-        Expression.Assign(left, right),
-        target, value);
-
-    return lambda.Compile();
-}
-
-// Test
-static void Main(string[] args)
-{
-    var target = new MyClass { MyProperty = 200 };
-    var accessor = CreateSetDelegate(typeof(MyClass), &quot;MyProperty&quot;);
-
-    accessor(target, 1000); // set
-    Console.WriteLine(target.MyProperty); // 1000
-}
-</code></pre>
-<p>Expression.Assignが代入なのと、objectで渡されるvalueは、プロパティに代入する際にプロパティの型へキャストする必要があるので、left.Typeで取り出しています。これ、Lambdaの中に一気に書いてしまうと値が取れないので、外で書く必要があるのが少々面倒かしらん。とりあえず、コメントで生成後の式を書いておいてあげると見る人に(少しだけ)優しい。</p>
-<p>今回のSet/Getは微妙に汎用的なものにするため全てobjectで扱っていますが、ジェネリクスにすれば、余計なExpression.Convertがなくてスッキリ記述＋パフォーマンスも向上、が狙えそうですねん。</p>
-<h2>何で突然？</h2>
-<p>思うところあって、じゃなくて、WP7にSQLCE搭載の報を受けて、以前書いたデータベース用ユーティリティを書き直そうと思いまして。そして、コマンドパラメータの受け渡しには匿名型を使おうかな、と。そうすると、書くのがとても簡単になるんですね。凄く軽快で。これは良い。のですけど、実行の度にPropertyInfoを取ってきてNameとGetValueでの値取り出しはどうかと思ったわけです。そりゃねーよ、と。そこで、じゃあ、キャッシュしよう。キャッシュするならPropertyInfoをキャッシュしたってそんな速くはない、やるならデリゲート生成までやろう。と、紆余曲折あってそうなりました。</p>
-<p>パラメータだけではなくて、簡易マッパー(selectの各カラムの名前とプロパティ名からインスタンス生成)も用意しているのですが、それもデリゲートのキャッシュで高速化効いてくるかなー、と。</p>
-<p>で、速いのかというと、うーん、生成のコストが結構高いので、平均取ると、PropertyInfoのキャッシュと比べると、数千回実行しないとコスト回収出来ないかも。PropertyInfoのGetValueも遅い遅いというほどにそんな遅くないのかなあ、いや、デリゲートと比べると十数倍ぐらいは違うんですが、しかし。マッパー的に使って、一回の実行に100行取ってくる、とかだったら余裕ですぐ回収出来ますが、コマンド程度だとどうだろうなー。まあ、ASP.NET MVCなんかはTypeDescriptor(正直遅い)経由でやってるみたいだし、それと比べれば悪くないかもはしれない。でもWP7を見ると、アプリケーションのキャッシュ生存期間を考えると、ペイ出来そうな気がしない。</p>
-<p>とはいえ、初回に少し重くてあとは高速、のほうがユーザーエクスペリエンス的にはいいかな、と思うので(あと、どちらにせよたかが知れてる！)、式木デリゲートキャッシュは採用の方向で。スッキリしてて、C#らしい美しさなところも好き。で、まあ一応、速度を気にしてのことなので、ベンチマークを取ったりするわけですが、生成時間が気になる……。エクストリームにハイパフォーマンスなシリアライザを作る！とかってわけじゃないので、あんまキチキチに気にしてもしょうがないのですが、でもちょっと気になる。Boxingが～、とかも少し、でもそれは放置として。</p>
-<p><a href="http://d.hatena.ne.jp/machi_pon/20090821/1250813986">リフレクションは遅いから情報をキャッシュするとかのお話 - Usa*Usa日記</a> <a href="http://ufcpp.net/study/csharp/misc_dynamic.html">[雑記] 動的コード生成のパフォーマンス (C# によるプログラミング入門)</a> <a href="http://ugaya40.net/wpf/mvvm-dynamic-proxy-viewmodel.html">動的プロキシなViewModelの実装とパフォーマンスの比較(MVVMパターン) - the sea of fertility</a> <a href="http://d.hatena.ne.jp/NyaRuRu/20070216/p1">効率の良い実行時バインディングとインターフェイス指向プログラミングでの boxing の回避テクニック - NyaRuRuの日記</a> <a href="http://d.hatena.ne.jp/NyaRuRu/20070925/p1">パフォーマンスのための Delegate, LCG, LINQ, DLR (を後で書く) - NyaRuRuの日記</a> <a href="http://www.atmarkit.co.jp/fdotnet/dotnetdeepdive/dotnetdeepdive01/dotnetdeepdive01_03.html">インライン・メソッド・キャッシュによる動的ディスパッチ高速化 － ＠IT</a> <a href="http://d.hatena.ne.jp/matarillo/20100120/p1">ByRef parameter and C# - 猫とC#について書くmatarilloの日記</a> <a href="http://stackoverflow.com/questions/1722096/how-does-protobuf-net-achieve-respectable-performance">c# - How does protobuf-net achieve respectable performance? - Stack Overflow</a> <a href="http://www.codeproject.com/KB/cs/HyperPropertyDescriptor.aspx">HyperDescriptor: Accelerated dynamic property access - CodeProject</a> <a href="http://msmvps.com/blogs/jon_skeet/archive/2008/08/09/making-reflection-fly-and-exploring-delegates.aspx">Making reflection fly and exploring delegates - Jon Skeet: Coding Blog</a> <a href="http://entlib.codeplex.com/">patterns &amp; practices – Enterprise Library(Data)</a> <a href="http://msdn.microsoft.com/ja-jp/library/system.data.linq.mapping.metaaccessor.aspx">MetaAccessor クラス (System.Data.Linq.Mapping)</a> <a href="http://msdn.microsoft.com/ja-jp/library/system.componentmodel.typedescriptor(v=VS.100).aspx">TypeDescriptor クラス (System.ComponentModel)</a>  <a href="http://automapper.codeplex.com/">AutoMapper</a> <a href="https://github.com/kazuki/msgpack/tree/master/csharp/msgpack">csharp/msgpack at master from kazuki/msgpack - GitHub</a> <a href="https://github.com/yfakariya/msgpack/tree/master/cli/src/MsgPack">cli/src/MsgPack at master from yfakariya/msgpack - GitHub</a></p>
-<p>ネタ元。先人が百億光年前に辿ってきた話だ、的な何か。コードは、シリアライザやマッパーはこの辺の仕組み載せてるよね、という当たりをつけて、ソースコードをPropertyInfoやDictionaryで検索してヒットした周辺を眺めるなど。で、まあ、分かったような分からないような。キャッシュの仕組みと含めて、上手くまとまったらDynamicJsonにも載せようと思っているんですが。一週間ぐらい延々と弄ってるんですが、どうも固まらなくて。この辺、コード書きの遅さに定評のある私です(ｷﾘｯ。</p>
-<p>ちなみにWP7には今のところExpression.Compileはないんですけどね！(Betaの頃はあったけど削られたよう)。SQLCE搭載でLinq to Hogeも搭載するはずなので、それと一緒に復活するはずと信じています。あとSL4相当じゃないとExpression.AssignやUnboxが使えなくてどちらにせよ困るので、MangoではSL4相当にグレードアップしてくれないと。もし一切変わらなかったら、IL生成はもとから出来ないし将来も搭載されないと思うので、適当に何かでお茶濁しますか。</p>
-</div>
 <a href="https://neue.cc/16">Prev |</a>
 <a href="https://neue.cc/18">| Next</a>
 </div>
@@ -1397,6 +1401,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/03/">2024-03</a>
 <li><a href="https://neue.cc/2024/02/">2024-02</a>
 <li><a href="https://neue.cc/2024/01/">2024-01</a>
 <li><a href="https://neue.cc/2023/12/">2023-12</a>
