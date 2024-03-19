@@ -117,9 +117,17 @@ sealed class ClampLongCustomCommand : CustomRawStringFunctions
         // valueに対して値を書くことで値のセットになる
         BinaryPrimitives.WriteInt64LittleEndian(value, result);
 
-        // 戻り値とかエラーを書きたい場合はoutputを使う(RespWriteUtils.WriteBulkStringを使いますが今回は略)
-        // var pool = MemoryPool.Rent(8);
-        // output = (pool, 8);
+        // 戻り値とかエラーを書きたい場合はoutputを使う(RespWriteUtilsに色々Utilityが揃ってる)
+        // WriteIntegerAsBulkStringなどを使うと&quot;String&quot;としての結果になることに注意
+        // 今回はlongをバイナリとして出力する
+        unsafe
+        {
+            var pool = MemoryPool.Rent(8 + 6); // $8\r\n{value}\r\n
+            var begin = (byte*)Unsafe.AsPointer(ref pool.Memory.Span[0]);
+            var end = (byte*)Unsafe.AsPointer(ref pool.Memory.Span[^1]);
+            RespWriteUtils.WriteBulkString(value, ref begin, end);
+            output = (pool, 8 + 6);
+        }
 
         return true;
     }
@@ -142,6 +150,14 @@ sealed class ClampLongCustomCommand : CustomRawStringFunctions
         var result = Math.Clamp(v, min, max);
 
         BinaryPrimitives.WriteInt64LittleEndian(value, result);
+        unsafe
+        {
+            var pool = MemoryPool.Rent(8 + 6); // $8\r\n{value}\r\n
+            var begin = (byte*)Unsafe.AsPointer(ref pool.Memory.Span[0]);
+            var end = (byte*)Unsafe.AsPointer(ref pool.Memory.Span[^1]);
+            RespWriteUtils.WriteBulkString(value, ref begin, end);
+            output = (pool, 8 + 6);
+        }
 
         return true;
     }
@@ -161,7 +177,7 @@ sealed class ClampLongCustomCommand : CustomRawStringFunctions
 <p>オーバーライドするメソッドの数が多いことと、パラメーターが<code>Span&lt;byte&gt;</code>だらけで一瞬圧倒されちゃうんですが、冷静に追ってみるとそこまで難しいことは言ってないことに気づきます。追加時(Add)・置換時(Replace)が、最適化のため同じサイズか違うサイズかで2択、それとRead時用。といった別れ方をしています。</p>
 <p>key, input, valueが全て<code>ReadOnlySpan&lt;byte&gt;</code>なのは、まぁそりゃそうでしょう(ここでstringとか出てきたら逆に良くない！)</p>
 <p>inputをパラメーターに分解するのは<code>GetNextArg</code>というヘルパーメソッドを使います。当然それも出てくるのは<code>ReadOnlySpan&lt;byte&gt;</code>なので、あとは適当に、もしJSONとかMessagePackとか<a href="https://github.com/Cysharp/MemoryPack">MemoryPack</a>でシリアライズしたデータだったらシリアライザを使って戻すのもいいし、プリミティブの値だったら<code>BinaryPrimitives</code>が恐らく適役です。MemoryPackでValueTupleにまとめちゃうのがArgumentが分かれないので最速かつ簡単かもしれません。</p>
-<p>結果は<code>Span&lt;byte&gt; value</code>に書きます。outputは今のところ気にしないでOK。この出力先のSpanの長さは事前に<code>GetLength</code>または<code>GetInitialLength</code>で求めておく必要があります。</p>
+<p>結果は<code>Span&lt;byte&gt; value</code>に書きます。この出力先のSpanの長さは事前に<code>GetLength</code>または<code>GetInitialLength</code>で求めておく必要があります。outputはクライアント側に戻すときの値で、RESPに則った形式で出力する必要があるので色々注意がいります。まずはRESPの仕様を簡単にでも頭に入れたほうがつまずかないで済むかもしれません、ここを分かってないとイマイチ書きづらいと思います。</p>
 <p>と、いうわけで、バイナリ操作がそこそこ混ざることを除けば、それなりに素直に書けるのではないでしょうか。雰囲気は理解しました！</p>
 <p>クライアントから呼び出す場合は、こんなメソッドを用意してみます。</p>
 <pre><code class="language-csharp">public static class GarnetClientExtensions
@@ -187,9 +203,7 @@ sealed class ClampLongCustomCommand : CustomRawStringFunctions
         // 戻り値のMemoryResultはArrayPoolから借りてる状態なのでDisposeでReturnする
         using var result = await client.ExecuteForMemoryResultWithCancellationAsync(OpCode_SETLCLAMP, new Memory&lt;byte&gt;[] { key, valSpan, minSpan, maxSpan }, cancellationToken);
         
-        // 本当はresult.Spanからlongを取りたいんですが、それはまた後日……！
-        // return BinaryPrimitives.ReadInt64LittleEndian(result.Span);
-        return;
+        return BinaryPrimitives.ReadInt64LittleEndian(result.Span);
     }
 }
 </code></pre>
