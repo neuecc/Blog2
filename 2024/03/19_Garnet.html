@@ -36,7 +36,7 @@
 <p>GarnetはC#で作られていますが、当然ながらC#専用ではなく、汎用的なRedisサーバーとして動作するため、既存のRedisクライアントで直接繋げることができます。Redisはそのプロトコル<a href="https://redis.io/docs/reference/protocol-spec/">Redis serialization protocol(RESP)</a>の仕様を公開しているため、互換サーバーが作りやすいというわけですね、素晴らしい……！</p>
 <p>C#から使う場合は<a href="https://github.com/StackExchange/StackExchange.Redis">StackExchange.Redis</a>と、Garnet同梱のGarent Clientのどちらかが使えます。パッとGarnet Clientを見た限り、現状現実的に使うならStackExchange.Redisですね。最低限は用意されているけれど、Redisクライアントとして使うには、しんどみがありそうです。ただ、性能面ではGarnet Clientのほうが良さそうです。StackExchange.Redisも、前身のBookSleeveから数えると初期設計が10年以上前のものになっているので、現代の観点から見ると設計は古く、パフォーマンス的にも、この実装は悪そうだな、と思えるところがかなりあります。なのでロマンを追いかけるならGarnet Clientを使うのも面白くはあります……！</p>
 <h2>C#でカスタムコマンドを実装する</h2>
-<p>普通にRedis互換サーバーとして立てて使うのもいいのですが、C#使いなら面白い点があって、Garnetをライブラリとして参照して、アプリケーションに組み込んでのセルフホストができます。例えばロガーとして<a href="https://github.com/Cysharp/ZLogger/">ZLogger</a>を差し込んでVerboseでログを出してみたりとか、ちょっと使いやすくていい感じです。ローカル開発とかだったらDockerでRedis動かして、などではなく、ソリューションにそのまま組み込んで<a href="https://github.com/dotnet/aspire">.NET Aspire</a>で同時起動させるとかもいい感じでしょう。</p>
+<p>普通にRedis互換サーバーとして立てて使うのもいいのですが、C#使いなら面白い点があって、Garnetをライブラリとして参照して(NuGet: Microsoft.Garnet)、アプリケーションに組み込んでのセルフホストができます。例えばロガーとして<a href="https://github.com/Cysharp/ZLogger/">ZLogger</a>を差し込んでVerboseでログを出してみたりとか、ちょっと使いやすくていい感じです。ローカル開発とかだったらDockerでRedis動かして、などではなく、ソリューションにGarnetをそのまま組み込んで<a href="https://github.com/dotnet/aspire">.NET Aspire</a>で同時起動させるとかもいい感じでしょう。RedisはWindowsでは動かないので(大昔にMicrosoftがForkして動かせるようにしたプロジェクトがありましたが！)、ちゃんと動く互換サーバーが出てきたこと自体がとても嬉しかったりもします。</p>
 <pre><code class="language-csharp">using Garnet;
 using Microsoft.Extensions.Logging;
 using ZLogger;
@@ -71,8 +71,8 @@ catch (Exception ex)
 }
 </code></pre>
 <p>もう一つは、カスタムコマンドを実装できることです……！C#で……！</p>
-<p>Redis上でちょっと複雑な実行をしたいことはよくあり、Redisの場合は<a href="https://redis.io/docs/interact/programmability/eval-intro/">Lua Script</a>で処理していましたが、GarnetではC#でカスタムコマンドを実装して組み込むことができます。さらに嬉しい点としては、サーバー側で用意した拡張コマンドは、RESPに従っているので、クライアントはC#専用ではなく、PHPからでもGoからでも呼べます。</p>
-<p>というわけで、「SETLCLAMP」というSET時にclampするカスタムコマンドを早速作っていきます……！先に↑のコードで欠けてるRegisterExtensionsの部分を。</p>
+<p>Redis上でちょっと複雑な実行をしたいことはよくあり、Redisの場合は<a href="https://redis.io/docs/interact/programmability/eval-intro/">Lua Script</a>で処理していましたが、GarnetではC#でカスタムコマンドを実装して組み込むことができます。LUAだとパフォーマンス上どうか、あるいはLUAではできないかなり複雑なことをしたい、といった場合に、パフォーマンス上のデメリットなく使えます。もっとさらに嬉しい点としては、サーバー側で用意した拡張コマンドは、RESPに従っているので、クライアントはC#専用ではなく、PHPからでもGoからでも呼べます。</p>
+<p>というわけで、サンプルということで単純な、「SETLCLAMP」というSET時にclampするカスタムコマンドを早速作っていきましょう。作る前に、先に↑のコードで欠けてるRegisterExtensionsの部分を。</p>
 <pre><code class="language-csharp">static void RegisterExtensions(GarnetServer server)
 {
     // ClampLongCustomCommandというカスタムコマンドをSETLCLAMPというコマンド名で登録する。
@@ -221,7 +221,8 @@ sealed class ClampLongCustomCommand : CustomRawStringFunctions
 
     var key = Encoding.UTF8.GetBytes(&quot;foo&quot;);
 
-    await client.ClampAsync(key, 12345, min: 0, max: 100);
+    var v1 = await client.ClampAsync(key, 12345, min: 0, max: 100);
+    Console.WriteLine(v1); // 100
 
     // String系のGET/SET/DELなどは普通に呼べる
     using var v2 = await client.StringGetAsMemoryAsync(key);
