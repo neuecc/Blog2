@@ -23,7 +23,177 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2010/08/11_271.html">linq.jsやRxJSのベンチマーク</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2010/08/19_272.html">Reactive ExtensionsのFromEventをT4 Templateで自動生成する</a></h1>
+<ul class="date"><li>2010-08-19</li></ul>
+<div class="entry_body"><p><a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Rx</a>で面倒くさいのが、毎回書かなければならないFromEvent。F#ならイベントがファーストクラスで、そのままストリーム処理に流せるという素敵仕様なのですが、残念ながらC#のeventはかなり雁字搦めな感があります。しかし、そこは豊富な周辺環境で何とか出来てしまうのがC#というものです。F#では form.MouseMove |&gt; Event.filter と書けますが、 form.MouseMoveAsObservable().Where と書けるならば、似たようなものですよね？</p>
+<p>というわけで、T4です。FromEventを自動生成しましょう！と、いうネタは散々既出で海外のサイトにも幾つかあるし、日本にもid:kettlerさんが<a href="http://d.hatena.ne.jp/kettler/20100424">FromEventが面倒なので自動生成させてみた2</a>として既に書かれているのですが、私も書いてみました。書くにあたってid:kettlerさんのコードを大変参考にさせていただきました、ありがとうございます。</p>
+<p>私の書いたもののメリットですが、リフレクションを使用しないFromEventで生成しているため、実行コストが最小に抑えられています。リフレクションを使わないFromEventは書くのが面倒でダルいのですが、その辺自動生成の威力発揮ということで。それと、命名規則をGetEventではなくEventAsObservableという形にしています。これは、サフィックスのほうがIntelliSenseに優しいため。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/rxclickasobservable.jpg">
+</p>
+<p>んね？この命名規則は、RxJSのほうで公式に採用されているものなので(例えばrx.jQuery.jsのanimateAsObservable)、俺々規則というわけじゃないので普通に従っていいと思われます。</p>
+<p>以下コード。利用改変その他ご自由にどうぞ、パブリックドメインで。</p>
+<pre><code class="language-csharp">&lt;#@ assembly Name=&quot;System.Core.dll&quot; #&gt;
+&lt;#@ assembly Name=&quot;System.Windows.Forms.dll&quot; #&gt;
+&lt;#@ assembly Name=&quot;C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.0\Profile\Client\System.Xaml.dll&quot; #&gt;
+&lt;#@ assembly Name=&quot;C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.0\Profile\Client\PresentationCore.dll&quot; #&gt;
+&lt;#@ assembly Name=&quot;C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.0\Profile\Client\PresentationFramework.dll&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Linq&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Collections.Generic&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Text.RegularExpressions&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Reflection&quot; #&gt;
+&lt;#
+    // 設定：ここに生成したいクラス(のTypeをFullNameで)を足してください(以下の4つは例)
+    // クラスによってはassemblyの増減が必要です、WPF/Silverlightなどはフルパス直書きしてください
+    var types = new[] {
+        typeof(System.Collections.ObjectModel.ObservableCollection&lt;&gt;),
+        typeof(System.Windows.Forms.Button),
+        typeof(System.Windows.Controls.Primitives.TextBoxBase),
+        typeof(System.Windows.Controls.Primitives.ButtonBase)
+    };
+#&gt;
+using System.Linq;
+using System.Collections.Generic;
+
+&lt;# foreach(var x in GenerateTemplates(types)) {#&gt;
+
+namespace &lt;#= x.Namespace #&gt;
+{
+    &lt;# foreach(var ct in x.ClassTemplates) {#&gt;
+
+    internal static class &lt;#= ct.Classname #&gt;EventExtensions
+    {
+        &lt;# foreach(var ev in ct.EventTemplates) {#&gt;
+		
+        public static IObservable&lt;IEvent&lt;&lt;#= ev.Args #&gt;&gt;&gt; &lt;#= ev.Name #&gt;AsObservable&lt;#= ct.GenericArgs #&gt;(this &lt;#= ct.Classname #&gt;&lt;#= ct.GenericArgs #&gt; source)
+        {
+            return Observable.FromEvent&lt;&lt;#= ev.Handler + (ev.IsGeneric ? &quot;&lt;&quot; + ev.Args + &quot;&gt;&quot; : &quot;&quot;) #&gt;, &lt;#= ev.Args #&gt;&gt;(
+                h =&gt; &lt;#= ev.IsGeneric ? &quot;h&quot; : &quot;new &quot; + ev.Handler + &quot;(h)&quot; #&gt;,
+                h =&gt; source.&lt;#= ev.Name #&gt; += h,
+                h =&gt; source.&lt;#= ev.Name #&gt; -= h);
+        }
+        &lt;# } #&gt;
+    }
+    &lt;# }#&gt;
+}
+&lt;# }#&gt;
+&lt;#+
+    IEnumerable&lt;T&gt; TraverseNode&lt;T&gt;(T root, Func&lt;T, T&gt; selector)
+    {
+        var current = root;
+        while (current != null)
+        {
+            yield return current;
+            current = selector(current);
+        }
+    }
+
+    IEnumerable&lt;ObservableTemplate&gt; GenerateTemplates(Type[] types)
+    {
+        return types.SelectMany(t =&gt; TraverseNode(t, x =&gt; x.BaseType))
+            .Distinct()
+            .GroupBy(t =&gt; t.Namespace)
+            .Select(g =&gt; new ObservableTemplate
+            {
+                Namespace = g.Key,
+                ClassTemplates = g.Select(t =&gt; new ClassTemplate(t))
+                    .Where(t =&gt; t.EventTemplates.Any())
+                    .ToArray()
+            })
+            .Where(a =&gt; a.ClassTemplates.Any())
+            .OrderBy(a =&gt; a.Namespace);
+    }
+
+    class ObservableTemplate
+    {
+        public string Namespace;
+        public ClassTemplate[] ClassTemplates;
+    }
+
+    class ClassTemplate
+    {
+        public string Classname, GenericArgs;
+        public EventTemplate[] EventTemplates;
+
+        public ClassTemplate(Type type)
+        {
+            Classname = Regex.Replace(type.Name, &quot;`.*$&quot;, &quot;&quot;);
+            GenericArgs = type.IsGenericType
+                ? &quot;&lt;&quot; + string.Join(&quot;,&quot;, type.GetGenericArguments().Select((_, i) =&gt; &quot;T&quot; + (i + 1))) + &quot;&gt;&quot;
+                : &quot;&quot;;
+            EventTemplates = type.GetEvents(BindingFlags.Public | BindingFlags.InvokeMethod | BindingFlags.DeclaredOnly | BindingFlags.Instance)
+                .Select(ei =&gt; new { EventInfo = ei, Args = ei.EventHandlerType.GetMethod(&quot;Invoke&quot;).GetParameters().Last().ParameterType })
+                .Where(a =&gt; a.Args == typeof(EventArgs) || a.Args.IsSubclassOf(typeof(EventArgs)))
+                .Select(a =&gt; new EventTemplate
+                {
+                    Name = a.EventInfo.Name,
+                    Handler = Regex.Replace(a.EventInfo.EventHandlerType.FullName, &quot;`.*$&quot;, &quot;&quot;),
+                    Args = a.Args.FullName,
+                    IsGeneric = a.EventInfo.EventHandlerType.IsGenericType
+                })
+                .ToArray();
+        }
+    }
+
+    class EventTemplate
+    {
+        public string Name, Args, Handler;
+        public bool IsGeneric;
+    }
+#&gt;
+</code></pre>
+<pre><code class="language-csharp">// こんなのが生成されます
+
+namespace System.Collections.ObjectModel
+{
+    internal static class ObservableCollectionEventExtensions
+    {
+        public static IObservable&lt;IEvent&lt;System.Collections.Specialized.NotifyCollectionChangedEventArgs&gt;&gt; CollectionChangedAsObservable&lt;T1&gt;(this ObservableCollection&lt;T1&gt; source)
+        {
+            return Observable.FromEvent&lt;System.Collections.Specialized.NotifyCollectionChangedEventHandler, System.Collections.Specialized.NotifyCollectionChangedEventArgs&gt;(
+                h =&gt; new System.Collections.Specialized.NotifyCollectionChangedEventHandler(h),
+                h =&gt; source.CollectionChanged += h,
+                h =&gt; source.CollectionChanged -= h);
+        }
+    }
+}
+
+namespace System.ComponentModel
+{
+    internal static class ComponentEventExtensions
+    {
+        public static IObservable&lt;IEvent&lt;System.EventArgs&gt;&gt; DisposedAsObservable(this Component source)
+        {
+            return Observable.FromEvent&lt;System.EventHandler, System.EventArgs&gt;(
+                h =&gt; new System.EventHandler(h),
+                h =&gt; source.Disposed += h,
+                h =&gt; source.Disposed -= h);
+        }
+    }
+
+    // 以下略
+</code></pre>
+<p>使い方ですが、RxGenerator.ttとか、名前はなんでもいいのですがコピペって、上の方のvar typesに設定したい型を並べてください。一緒に並べたものの場合は、全て継承関係を見て重複を省くようになっています。WPFとかSilverlightのクラスから生成する場合は、assembly Nameに直にDLLのパスを書いてやってくださいな。コード的には、例によってLinq大活躍というかLinqなかったら死ぬというか。リフレクションxLINQxT4は鉄板すぎる。</p>
+<p>一つ難点があって、名前空間をそのクラスの属している空間にきっちりと分けたせいで、例えばWPFのbutton.ClickAsObservableはSystem.Windows.Controls.Primitivesをusingしないと出てこないという、微妙に分かりづらいことになっちゃっています……。これ普通にHogeHogeExtensionsとかいう任意の名前空間にフラットに配置したほうが良かったのかなあ。ちょっと悩ましいところ。</p>
+<h2>T4の書き方</h2>
+<p>漠然と書いてると汚いんですよね、T4。読みにくくてダメだし読みにくいということは書きにくいということでダメだ。というわけで、今回からは書き方を変えました。ASP.NETのRepeater的というかデータバインド的にというかで、入れ物クラスを作って、パブリックフィールド(自動プロパティじゃないのって？そんな大袈裟なものは要りません)を参照させるという形にしました。foreachや閉じカッコ(&quot;}&quot;)は一行にする。&lt;% %&gt;で囲まれる範囲を最小限に抑えることで、ある程度の可読性が確保出来ているんじゃないかと思います。</p>
+<p>といったようなアイディアは</p>
+<blockquote>
+<p>よく訓練されたT4使いは　「何を元に作るか」　「何を作るか」　だけを考える。<br />
+何を元に作るかはきっと from ... select になるでしょう。 何を作るかの中では　&lt;#=o.Property#&gt; で値を出力する事ができます。<br />
+<a href="http://aka-kazuk.spaces.live.com/blog/cns!EB33514F53BAF4B3!259.entry">csproj.user を作るための T4 テンプレート</a></p>
+</blockquote>
+<p>からです。「何を元に作るか」　「何を作るか」　。聞いてみれば当たり前のようだけれど、本当にコロンブスの卵というか(前も同じこと書いた気がする)、脳みそガツーンと叩かれた感じで、うぉぉぉぉぉ、と叫んで納得でした。はい。それと、T4は書きやすいと言っても書きにくい（？）ので、囲む範囲を最小にするってことは、普通のコードでじっくり書いてからT4に移植しやすいってことでもあるんですね。</p>
+<h2>まとめ</h2>
+<p>最近F#勉強中なのです。Expert F# 2.0買ったので。と思ったらプログラミングF#が翻訳されて発売されるだとー！もうすぐ。あと一週間後。くぉ、英語にひいこらしながら読んでいるというのにー。</p>
+<iframe src="https://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=1430224312" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<iframe src="https://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=4873114667" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<p>F#すげーなー、と知れば知るほど確かに思うわけですが、しかし何故か同時に、C#への期待感もまた高まっていきます。必ずや「良さ」を吟味して取り込んでくれるという信頼感があります、C#には。そしてまた、ライブラリレベルで強烈に何とか出来る地力がある、例えばイベントをストリームに見立てた処理には、Reactive Extensionsが登場してC#でも実現出来ちゃったり。Scalaと対比され緩やかに死んでいくJavaと比べると、F#と対比しても元気に対抗していくC#の頼もしさといったらない。</p>
+<p>といっても、F#も全然まだ表面ぐらいしか見えてないし、突っつけば突っつくほど応えてくれる奥の深い言語な感じなので、今の程度の知識で比較してどうこうってのはないです。Java7のクロージャにたいし、Javaにそんなものはいらない、とか頑な態度を取っている人を見るとみっともないな、と思うわけですが、いつか私もC#に拘泥してC#にそんなものはいらない、的なことを言い出すようだと嫌だなー、とかってのは思ってます。進化を受け入れられなくなったら、終わり。</p>
+<p>マルチパラダイム言語の勝利→C++/CLI大勝利ですか？→いやそれは多分違う。的なこともあるので何もかもを受け入れろ、ひたすら取り込んで鈍重な恐竜になれ(最後に絶滅する)、とは言いません。この辺のバランス感覚が、きっと言語設計にとって難しいことであり、そして今のC#は外から見れば恐竜のようにラムダ式だのdynamicだのを取り入れてるように見えるでしょうが、決してそうではなく、素晴らしいバランスに立っています。機能の追加が恐竜への道になっていない。むしろ追加によって過去の機能を互換性を保ちつつ捨てているんですよね、例えば、もうdelegateというキーワードは書くどころか目にすることもほとんどない←なのでC#を学習する場合、C#1.0-&gt;2.0-&gt;3.0-&gt;4.0という順番を辿るのは良くなくて、最新のものから降りていったほうがいい。</p>
+<p>何が言いたいかっていったらC#愛してるってことですな。うはは。5.0にも当然期待していますし、Anders Hejlsbergの手腕には絶対的に信頼を寄せています。4.0は言語的な飛躍はあまりなかっただけに、5.0は凄いことになるに違いない。</p>
+</div>
+<h1><a href="https://neue.cc/2010/08/11_271.html">linq.jsやRxJSのベンチマーク</a></h1>
 <ul class="date"><li>2010-08-11</li></ul>
 <div class="entry_body"><p>どうも、定期的<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js - LINQ for JavaScript</a>宣伝の会がやってまいりました。最近はページビューも絶好調、なのだけどDL数はそこまで伸びない（でも同種のライブラリよりもDL数多かったりするので需要が限界値と思われる）などなどな近況ですがこんばんわ。乱立するLinqのJavaScript実装……。などと言うほどに乱立はしてないし、そもそも2009/04に最後発で私が出したのが最後で、それ以降の新顔は見かけないのですが(しいて言えばRxJS)、ちょうどjLinqを実装した人が、<a href="http://somewebguy.wordpress.com/2010/08/08/jlinq-reloaded/">ベンチ結果がボロボロだった、作り直してる</a>という記事を出したので、ほぅほぅとそのベンチマークを見て、ちょっと改良して色々なLinq実装で比較してみました。</p>
 <p class="noindent">
@@ -2187,149 +2357,6 @@ Enumerable.Range(1, 5)
 <p>そういえば、2.0は公開からひと月でDL数100到達。本当にありがとうございます。そろそろ実例サンプルも作っていきたいのですがネタがな。Google Waveって結局どうなんでしょうかね。ソーシャルアプリは何か肌に合わない雰囲気なのでスルーで、Waveに乗り込むぜ、とか思ってたんですが思ってただけで乗り込む以前に触ってもいないという有様。HTML5は、ええと、基本はC#っ子なのでSilverlight押しだから。うー、じゃあChrome拡張辺りで……。いやでもHTML5かな、よくわからないけれど。</p>
 <p>今のところ最優先事項はlinq.javaなんですけどね、忘れてない忘れてない。というか、linq.js 2.0も今回のOrderByのロジック変更も、linq.javaで書いてあったのを持ってきただけだったりして。もうほんと、とっとと出したいです。出してスッキリして次に行きたい。</p>
 <p>そんなわけで、この2.1でlinq.jsはようやくスタート地点に立てたぜ、という感じなので使ってやってください。</p>
-</div>
-<h1><a href="https://neue.cc/2010/05/06_257.html">C# DynamicObjectの基本と細かい部分について</a></h1>
-<ul class="date"><li>2010-05-06</li></ul>
-<div class="entry_body"><ul>
-<li><a href="http://dynamicjson.codeplex.com/" title="DynamicJson">CodePlex - DynamicJson</a></li>
-</ul>
-<p>DynamicJsonをver.1.1に更新しました。ver.1.0の公開以降に理解したDynamicObjectについての諸々を反映させてあります。具体的には、IsDefinedやDeleteといったメソッド名を書かずに、それらが呼び出せるようにし、また、foreach時にキャストが不要になりました。DynamicはIntelliSenseが効かないので、メソッド名を書かせたら負け。大まかに分けて「プロパティ」「名前付きメソッド」「名前無しメソッド」「キャスト」の4つをうまいこと振り分けて、不自然ではなく使えるようにすれば、DynamicObjectとして良い設計となるのではないかな、と思っています。</p>
-<p>というわけで、今回は微妙にはまったDynamicObjectの挙動の色々について書きますが、その前に1.1の更新事項を。DynamicJson自体については、<a href="http://neue.cc/2010/04/30_256.html" title="neue cc - DynamicJson - C# 4.0のdynamicでスムーズにJSONを扱うライブラリ">ver1.0のリリース時の記事</a>を参照ください。</p>
-<pre><code class="language-csharp">// ただの入れ物クラスなのであまり気にしないで。
-public class FooBar
-{
-    public string foo { get; set; }
-    public int bar { get; set; }
-}
-
-// こんなJSONがあったとするとする
-var json = DynamicJson.Parse(@&quot;{&quot;&quot;foo&quot;&quot;:&quot;&quot;json&quot;&quot;, &quot;&quot;bar&quot;&quot;:100, &quot;&quot;nest&quot;&quot;:{ &quot;&quot;foobar&quot;&quot;:true } }&quot;);
-var arrayJson = DynamicJson.Parse(@&quot;[1,10,200,300]&quot;);
-var objectJson = DynamicJson.Parse(@&quot;{&quot;&quot;foo&quot;&quot;:&quot;&quot;json&quot;&quot;,&quot;&quot;bar&quot;&quot;:100}&quot;);
-
-// .プロパティ名()はIsDefined(&quot;プロパティ名&quot;)と同じになります
-var b1_1 = json.IsDefined(&quot;foo&quot;); // true
-var b2_1 = json.IsDefined(&quot;foooo&quot;); // false
-var b1_2 = json.foo(); // true            
-var b2_2 = json.foooo(); // false;
-
-// .(&quot;プロパティ名&quot;)はDelete(&quot;プロパティ名&quot;)と同じになります
-json.Delete(&quot;foo&quot;);
-json(&quot;bar&quot;);
-
-// キャストはDeserialize&lt;T&gt;()と同じになります
-var array1 = arrayJson.Deserialize&lt;int[]&gt;();
-var array2 = (int[])arrayJson; // array1と一緒
-int[] array3 = arrayJson; // こう書いてもDeserialize呼び出しと同じだったりする
-
-// 配列だけではなく、パブリックプロパティ名で対応を取るマッピングも可能です
-var foobar1 = objectJson.Deserialize&lt;FooBar&gt;();
-var foobar2 = (FooBar)objectJson;
-FooBar foobar3 = objectJson;
-
-// 勿論、配列＋オブジェクトでも可。Linqに繋げる時はキャストで囲みましょう(asはダメ)
-var objectJsonList = DynamicJson.Parse(@&quot;[{&quot;&quot;bar&quot;&quot;:50},{&quot;&quot;bar&quot;&quot;:100}]&quot;);
-var barSum = ((FooBar[])objectJsonList).Select(fb =&gt; fb.bar).Sum(); // 150
-var hoge = objectJsonList as FooBar[]; // これはnullになる、asとキャストは挙動が違う
-
-// array状態のDynamicJsonにforeachはdynamicが渡る
-// 中の型が分かっている場合は、varではなく型名指定するといいかも
-// ちなみに、数字はdynamicのままだと全てdoubleです
-foreach (int item in arrayJson)
-{
-    Console.WriteLine(item); // 1, 10, 200, 300
-}
-
-// オブジェクト状態のDynamicJsonへのforeachはKeyValuePair
-// .Key、.Valueなのは分かってる、というならdynamicで受けると楽かも
-foreach (KeyValuePair&lt;string, object&gt; item in objectJson)
-{
-    Console.WriteLine(item.Key + &quot;:&quot; + item.Value); // foo:json, bar:100
-}
-</code></pre>
-<p>foreachを自然に使えるようにしたのと、IsDefined、Remove、DeserializeをDynamicとして自然に呼び出せるようにした、というのが更新内容になります。IsDefined(&quot;name&quot;)が.name()で自然なのか？というと、どうなんでしょうねー、という感じですが、しかしDynamicはIntelliSenseが効かないのです！なので、多少ややこしくても、こうして使える方が便利だと思われます。</p>
-<p>ところで、キャストとasの関係は、DynamicObjectだとより正確に意識する必要が出てきます。キャストとasは例外が飛ぶかnullになるかの違いしかない、と思っていたりしたのは私なのですが、そんなことはなくて、asはユーザ定義の変換演算子を呼ばないという性質があります。DynamicObjectでもそれが反映されているため、キャストするとTryConvertが呼ばれるのですが、asは純粋にそのクラスの継承関係しか見ません。</p>
-<h2>DynamicObjectとは</h2>
-<p>では本題。まずは基本から。型宣言がdynamicの場合に、挙動が変わるオブジェクトの作成方法は、DynamicObjectを継承して、挙動を変えたいメソッド(Tryなんたら)をオーバーライドするだけです。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/dynamic_override.jpg">
-</p>
-<p>override-&gt;スペースでIntelliSenseに候補が出てきますね、素敵。Try何とかかんとかの第一引数はbinderですが、とりあえずbinder.Nameだけで何とかなります。成否はboolで返し(falseの場合は、呼び出しを解決するため更に連鎖が重なったりする)、trueの場合はresultにセットした値が呼び出し元に返る。といった仕組みになっています。</p>
-<h2>呼び出しの解決</h2>
-<p>簡単な例、ということで呼び出し名を返す、というだけの単純なTryInvokeMemberを定義してみます。</p>
-<pre><code class="language-csharp">// MyDynamic:DynamicObjectのオーバーライド、メソッド呼び出し名を文字列としてそのまま返す、引数がある場合はfalse
-public override bool TryInvokeMember(InvokeMemberBinder binder, object[] args, out object result)
-{
-    result = binder.Name;
-    return (args.Length &gt; 0) ? false : true;
-}
-
-dynamic d = new MyDynamic();
-var t1 = d.Hoge(); // Hoge - dynamic(string)
-var t2 = d.ToString(); // ToStringにはならない、MyDynamicのToStringが呼ばれる
-</code></pre>
-<p>さて、この場合本来あるメソッドであるToStringやEquals、その他自分で定義したメソッドがあれば、それらを呼んだ場合はどちらが優先されるでしょうか、というと、定義されたメソッドが優先です。なので、TryInvokeMemberにだけ挙動を定義しておくと、どうやっても呼べないメソッドが出てきます。例えばDynamicJsonで言えば、プロパティ名がToStringのJSONに対してToString()で定義されているか確認は出来ません。そのための回避策として、TryInvokeMemberはIsDefinedの簡易記法としています。IsDefined(&quot;ToString&quot;)ならば問題なく呼べますので。</p>
-<p>引き続いて、TryInvokeMemberがfalseの場合も見てみます。</p>
-<pre><code class="language-csharp">public override bool TryGetMember(GetMemberBinder binder, out object result)
-{
-    result = new MyDynamic();
-    return true;
-}
-
-public override bool TryInvoke(InvokeBinder binder, object[] args, out object result)
-{
-    result = ((string)args[0]).ToUpper();
-    return true;
-}
-
-dynamic d = new MyDynamic();
-var t = d.Hoge(&quot;aaa&quot;); // AAA(InvokeMemberが失敗したらGetMemberが呼ばれ、それのTryInvokeが呼ばれる)
-</code></pre>
-<p>d.Hoge(&quot;aaa&quot;)は、まずTryInvokeMemberが呼ばれます。今回は引数がある場合はfalseとしているので、失敗します。すると、呼び出しの解決のためTryGetMemberが呼ばれます。ここでtrueの場合は、引数を持ってTryInvokeが呼ばれます。TryInvokeはd(&quot;aaa&quot;)のような、メソッド名なしでの関数呼び出しです。C#にはない記法となるので、TryInvokeMemberからの失敗の連鎖でTryGetMemberでDynamicObject以外を返すと、TryInvokeに失敗という形で例外が出ます。</p>
-<p>ややこしいですね！この失敗の連鎖はDynamicJsonではオブジェクトがネストしている際の呼び出しの解決に利用しています。</p>
-<pre><code class="language-csharp">var json = DynamicJson.Parse(@&quot;{&quot;&quot;tes&quot;&quot;:10,&quot;&quot;nest&quot;&quot;:{&quot;&quot;a&quot;&quot;:0}&quot;);
-
-json.nest(); // これはjson.IsDefined(&quot;nest&quot;)
-json.nest(&quot;a&quot;); // これはjson.nest.Delete(&quot;a&quot;)
-</code></pre>
-<p>json.nest(&quot;a&quot;)は、まずTryInvokeMemberが呼んでいます。これは原則IsDefinedと等しいのですが、引数がある場合はfalseにしています。そのためTryGetMemberが呼ばれて.nestを取得。そして、TryInvoke(これはDeleteに等しい)を呼ぶという流れになっています。真面目にDynamicObjectを使って構造を作る場合、呼び出し解決順序などを意識する必要は、間違いなくあります。ややこしいですけどねー。</p>
-<h2>DynamicObjectとforeach</h2>
-<p>DynamicObjectがIEnumerableならば、foreachはそれを呼びます。ていうかforeach可能なものはIEnumerableにするでしょ常識的に考えて。と、言いたいのですが世の中そうもいかなかったりします。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/dynamic_view.jpg">
-</p>
-<p>Dynamicの変数はデバッガで見るとDynamic Viewというものが用意されていて、展開すると全てのプロパティ名と値を表示してくれます(これに対応させるにはGetDynamicMemberNamesをオーバーライドする必要がある、DynamicObject作るなら必須！)。大変便利なのですが、これ、クラスがIEnumerableを実装している場合はIEnumerableの結果ビューに置き換わってしまい、Dynamic Viewがなくなってしまいます。</p>
-<p>Dynamic Viewがないと非常に不便極まりないので、DynamicJsonではIEnumerableの実装は断念しました。しかし、foreachでそのまま呼べないのは不便だ。どうする？となって思い浮かんだのは、IEnumerableじゃなくてもGetEnumeratorがあればforeachって呼ばれるんだよねー、普通のクラスは。という仕様がC#にはあるので、Dynamicでも行けるかな？と思いきやそんなことはなく、呼ばれませんでした。じゃあ、かわりにforeach時に何が呼ばれていたか、というと、TryConvertが呼ばれます。</p>
-<pre><code class="language-csharp">public override bool TryConvert(ConvertBinder binder, out object result)
-{
-    // foreachで呼ばれた時はbinder.TypeがIEnumerable
-    if (binder.Type == typeof(IEnumerable))
-    {
-        result = Enumerable.Range(1, 10); // resultはIEnumerableとIEnumerator、どちらでも可
-        return true;
-    }
-
-    // 通常のキャストは適当に分岐させるか、キャストの演算子オーバーロードでもどちらでもいい
-    // 演算子オーバーロードがある場合は、そちらが優先されます
-    result = (binder.Type == typeof(string)) ? &quot;hogehoge&quot; : null;
-    return true;
-}
-
-dynamic d = new MyDynamic();
-foreach (var item in d)
-{
-    Console.WriteLine(item); // 1,2,3,4,5,6,7,8,9,10
-}
-
-var ie = (IEnumerable)d; // これは失敗する、インターフェイスへの明示的型変換は不可！
-</code></pre>
-<p>C#ではインターフェイスの演算子オーバーロードは定義出来ないし、Dynamicでも呼び出しは不可能になっています。が、foreach呼び出し時のみ、TryConvertにTypeがIEnumerableとして渡るようになっているので、そこでtrueを返せば、IEnumerableではないDynamicObjectでもforeachで列挙出来ます。</p>
-<p>正直なところ、セコいハックに過ぎないです。本当はデバッガでDynamic Viewと結果ビューが共存できればいいんですよ、ていうか出来るべき。あと、Dynamic Viewは今のところ値がnullのものは表示しないようになっているのですが、これも不便な仕様ですね、改善して欲しいところ。とはいえ、IEnumerableじゃないから不便になってる！ということは無いと思われます。どちらにせよIEnumerableじゃなくてもdynamicはキャストしないと拡張メソッドが呼べない(つまりそのままではLinqが使えない)ため、利用感は犠牲にしていません。</p>
-<p>そういえばExpandoObjectはIEnumerableなのにdynamic viewが出るので、何か方法はあるかもしれませんね。</p>
-<h2>まとめ</h2>
-<p>dynamicは当初思っていたよりも、遥かに使いがいのある仕組みでした。dynamicはDSL。だと思います。そして、DSLとして便利に使わせるならば、メソッド名で呼ばせるのは厳禁。用意された機構を上手く使ってIntelliSenseレスでも快適に操作出来るようにしなければならない。というか、それで操作出来ないならば普通にC#で組んでIntelliSense効かせた方がずっと良い。</p>
-<p>と、まあ、そんなわけで<a href="http://dynamicjson.codeplex.com/" title="DynamicJson">DynamicJson</a>は400行程度の小さいコードですが、割と色々考えて作ってありますので、是非使ってみてください。お手製ライブラリにありがちなJSON解析の出来が怪しい、といった問題を、解析部を.NET FrameworkのJsonReaderWriterFactoryに丸投げしているため避けられている、というのも大きな利点かと思われます。</p>
-<p>ソースコード本体は、ArrayとObjectを一つのクラスに統合しているため、各メソッド行頭でifで分ける、というのが若干怪しいのですが(オブジェクト指向的にはポリモーフィズム、ていうかDynamicならその辺考えずに分けても問題ない、だろうけど400行のコードですからねえ、分割したほうが手間かつ分かりにくくなるだろうしで、まだリファクタリングの出番ではない、と思いますです、これ以上規模が膨れるなら別ですが)、全体的にはDynamicObjectの機能を満遍なく使っているので、参考になるかと思います。あと、JSON書き出し時のLinq to XmlでのXML組み立て部分は若干トリッキーなものの、割とよく出来ているかな？ Deserializeはもう少し気合入れて実装し直さないとダメな感じですがががが。</p>
 </div>
 <a href="https://neue.cc/20">Prev |</a>
 <a href="https://neue.cc/22">| Next</a>

@@ -23,7 +23,171 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2013/12/16_436.html">An Internal of LINQ to Objects</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2013/12/23_439.html">LightNode - Owinで構築するMicro RPC/REST Framework</a></h1>
+<ul class="date"><li>2013-12-23</li></ul>
+<div class="entry_body"><p>LightNodeというMicro RPC/REST FrameworkをOwinで作りました。というわけで、LightNodeについて……の前に、そもそもOwinって何？という感じだと思いますので、作成物を通してOwinが開くC#によるウェブ開発の未来について、もしくはOne ASP.NETというヴィジョンが見せる世界についてお伝えしようかな、と。これは<a href="http://www.adventar.org/calendars/132">One ASP.NET Advent Calendar 2013</a>への記事ですしね！ちなみに副題は「OWINでハイパー俺々フレームワーク作成」。きゃうん。</p>
+<h2>LightNode</h2>
+<p>バージョンはまだ0.1です。急ぎで作ったので、そう完成度高くないです。とはいえ十分動きますし、これは来年育てていきたいと思っているフレームワークです。やる気は、かなりあります。半年後ぐらいには実用になってるかなあ、と。ソースコードとか課題管理はGitHubで。</p>
+<ul>
+<li><a href="https://github.com/neuecc/LightNode/">GitHub - neuecc/LightNode</a></li>
+</ul>
+<p>例によってインストールはNuGetから。</p>
+<ul>
+<li>Install-Package <a href="https://nuget.org/packages/LightNode.Server/">LightNode.Server</a></li>
+</ul>
+<p>細かいパッケージが実はいっぱいあったりして……。</p>
+<ul>
+<li>Install-Package <a href="https://nuget.org/packages/LightNode.Client.PCL.T4/">LightNode.Client.PCL.T4</a></li>
+<li>Install-Package <a href="https://nuget.org/packages/LightNode.Formatter.JsonNet/">LightNode.Formatter.JsonNet</a></li>
+<li>Install-Package <a href="https://nuget.org/packages/LightNode.Formatter.ProtoBuf/">LightNode.Formatter.ProtoBuf</a></li>
+<li>Install-Package <a href="https://nuget.org/packages/LightNode.Formatter.MsgPack/">LightNode.Formatter.MsgPack</a></li>
+</ul>
+<p>LightNodeが提供するのはサーバーサイドフレームワーク(競合はASP.NET Web APIです)と、クライアントサイドのAPIアクセスコード自動生成(WCFがやっているような！)、両方です。クライアントサイドの生成は、Unity3Dへのコード生成が最初のターゲットだったはずなんですが時間的な都合上、今はPCLだけ、です。まあ近いうちにはUnityのは出します、あとTypeScript用のも。</p>
+<p>目標はクライアントサイドからサーバーサイドまで全てC#で統一されることによる生産性の超拡張を具現化すること。クライアントがUnityでサーバーがOwinで全部C#、みたいな、ね。両方C#で作り上げられることによるメリットを最大限引き出すことを目指しています。また、JSONオンリーではなくMessagePackやProtocol Buffersでのやり取りも可能なように、パフォーマンスを最大限追求します。また、そのうえで他言語との通信も捨てない、というわけでHTTPでRESTなでほげもげは捨てず、他言語からもサーバーへは自由にアクセス可能です。</p>
+<p>逆にRESTfulでビューティフォーなURL設計とかは優先度ゼロなので完全に捨てています。</p>
+<h2>Lightweight as a Server</h2>
+<p>LightNodeは超絶Lightweightなフレームワークです。何がLightweightかというと、パフォーマンスと実装の簡単さ、両方を指して言ってます。特に実装の手間はほとんどないぐらい非常に軽量です、ASP.NET Web APIとか超重量級ですからね（それはさすがにいいすぎ）。</p>
+<p>サーバーはOwin上に構築されていますので、まずOwinMiddlewareのセットアップが必要です。コンフィグだけは少し書いて下さい。SelfHostでもIISでもいいので、どちらかのOwinホストパッケージをNuGetで引っ張ってきて、スタートアップクラスでUseLightNodeする。</p>
+<pre><code class="language-csharp">// OwinのStartup
+public class Startup
+{
+    public void Configuration(Owin.IAppBuilder app)
+    {
+        // 受けつけるVerbを決めたりデフォのTypeFormatter(複数も当然できる)設定したり
+        app.UseLightNode(new LightNodeOptions(
+            AcceptVerbs.Get | AcceptVerbs.Post, 
+            new JavaScriptContentTypeFormatter()));
+    }
+}
+</code></pre>
+<p>準備はこれだけ。で、実際にAPIはどうやって作るかというと、LightNodeContractを継承したクラスのパブリックメソッドが、自動的にAPIとして公開されます。</p>
+<pre><code class="language-csharp">// LightNodeContractを実装すると全てのpublicメソッドがAPIになる
+// URLは {ClassName}/{MethodName} で固定
+// この場合だと例えば http://localhost/My/Echo?x=test
+public class My : LightNodeContract
+{
+    // 戻り値は↑で設定したContentTypeFormatterでシリアライズされて渡る    
+    public string Echo(string x)
+    {
+        return x;
+    }
+
+    // 今時なのでasyncもサポートしてるよ！戻り値はvoid, T, Task, Task&lt;T&gt;が使えます、ようは全部。
+    // パラメータのほうは配列、Nullable、オプション引数あたりはOK
+    public Task&lt;int&gt; Sum(int x, int? y, int z = 1000)
+    {
+        return Task.Run(() =&gt; x + y.Value + z);
+    }
+}
+</code></pre>
+<p>これで、「http://localhost/My/Echo?str=hoge」で叩けるってことになります。URLは {ClassName}/{MethodName} の形式で完全に統一されて、カスタマイズの余地はありません。</p>
+<p>サーバー側は基本的にこれだけです。単純！地味！</p>
+<p>必要最小限のラインってどこかなぁ、というのを考えた時、ここになるかな、と。ルーティングやパラメータのバインディング、レスポンスへの戻り値の書き込みなどはフレームワークがやってくれなきゃ死ぬけれど、それ以上はない。これだけでも割と十分便利に使える、の限界ラインを狙って、極力、機能を削ぎ落とす形で取捨選択しています。ちょっと不便、なぐらいで存外良かったりするのですよ、ちょっと便利、のために色々なものが引っ張られるより100倍良いでしょう？</p>
+<p>あと私は「設定より規約」って嫌いなんですよね。別にXML Hellがいいとは言わないですが、あのやり方はLL向けかなあ、という気が相当してまして、C#でそれをやっても嬉しいところってあんまないんじゃないかって思います。属性とか型をどういう活かすか、のほうがいいとオモイマス。</p>
+<h2>Lightweight as a Client</h2>
+<p>純粋（？）なRESTって、C#でも、他のどの言語でも、決して扱いやすいわけじゃない。だからラップしたHogeClientを作りますよね。そして、そうした特化したRestClientの作成って、結構難しい。使いやすいClientって中々作れるものじゃあないです。手間がかかるうえに使いにくいものが出来上がるなら、絶望的です。だからサーバーAPIとクライアント、自分たちで両方を作る時、もんのすごく苦労してしまう。どこもLightweightじゃない。こんなことならSOAPでVisual Studioで自動生成してくれてるののほうが100億倍Lightweightだったよー、とかね、それはそれで事実です。</p>
+<p>そこでLightNodeは真のLightweightを提供します。自動生成するからコストゼロで完璧なClient SDKが手渡されます。</p>
+<pre><code class="language-csharp">// 中身はHttpClientなので当然全部async
+// メソッドは全て
+// client.{ClassName}.{MethodName}Async({parameter}) で生成されます
+
+var client = new LightNodeClient(&quot;http://localhost&quot;);
+
+await client.Me.EchoAsync(&quot;test&quot;);
+var sum = await client.Me.SumAsync(1, 10, 100);
+</code></pre>
+<p>C#クライアントにとって、自然な操作感でサーバーサイドへとアクセスし、戻り値を受け取ることが出来ます（複雑なオブジェクトは内部のシリアライザを通して自動変換されます）。クライアント側にとってはRPCのように、サーバーを意識せず透過的にやり取り可能なこと、を目指しました。</p>
+<p>この自動生成コードは、HttpClientを使ったRestClientとしては、割とイイ感じに出力するので、そういったのの参考にもどうぞ多分。REST APIはこういった形にラップされてるのが使いやすいと思ってるんですね、私は。インターフェイスの明示的実装の活用例。手作業だと面倒でサボッてしまいがちなCancellationTokenも受け取り可能になってたり、その辺は機械生成ならではの徹底さです。</p>
+<p>ちなみに現状は実装時間的都合でまだPOSTにしか対応してない（次のアップデートでGETにも対応させます……）。</p>
+<h2>Micro RPC/REST Framework</h2>
+<p>Micro RPC FrameworkないしMicro REST Frameworkというのは造語です。ググッてもさして検索結果には出てきません。とはいえ、言わんとすることは分かるのではないでしょうかしらん。ヘヴィ級ORMのEntity Frameworkに対する、機能最小限でコンパクトなDapper。みたいなものです。徹底的に削ぎ落としたREST Framework。対極にあるのはUltra Super HeavyなFramework、って何？というと、ASP.NET Web APIかな。そう、ASP.NET Web APIって、別にLightweightじゃないよね？と、ずっと思っていて。ずっとしっくりこなくて。</p>
+<p>というか既存のRESTなフレームワークってどれもLightweightに思えない。何が自分の求めているものなのかなあってずっと考えていたのだけれど（その間、会う人会う人にWeb APIってしっくりこないんです！と吹っかけて回ってた、どうもご迷惑おかけしました）、RPCだ！って至りまして。一周回ってRPC、これはアリだ、と。</p>
+<h2>REST vs SOAP, REST vs RPC, REST vs WCF</h2>
+<p>そもそも対立軸がオカシイ。そして、その結果、orになるんだよね、どちらを選びますか？って。それ以外がないの。なんでそう極端な対立になってしまうの？でも、しかし、それはある意味正しい。だって何かを作るには、この世にあるものから選ぶしかないのだから。ヘヴィなSOAPが嫌ならRESTしかなく、ヘヴィなRPCが嫌ならRESTしかなく、ヘヴィなWCFが嫌ならREST(ASP.NET Web API)しかない。</p>
+<p>でも、本来は選択肢もっとあって良かったはずなんだよね。どうして中間がなかったんだろうね。そんなにRESTfulは素晴らしく輝かしい未来だったのかな。あまりにも、SOAPが、WCFが辛すぎて反動で極端に振れるしかなかったのかな。</p>
+<h2>RESTful</h2>
+<p>どうでもいい。だからLightNodeはGETとPOSTしかありません。</p>
+<h2>XML/JSON/XXX-RPC</h2>
+<p>doudemoii。入/出力がフォーマットに固定されるのが世の中的に厳しい。XMLは今どきアリエナイといわれてもshoganai感じになってきてしまっているし、その他のバイナリ形式もJavaScriptで扱いにくくなったりして絶望感ある。JSON最強はありますけど、それはそれで、一部クライアントとはMsgPackとかProtobufとかで高速省スペースな通信したいって欲求には応えられない。仕様もあってないようなものだし、それらに従っていいこと、あまりない。</p>
+<h2>Language Interoperability</h2>
+<p>LightNodeはかなりC#に依存というか、むしろ尻尾から先頭までC#で一気通貫して通せることをメリットの一つとしています。とはいえ（広義の）RESTなので、HTTPでGETかPOSTでアドレス叩けば結果帰ってきます。他の言語からも叩けるって物凄く大事なので、いくら一気通貫、C#で大統一理論を正義にしていても、大事にしてあげたいです。JavaScript無視するとか自殺行為ですしね(TypeScriptコードの生成は将来的に作りたいものの一つです)。</p>
+<p>仕様は、URLは{ClassName}/{MethodName}、パラメータはGETはクエリストリング、POSTはx-www-form-urlencodedで送ります。そのためということもあって、基本的にパラメータの型には制限があって、基本型(intとかstringとかDateTimeとか)のnullableとarray、それとオプション引数までにしか対応していません。複雑な型はダメ。</p>
+<p>ダメな理由としては、あと、それ許可するとメソッドや引数がAPIドキュメントの代わりにならないんですよね。何を渡すことが許されるているのか、のシンプルさが消える。せっかくC#側で作ることの良さ、型があること、を消してしまうほうがmottainai、トレードオフとしてナシという判断です。そしてそのほうが言語間Interoperabilityにも有利ですし。</p>
+<p>レスポンスのほうは自由です。何でもありです。基本的にbodyに書かれるだけなので、シリアライズ可能なものならなんでもOK。シリアライザも自由に選べます。こういった形式が自由なのは、パフォーマンスのためです。C#でガリガリに速くしたいなら、やっぱProtobufやMsgPackだろう、と(バイナリだから単純に高速省スペースとかいうのはただの幻想なのでWCFをそういう目では見ないようにしましょう)。でもJSONで吐けないのはそれはそれでありえないわけで、自由に選べる、かつ共存できるように(拡張子やContent-Typeで識別します)しています。</p>
+<p>RPC風であり、REST風な中間点がこれかなあ、と。これなら俺々仕様っぽさは特になくRESTといって納得できるレベルに収まってるかと。そのうえで、クライアント側的にはRPC風に使えるのでシームレス感が相当ある。APIの構造がC#に引っ張られて、他言語からキモチワルイ感を醸しだしてしまう可能性はあるのですが（但しメソッド名のcamel,Pascalは自由でどちらでも通るようになってます）、こればっかりはshoganaiかなあ。</p>
+<p>そもそもREST的な公開されてるほげもげって各言語、どの言語でも決して使いやすくはないような。だからSDKでラップしたものを使うでしょう？言語中立で万歳、みたいな理想世界がない以上は、プライマリの言語での使いやすさ＋セカンダリ以降でも可能な限り使いやすさを維持できる構造、にするのがベターかなあ、って。思ってます。</p>
+<h2>Why Code Generation? Why not Dynamic Proxy?</h2>
+<p>今のクライアントコードは、T4によるソースコード生成になっています。正直ダサい。クライアント側はソースコード生成よりも、共通のインターフェイスに対して動的コード生成でProxy作ってやるほうが手軽に扱えていいのよね。どういうイメージかと言いますと、例えば</p>
+<pre><code class="language-csharp">// こういうインターフェイスがサーバー側とクライアント側が共に参照するDLLに定義してあって
+public interface IHoge
+{
+    int Sum(int x, int y);
+}
+
+// サーバー側は↑のインターフェイスを実装する
+public class HogeContract : IHoge
+{
+    public int Sum(int x, int y)
+    {
+        return x + y;
+    }
+}
+
+// クライアント側は↓のような形で使える
+// Createの戻り値がIHogeになってて、その実装は動的生成されたもの、という感じ
+var sum = LightNodeClient.Create&lt;IHoge&gt;(&quot;http://localhost&quot;).Sum(10, 20); 
+</code></pre>
+<p>実にスッキリしていいですね！クライアントサイドのIHogeの実装は、動的コード生成により実行時に挿入されるので一切、手を加える必要はありません。ちなみに実装方法は<a href="http://msdn.microsoft.com/ja-jp/library/system.reflection.emit.assemblybuilder.aspx">AssemblyBuilder</a>を使ってひたすらILゴリゴリです。ExpressionTreeのCompileToMethodは静的メソッドしか作れないので、↑のイメージのようなインスタンスメソッドへの生成は気合入れて書くしかないのですねえ、やれやれ……。</p>
+<p>でも、今回はソースコード生成にしました。それはIL書くのが面倒だから、ではなくて（実際面倒だからってのはちょっとありますが！）、理由はそれなりに幾つかあります。</p>
+<p>まず、インターフェイスの戻り値＝クライアントにとっての戻り値、じゃあなくなってます。具体的にはTaskです。非同期以降の世界ではクライアント側の型はTask以外はありえないんです。ここで、じゃあインターフェイス側もTaskを強要すればいい、ってのは、それは不便なのでナシですしねえ。クライアント側のメソッド名はXxxAsyncにしたいとかってのもありますし、やっぱ、現代においてはインターフェイスをきっちり一致させるというのは難しい。</p>
+<p>あと、Unity。まあ、何度か名前↑で出しているようにUnityはかなりターゲットなわけですが、UnityのC#ってバージョン古いのですよね、Taskなんてないんですよ……。そんなわけで各プラットフォーム毎に全然違う生成したほうがいいってことになってしまいますよねえ、と。C#以外にTypeScriptなんかもターゲットにしたいですしね。</p>
+<p>そして最後に、AssemblyBuilderはフル.NET Frameworkにしかない。WinRTやPhone、当然PCLにはない。ないないないないなので、手間隙かけてIL書いてもあんま嬉しくなれない。</p>
+<p>そんなわけで、ソースコード生成を手法に選んでいます。</p>
+<p>とはいえ、提供手段がT4であることが良いかどうかはビミョイところですね。こういうの自体は、別に割とあるパターンではあるのですけど、例えばPetaPocoやORM LiteなどMicro ORM系はEFなどのヘヴィーなデザイナの代わりとしてT4を用いているし、 T4 MVCとかもあるし、……、うーん、そのぐらいか。あんまないね。</p>
+<p>あと今の実装はdllをロードしてそれを解析するんですが、ロードしたあとそのまんまアセンブリ掴みっぱなしで解放されないから、解放するにはVS再起動しないといけないとかいうクソ仕様とかも残ってるので、何とかしなきゃ度は相当高いです。誰か解決策教えてください。</p>
+<h2>Performance</h2>
+<p>機能面では最小な上に（劣る、とは言いません）、わざわざ新しく作る以上、パフォーマンスで負けていたら馬鹿みたいな話です。というわけで結果。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/12/lightnodeperformance.jpg' alt='' />
+</p>
+<p>OWIN上のWeb API、OWIN上のLightNode、OWIN上の生app.Run、あとふつーにIISでホストする生HttpHandlerの4つでテキトーに測ってみました。Nancyは加えようと思ったんですがちょっと動かなくて調べる時間がなかったので(この記事はAdvent Calendar的にギリギリで書き上げているのです！)いったんナシ。</p>
+<p>んで、速いです。というかほっとんど生HttpHandlerと変わらない速度出せてます。そりゃ機能少ないんだから当たり前……、ではないです。機能が少ない＝速い、に直接結びつくほど世の中、甘くはありません！この手のものを作るにあたって速度を稼ぐポイントは幾つかあって、しっかりポイント抑えたコード生成(&amp;キャッシュ)をしつつ、余計な要素を足さないことで最速になります。そりゃそーだ。ともあれ、これ以上は速くならないという限界ラインを突いてます。これより先はどう頑張っても誤差範囲は超えないでしょう、というか生Handler近辺の時点で、もう大して変えられんです。</p>
+<p>その辺の実装のコツのお話はまた次回にでも。（ただEnum周りのマッピング処理が現在ゴミなのでEnum入れると遅いです、これは次回までに改善します）</p>
+<h2>Owin</h2>
+<p>ASP.NET Web APIがOwin対応とか、そういうのどーでもいーんだよね。だってIISにホストするでしょ？SelfHostとか別になくてもいいレベルでしょ？プロダクション環境では使わないでしょ？というわけで、あるものを使うという点では、別に今はOwin対応とかドウデモイイレベルの話です。皆が今Owinにさして興味持てなかったり使い道に想像沸かないとしても、そりゃそうだ、です。だってIISでいいんですもの。</p>
+<p>Owinの利点はMiddlewareを組み合わせられること。けれど現状は、多様なMiddlewareは、特にはない。できたてほやほやみたいなものだから。むしろASP.NET Web APIやASP.NET MVCレベルでのコンポーネントのほうがあるし、将来的にもきっとそうでしょう。つまり、Middlewareも利点だー！と声高に言ってもshoganaiところがある。</p>
+<p>でも、それでも、そこに未来はある。Owinは誰もが簡単にMiddlewareを作れる。小さなちょっとしたユーティリティから、大きいフレームワークまで。ついに始まった自由の世界。多様なMiddlewareは、今は、特にはない。でも、作ればいい、必ず彩り豊かになる。そうなればASP.NET Web APIのOwin対応なども、意味がでてくる。</p>
+<p>そしてパフォーマンスですら手に入る。ああ、パフォーマンスは大事だ、そう、本当は大事でなかったとしても、とにかくキャッチーだからね。今までのASP.NETコアランタイム、System.Webがヘヴィだとしたら、それを完全にバイパスして直繋ぎしたら。発表されたHelios IIS Owin Web Server Hostは<a href="http://weblog.west-wind.com/posts/2013/Nov/23/Checking-out-the-Helios-IIS-Owin-Web-Server-Host">驚異的なパフォーマンスを見せている</a>。なるほど、すごく魅力的に見える。なにより、Microsoftは本気なんだなって気がする。Helios自体はまだαだけど、今はSystem.Webにホストしてもらって、Heliosが完成したらそっちでホストすればいい。そこが選べるのもOwinのいいところだ。ああ！素晴らしいじゃないか、Owin！</p>
+<h2>Create Your Own Framework</h2>
+<p>俺々フレームワークは悪。常識です。常識。かといって、何もかも作らないわけにはいきません。何を作り、作らないか、その見極めが戦略として非常に大事。自分の戦略でもそうだし会社だったらなお大事。</p>
+<p>さて、今回は作ったわけですけれど、その理由は単純にないから。ないものは作る。当たり前だよにぇ。といっても何もかもを満たすものなんて存在しないので、妥協できるかどうかのラインを見定めるってことではあるのだけれど。妥協ラインですが、C#の場合って、Microsoftで完結するものなら凄く整ってるんですよね、妥協OKというかむしろ完璧すぎるぐらいに。でも、今回の需要はMicrosoftの外側、Unityとか他のクライアント系のとか、それらと一気通貫に繋がって欲しいって需要なのです。Microsoftの中で完結してそれ以外とは疎結合、じゃなくて、繋がれる範囲は可能な限り全開に密結合して欲しいってのがリクエスト。そういうのって、未来永劫Microsoftから出てくることはない。絶対に。だから、作るって結論になる。</p>
+<p>あともう一つはどのぐらいのクオリティで作れるか。作ったはいいけどクソクオリティだったら不幸になるだけだからね！そして、C#の場合はVisual Studioとの統合具合もかなり大事。だから、MVCフレームワークなどだと、単純に作業量が超絶多くて全体のクオリティを保つのは非常に大変なうえに、ASP.NET MVCはVS統合が進んでてサクサクViewとControllerを相互に移動出来たりコンパイルエラーがくっついてたり、そういうところまで面倒見るのは不可能に近い。だから、部分的に良い物を作れたとしても全体的には超えるのって凄く難しいから、俺々フレームワークは、あまり良い選択肢にはなれなさそう（でも<a href="http://nancyfx.org/">Nancy</a>とか頑張って欲しい！）。</p>
+<p>Service系のフレームワークだとViewとかとの面倒みなくていいしVS統合もそんなに気を配らなくていい（WCFぐらいパーフェクトな統合があればそりゃ素敵だけど、WCFは統合されてはいても他に問題だらけなので除外）、最小限の機能のラインが見えていて、かなり満たしやすい。性能だって少し頑張れば既存のものを抜くのも簡単。そんなわけで作るのはアリだ、のラインに個人的には達しました。</p>
+<h2>Owin EcoSystem</h2>
+<p>Service系ならば、そもそもHTTPに乗らなくてもいいじゃない？特にパフォーマンス優先なら！という選択もありますね。それを選ばないのは、エコシステム。サーバー側には沢山のノウハウやシステムがあり、何もしなくても最高のInteroperabilityがある。通信関連ではHTTPったら最強ね。っていうのは揺るがない。よほどパフォーマンス優先な根幹的な何かを作るのでなければ。</p>
+<p>そして、Owinもまた理由になります。今までの俺々フレームワークの最大の欠点は、全て自前で作るしかなかったことです。でもOwinがあれば違う。認証？他のMiddlewareで。パフォーマンスモニタ系？例えば<a href="http://getglimpse.com/">Glimpse</a>は最高のモニタライブラリだけど、俺々フレームワークで、こういうのが一切使えなくなるって、痛手というか、それだけでありえないレベルになりますよね。でも、Owinならば、GlimpseがOwinに対応すればそれだけで乗っかることが出来る（そして実際、現在対応作業中のようです）。<a href="http://newrelic.com/">New Relic</a>のような監視ツールなどもそう、俺々フレームワークであっても、そういうのにフルに乗っかっていけるってのが、今までと違うところだし、だから、作ってもOKの許容ラインに達しやすくなったと思いますですよ。</p>
+<p>私も、LightNodeのようなフレームワークレベルのものだけじゃなく、他のフレームワークで使える小さなMiddlewareをこっそり作って公開してたりします。一つは<a href="https://github.com/neuecc/OwinRequestScopeContext/">OwinRequestScopeContext</a>で、HttpContext.CurrentのようなものをOwin上で使えるようにするもの。もう一つは<a href="https://github.com/neuecc/Owin.RedisSession">RedisSession</a>で、その名の通り、裏側がRedisのセッションストアです。RedisのHash構造に格納していて、リクエスト開始時に全部のデータを読み込み、リクエスト実行中のアクセスは全てインメモリで完結さえ、リクエスト終了時に変更があったもの差分だけを書き出す(RedisのHash構造だからこそ可能)ようにしています。実はこれの原型は既に謎社で実稼働していて、沢山のアクセスを捌いている実績アリだったりして。</p>
+<p>今後RubyのRackにある便利Middlewareが移植されたりとかもするんじゃないでしょうか、むしろ良さそーな発想のものは自分達で移植してみるのもいいかもしれません。Owinが出たことで、自分達で作ることが、独善じゃなく発展の道になった。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/12/oneaspnetandyou.jpg' alt='' />
+</p>
+<p>One ASP.NET。You。使うだけじゃなく作る。それがこれからのASP.NETの未来だと思います。</p>
+<h2>Related Works</h2>
+<p><a href="http://ja.wikipedia.org/wiki/Windows_Communication_Foundation">WCF</a>。なんのかんのいってWCF。は偉いねえ、壮大だねえ、とか。LightNodeはWCFのABCからBindingを抜いたようなイメージでいいですよ。で、やっぱWCFとかの、その手の抽象化は辛い！何か被せて共通化して出来た気がするのは誰も満足させられないパターン。</p>
+<p><a href="https://github.com/ppcuni/rpcoder">rpcoder</a>。Aimingさんの、独自IDL(Interface Definition Language)からUnity用のC#コードとかを吐き出すもの。LightNodeとの違いは、IDLかどうか、かしらん。LightNodeはIDLじゃなくてサーバーサイドの実装そのものが定義になるので、そういった外部定義不要なので、手間削減と、実装との乖離が絶対にないってとこかしらん。</p>
+<p>似たようなというか定義という点では<a href="http://raml.org/">RAML</a>とかね、まぁRAMLは最悪かなぁって思うのですけれど。RESTfulの呪縛に囚われて極北まで行くとそうなるのかねえ。どうぞ素敵なモデリングをしてください。ほんとdoudemoii。</p>
+<p><a href="https://developers.google.com/appengine/docs/java/endpoints/">Google Cloud Endpoints</a>。サーバーの実装があって、そこからiOSやAndroid用のコードを生成するってもの。いいですねー、これですよこれ。Cloud Endpointsの正式リリースはついこないだですが、（特に）モバイル向けのバックエンドはこういうのがベストだと本当に思いますし、RPCの時代というかそういったようなものの時代への揺り戻しというか、再び多様性の時代が来たかな、と、健全で素敵です。</p>
+<p><a href="https://servicestack.net/">ServiceStack</a>。これは、WCF Alternativeの中では一番メジャーな選択肢、ではあるのだけど、正直、なんか、この人のAPIセンスは……。辛い。正直ナシです。ちなみにv4から有料化しました。</p>
+<p><a href="http://twitter.github.io/finagle/">Finagle</a>。Twitter製の、Scalaでできた非同期でプラガブルなRPCフレームワーク。非同期なので全部Future(C#のTaskみたいなもの)。Relatedといったけど特に直接的な影響はないけど、オサレでモダンなフレームワークがRPC、というところだけちょっと強調とか。</p>
+<p><a href="https://github.com/duovia/duovia-http">DuoVia.Http</a>。Owinで動くLightweightのService Libraryということで、LightNodeに一番近い先行実装ですね！クライアント側はプロキシによる動的生成なので非同期なし。サーバー側がrefやoutに対応させたりとか多機能を狙いすぎて、実行速度が引っ張られてたりとか、ちょっと違うかな、と。</p>
+<p><a href="http://www.asp.net/web-api">ASP.NET Web API</a>。まぁ、散々腐しましたけれど、実際ふつーに選ぶのならASP.NET Web APIが最初の選択肢だと思います。悪くないですよむしろイイですよ。そもそもLightNodeの実装にあたっては<a href="http://www.slideshare.net/miso_desu/50-aspnet-web-api">50分で掴み取る ASP.NET Web API パターン＆テクニック</a>とか<a href="http://www.slideshare.net/miso_desu/one-aspnet-owinkatana">One ASP.NET, OWIN &amp; Katana</a>とかガン見してたので<a href="http://miso-soup3.hateblo.jp/">味噌先生</a>には頭が上がらないのでWeb APIいいんじゃないでしょうか（適当）。真面目な話、ASP.NET Web APIが一番参考にしてるのは間違いないですので、話の流れ（？）で色々腐しましたが、良いと思いますよ、本当。</p>
+<h2>Conclusion</h2>
+<p>One ASP.NETと言いつつも別にフィーチャーされないYou!の部分を推してみました。人昔前は、こういった俺々フレームワークが乱立しないのが.NETの良さ、と言われていた、こともありました。ありました。過去の話です。世界の進化は速く、Microsoftだけが一手に全ての需要を引き受けられるわけがない。それぞれの需要に合わせて、時に組み合わせて、時に自分で作り上げることができる。そういった世界の幕開けがOwinです。まだまだMiddlewareは足りていないので、「組み立てる」にはならないでしょう、けれどそれを解決するためにも、自分達で作り、公開していきましょう？それがOpenな世界だし、これからのC#コミュニティのあるべき姿だと思っています。</p>
+<p>（いつもやるやる詐欺で毎回言ってる気がしますが）LightNodeはコンセプトだけじゃなく、真面目に育てていきたいと思っています。そもそも、会社として、この辺の通信が来年は重要課題になってくるなあ、というのがあって考えてたものなので、諸々色々で半年後ぐらいには十分な完成度で掲示できるかなあ、って思いますですよ。勿論、皆さん今から使ってくれたら嬉しいですにぇ。</p>
+<p>また、コンセプト語るには実装がなきゃ、と相当思っていまして。<a href="http://steps.dodgson.org/b/2013/04/24/recent-happenings-on-elders/">かつて人々は「パターン」「契約による設計」などアイデアに名前をつけて論じたけれど、 このごろの新しいアイデアはフレームワークやプログラミング言語、データベースエンジンなどを通じて表現されるようになった。 今は書籍ではなく実装が思想を表現する手段になっている</a>と、Eric Evans(DDD本の人)は語った。そんなわけで、というわけではないですけれど、私は私の思想はコードで表現していきたいと思っているし、そもそもそうしてきた。linq.js(LINQが言語を超えることを)もChaining Assertion(流れるようなインターフェイスや英語的なるものの馬鹿らしさを)もReactiveProperty(全てが繋がるイメージを)もそうです。ライブラリは思想の塊なのです、言葉に出されていなければそこに思想はない？そんなことはなく、ずっと流暢に語ってくれるはず。</p>
+<p>そしてC#の強さの証明は、会社の結果で表現していきます。実証されなければ何の意味もないし、何の説得力もない。誰に？というと、日本に、世界に。というわけで、引き続き来年の諸々にもご期待ください！</p>
+</div>
+<h1><a href="https://neue.cc/2013/12/16_436.html">An Internal of LINQ to Objects</a></h1>
 <ul class="date"><li>2013-12-16</li></ul>
 <div class="entry_body"><p>というタイトルで、大阪で開催された<a href="http://vshtc.doorkeeper.jp/events/6781">第3回 LINQ勉強会</a>で発表してきました。</p>
 <iframe src="https://www.slideshare.net/slideshow/embed_code/29200657" width="597" height="486" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC;border-width:1px 1px 0;margin-bottom:5px" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="https://www.slideshare.net/neuecc/an-internal-of-linq-to-objects-29200657" title="An Internal of LINQ to Objects" target="_blank">An Internal of LINQ to Objects</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
@@ -1923,328 +2087,6 @@ Console.WriteLine(unescaped); // q=つくば
 <iframe src="https://www.slideshare.net/slideshow/embed_code/23314703" width="597" height="400" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC;border-width:1px 1px 0;margin-bottom:5px" allowfullscreen webkitallowfullscreen mozallowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="http://www.slideshare.net/neuecc/the-history-of-linq" title="The History of LINQ" target="_blank">The History of LINQ</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
 <p>初心者向け勉強会（？）ということで、歴史ですかにぇー。詳細よりは、全体的にあっさり、みたいな。多分ね！<a href="http://research.microsoft.com/en-us/um/cambridge/projects/comega/">Cω</a>とかもう10年前ですが、これだけ時間のたった今だからこそ、あらためてちょっと見てみると面白いね、みたいな。</p>
 <p><a href="http://togetter.com/li/523153">第一回つくばC#勉強会 #tkbcsmt 当日の様子</a>ということで実にカオス、よかったね！面白かったです～。</p>
-</div>
-<h1><a href="https://neue.cc/2013/06/20_408.html">TypeScript 0.9のジェネリクス対応でlinq.jsの型定義作って苦労した話</a></h1>
-<ul class="date"><li>2013-06-20</li></ul>
-<div class="entry_body"><p>久しぶりの<a href="http://www.typescriptlang.org/">TypeScript</a>。<a href="http://blogs.msdn.com/b/typescript/archive/2013/06/18/announcing-typescript-0-9.aspx">Announcing TypeScript 0.9</a>というわけで、ついに待望のジェネリクスが搭載されました。やったね！というわけで、ジェネリクス対応の<a href="https://linqjs.codeplex.com/">linq.js</a>の型定義を早速作りました、と。ver 3.0.4-Beta5です。まだまだBeta、すみませんすみません、色々忙しくて……。NuGetからもしくはサイトからのダウンロードで公開してます。</p>
-<p>とりあえず例として使ってみた感じ。</p>
-<pre><code class="language-javascript">// booleanしか受け入れないwhereにnumberを突っ込んだらちゃんと怒ってくれるよ！
-// Call signatures of types '(x: any) =&gt; number' and '(element: number, index: number) =&gt; boolean' are incompatible.
-var seq = Enumerable.from([1, 10, 100, 100]).where(x =&gt; x * 2);
-</code></pre>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/ts_generics_intellisense.jpg">
-</p>
-<p>やったー。これだよこれ！LINQはジェネリクスがあって本当の本当の真価を発揮するんです！！！</p>
-<h2>面白げな型定義</h2>
-<p>C#とちょっと違うところとしては、ジェネリクスの型変数のところにもオブジェクトを突っ込めるんですね。だから</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/ts_generics_typearg.jpg">
-</p>
-<pre><code class="language-javascript">// from(obj)の型定義はこんな感じ。
-from(obj: any): IEnumerable&lt;{ key: string; value: any }&gt;;
-
-// ちなみにfromのオーバーロードはいっぱいある
-// linq.js自体はJScriptのIEnumerableとWinMDのIIterable&lt;T&gt;にも対応してるのですがTSで表現できないので、そこは未定義……。。。
-from(): IEnumerable&lt;any&gt;; // empty
-from&lt;T&gt;(obj: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
-from(obj: number): IEnumerable&lt;number&gt;;
-from(obj: boolean): IEnumerable&lt;boolean&gt;;
-from(obj: string): IEnumerable&lt;string&gt;;
-from&lt;T&gt;(obj: T[]): IEnumerable&lt;T&gt;;
-from&lt;T&gt;(obj: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
-</code></pre>
-<p>このkey,valueはどこから出てきたんだよって感じでわかりづらかったので、こうして見えてくれると嬉しい度高い。</p>
-<h2>型消去</h2>
-<p>場合によってはIEnumerable&lt;any&gt;となるため、Tの型をつけてあげたかったり、もしくは強引に変換したかったり（例えば↑のIIterable&lt;T&gt;は{key,value}に解釈されてしまうので、明示的に変換してあげる必要がある）する場合のために、castメソッドを用意しました。</p>
-<pre><code class="language-javascript">// any[]型で渡ってきたりする場合に
-var seq: any[] = [1, 2, 3, 4, 5];
-
-var result = Enumerable.from(seq)
-    .cast&lt;number&gt;() // numberに変換
-    .select(x =&gt; x * x) // x:number
-    .toArray(); // result:number[]
-</code></pre>
-<p>さて、ところで、TypeScriptのジェネリクスは型消去(Type Erasure)式です。コンパイル結果のJSは以下のような感じで</p>
-<pre><code class="language-javascript">var result = Enumerable.from(seq)
-    .cast()
-    .select(function (x) { return x * x; })
-    .toArray();
-</code></pre>
-<p>一切の型は消えています。なので、TypeScriptでTの型を取って実行時に扱ったりはできません。型が欲しければ型を渡せ方式。</p>
-<p>linq.jsにはofTypeという、型でフィルタリングするメソッドがあるのですが</p>
-<pre><code class="language-javascript">// 混在した配列から、型でフィルタして取り出す
-var mixed: any[] = [1, &quot;hoge&quot;, 100, true, &quot;nano&quot;];
-
-// このままじゃ型が分からないのでresultはany[]
-var result1 = Enumerable.from(mixed)
-    .ofType(Number) // 数値型のみでフィルタ、つまり[1, 100]
-    .toArray();
-
-// ofTypeの後にcastするか、もしくはofTypeで型指定するか
-var result2 = Enumerable.from(mixed)
-    .ofType&lt;number&gt;(Number)
-    .toArray();
-</code></pre>
-<p>というように、&lt;number&gt;(Number)と連続するのが非常に不恰好……。まあ、この辺はそういうものなのでしょうがないと諦めましょう。</p>
-<h2>地雷ふんだり</h2>
-<p>さて、そんな素敵なTypeScript 0.9なのですが、残念なお知らせ。現在の、というか、この0.9ですが、完成度はものすごーーーーーーーーく、低いです。はい、超低いです。Visual Studioと組み合わせて使う場合、半端無く動作も補完も遅いです。正直、ベータどころかアルファぐらいのクオリティで、何故に堂々と出してきたのか理解に苦しむ。遅いだけならまだしも、ジェネリクスの解釈が非常に怪しく、地雷を踏むと補完やエラー通知が消え去ります。いや、消え去るだけならまだよくて、Visual Studioと裏で動くTypeScript Compilerが大暴走をはじめてCPUが100%に張り付いたりします。もうヤヴァい。タスクマネージャー開きっぱにして警戒しながらじゃないと書けないです。linq.jsの型定義書くの超絶苦労した……。</p>
-<pre><code class="language-javascript">interface IEnumerable&lt;T&gt; {
-    // 戻り値の型をIEnumerable&lt;IGrouping&lt;TKey, T&gt;&gt;にしたいのですが、
-    // interface側で定義しているTをネストした型変数に使うとVSが大暴走して死ぬ
-    // ので、今回のバージョンではanyにしてます
-    groupBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IEnumerable&lt;IGrouping&lt;TKey, any&gt;&gt;;
-}
-</code></pre>
-<p>具体的に踏んだのは↑ですねえ。最初原因が分かってなくてかなり時間食われちゃいました。んもー。最小セットで試してる限りでは、コンパイルエラーにはなるんですが(A generic type may not reference itself with a wrapped form of its own type parameters.)暴走はしない、んですがlinq.d.tsで弄ってると死ぬ。おうふ。もう定義の仕方が悪いのかコンパイラがアレなのか判断つかないのでしんどい。</p>
-<p>そんなわけで、0.8の完成度からだいぶ退化して、実用性はゼロになってしまいました。私の環境だけ、じゃあないよねえ…‥？とりあえず0.9.1を待ちましょう。どうやらコンパイラをまるっと書き換えたそうですしねー、初物だからshoganaiと思うことにして。しかし泣きたい。</p>
-<h2>linq.d.ts</h2>
-<p>とりあえず、こんな感じになってます。</p>
-<pre><code class="language-csharp">// Type Definition for linq.js, ver 3.0.4-Beta5
-
-declare module linqjs {
-    interface IEnumerator&lt;T&gt; {
-        current(): T;
-        moveNext(): boolean;
-        dispose(): void;
-    }
-
-    interface Enumerable {
-        Utils: {
-            createLambda(expression: any): (...params: any[]) =&gt; any;
-            createEnumerable&lt;T&gt;(getEnumerator: () =&gt; IEnumerator&lt;T&gt;): IEnumerable&lt;T&gt;;
-            createEnumerator&lt;T&gt;(initialize: () =&gt; void , tryGetNext: () =&gt; boolean, dispose: () =&gt; void ): IEnumerator&lt;T&gt;;
-            extendTo(type: any): void;
-        };
-        choice&lt;T&gt;(...params: T[]): IEnumerable&lt;T&gt;;
-        cycle&lt;T&gt;(...params: T[]): IEnumerable&lt;T&gt;;
-        empty&lt;T&gt;(): IEnumerable&lt;T&gt;;
-        // from&lt;T&gt;, obj as JScript's IEnumerable or WinMD IIterable&lt;T&gt; is IEnumerable&lt;T&gt; but it can't define.
-        from(): IEnumerable&lt;any&gt;; // empty
-        from&lt;T&gt;(obj: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
-        from(obj: number): IEnumerable&lt;number&gt;;
-        from(obj: boolean): IEnumerable&lt;boolean&gt;;
-        from(obj: string): IEnumerable&lt;string&gt;;
-        from&lt;T&gt;(obj: T[]): IEnumerable&lt;T&gt;;
-        from&lt;T&gt;(obj: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
-        from(obj: any): IEnumerable&lt;{ key: string; value: any }&gt;;
-        make&lt;T&gt;(element: T): IEnumerable&lt;T&gt;;
-        matches&lt;T&gt;(input: string, pattern: RegExp): IEnumerable&lt;T&gt;;
-        matches&lt;T&gt;(input: string, pattern: string, flags?: string): IEnumerable&lt;T&gt;;
-        range(start: number, count: number, step?: number): IEnumerable&lt;number&gt;;
-        rangeDown(start: number, count: number, step?: number): IEnumerable&lt;number&gt;;
-        rangeTo(start: number, to: number, step?: number): IEnumerable&lt;number&gt;;
-        repeat&lt;T&gt;(element: T, count?: number): IEnumerable&lt;T&gt;;
-        repeatWithFinalize&lt;T&gt;(initializer: () =&gt; T, finalizer: (element) =&gt; void ): IEnumerable&lt;T&gt;;
-        generate&lt;T&gt;(func: () =&gt; T, count?: number): IEnumerable&lt;T&gt;;
-        toInfinity(start?: number, step?: number): IEnumerable&lt;number&gt;;
-        toNegativeInfinity(start?: number, step?: number): IEnumerable&lt;number&gt;;
-        unfold&lt;T&gt;(seed: T, func: (value: T) =&gt; T): IEnumerable&lt;T&gt;;
-        defer&lt;T&gt;(enumerableFactory: () =&gt; IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
-    }
-
-    interface IEnumerable&lt;T&gt; {
-        constructor(getEnumerator: () =&gt; IEnumerator&lt;T&gt;);
-        getEnumerator(): IEnumerator&lt;T&gt;;
-
-        // Extension Methods
-        traverseBreadthFirst(func: (element: T) =&gt; IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
-        traverseBreadthFirst&lt;TResult&gt;(func: (element: T) =&gt; IEnumerable&lt;T&gt;, resultSelector: (element: T, nestLevel: number) =&gt; TResult): IEnumerable&lt;TResult&gt;;
-        traverseDepthFirst&lt;TResult&gt;(func: (element: T) =&gt; Enumerable): IEnumerable&lt;T&gt;;
-        traverseDepthFirst&lt;TResult&gt;(func: (element: T) =&gt; Enumerable, resultSelector?: (element: T, nestLevel: number) =&gt; TResult): IEnumerable&lt;TResult&gt;;
-        flatten(): IEnumerable&lt;any&gt;;
-        pairwise&lt;TResult&gt;(selector: (prev: T, current: T) =&gt; TResult): IEnumerable&lt;TResult&gt;;
-        scan(func: (prev: T, current: T) =&gt; T): IEnumerable&lt;T&gt;;
-        scan&lt;TAccumulate&gt;(seed: TAccumulate, func: (prev: TAccumulate, current: T) =&gt; TAccumulate): IEnumerable&lt;TAccumulate&gt;;
-        select&lt;TResult&gt;(selector: (element: T, index: number) =&gt; TResult): IEnumerable&lt;TResult&gt;;
-        selectMany&lt;TOther&gt;(collectionSelector: (element: T, index: number) =&gt; IEnumerable&lt;TOther&gt;): IEnumerable&lt;TOther&gt;;
-        selectMany&lt;TCollection, TResult&gt;(collectionSelector: (element: T, index: number) =&gt; IEnumerable&lt;TCollection&gt;, resultSelector: (outer: T, inner: TCollection) =&gt; TResult): IEnumerable&lt;TResult&gt;;
-        selectMany&lt;TOther&gt;(collectionSelector: (element: T, index: number) =&gt; TOther[]): IEnumerable&lt;TOther&gt;;
-        selectMany&lt;TCollection, TResult&gt;(collectionSelector: (element: T, index: number) =&gt; TCollection[], resultSelector: (outer: T, inner: TCollection) =&gt; TResult): IEnumerable&lt;TResult&gt;;
-        selectMany&lt;TOther&gt;(collectionSelector: (element: T, index: number) =&gt; { length: number;[x: number]: TOther; }): IEnumerable&lt;TOther&gt;;
-        selectMany&lt;TCollection, TResult&gt;(collectionSelector: (element: T, index: number) =&gt; { length: number;[x: number]: TCollection; }, resultSelector: (outer: T, inner: TCollection) =&gt; TResult): IEnumerable&lt;TResult&gt;;
-        where(predicate: (element: T, index: number) =&gt; boolean): IEnumerable&lt;T&gt;;
-        choose(selector: (element: T, index: number) =&gt; T): IEnumerable&lt;T&gt;;
-        ofType&lt;TResult&gt;(type: any): IEnumerable&lt;TResult&gt;;
-        zip&lt;TResult&gt;(second: IEnumerable&lt;T&gt;, resultSelector: (first: T, second: T, index: number) =&gt; TResult): IEnumerable&lt;TResult&gt;;
-        zip&lt;TResult&gt;(second: { length: number;[x: number]: T; }, resultSelector: (first: T, second: T, index: number) =&gt; TResult): IEnumerable&lt;TResult&gt;;
-        zip&lt;TResult&gt;(second: T[], resultSelector: (first: T, second: T, index: number) =&gt; TResult): IEnumerable&lt;TResult&gt;;
-        zip&lt;TResult&gt;(...params: any[]): IEnumerable&lt;TResult&gt;; // last one is selector
-        merge&lt;TResult&gt;(...params: IEnumerable&lt;T&gt;[]): IEnumerable&lt;T&gt;;
-        merge&lt;TResult&gt;(...params: { length: number;[x: number]: T; }[]): IEnumerable&lt;T&gt;;
-        merge&lt;TResult&gt;(...params: T[][]): IEnumerable&lt;T&gt;;
-        join&lt;TInner, TKey, TResult&gt;(inner: IEnumerable&lt;TInner&gt;, outerKeySelector: (outer: T) =&gt; TKey, innerKeySelector: (inner: TInner) =&gt; TKey, resultSelector: (outer: T, inner: TKey) =&gt; TResult, compareSelector?: (obj: T) =&gt; TKey): IEnumerable&lt;TResult&gt;;
-        join&lt;TInner, TKey, TResult&gt;(inner: { length: number;[x: number]: TInner; }, outerKeySelector: (outer: T) =&gt; TKey, innerKeySelector: (inner: TInner) =&gt; TKey, resultSelector: (outer: T, inner: TKey) =&gt; TResult, compareSelector?: (obj: T) =&gt; TKey): IEnumerable&lt;TResult&gt;;
-        join&lt;TInner, TKey, TResult&gt;(inner: TInner[], outerKeySelector: (outer: T) =&gt; TKey, innerKeySelector: (inner: TInner) =&gt; TKey, resultSelector: (outer: T, inner: TKey) =&gt; TResult, compareSelector?: (obj: T) =&gt; TKey): IEnumerable&lt;TResult&gt;;
-        groupJoin&lt;TInner, TKey, TResult&gt;(inner: IEnumerable&lt;TInner&gt;, outerKeySelector: (outer: T) =&gt; TKey, innerKeySelector: (inner: TInner) =&gt; TKey, resultSelector: (outer: T, inner: TKey) =&gt; TResult, compareSelector?: (obj: T) =&gt; TKey): IEnumerable&lt;TResult&gt;;
-        groupJoin&lt;TInner, TKey, TResult&gt;(inner: { length: number;[x: number]: TInner; }, outerKeySelector: (outer: T) =&gt; TKey, innerKeySelector: (inner: TInner) =&gt; TKey, resultSelector: (outer: T, inner: TKey) =&gt; TResult, compareSelector?: (obj: T) =&gt; TKey): IEnumerable&lt;TResult&gt;;
-        groupJoin&lt;TInner, TKey, TResult&gt;(inner: TInner[], outerKeySelector: (outer: T) =&gt; TKey, innerKeySelector: (inner: TInner) =&gt; TKey, resultSelector: (outer: T, inner: TKey) =&gt; TResult, compareSelector?: (obj: T) =&gt; TKey): IEnumerable&lt;TResult&gt;;
-        all(predicate: (element: T) =&gt; boolean): boolean;
-        any(predicate?: (element: T) =&gt; boolean): boolean;
-        isEmpty(): boolean;
-        concat(...sequences: IEnumerable&lt;T&gt;[]): IEnumerable&lt;T&gt;;
-        concat(...sequences: { length: number;[x: number]: T; }[]): IEnumerable&lt;T&gt;;
-        concat(...sequences: T[]): IEnumerable&lt;T&gt;;
-        insert(index: number, second: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
-        insert(index: number, second: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
-        alternate(alternateValue: T): IEnumerable&lt;T&gt;;
-        alternate(alternateSequence: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
-        alternate(alternateSequence: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
-        alternate(alternateSequence: T[]): IEnumerable&lt;T&gt;;
-        contains(value: T): boolean;
-        contains&lt;TCompare&gt;(value: T, compareSelector?: (element: T) =&gt; TCompare): boolean;
-        defaultIfEmpty(defaultValue?: T): IEnumerable&lt;T&gt;;
-        distinct(): IEnumerable&lt;T&gt;;
-        distinct&lt;TCompare&gt;(compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
-        distinctUntilChanged(): IEnumerable&lt;T&gt;;
-        distinctUntilChanged&lt;TCompare&gt;(compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
-        except(second: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
-        except&lt;TCompare&gt;(second: { length: number;[x: number]: T; }, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
-        except(second: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
-        except&lt;TCompare&gt;(second: IEnumerable&lt;T&gt;, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
-        except(second: T[]): IEnumerable&lt;T&gt;;
-        except&lt;TCompare&gt;(second: T[], compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
-        intersect(second: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
-        intersect&lt;TCompare&gt;(second: { length: number;[x: number]: T; }, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
-        intersect(second: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
-        intersect&lt;TCompare&gt;(second: IEnumerable&lt;T&gt;, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
-        intersect(second: T[]): IEnumerable&lt;T&gt;;
-        intersect&lt;TCompare&gt;(second: T[], compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
-        union(second: { length: number;[x: number]: T; }): IEnumerable&lt;T&gt;;
-        union&lt;TCompare&gt;(second: { length: number;[x: number]: T; }, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
-        union(second: IEnumerable&lt;T&gt;): IEnumerable&lt;T&gt;;
-        union&lt;TCompare&gt;(second: IEnumerable&lt;T&gt;, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
-        union(second: T[]): IEnumerable&lt;T&gt;;
-        union&lt;TCompare&gt;(second: T[], compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;T&gt;;
-        sequenceEqual(second: { length: number;[x: number]: T; }): boolean;
-        sequenceEqual&lt;TCompare&gt;(second: { length: number;[x: number]: T; }, compareSelector: (element: T) =&gt; TCompare): boolean;
-        sequenceEqual(second: IEnumerable&lt;T&gt;): boolean;
-        sequenceEqual&lt;TCompare&gt;(second: IEnumerable&lt;T&gt;, compareSelector: (element: T) =&gt; TCompare): boolean;
-        sequenceEqual(second: T[]): boolean;
-        sequenceEqual&lt;TCompare&gt;(second: T[], compareSelector: (element: T) =&gt; TCompare): boolean;
-        orderBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IOrderedEnumerable&lt;T&gt;;
-        orderByDescending&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IOrderedEnumerable&lt;T&gt;;
-        reverse(): IEnumerable&lt;T&gt;;
-        shuffle(): IEnumerable&lt;T&gt;;
-        weightedSample(weightSelector: (element: T) =&gt; number): IEnumerable&lt;T&gt;;
-        // truly, return type is IEnumerable&lt;IGrouping&lt;TKey, T&gt;&gt; but Visual Studio + TypeScript Compiler can't compile.
-        groupBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IEnumerable&lt;IGrouping&lt;TKey, T&gt;&gt;;
-        groupBy&lt;TKey, TElement&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement): IEnumerable&lt;IGrouping&lt;TKey, TElement&gt;&gt;;
-        groupBy&lt;TKey, TElement, TResult&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement, resultSelector: (key: TKey, element: IEnumerable&lt;TElement&gt;) =&gt; TResult): IEnumerable&lt;TResult&gt;;
-        groupBy&lt;TKey, TElement, TResult, TCompare&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement, resultSelector: (key: TKey, element: IEnumerable&lt;TElement&gt;) =&gt; TResult, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;TResult&gt;;
-        // :IEnumerable&lt;IGrouping&lt;TKey, T&gt;&gt;
-        partitionBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IEnumerable&lt;IGrouping&lt;TKey, any&gt;&gt;;
-        // :IEnumerable&lt;IGrouping&lt;TKey, TElement&gt;&gt;
-        partitionBy&lt;TKey, TElement&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement): IEnumerable&lt;IGrouping&lt;TKey, TElement&gt;&gt;;
-        partitionBy&lt;TKey, TElement, TResult&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement, resultSelector: (key: TKey, element: IEnumerable&lt;TElement&gt;) =&gt; TResult): IEnumerable&lt;TResult&gt;;
-        partitionBy&lt;TKey, TElement, TResult, TCompare&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement, resultSelector: (key: TKey, element: IEnumerable&lt;TElement&gt;) =&gt; TResult, compareSelector: (element: T) =&gt; TCompare): IEnumerable&lt;TResult&gt;;
-        buffer(count: number): IEnumerable&lt;T&gt;;
-        aggregate(func: (prev: T, current: T) =&gt; T): T;
-        aggregate&lt;TAccumulate&gt;(seed: TAccumulate, func: (prev: TAccumulate, current: T) =&gt; TAccumulate): TAccumulate;
-        aggregate&lt;TAccumulate, TResult&gt;(seed: TAccumulate, func: (prev: TAccumulate, current: T) =&gt; TAccumulate, resultSelector: (last: TAccumulate) =&gt; TResult): TResult;
-        average(selector?: (element: T) =&gt; number): number;
-        count(predicate?: (element: T, index: number) =&gt; boolean): number;
-        max(selector?: (element: T) =&gt; number): number;
-        min(selector?: (element: T) =&gt; number): number;
-        maxBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): T;
-        minBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): T;
-        sum(selector?: (element: T) =&gt; number): number;
-        elementAt(index: number): T;
-        elementAtOrDefault(index: number, defaultValue?: T): T;
-        first(predicate?: (element: T, index: number) =&gt; boolean): T;
-        firstOrDefault(predicate?: (element: T, index: number) =&gt; boolean, defaultValue?: T): T;
-        last(predicate?: (element: T, index: number) =&gt; boolean): T;
-        lastOrDefault(predicate?: (element: T, index: number) =&gt; boolean, defaultValue?: T): T;
-        single(predicate?: (element: T, index: number) =&gt; boolean): T;
-        singleOrDefault(predicate?: (element: T, index: number) =&gt; boolean, defaultValue?: T): T;
-        skip(count: number): IEnumerable&lt;T&gt;;
-        skipWhile(predicate: (element: T, index: number) =&gt; boolean): IEnumerable&lt;T&gt;;
-        take(count: number): IEnumerable&lt;T&gt;;
-        takeWhile(predicate: (element: T, index: number) =&gt; boolean): IEnumerable&lt;T&gt;;
-        takeExceptLast(count?: number): IEnumerable&lt;T&gt;;
-        takeFromLast(count: number): IEnumerable&lt;T&gt;;
-        indexOf(item: T): number;
-        indexOf(predicate: (element: T, index: number) =&gt; boolean): number;
-        lastIndexOf(item: T): number;
-        lastIndexOf(predicate: (element: T, index: number) =&gt; boolean): number;
-        asEnumerable(): IEnumerable&lt;T&gt;;
-        cast&lt;TResult&gt;(): IEnumerable&lt;TResult&gt;;
-        toArray(): T[];
-        // truly, return type is ILookup&lt;TKey, T&gt; but Visual Studio + TypeScript Compiler can't compile. 
-        toLookup&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): ILookup&lt;TKey, any&gt;;
-        toLookup&lt;TKey, TElement&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement): ILookup&lt;TKey, TElement&gt;;
-        toLookup&lt;TKey, TElement, TCompare&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TElement, compareSelector: (key: TKey) =&gt; TCompare): ILookup&lt;TKey, TElement&gt;;
-        toObject(keySelector: (element: T) =&gt; any, elementSelector?: (element: T) =&gt; any): Object;
-        // :IDictionary&lt;TKey, T&gt;
-        toDictionary&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IDictionary&lt;TKey, any&gt;;
-        toDictionary&lt;TKey, TValue&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TValue): IDictionary&lt;TKey, TValue&gt;;
-        toDictionary&lt;TKey, TValue, TCompare&gt;(keySelector: (element: T) =&gt; TKey, elementSelector: (element: T) =&gt; TValue, compareSelector: (key: TKey) =&gt; TCompare): IDictionary&lt;TKey, TValue&gt;;
-        toJSONString(replacer: (key: string, value: any) =&gt; any): string;
-        toJSONString(replacer: any[]): string;
-        toJSONString(replacer: (key: string, value: any) =&gt; any, space: any): string;
-        toJSONString(replacer: any[], space: any): string;
-        toJoinedString(separator?: string): string;
-        toJoinedString&lt;TResult&gt;(separator: string, selector: (element: T, index: number) =&gt; TResult): string;
-        doAction(action: (element: T, index: number) =&gt; void ): IEnumerable&lt;T&gt;;
-        doAction(action: (element: T, index: number) =&gt; boolean): IEnumerable&lt;T&gt;;
-        forEach(action: (element: T, index: number) =&gt; void ): void;
-        forEach(action: (element: T, index: number) =&gt; boolean): void;
-        write(separator?: string): void;
-        write&lt;TResult&gt;(separator: string, selector: (element: T) =&gt; TResult): void;
-        writeLine(): void;
-        writeLine&lt;TResult&gt;(selector: (element: T) =&gt; TResult): void;
-        force(): void;
-        letBind&lt;TResult&gt;(func: (source: IEnumerable&lt;T&gt;) =&gt; { length: number;[x: number]: TResult; }): IEnumerable&lt;TResult&gt;;
-        letBind&lt;TResult&gt;(func: (source: IEnumerable&lt;T&gt;) =&gt; TResult[]): IEnumerable&lt;TResult&gt;;
-        letBind&lt;TResult&gt;(func: (source: IEnumerable&lt;T&gt;) =&gt; IEnumerable&lt;TResult&gt;): IEnumerable&lt;TResult&gt;;
-        share(): IDisposableEnumerable&lt;T&gt;;
-        memoize(): IDisposableEnumerable&lt;T&gt;;
-        catchError(handler: (exception: any) =&gt; void ): IEnumerable&lt;T&gt;;
-        finallyAction(finallyAction: () =&gt; void ): IEnumerable&lt;T&gt;;
-        log(): IEnumerable&lt;T&gt;;
-        log&lt;TValue&gt;(selector: (element: T) =&gt; TValue ): IEnumerable&lt;T&gt;;
-        trace(message?: string): IEnumerable&lt;T&gt;;
-        trace&lt;TValue&gt;(message: string, selector: (element: T) =&gt; TValue ): IEnumerable&lt;T&gt;;
-    }
-
-    interface IOrderedEnumerable&lt;T&gt; extends IEnumerable&lt;T&gt; {
-        createOrderedEnumerable&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey, descending: boolean): IOrderedEnumerable&lt;T&gt;;
-        thenBy&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IOrderedEnumerable&lt;T&gt;;
-        thenByDescending&lt;TKey&gt;(keySelector: (element: T) =&gt; TKey): IOrderedEnumerable&lt;T&gt;;
-    }
-
-    interface IDisposableEnumerable&lt;T&gt; extends IEnumerable&lt;T&gt; {
-        dispose(): void;
-    }
-
-    interface IDictionary&lt;TKey, TValue&gt; {
-        add(key: TKey, value: TValue): void;
-        get(key: TKey): TValue;
-        set(key: TKey, value: TValue): boolean;
-        contains(key: TKey): boolean;
-        clear(): void;
-        remove(key: TKey): void;
-        count(): number;
-        toEnumerable(): IEnumerable&lt;{ key: TKey; value: TValue }&gt;;
-    }
-
-    interface ILookup&lt;TKey, TElement&gt; {
-        count(): number;
-        get(key: TKey): IEnumerable&lt;TElement&gt;;
-        contains(key: TKey): boolean;
-        toEnumerable(): IEnumerable&lt;IGrouping&lt;TKey, TElement&gt;&gt;;
-    }
-
-    interface IGrouping&lt;TKey, TElement&gt; extends IEnumerable&lt;TElement&gt; {
-        key(): TKey;
-    }
-}
-
-// export definition
-declare var Enumerable: linqjs.Enumerable;
-</code></pre>
-<p>アップデートを全然追ってないので、初期に作った定義の仕方のまんまなので、大丈夫かな、まあ、大丈夫じゃないかな、きっと。</p>
-<p>とりあえずとにかく面倒くさかった。しかし定義する人が苦労すれば、利用者はハッピーになれるから！！！なのではやくVS対応がまともになってください。ぶんぶんぶん回したいのだけれどねえ←その前にlinq.js ver.3がいつまでもBetaなのをなんとかしろ</p>
 </div>
 <a href="https://neue.cc/10">Prev |</a>
 <a href="https://neue.cc/12">| Next</a>

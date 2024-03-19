@@ -23,7 +23,136 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2010/11/26_286.html">Reactive Extensions用のWebRequest拡張メソッド</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2010/12/04_287.html">Reactive Extensionsとエラーハンドリング</a></h1>
+<ul class="date"><li>2010-12-04</li></ul>
+<div class="entry_body"><p>例外処理は非常に大事だけれど、非常に難しい。非同期となると、なおのこと難しくなる！一体どう処理したらいいものか。勿論、放置するわけにもいかない避けては通れない話。そのため、<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Reactive Extensions</a>には豊富な例外処理手段が用意されています。決してOnErrorだけではありません。想像を遥かに越える、恐るべき柔軟さがそこにはあります。そして、これもまた、何故Rxを使うべきなのか、の強い理由の一つになるでしょう。</p>
+<h2>OnError</h2>
+<p>まずは基本の例から。なお、DownloadStringAsyncは<a href="http://neue.cc/2010/11/26_286.html" title="neue cc - Reactive Extensions用のWebRequest拡張メソッド">Reactive Extensions用のWebRequest拡張メソッド</a>からです。BeginGetResponseしてStreamをReadToEndしたもの、と思ってください。この辺も書いてると長くなるし本質的には関係ないので。「非同期で文字列(HTML)をダウンロード」程度の意味で。</p>
+<pre><code class="language-csharp">// 存在しないアドレスにアクセスしようとする(当然例外が起こる！)
+// 出力結果は「リモート名が解決出来ませんでした」など。Timeoutを待つ必要はあります。
+WebRequest.Create(&quot;http://goooooogllle.co.jp/&quot;)
+    .DownloadStringAsync()
+    .Subscribe(
+        s =&gt; Console.WriteLine(s), // OnNext
+        e =&gt; Console.WriteLine(e.Message), // OnError
+        () =&gt; Console.WriteLine(&quot;completed!&quot;)); // OnCompleted
+
+// OnNextのみの場合はcatchされずに例外が外にthrowされる
+WebRequest.Create(&quot;http://goooooogllle.co.jp/&quot;)
+    .DownloadStringAsync()
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>存在しないアドレスにアクセスしたため、WebExceptionが発生します。Rxにおける基本の例外処理は、Subscribe時にOnErrorにエラー時処理を書くこと。ここにシーケンス内で発生した例外が集められ、一括で処理出来ます。</p>
+<p>ところで、Subscribeのオーバーロードは多数用意されている、ように見えて実のところ一つしかありません。IObserver&lt;T&gt;を受け取るものただ一つ。では、普段やっているAction&lt;T&gt;を一つだけ渡しているのは何なの？というと、OnNextだけ定義されたIObserver&lt;T&gt;を作るショートカットにすぎません。挙動としては、OnErrorを省略した場合は例外をcatchせずそのままthrowされていきます。OnErrorを定義した場合は、ここでExceptionを丸ごとcatch。</p>
+<p>OnErrorで丸ごとキャッチというのは、try-catch(Exception e)のようかもしれません。例外は何でもキャッチはダメ、なるべく上の階層で処理すべき、というセオリーから考えると違和感も？ただ、同期的に書いた場合は下位層でcatchせず、最上位でcatchしよう、という話が成立しますが、非同期には最上位などというものはなく、OnErrorで掴まなければ集約例外ハンドラ行きとなるので、最上位の呼び出しメソッドなどというものはなく、そんな当てはまるものでもないかもです。というか、つまりはOnErrorが最上位のcatchの役割を担っているわけですね。</p>
+<h2>Catch</h2>
+<p>出てくる例外によって処理内容を変えたかったり、例外の種類によってはCatchしないで欲しかったりするシチュエーションはいっぱいあります。その場合OnErrorでとりあえずExceptionを取ってe is HogeException... などと分岐、というのは格好悪い。というわけで、Catchメソッド。</p>
+<pre><code class="language-csharp">// TwitterのUserTimeLineは認証(OAuth)が必要なので例外が発生する！
+// 出力結果は、以下のレスポンス
+// {&quot;error&quot;:&quot;This method requires authentication.&quot;,&quot;request&quot;:&quot;\/statuses\/user_timeline.json&quot;}
+WebRequest.Create(&quot;http://twitter.com/statuses/user_timeline.json&quot;)
+    .DownloadStringAsync()
+    .Catch((WebException e) =&gt; e.Response.DownloadStringAsync())
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>Catchに渡すメソッドは型が指定出来て、型が一致しない例外はCatchしません。そして、ここで少し面白いのが渡すメソッドの戻り値はIObservable&lt;T&gt;でなければならないということ。例外が発生した場合は、後続に代わりのシーケンスを渡すことが出来ます。</p>
+<p>例えばWebRequestではエラー原因を知るため、WebExceptionからResponseを取ってデータを取得したいわけです。そこで、そのままWebException中のResponseStreamから非同期で読み取ってそのまま流す。という例が上のコードです。WebAPIを試してる間はこうやってエラーメッセージが簡単に読み取れると非常に楽。OAuthとかややこしくて中々認証通せなくて泣きますからね……。</p>
+<h2>Empty/Never</h2>
+<p>Catchしたら例外処理する（ログに書くなどなど）だけで、別に後続に渡したいものなどない。という場合はEmptyを渡してやりましょう。</p>
+<pre><code class="language-csharp">// 5が出たら例外出してみる
+// 出力結果は1,2,3,4,completed
+Observable.Range(1, 10)
+    .Do(i =&gt; { if (i == 5) throw new Exception(); })
+    .Catch((Exception e) =&gt; Observable.Empty&lt;int&gt;())
+    .Subscribe(i =&gt; Console.WriteLine(i), e =&gt; { }, () =&gt; Console.WriteLine(&quot;completed&quot;));
+</code></pre>
+<p>他に同種のものとして、Neverがあります。</p>
+<pre><code class="language-csharp">// Neverは何も返さない物
+// Emptyとの違いは、OnCompletedすら発生しない
+// 余談ですが、FromEventの第一引数は最新情報によると h =&gt; h.Invoke が一番短く書けてお薦めです！
+var collection = new ObservableCollection&lt;int&gt;();
+
+Observable.FromEvent&lt;NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs&gt;(
+        h =&gt; h.Invoke, h =&gt; collection.CollectionChanged += h, h =&gt; collection.CollectionChanged -= h)
+    .Select(e =&gt; (int)e.EventArgs.NewItems[0])
+    .Do(i =&gt; { if (i == -1)  throw new Exception(); })
+    .Catch((Exception e) =&gt; Observable.Never&lt;int&gt;())
+    .Subscribe(Console.WriteLine, e =&gt; { }, () =&gt; Console.WriteLine(&quot;終了&quot;));
+
+// 出力結果は 300
+collection.Add(300);  // 300が出力される
+collection.Add(-1);   // 例外発生
+collection.Add(1000); // デタッチ済みなので何も発生しない
+</code></pre>
+<p>NeverはOnCompletedを発生させないという性質が、Emptyとの使い分けとして面白いかもしれません。</p>
+<h2>OnCompletedとFinallyの違いについて</h2>
+<p>Catchがあるなら、当然Finallyもあります！そこでふと思うFinallyとOnCompletedってどう違うの？というと、OnErrorとの絡みで違います。</p>
+<pre><code class="language-csharp">// 出力結果は 例外発生, ふぁいなりー
+Observable.Throw&lt;int&gt;(new Exception()) // Throwは例外のみを出すというもの
+    .Finally(() =&gt; Console.WriteLine(&quot;ふぁいなりー&quot;))
+    .Subscribe(
+        i =&gt; Console.WriteLine(i),
+        e =&gt; Console.WriteLine(&quot;例外発生&quot;),
+        () =&gt; Console.WriteLine(&quot;こんぷりーてっど&quot;));
+</code></pre>
+<p>Reactive Extensionsにおいて守られている、また、もし自分で拡張メソッドを書く場合などに守らなければならない原則があります。それは「OnErrorとOnCompletedはどちらか一つのみが発生する」「OnError/OnCompleted後はOnNextは発生しない」という点。というわけで、FinallyとOnCompletedの違いですが、例外発生時にも実行されるのがFinally、そうでないのがOnCompletedといったところです。</p>
+<p>また、Finallyは途中で挟むのでメソッドチェーンの並びによっては実行されるタイミングを調整出来るのもポイントです。例えば</p>
+<pre><code class="language-csharp">// 1, 2, 3, ふぁいなりー1, 100, 101, 102, ふぁいなりー2
+Observable.Range(1, 3)
+    .Do(Console.WriteLine)
+    .Finally(() =&gt; Console.WriteLine(&quot;ふぁいなりー1&quot;))
+    .TakeLast(1)
+    .SelectMany(i =&gt; Observable.Range(100, 3))
+    .Finally(() =&gt; Console.WriteLine(&quot;ふぁいなりー2&quot;))
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>TakeLast（1）は最後の1つのみを取得する、そのためにそれ以前のものは「完了」していなければならない。完了したということはFinallyが発動する。というわけで、SelectrMany後の、SubscribeされているOnNextに届く前に一つ目のFinallyが実行されます。二つ目のFinallyに関しては、全てのシーケンスが列挙された最後となります。</p>
+<p>この性質は、Streamなど適切にClose/Disposeしなければならないものの実行タイミングの調整に使えます。</p>
+<h2>OnErrorResumeNext</h2>
+<p>Catchと同じような性質を持つメソッドとして、OnErrorResumeNextがあります。両者の違いは、例外非発生時に現れます。</p>
+<pre><code class="language-csharp">// 実行結果は「1, 2, 3」Catchは例外非発生時は後続を渡さない
+Observable.Range(1, 3)
+    .Catch(Observable.Range(100, 3))
+    .Subscribe(Console.WriteLine);
+
+// 実行結果は「1, 2, 3, 100, 101, 102」OnErrorResumeNextは例外非発生時も後続に繋ぐ
+Observable.Range(1, 3)
+    .OnErrorResumeNext(Observable.Range(100, 3))
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>代わりに渡す後続が、例外非発生時にも渡されるのがOnErrorResumeNext、渡さないのがCatch。つまりOnErrorResumeNextは必ず後続が繋がれるので、Catch().Concat()、で表現できます。</p>
+<h2>Retry/Timeout</h2>
+<p>Webにアクセスする時って失敗したらリトライしたいですよねー、特にTwitterなんて普通にサーバー不調でエラー返してきやがりますからね！という時はRetry。</p>
+<pre><code class="language-csharp">// Access Start x3回のあとに401例外発生
+Observable.Defer(() =&gt;
+    {
+        Console.WriteLine(&quot;Access Start:&quot;);
+        return WebRequest.Create(&quot;http://twitter.com/statuses/user_timeline.json&quot;).DownloadStringAsync();
+    })
+    .Retry(3)
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>再アクセスしているのが分かるようコードが少しゴチャついてしまいましたが……。この例では認証が必要なものにアクセスしているため、100% WebExceptionが発生してます。んが、Retry(3)ということで、3回リトライしています。リトライ処理は必須ではあるものの、面倒くさいものの筆頭でしたが、恐ろしく簡単に書けてしまいました。同様に、タイムアウトもあります。</p>
+<pre><code class="language-csharp">// Timeoutは指定時間以内に値が通過しなければTimeoutExceptionが発生します
+// カウントのタイミングはSubscribeされたらスタート
+// この例では恐らく例外発生します(100ミリ秒で結果を返せる、ことは恐らくないでしょふ)
+var wc = new WebClient();
+Observable.FromEvent&lt;DownloadStringCompletedEventHandler, DownloadStringCompletedEventArgs&gt;(
+        h =&gt; h.Invoke, h =&gt; wc.DownloadStringCompleted += h, h =&gt; wc.DownloadStringCompleted -= h)
+    .Timeout(TimeSpan.FromMilliseconds(100)) // 100ミリ秒
+    .Take(1) // これつけないとTimeoutのチェックが働き続けます←WebClientもWebRequest感覚になるようにしたほうがRx的にはお薦め
+    .Subscribe(e =&gt; Console.WriteLine(e.EventArgs.Result));
+
+wc.DownloadStringAsync(new Uri(&quot;http://bing.com/&quot;));
+</code></pre>
+<p>Web関連だとWebRequestであればTimeoutがありますが、ないもの(WebClient)もありますし、また、こちらのほうがお手軽なので、それなりに重宝すると思います。勿論、Web関連以外のメソッドでも使えますので、例えば一つのボタンが押されて、指定時間内にもう一つのボタンが押されなければTimeoutExceptionを出す、などなども考えられますね。更にそれをTimeoutExceptionをCatchで、指定時間内で二つのボタンが押されなかった場合の処理を追加、などなど、従来面倒くさかったことが恐ろしくスッキリ記述出来ます。</p>
+<h2>まとめ</h2>
+<p><a href="http://reactiveoauth.codeplex.com/" title="ReactiveOAuth">ReactiveOAuth</a>が機能的にスッカラカンなのは手抜きじゃなくて、(Retryとか)Rxに丸投げ出来るからです。ひたすら機能は分解、モジュールは小さく。というのは大変関数型的だと思うのですが、まさにそれです。(ただ、ちょっと、というかかなり手直ししないとマズいところがあるので近いうちに更新します……)</p>
+<p>といったわけで、Rxはかなり柔軟にエラーを処理することが出来るため、もう同期とか非同期とか関係なく、Rx挟まないでネットワーク処理書くのは面倒くさくて嫌です、という勢いだったり。大変素晴らしい。というかもう全ての処理をRx上に載せてしまってもいいんじゃね？ぐらいの勢いだったりしますがそれはやりすぎである。</p>
+<p>なお、この記事は<a href="http://atnd.org/events/10630" title="C# Advent Calendar jp: 2010 : ATND">C# Advent Calendar jp: 2010</a>の12/4分として書きました。リレーが途切れると、寂しいです。最後まで完走させたいですね。JavaScriptなど割とすぐに埋まったのに、こんなところで言語の（日本のネット上での）人気不人気が視覚化されるとしたら、寂しい話です。</p>
+<p>あと、私は<a href="http://atnd.org/events/10497" title="JavaScript Advent Calendar 2010 : ATND">JavaScript Advent Calendar 2010</a>のほうでも12/20に書くので、20日もよろしくどうも。<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js</a>とRxJSについて書きます。</p>
+</div>
+<h1><a href="https://neue.cc/2010/11/26_286.html">Reactive Extensions用のWebRequest拡張メソッド</a></h1>
 <ul class="date"><li>2010-11-26</li></ul>
 <div class="entry_body"><p>WebClientは楽ちんです。WebRequestはシンドイです。そのシンドさといったら、FromAsyncPatternでラップした程度じゃあまり意味がなかったりなわけです。いえ、単純なダウンロード程度ならいいのです。でも、アップロードとか！プログレスとか！そんなのに対応しようとすると、やっぱどうしょうもなく面倒臭い。とはいえ、面倒くさいのも一度書いてしまえば済むわけなので、一通り使いそうなものを書いてみました。<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx">Reactive  Extensions</a>が動く環境(.NET 4 Client Profile, Silverlight4)と、Windows Phone 7環境では標準搭載のMicrosoft.Phone.Reactiveで確認取ってあります。</p>
 <p>ソースコード、の前に利用例のほうを。</p>
@@ -2142,176 +2271,6 @@ static void Main(string[] args)
 <p>T4の標準搭載はC#にとって非常に大きい。T4標準搭載によって、出来る事の幅がもう一段階広がった気がします。partial class素晴らしい。自動生成って素敵。T4はただのテキストテンプレートじゃなくて「VSと密接に結びついていて」「なおかつ標準搭載」「もはやC#の一部といってもいい」ことが、全く違った価値をもたらしていると思います。自動生成前提のパターンを作っても/使ってもいいんだよ、と。言語的に足らない部分の迂回策が、また一つ加わった。</p>
 <p>見た目上若干Uglyになっても自動生成でなんとかする、というのはJava + Eclipseもそうですが、それと違うのはpartialでUglyな部分を隔離出来る(隔離によって自動生成の修正が容易になることも見逃せない)ことと、自動生成部分をユーザーが簡単に書けること、ですね。Eclipseの自動生成のプラグインを書くのは敷居が高すぎですが、T4を書く、書くまではしなくても修正する、というのは相当容易でしょう。</p>
 <p>最近本当にT4好きですねー。色々と弄ってしまいます。こーどじぇねれーと素晴らしい。あとは、T4自体のUglyさが少し軽減されればな、といったところでしょうか。テンプレートエンジンとしてRazorに切り替えられたりを望みたいなあ。</p>
-</div>
-<h1><a href="https://neue.cc/2010/08/19_272.html">Reactive ExtensionsのFromEventをT4 Templateで自動生成する</a></h1>
-<ul class="date"><li>2010-08-19</li></ul>
-<div class="entry_body"><p><a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Rx</a>で面倒くさいのが、毎回書かなければならないFromEvent。F#ならイベントがファーストクラスで、そのままストリーム処理に流せるという素敵仕様なのですが、残念ながらC#のeventはかなり雁字搦めな感があります。しかし、そこは豊富な周辺環境で何とか出来てしまうのがC#というものです。F#では form.MouseMove |&gt; Event.filter と書けますが、 form.MouseMoveAsObservable().Where と書けるならば、似たようなものですよね？</p>
-<p>というわけで、T4です。FromEventを自動生成しましょう！と、いうネタは散々既出で海外のサイトにも幾つかあるし、日本にもid:kettlerさんが<a href="http://d.hatena.ne.jp/kettler/20100424">FromEventが面倒なので自動生成させてみた2</a>として既に書かれているのですが、私も書いてみました。書くにあたってid:kettlerさんのコードを大変参考にさせていただきました、ありがとうございます。</p>
-<p>私の書いたもののメリットですが、リフレクションを使用しないFromEventで生成しているため、実行コストが最小に抑えられています。リフレクションを使わないFromEventは書くのが面倒でダルいのですが、その辺自動生成の威力発揮ということで。それと、命名規則をGetEventではなくEventAsObservableという形にしています。これは、サフィックスのほうがIntelliSenseに優しいため。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/rxclickasobservable.jpg">
-</p>
-<p>んね？この命名規則は、RxJSのほうで公式に採用されているものなので(例えばrx.jQuery.jsのanimateAsObservable)、俺々規則というわけじゃないので普通に従っていいと思われます。</p>
-<p>以下コード。利用改変その他ご自由にどうぞ、パブリックドメインで。</p>
-<pre><code class="language-csharp">&lt;#@ assembly Name=&quot;System.Core.dll&quot; #&gt;
-&lt;#@ assembly Name=&quot;System.Windows.Forms.dll&quot; #&gt;
-&lt;#@ assembly Name=&quot;C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.0\Profile\Client\System.Xaml.dll&quot; #&gt;
-&lt;#@ assembly Name=&quot;C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.0\Profile\Client\PresentationCore.dll&quot; #&gt;
-&lt;#@ assembly Name=&quot;C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.0\Profile\Client\PresentationFramework.dll&quot; #&gt;
-&lt;#@ import namespace=&quot;System.Linq&quot; #&gt;
-&lt;#@ import namespace=&quot;System.Collections.Generic&quot; #&gt;
-&lt;#@ import namespace=&quot;System.Text.RegularExpressions&quot; #&gt;
-&lt;#@ import namespace=&quot;System.Reflection&quot; #&gt;
-&lt;#
-    // 設定：ここに生成したいクラス(のTypeをFullNameで)を足してください(以下の4つは例)
-    // クラスによってはassemblyの増減が必要です、WPF/Silverlightなどはフルパス直書きしてください
-    var types = new[] {
-        typeof(System.Collections.ObjectModel.ObservableCollection&lt;&gt;),
-        typeof(System.Windows.Forms.Button),
-        typeof(System.Windows.Controls.Primitives.TextBoxBase),
-        typeof(System.Windows.Controls.Primitives.ButtonBase)
-    };
-#&gt;
-using System.Linq;
-using System.Collections.Generic;
-
-&lt;# foreach(var x in GenerateTemplates(types)) {#&gt;
-
-namespace &lt;#= x.Namespace #&gt;
-{
-    &lt;# foreach(var ct in x.ClassTemplates) {#&gt;
-
-    internal static class &lt;#= ct.Classname #&gt;EventExtensions
-    {
-        &lt;# foreach(var ev in ct.EventTemplates) {#&gt;
-		
-        public static IObservable&lt;IEvent&lt;&lt;#= ev.Args #&gt;&gt;&gt; &lt;#= ev.Name #&gt;AsObservable&lt;#= ct.GenericArgs #&gt;(this &lt;#= ct.Classname #&gt;&lt;#= ct.GenericArgs #&gt; source)
-        {
-            return Observable.FromEvent&lt;&lt;#= ev.Handler + (ev.IsGeneric ? &quot;&lt;&quot; + ev.Args + &quot;&gt;&quot; : &quot;&quot;) #&gt;, &lt;#= ev.Args #&gt;&gt;(
-                h =&gt; &lt;#= ev.IsGeneric ? &quot;h&quot; : &quot;new &quot; + ev.Handler + &quot;(h)&quot; #&gt;,
-                h =&gt; source.&lt;#= ev.Name #&gt; += h,
-                h =&gt; source.&lt;#= ev.Name #&gt; -= h);
-        }
-        &lt;# } #&gt;
-    }
-    &lt;# }#&gt;
-}
-&lt;# }#&gt;
-&lt;#+
-    IEnumerable&lt;T&gt; TraverseNode&lt;T&gt;(T root, Func&lt;T, T&gt; selector)
-    {
-        var current = root;
-        while (current != null)
-        {
-            yield return current;
-            current = selector(current);
-        }
-    }
-
-    IEnumerable&lt;ObservableTemplate&gt; GenerateTemplates(Type[] types)
-    {
-        return types.SelectMany(t =&gt; TraverseNode(t, x =&gt; x.BaseType))
-            .Distinct()
-            .GroupBy(t =&gt; t.Namespace)
-            .Select(g =&gt; new ObservableTemplate
-            {
-                Namespace = g.Key,
-                ClassTemplates = g.Select(t =&gt; new ClassTemplate(t))
-                    .Where(t =&gt; t.EventTemplates.Any())
-                    .ToArray()
-            })
-            .Where(a =&gt; a.ClassTemplates.Any())
-            .OrderBy(a =&gt; a.Namespace);
-    }
-
-    class ObservableTemplate
-    {
-        public string Namespace;
-        public ClassTemplate[] ClassTemplates;
-    }
-
-    class ClassTemplate
-    {
-        public string Classname, GenericArgs;
-        public EventTemplate[] EventTemplates;
-
-        public ClassTemplate(Type type)
-        {
-            Classname = Regex.Replace(type.Name, &quot;`.*$&quot;, &quot;&quot;);
-            GenericArgs = type.IsGenericType
-                ? &quot;&lt;&quot; + string.Join(&quot;,&quot;, type.GetGenericArguments().Select((_, i) =&gt; &quot;T&quot; + (i + 1))) + &quot;&gt;&quot;
-                : &quot;&quot;;
-            EventTemplates = type.GetEvents(BindingFlags.Public | BindingFlags.InvokeMethod | BindingFlags.DeclaredOnly | BindingFlags.Instance)
-                .Select(ei =&gt; new { EventInfo = ei, Args = ei.EventHandlerType.GetMethod(&quot;Invoke&quot;).GetParameters().Last().ParameterType })
-                .Where(a =&gt; a.Args == typeof(EventArgs) || a.Args.IsSubclassOf(typeof(EventArgs)))
-                .Select(a =&gt; new EventTemplate
-                {
-                    Name = a.EventInfo.Name,
-                    Handler = Regex.Replace(a.EventInfo.EventHandlerType.FullName, &quot;`.*$&quot;, &quot;&quot;),
-                    Args = a.Args.FullName,
-                    IsGeneric = a.EventInfo.EventHandlerType.IsGenericType
-                })
-                .ToArray();
-        }
-    }
-
-    class EventTemplate
-    {
-        public string Name, Args, Handler;
-        public bool IsGeneric;
-    }
-#&gt;
-</code></pre>
-<pre><code class="language-csharp">// こんなのが生成されます
-
-namespace System.Collections.ObjectModel
-{
-    internal static class ObservableCollectionEventExtensions
-    {
-        public static IObservable&lt;IEvent&lt;System.Collections.Specialized.NotifyCollectionChangedEventArgs&gt;&gt; CollectionChangedAsObservable&lt;T1&gt;(this ObservableCollection&lt;T1&gt; source)
-        {
-            return Observable.FromEvent&lt;System.Collections.Specialized.NotifyCollectionChangedEventHandler, System.Collections.Specialized.NotifyCollectionChangedEventArgs&gt;(
-                h =&gt; new System.Collections.Specialized.NotifyCollectionChangedEventHandler(h),
-                h =&gt; source.CollectionChanged += h,
-                h =&gt; source.CollectionChanged -= h);
-        }
-    }
-}
-
-namespace System.ComponentModel
-{
-    internal static class ComponentEventExtensions
-    {
-        public static IObservable&lt;IEvent&lt;System.EventArgs&gt;&gt; DisposedAsObservable(this Component source)
-        {
-            return Observable.FromEvent&lt;System.EventHandler, System.EventArgs&gt;(
-                h =&gt; new System.EventHandler(h),
-                h =&gt; source.Disposed += h,
-                h =&gt; source.Disposed -= h);
-        }
-    }
-
-    // 以下略
-</code></pre>
-<p>使い方ですが、RxGenerator.ttとか、名前はなんでもいいのですがコピペって、上の方のvar typesに設定したい型を並べてください。一緒に並べたものの場合は、全て継承関係を見て重複を省くようになっています。WPFとかSilverlightのクラスから生成する場合は、assembly Nameに直にDLLのパスを書いてやってくださいな。コード的には、例によってLinq大活躍というかLinqなかったら死ぬというか。リフレクションxLINQxT4は鉄板すぎる。</p>
-<p>一つ難点があって、名前空間をそのクラスの属している空間にきっちりと分けたせいで、例えばWPFのbutton.ClickAsObservableはSystem.Windows.Controls.Primitivesをusingしないと出てこないという、微妙に分かりづらいことになっちゃっています……。これ普通にHogeHogeExtensionsとかいう任意の名前空間にフラットに配置したほうが良かったのかなあ。ちょっと悩ましいところ。</p>
-<h2>T4の書き方</h2>
-<p>漠然と書いてると汚いんですよね、T4。読みにくくてダメだし読みにくいということは書きにくいということでダメだ。というわけで、今回からは書き方を変えました。ASP.NETのRepeater的というかデータバインド的にというかで、入れ物クラスを作って、パブリックフィールド(自動プロパティじゃないのって？そんな大袈裟なものは要りません)を参照させるという形にしました。foreachや閉じカッコ(&quot;}&quot;)は一行にする。&lt;% %&gt;で囲まれる範囲を最小限に抑えることで、ある程度の可読性が確保出来ているんじゃないかと思います。</p>
-<p>といったようなアイディアは</p>
-<blockquote>
-<p>よく訓練されたT4使いは　「何を元に作るか」　「何を作るか」　だけを考える。<br />
-何を元に作るかはきっと from ... select になるでしょう。 何を作るかの中では　&lt;#=o.Property#&gt; で値を出力する事ができます。<br />
-<a href="http://aka-kazuk.spaces.live.com/blog/cns!EB33514F53BAF4B3!259.entry">csproj.user を作るための T4 テンプレート</a></p>
-</blockquote>
-<p>からです。「何を元に作るか」　「何を作るか」　。聞いてみれば当たり前のようだけれど、本当にコロンブスの卵というか(前も同じこと書いた気がする)、脳みそガツーンと叩かれた感じで、うぉぉぉぉぉ、と叫んで納得でした。はい。それと、T4は書きやすいと言っても書きにくい（？）ので、囲む範囲を最小にするってことは、普通のコードでじっくり書いてからT4に移植しやすいってことでもあるんですね。</p>
-<h2>まとめ</h2>
-<p>最近F#勉強中なのです。Expert F# 2.0買ったので。と思ったらプログラミングF#が翻訳されて発売されるだとー！もうすぐ。あと一週間後。くぉ、英語にひいこらしながら読んでいるというのにー。</p>
-<iframe src="https://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=1430224312" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
-<iframe src="https://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=4873114667" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
-<p>F#すげーなー、と知れば知るほど確かに思うわけですが、しかし何故か同時に、C#への期待感もまた高まっていきます。必ずや「良さ」を吟味して取り込んでくれるという信頼感があります、C#には。そしてまた、ライブラリレベルで強烈に何とか出来る地力がある、例えばイベントをストリームに見立てた処理には、Reactive Extensionsが登場してC#でも実現出来ちゃったり。Scalaと対比され緩やかに死んでいくJavaと比べると、F#と対比しても元気に対抗していくC#の頼もしさといったらない。</p>
-<p>といっても、F#も全然まだ表面ぐらいしか見えてないし、突っつけば突っつくほど応えてくれる奥の深い言語な感じなので、今の程度の知識で比較してどうこうってのはないです。Java7のクロージャにたいし、Javaにそんなものはいらない、とか頑な態度を取っている人を見るとみっともないな、と思うわけですが、いつか私もC#に拘泥してC#にそんなものはいらない、的なことを言い出すようだと嫌だなー、とかってのは思ってます。進化を受け入れられなくなったら、終わり。</p>
-<p>マルチパラダイム言語の勝利→C++/CLI大勝利ですか？→いやそれは多分違う。的なこともあるので何もかもを受け入れろ、ひたすら取り込んで鈍重な恐竜になれ(最後に絶滅する)、とは言いません。この辺のバランス感覚が、きっと言語設計にとって難しいことであり、そして今のC#は外から見れば恐竜のようにラムダ式だのdynamicだのを取り入れてるように見えるでしょうが、決してそうではなく、素晴らしいバランスに立っています。機能の追加が恐竜への道になっていない。むしろ追加によって過去の機能を互換性を保ちつつ捨てているんですよね、例えば、もうdelegateというキーワードは書くどころか目にすることもほとんどない←なのでC#を学習する場合、C#1.0-&gt;2.0-&gt;3.0-&gt;4.0という順番を辿るのは良くなくて、最新のものから降りていったほうがいい。</p>
-<p>何が言いたいかっていったらC#愛してるってことですな。うはは。5.0にも当然期待していますし、Anders Hejlsbergの手腕には絶対的に信頼を寄せています。4.0は言語的な飛躍はあまりなかっただけに、5.0は凄いことになるに違いない。</p>
 </div>
 <a href="https://neue.cc/19">Prev |</a>
 <a href="https://neue.cc/21">| Next</a>

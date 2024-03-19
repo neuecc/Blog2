@@ -23,7 +23,204 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2024/03/18_Claudia.html">Claudia - Anthropic ClaudeのC# SDKと現代的なC#によるウェブAPIクライアントの作り方</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2024/03/19_Garnet.html">Redis互換の超高速インメモリデータストア「Garnet」にC# CustomCommandを実装してコマンドを拡張する</a></h1>
+<ul class="date"><li>2024-03-19</li></ul>
+<div class="entry_body"><p>Microsoftから<a href="https://www.microsoft.com/en-us/research/blog/introducing-garnet-an-open-source-next-generation-faster-cache-store-for-accelerating-applications-and-services/">Introducing Garnet – an open-source, next-generation, faster cache-store for accelerating applications and services</a>という記事が今日公開されて、Garnetという新しいインメモリデータストアがOSSとして公開されました。Microsoft Researchで<a href="https://github.com/microsoft/FASTER">FASTER</a>を手掛けていたチームによるもので、FASTERはC#実装の高速なキーバリューストアでした。今回のGarnetはその発展形のようなもので、FASTERベースのストレージと、Redis互換のプロトコルによる、インメモリデータストアになっています。詳しくはGarnetのほうのブログ<a href="https://microsoft.github.io/garnet/blog/brief-history">A Brief History of Garnet</a>で。GarnetもC#で作られています。</p>
+<p>ベンチマークによると、Redisはもちろんのこと、DragonflyというRedis互換の世界最速のインメモリデータストア（を公式で謳ってる）<a href="https://www.dragonflydb.io/">Dragonfly</a>よりも高速、だそうで。</p>
+<p>そもそもRedisの速度に関していうと、シングルスレッドベースであることなどから、たまによくそこまで速くはないというのは言われてきていて、先述のDragonflyは<a href="https://www.publickey1.jp/blog/22/redis25dragonfly2022.html">Redis互換で25倍高速とする「Dragonfly」が登場。2022年の最新技術でインメモリデータストアを実装</a>などというリリースとともに、現代の技術で作り直せばもっともっと速くなる、とはされてきました。とはいえ、単純なGET/SETだけのメモリキャッシュとは比較にならない豊富なデータ型など利便性がとても高く、いうて別にそこまで遅いというわけでもないので、特に気にすることなく使われ続けているのではないでしょうか。</p>
+<p>GarnetはC#で作られていますが、当然ながらC#専用ではなく、汎用的なRedisサーバーとして動作するため、既存のRedisクライアントで直接繋げることができます。Redisはそのプロトコル<a href="https://redis.io/docs/reference/protocol-spec/">Redis serialization protocol(RESP)</a>の仕様を公開しているため、互換サーバーが作りやすいというわけですね、素晴らしい……！</p>
+<p>C#から使う場合は<a href="https://github.com/StackExchange/StackExchange.Redis">StackExchange.Redis</a>と、Garnet同梱のGarent Clientのどちらかが使えます。パッとGarnet Clientを見た限り、現状現実的に使うならStackExchange.Redisですね。最低限は用意されているけれど、Redisクライアントとして使うには、しんどみがありそうです。ただ、性能面ではGarnet Clientのほうが良さそうです。StackExchange.Redisも、前身のBookSleeveから数えると初期設計が10年以上前のものになっているので、現代の観点から見ると設計は古く、パフォーマンス的にも、この実装は悪そうだな、と思えるところがかなりあります。なのでロマンを追いかけるならGarnet Clientを使うのも面白くはあります……！</p>
+<h2>C#でカスタムコマンドを実装する</h2>
+<p>普通にRedis互換サーバーとして立てて使うのもいいのですが、C#使いなら面白い点があって、Garnetをライブラリとして参照して、アプリケーションに組み込んでのセルフホストができます。例えばロガーとして<a href="https://github.com/Cysharp/ZLogger/">ZLogger</a>を差し込んでVerboseでログを出してみたりとか、ちょっと使いやすくていい感じです。ローカル開発とかだったらDockerでRedis動かして、などではなく、ソリューションにそのまま組み込んで<a href="https://github.com/dotnet/aspire">.NET Aspire</a>で同時起動させるとかもいい感じでしょう。</p>
+<pre><code class="language-csharp">using Garnet;
+using Microsoft.Extensions.Logging;
+using ZLogger;
+
+try
+{
+    var loggerFactory = LoggerFactory.Create(x =&gt;
+    {
+        x.ClearProviders();
+        x.SetMinimumLevel(LogLevel.Trace);
+        x.AddZLoggerConsole(options =&gt;
+        {
+            options.UsePlainTextFormatter(formatter =&gt;
+            {
+                formatter.SetPrefixFormatter($&quot;[{0}]&quot;, (in MessageTemplate template, in LogInfo info) =&gt; template.Format(info.Category));
+            });
+        });
+    });
+
+    using var server = new GarnetServer(args, loggerFactory);
+
+    // Optional: register custom extensions
+    RegisterExtensions(server);
+
+    // Start the server
+    server.Start();
+    Thread.Sleep(Timeout.Infinite);
+}
+catch (Exception ex)
+{
+    Console.WriteLine($&quot;Unable to initialize server due to exception: {ex.Message}&quot;);
+}
+</code></pre>
+<p>もう一つは、カスタムコマンドを実装できることです……！C#で……！</p>
+<p>Redis上でちょっと複雑な実行をしたいことはよくあり、Redisの場合は<a href="https://redis.io/docs/interact/programmability/eval-intro/">Lua Script</a>で処理していましたが、GarnetではC#でカスタムコマンドを実装して組み込むことができます。さらに嬉しい点としては、サーバー側で用意した拡張コマンドは、RESPに従っているので、クライアントはC#専用ではなく、PHPからでもGoからでも呼べます。</p>
+<p>というわけで、「SETLCLAMP」というSET時にclampするカスタムコマンドを早速作っていきます……！先に↑のコードで欠けてるRegisterExtensionsの部分を。</p>
+<pre><code class="language-csharp">static void RegisterExtensions(GarnetServer server)
+{
+    // ClampLongCustomCommandというカスタムコマンドをSETLCLAMPというコマンド名で登録する。
+    // これはMath.Clampを呼び出すので、パラメーター数は3(long value, long min, long max)
+    server.Register.NewCommand(&quot;SETLCLAMP&quot;, 3, CommandType.ReadModifyWrite, new ClampLongCustomCommand());
+}
+</code></pre>
+<p>カスタムコマンドの登録自体は非常に簡単で、<code>CustomRawStringFunctions</code>, <code>CustomTransactionProcedure</code> または <code>CustomObjectFactory</code> を実装したクラスをコマンド名と共に追加するだけです。</p>
+<p>カスタムコマンドの実装も簡単……？まぁ、理解すればそれなりぐらいに。</p>
+<pre><code class="language-csharp">using Garnet.server;
+using System.Buffers;
+using System.Buffers.Binary;
+using Tsavorite.core;
+
+sealed class ClampLongCustomCommand : CustomRawStringFunctions
+{
+    // trueの場合はKeyが空の時の動作(GetInitialLength, InitilUpdate)を呼びに行く
+    public override bool NeedInitialUpdate(ReadOnlySpan&lt;byte&gt; key, ReadOnlySpan&lt;byte&gt; input, ref (IMemoryOwner&lt;byte&gt;, int) output) =&gt; true;
+
+    // UpdaterのSpan&lt;byte&gt; value（書き込みたいメモリデータ）の長さを決める
+    public override int GetInitialLength(ReadOnlySpan&lt;byte&gt; input)
+    {
+        // 今回はlongだけなので決め打ち8
+        return 8;
+    }
+
+    public override bool InitialUpdater(ReadOnlySpan&lt;byte&gt; key, ReadOnlySpan&lt;byte&gt; input, Span&lt;byte&gt; value, ref (IMemoryOwner&lt;byte&gt;, int) output, ref RMWInfo rmwInfo)
+    {
+        // inputに対してGetNextArgを連続して呼ぶとパラメーターの取得。これは定型句。
+        int offset = 0;
+        var arg1 = GetNextArg(input, ref offset);
+        var arg2 = GetNextArg(input, ref offset);
+        var arg3 = GetNextArg(input, ref offset);
+
+        // ClientはWriteInt64LittleEndianでシリアライズしてきてるので、Readでデシリアライズ
+        var v = BinaryPrimitives.ReadInt64LittleEndian(arg1);
+        var min = BinaryPrimitives.ReadInt64LittleEndian(arg2);
+        var max = BinaryPrimitives.ReadInt64LittleEndian(arg3);
+
+        var result = Math.Clamp(v, min, max);
+
+        // valueに対して値を書くことで値のセットになる
+        BinaryPrimitives.WriteInt64LittleEndian(value, result);
+
+        // 戻り値とかエラーを書きたい場合はoutputを使う(RespWriteUtils.WriteBulkStringを使いますが今回は略)
+        // var pool = MemoryPool.Rent(8);
+        // output = (pool, 8);
+
+        return true;
+    }
+
+    // 同じメモリ領域を再利用する(置換する値の長さが同値なら再利用可能)かどうかを決める
+    public override bool NeedCopyUpdate(ReadOnlySpan&lt;byte&gt; key, ReadOnlySpan&lt;byte&gt; input, ReadOnlySpan&lt;byte&gt; oldValue, ref (IMemoryOwner&lt;byte&gt;, int) output) =&gt; false;
+
+    // 置換時に再利用する場合
+    public override bool InPlaceUpdater(ReadOnlySpan&lt;byte&gt; key, ReadOnlySpan&lt;byte&gt; input, Span&lt;byte&gt; value, ref int valueLength, ref (IMemoryOwner&lt;byte&gt;, int) output, ref RMWInfo rmwInfo)
+    {
+        // 置換するvalueの長さが一緒(あるいは小さい)の場合は
+        // valueにはoldValueが入ってきてる。
+        // 今回は特に考慮しないのでそのまんま書く。
+
+        int offset = 0;
+        var v = BinaryPrimitives.ReadInt64LittleEndian(GetNextArg(input, ref offset));
+        var min = BinaryPrimitives.ReadInt64LittleEndian(GetNextArg(input, ref offset));
+        var max = BinaryPrimitives.ReadInt64LittleEndian(GetNextArg(input, ref offset));
+
+        var result = Math.Clamp(v, min, max);
+
+        BinaryPrimitives.WriteInt64LittleEndian(value, result);
+
+        return true;
+    }
+
+    // 置換時に別のメモリ領域を確保する場合
+
+    public override int GetLength(ReadOnlySpan&lt;byte&gt; value, ReadOnlySpan&lt;byte&gt; input) =&gt; 8;
+
+    public override bool CopyUpdater(ReadOnlySpan&lt;byte&gt; key, ReadOnlySpan&lt;byte&gt; input, ReadOnlySpan&lt;byte&gt; oldValue, Span&lt;byte&gt; newValue, ref (IMemoryOwner&lt;byte&gt;, int) output, ref RMWInfo rmwInfo) =&gt; throw new NotImplementedException();
+
+
+    // 読み込み処理用
+    public override bool Reader(ReadOnlySpan&lt;byte&gt; key, ReadOnlySpan&lt;byte&gt; input, ReadOnlySpan&lt;byte&gt; value, ref (IMemoryOwner&lt;byte&gt;, int) output, ref ReadInfo readInfo) =&gt; throw new NotImplementedException();
+}
+</code></pre>
+<p>今回はRedisでいうところのStringベースで作るので <code>CustomRawStringFunctions</code> を使います。RedisのStringは文字列型じゃなくて、どちらかというとバイナリ型で、バイナリシリアライズできるものなら、なんでも突っ込めるイメージです。私もゲームサーバーを作っていたときはMessagePackのバイナリを突っ込みまくってましたし、開発時には雑に画像データのバイナリを投げ込んで画像DB代わりに使ったりとかもありました。</p>
+<p>オーバーライドするメソッドの数が多いことと、パラメーターが<code>Span&lt;byte&gt;</code>だらけで一瞬圧倒されちゃうんですが、冷静に追ってみるとそこまで難しいことは言ってないことに気づきます。追加時(Add)・置換時(Replace)が、最適化のため同じサイズか違うサイズかで2択、それとRead時用。といった別れ方をしています。</p>
+<p>key, input, valueが全て<code>ReadOnlySpan&lt;byte&gt;</code>なのは、まぁそりゃそうでしょう(ここでstringとか出てきたら逆に良くない！)</p>
+<p>inputをパラメーターに分解するのは<code>GetNextArg</code>というヘルパーメソッドを使います。当然それも出てくるのは<code>ReadOnlySpan&lt;byte&gt;</code>なので、あとは適当に、もしJSONとかMessagePackとか<a href="https://github.com/Cysharp/MemoryPack">MemoryPack</a>でシリアライズしたデータだったらシリアライザを使って戻すのもいいし、プリミティブの値だったら<code>BinaryPrimitives</code>が恐らく適役です。MemoryPackでValueTupleにまとめちゃうのがArgumentが分かれないので最速かつ簡単かもしれません。</p>
+<p>結果は<code>Span&lt;byte&gt; value</code>に書きます。outputは今のところ気にしないでOK。この出力先のSpanの長さは事前に<code>GetLength</code>または<code>GetInitialLength</code>で求めておく必要があります。</p>
+<p>と、いうわけで、バイナリ操作がそこそこ混ざることを除けば、それなりに素直に書けるのではないでしょうか。雰囲気は理解しました！</p>
+<p>クライアントから呼び出す場合は、こんなメソッドを用意してみます。</p>
+<pre><code class="language-csharp">public static class GarnetClientExtensions
+{
+    // RESPプロトコルにのっとってOpCodeを用意する
+    // RESPのBlukStringの仕様: https://redis.io/docs/reference/protocol-spec/#bulk-strings
+    // $&lt;length&gt;\r\n&lt;data&gt;\r\n
+    readonly static Memory&lt;byte&gt; OpCode_SETLCLAMP = Encoding.ASCII.GetBytes(&quot;$9\r\nSETLCLAMP\r\n&quot;);
+
+    public static async Task&lt;long&gt; ClampAsync(this GarnetClient client, Memory&lt;byte&gt; key, long value, long min, long max, CancellationToken cancellationToken = default)
+    {
+        var parameters = new byte[24];
+
+        var valSpan = parameters[0..8];
+        var minSpan = parameters[8..16];
+        var maxSpan = parameters[16..24];
+
+        BinaryPrimitives.WriteInt64LittleEndian(valSpan, value);
+        BinaryPrimitives.WriteInt64LittleEndian(minSpan, min);
+        BinaryPrimitives.WriteInt64LittleEndian(maxSpan, max);
+
+        // key + (value, min, max)
+        // 戻り値のMemoryResultはArrayPoolから借りてる状態なのでDisposeでReturnする
+        using var result = await client.ExecuteForMemoryResultWithCancellationAsync(OpCode_SETLCLAMP, new Memory&lt;byte&gt;[] { key, valSpan, minSpan, maxSpan }, cancellationToken);
+        
+        // 本当はresult.Spanからlongを取りたいんですが、それはまた後日……！
+        // return BinaryPrimitives.ReadInt64LittleEndian(result.Span);
+        return;
+    }
+}
+</code></pre>
+<p>サーバー側で用意した拡張コマンドは、ちゃんとRESPに従っているので、クライアントはC#専用ではありませんし、Garnet Client専用でもありません。StackExchange.Redisであれば、<code>db.Execute(&quot;SETLCLAMP&quot;, ...)</code> で呼べます。</p>
+<p>実際に動かしてみるとこんな感じです。</p>
+<pre><code class="language-csharp">static async Task RunClientAsync(ILoggerFactory loggerFactory)
+{
+    var logger = loggerFactory.CreateLogger(&quot;Client&quot;);
+
+    var client = new GarnetClient(&quot;localhost&quot;, 3278, logger: logger);
+
+    logger.ZLogInformation($&quot;Client Connecting.&quot;);
+    await client.ConnectAsync();
+    logger.ZLogInformation($&quot;Success Connect.&quot;);
+
+    var key = Encoding.UTF8.GetBytes(&quot;foo&quot;);
+
+    await client.ClampAsync(key, 12345, min: 0, max: 100);
+
+    // String系のGET/SET/DELなどは普通に呼べる
+    using var v2 = await client.StringGetAsMemoryAsync(key);
+    Console.WriteLine(BinaryPrimitives.ReadInt64LittleEndian(v2.Span)); // 100
+
+    var isDelete = await client.KeyDeleteAsync(key);
+    Console.WriteLine(isDelete); // True
+}
+</code></pre>
+<p>いいですね！</p>
+<h2>まとめ</h2>
+<p>さすがに公開されてまだ10時間経ってないぐらいなのでザックリとした理解なのですが、かなりいいんじゃないかと！</p>
+<p>どうしてもMemachedとかRedisとかは、クラウドのマネージドサービスが用意されてないと嫌だー、という思考に陥りがちなのですが、C#でガリガリ拡張できるとなれば、まぁマネージドがなくてもしょうがないな！という気持ちになれ、る、でしょうかね……？</p>
+<p>まぁそうじゃなくても、あまりマネージド指向になりすぎるのも良くないかな、とは思っています。私は最近はPubSubに<a href="https://nats.io/">NATS</a>をお薦めしてクライアントも作ったりしてたわけですが、もちろんマネージドサービスはありません。で、だから、諦めます、というのは違うかな、と。もったいないと思うんですよね。</p>
+<p>なので、必要あれば、いや、必要じゃなくても（？）気持ちがあるなら、自前に立てるというのも否定しちゃあいけないと思ってます。特にC#アプリケーションを作ったことがある人なら、C#で組み込んでホスティングすること自体は別に難しくもない、なんだったらいつもやってることの延長線上でいけますし。もちろん、そこからインフラ安定させるとかデータどうするなとかリカバリどうするとか、そういうのは別問題の話ではありますが……！</p>
+<p>ともあれかなり面白いし使える予感があるので、やっていきましょう！</p>
+</div>
+<h1><a href="https://neue.cc/2024/03/18_Claudia.html">Claudia - Anthropic ClaudeのC# SDKと現代的なC#によるウェブAPIクライアントの作り方</a></h1>
 <ul class="date"><li>2024-03-18</li></ul>
 <div class="entry_body"><p>AI関連、競合は現れども、性能的にやはりOpenAI一強なのかなぁというところに現れた<a href="https://www.anthropic.com/">Anthropic Claude 3</a>は、確かに明らかに性能がいい、GPT-4を凌駕している……！というわけで大いに気に入った（ついでに最近のOpenAIのムーブが気に入らない）ので、C#で使い倒していきたい！そこで、まずはSDKがないので非公式SDKを作りました。こないだまでプレビュー版を流していたのですが、今回v1.0.0として出します。ライブラリ名は、Claudeだから、Claudiaです！.NET全般で使えるのと、Unity(Runtime/Editor双方)でも動作確認をしているので、アイディア次第で色々活用できると思います。</p>
 <ul>

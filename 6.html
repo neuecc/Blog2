@@ -23,7 +23,97 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2017/08/07_556.html">C#の高速なMySQLのドライバを書こうかという話、或いはパフォーマンス向上のためのアプローチについて</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2017/08/20_557.html">C#のベンチマークドリブンで同一プロジェクトの性能向上を比較する方法</a></h1>
+<ul class="date"><li>2017-08-20</li></ul>
+<div class="entry_body"><p>ある日のこと、<a href="https://github.com/neuecc/MessagePack-CSharp/">MessagePack for C#</a>のTypeless Serializerが<a href="https://github.com/neuecc/MessagePack-CSharp/issues/102">ふつーのと比べて10倍遅いぞ、というIssue</a>が来た。なるほど遅い。Typelessはあんま乗り気じゃなくて、そもそも実装も私はコンセプト出しただけでフィニッシュまでやったのは他の人で私はプルリクマージしただけだしぃ、とかいうダサい言い訳がなくもないのですが、本筋のラインで使われるものでないとはいえ、実装が乗ってるものが遅いってのは頂けない。直しましょう直しましょう。</p>
+<p>速くするのは、コード見りゃあどの辺がネックで手癖だけで何をどうやりゃよくて、どの程度速くなるかはイメージできるんで割とどうでもいいんですが（実際それで8倍高速化した）、とはいえ経過は計測して見ていきたいよね。ってことで、Before, Afterをどう調べていきましょうか、というのが本題。</p>
+<p>基本的には<a href="https://github.com/dotnet/BenchmarkDotNet">BenchmarkDotNet</a>を使っていきます。詳しい使い方は<a href="http://engineering.grani.jp/entry/2017/07/28/145035">C#でTypeをキーにしたDictionaryのパフォーマンス比較と最速コードの実装</a>で紹介しているので、そちらを見てくださいね、というわけでベンチマークをセットアップ。</p>
+<pre><code class="language-csharp">class Program
+{
+    static void Main(string[] args)
+    {
+        var switcher = new BenchmarkSwitcher(new[]
+        {
+            typeof(TypelessSerializeBenchmark),
+            typeof(TypelessDeserializeBenchmark),
+        });
+
+        switcher.Run(args);
+    }
+}
+
+internal class BenchmarkConfig : ManualConfig
+{
+    public BenchmarkConfig()
+    {
+        Add(MarkdownExporter.GitHub);
+        Add(MemoryDiagnoser.Default);
+
+        // ダルいのでShortRunどころか1回, 1回でやる
+        Add(Job.ShortRun.With(BenchmarkDotNet.Environments.Platform.X64).WithWarmupCount(1).WithTargetCount(1));
+    }
+}
+
+[Config(typeof(BenchmarkConfig))]
+public class TypelessSerializeBenchmark
+{
+    private TypelessPrimitiveType TestTypelessComplexType = new TypelessPrimitiveType(&quot;John&quot;, new TypelessPrimitiveType(&quot;John&quot;, null));
+
+    [Benchmark]
+    public byte[] Serialize()
+    {
+        return MessagePackSerializer.Serialize(TestTypelessComplexType, TypelessContractlessStandardResolver.Instance);
+    }
+}
+
+// Deserializeも同じようなコードなので省略。
+</code></pre>
+<p>ベンチマークコードは本体のライブラリからプロジェクト参照によって繋がっています。こんな感じ。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/29488116-23872168-853f-11e7-9537-c718ca96e4d9.png" alt="image" /></p>
+<p>というわけで、これでコード書き換えてけば、グングンとパフォーマンスが向上してくことは分かるんですが、これだと値をメモらなきゃダメじゃん。Before, Afterを同列に比較したいじゃん、という至極当然の欲求が生まれるのであった。そうじゃないと面倒くさいし。</p>
+<h2>2つのアセンブリ参照</h2>
+<p>古いバージョンをReleaseビルドでビルドしちゃって、そちらはDLLとして参照しちゃいましょう。とやると、うまくいきません。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/29488160-3ba9dbe0-8540-11e7-94ca-c994f1b37db9.png" alt="image" /></p>
+<p>同一アセンブリ名のものは2つ参照できないからです。ということで、どうするかといったら、まぁプロジェクトは自分自身で持ってるので、ここはシンプルにアセンブリ名だけ変えたものをビルドしましょう。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/29488237-c3ba0478-8541-11e7-9276-9b0a712cb886.png" alt="image" /></p>
+<p>これを参照してやれば、一旦はOK。</p>
+<h2>extern alias</h2>
+<p>2つ、同じMessagePackライブラリが参照できたわけですが、今度はコード上でそれを使い分けられなければなりません。そのままでは出し分けできないので（同一ネームスペース、同一クラス名ですからね！）、次にaliasを設定します。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/29488244-eea0a9b2-8541-11e7-84d8-2cef1c321097.png" alt="image" /></p>
+<p>対象アセンブリのプロパティで、Aliasesのところに任意のエイリアスをつけます。今回は1_4_4にはoldmsgpack, プロジェクト参照している最新のものにはnewmsgpackとつけてみました。</p>
+<p>あとはコード上で、extern aliasとoldmsgpack::といった::によるフル修飾で、共存した指定が可能です。</p>
+<pre><code class="language-csharp">// 最上段でextern aliasを指定
+extern alias oldmsgpack;
+extern alias newmsgpack;
+
+[Config(typeof(BenchmarkConfig))]
+public class TypelessSerializeBenchmark
+{
+    private TypelessPrimitiveType TestTypelessComplexType = new TypelessPrimitiveType(&quot;John&quot;, new TypelessPrimitiveType(&quot;John&quot;, null));
+
+    [Benchmark]
+    public byte[] OldSerialize()
+    {
+        // フル修飾で書かなきゃいけないのがダルい
+        return oldmsgpack::MessagePack.MessagePackSerializer.Serialize(TestTypelessComplexType, oldmsgpack::MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance);
+    }
+   
+    [Benchmark(Baseline = true)]
+    public byte[] NewSerialize()
+    {
+        return newmsgpack::MessagePack.MessagePackSerializer.Serialize(TestTypelessComplexType, newmsgpack::MessagePack.Resolvers.TypelessContractlessStandardResolver.Instance);
+    }
+}
+</code></pre>
+<p>これで完成。実行すれば</p>
+<p><img src="https://user-images.githubusercontent.com/46207/29488345-c03a2628-8543-11e7-8850-5c6b3ef7ba95.png" alt="image" /></p>
+<p>最終的に、以前と比較して9倍ほど速くなりました。実際には、何度か実行していって、速くなったことを確認しながらやっています。</p>
+<p>クソ遅かったのね！って話なのですが、Typelessは実際クソ遅かったのですが、それ以外の普通のは普通にちゃんと速かったので、一応、大丈夫です、はい、あくまでTypelessだけです、すみません……。</p>
+<h2>まとめ</h2>
+<p>ある程度完成している状態になっているならば、ベンチマークドリブンデベロップメントは割とかなり効果的ですね。改善はまずは計測から、とかいっても、結局、その数値が速いのか遅いのかの肌感覚がないとクソほども役に立たないわけですが（ただたんに漠然と眺めるだけの計測には本当に何の意味もないし、数値についての肌感覚を持っているかいないかの経験値は、ツールが充実している今でもなお重要だと思います。肌感覚に繋げていくことを意識して、経験を積みましょう）、さすがにBefore, Afterだととてもわかりやすくて、導入としてもいい感じです。</p>
+<p><a href="https://github.com/neuecc/MessagePack-CSharp/">MessagePack for C#</a>は、昨日ver 1.5.0を出しまして、最速モード(Object-Array)以外の部分(Object-Map)でも性能的にかなり向上したのと、object型のシリアライズがみんなの想像する通りのシリアライズをしてくれるようにようやくなりまして、本気で死角なし、になりました。Typelessの性能向上は次のアップデート。それと、もう一つ大型の機能追加（とても役に立ちます！特にUnityで！）を予定しているので、まだまだ良くなっていきますので期待しといてください。</p>
+</div>
+<h1><a href="https://neue.cc/2017/08/07_556.html">C#の高速なMySQLのドライバを書こうかという話、或いはパフォーマンス向上のためのアプローチについて</a></h1>
 <ul class="date"><li>2017-08-07</li></ul>
 <div class="entry_body"><p>割とずっと公式のC# MySQL Driverは性能的にビミョいのではと思っていて、それがSQL Serverと比較してもパフォーマンス面で足を引っ張るなー、と思っていたんですが、いよいよもって最近はシリアライザも延々と書いてたりで、その手の処理に自信もあるし、いっちょやったるかと思い至ったのであった。つまり、データベースドライバをシリアライゼーションの問題として捉えたわけです。あと会社のプログラム(<a href="https://kuro-kishi.jp/">黒騎士と白の魔王</a>)のサーバー側の性能的にもう少し飛躍させたくて、ボトルネックはいっぱいあるんですが、根本から変えれればそれなりにコスパもいいのでは、みたいな。</p>
 <p><img src="https://user-images.githubusercontent.com/46207/29028002-dcf3caa6-7bbd-11e7-86f8-e4d89276be75.png" alt="image" /></p>
@@ -1975,193 +2065,6 @@ switch (union.Type)
 <p><a href="https://redd.it/5cqkd2">redddit/r/csharp/ZeroFormatter</a>でAsk Me Anythingやってます（とは）。Fastestとかぶち撒けたせいでシリアライザ戦争が勃発している（恐ろしい）。なるほど<a href="https://github.com/rogeralsing/Wire">Wire</a>、シランカッタ。コード的には基本的にZeroFormatterのほうが速そーなので、トータルで色々なケース作れば勝つと思うんだけど、弱点を突くと負けるケースは出てくるのかなぁ。とはいえ普通に私の手元で図ったら圧勝した、ふむ。（最終的に相手のベンチマークにZeroFormatter足して計測→<a href="https://gist.github.com/neuecc/05a25a2227f0bf464b458b75e99412e1">結果</a> 圧倒的な圧勝ということで、まぁしょうがない、相手が悪い。確かにWireは二位なので、惜しかったで賞というところ）</p>
 <p>というわけで、真面目に、C#でサッと今使ってるシリアライザをそのまま置き換えられるものにしました。つまり、あらゆるところで使ってください、と言ってます。実際、小さなところから大きなところまで効果あると思います。小さなところは↑でstructを例にしましたが、大きなところでは、例えばバッチ処理の連鎖とかで、延々と巨大なデータを送っているのだけれど、一つ一つはその一部しか使わないんだよねー、みたいな場合。に、ものすごく効くんじゃない？って意見貰いました。その通りで、実際そういうケースでは正しくめっちゃ効きますねー。</p>
 <p>とかとかって感なので、是非是非試してみてくださいな。あとクドい告知ですが11/27開催の<a href="http://kbkz.connpass.com/event/40629/">歌舞伎座.tech#12「メッセージフォーマット/RPC勉強会」</a>でもお話します＆クロスプラットフォーム(Unity, Windows, Mac, Linux)で使える通信用のフレームワークをリリースします（！）のもします（ホントに！）</p>
-</div>
-<h1><a href="https://neue.cc/2016/11/08_542.html">ZeroFormatter - C#の最速かつ無限大高速な .NET, .NET Core, Unity用シリアライザー</a></h1>
-<ul class="date"><li>2016-11-08</li></ul>
-<div class="entry_body"><p>（現状は）C#専用の、新しいシリアライズフォーマットを作りました。アセットストアには置いてないんですが、GitHubで公開しています。ReadMeが超書きかけですが明日ぐらいには全部書き終わってるはず……。</p>
-<ul>
-<li><a href="https://github.com/neuecc/ZeroFormatter/">neuecc/ZeroFormatter</a></li>
-</ul>
-<p>特徴はデシリアライズ速度がゼロなので、真の意味で爆速です。そう、無限大高速。</p>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/20072942/ba760e70-a56d-11e6-918f-edf84f0187da.png" alt="image" /></p>
-<p>嘘くせー、って話なんですが、実のところこれは類似品があって、Googleの出してる<a href="http://google.github.io/flatbuffers/">FlatBuffers</a>と基本的な考えは同じです（他に<a href="https://capnproto.org/">Cap'n Proto</a>というのもあります、こっちも元Googleの人ですね）。デシリアライズ「しない」から速い。つまるところ必要になるときまでパースを先送りするってことです。これは、アプリケーションの作りにもよりますが非常に効果があって、例えばデカいマスタデータをドバッと取得するなんてときに、その場で必要なデータってその巨大データのごく一部だったりするんですよね。全部パースしてデシリアライズなんかしてると遅くって。そういった問題をFlatBuffersなら一挙に解決できます（多分）。ってことは同種のZeroFormatterでも大解決できます。</p>
-<p>なら、じゃあFlatBuffers使えばいいじゃんって話になると思うんですが、なんとFlatBuffersはAPIがエクストリームすぎて実用はマジ不可能。<a href="http://qiita.com/shibukawa/items/878c5fe8ec09935fccd2">最速という噂のFlatbuffersの速度のヒミツと、導入方法の紹介</a>という記事にもありますが、まぁfbsという専用IDLでスキーマ書いてジェネレートまでは許せても、その後のオブジェクトの生成をバイナリ弄っているかのように生でビルドさせるのは正気の沙汰ではない……。さすがにこれをふっつーに使うのは無理でしょ、無理。それでもピンとこない？<a href="https://github.com/google/flatbuffers/blob/master/samples/SampleBinary.cs#L28-L59">このFlatBuffersの公式サンプル</a>はどうでしょう？new Monster { Hp = ... Name =... WEapon... }ってだけのはずのコードが凄いことになってますけれど、まぁ、つまるところそういうことです。厳しい。絶対厳しい。（しかもそんだけやってもそこまで速くないという）。</p>
-<p>というわけで、C#で「ちゃんと使える」というのを念頭において、シンプルなAPI(Serialize&lt;T&gt;とDeserialize&lt;T&gt;だけ！）で使えるようにデザインしました。</p>
-<p>また、<a href="https://kuro-kishi.jp/">社内的事情</a>で、IDictionaryやILookup(MultiDictionary)へのゼロ速度デシリアライズが欲しかったので（Dictionaryを作るのに配列を全部パースしてC#コードで構築、なんてやってると結局全部パースしててパースの先送りができないわ、Dictionary構築にかなり時間喰っちゃうわで全然ダメ）、ネイティブフォーマットの中にDictionaryやILookupを加えています。これにより爆速でDictionaryのデシリアライズが終わります。Dictionaryをまんま保存できるので、簡易データベース、インメモリKVSとなります。ただのシリアライズフォーマットより少し賢くて、SQLiteのようなデータベースほどは賢くない、けれど、Dictionaryそのものなので絶妙な使いやすさがある。結構、そういうのがマッチするシチュエーションって多いんじゃないかと思います(MySQLをメインに使っててもRedisも最高だよね、みたいな）</p>
-<p>シリアライズ速度もまた、並み居る強豪を抑え(protobuf-net, MsgPack-Cli, UnityだとネイティブJsonUtilityなど）最速をマークしています。パフォーマンス系は痛い思い出があるので（性能ガン無視したゴテゴテした何かで構築すると、困ったときに性能を取り戻すのは非常に難しく、始まる前から技術的負債となる……）、とにかくパフォーマンス超優先、絶対落とさん、というぐらいにギチギチに突き詰めました。実際、今後C#でZeroFormatterを超える速度を叩き出すのは不可能でしょう。いやマジで。というぐらいにC#の最適化技法が詰め込んであります。</p>
-<p>Unityサポートを最初から組んでいるシリアライザも珍しくて（まぁふつーは.NETでシリアライザ書くとふつーの.NETが対象になって対応が後手に回るので）、使えるっていうだけではなくて、ちゃんとiOS/IL2CPPでも最速が維持できるように組んであります。結果実際、ネイティブ実装なはずのJsonUtilityよりも速い。C#が遅いなんて誰が言ったヲイ。ちゃんと書けば速いのだ（まぁJSONじゃないからってアドバンテージはあるんだけど）。この辺は<a href="https://github.com/neuecc/UniRx">UniRx</a>の実装で散々IL2CPPと格闘した経験がちゃんと活きてます。</p>
-<p>メインターゲットは Server - Unity 間での通信のためですが、Server - ServerのRPC/Microservices的シナリオや、Unityでのファイルセーブなどのシナリオでも有意義に使うことは可能でしょう。難点はネットワーク通信に使うとサーバーもC#で実装しなきゃいけないってことですね！それはいいことですね！この際なのでC#で実装しましょう！そのために .NET Coreにも対応させたのでLinuxでも動かせますよ！</p>
-<p>まぁ、この辺は来月ぐらいというか、今月末ぐらいには、更にクロスプラットフォーム(Unity, Windows, Mac, Linux)で使える通信用のフレームワークをリリースします（！）ので、そこはそれを待っていただければきっと活用の幅が広がるはずです……。詳しくは11/27開催の<a href="http://kbkz.connpass.com/event/40629/">歌舞伎座.tech#12「メッセージフォーマット/RPC勉強会」</a>でお話するつもりなので、是非来てくださいな。</p>
-<h2>使い方</h2>
-<p>DLLはNuGetに転がってます。</p>
-<ul>
-<li>PM&gt; Install-Package <a href="https://www.nuget.org/packages/ZeroFormatter">ZeroFormatter</a></li>
-</ul>
-<p>.NET用。</p>
-<ul>
-<li>PM&gt; Install-Package <a href="https://www.nuget.org/packages/ZeroFormatter.Interfaces/">ZeroFormatter.Interfaces</a></li>
-<li>PM&gt; Install-Package <a href="https://www.nuget.org/packages/ZeroFormatter.Unity">ZeroFormatter.Unity</a></li>
-</ul>
-<p>Unity用。Interfacesは.NET 3.5プロジェクトとUnityで共用できるのでクラスの共通化に使えます。Unityの場合は<a href="https://github.com/neuecc/ZeroFormatter/releases">releases</a>からバイナリをダウンロードしてもらったほうがいいかもしれません。</p>
-<ul>
-<li>PM&gt; Install-Package <a href="https://www.nuget.org/packages/ZeroFormatter.Analyzer">ZeroFormatter.Analyzer</a></li>
-</ul>
-<p>Visual Studio 2015用のAnalyzer。</p>
-<p>クラスを定義して、ZeroFormatterSerializer.Serializeでbyte[], DeserializeでTが取れるというのが基本APIになります。</p>
-<pre><code class="language-csharp">[ZeroFormattable]
-public class MyClass
-{
-    [Index(0)]
-    public virtual int Age { get; set; }
-
-    [Index(1)]
-    public virtual string FirstName { get; set; }
-
-    [Index(2)]
-    public virtual string LastName { get; set; }
-
-    [IgnoreFormat]
-    public string FullName { get { return FirstName + LastName; } }
-
-    [Index(3)]
-    public virtual IList&lt;int&gt; List { get; set; }
-}
-
-class Program
-{
-    static void Main(string[] args)
-    {
-        var mc = new MyClass
-        {
-            Age = 99,
-            FirstName = &quot;hoge&quot;,
-            LastName = &quot;huga&quot;,
-            List = new List&lt;int&gt; { 1, 10, 100 }
-        };
-
-        var bytes = ZeroFormatterSerializer.Serialize(mc);
-        var mc2 = ZeroFormatterSerializer.Deserialize&lt;MyClass&gt;(bytes);
-
-        // ZeroFormatter.DynamicObjectSegments.MyClass
-        Console.WriteLine(mc2.GetType().FullName);
-    }
-}
-</code></pre>
-<p>ZeroFormatterSerializerの使い方自体は超単純なんですが、対象となるクラスには幾つか制限があります。「ZeroFormattable」で「Indexで番号のついた」「virtualな」プロパティが必要です。更にコレクションはIList&lt;T&gt;で、ディクショナリはIDicitionary&lt;TKey,TValue&gt;で宣言しておく必要があります。おー、なんか面倒くさそうですね！そこでVisual Studioの環境ならAnalyzerが用意されていて、エディット時にリアルタイムで警告/修正してもらえます。</p>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/20078766/3ea54f14-a585-11e6-9873-b99cb5d9efe5.gif" alt="zeroformatteranalyzer" /></p>
-<p>structにも対応していて、その場合は「Indexで0から欠番なしの連番がついたpublicなフィールドかプロパティ」と「その順番どおりの引数を持つコンストラクタ」が要求されます。これもAnalyzerが警告します。詳しいルールはReadMeで！</p>
-<p>IDL経由で書くよりマシだし（普通のC#ですからね）、そこまで面倒くさくはないかなあ、というギリギリラインにしているつもりです。virtual強要のダルさとかルールの多さはVisual Studio Analyzerでカバーするという、今風の作りになってます。今風といっても、一つのライブラリにAnalyzerをセットでがっつし組み込むような作りしてる人は私以外見た覚えないけれど……。一昔前だとvirtual強要とか無理ゲーと思ってましたが、Analyzer以降の世代のC#ならこういう作りをしてもアリだなって思えているので、APIの見せ方の幅が広がると思うんで、もう少し増えてもいいんじゃないかなーとは思いますね。</p>
-<h2>デシリアライズと再シリアライズ</h2>
-<p>グラフ意味ないレベルなんですが、デシリアライズ速度。特に大きい配列とか、サイズがデカければデカいほど無限大に差は開きます。</p>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/20079582/b33061ae-a588-11e6-8fc1-0ae40c0ee9e5.png" alt="image" /></p>
-<p>なんでかといえば、裏にbyte[]を持って、ラップするクラスに包んでいるだけだからです。クラス定義で virtual を強要しているのは、デシリアライズ後のオブジェクトの実態は、裏で動的に作り変えてあり、それを継承したクラスにするためです。FlatBuffersと同等のパフォーマンスでありながら、極力自然なC#のシリアライズ/デシリアライズのAPIに載せるための手段です。</p>
-<p>所詮はパースの先送りなので、全部の要素を使う場合はそこまで差は開きません（但し、ふつーのbyte[]から実体化するという点でのデシリアライズもかなり高速なので、仮に全プロパティを舐めても他のシリアライザよりも速度的には高速になってます、現状の実装だと）。まぁ、モノによってはすんごく効果的というのは分かってもらえるかと。実際うちの（開発中の）ゲームでは効果大（になる見込み）です。</p>
-<p>そうして作り込んだオブジェクトの再シリアライズも強烈な速度です、というか、こちらも再シリアライズも無限大高速です。というのも裏で持ってるbyte[]をBuffer.BlockCopyでコピーするだけだから。シリアライズしないから無限大速い。これはひどぅぃ。</p>
-<p>再シリアライズするシナリオっていうのは、サーバー側だとMicroservices的な分散環境でかなり効果あると思ってます。オブジェクトを左から右に流すだけって、それなりにあるんですよね。そういう時に生のbyte[]でやりくりするとかじゃなくて、ちゃんとオブジェクトとしての実体を持ちつつ（API的に嬉しい）、パフォーマンスも両立（左から右に流すだけなのでデシリアライズもしなければシリアライズもしない！）することが達成できます。</p>
-<p>また、触らないというだけじゃなくて、触ることもできます。オブジェクトはミュータブルで、ちゃんとふつーのクラスのように扱って値も変えられます。FlatBuffersは制限付きで一部だけ可能なんですが、ZeroFormatterは全てを変更可能にしてます（イミュータブルにしたい場合はセッターをprotectedにしたりIListのかわりにIReadOnlyListで宣言したりすることでイミュータブルにできるので安心してくだしあ）。この場合、もし固定長の値(intとかfloatとか)を変更した場合は、裏のbyte[]に直接書き込むので、再シリアライズの高速性は維持されます。可変長の値(stringとかオブジェクトとか）を変更した場合は、そこの部分だけシリアライズが必要な差分としてマークされます。それ以外の箇所はbyte[]をBlockCopyするので、可能な限りの高速性を維持しつつも自由な編集を可能にしています。</p>
-<p class="noindent"><img width=640 src="https://cloud.githubusercontent.com/assets/46207/20078613/9f9ddfda-a584-11e6-9d7c-b98f8a6ac70e.png" /></p>
-<p>これはFlatBuffersでは出来ないし、当然他のフォーマットでもできません。</p>
-<h2>シリアライズパフォーマンス</h2>
-<p>シリアライズはデシリアライズの時のようなチートは出来ないんで、ZeroFormatterの実装も正攻法で真正面から競ってます。で、ちゃんと速いというか十分以上に速いですというか.NET最速です、いやほんと。</p>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/20079614/d1d8431a-a588-11e6-8b80-4dbb1cc71301.png" alt="image" /></p>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/20079628/e1f310f4-a588-11e6-803a-30ef4b7e15f9.png" alt="image" /></p>
-<p>せっかくなので比較対象は沢山用意していて、まぁprotobuf-netを基準として見るといいと思います。<a href="https://github.com/mgravell/protobuf-net">protobuf-net</a>は実際、.NET最速シリアライザで、良いパフォーマンス出してます。でもZeroFormatterはその2倍以上速いんだなぁ。<a href="http://mbraceproject.github.io/FsPickler/">FsPickler</a>は個性的で面白いし、機能の豊富さを考えると十分よくやってる感じでいいですね。FlatBuffersは気合が足りないですね、あんだけ奇怪なAPIでこれかよ、みたいな。</p>
-<p><a href="https://github.com/google/protobuf/tree/master/csharp/">Google.Protobuf</a>が凄く良好でビックリした。これはGoogle公式のProto3実装で、gRPCとか最近のGoogle公式でProtocol Buffersを多用するものはこれを使っていますね。ただ、汎用シリアライザじゃなくて、protoから生成してやらないと一歩も動けないタイプなので使いづらいとは思います。gRPCとかで完全にIDLのシステムが固まっている場合でなら、速度的に不安にならなくて良いという点で良いですねぇ。というかなんでこんな速いんだろ、いや、速いのはいいんですけど、コード的に、だったらZeroFormatterはもう少しいけるはずなはず、うーん、事前csコード生成で普通にコンパイルかけたほうが動的生成よりイケてるってのはあるにはあるんですが、とはいえとはいえ。むー。</p>
-<p>というわけでZeroFormatterは実際超速い、んですが速度の秘訣は、沢山あります！幾つか紹介すると、一つは自分でコントロールできない実装を一切通してないから。ひたすらrefでbyte[]を回して、それに対して書き込むだけって感じになっていて、Streamすら使っていません。(Memory)Streamはあんまり通さないほうがいいですね、基本的にはパフォーマンスのネックになります。実際Google.Protobufやprotobuf-netは内部で書き込み用のbyte[]バッファを持ってて、溢れた時のFlushのタイミングでだけ嫌々（？）MemoryStreamに書きに行ってます。ZeroFormatterは更に徹底して、byte[]だけをひたすら引き回す。</p>
-<p>次に、整数（など）が可変長じゃないから。Protocol BuffersやMsgPackはint(4バイト)をシリアライズするにあたって、4バイト使いません。というか使わない場合があります。それぞれのエンコード方式を使って、例えばよく使われる数字なんかは1バイトとか2バイトでシリアライズできたりします。これによってバイナリサイズが縮みます。素晴らしい。が、これはエンコードの一種と考えられるので、そのまんまintの4バイトを突っ込むのに比べてエンコードのコストがかかってます。ZeroFormatterは固定長です（これは別にパフォーマンス稼ぎたいわけじゃなくて、ランダムアクセス・ミュータブルなデシリアライズのために必要だからそうなってるだけなのですけれど）</p>
-<p>文字列の取扱いもそこそこ工夫があります。まず、 Encoding.GetBytes(string) でbyte[]取ってストリームにWrite、なんてのはビミョー。そのbyte[]無駄じゃんって話で。GetBytesにはbyte[]を受け取ってそいつに書き込んでくれるオーバーロードがあるので、それを使います。じゃあ単純にbyte[]投げればいいのかっていうとそうでもなくて、byte[]の長さが足りない時に伸ばしてくれたりしないので、事前にちゃんと余裕もった長さにしてあげる必要があります。つまりエンコード後のサイズを知っておく必要がある。ここで Encoding.GetByteCount を大抵の実装は使うんですが、長さ分かるってことは実質エンコードしたようなものじゃん、と。というわけで、ここは Encoding.GetMaxByteCount で確保します。こっちのほうがずっと軽い。そして、別にちょっと大きめに取るのはそんな問題ないんですよ、後続がシリアライズするのに使うかもしれないし、そもそも既に大きめに確保されているかもしれない。</p>
-<p>長さが分かっている場合（intしか返さない場合とかVector2しか返さないとか、何気にあるはず）は、返すbyte[]をきっちりそのサイズでしか確保しないという最適化が入っています。余計なバッファなし。これは↑のstringも同様で（stringだけ返すというのは非常によくある！）、その場合だけ大きめに確保はせず、ジャストサイズで返します。この辺をきっちりやってる実装は、ないですね（Streamが根底に入ってるとそもそも出来ないので、ZeroFormatterがbyte[]しか引き回さない戦略取ってるからこそ出来る芸当とも言える）</p>
-<p>オブジェクトへのシリアライザは初回に一度だけDynamicAssemblyで型を動的に生成するわけですが、コード生成の外からループのヘルパーを通したりせずに、<a href="https://github.com/neuecc/ZeroFormatter/blob/7e68883dc3365d2caf32279cf64f07427b94f109/src/ZeroFormatter/Formatters/DynamicObjectFormatter.cs#L186-L583">全てのコードを埋め込んでます</a>。というわけで長めのil.Emitが延々と続いてるんですが、これは手間かけるだけの効果ありますね、最初はExpressionTreeでプロパティ単位でのシリアライザを用意して回してたりしたんですが、全部埋め込みにしたら劇的に良くなりました。こう差が出ると、あんまExpressionTreeで書いたほうがいいよねー、なんて気はなくなりました。</p>
-<p>そうして生成したシリアライザのキャッシュにDictionaryは使いません。辞書のルックアップはオーバーヘッドです。.NETで最速の型をキーにした取り出しは、適当な&lt;T&gt;のクラスのスタティック変数から取り出すことです。特に静的コンストラクタはスレッドセーフが保証されているので、lockもいりません。つまりどうすればいいかというと、<a href="https://github.com/neuecc/ZeroFormatter/blob/7e68883dc3365d2caf32279cf64f07427b94f109/src/ZeroFormatter/Formatters/Formatter.cs">静的コンストラクタの中でifを書きまくること</a>が絶対の正解です。if連打とか気持ち悪い？いやいや、いいんですよ、こんなんで、むしろこういうのがいいんですよ。</p>
-<p>それやると一つの型につき一つのシリアライザしか登録できないのでコンフィグが出来ない！って話になってしまうんですが、今のとこZeroFormatterはそもそもノー・コンフィグなので問題ない（酷い）。というのはともかく、オプション毎に型を作って&lt;TOption, T&gt;という形で登録するっていう手法があります。その場合はオプションの全組み合わせを一つ一つの型として用意するということになります。んなのアホかって思うかもですが、実際に<a href="https://github.com/kevin-montrose/Jil">Jil</a>はそういう実装になっていて、真面目に現実的な手法です。</p>
-<p>Enumの取扱いはかなり厄介で、そもそもToStringは遅くてヤバい。ので、ZeroFormatterは値でしかシリアライズしません。ToStringのキャッシュってのもありますが、じゃあそのキャッシュはどこに置くのって話になってきて（Dictionaryに突っ込むと取ってくるコストかかるので、やるなら専用シリアライザを動的に作ってIL内に文字列埋め込みが最速でしょうね）、やらなくていいならやらないにこしたことはない！</p>
-<p>さて、というだけじゃなくて、そもそも実はEnumのUnderlyingTypeへのキャストも汎用的にやろうとするとかなり大変だったり。つまりTEnumをInt32に変換するって奴で、これ、正攻法でうまく（速く）やる手段はないです。そうなると結局動的コード生成するしかないってことになりそうで、その場合ExpressionTreeでサクッと作るのが正攻法なんですが、今回私はCreateDelegateのハックでやりました。例えば、通常は変換できない<a href="https://github.com/neuecc/ZeroFormatter/blob/7e68883dc3365d2caf32279cf64f07427b94f109/src/ZeroFormatter/Formatters/EnumFormatter.cs#L94-L125">Func&lt;int,int&gt;はFunc&lt;T,int&gt;に変換できます</a>。TがEnumの場合、かつCreateDelegate経由の場合のみ。実装バグが、まぁベンリだしいいんじゃね？って感じで仕様として（？）残ったって感じなんですが、まぁ実際ベンリなので良きかな良きかな。ちなみに、これでExpressionTreeとか動的生成が効かないUnityでも行けるぜ！とか思ったら、そもそもUnityだと（古いmonoのコンパイラだと？）エディター上ですら動かなかった……。のでUnityではこのテクニックは使ってなくて、普通にEnumはクラスと同じように事前コードジェネレートの対象に含めてます。</p>
-<p>あとは本当にボクシングが絶対に発生しないように書いてあります。アタリマエと思いきや意外と普通にこの辺が甘いコードは少なくなくて、protobuf-netですら秘孔を突くってほどじゃなく普通にボクシング行きのコードパス通せたりします。このボクシング殺すべしはUnityでも徹底していて、一切ボクシングなコードは通りません。どうしても必要そうな場合でもコードジェネレートでシリアライザを徹底的に事前生成させることで完全に回避してます。MsgPack-CliのUnity用コードが、コレクションをobjectで取り出すようにしてたり(汎用的なAOT対策としては、正解なのですが……）なので、Unityで徹頭徹尾やってるものも珍しい部類に入るんじゃないかと思います。</p>
-<p>また、そもそもbyte[]を確保しない（外から渡せて縮小もしない）NoAlloc系のAPIも用意してます。外側でBufferPoolとか用意しといてもらえれば、ゴミを全く発生させないシリアライザになります。内部ではヘルパーオブジェクトの生成も全くしてない（最初から最後までbyte[]を引き回すだけでなんとかしてる）ですしね。これはリアルタイム通信書いてる時に、こんなにバンバン通信してる = シリアライザが動きまくってるのに byte[] を使い捨てまくり嫌すぎる、と思ってどうしても用意したかったのでした。まぁさすがにバンバン通信といったってUpdateループのような毎フレとかじゃあないんで、神経質になりすぎっちゃあなりすぎかもですが。</p>
-<h2>Unityでのパフォーマンス</h2>
-<p>ZeroFormatter, MsgPack-Cli, JsonUtilityでの計測です。ループ回数は500回でiPhone 6s Plus/IL2CPPで動かした結果です。ZeroFormatter, MsgPack-Cliはコードジェネレート済み、JsonUtilityはstringの後にEncoding.GetBytesでbyte[]を取る/byte[]からの復元を時間に含めてます(この手の使い方だと通常最終的にbyte[]に落とすはずなので)</p>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/20076797/281f7b78-a57d-11e6-8fbd-e83cc6b72025.png" alt="image" /></p>
-<p>デシリアライズは例によってチートなので見なくていいんですが、シリアライズもきっちり爆速です。というかJsonUtilityよりも速い。配列がMsgPack-Cliの10倍速い……（MsgPack-Cliの配列のデシリアライズ速度は正直結構厳しい結果ですね、うーん、なんでそうなのかは分からなくもなくはないんですが……）。</p>
-<p>ZeroFormatterをUnityで使うには zfc.exe というコンソールアプリケーションを使ってシリアライザを事前生成します。今のところzfcはWindowsでしか動きません（本当は.NET Coreで実装してLinuxやMacでも動かせるようにしたかったんですが、コード解析に使っている<a href="https://github.com/dotnet/roslyn">Roslyn</a>のプロジェクト解析部分がWindows用しかまともに動かせないという鬼門があり、解決策は今のところない。もう少し.NET Coreが成熟すればいい感じになれるはず、まだ実は細かいところがイケてないのだ……）。生成物自体はどのプラットフォームでもいけます。</p>
-<p>Unityでパフォーマンスが有利になる点といえば、ZeroFormatterでのデシリアライズ後のDictionaryは普通に書いたDictionaryよりも良い場合があります。何かというと、Unityの場合、Enumがキーの場合のDictionaryはパフォーマンスに不利です。というのも、参照の度に裏でボクシングが発生しているから（これはmonoの古いバージョンのEqualityComparer.Defaultの実装に問題があって、というかふつーの.NETのほうも4.5辺りまで微妙な実装でした)。で、解決策は専用のEqualityComparerを作ってセットしてあげること、です。面倒くさくてやってられないし実際それ分かっててもやれ（て）ないんですが、zfcで生成したDictionaryには専用のEqualityComparerが最初から自動でセットされてます。ので、その問題は起こりません。</p>
-<p>ZeroFormatterはUnityのVector3とかはそのまんまだとシリアライズできないんですが、ZeroFormattableなstructに見せかけてzfcを通すと、Vector3用のシリアライザとかを作ってくれてベンリです。例えば</p>
-<pre><code class="language-csharp">#if INCLUDE_ONLY_CODE_GENERATION
-
-using ZeroFormatter;
-
-namespace UnityEngine
-{
-    [ZeroFormattable]
-    public struct Vector2
-    {
-        [Index(0)]
-        public float x;
-        [Index(1)]
-        public float y;
-
-        public Vector2(float x, float y)
-        {
-            this.x = x;
-            this.y = y;
-        }
-    }
-}
-
-#endif
-</code></pre>
-<p>のようなコードを用意しておくと、「INCLUDE_ONLY_CODE_GENERATION」が特別なシンボルになっていて、zfcのみで解析対象になってVector2用のシリアライザが生成されます。サーバー側でも受けたいとかって場合は、普通に↑のものをそのまま使えばそれはそれでOKです。ラップした何かに置き換える、なんてのは当然オーバーヘッドなわけなので、structがそのまま使えるんならそれにこしたことはないですからねえ。</p>
-<p>zfcの解析対象はソースコードです。昔はコンパイル済みのDLLバイナリを解析するコードをよく書いていたのですが、CIでのビルドと相性が悪すぎて（ビルド順序の依存がある・互いが生成しあって、その生成物を参照しているような場合だとCI上でビルド不能になったりする）イマイチでした。というわけで、今後はコードジェネレートはソースコード解析によるものを主軸にしていこうと思っています。まぁ、そもそもコード生成なんてしないにこしたことはないんですけどね、ILでもなんでもいいから極力実行時動的生成にして、UnityのIL2CPP用だとか、特別な理由がある時だけ「しょうがないから」ソースコード生成する、ぐらいがいいと思ってます。全然、コード生成なんてほんといいもんでもなんでもないし、少なくするにこしたことはない。だから私はIDLを定義して生成するってのは嫌いで、C#そのものがIDLにならなきゃならないと思ってます。言語中立にしたいなら、その場合だけ「しょうがないから」IDLをジェネレートすればいい。そうですねぇ、仮にZeroFormatterを言語中立に拡大していくのだとしたら、C#をIDLの代わりにします。csx(C# Script)で直接コンパイルできるような。結構面白いと思うんだよね。</p>
-<h2>バイナリサイズ</h2>
-<p>バイナリサイズはMsgPackやProtocol Buffersに比べて「大きい」です。さすがにJSONよりは小さくなるんですが、まぁFlatBuffersとは同じぐらいですね。別にバイナリだから小さいなんてことはなくて、そう、FlatBuffersも結構大きいですよ。なんで大きいのかっていうと、ランダムアクセスするためのヘッダ領域が必要なので、その分が純粋にオーバーヘッドになってます。これはねえ、しゃーない。デシリアライズ先送りのための必要経費です。銀の弾丸なんてこの世にはなくて、トレードオフなんです、トレードオフ。gzipとかLZ4とかで圧縮しちゃうんなら結構縮められるので、もとよりMsgPack+gzipとかってやってるんなら、そんなにサイズに差は出てこないでしょう。せっかくの速度がウリのフォーマットなので、圧縮する場合はLZ4がお薦めです。結局、デシリアライズが速いといってもネットワーク転送量が多くなってしまえば、ネットワーク通信がボトルネックになってトータル処理時間では負けた！みたいなことだって普通に起こるわけなんで、全然、LZ4で圧縮ってのは良い選択です。ていうか私も（モノによってやるやらないの判断は入れますけれど）やります。</p>
-<p>また、パフォーマンスのところで有利になると書いた可変長整数「ではない」ことは、バイナリサイズには当然響いてきます。固定長なのはパフォーマンスのためじゃなくてミュータブルにするためだったり、固定長配列の長さを真に固定するために必要だったりするのでしょうがないんですけれどね（FlatBuffersも勿論同様の話で、固定長で整数のサイズが大きくなってしまうのも必要経費でバイナリ仕様的にしょーがない）、どちらかというとパフォーマンスのほうが副産物で。</p>
-<p>ところで突然ちなみにBinaryFormatterは更にもっとサイズでかいです、なんでかっていうとかなりリッチめに型情報が入ってるからなんですねえ。シリアライズ/デシリアライズも遅いんで、アレは使わないほうがいいですよ。</p>
-<p>他のシリアライザにはないZeroFormatterだけのお薦め機能として、IDictionaryやILookup(MultiDictionary)へのゼロ速度デシリアライズというのを持っているんですが、なんと、それを使うとバイナリサイズが飛躍的に増大します！（ついでにシリアライズ速度も大きく低下する）。なんでかっていうと、中のハッシュテーブルを丸ごとシリアライズしてるので純粋にKey, Valueだけのシリアライズに比べて、結構に大きくなっちゃいます。なのでデフォルトでは有効になってなくて(?)、IDictionaryのかわりにILazyDictionary, ILookupのかわりにILazyLookupという形で型を宣言すると、そっちのモードでシリアライズします。これはトレードオフはトレードオフでも、ちゃんと理解した上で選択しないと危なっかしいので、デフォのIDictionaryは初回アクセス時に丸ごと構築するという、全然遅延してないじゃんモードになってます。</p>
-<h2>拡張性</h2>
-<p>ZeroFormatterはバイナリ生成のためのフレームワーク、ぐらいの気持ちで設計してあって、割とサクッと拡張して俺々バイナリを統合して流し込めるようになってます。というのも、ゲーム用に使うというのも主眼に入れてるので、一部の型は汎用ではなくて、特化したバイナリを流したいって局面は全然あるでしょう。拡張のコードの例として、Guidはデフォでサポートしてないんでプロパティの型に使うと怒られるんですが、</p>
-<pre><code class="language-csharp">// こんな風にFormatter&lt;T&gt;を継承したクラスを作って
-public class GuidFormatter : Formatter&lt;Guid&gt;
-{
-    // もしバイナリが固定サイズなら数字を、そうじゃないならnullを返す
-    public override int? GetLength()
-    {
-        return 16;
-    }
-
-    // あとはbyte[]に対して書き込む/読み込む
-    // BinaryUtilが汎用的に使えるヘルパーになっている他、Formatter&lt;T&gt;.Defaultを呼べば子シリアライザを使える
-    public override int Serialize(ref byte[] bytes, int offset, Guid value)
-    { 
-        return BinaryUtil.WriteBytes(ref bytes, offset, value.ToByteArray());
-    }
-
-    public override Guid Deserialize(ref byte[] bytes, int offset, DirtyTracker tracker, out int byteSize)
-    {
-        byteSize = 16;
-        var guidBytes = BinaryUtil.ReadBytes(ref bytes, offset, 16);
-        return new Guid(guidBytes);
-    }
-}
-
-// どっか起動時に↓のコードを呼んでおけば、Guidに対するデシリアライズが必要な時には↑のコードが呼ばれるようになる
-ZeroFormatter.Formatters.Formatter&lt;Guid&gt;.Register(new GuidFormatter());
-</code></pre>
-<p>という風にすれば、どんな型でも対応させられます。ジェネリクス対応や動的に変動させたい、とかって場合のための登録の口も用意されているので（詳しくはReadMeを読んでね！）基本的にはどんな状況でもいけます。社内からはF#の判別共用体へのシリアライズを対応させるって話もありましたが果たして実装してもらえるのであろうか……。</p>
-<p>この辺、protobufとかだとバイナリ仕様決まってるので、あんまり手をいれるのは気が引ける、って感じになりますが、新興フォーマットなだけに、別に自由にやっていいんじゃよ、って気になれます。MsgPackにも仕様の中にExtension typeありますけれど、如何せんZeroFormatterはオプションがない直線番長なので、考えることもまったくなく、とにかくbyte[]に書きたいように書けばそれでOK、問題なくちゃんと動きますよ、っていうのが嬉しい話です。</p>
-<h2>他言語サポート</h2>
-<p>ないです！私自身はちょっと出来ないので、気になる人がいれば、やっていただける人をゆるぼです。基本的なのは実のところかなり単純で、そこまでC#特化の何かを入れているわけでもなかったりします（というか、一応は汎用的なものを意識しているのでC#特化のものは極力入れてません）。独自のデータ構造が必要になる遅延Dictionaryとかが厳しいんですが（あと、あれはフォーマット的にも内部構造をベタシリアライズしているので、実装しづらさがかなりある）。一応、仕様サポートのステージは考えていて</p>
-<ul>
-<li>Stage1: 全てが先行評価される（無限大高速なほうの仕様は満たさない）、Decimal, LazyDictionary/LazyMultiDictionaryは非サポート</li>
-<li>Stage2: リスト、クラスが遅延評価される（無限大高速なデシリアライズ）、Decimal, LazyDictionary/LazyMultiDictionaryは非サポート</li>
-<li>Stage3: Decimalをサポートする、LazyDictionary/LazyMultiDictionaryは非サポート</li>
-<li>Stage4: 全フォーマットをサポートする</li>
-</ul>
-<p>みたいな感じです。もし、やろう！という方がいれば、まずはStage1から試みてもらえるとどうでしょうかー。<a href="https://github.com/neuecc/ZeroFormatter#wireformat-specification">バイナリ仕様はGitHubのReadMe</a>にあります。</p>
-<h2>まとめ</h2>
-<p>デシリアライズ先送りが魅力なのは勿論なのですが、先送りしないようなものであっても、他より高いパフォーマンスが出るので、ほぼ全方位に有効なものになってるんじゃないかと思います。比較対象としてやたらFlatBuffersに関して言及しましたが、実際のところ本当にあれ実用で使うのは無理なので（あんなんで普通に使えてる人いるのかな……）、まともに使える代物としては唯一無二な価値はあるんじゃないかな、と。</p>
-<p>なんで作ろうかって思ったというと、<a href="https://kuro-kishi.jp/">絶賛開発中のゲーム</a>で手詰まったからなんですね、とほほ。巨大なDictionary/MultiDictionaryをデータベース代わりに起動時に構築する、というアプローチだったんですが、かなり破綻してて（起動時間は遅いし、そのための対応のせいでただでさえ未熟なワークフローが更にグチャグチャに）、ｇｄｇｄループの根底にいたのが其奴なのであった。といっても、今更もう作りは変えられないんで、なんというか、なんとかするしかないわけで、ウルトラC的なアプローチに走ったのであった。そりゃ私だって別にこのレイヤーで俺々フォーマット作りたいなんて思わないですよ、んなもん常識的に考えて悪手に決まってるじゃん。他人がやるって言ったら全力で止めるわ。まぁ結果オーライで最終的にはZeroFormatterを活かした爆速仕様になる（予定）んで、いいってことよってことですかね。</p>
-<p>元々はそうした無限大高速なデシリアライズと、ボトルネックにならない程度に普通に高速なシリアライズ、ぐらいに思っていたんですが、シリアライズの計測結果がかなり良かったので欲張って、いっそもうやるなら世界最速だろうとガッチガッチに実装し始めると性能は確かに伸びる。やればやるほど伸びる。が、実装時間も伸びる。やればやるほど。なるほど。とはいえ、実は告知してないだけでGitHub上ではpublicにしていたので、社外でも何人かの方には公開を伝えていて、ベータテスターじゃないけれど、様々なフィードバックなどなどを頂きました。それがなければ、全然もっと出来は悪かったと思うので、非常に感謝です。<a href="http://neue.cc/2016/10/02_540.html">過去に制作した30のライブラリから見るC#コーディングテクニックと個人OSSの原理原則</a>で偉そうに言いましたけれど、自分一人の限界を超えていけるのもいいことですね。外に出すってことで外圧も感じられるし:)<a href="http://www.slideshare.net/yusukefujiwara731/net-fringejp2016">MsgPack-Cliの藤原さんがセッションで言ってました気がしましたが</a>、シリアライザーなんて作るのは奇特で、確かにちょっともう次はやりたくない、しんどいー。ILも一生分書いた気がする。しかし、例によって様々な既存シリアライザーの仕様から、それぞれのC#版の実装のコードを大量に読んだので、シリアライザーに関しては更に相当詳しくなりました、ううむ。シリアライザーとは結構ブログでことあるごとに記事書いてたりと、なんか長い付き合いなんですよねえ、最終的にまさか自分で作ることになるとは……。</p>
-<p>と、そんなわけなので、是非是非使ってみてください。実用品なのかどうかで言ったら、会社で使う気満々というかそのための代物なので、その辺の耐久性はあります、まぁまだリリースされてないので（！）、耐久性はどんどん上がっていきます、ぐらいで。バグあればどんどん直すというのと、(UniRxで聞かれたことがあるのですが)社内用と社外用に分けてたりもないので、ちゃんとpublicなところでメンテナンスは続いていきます。</p>
-<p>現状どうしても通信用フォーマットとしてはC#オンリーなので、サーバー側で送り出せなくて使いにくい、ということも絶対あるとは思うんですが、そのための解決策としてクロスプラットフォーム(Unity, Windows, Mac, Linux)で使えるC#製の通信用フレームワークをリリースする、という計画も控えているので、その辺も含めて注視していただければですね。繰り返しますが、その辺のところは11/27開催の<a href="http://kbkz.connpass.com/event/40629/">歌舞伎座.tech#12「メッセージフォーマット/RPC勉強会」</a>でお話するつもりなので、是非来てくださいな。</p>
 </div>
 <a href="https://neue.cc/5">Prev |</a>
 <a href="https://neue.cc/7">| Next</a>

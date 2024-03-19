@@ -23,7 +23,150 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2010/04/30_256.html">DynamicJson - C# 4.0のdynamicでスムーズにJSONを扱うライブラリ</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2010/05/06_257.html">C# DynamicObjectの基本と細かい部分について</a></h1>
+<ul class="date"><li>2010-05-06</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://dynamicjson.codeplex.com/" title="DynamicJson">CodePlex - DynamicJson</a></li>
+</ul>
+<p>DynamicJsonをver.1.1に更新しました。ver.1.0の公開以降に理解したDynamicObjectについての諸々を反映させてあります。具体的には、IsDefinedやDeleteといったメソッド名を書かずに、それらが呼び出せるようにし、また、foreach時にキャストが不要になりました。DynamicはIntelliSenseが効かないので、メソッド名を書かせたら負け。大まかに分けて「プロパティ」「名前付きメソッド」「名前無しメソッド」「キャスト」の4つをうまいこと振り分けて、不自然ではなく使えるようにすれば、DynamicObjectとして良い設計となるのではないかな、と思っています。</p>
+<p>というわけで、今回は微妙にはまったDynamicObjectの挙動の色々について書きますが、その前に1.1の更新事項を。DynamicJson自体については、<a href="http://neue.cc/2010/04/30_256.html" title="neue cc - DynamicJson - C# 4.0のdynamicでスムーズにJSONを扱うライブラリ">ver1.0のリリース時の記事</a>を参照ください。</p>
+<pre><code class="language-csharp">// ただの入れ物クラスなのであまり気にしないで。
+public class FooBar
+{
+    public string foo { get; set; }
+    public int bar { get; set; }
+}
+
+// こんなJSONがあったとするとする
+var json = DynamicJson.Parse(@&quot;{&quot;&quot;foo&quot;&quot;:&quot;&quot;json&quot;&quot;, &quot;&quot;bar&quot;&quot;:100, &quot;&quot;nest&quot;&quot;:{ &quot;&quot;foobar&quot;&quot;:true } }&quot;);
+var arrayJson = DynamicJson.Parse(@&quot;[1,10,200,300]&quot;);
+var objectJson = DynamicJson.Parse(@&quot;{&quot;&quot;foo&quot;&quot;:&quot;&quot;json&quot;&quot;,&quot;&quot;bar&quot;&quot;:100}&quot;);
+
+// .プロパティ名()はIsDefined(&quot;プロパティ名&quot;)と同じになります
+var b1_1 = json.IsDefined(&quot;foo&quot;); // true
+var b2_1 = json.IsDefined(&quot;foooo&quot;); // false
+var b1_2 = json.foo(); // true            
+var b2_2 = json.foooo(); // false;
+
+// .(&quot;プロパティ名&quot;)はDelete(&quot;プロパティ名&quot;)と同じになります
+json.Delete(&quot;foo&quot;);
+json(&quot;bar&quot;);
+
+// キャストはDeserialize&lt;T&gt;()と同じになります
+var array1 = arrayJson.Deserialize&lt;int[]&gt;();
+var array2 = (int[])arrayJson; // array1と一緒
+int[] array3 = arrayJson; // こう書いてもDeserialize呼び出しと同じだったりする
+
+// 配列だけではなく、パブリックプロパティ名で対応を取るマッピングも可能です
+var foobar1 = objectJson.Deserialize&lt;FooBar&gt;();
+var foobar2 = (FooBar)objectJson;
+FooBar foobar3 = objectJson;
+
+// 勿論、配列＋オブジェクトでも可。Linqに繋げる時はキャストで囲みましょう(asはダメ)
+var objectJsonList = DynamicJson.Parse(@&quot;[{&quot;&quot;bar&quot;&quot;:50},{&quot;&quot;bar&quot;&quot;:100}]&quot;);
+var barSum = ((FooBar[])objectJsonList).Select(fb =&gt; fb.bar).Sum(); // 150
+var hoge = objectJsonList as FooBar[]; // これはnullになる、asとキャストは挙動が違う
+
+// array状態のDynamicJsonにforeachはdynamicが渡る
+// 中の型が分かっている場合は、varではなく型名指定するといいかも
+// ちなみに、数字はdynamicのままだと全てdoubleです
+foreach (int item in arrayJson)
+{
+    Console.WriteLine(item); // 1, 10, 200, 300
+}
+
+// オブジェクト状態のDynamicJsonへのforeachはKeyValuePair
+// .Key、.Valueなのは分かってる、というならdynamicで受けると楽かも
+foreach (KeyValuePair&lt;string, object&gt; item in objectJson)
+{
+    Console.WriteLine(item.Key + &quot;:&quot; + item.Value); // foo:json, bar:100
+}
+</code></pre>
+<p>foreachを自然に使えるようにしたのと、IsDefined、Remove、DeserializeをDynamicとして自然に呼び出せるようにした、というのが更新内容になります。IsDefined(&quot;name&quot;)が.name()で自然なのか？というと、どうなんでしょうねー、という感じですが、しかしDynamicはIntelliSenseが効かないのです！なので、多少ややこしくても、こうして使える方が便利だと思われます。</p>
+<p>ところで、キャストとasの関係は、DynamicObjectだとより正確に意識する必要が出てきます。キャストとasは例外が飛ぶかnullになるかの違いしかない、と思っていたりしたのは私なのですが、そんなことはなくて、asはユーザ定義の変換演算子を呼ばないという性質があります。DynamicObjectでもそれが反映されているため、キャストするとTryConvertが呼ばれるのですが、asは純粋にそのクラスの継承関係しか見ません。</p>
+<h2>DynamicObjectとは</h2>
+<p>では本題。まずは基本から。型宣言がdynamicの場合に、挙動が変わるオブジェクトの作成方法は、DynamicObjectを継承して、挙動を変えたいメソッド(Tryなんたら)をオーバーライドするだけです。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/dynamic_override.jpg">
+</p>
+<p>override-&gt;スペースでIntelliSenseに候補が出てきますね、素敵。Try何とかかんとかの第一引数はbinderですが、とりあえずbinder.Nameだけで何とかなります。成否はboolで返し(falseの場合は、呼び出しを解決するため更に連鎖が重なったりする)、trueの場合はresultにセットした値が呼び出し元に返る。といった仕組みになっています。</p>
+<h2>呼び出しの解決</h2>
+<p>簡単な例、ということで呼び出し名を返す、というだけの単純なTryInvokeMemberを定義してみます。</p>
+<pre><code class="language-csharp">// MyDynamic:DynamicObjectのオーバーライド、メソッド呼び出し名を文字列としてそのまま返す、引数がある場合はfalse
+public override bool TryInvokeMember(InvokeMemberBinder binder, object[] args, out object result)
+{
+    result = binder.Name;
+    return (args.Length &gt; 0) ? false : true;
+}
+
+dynamic d = new MyDynamic();
+var t1 = d.Hoge(); // Hoge - dynamic(string)
+var t2 = d.ToString(); // ToStringにはならない、MyDynamicのToStringが呼ばれる
+</code></pre>
+<p>さて、この場合本来あるメソッドであるToStringやEquals、その他自分で定義したメソッドがあれば、それらを呼んだ場合はどちらが優先されるでしょうか、というと、定義されたメソッドが優先です。なので、TryInvokeMemberにだけ挙動を定義しておくと、どうやっても呼べないメソッドが出てきます。例えばDynamicJsonで言えば、プロパティ名がToStringのJSONに対してToString()で定義されているか確認は出来ません。そのための回避策として、TryInvokeMemberはIsDefinedの簡易記法としています。IsDefined(&quot;ToString&quot;)ならば問題なく呼べますので。</p>
+<p>引き続いて、TryInvokeMemberがfalseの場合も見てみます。</p>
+<pre><code class="language-csharp">public override bool TryGetMember(GetMemberBinder binder, out object result)
+{
+    result = new MyDynamic();
+    return true;
+}
+
+public override bool TryInvoke(InvokeBinder binder, object[] args, out object result)
+{
+    result = ((string)args[0]).ToUpper();
+    return true;
+}
+
+dynamic d = new MyDynamic();
+var t = d.Hoge(&quot;aaa&quot;); // AAA(InvokeMemberが失敗したらGetMemberが呼ばれ、それのTryInvokeが呼ばれる)
+</code></pre>
+<p>d.Hoge(&quot;aaa&quot;)は、まずTryInvokeMemberが呼ばれます。今回は引数がある場合はfalseとしているので、失敗します。すると、呼び出しの解決のためTryGetMemberが呼ばれます。ここでtrueの場合は、引数を持ってTryInvokeが呼ばれます。TryInvokeはd(&quot;aaa&quot;)のような、メソッド名なしでの関数呼び出しです。C#にはない記法となるので、TryInvokeMemberからの失敗の連鎖でTryGetMemberでDynamicObject以外を返すと、TryInvokeに失敗という形で例外が出ます。</p>
+<p>ややこしいですね！この失敗の連鎖はDynamicJsonではオブジェクトがネストしている際の呼び出しの解決に利用しています。</p>
+<pre><code class="language-csharp">var json = DynamicJson.Parse(@&quot;{&quot;&quot;tes&quot;&quot;:10,&quot;&quot;nest&quot;&quot;:{&quot;&quot;a&quot;&quot;:0}&quot;);
+
+json.nest(); // これはjson.IsDefined(&quot;nest&quot;)
+json.nest(&quot;a&quot;); // これはjson.nest.Delete(&quot;a&quot;)
+</code></pre>
+<p>json.nest(&quot;a&quot;)は、まずTryInvokeMemberが呼んでいます。これは原則IsDefinedと等しいのですが、引数がある場合はfalseにしています。そのためTryGetMemberが呼ばれて.nestを取得。そして、TryInvoke(これはDeleteに等しい)を呼ぶという流れになっています。真面目にDynamicObjectを使って構造を作る場合、呼び出し解決順序などを意識する必要は、間違いなくあります。ややこしいですけどねー。</p>
+<h2>DynamicObjectとforeach</h2>
+<p>DynamicObjectがIEnumerableならば、foreachはそれを呼びます。ていうかforeach可能なものはIEnumerableにするでしょ常識的に考えて。と、言いたいのですが世の中そうもいかなかったりします。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/dynamic_view.jpg">
+</p>
+<p>Dynamicの変数はデバッガで見るとDynamic Viewというものが用意されていて、展開すると全てのプロパティ名と値を表示してくれます(これに対応させるにはGetDynamicMemberNamesをオーバーライドする必要がある、DynamicObject作るなら必須！)。大変便利なのですが、これ、クラスがIEnumerableを実装している場合はIEnumerableの結果ビューに置き換わってしまい、Dynamic Viewがなくなってしまいます。</p>
+<p>Dynamic Viewがないと非常に不便極まりないので、DynamicJsonではIEnumerableの実装は断念しました。しかし、foreachでそのまま呼べないのは不便だ。どうする？となって思い浮かんだのは、IEnumerableじゃなくてもGetEnumeratorがあればforeachって呼ばれるんだよねー、普通のクラスは。という仕様がC#にはあるので、Dynamicでも行けるかな？と思いきやそんなことはなく、呼ばれませんでした。じゃあ、かわりにforeach時に何が呼ばれていたか、というと、TryConvertが呼ばれます。</p>
+<pre><code class="language-csharp">public override bool TryConvert(ConvertBinder binder, out object result)
+{
+    // foreachで呼ばれた時はbinder.TypeがIEnumerable
+    if (binder.Type == typeof(IEnumerable))
+    {
+        result = Enumerable.Range(1, 10); // resultはIEnumerableとIEnumerator、どちらでも可
+        return true;
+    }
+
+    // 通常のキャストは適当に分岐させるか、キャストの演算子オーバーロードでもどちらでもいい
+    // 演算子オーバーロードがある場合は、そちらが優先されます
+    result = (binder.Type == typeof(string)) ? &quot;hogehoge&quot; : null;
+    return true;
+}
+
+dynamic d = new MyDynamic();
+foreach (var item in d)
+{
+    Console.WriteLine(item); // 1,2,3,4,5,6,7,8,9,10
+}
+
+var ie = (IEnumerable)d; // これは失敗する、インターフェイスへの明示的型変換は不可！
+</code></pre>
+<p>C#ではインターフェイスの演算子オーバーロードは定義出来ないし、Dynamicでも呼び出しは不可能になっています。が、foreach呼び出し時のみ、TryConvertにTypeがIEnumerableとして渡るようになっているので、そこでtrueを返せば、IEnumerableではないDynamicObjectでもforeachで列挙出来ます。</p>
+<p>正直なところ、セコいハックに過ぎないです。本当はデバッガでDynamic Viewと結果ビューが共存できればいいんですよ、ていうか出来るべき。あと、Dynamic Viewは今のところ値がnullのものは表示しないようになっているのですが、これも不便な仕様ですね、改善して欲しいところ。とはいえ、IEnumerableじゃないから不便になってる！ということは無いと思われます。どちらにせよIEnumerableじゃなくてもdynamicはキャストしないと拡張メソッドが呼べない(つまりそのままではLinqが使えない)ため、利用感は犠牲にしていません。</p>
+<p>そういえばExpandoObjectはIEnumerableなのにdynamic viewが出るので、何か方法はあるかもしれませんね。</p>
+<h2>まとめ</h2>
+<p>dynamicは当初思っていたよりも、遥かに使いがいのある仕組みでした。dynamicはDSL。だと思います。そして、DSLとして便利に使わせるならば、メソッド名で呼ばせるのは厳禁。用意された機構を上手く使ってIntelliSenseレスでも快適に操作出来るようにしなければならない。というか、それで操作出来ないならば普通にC#で組んでIntelliSense効かせた方がずっと良い。</p>
+<p>と、まあ、そんなわけで<a href="http://dynamicjson.codeplex.com/" title="DynamicJson">DynamicJson</a>は400行程度の小さいコードですが、割と色々考えて作ってありますので、是非使ってみてください。お手製ライブラリにありがちなJSON解析の出来が怪しい、といった問題を、解析部を.NET FrameworkのJsonReaderWriterFactoryに丸投げしているため避けられている、というのも大きな利点かと思われます。</p>
+<p>ソースコード本体は、ArrayとObjectを一つのクラスに統合しているため、各メソッド行頭でifで分ける、というのが若干怪しいのですが(オブジェクト指向的にはポリモーフィズム、ていうかDynamicならその辺考えずに分けても問題ない、だろうけど400行のコードですからねえ、分割したほうが手間かつ分かりにくくなるだろうしで、まだリファクタリングの出番ではない、と思いますです、これ以上規模が膨れるなら別ですが)、全体的にはDynamicObjectの機能を満遍なく使っているので、参考になるかと思います。あと、JSON書き出し時のLinq to XmlでのXML組み立て部分は若干トリッキーなものの、割とよく出来ているかな？ Deserializeはもう少し気合入れて実装し直さないとダメな感じですがががが。</p>
+</div>
+<h1><a href="https://neue.cc/2010/04/30_256.html">DynamicJson - C# 4.0のdynamicでスムーズにJSONを扱うライブラリ</a></h1>
 <ul class="date"><li>2010-04-30</li></ul>
 <div class="entry_body"><p>C#4.0の新機能といったらdynamic。外部から来る型が決まってないデータを取り扱うときは楽かしら。とはいえ、実際に適用出来る範囲はそんなに多くはないようです。例えばXMLをdynamicで扱えたら少し素敵かも、と一瞬思いつつもElementsもDescendantsも出来なくてAttributeの取得出来ないXMLは、実際あんまり便利じゃなかったりする。ただ、ちょうどジャストフィットするものがあります。それは、JSONですよ、JSON。というわけで、dynamicでJSONを扱えるライブラリを書いてみました。ライブラリといっても300行程度のクラス一個です。</p>
 <ul>
@@ -1501,27 +1644,6 @@ list[i] = array[i]; // C#
 <p>ついでに個人的な意見ですがListインターフェイスにListIteratorはそこまで必要ではない。普通のIteratorと機能がかなり被る割には、使う機会はとても少ない。おまけに、ListIteratorのsetってoptionalで、実装されていることが保証されてない。この手の、実装しなくてもいいインターフェイスって撲滅した方がいいと思うんですけどねー。私は怖くて呼べません。</p>
 <p>とはいえ、保証されないインターフェイスを完全に撲滅など出来はしません。例えばList(Java)/IList(C#)のAddは実行出来ることが保証されていない。JavaならArrays.asList(1, 2, 3).add(4)を、C#なら(array as IList<int>).Add で簡単にNotSupportedを吐きます。他にもReadOnlyにしたコレクションにインデクサで値をセットしようとすれば、これまた同様に例外。コレクションフレームワークにおいてインターフェイスの完全保証を実現しようとするのは大変難しい。とは、私じゃなくて <a href="http://java.sun.com/javase/ja/6/docs/ja/technotes/guides/collections/designfaq.html">Java コレクション API の設計に関する FAQ</a>でSunが妥協した、と言うぐらいなので、無理なのでしょう。</p>
 <p>まとまってませんが、結論としては疑問に思ったらソース読むのが手っ取り早い、とかそんなところで。Javaの良いところはC#に比べてフレームワークのコードへのアクセスが簡単なところですね。C#は部分的にはコードは公開されていて大変タメになるのですが、色々と面倒くさいし、公開されてない範囲も少なくないし……。.NET Reflectorのお世話になりまくってイリーガルな気分を味わうのはもう嫌ぽ。嘘。リフレクタ大好きですがそれはそれ。</p>
-</div>
-<h1><a href="https://neue.cc/2010/02/18_242.html">Re:Scheduled</a></h1>
-<ul class="date"><li>2010-02-18</li></ul>
-<div class="entry_body"><p>Windows7杯では、無事グランプリを逃して部門賞に落ち着いたりした昨今ですがこんばんわ。長らくBlog放置、ついでにゲームも放置中という有様なので、改めてスケジュールを考えなおさないとな、というところに来てたりします。今年はまずは<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript Library">linq.js</a>のWSH対応をやるぞ！とか言ってた気がしますがちっともやってませんし。で、代わりに何をやっているかというと、何故かここ一ヶ月は延々とLinqのJava移植をやっていたりします。どうしてこうなった……。予定なんて立てるだけ無駄ってことですな。</p>
-<p>そんなわけで、今週中、無理でも来週中にはリリースするつもり、です。もう実装は出来上がっているのですがテストを一切書いてないので、テスト書きとJavaDoc書きと、あと事前条件の例外送出(これも一切書いてない)が残っているので、やらないといけない。実装はやる気満々にノリノリで書けたんですが、残ったこれらをやるのはモチベーションが全然上がらない。ダルぃ。シュタゲやりたい(やれよ)</p>
-<p>進捗は例によって<a href="https://twitter.com/neuecc" title="neuecc (neuecc) on Twitter">neuecc on Twitter</a>でgyazoで画像張りながら、Javaに文句つけながらやってます。<a href="http://gyazo.com/f367e1fa95eebdb736b16002f290b1ff.png">スタンダードにwhere-select</a>とか(NetBeansの赤線は解決しました)、<a href="http://gyazo.com/304f6f5a9b3a8fdaf64fdddd0b0f4b19.png">正規表現がスッキリ！</a>とかは、まぁまぁ悪くないと思うのですが、<a href="http://gyazo.com/d5a68c303c19be03762947085971d721.png">左外部結合で記述がカオス</a>などは何とも言えないネタ感が。作者の私がメソッドのシグネチャを合わせられなくて苦労したぐらいなので、一体誰が使えるんだよ、という。Join系は鬼門です。あと、匿名型の代わりにTupleを使うのですが、型定義が地獄になるのもねえ。 <a href="http://gyazo.com/191f7d39de9626dab904e9e6fc7f288d.png">定番の無限フィボナッチ</a>なんかも書いたけど、Tupleの型定義のクドささえなければ見れるのだけど、現状だと少し厳しい。</p>
-<pre><code class="language-java">// static importと合わせるとLLっぽく見えて素敵、的な何か
-for (int i : range(5, 10)) {
-    System.out.println(i);
-}
-
-// 10以上のもののうち重複なしで二倍にしてリストに格納する的な何か
-int[] array = {3, 13, 51, 2, 1, 51, 67, 32, 13, 9};
-ArrayList&lt;Integer&gt; list = Enumerable.from(array)
-        .where(Predicates.greaterEqual(10))
-        .distinct()
-        .select(Functions.multiply(2))
-        .toList(); // [26,102,134,64]
-</code></pre>
-<p>Java7のクロージャと型推論に期待しつつ、今のうちに出来ることはやっておく、的な何か。期待しないで期待して待っててください。多分、思われているよりかはマトモに使える代物だと思います。移植なんて誰もが考えるし、LinqのJava実装なんて当然幾つかあるんですが、どれも全然徹底してない(中途半端にSQLには対応してる)ので、今一つなんですね(JavaScriptの時も同じこと思ったわけだけど……)。ひたすら愚直にLinq to Objectsだけを忠実移植したものは初になると思います。いやまあ、何で誰もやらないかっていうと誰得としか言いようがないから、ってのもありますが。私は、割と普通なLinq好きーなのでそんなのちっとも気にしない！</p>
-<p>標準Linq以外のメソッド類はlinq.jsにあるのは大体入れた。linq.jsのRangeDownToはアホだったので削った。RangeTo(0,-10)でいいわけですよね、Toなのだから。DownToとかアホすぎた、といったような反省も若干活かしてます。それとRxのCatchとかFinallyも入れた。良さそうなのは何でもいれますよー。というわけでもないのですけどね、ちょっと便利、程度だと躊躇います。入力補完に大量にメソッドが出るってのはあんまり嬉しいものでもないですから、なるべく厳選して。</p>
 </div>
 <a href="https://neue.cc/21">Prev |</a>
 <a href="https://neue.cc/23">| Next</a>

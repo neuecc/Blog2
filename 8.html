@@ -23,7 +23,56 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2016/03/21_526.html">SerializableDictionary - Unityで高速に辞書復元するためのライブラリ</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2016/03/30_527.html">Roslyn Analyzerでコンフィグを読み込ませて挙動を変更する</a></h1>
+<ul class="date"><li>2016-03-30</li></ul>
+<div class="entry_body"><p>方法。が、欲すぃ。例えば採番する時に0ベースなのか1ベースなのかプロジェクトによって変えたい。例えばCodeFix時の名前変更のルールを先頭アンスコ付けるのか付けないのかを自由に変えさせたい。<a href="http://neue.cc/2015/06/13_513.html">NotifyPropertyChangedGenerator - RoslynによるVS2015時代の変更通知プロパティの書き方</a>の時は、専用のAttributeを使うので、その中のインターフェイスを書き換えてコンフィグ代わりにしてね、という方法を取ったのですが、専用の属性が使えなきゃ適用できない手法で、全然汎用的っぽくないし、当然ながら全然イケてない。</p>
+<p>ではどうするか。実は、Additional Filesという仕組みが用意されているので、それを用いることでコンフィグを読みこませることができます！詳細は<a href="https://github.com/dotnet/roslyn/blob/master/docs/analyzers/Using%20Additional%20Files.md">roslyn/Using Additional Files.md</a>に書かれていますが、任意のテキストファイルを色々な手法（コマンドラインの引数やcsprojの定義としてなど）でプロジェクトに設定し、Analyzer側では AnalyzerOptions.AdditionalFiles で読めます。</p>
+<p>では、やってみましょう。</p>
+<pre><code class="language-csharp">[DiagnosticAnalyzer(LanguageNames.CSharp)]
+public class AdditionalFileAnalyzer : DiagnosticAnalyzer
+{
+    static DiagnosticDescriptor Rule = new DiagnosticDescriptor(&quot;AdditionalFileAnalyzer&quot;, &quot;AdditionalFileテスト&quot;, &quot;AdditionalFiles:{0}&quot;, &quot;Usage&quot;, DiagnosticSeverity.Error, isEnabledByDefault: true);
+    public override ImmutableArray&lt;DiagnosticDescriptor&gt; SupportedDiagnostics { get { return ImmutableArray.Create(Rule); } }
+
+    public override void Initialize(AnalysisContext context)
+    {
+        context.RegisterSymbolAction(Analyze, SymbolKind.NamedType);
+    }
+
+    private static void Analyze(SymbolAnalysisContext context)
+    {
+        // AnalyzerOptionsにAdditionalFilesがある。
+        // CodeFixContextの場合はProjectに生えてるので、 context.Document.Project.AnalyzerOptions で取得可能。
+        var additionalFiles = context.Options.AdditionalFiles;
+
+        // Pathから引っ掛けて取る
+        var config = additionalFiles.FirstOrDefault(x =&gt; System.IO.Path.GetFileName(x.Path) == &quot;config.json&quot;);
+        if (config != null)
+        {
+            // GetText().ToString()で文字列が取れるので、あとはJsonConvertでデシリアライズするなりなんなりどうぞご自由に……。
+            var text = config.GetText().ToString();
+            context.ReportDiagnostic(Diagnostic.Create(Rule, context.Symbol.Locations[0], text));
+        }
+        else
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Rule, context.Symbol.Locations[0], &quot;JSONが見つかってないぞ&quot;));
+        }
+    }
+}
+</code></pre>
+<p>これでJSONが見つかってないぞ、と怒られまくります。ファイルを追加するには、まずプロジェクトの適当なところにconfig.jsonを足して、Build Actionを AdditionalFiles に変更します。が、変更しようとするとやっぱり怒られるので、しょうがないからcsprojを手動で書き換えます。</p>
+<pre><code class="language-xml">&lt;ItemGroup&gt;
+    &lt;AdditionalFiles Include=&quot;config.json&quot; /&gt;
+&lt;/ItemGroup&gt;
+</code></pre>
+<p>これで、以下の様な結果が得られます。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/14132223/6463302e-f67e-11e5-8b98-3645b82bf4fd.png" alt="image" /></p>
+<p>うん、ちゃんと読めてる！</p>
+<p>コンフィグとして使うには、まぁイマドキのJSONでコンフィグだったらJSON.NETでJsonConvert.DeserializeObjectなんかでサクッと復元してやるのが楽でしょう。外部DLL読み込むのが嫌だという場合は、XMLにしてLINQ to XMLやXmlSerializer使うのも全然お手軽でいいとは思います。</p>
+<p>コンフィグなんてほぼほぼ固定になるのに毎回デシリアライズ走らせるのは嫌だなあ、って場合はstaticオブジェクトにキャッシュしちゃうのも悪くない手だと思います。その場合は、書き換えた場合はプロジェクト再読み込み（or VS再起動)になってしまいますが、実用的には全然問題ないはず。といいたいのですが、複数のプロジェクト跨ぎで共有されちゃうと厄介だったりするので注意が必要なので、まぁちょっとDeserializeするぐらい大したことねーよということで、毎度Deserializeするのも全然構わないかな、とは。</p>
+<p>このコンフィグを読み込む手法は<a href="https://github.com/DotNetAnalyzers/StyleCopAnalyzers/blob/master/documentation/Configuration.md">StyleCopAnalyzer/Configuration.md</a>でも採用されているし、これがスタンダードのやり方だと思って良さそうです。</p>
+</div>
+<h1><a href="https://neue.cc/2016/03/21_526.html">SerializableDictionary - Unityで高速に辞書復元するためのライブラリ</a></h1>
 <ul class="date"><li>2016-03-21</li></ul>
 <div class="entry_body"><p>という、ScriptableObjectとかJsonUtilityとか、そもそもSerializeFieldとかでシリアライズできるDictionaryを作りました。</p>
 <ul>
@@ -1635,85 +1684,6 @@ class Test
 <h2>まとめ</h2>
 <p>Analyzer、かなりイイです。実際。とにかくとりあえず触ってみませう。現状リファレンスとかは特にないですが、まぁLINQ to XML辺りがわかっていればSyntaxVisualizerとIntelliSenseを頼りになんとか作り上げられるでしょう！メソッド名を見ながらカンを働かせましょう。大丈夫大丈夫。また、GitHubには既にお手本となるAnalyzerが出回っているので、それを参照にすればかなりいけます。代表的なところでは<a href="http://nr6pack.net/">NR6Pack</a>, <a href="https://github.com/DotNetAnalyzers/StyleCopAnalyzers">StyleCopAnalyzers</a>, <a href="https://github.com/code-cracker/code-cracker">Code Cracker</a>などがあります。</p>
 <p>では、よきRoslynライフを！</p>
-</div>
-<h1><a href="https://neue.cc/2015/04/19_511.html">LightNode 1.2.0 - Swagger統合によるAPIのデバッグ実行</a></h1>
-<ul class="date"><li>2015-04-19</li></ul>
-<div class="entry_body"><p><a href="http://neue.cc/2015/03/25_508.html">グラニのC#フレームワークの過去と未来、現代的なASP.NETライブラリの選び方</a>という記事で、スライドと補足は先に上げましたが、以前に弊社で行った勉強会「Build Insider MEETUP with Grani 第1回」のレポートがBuild Insiderに上がっています。<a href="http://www.buildinsider.net/enterprise/granireport/0101">「using CSharp;」な企業を支える技術方針とベスト.NETライブラリ</a>記事によるレポートは、さくさく読めるし、スライドで欠けていた部分も補完できていーんじゃないでしょーか。まる。</p>
-<p>さて、で、基本的にAPIサーバーはOWINで行くんですが、API開発はとにかくふつーのウェブよりも開発がしにくい！の欠点を、前回<a href="http://neue.cc/2015/02/16_505.html">LightNode 1.0、或いはWeb APIでのGlimpseの使い方</a>はGlimpseフル統合で補おうとしました。それはそれでいいんですが、もう一つ足りない。それはともかく根本的にそもそも実行しづらい。さすがにモバイルのエミュレーターなりUnityのEditorなりから毎度実行は効率悪すぎてありえないし、<a href="https://chrome.google.com/webstore/detail/postman-rest-client/fdmmgilgnpjigdojojpjoooidkmcomcm">POSTMAN</a>や<a href="http://www.telerik.com/fiddler">Fiddler</a>で叩くのも面倒くせえ。</p>
-<p>そこで<a href="http://swagger.io/">Swagger</a>。とはなにか、というのは見てもらえれば。</p>
-<p class="noindent">
-<img src="https://raw.githubusercontent.com/neuecc/LightNode/master/Img/swagger_support.jpg" width="640" />
-</p>
-<p>実行機付きのAPIのヘルプ・ドキュメントです。ヘルプ/ドキュメントはどうでもいいんですが、この実行機がかなり使いやすくいい！パラメータ入力してTry it out!でOK。認証が必要な場合も、右上にapi_keyというのが見えてますが、ちょっとindex.htmlを書き換えてこのapi_keyの部分を好きに都合のいい形態に変えてしまえば、機能します。実に便利。</p>
-<p>SwaggerはAzureのAPI Appsでも利用されるようになったので、今後.NETでも目にする機会はちょっとずつ増えていくのではないでしょうか？ASP.NET Web APIで利用する方法はみそせんせーの<a href="http://miso-soup3.hateblo.jp/entry/2014/12/17/233409">Swagger を使った ASP.NET Web API のドキュメント生成</a>を参照すれば良いでしょふ。</p>
-<p>さて、<a href="https://github.com/neuecc/LightNode">LightNode</a>(ってここではじめて解説しますが、私の作っているOwin上で動くMicro REST/RPCフレームワークです)では、Swagger統合はMiddlewareとして実装してあります。</p>
-<ul>
-<li>PM&gt; Install-Package <a href="https://www.nuget.org/packages/LightNode.Swagger/">LightNode.Swagger</a></li>
-</ul>
-<p>ルートをapiと別系統にswaggerとして切ってもらって、</p>
-<pre><code class="language-csharp">// 今のところPOSTしかサポートしてないのでPostを有効にしてね
-app.Map(&quot;/api&quot;, builder =&gt;
-{
-    builder.UseLightNode(new LightNodeOptions(AcceptVerbs.Get | AcceptVerbs.Post, new JilContentFormatter(), new GZipJilContentFormatter())
-    {
-        ParameterEnumAllowsFieldNameParse = true, // Enumを文字列で並べたいならこれをONにして
-        // 下2つはSwagger前提で使うならエラー表示的に便利
-        ErrorHandlingPolicy = ErrorHandlingPolicy.ReturnInternalServerErrorIncludeErrorDetails,
-        OperationMissingHandlingPolicy = OperationMissingHandlingPolicy.ReturnErrorStatusCodeIncludeErrorDetails
-    });
-});
-
-// こっちでSwaggerを有効にする
-app.Map(&quot;/swagger&quot;, builder =&gt;
-{
-    // XMLコメントから引っ張ってくるばあい（オプション）はパスを指定してください
-    // メソッドに付与されているsummary, remarks, paramを情報として使います     
-    var xmlName = &quot;LightNode.Sample.GlimpseUse.xml&quot;;
-    var xmlPath = System.AppDomain.CurrentDomain.BaseDirectory + &quot;\\bin\\&quot; + xmlName; // もしくは HttpContext.Current.Server.MapPath(&quot;~/bin/&quot; + xmlName);
-
-    // LightNode側のAPIのbasePathを指定
-    builder.UseLightNodeSwagger(new Swagger.SwaggerOptions(&quot;LightNodeSample&quot;, &quot;/api&quot;)
-    {
-        XmlDocumentPath = xmlPath,
-        IsEmitEnumAsString = true // Enumを文字列で並べたいならtrueに
-    });
-});
-</code></pre>
-<p>といった感じです。ちょっとややこしーですが、基本的にはUseLightNodeSwaggerだけでOK、ということで。これで、例えば http://localhost:41932/Swagger/ にアクセスすればSwaggerの画面が出てきます。Swagger-UI自体はdllに埋め込まれています。また、定義ファイル(JSON)はapi-default.jsonにアクセスすることで、直接取得できます。</p>
-<p>もしOwinをIISでホストしている場合、IISのStaticFileハンドラーが邪魔してうまくホストできない場合があります。その場合、StaticFileハンドラーを殺してください。Owinでやる場合は、とにかくOwinに寄せたほうがいいですね（StaticFile系はMicrosoft.Owin.StaticFiles使いましょう）</p>
-<pre><code class="language-xml">&lt;system.webServer&gt;
-    &lt;handlers&gt;
-        &lt;remove name=&quot;StaticFile&quot; /&gt;
-        &lt;!-- もしGlimpseもホストする場合はGlimpseのを先に書いといて --&gt;
-        &lt;add name=&quot;Glimpse&quot; path=&quot;glimpse.axd&quot; verb=&quot;GET&quot; type=&quot;Glimpse.AspNet.HttpHandler, Glimpse.AspNet&quot; preCondition=&quot;integratedMode&quot; /&gt;
-        &lt;add name=&quot;OWIN&quot; path=&quot;*&quot; verb=&quot;*&quot; type=&quot;Microsoft.Owin.Host.SystemWeb.OwinHttpHandler&quot; /&gt;
-    &lt;/handlers&gt;
-&lt;/system.webServer&gt;
-</code></pre>
-<p>もし、例えば最初に例に出しましたが、認証情報を付与するとかでindex.htmlを埋め込みのではなくカスタムのを使いたい場合、OptionのResolveCustomResourceをハンドリングすればできます。例えばこんな感じに、別の埋め込みリソースから取り出したものに差し替えたり。</p>
-<pre><code class="language-csharp">app.Map(&quot;/swagger&quot;, builder =&gt;
-{
-    builder.UseLightNodeSwagger(new LightNode.Swagger.SwaggerOptions(&quot;MySample&quot;, &quot;/api&quot;)
-    {
-        ResolveCustomResource = (filePath, loadedEmbeddedBytes) =&gt;
-        {
-            if (filePath == &quot;index.html&quot;)
-            {
-                using (var resourceStream = typeof(Startup).Assembly.GetManifestResourceStream(&quot;MySample.Swagger.index.html&quot;))
-                using (var ms = new MemoryStream())
-                {
-                    resourceStream.CopyTo(ms);
-                    return ms.ToArray();
-                }
-            }
-            return loadedEmbeddedBytes;
-        }
-    });
-});
-</code></pre>
-<p>当然、index以外でもハンドリングできます。</p>
-<h2>まとめ</h2>
-<p>GlimpseとSwaggerがあわさって最強に見える！あとはもともとあるクライアント自動生成もあるので、三種の神器コンプリート。実際、これでAPI開発の苦痛に思えるところがかなり取り除かれたのではないかなー、って思ってます。これを全部自分で用意するのはそれはそれは大変なので、Owinで良かったし、組み合わせに関しても、.NETでOSSを使うってこういうことですよね？という例になればよいかな。</p>
 </div>
 <a href="https://neue.cc/7">Prev |</a>
 <a href="https://neue.cc/9">| Next</a>
