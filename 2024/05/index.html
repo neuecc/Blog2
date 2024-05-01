@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="ja">
+<head>
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-2834006-1"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag() { dataLayer.push(arguments); }
+        gtag('js', new Date());
+        gtag('config', 'UA-2834006-1');
+    </script>
+    <meta charset="utf-8" />
+    <title>neue cc - 2024-05</title>
+    <link rel="shortcut icon" href="https://neue.cc/favicon.ico" />
+    <link rel="alternate" type="application/rss+xml" href="https://neue.cc/feed"/>
+	<link rel="stylesheet" href="https://neue.cc/style.css" type="text/css" media="screen" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
+    
+ </head>
+<body>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
+    <div id="wrapper">
+        <a href="https://neue.cc/"><div id="header"></div></a>
+        <div id="content"><h1><a href="https://neue.cc/2024/05/01_R3_Presentation.html">R3のコードから見るC#パフォーマンス最適化技法実例とTimeProviderについて</a></h1>
+<ul class="date"><li>2024-05-01</li></ul>
+<div class="entry_body"><p>4/27に大阪で開催された<a href="https://cs-reading.connpass.com/event/309714/">C#パフォーマンス勉強会</a>で「R3のコードから見る実践LINQ実装最適化・コンカレントプログラミング実例」という題でセッションしてきました！</p>
+<iframe class="speakerdeck-iframe" frameborder="0" src="https://speakerdeck.com/player/205627770b434599925567dbfeca229c" title="R3のコードから見る実践LINQ実装最適化・コンカレントプログラミング実例" allowfullscreen="true" style="border: 0px; background: padding-box padding-box rgba(0, 0, 0, 0.1); margin: 0px; padding: 0px; border-radius: 6px; box-shadow: rgba(0, 0, 0, 0.2) 0px 5px 40px; width: 100%; height: auto; aspect-ratio: 560 / 315;" data-ratio="1.7777777777777777"></iframe>
+<p>タイトル的にあまりLINQでもコンカレントでもなかったかな、とは思いますが、<a href="https://github.com/Cysharp/R3">R3</a>を題材に、具体的なコードをもとにした最適化技法の紹介という点では面白みはあったのではないかと思います。</p>
+<h2>Rxの定義</h2>
+<p>R3は、やや挑発的な内容を掲げていることもあり、R3は「Rxではない」みたいなことを言われることもあります。なるほど！では、そもそも何をもってRxと呼ぶのか、呼べるのか。私は「Push型でLINQ風のオペレーターが適用できればRx」というぐらいの温度感で考えています。もちろん、R3はそれを満たしています。</p>
+<p><code>mutable struct</code>の扱いと同じく、あまり教条主義的にならず、時代に合わせて、柔軟により良いシステムを考えていきましょう。コンピュータープログラミングにおいて、伝統や歴史を守ることは別に大して重要なことではないはずです。</p>
+<h2>TimeProvider DeepDive</h2>
+<p><a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.timeprovider?view=net-8.0">TimeProvider</a>について、セッションでも話しましたが、大事なことなのでもう少し詳しくいきましょう。TimeProviderにまず期待するところとしては、ほとんどが<code>SystemClock.Now</code>、つまりオレオレ<code>DateTime.Now</code>生成器の代わりを求めているでしょう。それを期待しているとTimeProviderの定義は無駄に複雑に見えます。しかし<code>TimeProvider</code>を分解してみると、これは4つの時間を司るクラスの抽象層になっています。</p>
+<pre><code class="language-csharp">public abstract class TimeProvider
+{
+    // TimeZoneInfo
+    public virtual TimeZoneInfo LocalTimeZone =&gt; TimeZoneInfo.Local;
+
+    // DateTimeOffset
+    public virtual DateTimeOffset GetUtcNow() =&gt; DateTimeOffset.UtcNow;
+    public DateTimeOffset GetLocalNow() =&gt;
+
+    // Stopwatch
+    public virtual long TimestampFrequency =&gt; Stopwatch.Frequency;
+    public virtual long GetTimestamp() =&gt; Stopwatch.GetTimestamp();
+    public TimeSpan GetElapsedTime(long startingTimestamp, long endingTimestamp) =&gt; 
+    public TimeSpan GetElapsedTime(long startingTimestamp) =&gt; GetElapsedTime(startingTimestamp, GetTimestamp());
+
+    // System.Threading.Timer
+    public virtual ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) =&gt;
+}
+
+public interface ITimer : IDisposable, IAsyncDisposable
+{
+    bool Change(TimeSpan dueTime, TimeSpan period);
+}
+</code></pre>
+<p>4つの時間を司るクラス、すなわち<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.timezoneinfo?view=net-8.0">TimeZoneInfo</a>、<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.datetimeoffset?view=net-8.0">DateTimeOffset</a>、<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.diagnostics.stopwatch?view=net-8.0">Stopwatch</a>、<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.threading.timer?view=net-8.0">System.Threading.Timer</a>。</p>
+<p>この造りになっているからこそ、あらゆる時間にまつわる挙動を任意に変更することができるのです。</p>
+<p>挙動を任意に変更するというとユニットテストでの時間のモックにばかり意識が向きますが（実際、<a href="https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.extensions.time.testing.faketimeprovider?view=net-8.0">FakeTimeProvider</a>はとても有益です）、別にユニットテストに限らず、優れた時間の抽象化層として使うことができます。ということを実装とともに証明したのがR3で、特にR3では<code>CreateTimer</code>をかなり弄っていて、WPFではDispatcherTimerを使うことで自動的にUIスレッドにディスパッチしたり、UnityではPlayerLoopベースのタイマーとしてScaledとUnsacledでTimescaleの影響を受けるタイマー・受けないタイマーなどといった実行時のカスタマイズ性を実現しました。</p>
+<p>セッションではStopwatchについてフォーカスしました。二点の時刻の経過時間を求めるのにDateTimeの引き算、つまり</p>
+<pre><code class="language-csharp">DateTime now = DateTime.UtcNow;
+/* do something... */
+TimeSpan elapesed = DateTime.UtcNow - now;
+</code></pre>
+<p>といったコードを書くのはよくあることですが、これはバッドプラクティスです。DateTimeの取得はタダではありません。では、なるほどStopwatchですね？ということで</p>
+<pre><code class="language-csharp">Stopwatch sw = Stopwatch.StartNew();
+/* do something... */
+TimeSpan elapsed = sw.Elapsed;
+</code></pre>
+<p>これは、Stopwatchがclassなのでアロケーションがあります。うまく使いまわしてあげる必要があります。
+使いまわしができないシチュエーションのために、アロケーションを避けるためにstructのStopwatch、ValueStopwatchといったカスタム型を作ることもありますが、待ってください、そもそもStopwatchが不要です。</p>
+<p>二点の経過時間を求めるなら、時計による時刻も不要で、その地点の何らかのタイムスタンプが取れればそれで十分なのです。</p>
+<pre><code class="language-csharp">// .NET 7以降での手法(GetElapsedTimeが追加された)
+long timestamp = Stopwatch.GetTimestamp();
+/* do something... */
+TimeSpan elapsed = Stopwatch.GetElapsedTime(timestamp);
+</code></pre>
+<p>このlongは、通常は高解像度タイムスタンプ、Windowsでは[QueryPerformanceCounter(https://learn.microsoft.com/ja-jp/windows/win32/sysinfo/acquiring-high-resolution-time-stamps)が使われています。TimeSpanでよく使うTicksではないことに注意してください。</p>
+<p>ベンチマークを取ってみましょう。</p>
+<pre><code class="language-csharp">using BenchmarkDotNet.Attributes;
+using System.Diagnostics;
+
+BenchmarkDotNet.Running.BenchmarkRunner.Run&lt;TimestampBenchmark&gt;();
+
+public class TimestampBenchmark
+{
+    [Benchmark]
+    public long Stopwatch_GetTimestamp()
+    {
+        return Stopwatch.GetTimestamp();
+    }
+
+    [Benchmark]
+    public DateTime DateTime_UtcNow()
+    {
+        return DateTime.UtcNow;
+    }
+
+    [Benchmark]
+    public DateTime DateTime_Now()
+    {
+        return DateTime.Now;
+    }
+}
+</code></pre>
+<p><img src="https://github.com/Cysharp/R3/assets/46207/75122cc7-c303-493f-bc78-40388529cf60" alt="image" /></p>
+<p>NowではUtcNowに加えてTimeZoneからのオフセット算出が入るために更にもう一段遅くなります。</p>
+<p>なお、マイクロベンチマークを取るときは必ず<a href="https://github.com/dotnet/BenchmarkDotNet">BenchmarkDotNet</a>を使ってください。(micro)benchmark is hard、です。Stopwatchで測られても、あらゆる要因から誤差が出まくるし、そもそも指標もよくわからないしで、数字を見ても何もわかりません。私はそういう数字の記事とかを見た場合、役に立たないと判断して無視します。</p>
+<h2>まとめ</h2>
+<p>セッション資料に盛り込めた最適化技法の紹介は極一部ではありますが、R3がどれだけ気合い入れて作られているかが伝わりましたでしょうか？10年の時を経て、私自身の成長とC#の成長が合わさり、UniRxからクオリティが桁違いです。</p>
+<p>これからも足を止めずにやっていきますし、みなさんも是非モダンC#やっていきましょう……！（Unityも十分モダンC#の仲間入りで良いです！）</p>
+<p>そういえばブログに貼り付けるのを忘れてたのですが3月末にはこんなセッションもしていました。</p>
+<iframe class="speakerdeck-iframe" frameborder="0" src="https://speakerdeck.com/player/c5a8898ac7c4464584068b0ee3180e94" title=".NETの非同期戦略とUnityとの相互運用" allowfullscreen="true" style="border: 0px; background: padding-box padding-box rgba(0, 0, 0, 0.1); margin: 0px; padding: 0px; border-radius: 6px; box-shadow: rgba(0, 0, 0, 0.2) 0px 5px 40px; width: 100%; height: auto; aspect-ratio: 560 / 315;" data-ratio="1.7777777777777777"></iframe>
+<p>ええ、ええ。Unityもモダンですよ！大丈夫！</p>
+</div>
+</div>
+        <div id="side">
+<h3>Profile</h3>
+<div class="side_body" align="center">
+<b>Yoshifumi Kawai</b><br />
+<br />
+<a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
+CEO/CTO<br />
+<br />
+Microsoft MVP for Developer Technologies(C#)<br />
+April 2011<br />
+|<br />
+July 2024<br />
+<br />
+Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
+GitHub:<a href="https://github.com/neuecc/">neuecc</a>
+</div>
+
+<h3>Archive</h3>
+<div class="side_body">
+<ul>
+<li><a href="https://neue.cc/2024/05/">2024-05</a>
+<li><a href="https://neue.cc/2024/03/">2024-03</a>
+<li><a href="https://neue.cc/2024/02/">2024-02</a>
+<li><a href="https://neue.cc/2024/01/">2024-01</a>
+<li><a href="https://neue.cc/2023/12/">2023-12</a>
+<li><a href="https://neue.cc/2023/10/">2023-10</a>
+<li><a href="https://neue.cc/2023/09/">2023-09</a>
+<li><a href="https://neue.cc/2023/07/">2023-07</a>
+<li><a href="https://neue.cc/2023/03/">2023-03</a>
+<li><a href="https://neue.cc/2023/01/">2023-01</a>
+<li><a href="https://neue.cc/2022/12/">2022-12</a>
+<li><a href="https://neue.cc/2022/11/">2022-11</a>
+<li><a href="https://neue.cc/2022/07/">2022-07</a>
+<li><a href="https://neue.cc/2022/05/">2022-05</a>
+<li><a href="https://neue.cc/2022/04/">2022-04</a>
+<li><a href="https://neue.cc/2022/02/">2022-02</a>
+<li><a href="https://neue.cc/2022/01/">2022-01</a>
+<li><a href="https://neue.cc/2021/12/">2021-12</a>
+<li><a href="https://neue.cc/2021/11/">2021-11</a>
+<li><a href="https://neue.cc/2021/08/">2021-08</a>
+<li><a href="https://neue.cc/2021/07/">2021-07</a>
+<li><a href="https://neue.cc/2021/05/">2021-05</a>
+<li><a href="https://neue.cc/2021/02/">2021-02</a>
+<li><a href="https://neue.cc/2020/12/">2020-12</a>
+<li><a href="https://neue.cc/2020/11/">2020-11</a>
+<li><a href="https://neue.cc/2020/10/">2020-10</a>
+<li><a href="https://neue.cc/2020/08/">2020-08</a>
+<li><a href="https://neue.cc/2020/07/">2020-07</a>
+<li><a href="https://neue.cc/2020/04/">2020-04</a>
+<li><a href="https://neue.cc/2020/01/">2020-01</a>
+<li><a href="https://neue.cc/2019/12/">2019-12</a>
+<li><a href="https://neue.cc/2019/09/">2019-09</a>
+<li><a href="https://neue.cc/2019/08/">2019-08</a>
+<li><a href="https://neue.cc/2019/07/">2019-07</a>
+<li><a href="https://neue.cc/2019/06/">2019-06</a>
+<li><a href="https://neue.cc/2019/05/">2019-05</a>
+<li><a href="https://neue.cc/2019/04/">2019-04</a>
+<li><a href="https://neue.cc/2018/12/">2018-12</a>
+<li><a href="https://neue.cc/2018/10/">2018-10</a>
+<li><a href="https://neue.cc/2018/08/">2018-08</a>
+<li><a href="https://neue.cc/2018/07/">2018-07</a>
+<li><a href="https://neue.cc/2018/05/">2018-05</a>
+<li><a href="https://neue.cc/2018/04/">2018-04</a>
+<li><a href="https://neue.cc/2018/01/">2018-01</a>
+<li><a href="https://neue.cc/2017/12/">2017-12</a>
+<li><a href="https://neue.cc/2017/09/">2017-09</a>
+<li><a href="https://neue.cc/2017/08/">2017-08</a>
+<li><a href="https://neue.cc/2017/07/">2017-07</a>
+<li><a href="https://neue.cc/2017/06/">2017-06</a>
+<li><a href="https://neue.cc/2017/04/">2017-04</a>
+<li><a href="https://neue.cc/2017/03/">2017-03</a>
+<li><a href="https://neue.cc/2016/12/">2016-12</a>
+<li><a href="https://neue.cc/2016/11/">2016-11</a>
+<li><a href="https://neue.cc/2016/10/">2016-10</a>
+<li><a href="https://neue.cc/2016/09/">2016-09</a>
+<li><a href="https://neue.cc/2016/08/">2016-08</a>
+<li><a href="https://neue.cc/2016/07/">2016-07</a>
+<li><a href="https://neue.cc/2016/06/">2016-06</a>
+<li><a href="https://neue.cc/2016/05/">2016-05</a>
+<li><a href="https://neue.cc/2016/04/">2016-04</a>
+<li><a href="https://neue.cc/2016/03/">2016-03</a>
+<li><a href="https://neue.cc/2016/01/">2016-01</a>
+<li><a href="https://neue.cc/2015/12/">2015-12</a>
+<li><a href="https://neue.cc/2015/11/">2015-11</a>
+<li><a href="https://neue.cc/2015/10/">2015-10</a>
+<li><a href="https://neue.cc/2015/09/">2015-09</a>
+<li><a href="https://neue.cc/2015/06/">2015-06</a>
+<li><a href="https://neue.cc/2015/05/">2015-05</a>
+<li><a href="https://neue.cc/2015/04/">2015-04</a>
+<li><a href="https://neue.cc/2015/03/">2015-03</a>
+<li><a href="https://neue.cc/2015/02/">2015-02</a>
+<li><a href="https://neue.cc/2015/01/">2015-01</a>
+<li><a href="https://neue.cc/2014/12/">2014-12</a>
+<li><a href="https://neue.cc/2014/11/">2014-11</a>
+<li><a href="https://neue.cc/2014/10/">2014-10</a>
+<li><a href="https://neue.cc/2014/09/">2014-09</a>
+<li><a href="https://neue.cc/2014/08/">2014-08</a>
+<li><a href="https://neue.cc/2014/07/">2014-07</a>
+<li><a href="https://neue.cc/2014/05/">2014-05</a>
+<li><a href="https://neue.cc/2014/04/">2014-04</a>
+<li><a href="https://neue.cc/2014/03/">2014-03</a>
+<li><a href="https://neue.cc/2014/01/">2014-01</a>
+<li><a href="https://neue.cc/2013/12/">2013-12</a>
+<li><a href="https://neue.cc/2013/11/">2013-11</a>
+<li><a href="https://neue.cc/2013/10/">2013-10</a>
+<li><a href="https://neue.cc/2013/09/">2013-09</a>
+<li><a href="https://neue.cc/2013/08/">2013-08</a>
+<li><a href="https://neue.cc/2013/07/">2013-07</a>
+<li><a href="https://neue.cc/2013/06/">2013-06</a>
+<li><a href="https://neue.cc/2013/05/">2013-05</a>
+<li><a href="https://neue.cc/2013/04/">2013-04</a>
+<li><a href="https://neue.cc/2013/03/">2013-03</a>
+<li><a href="https://neue.cc/2013/02/">2013-02</a>
+<li><a href="https://neue.cc/2013/01/">2013-01</a>
+<li><a href="https://neue.cc/2012/12/">2012-12</a>
+<li><a href="https://neue.cc/2012/11/">2012-11</a>
+<li><a href="https://neue.cc/2012/10/">2012-10</a>
+<li><a href="https://neue.cc/2012/09/">2012-09</a>
+<li><a href="https://neue.cc/2012/08/">2012-08</a>
+<li><a href="https://neue.cc/2012/07/">2012-07</a>
+<li><a href="https://neue.cc/2012/06/">2012-06</a>
+<li><a href="https://neue.cc/2012/05/">2012-05</a>
+<li><a href="https://neue.cc/2012/04/">2012-04</a>
+<li><a href="https://neue.cc/2012/03/">2012-03</a>
+<li><a href="https://neue.cc/2012/02/">2012-02</a>
+<li><a href="https://neue.cc/2012/01/">2012-01</a>
+<li><a href="https://neue.cc/2011/12/">2011-12</a>
+<li><a href="https://neue.cc/2011/11/">2011-11</a>
+<li><a href="https://neue.cc/2011/10/">2011-10</a>
+<li><a href="https://neue.cc/2011/09/">2011-09</a>
+<li><a href="https://neue.cc/2011/08/">2011-08</a>
+<li><a href="https://neue.cc/2011/07/">2011-07</a>
+<li><a href="https://neue.cc/2011/06/">2011-06</a>
+<li><a href="https://neue.cc/2011/05/">2011-05</a>
+<li><a href="https://neue.cc/2011/04/">2011-04</a>
+<li><a href="https://neue.cc/2011/03/">2011-03</a>
+<li><a href="https://neue.cc/2011/02/">2011-02</a>
+<li><a href="https://neue.cc/2011/01/">2011-01</a>
+<li><a href="https://neue.cc/2010/12/">2010-12</a>
+<li><a href="https://neue.cc/2010/11/">2010-11</a>
+<li><a href="https://neue.cc/2010/10/">2010-10</a>
+<li><a href="https://neue.cc/2010/09/">2010-09</a>
+<li><a href="https://neue.cc/2010/08/">2010-08</a>
+<li><a href="https://neue.cc/2010/07/">2010-07</a>
+<li><a href="https://neue.cc/2010/06/">2010-06</a>
+<li><a href="https://neue.cc/2010/05/">2010-05</a>
+<li><a href="https://neue.cc/2010/04/">2010-04</a>
+<li><a href="https://neue.cc/2010/03/">2010-03</a>
+<li><a href="https://neue.cc/2010/02/">2010-02</a>
+<li><a href="https://neue.cc/2010/01/">2010-01</a>
+<li><a href="https://neue.cc/2009/12/">2009-12</a>
+<li><a href="https://neue.cc/2009/11/">2009-11</a>
+<li><a href="https://neue.cc/2009/10/">2009-10</a>
+<li><a href="https://neue.cc/2009/09/">2009-09</a>
+<li><a href="https://neue.cc/2009/08/">2009-08</a>
+<li><a href="https://neue.cc/2009/07/">2009-07</a>
+<li><a href="https://neue.cc/2009/06/">2009-06</a>
+<li><a href="https://neue.cc/2009/05/">2009-05</a>
+<li><a href="https://neue.cc/2009/04/">2009-04</a>
+<li><a href="https://neue.cc/2009/03/">2009-03</a>
+<li><a href="https://neue.cc/2009/02/">2009-02</a>
+<li><a href="https://neue.cc/2009/01/">2009-01</a>
+</ul>
+</div>
+</div>
+        <div id="footer"><ul>
+<li>Index: <a href="https://neue.cc">neue.cc</a><li>
+<li>RSS feed: <a href="https://neue.cc/feed">neue.cc/feed</a><li>
+<li>Powered by: <a href="https://github.com/neuecc/Blog2">https://github.com/neuecc/Blog2</a>
+</ul></div>
+    </div>
+</body>

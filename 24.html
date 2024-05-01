@@ -23,7 +23,182 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2009/11/27_225.html">TwitterのTL過去ログをHTMLにするツール</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2009/11/29_226.html">Reactive Extensions for .NET (Rx) メソッド探訪第六回:exception handling</a></h1>
+<ul class="date"><li>2009-11-29</li></ul>
+<div class="entry_body"><p>.NET Reactive FrameworkからReactive Extensions for .NET (Rx)に名称が変わったようなので、タイトルも変更。長いね。というわけで久しぶりなのですが、今回はざっとexception handling operators、つまり「Catch, Finally, Retry, OnErrorResumeNext」を見てみることにします。それとRun(ForEachなので説明不要ですが)。Rxって何？という人は<a href="http://neue.cc/2009/11/24_222.html" title="neue cc - Hello, Reactive Extensions">Hello, Reactive Extensions</a>をまず参照下さい。</p>
+<p>Rxの花形はイベント合流系のメソッドにあると思うので、ひたすら脇役ばかりを紹介してちっとも本流に入ろうとしないのはどうかと思うのですけど、EnumerableExのCatchを見て、あー、こりゃ便利だ、ヤバい、便利だ、用途すぐ浮かんでしまった、というわけでしてCatchを紹介します。まずは、その浮かんだ例であるTwitterのタイムライン取得をどうぞ。例はIEnumerableに対してのものですが、IObservableに対してのものも同じです。</p>
+<pre><code class="language-csharp">class Twitter
+{
+    public string Text { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+static IEnumerable&lt;Twitter&gt; EnumerateUserTimeline(string userName)
+{
+    // {0}はユーザー名、{1}はページ番号 公開ユーザーのものを取得なら認証不要
+    var format = &quot;http://twitter.com/statuses/user_timeline/{0}.xml?page={1}&quot;;
+    foreach (var page in Enumerable.Range(1, 1000))
+    {
+        var query = XDocument.Load(string.Format(format, userName, page))
+            .Descendants(&quot;status&quot;)
+            .Select(e =&gt; new Twitter
+            {
+                Text = e.Element(&quot;text&quot;).Value,
+                CreatedAt = DateTime.ParseExact(e.Element(&quot;created_at&quot;).Value,
+                    &quot;ddd MMM dd HH:mm:ss zzzz yyyy&quot;,
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal)
+            });
+        foreach (var item in query) yield return item;
+    }
+}
+
+static void Main(string[] args)
+{
+    // 2009/11/23から今日までの投稿を古い順に並べるというもの
+    var test = EnumerateUserTimeline(&quot;neuecc&quot;)
+        .TakeWhile(t =&gt; t.CreatedAt &gt;= new DateTime(2009, 11, 23))
+        .OrderBy(t =&gt; t.CreatedAt)
+        .ToArray();
+    
+    // これで基本的には問題ないわけですが、TwitterにはAPI制限があるので
+    // ちゃんと全部取得出来るわけではなく、API制限発動 =&gt; 死亡になる可能性がある
+    // 死んでもいいんだけど、せっかく取った死ぬ前のデータはがめておきたいよねえ
+    // というわけで、そこで出番なのがRxのCatch！
+
+    var test2 = EnumerateUserTimeline(&quot;neuecc&quot;)
+        .TakeWhile(t =&gt; t.CreatedAt &gt;= new DateTime(2009, 11, 23))
+        .Catch((Exception e) =&gt; Enumerable.Empty&lt;Twitter&gt;())
+        .OrderBy(t =&gt; t.CreatedAt)
+        .ToArray();
+
+    // 例外が発生したら握りつぶして、代わりにEnumerable.Emptyを返します
+    // なので、例外発生前のデータは全て取得出来ています、素晴らしい！
+}
+</code></pre>
+<p>といった感じです。つまりCatchは、そのまんまCatchです。Linqで全部書くのも良いんだけど、例外処理が出来なくてなあ、という不満がこれで解消されます。残りのFinally, Retry, OnErrorResumeNextですが、全部Catchの派生みたいなものです。とりあえず簡単な例を。</p>
+<pre><code class="language-csharp">static IEnumerable&lt;int&gt; Iterate1To5()
+{
+    yield return 1;
+    yield return 2;
+    throw new DivideByZeroException(); // 嘘例外でも投げておく
+    yield return 4;
+    yield return 5;
+}
+
+static void Main(string[] args)
+{
+    // 1,2
+    Iterate1To5().Catch((Exception e) =&gt; Enumerable.Empty&lt;int&gt;()).Run(Console.WriteLine);
+    // 1,2,100,200
+    Iterate1To5().Catch((Exception e) =&gt; new[] { 100, 200 }).Run(Console.WriteLine);
+    // 1,2 -&gt; 例外発生(ArgumentNullExceptionはDivideByZeroExceptionじゃないのでCatchしない)
+    Iterate1To5().Catch((ArgumentNullException e) =&gt; new[] { 100, 200 }).Run(Console.WriteLine);
+    // 1,2,100,200。つまりCatchの簡略版
+    Iterate1To5().OnErrorResumeNext(new[] { 100, 200 }).Run(Console.WriteLine);
+    // 1,2,Finally。これでtry-catch-finallyが出来あがる
+    Iterate1To5()
+        .Catch((Exception e) =&gt; Enumerable.Empty&lt;int&gt;())
+        .Finally(() =&gt; Console.WriteLine(&quot;Finally&quot;))
+        .Run(Console.WriteLine);
+    // 1,2 -&gt; 1,2 -&gt; 例外発生。例外を検知したら最初から列挙し直しての再試行
+    // EnumerableExのRetryはバグっぽくてObservableとは違う動きをする
+    // 明らかにオカシイのでそのうち修正されるでしょう
+    Iterate1To5().ToObservable().Retry(2).Subscribe(Console.WriteLine);
+}
+</code></pre>
+<p>最後に、中身をちゃんと知るには自分で実装するに限る、ということでIEnumerableでの拡張メソッドで再現してみました。Catchは本当に便利なので、わざわざRx使うのも、と思う場合は以下のコードを是非コピペして使ってくださいな。</p>
+<pre><code class="language-csharp">// ループをぶん回すだけ、というもの(linq.jsではForce()が同様の働き)
+public static void Run&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source)
+{
+    source.Run(_ =&gt; { });
+}
+
+// ようするにForEach
+public static void Run&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source, Action&lt;TSource&gt; action)
+{
+    foreach (var item in source) action(item);
+}
+
+// try-catch句の中でyield returnが使えないので回りっくどいことに
+public static IEnumerable&lt;TSource&gt; Catch&lt;TSource, TException&gt;(this IEnumerable&lt;TSource&gt; source,
+    Func&lt;TException, IEnumerable&lt;TSource&gt;&gt; handler) where TException : Exception
+{
+    using (var enumerator = source.GetEnumerator())
+    {
+        while (true)
+        {
+            TException exception = null;
+            var hasNext = false;
+            try
+            {
+                hasNext = enumerator.MoveNext();
+            }
+            catch (Exception e)
+            {
+                exception = e as TException;
+                if (exception == null) throw;
+            }
+
+            if (exception != null)
+            {
+                foreach (var item in handler(exception)) yield return item;
+            }
+            if (hasNext) yield return enumerator.Current;
+            else yield break;
+        }
+    }
+}
+
+// Rxにはこういう、handlerがActionのオーバーロードが欲しいです
+// わざわざ空のシーケンス投げるのは面倒くさいし、匿名型に対応できないじゃないか！
+public static IEnumerable&lt;TSource&gt; Catch&lt;TSource, TException&gt;(this IEnumerable&lt;TSource&gt; source,
+    Action&lt;TException&gt; handler) where TException : Exception
+{
+    return source.Catch((TException e) =&gt; { handler(e); return Enumerable.Empty&lt;TSource&gt;(); });
+}
+
+// OnErrorResumeNextはCatchの簡略版みたいなもんですね、別に必要ないような
+public static IEnumerable&lt;TSource&gt; OnErrorResumeNext&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source, IEnumerable&lt;TSource&gt; next)
+{
+    return source.Catch((Exception e) =&gt; next);
+
+}
+
+// ToList().ForEach()とRun()ではactionの出るタイミングが変わることに注意
+public static IEnumerable&lt;TSource&gt; Finally&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source, Action action)
+{
+    try { foreach (var item in source) yield return item; }
+    finally { action(); }
+}
+
+// 本当は無限でやるべきなんでしょうが、int.MaxValueで。
+public static IEnumerable&lt;TSource&gt; Retry&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source)
+{
+    return source.Retry(int.MaxValue);
+}
+
+// EnumerableExのRetryがバグ臭いのでObservable.Retryの挙動を採用しました
+public static IEnumerable&lt;TSource&gt; Retry&lt;TSource&gt;(this IEnumerable&lt;TSource&gt; source, int retryCount)
+{
+    var count = 0;
+    Exception exception = null;
+    while (count &lt; retryCount)
+    {
+        exception = null;
+        foreach (var item in source.Catch((Exception e) =&gt; exception = e))
+        {
+            yield return item;
+        }
+        if (exception == null) yield break;
+        count++;
+    }
+    throw exception;
+}
+</code></pre>
+<p>どれもCatchの派生のようなものです、CatchイイよCatch。これは使いまくりたくなる。それにしてもtry-catchの中でyield returnが使えないのを、はじめて知りました。こんなことやろうとしたことがなかったので。あと、EnumerableEx.Retryはひっじょーにバグ臭いです。ちなみにEnumerableEx.Mergeもバグ臭い。全体的にEnumerableExはバグ臭さ全開です。明らかに(Observableから)適当に移植した感漂ってます。ヤバい。</p>
+</div>
+<h1><a href="https://neue.cc/2009/11/27_225.html">TwitterのTL過去ログをHTMLにするツール</a></h1>
 <ul class="date"><li>2009-11-27</li></ul>
 <div class="entry_body"><p class="noindent">
 	<img src="http://neue.cc/wp-content/uploads/image/twittertltohtml.jpg">
@@ -1240,87 +1415,6 @@ _ : 32
 </code></pre>
 <p>ちゃんと(?)、eが一番人気でした。</p>
 </div>
-<h1><a href="https://neue.cc/2009/09/30_206.html">C# Linqでクイックソート</a></h1>
-<ul class="date"><li>2009-09-30</li></ul>
-<div class="entry_body"><pre><code class="language-haskell">qsort []     = []
-qsort (x:xs) = qsort elts_lt_x ++ [x] ++ qsort elts_greq_x
-                 where
-                   elts_lt_x   = [y | y &lt;- xs, y &lt; x]
-                   elts_greq_x = [y | y &lt;- xs, y &gt;= x]
-</code></pre>
-<p>これはHaskellのコードで、良く見かける定番のQuickSort。うん、短い。というわけでLinqでそれをやる。というネタは既出のン番煎じなのですが、気にせずやる。</p>
-<pre><code class="language-csharp">// LinqでHaskell風のクイックソート
-public static IEnumerable&lt;T&gt; QuickSort&lt;T&gt;(IEnumerable&lt;T&gt; source)
-    where T : IComparable&lt;T&gt;
-{
-    if (!source.Any()) return source;
-    var pivot = source.First();
-    return source
-        .GroupBy(x =&gt; x.CompareTo(pivot))
-        .OrderBy(g =&gt; g.Key) // OrderBy使うのはどうかなー、というところはある
-        .SelectMany(g =&gt; (g.Key == 0) ? g : QuickSort(g));
-}
-</code></pre>
-<p>GroupBy-&gt;SelectManyと流れるように書けて美しいー。これならHaskellにも引けを取らないですね！但し問題なのは、OrderByを使用しているところ。CompareToの結果である-1, 0, 1を並べ替えるために使っているのだけど、OrderByの中身はシュワルツ変換の挟まったクイックソートそのものなので邪道な感は否めない。OrderBy使うなら、そもそもsource.OrderBy(x =&gt; x)でもいいぢゃん、って話になってしまう。</p>
-<pre><code class="language-csharp">// 非GroupBy版。LookupはGroupByの即時評価版と考えていい。
-public static IEnumerable&lt;T&gt; QuickSort&lt;T&gt;(IEnumerable&lt;T&gt; source)
-    where T : IComparable&lt;T&gt;
-{
-    if (!source.Any()) return source;
-    var pivot = source.First();
-    var lookup = source.ToLookup(x =&gt; x.CompareTo(pivot));
-    return QuickSort(lookup[-1]).Concat(lookup[0]).Concat(QuickSort(lookup[1]));
-}
-</code></pre>
-<p>GroupByをToLookupに書き変えました。ToLookupはGroupByの即時評価版といった感じで、インデクサによるアクセスが可能。インデクサ使わないでそのままforeachで列挙する、なんて時はGroupByを使った方が良いです。今回はインデクサで順番を明示的に指定するため、ToLookupでパーティション切って、Concatで繋いでやれば出来あがり。やってることが非常に分かりやすくて良い。ソースの見た目も中々綺麗じゃないでしょうか。Haskellのものとも非常に近いです(ようするに++がConcatなので) ToLookupではなくWhereを使えば、見た目は更にHaskellに近づきますが、列挙が二回になるので、ここはToLookupで。</p>
-<pre><code class="language-csharp">// 普通に？書いた場合。
-public static void QuickSort&lt;T&gt;(IList&lt;T&gt; source, int lowerBound, int upperBound)
-    where T : IComparable&lt;T&gt;
-{
-    var pivot = source[lowerBound + ((upperBound - lowerBound) &gt;&gt; 1)];
-    var left = lowerBound - 1;
-    var right = upperBound + 1;
-    while (true)
-    {
-        while (source[++left].CompareTo(pivot) &lt; 0) ;
-        while (source[--right].CompareTo(pivot) &gt; 0) ;
-        if (left &gt;= right) break;
-        var temp = source[left];
-        source[left] = source[right];
-        source[right] = temp;
-    }
-    if (lowerBound &lt; left - 1) QuickSort(source, lowerBound, left - 1);
-    if (right + 1 &lt; upperBound) QuickSort(source, right + 1, upperBound);
-}
-</code></pre>
-<p>今度は非Linqに一般的？な書き方で。あまりヘタな書き方するとアレだなあ、と思ったので<a href="http://blog.livedoor.jp/dankogai/archives/51182235.html">404 Blog Not Found:javascript - Array#sortはオレquicksortより遅い by Chrome</a>のコードをC#に移植しました。<a href="http://dic.nicovideo.jp/a/%E3%81%82%E3%81%9F%E3%81%97%E3%81%93%E3%81%AE%E3%83%91%E3%82%A4%E5%AB%8C%E3%81%84%E3%81%AA%E3%81%AE%E3%82%88%E3%81%AD">あたしこの書き方嫌いなのよね</a>、という感じにゴチャゴチャした印象は否めないというか、まあ、嫌いなのよね。一本の配列で頑張るところが、ゆとりな私としてはしんどい。ビットシフトも嫌よね。</p>
-<pre><code class="language-csharp">public static IEnumerable&lt;T&gt; QuickSort&lt;T&gt;(IEnumerable&lt;T&gt; source)
-    where T : IComparable&lt;T&gt;
-{
-    var enumerator = source.GetEnumerator();
-    if (!enumerator.MoveNext()) yield break;
-
-    var pivot = enumerator.Current;
-    var less = new List&lt;T&gt;();
-    var equal = new List&lt;T&gt;();
-    var greater = new List&lt;T&gt;();
-    do
-    {
-        switch (enumerator.Current.CompareTo(pivot))
-        {
-            case -1: less.Add(enumerator.Current); break;
-            case 0: equal.Add(enumerator.Current); break;
-            case 1: greater.Add(enumerator.Current); break;
-        }
-    } while (enumerator.MoveNext());
-
-    foreach (var item in QuickSort(less)) yield return item;
-    foreach (var item in equal) yield return item;
-    foreach (var item in QuickSort(greater)) yield return item;
-}
-</code></pre>
-<p>最後に、非Linqで、ToLookup版を再現してみたものを。do-whileがToLookupでforeachの連発がConcat。ようするに富豪的にListを作りまくるってわけなんですね！書きやすいし分かりやすいので、一本配列版よりも遥かに好き度高い。現代人はListを贅沢に大量に好きなだけ使うのです。まあ、Linq版がない状態でこの書き方が浮かぶ or 実行に移せるかどうかといったら、かなり無理ですけど。</p>
-</div>
 <a href="https://neue.cc/23">Prev |</a>
 <a href="https://neue.cc/25">| Next</a>
 </div>
@@ -1344,6 +1438,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/05/">2024-05</a>
 <li><a href="https://neue.cc/2024/03/">2024-03</a>
 <li><a href="https://neue.cc/2024/02/">2024-02</a>
 <li><a href="https://neue.cc/2024/01/">2024-01</a>

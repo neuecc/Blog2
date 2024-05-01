@@ -23,7 +23,364 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2010/08/19_272.html">Reactive ExtensionsのFromEventをT4 Templateで自動生成する</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2010/08/30_273.html">T4による不変オブジェクト生成のためのテンプレート</a></h1>
+<ul class="date"><li>2010-08-30</li></ul>
+<div class="entry_body"><p>不変欲しい！const欲しい！readonlyをローカル変数にもつけたい！という要望をたまに見かけるこの頃。もし、そういった再代入不可というマークがローカル変数に導入されるとしたら、readonlyの使い回しだけは勘弁です。何故って、ローカル変数なんて大抵は再代入しないので、readonly推奨ということになるでしょう、そのうちreadonly付けろreadonly付けろというreadonly厨が出てくるのは目に見えています。</p>
+<p>良いことなら付ければいいじゃない、というのはもっともですが、Uglyですよ、視覚的に。readonly var hoge = 3 だなんて、見たくはない。頻繁に使うほうがオプションで醜く面倒くさいってのは、良くないことです。let hoge = 3 といったように、let、もしくはその他のキーワード(valとか？)を導入するならば、いいかな、とは思いますが。</p>
+<p>それに、ただ単にマークしただけじゃあ不変を保証するわけでもない……。例えばListなんてClearしてAddRangeしたのと再代入とは、どう違うの？的な。難しいねえ。そんなimmutableの分類に関しては<a href="http://ufcpp.spaces.live.com/blog/cns!5C622397E11C979D!931.entry">ufcppさんのimmutable</a>という記事が、コメント欄含め参考になりました。</p>
+<p>そうはいっても、そんなにガチに捉えなくても、不変にしたいシチュエーションはいっぱいあります。<a href="http://d.hatena.ne.jp/zecl/20100531/p1">実はオブジェクト指向ってしっくりきすぎるんです！ 不変オブジェクトのすゝめ。 - Bug Catharsis</a>。おお、すすめられたい。ところでしかし、こういう時にいつも疑問に思っているのは、生成どうすればいいのだろう、ということ。今のところ現実解としてあるのはreadonly、つまり、コンストラクタに渡すしかないのですが……</p>
+<pre><code class="language-csharp">public Hoge(int a, int b, int c, string d, string e, DateTime f, .....
+</code></pre>
+<p>破綻してる。こんなクソ長いコンストラクタ見かけたら殺していいと思う。全くもって酷い。さて、どうしましょう。こういう場合はビルダーを使いましょう、とはEffective Javaが言ってますので(私、この本あんま好きじゃないんだよねー、とかはどうでもいいんですがー)とりあえずストレートに従ってみます。</p>
+<pre><code class="language-csharp">// あまり行数使うのもアレなので短くしますが、実際は10行ぐらいあると思ってください
+Hoge hoge = new HogeBuilder()
+  .Age(10)
+  .Name(&quot;hogehoge&quot;)
+  .Build();
+</code></pre>
+<p>まあ、悪くない、ですって？いえいえ、これはBuilder作るの面倒くさいし、第一Java臭い。メソッドチェーンだからモダンで素敵、と脳が直結してる人は考えが一歩足らない。むしろ古臭い。最近は流れるようなインターフェイスとかも割と懐疑的で、私は。頂くのはアイディアだけであって、書き方に関しては、各言語にきっちり馴染ませるべき。先頭の大文字小文字だけ整えて移植だとか、愚かな話。というわけで、C#ならオブジェクト初期化子を使おう。</p>
+<pre><code class="language-csharp">var hoge = new HogeBuilder
+{
+    Age = 10,
+    Name = &quot;hogehoge&quot;
+}.Build();
+
+// 暗黙的な型変換を使えばBuildメソッドも不要になる(私はvarのほうが好みですが)
+Hoge hoge = new HogeBuilder
+{
+    Age = 10,
+    Name = &quot;hogehoge&quot;
+};
+</code></pre>
+<p>ええ、これなら悪くない。オブジェクト初期化子は大変素晴らしい(本当にそろそろModern C# Designをですね……)。ビルダーを作る手間もJava方式に比べ大幅に軽減されます(set専用の自動プロパティを用意するだけ)。それにIntelliSenseのサポートも効きます。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/objectinitializer_intellisense.jpg">
+</p>
+<p>未代入のもののみリストアップしてくれる(Ctrl+Space押しだと全部出てきたりする、バグですかね、困った困った)。そういえばで、これは、不変である匿名型の記法とも似ています。余分なのは.Build()だけで、書く手間的にはそんな変わらない。</p>
+<p>前説が長ったらしくなりました。本題は「匿名型のような楽な記法で不変型を生成したい」が目標です。C#の現在の記法では、それは無い。欲しいなあ。名前付き引数使えば似たような雰囲気になると言えばなるんですが、アレ使うと「省略可」な雰囲気が出てダメ。ビルダーで作りたいのは、原則「省略不可」なので。</p>
+<p>なければ作ればいいじゃない、オブジェクト初期化子を使って.Buildで生成させるビルダーを作れば似たような感じになる。あとは、手動でそれ定義するの非常に面倒なので、そう、T4で自動生成しちゃえばいいぢゃない。</p>
+<p>以下コード。例によってパブリックドメインで。別にブログにベタ貼りなコードは自明でいいんじゃないかって気もするんですが、宣言は一応しておいたほうがいいのかなー、と。</p>
+<pre><code class="language-csharp">&lt;#@ assembly Name=&quot;System.Core.dll&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Linq&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Collections.Generic&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Text.RegularExpressions&quot; #&gt;
+&lt;#@ output extension=&quot;Generated.cs&quot; #&gt;
+&lt;#
+    // 設定：クラス名はそのまま文字列で入力
+    // クラスの持つ変数は、コンストラクタに書くみたいにdeffinesに
+    // &quot;string hoge&quot;,&quot;int huga&quot; といった形で並べてください
+    // usingとnamespaceは、直下の出力部を直に弄ってください
+    // partial classなので、これをベースにメソッドを足す場合は別ファイルにpartialで定義することを推奨します
+    // Code Contractsに関わる部分は(ContractVerification属性とContract.EndContractBlock())は、
+    // 対象がWindows Phone 7などContractが入っていない環境下では削除してください（通常の.NET 4環境では放置で大丈夫）
+
+    var className = &quot;Person&quot;;
+    var deffines = new DeffineList {
+        &quot;string name&quot;,
+        &quot;DateTime birth&quot;,
+        &quot;string address&quot;
+    };
+#&gt;
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Diagnostics.Contracts;
+
+namespace Neue.Test
+{
+    [DebuggerDisplay(@&quot;&lt;#= deffines.DebuggerDisplay #&gt;&quot;, Type = &quot;&lt;#= className #&gt;&quot;)]
+    public partial class &lt;#= className #&gt; : IEquatable&lt;&lt;#= className #&gt;&gt;
+    {
+&lt;# foreach(var x in deffines) {#&gt;
+        [DebuggerBrowsable(DebuggerBrowsableState.Never)]
+        private readonly &lt;#= x.TypeName #&gt; &lt;#= x.FieldName #&gt;;
+        public &lt;#= x.TypeName #&gt; &lt;#= x.PropName #&gt; { get { return &lt;#= x.FieldName #&gt;; } }
+&lt;# } #&gt;
+
+        private &lt;#= className #&gt;(&lt;#= deffines.Constructor #&gt;)
+        {
+&lt;# foreach(var x in deffines) {#&gt;
+            this.&lt;#= x.FieldName #&gt; = &lt;#= x.FieldName #&gt;;
+&lt;# } #&gt;
+        }
+        
+        [ContractVerification(false)]
+        public static implicit operator Person(Builder builder)
+        {
+            return builder.Build();
+        }
+
+        public bool Equals(&lt;#= className #&gt; other)
+        {
+            if (other == null || GetType() != other.GetType()) return false;
+            if (ReferenceEquals(this, other)) return true;
+            return EqualityComparer&lt;&lt;#= deffines.First().TypeName #&gt;&gt;.Default.Equals(&lt;#= deffines.First().FieldName #&gt;, other.&lt;#= deffines.First().FieldName #&gt;)
+&lt;# foreach(var x in deffines.Skip(1)) {#&gt;
+                &amp;&amp; EqualityComparer&lt;&lt;#= x.TypeName #&gt;&gt;.Default.Equals(&lt;#= x.FieldName #&gt;, other.&lt;#= x.FieldName #&gt;)
+&lt;# } #&gt;
+                ;
+        }
+
+        public override bool Equals(object obj)
+        {
+            var other = obj as &lt;#= className #&gt;;
+            return (other != null) ? Equals(other) : false;
+        }
+
+        public override int GetHashCode()
+        {
+            var hash = 0xf937b6f;
+&lt;# foreach(var x in deffines) {#&gt;
+            hash = (-1521134295 * hash) + EqualityComparer&lt;&lt;#= x.TypeName #&gt;&gt;.Default.GetHashCode(&lt;#= x.FieldName #&gt;);
+&lt;# } #&gt;
+            return hash;
+        }
+
+        public override string ToString()
+        {
+            return &quot;{ &quot; + &quot;&lt;#= deffines.First().PropName #&gt; = &quot; + &lt;#= deffines.First().FieldName #&gt; +
+&lt;# foreach(var x in deffines.Skip(1)) {#&gt;
+                &quot;, &lt;#= x.PropName #&gt; = &quot; + &lt;#= x.FieldName #&gt; +
+&lt;# } #&gt;
+                &quot; }&quot;;
+        }
+
+        public class Builder
+        {
+&lt;# foreach(var x in deffines) {#&gt;
+            public &lt;#= x.TypeName #&gt; &lt;#= x.PropName #&gt; { private get; set; }
+&lt;# } #&gt;
+
+            public &lt;#= className #&gt; Build()
+            {
+&lt;# foreach(var x in deffines) {#&gt;
+                if ((object)&lt;#= x.PropName #&gt; == null) throw new ArgumentNullException(&quot;&lt;#= x.PropName #&gt;&quot;);
+&lt;# } #&gt;
+                Contract.EndContractBlock();
+                return new &lt;#= className #&gt;(&lt;#= string.Join(&quot;, &quot;, deffines.Select(d =&gt; d.PropName)) #&gt;);
+            }
+        }
+    }
+}
+&lt;#+
+    class Deffine
+    {
+        public string TypeName, FieldName, PropName;
+
+        public Deffine(string constructorParam)
+        {
+            var split = constructorParam.Split(' ');
+            this.TypeName = split.First();
+            this.FieldName = Regex.Replace(split.Last(),  &quot;^(.)&quot;, m =&gt; m.Groups[1].Value.ToLower());
+            this.PropName = Regex.Replace(FieldName, &quot;^(.)&quot;, m =&gt; m.Groups[1].Value.ToUpper());
+        }
+    }
+
+    class DeffineList : IEnumerable&lt;Deffine&gt;
+    {
+        private List&lt;Deffine&gt; list = new List&lt;Deffine&gt;();
+
+        public void Add(string constructorParam)
+        {
+            list.Add(new Deffine(constructorParam));
+        }        
+        
+        public string DebuggerDisplay
+        {
+            get
+            {
+                return &quot;\\{ &quot; + string.Join(&quot;, &quot;, list.Select(d =&gt;
+                    string.Format(&quot;{0} = {{{1}}}&quot;, d.PropName, d.FieldName))) + &quot; }&quot;;
+            }
+        }
+
+        public string Constructor
+        {
+            get { return string.Join(&quot;, &quot;, list.Select(d =&gt; d.TypeName + &quot; &quot; + d.FieldName)); }
+        }
+
+        public IEnumerator&lt;Deffine&gt; GetEnumerator()
+        {
+            return list.GetEnumerator();
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+        {
+            return GetEnumerator();
+        }
+    }
+#&gt;
+</code></pre>
+<p>以下のようなのが出力されます（長いねー）</p>
+<pre><code class="language-csharp">using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Diagnostics.Contracts;
+
+namespace Neue.Test
+{
+    [DebuggerDisplay(@&quot;\{ Name = {name}, Birth = {birth}, Address = {address} }&quot;, Type = &quot;Person&quot;)]
+    public partial class Person : IEquatable&lt;Person&gt;
+    {
+        [DebuggerBrowsable(DebuggerBrowsableState.Never)]
+        private readonly string name;
+        public string Name { get { return name; } }
+        [DebuggerBrowsable(DebuggerBrowsableState.Never)]
+        private readonly DateTime birth;
+        public DateTime Birth { get { return birth; } }
+        [DebuggerBrowsable(DebuggerBrowsableState.Never)]
+        private readonly string address;
+        public string Address { get { return address; } }
+
+        private Person(string name, DateTime birth, string address)
+        {
+            this.name = name;
+            this.birth = birth;
+            this.address = address;
+        }
+        
+        [ContractVerification(false)]
+        public static implicit operator Person(Builder builder)
+        {
+            return builder.Build();
+        }
+
+        public bool Equals(Person other)
+        {
+            if (other == null || GetType() != other.GetType()) return false;
+            if (ReferenceEquals(this, other)) return true;
+            return EqualityComparer&lt;string&gt;.Default.Equals(name, other.name)
+                &amp;&amp; EqualityComparer&lt;DateTime&gt;.Default.Equals(birth, other.birth)
+                &amp;&amp; EqualityComparer&lt;string&gt;.Default.Equals(address, other.address)
+                ;
+        }
+
+        public override bool Equals(object obj)
+        {
+            var other = obj as Person;
+            return (other != null) ? Equals(other) : false;
+        }
+
+        public override int GetHashCode()
+        {
+            var hash = 0xf937b6f;
+            hash = (-1521134295 * hash) + EqualityComparer&lt;string&gt;.Default.GetHashCode(name);
+            hash = (-1521134295 * hash) + EqualityComparer&lt;DateTime&gt;.Default.GetHashCode(birth);
+            hash = (-1521134295 * hash) + EqualityComparer&lt;string&gt;.Default.GetHashCode(address);
+            return hash;
+        }
+
+        public override string ToString()
+        {
+            return &quot;{ &quot; + &quot;Name = &quot; + name +
+                &quot;, Birth = &quot; + birth +
+                &quot;, Address = &quot; + address +
+                &quot; }&quot;;
+        }
+
+        public class Builder
+        {
+            public string Name { private get; set; }
+            public DateTime Birth { private get; set; }
+            public string Address { private get; set; }
+
+            public Person Build()
+            {
+                if ((object)Name == null) throw new ArgumentNullException(&quot;Name&quot;);
+                if ((object)Birth == null) throw new ArgumentNullException(&quot;Birth&quot;);
+                if ((object)Address == null) throw new ArgumentNullException(&quot;Address&quot;);
+                Contract.EndContractBlock();
+                return new Person(Name, Birth, Address);
+            }
+        }
+    }
+}
+</code></pre>
+<p>これで、どれだけ引数の多いクラスであろうとも、簡単な記述でイミュータブルオブジェクトを生成させることが出来ます。しかも、普通にクラス作るよりも楽なぐらいです、.ttをコピペって、先頭の方に、コンストラクタに並べる型を書くだけ。後は全部自動生成任せ。もし積極的に使うなら、Generated.csのほうを消して.ttのみにした状態で、ファイル→テンプレートのエクスポートで項目のエクスポートをすると使い回しやすくて素敵と思われます、項目名はImmutableObjectとかで。</p>
+<pre><code class="language-csharp">// 書くときはこんな風にやります
+var person1 = new Person.Builder
+{
+    Name = &quot;hoge&quot;,
+    Birth = new DateTime(1999, 12, 12),
+    Address = &quot;Tokyo&quot;
+}.Build();
+
+// 暗黙的な型変換も実装されているので、.Buildメソッドの省略も可
+Person person2 = new Person.Builder
+{
+    Name = &quot;hoge&quot;,
+    Birth = new DateTime(1999, 12, 12),
+    Address = &quot;Tokyo&quot;
+};
+
+// 参照ではなく、全てのフィールドの値の同値性で比較される
+Console.WriteLine(person1.Equals(person2)); // true
+</code></pre>
+<p>匿名型の再現なので、EqualsやGetHashCodeもオーバーライドされて、フィールドの値で比較を行うようになっています。この辺はもう手動だと書いてられないですよね。ReSharperなどを入れて生成をお任せする、という手はありますが。</p>
+<p>==はオーバーライドされていません。これもまた匿名型の再現なので……。Tupleもされてないですしね。これは、フィールドをreadonlyで統一しようと「変更可能」な可能性が含まれるので==は不適切、というガイドライン的なもの(と解釈しました)に従った結果です。変更可能云々は、下の方で解説します。</p>
+<h2>Code Contracts</h2>
+<p>更に、<a href="http://msdn.microsoft.com/en-us/devlabs/dd491992.aspx" title="Code Contracts">Code Contracts</a>を入れれば、値の未代入に対するコンパイラからの静的チェックまで得られます！下記画像のは、Addressが未入力で、通常は実行時に例外が飛ぶことで検出するしかないですが、Code Contractsが静的チェックで実行前にnullだと警告してくれています。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/codecontracts_build.jpg">
+</p>
+<p>ビルダーの欠点は未代入の検出が実行時まで出来なかったりすること。インターフェイスで細工することで、順番を規定したり、必ず代入しなければならないものを定義し終えるまでは.BuildメソッドがIntelliSenseに出てこないようにする。などが出来ますが、手間がかかりすぎて理想論に留まっている気がします。</p>
+<p>簡単であることってのはとても大事で、過剰な手間暇や複雑な設計だったりってのは、必ず無理が生じます。手間がかかること、複雑であることは、それ自体が良くない性質の一つであり、メリットがよほど上回らない限りは机上の空論にすぎない。</p>
+<p>今回、Code Contractsのパワーにより、シンプルなオブジェクト初期化子を使ったビルダーでも未代入の静的チェックをかませる、という素敵機構が実現しました。残念ながらCode Contractsは要求環境が厳しいです。アドインを入れてない/入れられない(Express)場合はどうなるのか、というと、.NET 4にクラス群は入っているので、コンパイル通らないということはありません。普通にArgumentNullExceptionがthrowされるという形になります。</p>
+<p>私が考えるに、.NET 4でクラスが入ったのって、Code Contractsのインストールの有無に関係なくコードが共有出来るように、という配慮でしかない予感。ExpressでContractクラスを使う意味は、あまりなさそうですね。Windows Phone 7環境など、Contractクラスそのものがないような場合では、T4のBuilderクラスBuildメソッドのContract.EndContractBlock();の一行とimplict operatorのContractVerification属性を削除してください。自分で好きに簡単に書き換えられるのもT4の良さです。</p>
+<p>今回はnullチェックしかしていないので、つまり値型の未代入には無効です。何とかして入れたいとは思ったんですが、例えば対策として値型をNullableにするにせよType情報が必要で、そのためにはAssembly参照が必要で、と設定への手間が増えてしまうので今回は止めました(このT4はただ文字列を展開しているだけで、完全にリフレクション未使用)</p>
+<p>Code Contractsに関しては、事前条件のnullチェックにしか使っていなくて真価の1%も発揮されていないので、詳しくは<a href="http://d.hatena.ne.jp/zecl/20100131/p1">とある契約の備忘目録。契約による設計(Design by Contract)で信頼性の高いソフトウェアを構築しよう。 - Bug Catharsis</a>などなどを。不変オブジェクトに関してもそうだけれど、zeclさんの記事は素晴らしいです。</p>
+<p>Code Contracts自体は、メソッド本体の上の方で、コントラクトの記述が膨れ上がるのは好きでないかも。従来型の、if-then-throwでの引数チェックも、5行を超えるぐらいになるとウンザリしますね。ご丁寧に{で改行して、if-then-throwの一個のチェックに4行も使って、それが5個ぐらい連なって20行も使いやがったりするコードを見ると発狂します。そういう場合に限ってメソッド本体は一行で他のメソッド呼んでるだけで、更にその、他のメソッドの行頭にも大量の引数チェックがあったりすると、死ねと言いたくなる。コードは視覚的に、横領域の節約も少しは大事だけど、縦も大事なんだよ、分かってよね……。メソッド本体が1000行とか書く人じゃなく、100行超えたら罰金(ｷﾘｯ とか言ってる人だけど、それならガード句が10行超えたら罰金だよこっちとしては。</p>
+<p>話が脱線した。つまるところ、コントラクトはライブラリレベルで頑張るよりも、言語側でのサポートが必要な概念ですね、ということで。実際rewriterとか、ライブラリレベル超えて無茶しやがって、の領域に踏み込んでいますし＜Code Contracts。</p>
+<h2>プラスアルファ</h2>
+<p>partial classで生成されるので(デフォルトではクラス名.Generated.cs)、別ファイルにクラスを作ることで、フィールドの増減などでT4を後で修正しても、影響を受けることなくメソッドを追加することができます。</p>
+<pre><code class="language-csharp">// Person.csという形で別ファイルで追加
+using System;
+
+namespace Neue.Test
+{
+    public partial class Person
+    {
+        public int GetAge(DateTime target)
+        {
+            return (target.Year - birth.Year);
+        }
+    }
+}
+</code></pre>
+<p>それと、nullチェックだけじゃなくきっちりBuildに前提条件入れたい(もしくはnullを許容したい)場合は、T4のBuildメソッドの部分に直に条件を書いてしまうか、それも何だか不自然に感じる場合は生成後のファイルをT4と切り離してしまうのも良いかもですね。自由なので好きにどうぞですます。</p>
+<h2>で、本当に不変なの？</h2>
+<p>何をもってどこまでを不変というのかはむつかしいところですが、Equalsが、GetHashCodeが変化するなら、可変かしら？ 単純に全ての含まれる型のゲッターが常に同一の値を返さなければ不変ではない、でも良いですが。冒頭でも言いましたが、そう見るとreadonlyだけでは不変を厳密には保証しきれていません。匿名型で例を出すと</p>
+<pre><code class="language-csharp">class MyClass
+{
+   public int i;
+
+   public override int GetHashCode()
+   {
+       return i;
+   }
+}
+
+static void Main(string[] args)
+{
+   var anon = new { MC = new MyClass { i = 100 } };
+   var hashCode1 = anon.GetHashCode();
+
+   anon.MC.i = 1000; // 変更
+   var hashCode2 = anon.GetHashCode();
+
+   Console.WriteLine(hashCode1 == hashCode2); // false
+   Console.WriteLine(hashCode1);
+   Console.WriteLine(hashCode2);
+}
+</code></pre>
+<p>参照しているMyClassのインスタンスの中身が変化可能で、それが変化してしまえば、違う値になってしまいます。厳密に不変であるためには、中のクラス全てが不変でなければなりません。これは今の言語仕様的には制限かけるのは無理かなー、といったところ。T4なのでリフレクションで全部バラして、参照している型が本当の意味で不変なのかどうか検証して、可変の型を含む場合はジェネレートしない、という形でチェックかけるのは原理的には可能かもしれません、が、やはり色々無理があるかなあ。</p>
+<h2>まとめ</h2>
+<p>プログラミングの楽しさの源は、書きやすく見た目が美しいことです。私はLinq to Objects/Linq to Xmlでプログラミングを学んだようなものなので、Linqの成し遂げたこと(究極のIntelliSenseフレンドリーなモデル・使いづらいDOMの大破壊)というのが、設計の理想と思っているところが相当あります。C#は言語そのものが素晴らしいお手本。匿名型素晴らしいよ(一年ぐらい前は匿名型も可変ならいいのに、とか口走っていた時期があった気がしますが忘れた、いやまあ、可変だと楽なシチュエーションってのもそれなりにいっぱいあるんですよね)。</p>
+<p>T4の標準搭載はC#にとって非常に大きい。T4標準搭載によって、出来る事の幅がもう一段階広がった気がします。partial class素晴らしい。自動生成って素敵。T4はただのテキストテンプレートじゃなくて「VSと密接に結びついていて」「なおかつ標準搭載」「もはやC#の一部といってもいい」ことが、全く違った価値をもたらしていると思います。自動生成前提のパターンを作っても/使ってもいいんだよ、と。言語的に足らない部分の迂回策が、また一つ加わった。</p>
+<p>見た目上若干Uglyになっても自動生成でなんとかする、というのはJava + Eclipseもそうですが、それと違うのはpartialでUglyな部分を隔離出来る(隔離によって自動生成の修正が容易になることも見逃せない)ことと、自動生成部分をユーザーが簡単に書けること、ですね。Eclipseの自動生成のプラグインを書くのは敷居が高すぎですが、T4を書く、書くまではしなくても修正する、というのは相当容易でしょう。</p>
+<p>最近本当にT4好きですねー。色々と弄ってしまいます。こーどじぇねれーと素晴らしい。あとは、T4自体のUglyさが少し軽減されればな、といったところでしょうか。テンプレートエンジンとしてRazorに切り替えられたりを望みたいなあ。</p>
+</div>
+<h1><a href="https://neue.cc/2010/08/19_272.html">Reactive ExtensionsのFromEventをT4 Templateで自動生成する</a></h1>
 <ul class="date"><li>2010-08-19</li></ul>
 <div class="entry_body"><p><a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Rx</a>で面倒くさいのが、毎回書かなければならないFromEvent。F#ならイベントがファーストクラスで、そのままストリーム処理に流せるという素敵仕様なのですが、残念ながらC#のeventはかなり雁字搦めな感があります。しかし、そこは豊富な周辺環境で何とか出来てしまうのがC#というものです。F#では form.MouseMove |&gt; Event.filter と書けますが、 form.MouseMoveAsObservable().Where と書けるならば、似たようなものですよね？</p>
 <p>というわけで、T4です。FromEventを自動生成しましょう！と、いうネタは散々既出で海外のサイトにも幾つかあるし、日本にもid:kettlerさんが<a href="http://d.hatena.ne.jp/kettler/20100424">FromEventが面倒なので自動生成させてみた2</a>として既に書かれているのですが、私も書いてみました。書くにあたってid:kettlerさんのコードを大変参考にさせていただきました、ありがとうございます。</p>
@@ -2194,170 +2551,6 @@ foreach (var status in statuses)
 <p>というわけですが、今回の修正で無事、出来るようになりました。配列変換は気にくわないけどしょうがない。IEnumerableを実装しているけれどDynamic Viewが使えるやり方募集中です。方法あったら誰か教えてくださいお願いします。</p>
 <p>あと、キャストついでに、読み取り専用プロパティに対しても値をセットしようとして例外出るのを修正しました。これは、まあ、バグですね。仕様とか言ったら怒る。ていうかすみません。</p>
 </div>
-<h1><a href="https://neue.cc/2010/05/18_258.html">linq.js ver 2.1.0.0 - ToDictionary, Share, Let, MemoizeAll</a></h1>
-<ul class="date"><li>2010-05-18</li></ul>
-<div class="entry_body"><p><a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">CodePlex - linq.js - LINQ for JavaScript</a></p>
-<p>linq.jsを2.0から2.1に更新しました。今回はただのメソッド追加というだけじゃなく、1.*の時から続いてる微妙コードを完全抹殺の一掃で書き換えた結果、内部的にはかなり大きな変更が入りました。その影響で挙動が変わってるところも割とあります。</p>
-<p>まず、OrderByのロジックを変更しました。これで動作はC#完全準拠です（多分）。前のはかなりアレだったのでずっと書きなおしたいと思ってたのですが、やっと果たせました。従来と比べるとThenByを複数個繋げた時の挙動が変わってくる(今まではOrderByのみ安定ソートで、ThenBy以降は非安定ソートだったのが、今回からは幾つ繋げても安定ソートになります)ので、複雑なソートをやろうとしていた場合は違う結果が出る可能性はなきにしもあらず、ですが、基本的には変化なしと見て良いと思います。</p>
-<p>ちなみにJavaScriptのArray.sortは破壊的だし、安定である保証もないので、linq.jsのOrderBy使うのは素敵な選択だと思いますよ！非破壊的で安定で並び替え項目を簡単に複数連結出来る(ThenBy)という、実に強力な機能を提供しています。代償は、ちょっと処理効率は重いかもですね、例によってそういうのは気にしたら負けだと思っている。</p>
-<p>他に関係あるところで大きな変更はToLookup。戻り値を、今まではJSのオブジェクトだったのですが、今回からはlinq.jsの独自クラスのLookupになります。すみませんが、破壊的変更です、前と互換性ありません。変えた理由はJSのオブジェクトを使うとキーが文字列以外使えないため。そのことはわかっていて、でもまあいっかー、と思っていたのですがGroupByとか内部でToLookupを使ってるメソッドの挙動が怪しいことになってる(という報告を貰って気づいた)ので、ちゃんとした文字列以外でもキーに使えるLookupを作らないとダメだなー、と。</p>
-<h2>GroupByでのcompareSelector</h2>
-<p>そんなわけで、GroupByのキーが全部文字列に変換されてしまう、というアレゲなバグが修正されました。あと、オーバーロードを足して、compareKey指定も出来るようにしました。何のこっちゃ？というと、例えばDateもオブジェクトも参照の比較です。</p>
-<pre><code class="language-javascript">alert(new Date(2000, 1, 1) == new Date(2000, 1, 1)); // false
-alert({ a: 0} == { a: 0 }); // false
-</code></pre>
-<p>JavaScriptではどちらもfalse。別のオブジェクトだから。C#だとどちらもtrue、匿名型もDateTimeも、値が比較されます。そんなわけでJavaScriptで値で比較したい場合はJSONにでもシリアライズして文字列にして比較すればいいんじゃね？とか適当なことを言ってみたりはしますが、実際Linqだと参照比較のみだと困るシーン多いんですねえ。そんなわけで、GroupBy/ToLookup、その他多数のメソッドに比較キー選択関数を追加しました。例を一つ。</p>
-<pre><code class="language-javascript">var objects = [
-    { Date: new Date(2000, 1, 1), Id: 1 },
-    { Date: new Date(2010, 5, 5), Id: 2 },
-    { Date: new Date(2000, 1, 1), Id: 3 }
-]
-
-// [0] date:Feb 1 2000 ids:&quot;1&quot; 
-// [1] date:Jun 5 2010 ids:&quot;2&quot;
-// [2] date:Feb 1 2000 ids:&quot;3&quot; 
-var test = Enumerable.From(objects)
-    .GroupBy(&quot;$.Date&quot;, &quot;$.Id&quot;,
-        function (key, group) { return { date: key, ids: group.ToString(',')} })
-    .ToArray();
-</code></pre>
-<p>キーにDateを指定し、日付でグルーピングしたいと思いました(この程度の指定で関数書くのは面倒くさいし視認性もアレなので、文字列指定は非常に便利です)。しかし、それだけだと、参照比較なので同じ日付でも別物として扱われてしまうのでグルーピングされません。$.Date.toString()として文字列化すれば同一日時でまとめられるけれど、Keyが文字列になってしまう。後で取り出す際にKeyはDateのまま保っていて欲しい、といった場合にどうすればいいか、というと、ここで今回新設した第四引数のcompareSelectorの出番です。</p>
-<pre><code class="language-javascript">// [0] date:Feb 1 2000 ids:&quot;1,3&quot;
-// [1] date:Jun 5 2010 ids:&quot;2&quot;
-var test2 = Enumerable.From(objects)
-    .GroupBy(&quot;$.Date&quot;, &quot;$.Id&quot;,
-        function (key, group) { return { date: key, ids: group.ToString(',')} },
-        function (key) { return key.toString() })
-    .ToArray();
-</code></pre>
-<p>比較はキー(この場合$.Date)をtoStringで値化したもので行う、と指定することで、思い通りにグループ化されました。なお、C#でもこういうシーン、割とありますよね。C#の場合はIEqualityComparerを指定するのですが、わざわざ外部にクラス作るのは大変どうかと思う。といった時は<a href="http://linqcomparer.codeplex.com/">AnonymousComparer</a>を使えばlinq.jsと同じようにラムダ式でちゃちゃっと同値比較出来ます。</p>
-<p>なお、今回からGroupByの第三引数(resultSelector)が未指定の場合はGroupingクラスが列挙されるように変更されました。GroupingはEnumerableを継承しているので全てのLinqメソッドが使えます。その他に、.Key()でキーが取り出しできるというクラスです。</p>
-<h2>Lookup</h2>
-<p>LookupはGroupByの親戚です。むしろGroupByは実はToLookupしたあと即座に列挙してるだけなのだよ、ナンダッテー。で、何かというとMultiDictionaryとかMultiMapとか言われてるような、一つのキーに複数個の要素が入った辞書です。そして、immutableです。不変です。変更出来ません。</p>
-<pre><code class="language-javascript">var list = [
-    { Name: &quot;temp&quot;, Ext: &quot;xls&quot; },
-    { Name: &quot;temp2&quot;, Ext: &quot;xLS&quot; },
-    { Name: &quot;temp&quot;, Ext: &quot;pdf&quot; },
-    { Name: &quot;temp&quot;, Ext: &quot;jpg&quot; },
-    { Name: &quot;temp2&quot;, Ext: &quot;PdF&quot; }
-];
-
-var lookup = Enumerable.From(list).ToLookup(&quot;$.Ext&quot;, &quot;$.Name&quot;, &quot;$.toLowerCase()&quot;);
-
-var xls = lookup.Get(&quot;XlS&quot;); // toLowerCaseが適用されるため大文字小文字無視で取得可
-var concat = xls.ToString(&quot;-&quot;); // temp-temp2 &lt;- lookupのGetの戻り値はEnumerable
-var zero = lookup.Get(&quot;ZZZ&quot;).Count(); // 0 &lt;- Getで無いKeyを指定するとEnumerable.Emptyが返る
-
-// ToEnumerableでEnumerableに変換、その場合はGroupingクラスが渡る
-// Groupingは普通のLinqと同じメソッド群＋.Key()でキー取得
-lookup.ToEnumerable().ForEach(function (g)
-{
-    // xls:temp-temp2, pdf:temp-temp2, jpg:temp
-    alert(g.Key() + &quot;:&quot; + g.ToString(&quot;-&quot;));
-});
-</code></pre>
-<p>ToLookup時に第三引数を指定すると、戻り値であるLookupにもその比較関数が有効になり続けます。今回はtoLowerCaseを指定したので、大文字小文字無視でグルーピングされたし、Getによる取得も大文字小文字無視になりました。なお、GroupByでもそうですが、キーは文字列以外でも何でもOKです(compareSelectorを利用する場合はその結果が数字か文字列か日付、そうでない場合はそれそのものが数字か文字列か日付を使う方が速度的に無難です、後で詳しく述べますが)。</p>
-<h2>Dictionary</h2>
-<p>Lookupは内部でDictionaryを使うためDictionaryも作成、で、せっかく作ったのだから公開しますか、といった感じにToDictionaryが追加されました。ToObjectと違い、文字列以外をキーに指定出来るのが特徴です。</p>
-<pre><code class="language-javascript">// 従来は
-var cls = function (a, b)
-{
-    this.a = a;
-    this.b = b;
-}
-var instanceA = new cls(&quot;a&quot;, 100);
-var instanceB = new cls(&quot;b&quot;, 2000);
-
-// オブジェクトを辞書がわりに使うのは文字列しか入れられなかった
-var hash = {};
-hash[instanceA] = &quot;zzz&quot;;
-hash[instanceB] = &quot;huga&quot;;
-alert(hash[instanceA]); // &quot;huga&quot; ([Object object]がキーになって上書きされる)
-
-// linq.jsのDictionaryを使う場合……
-// new Dictionaryはできないので、新規空辞書作成はこれで代用(という裏技)
-// 第三引数を指定するとハッシュ値算出＋同値比較にその関数を使う
-// 第三引数が不要の場合はToDictionary()でおk
-var dict = Enumerable.Empty().ToDictionary(&quot;&quot;, &quot;&quot;,
-    function (x) { return x.a + x.b });
-
-dict.Add(instanceA, &quot;zzz&quot;);
-dict.Add(instanceB, &quot;huga&quot;);
-alert(dict.Get(instanceA)); // zzz
-alert(dict.Get(instanceB)); // huga
-
-// ...といったように、オブジェクト(文字列含め、boolでも何でも)をキーに出来る。
-// ToEnumerableで列挙も可能、From(obj)と同じく.Key .Valueで取り出し
-dict.ToEnumerable().ForEach(function (kvp)
-{
-    alert(kvp.Key.a + &quot;:&quot; + kvp.Value);
-});
-</code></pre>
-<p>空のDictionaryを作りたい場合は、空のEnumerableをToDictionaryして生成します。微妙に裏技的でアレですが、まあ、こういう風に空から使うのはオマケみたいなものなので。というかToDictionaryメソッド自体がオマケです。DictionaryはLookupに必要だから作っただけで、当初は外部には出さないつもりでした。</p>
-<p>第三引数を指定しないとオブジェクトを格納する場合は線形探索になるので、格納量が多くなると重くなります(toStringした結果をハッシュ値に使うので、Dateの場合は値でバラつくので大丈夫です、普通のオブジェクトの場合のみ)。第三引数を指定するとハッシュ値の算出にそれを使うため、格納量が増えても比較的軽量になります(ハッシュ衝突時はベタにチェイン法で探索してます)。なお、第三引数はハッシュ関数、ではあるのですが、それだけじゃなくて同値比較にも利用します。GetHashCodeとEqualsが混ざったようなものなので、ようするに<a href="http://linqcomparer.codeplex.com/">AnonymousComparer</a>のデフォルト実装と同じです。</p>
-<p>勿論、ハッシュ関数と同値比較関数は別々の方が柔軟性が高いんですが(特にJavaScriptはハッシュ関数がないから重要性は高いよね！)、別々に設定って面倒くさいしぃー、結局一緒にするシーンのほうが割と多くない？と思っているためこのようなことになっています。というだけじゃなくて、もしequalsとgetHashCodeを共に渡すようにするなら{getHashCode:function(), equals:function()} といった感じのオブジェクト渡しにすると思うんですが、私はIntelliSenseの効かない、こういうオブジェクト渡しが好きではないので……。</p>
-<p>メソッドはIDictionaryを模しているためAdd, Remove, Contains, Clear、それにインデクサが使えないのでGet, Set、EnumerableではないかわりにToEnumerableでKeyValuePairの列挙に変換。Addは重複した場合は例外ではなく上書き、Getは存在しない要素を取得しようとした場合は例外ではなくundefinedを返します。この辺はC#流ではなく、JavaScript風に、ということで。</p>
-<p>GroupingはEnumerableを継承しているのに、DictionaryとLookupは継承していないのでToEnumerableで変換が必要です。C#準拠にするなら、Groupingと同じく継承すべきなのですが、あえて対応を分けた理由は、Groupingはそのまま列挙するのが主用途ですが、LookupやDictionaryはそのまま使うのがほとんどなので、IntelliSenseに優しくしたいと思ったのからです。90近いメソッドが並ぶと、本来使いたいGetとかが見えなくなってしまうので。</p>
-<p>なお、Dictionaryの列挙順は、キーが挿入された順番になります。不定ではありません。JavaのLinkedHashMapみたいな感じです(C#だとOrderedDictionary、Genericsじゃないけど)。順序保持の理由は、DictionaryはLookupで使う-&gt;LookupはGroupByで使う-&gt;GroupByの取り出し順は最初にキーが見つかった順番でなければならない(MSDNにそう記載がある)。といった理由からです。ちなみにですが、GroupByが順番通りに来るってのは経験則では知ってたのですがMSDNに記載があったのは見落としていて、むしろ不定だと考えるべきじゃないか、とかTwitterでデマ吹いてたんですが即座にツッコミを頂いて大変助かりました、毎回ありがとうございます。</p>
-<h2>Share, Let, MemoizeAll</h2>
-<p>そして3つの新メソッド。これらは<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx">Reactive Extensions</a>に含まれるSystem.Interactive.dllのEnumerableに対する拡張メソッドから移植しています。</p>
-<pre><code class="language-javascript">// Shareはenumeratorを共有する
-// 一つの列挙終了後に再度呼び出すと、以前中断されたところから列挙される
-var share = Enumerable.Range(1, 10).Share();
-var array = share.Take(4).ToArray(); // [1,2,3,4]
-var arrayRest = share.ToArray(); // [5,6,7,8,9,10]
-
-// 例えば、これだと二度列挙してしまうことになる！
-// 1,1,2,3とアラートが出る
-var range = Enumerable.Range(1, 3).Do(&quot;alert($)&quot;)
-var car = range.First(); // 1
-var cdr = range.Skip(1).ToArray(); // [2,3]
-
-// Shareを使えば無駄がなくなる(アラートは1,2,3)
-var share = range.Share();
-var car = share.First(); // 1
-var cdr = share.ToArray(); // [2,3]
-</code></pre>
-<p>Shareは、列挙の「再開」が出来ると捉えると良いかもしれません。ちなみに、再開が出来るというのは列挙完了までDispose(終了処理)しないということに等しいのには、少しだけ注意が必要かもしれません。</p>
-<pre><code class="language-javascript">// Letの関数の引数は自分自身
-// [1,2], [2,3], [3,4], [4,5]
-Enumerable.Range(1, 5).Let(function (e)
-{
-    return e.Zip(e.Skip(1), &quot;x,y=&gt;[x,y]&quot;);
-});
-
-// 上のLetはこれと等しい
-var range = Enumerable.Range(1, 3);
-range.Zip(range.Skip(1), &quot;x,y=&gt;[x,y]&quot;);
-
-// 余談：Pairwiseは↑と同じ結果です、一つ先の自分との結合
-Enumerable.Range(1, 5).Pairwise(&quot;x,y=&gt;[x,y]&quot;);
-</code></pre>
-<p>Letは、Enumerableを受け取ってEnumerableを返す関数を渡します。何のこっちゃですが、外部変数に置かなくても、メソッドチェーンを切らさずに自分自身が使えるということになります。使い道は主に自分自身との結合を取りたい場合、とか。なお、何も対処せずそのまま結合すると二度列挙が回ることには注意が必要かもしれません。</p>
-<pre><code class="language-javascript">// MemoizeAllは、そこを一度通過したものはキャッシュされる
-var memo = Enumerable.Range(1, 3)
-    .Do(&quot;alert($)&quot;)
-    .MemoizeAll();
-
-memo.ToArray(); // 一度目の列挙なのでDoでalertが出る
-memo.ToArray(); // 二度目の列挙はキャッシュからなのでDoを通過しない
-
-// Letと組み合わせて、自己結合の列挙を一度のみにする
-Enumerable.Range(1, 5)
-    .MemoizeAll()
-    .Let(function (e) { return e.Zip(e.Skip(1), &quot;x,y=&gt;[x,y]&quot;) });
-</code></pre>
-<p>MemoizeAllはメモ化です。二度三度列挙するものは、一度.ToArray()とかして配列に置いたりすることが少なくなかったのですが、MemoizeAllはその辺を遅延評価のままやってくれます。使いかっては良さそう。ただし、これもShareと同じく列挙完了まで例外が起ころうが何だろうがDispose(終了処理)しないのは注意が必要かもしれません。素のJavaScriptではリソース管理は滅多にないので関係ないですが、例えばメモ化が威力を発揮しそうな(linq.jsではWSHで、C#だったら普通にやりますよね)ファイル読み込みに使おうとすると、ちょっと怖い。ていうか私はそういう場合は素直にToArrayします。</p>
-<p>この3つは「注意が必要かもしれません」ばかりですね！ただ、MemoizeAll-&gt;Let-&gt;Zipで自分自身と結合するのは便利度鉄板かと思われます。便利すぎる。</p>
-<h2>まとめ</h2>
-<p>Dictionaryの導入は地味に影響範囲が大きいです。集合演算系メソッドもみんなDictionary利用に変えたので。なんでかというと、ええと、そう、今まではバグっておりました……。trueと&quot;true&quot;区別しないとか。Enumerable.From([&quot;true&quot;,true]).Distinct()の結果が[&quot;true&quot;]になってました。ほんとすみません。今回から、そういう怪しい挙動は潰れたと思います。いや、Dictionaryがバグッてたら元も子もないのですが多分大丈夫だと思います思いたい。</p>
-<p>とにかく一年前の私はアホだな、と。来年も同じこと思ってそうですが。</p>
-<p>Share, MemoizeAll, LetのRx移植三点セットは遊んでる分には面白いんですが、使いどころは難しいですね。ちなみに、MemoizeAllということで、RxにはAllじゃないMemoizeもあるのですが、かなり挙動が胡散臭いので私としては採用見送りだし、C#でも使う気はしません。内部の動きを相当意識してコントロールしないと暴走するってのが嫌。</p>
-<p>VS2010のJavaScript用IntelliSenseは本当に強化されましたねー。ということで、VS2010ならDictionaryやLookupでIntelliSenseが動作するのですが、VS2008では動作しません。完全にVS2010用に調整してたら2008では動かないシーンも幾つか出てきてしまった……。まあでも、2010は素敵なのでみんな2010使えばいいと思うよ。私はまだExpressですががが。一般パッケージ販売まだー？(6月です)</p>
-<p>そういえば、2.0は公開からひと月でDL数100到達。本当にありがとうございます。そろそろ実例サンプルも作っていきたいのですがネタがな。Google Waveって結局どうなんでしょうかね。ソーシャルアプリは何か肌に合わない雰囲気なのでスルーで、Waveに乗り込むぜ、とか思ってたんですが思ってただけで乗り込む以前に触ってもいないという有様。HTML5は、ええと、基本はC#っ子なのでSilverlight押しだから。うー、じゃあChrome拡張辺りで……。いやでもHTML5かな、よくわからないけれど。</p>
-<p>今のところ最優先事項はlinq.javaなんですけどね、忘れてない忘れてない。というか、linq.js 2.0も今回のOrderByのロジック変更も、linq.javaで書いてあったのを持ってきただけだったりして。もうほんと、とっとと出したいです。出してスッキリして次に行きたい。</p>
-<p>そんなわけで、この2.1でlinq.jsはようやくスタート地点に立てたぜ、という感じなので使ってやってください。</p>
-</div>
 <a href="https://neue.cc/20">Prev |</a>
 <a href="https://neue.cc/22">| Next</a>
 </div>
@@ -2381,6 +2574,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/05/">2024-05</a>
 <li><a href="https://neue.cc/2024/03/">2024-03</a>
 <li><a href="https://neue.cc/2024/02/">2024-02</a>
 <li><a href="https://neue.cc/2024/01/">2024-01</a>

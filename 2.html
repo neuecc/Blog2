@@ -23,7 +23,55 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2023/01/27_StructureOfArraysGenerator.html">StructureOfArraysGenerator - C#でSoAを簡単に利用するためのSource Generator</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2023/01/30-SimdLinq.html">SimdLinq - LINQをそのままSIMD対応して超高速化するライブラリ</a></h1>
+<ul class="date"><li>2023-01-30</li></ul>
+<div class="entry_body"><p>ついこないだの<a href="https://neue.cc/2023/01/27_StructureOfArraysGenerator.html">StructureOfArraysGenerator - C#でSoAを簡単に利用するためのSource Generator</a>は、SoAになってるとSIMDを適用しやすいよ、という話だったのですが、そもそもSIMD手書きはカジュアルにやらないし、気合い入れてSIMD書くシチュエーションなら構造も気合い入れて専用に設計するよなぁ。と、なると、カジュアルにSIMD使えるライブラリが必要で、まぁLINQですね、と。</p>
+<ul>
+<li><a href="https://github.com/Cysharp/SimdLinq">Cysharp/SimdLinq</a></li>
+</ul>
+<p>これを入れると別にSoA関係なく、SIMDが適用できる状態(例えばint[]にSum)だと、自動的にSIMDが適用されるようになります。そして、実際めちゃくちゃ速い。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/215410106-b68d8567-5abf-4aa4-a050-a803b1913187.png" alt="" /></p>
+<p>SIMDとLINQの組み合わせが威力を発揮するというのは、別に新しいことではなく、そもそも .NET 7でも<a href="https://devblogs.microsoft.com/dotnet/performance_improvements_in_net_7/#linq">Performance Improvements in .NET 7 LINQ</a>で、幾つかのメソッドが内部でSIMD化されて高速化されていることが発表されています。しかし、 .NET 7のSIMD対応は非常に限定的なもので、具体的には<code>int[]</code>の<code>Average</code>,<code>Min</code>,<code>Max</code>、それと<code>long[]</code>の<code>Min</code>,<code>Max</code>だけです。これには理由はなくはないのですが、本来SIMD対応できる範囲はもっと広いため、これでは非常にもったいない。</p>
+<p>SimdLinqを適用できるメソッドは <code>Sum</code>, <code>Average</code>, <code>Min</code>, <code>Max</code>, <code>MinMax</code>, <code>Contains</code>, <code>SequenceEqual</code>、要素の型は <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code> int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code>、コレクションの型は <code>T[]</code>, <code>List&lt;T&gt;</code>, <code>Span&lt;T&gt;</code>, <code>ReadOnlySpan&lt;T&gt;</code>, <code>Memory&lt;T&gt;</code>, <code>ReadOnlyMemory&lt;T&gt;</code> と理屈上SIMD化できるものを全て詰め込みました。特に<code>Span&lt;T&gt;</code>/<code>ReadOnlySpan&lt;T&gt;</code>は通常のLINQでは使えない（メソッドが定義されていない）ので、有益です。また、Min, Maxを同時に取得する<code>MinMax</code>というメソッドを独自に追加しています。</p>
+<p>専用メソッドを呼ばせる（例えば<code>SumSimd()</code>とか)ようでは使いにくいと思ったので、現在のコードを何も弄らずとも、ライブラリ参照してglobal usingを設定すれば、全ての適用可能なメソッドに自動適用される仕組みにしました。これは同名メソッドを定義して、具象型のほうにオーバーロード解決が優先採用されることを利用しています。</p>
+<h2>使い方</h2>
+<p>なので、使い方もなにもなく、usingすれば勝手にSimdLinqになって高速化されます。</p>
+<pre><code class="language-csharp">using SimdLinq; // enable SimdLinq extension methods
+
+var array = Enumerable.Range(1, 100000).ToArray();
+
+var sum = array.Sum(); // used SimdLinqExtensions.Sum
+</code></pre>
+<p>using忘れちゃうというのはあるので、そこでglobal usingです。csprojに</p>
+<pre><code class="language-xml">&lt;ItemGroup&gt;
+    &lt;Using Include=&quot;SimdLinq&quot; /&gt;
+&lt;/ItemGroup&gt;
+</code></pre>
+<p>というのを仕込んでやれば、SimdLinqが使える場合はSimdLinqに、そうじゃないものは普通のLinqでオーバーロードが解決されるようになります。便利。</p>
+<p>具体的にSimdLinqが適用されるメソッドは以下のものになります。</p>
+<ul>
+<li><code>Sum</code> for <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
+<li><code>LongSum</code> for <code>int</code>, <code>uint</code></li>
+<li><code>Average</code> for <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
+<li><code>Min</code> for <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
+<li><code>Max</code> for <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
+<li><code>MinMax</code> for <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
+<li><code>Contains</code> for <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
+<li><code>SequenceEqual</code> for <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
+</ul>
+<h2>互換性と安全性</h2>
+<p>.NET 7の標準に、このSimdLinqのようなアグレッシブなSIMD化が入らなかった理由は、互換性と安全性になります。え、安全じゃないの？というと怖くなるので、何が違うのかはしっかり把握しておきましょう。別に危険、というわけではないですが。</p>
+<p>まずSumとAverage(Averageの中身はSumしたのをLengthで割るだけなので中身は実質Sum)ですが、LINQのSumはcheckedで、オーバーフローすると例外を吐きます。SimdLinqはuncheckedです、つまりオーバーフローするとそのままオーバーフローしたまま結果を返します。checkedのほうが挙動としてはいいんですが、SIMD演算がオーバーフローのチェックできないので、SimdLinqではuncheckedとして提供しています。オーバーフローに関しては自己責任で。さすがにbyteのSumとかだとすぐオーバーフローしちゃうので、SimdLinqのSumは32 bit以上の要素にだけ提供しています、つまり<code>int</code>, <code>long</code>, <code>uint</code>, <code>ulong</code>, <code>double</code>, <code>float</code> です。そもそも元々のLINQのSum(引数なし)も<code>int</code>からなので、その辺は一緒ということで。</p>
+<p>そうしたオーバーフローの危険性を避けたい場合、独自拡張として <code>LongSum</code> というlongを戻り値にするSumメソッドを追加しています。内部的にlongで処理するため、(若干性能は落ちますが)オーバーフローしなくなります。</p>
+<p>float/doubleの扱いは挙動の違いが若干あります。まず、通常のLINQのMin, Maxは<code>NaN</code>をチェックしますがSimdLinqは<code>NaN</code>をチェックしません。<code>NaN</code>チェックがあったほうが丁寧ですが、SIMDでそれは入れずらい＆NaNが入ってくるケースってあまりないので現実的にすごい問題か、というとそうではないかな、と。</p>
+<p>それとSumの場合に足し算の順序が変わって(LINQは前から順番に足しますが、SIMDだと並列に足すので)、浮動小数点演算だと足す順序が変わると微妙に誤差が出て同じ結果になりません。例えばLINQだと<code>1.5710588F</code>だけどSimdLinqだと<code>1.5710589F</code>になる、といったような違いが出てきます。結果としては別にどっちでも良い（ある意味で別にどっちも厳密にはあってない）と思いますが、結果の互換性がないですよ、ということは留意してください。</p>
+<h2>まとめ</h2>
+<p>高速なLINQのAlternativeって、結構あります。<a href="https://github.com/kevin-montrose/LinqAF">LinqAF</a>、<a href="https://github.com/jackmott/LinqFaster">LinqFaster</a>、<a href="https://github.com/NetFabric/NetFabric.Hyperlinq">NetFabric.Hyperlinq</a>など。ただ、どれも大仰なんですよね、StructのIteratorを作ってー、とか。専用メソッドを呼ぶためにラップするのも手間だし、その割に凄い効果的というほどでもないから、依存を増やす割にはメリットも薄くなので、私自身は使おうとはあまり思ってませんでした。</p>
+<p>そこでSimdLinqではLINQ全体を高速化させることを狙っているわけではなくて、SIMDが適用できるものだけピンポイントに、そしてソースコードには一切手を入れる必要のない&quot;Drop-in replacement&quot;になるようにデザインしました。また、SIMDのみに絞ったことで性能面に明らかに圧倒的な差をだして、あえて使う理由を作る、といったところですね。</p>
+<p>ついでにそうなると欲張ってどんどん適用できる箇所を増やしたい、つまりは<a href="https://github.com/Cysharp/StructureOfArraysGenerator">StructureOfArraysGenerator</a>だ、みたいなコンボも狙っています。エコシステム囲い込み！囲い込みはEvil！</p>
+<p>そんなわけでSIMDシリーズ第一弾でした。今年はSIMD関連も幾つか出していくかもしれませんし、Source Generatorネタがめちゃくちゃ溜まってるので時間が無限大に必要です。まぁ、ともかくまずはSimdLinqを使って見てください！</p>
+</div>
+<h1><a href="https://neue.cc/2023/01/27_StructureOfArraysGenerator.html">StructureOfArraysGenerator - C#でSoAを簡単に利用するためのSource Generator</a></h1>
 <ul class="date"><li>2023-01-27</li></ul>
 <div class="entry_body"><p>最近はSource Generatorブームが続いていて、去年末に<a href="https://neue.cc/2022/12/16_IncrementalSourceGenerator.html">2022年のC# (Incremental) Source Generator開発手法</a>という記事を出しましたが、まずは今年第一弾のSource Generatorライブラリです。</p>
 <ul>
@@ -2464,472 +2512,6 @@ fixed (byte* p = &amp;buffer[42])
 <p>そして2016年の議論時点ではなかった、C# 9.0で<a href="https://docs.microsoft.com/ja-jp/dotnet/csharp/language-reference/builtin-types/nint-nuint">nuint, nuint</a>が追加されたので、<code>nuint Span&lt;T&gt;/Memory&lt;T&gt;.Length</code>はありなんじゃないかな、と。</p>
 <p>ただNativeMemoryArrayの開発当初は<code>nuint Length</code>で作っていたのですが、<code>AsSpan(nuint start, nuint length)</code>みたいなAPIは、カジュアルにintやlongを突っ込めなくて死ぬほど使いづらかったので、最終的にlongで統一することにしました。ので、<code>nuint Length</code>は、なしかな。つまり一周回って現状維持。そんなものかー、そんなもんですねー。</p>
 </div>
-<h1><a href="https://neue.cc/2021/12/04.html">.NET 6とAngleSharpによるC#でのスクレイピング技法</a></h1>
-<ul class="date"><li>2021-12-04</li></ul>
-<div class="entry_body"><p><a href="https://qiita.com/advent-calendar/2021/csharplang">C# Advent Calendar 2021</a>の参加記事となっています。去年は2個エントリーしたあげく、1個すっぽかした（！）という有様だったので、今年は反省してちゃんと書きます。</p>
-<p>スクレイピングに関しては10年前に<a href="https://neue.cc/2010/03/02_244.html">C#でスクレイピング:HTMLパース(Linq to Html)のためのSGMLReader利用法</a>という記事でSGMLReaderを使ったやり方を紹介していたのですが、10年前ですよ、10年前！さすがにもう古臭くて、現在ではもっとずっと効率的に簡単にできるようになってます。</p>
-<p>今回メインで使うのは<a href="https://anglesharp.github.io/">AngleSharp</a>というライブラリです。AngleSharp自体は2015年ぐらいからもう既に定番ライブラリとして、日本でも紹介記事が幾つかあります。が、いまいち踏み込んで書かれているものがない気がするので、今回はもう少しがっつりと紹介していきたいと思っています。それと直近Visual StudioのWatchウィンドウの使い方を知らん、みたいな話を聞いたりしたので、デバッグ方法の手順みたいなものを厚めに紹介したいなあ、という気持ちがあります！</p>
-<p>AngleSharpの良いところは、まずはHTMLをパースしてCSSセレクターで抽出できるところです。以前はLINQ(to DOM)があればCSSセレクターじゃなくてもいいっす、WhereとSelectManyとDescendantsでやってきますよ、とか言ってましたが、そんなにきちんと構造化されてるわけじゃないHTMLを相手にするのにあたっては、CSSセレクターのほうが100億倍楽！CSSセレクターの文法なんて大したことないので、普通に覚えて使えってやつですね。SQLと正規表現とCSSセレクターは三大言語関係なく覚えておく教養、と。</p>
-<p>もう一つは、それ自体でネットワークリクエストが可能なこと。FormへのSubmitなどもサポートして、Cookieも保持し続けるとかが出来るので、ログインして会員ページを弄る、といったようなクローラーが簡単に書けるんですね。この辺非常に良く出来ていて、もう自前クローラーなんて投げ捨てるしかないです。また、<a href="https://github.com/sebastienros/jint">Jint</a>というPure C#なJavaScriptインタプリタと統合したプラグインも用意されているので、JavaScriptがDOMをガリガリっと弄ってくる今風のサイトにも、すんなり対応できます。</p>
-<p>AngleSharpの紹介記事では、よくHttpClientなどで別途HTMLを取ってきたから、それをAngleSharpのHtmlParserに読み込ませる、というやり方が書かれていることが多いのですが、取得も含めて全てAngleSharp上で行ったほうが基本的には良いでしょう。</p>
-<p>ここまで来るとPure C#の軽量なヘッドレスブラウザとしても動作する、ということになるので、カジュアルなE2Eテストの実装基盤にもなり得ます。普通のユニットテストと並べて <code>dotnet test</code> だけでその辺もある程度まかなえたら、とても素敵なことですよね？がっつりとしたE2Eテストを書きたい場合は<a href="https://github.com/microsoft/playwright">Playwright</a>などを使わなければ、ということになってしまいますが、まずは軽い感じから始めたい、という時にうってつけです。C#で書けるし。いいことです。</p>
-<h2>BrowingContextとQuerySelectorの基本</h2>
-<p>まずはシンプルなHTMLのダウンロードと解析を。基本は <code>BrowsingContext</code> を作って、それをひたすら操作していくことになります。</p>
-<pre><code class="language-csharp">// この辺で色々設定する
-var config = Configuration.Default
-    .WithDefaultLoader(); // LoaderはデフォではいないのでOpenAsyncする場合につける
-
-// Headless Browser的なものを作る
-using var context = BrowsingContext.New(config);
-
-// とりあえずこのサイトの、右のArchivesのリンクを全部取ってみる
-var doc = await context.OpenAsync(&quot;https://neue.cc&quot;);
-</code></pre>
-<p>OpenAsyncで取得できた <code>IDocument</code> をよしなにCSSセレクターで解析していくわけですが、ここで絞り込みクエリー作成に使うのがVisual StudioのWatchウィンドウ。（Chromeのデベロッパーツールなどで機械的に取得したい要素のCSSセレクターを取得できたりしますが、手セレクターのほうがブレなくルールは作りやすいかな、と）。</p>
-<p>デバッガーを起動して、とりあえずウォッチウィンドウを開いておもむろに、Nameのところでコードを書きます。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/144583627-0c7982e4-4933-41f7-ba04-81836f10da8c.png" alt="image" /></p>
-<p>ウォッチウィンドウは見たい変数を並べておく、お気に入り的な機能、と思いきや本質的にはそうじゃなくて、式を自由に書いて、結果を保持する、ついでに式自体も保持できるという、実質REPLなのです。代入もラムダ式もLINQも自由に書けるし、入力補完も普通に出てくる。Immediate Windowよりも結果が遥かに見やすいので、Immediate Windowは正直不要です。</p>
-<p>デバッガー上で動いているので実データを自由に扱えるというところがいいですね。というわけで、ToHtml()でHTMLを見て、QuerySelectorAllをゆっくり評価しながら書いていきましょう。まずはサイドバーにあるので <code>.side_body</code> を出してみると、あれ、二個あるの？と。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/144582934-371930f2-dbff-4341-9f92-87e27c56d477.png" alt="image" /></p>
-<p>中開けてInnerHtml見ると、なるほどProfile部分とArchive部分、と。とりあえず後ろのほうで固定のはずなのでlast-childね、というところで一旦評価して大丈夫なのを確認した後に、あとはa、と。でここまでで期待通りの結果が取れていれば、コピペる。よし。</p>
-<pre><code class="language-csharp">// 基本、QuerySelectorかQuerySelectorAllでDOMを絞り込む
-var anchors = doc.QuerySelectorAll(&quot;.side_body:last-child a&quot;)
-    .Cast&lt;IHtmlAnchorElement&gt;() // AngleSharp.Html.Dom
-    .Select(x =&gt; x.Href)
-    .ToArray();
-</code></pre>
-<p>単一の要素に絞り込んだ場合は、 <code>IHtml***</code> にキャストしてあげると扱いやすくなります(attributeのhrefのtextを取得、みたいにしなくていい)。頻出パターンなので、<code>QuerySelectorAll&lt;T&gt;</code>でCastもセットになってすっきり。</p>
-<pre><code class="language-csharp">doc.QuerySelectorAll&lt;IHtmlAnchorElement&gt;(&quot;.side_body:last-child a&quot;)
-</code></pre>
-<p>せっかくなので、年に何本記事を書いていたかの集計を出してみたいと思います！URLから正規表現で年と月を取り出すので、とりあえずここでもウォッチウィンドウです。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/144590970-34c3bff4-0f0b-4db3-a259-f37a6f1e5f40.png" alt="image" /></p>
-<p>anchrosの[0]を確認して、これをデータソースとしてRegex.Matchを書いて、どのGroupに収まったのかを見ます。この程度だったら特にミスらないでしょー、と思いきや普通に割とミスったりするのが正規表現なので、こういうので確認しながらやっていけるのはいいですね。</p>
-<p>後は普通の（？）LINQコード。グルーピングした後に、ひたすら全ページをOpenAsyncしていきます。記事の本数を数えるのはh1の数をチェックするだけなので、特に複雑なCSSセレクターは必要なし。本来はページングの考慮は必要ですが、一月単位だとページングが出てくるほどの記事量がないので、そこも考慮なしで。</p>
-<pre><code class="language-csharp">var yearGrouped = anchors
-    .Select(x =&gt;
-    {
-        var match = Regex.Match(x, @&quot;(\d+)/(\d+)&quot;);
-        return new
-        {
-            Url = x,
-            Year = int.Parse(match.Groups[1].Value),
-            Month = int.Parse(match.Groups[2].Value)
-        };
-    })
-    .GroupBy(x =&gt; x.Year);
-
-foreach (var year in yearGrouped.OrderBy(x =&gt; x.Key))
-{
-    var postCount = 0;
-    foreach (var month in year)
-    {
-        var html = await context.OpenAsync(month.Url);
-        postCount += html.QuerySelectorAll(&quot;h1&quot;).Count(); // h1 == 記事ヘッダー
-    }
-    Console.WriteLine($&quot;{year.Key}年記事更新数: {postCount}&quot;);
-}
-</code></pre>
-<p>結果は</p>
-<pre><code>2009年記事更新数: 92
-2010年記事更新数: 61
-2011年記事更新数: 66
-2012年記事更新数: 30
-2013年記事更新数: 33
-2014年記事更新数: 22
-2015年記事更新数: 19
-2016年記事更新数: 24
-2017年記事更新数: 13
-2018年記事更新数: 11
-2019年記事更新数: 14
-2020年記事更新数: 11
-2021年記事更新数: 5
-</code></pre>
-<p>ということで右肩下がりでした、メデタシメデタシ。今年は特に書いてないなあ、せめて2ヶ月に1本は書きたいところ……。</p>
-<p>なお、<a href="https://neue.cc/2021/11/21.html">C#による自家製静的サイトジェネレーターに移行した話</a>
-で紹介しているのですが、このサイトは完全に<a href="https://github.com/neuecc/Blog2/tree/master/articles">GitHub上に.mdがフラットに並んで.mdが管理されている</a>ので、こういうの出すなら別にスクレイピングは不要です。</p>
-<h2>UserAgentを変更する</h2>
-<p>スクレイピングといったらログインしてごにょごにょする。というわけで、そうしたログイン処理をさくっとやってくれるのがAngleSharpの良いところです。ので紹介していきたいのですが、まずはやましいことをするので（？）、UserAgentを偽装しましょう。</p>
-<p>AngleSharpが現在何を送っているのかを確認するために、とりあえずダミーのサーバーを立てます。その際には .NET 6 のASP .NET から搭載されたMinimal APIが非常に便利です！そしてそれを<a href="https://www.linqpad.net/">LINQPad</a>で動かすと、テスト用サーバーを立てるのにめっちゃ便利です！やってみましょう。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/144586706-aa067b51-d8d3-44ac-91b3-552c62e7ce6d.png" alt="image" /></p>
-<p>たった三行でサーバーが立ちます。便利。</p>
-<pre><code class="language-csharp">await context.OpenAsync(&quot;http://localhost:5000/headers&quot;);
-</code></pre>
-<p>でアクセスして、 <code>AngleSharp/1.0.0.0</code> で送られていることが確認できました。</p>
-<p>なお、LINQPadでASP.NETのライブラリを使うには、Referene ASP.NET Core assembliesのチェックを入れておく必要があります。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/144586956-fddb4821-59a3-4f37-9086-1624d471ed36.png" alt="image" /></p>
-<p>他、よく使うNuGetライブラリや名前空間なども設定したうえで、<code>Set as default for new queries</code>しておくと非常に捗ります。</p>
-<p>さて、で、このUser-Agentのカスタマイズの方法ですが、AngleSharpはServicesに機能が詰まっているようなDI、というかService Locatorパターンの設計になっているので、ロードされてるServicesを(Watch Windowで)一通り見ます。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/144601687-3ee78e1d-2f95-404f-b2f9-162deb8eeda0.png" alt="image" /></p>
-<p>型に限らず全Serviceを取得するメソッドが用意されていない場合でも、<code>&lt;object&gt;</code>で取ってやると全部出てくるような実装は割と多い（ほんと）ので、とりあえずやってみるのはオススメです。今回も無事それで取れました。</p>
-<p>で、型名を眺めてそれっぽそうなのを見ると <code>DefaultHttpRequester</code> というのがかなりそれっぽく、その中身を見るとHeadersという輩がいるので、これを書き換えればいいんじゃないだろうかと当たりがつきます。</p>
-<p>ここはやましい気持ちがあるので（？）Chromeに偽装しておきましょう。</p>
-<pre><code class="language-csharp">var requester = context.GetService&lt;DefaultHttpRequester&gt;();
-requester.Headers[&quot;User-Agent&quot;] = &quot;Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.45 Safari/537.36&quot;;
-</code></pre>
-<p>再びOpenAsyncしてLINQPadの表示を見て、変更されてること確認できました。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/144602382-aba63413-2065-46ed-bd52-f4adf65bd30f.png" alt="image" /></p>
-<p>ちなみに、DefaultじゃないHttpRequesterをConfigurationに登録しておく、ということも出来ますが、よほどカスタムでやりたいことがなければ、デフォルトのものをちょっと弄るぐらいの方向性でやっていったほうが楽です。</p>
-<h2>FormにSubmitする</h2>
-<p>クローラーと言ったらFormにSubmit、つまりログイン！そしてクッキーをいただく！認証！</p>
-<p>さて、が、まぁ認証付きの何かを例にするのはアレなので、googleの検索フォームを例にさせていただきたいと思います。先にまずはコード全体像と結果を。</p>
-<pre><code class="language-csharp">using AngleSharp;
-using AngleSharp.Dom;
-using AngleSharp.Html.Dom; // 拡張メソッドとかで有効化されたりするのでusing大事
-using AngleSharp.Io;
-
-var config = Configuration.Default
-    .WithDefaultLoader()
-    .WithDefaultCookies(); // login form的なものの場合これでクッキーを持ち歩く
-
-using var context = BrowsingContext.New(config);
-
-// お行儀悪いので（？）前述のこれやっておく
-var requester = context.GetService&lt;DefaultHttpRequester&gt;();
-requester.Headers[&quot;User-Agent&quot;] = &quot;Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/47.0.2526.106 Safari/537.36&quot;;
-
-var doc = await context.OpenAsync(&quot;https://google.com/&quot;);
-var form = doc.Forms[0];
-var result = await form.SubmitAsync(new { q = &quot;AngleSharp&quot; }); // name = valueは匿名型が使える
-
-// とりあえず結果を表示しておく
-var titles = result.QuerySelectorAll&lt;IHtmlHeadingElement&gt;(&quot;h3&quot;).Select(x =&gt; x.TextContent);
-var i = 1;
-foreach (var item in titles)
-{
-    Console.WriteLine($&quot;{i++:00}: {item}&quot;);
-}
-</code></pre>
-<p><img src="https://user-images.githubusercontent.com/46207/144704506-b0d7038f-ad26-42e4-b8dd-b63b250759c5.png" alt="image" /></p>
-<p><code>WithDefaultLoader</code> と、そして認証クッキー持ち歩きのために <code>WithDefaultCookies</code> をコンフィギュレーションに足しておくことが事前準備として必須です。User-Agentの書き換えはご自由に、ただやましいこと、ではなくてUA判定をもとにして処理する、みたいなサイトも少なからずあるので、余計ないこと考えなくて済む対策としてはUAをChromeに偽装しておくのはアリです。</p>
-<p>FormへのSubmit自体は3行というか2行です。ページをOpenしてFormに対してSubmitするだけ。超簡単。 <code>.Forms</code> で <code>IHtmlElementForms</code>がすっと取れるので、あとは単純にSubmitするだけです。渡す値は <code>{ name = value }</code>の匿名型で投げ込めばOK。</p>
-<p>度々出てくるウォッチウィンドウの宣伝ですが、この何の値を投げればいいのか、を調べるのにHTMLとニラメッコではなく、ウォッチウィンドウで調査していきます。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/146650708-d2f1beb1-c21b-4a0a-851b-d0e78628bc00.png" alt="image" /></p>
-<p>まず(&quot;input&quot;)を拾うのですが、9個ある。多いね、で、まぁこれはほとんどtype = &quot;hidden&quot;なので無視して良い（AngleSharpがSubmitAsync時にちゃんと自動でつけて送信してくれる）。値を入れる必要があるのはhiddden以外のものなので、それをウォッチで普通にLINQで書けば、3件に絞れました。で、中身見ると必要っぽいのはqだけなので、 new { q = &quot;hogemoge&quot; } を投下、と。</p>
-<p>認証が必要なサイトでは、これでBrowingContextに認証クッキーがセットされた状態になるので、以降のこのContextでのOpenや画像、動画リクエストは認証付きになります。</p>
-<h2>画像や動画を拾う</h2>
-<p>スクレイピングといったら画像集めマンです（？）。AngleSharpでのそうしたリソース取得のやり方には幾つかあるのですが、私が最も良いかな、と思っているのはIDocumentLoader経由でのフェッチです。</p>
-<pre><code class="language-csharp">// BrowsingContextから引っ張る。Contextが認証クッキー取得済みなら認証が必要なものもダウンロードできる。
-var loader = context.GetService&lt;IDocumentLoader&gt;();
-
-// とりあえず適当にこのブログの画像を引っ張る
-var response = await loader.FetchAsync(new DocumentRequest(new Url(&quot;https://user-images.githubusercontent.com/46207/142736833-55f36246-cb7f-4b62-addf-0e18b3fa6d07.png&quot;))).Task;
-
-using var ms = new MemoryStream();
-await response.Content.CopyToAsync(ms);
-
-var bytes = ms.ToArray(); // あとは適当にFile.WriteAllBytesでもなんでもどうぞ
-</code></pre>
-<p>内部用なので少し引数やAPIが冗長なところもありますが、それは後述しますが別になんとでもなるところなので、どちらかというと生のStreamが取れたりといった柔軟性のところがプラスだと思っています。普通にHttpClientで自前で取るのと比べると、認証周りやってくれた状態で始められるのが楽ですね。</p>
-<p>並列ダウンロードもいけます、例えば、このブログの全画像を引っ張るコードを、↑に書いた全ページ取得コードを発展させてやってみましょう。</p>
-<pre><code class="language-csharp">using AngleSharp;
-using AngleSharp.Dom;
-using AngleSharp.Html.Dom;
-using AngleSharp.Io;
-
-var config = Configuration.Default
-    .WithDefaultLoader()
-    .WithDefaultCookies();
-
-using var context = BrowsingContext.New(config);
-
-var requester = context.GetService&lt;DefaultHttpRequester&gt;();
-requester.Headers[&quot;User-Agent&quot;] = &quot;Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/47.0.2526.106 Safari/537.36&quot;;
-
-var doc = await context.OpenAsync(&quot;https://neue.cc/&quot;);
-var loader = context.GetService&lt;IDocumentLoader&gt;();
-
-foreach (var arvhives in doc.QuerySelectorAll&lt;IHtmlAnchorElement&gt;(&quot;.side_body:last-child a&quot;))
-{
-    var page = await context.OpenAsync(arvhives.Href);
-
-    // content(ページ本体)下のimgを全部。
-    // 今回はページ単位で5並列ダウンロードすることにする(粒度の考え方は色々ある)
-    var imgs = page.QuerySelectorAll&lt;IHtmlImageElement&gt;(&quot;#content img&quot;);
-    await Parallel.ForEachAsync(imgs, new ParallelOptions { MaxDegreeOfParallelism = 5 }, async (img, ct) =&gt;
-     {
-         var url = new Url(img.Source);
-         var response = await loader.FetchAsync(new DocumentRequest(url)).Task;
-
-         // とりあえず雑にFile書き出し。
-         Console.WriteLine($&quot;Downloading {url.Path}&quot;);
-         using (var fs = new FileStream(@$&quot;C:\temp\neuecc\{url.Path.Replace('/', '_')}&quot;, FileMode.Create))
-         {
-             await response.Content.CopyToAsync(fs, ct);
-         }
-     });
-}
-</code></pre>
-<p>.NET 6から <a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.threading.tasks.parallel.foreachasync">Parallel.ForEachAsync</a> が追加されたので、asyncコードを並列数(MaxDegreeOfParallelism)で制御した並列実行が容易に書けるようになりました。async/await以降、Parallel系の出番は圧倒的に減ったのは確かなのですが、Task.WhenAllだけだと並列に走りすぎてしまって逆に非効率となってしまって、そこを制御するコードを自前で用意する必要が出てきていたりと面倒なものも残っていました。それが、このParallel.ForEachAsyncで解消されたと思います。</p>
-<h2>Kurukuru Progress</h2>
-<p>数GBの動画をダウンロードする時などは、プログレスがないとちゃんと動いているのか確認できなくて不便です。しかし、ただ単にConsole.WriteLineするだけだとログが凄い勢いで流れていってしまって見辛くて困りものです。そこを解決するC#ライブラリが<a href="https://github.com/mayuki/Kurukuru">Kurukuru</a>で、見ればどんなものかすぐわかるので、まずは実行結果を見てもらいましょう（素の回線だと一瞬でダウンロード終わってしまったので回線の低速シミュレーションしてます）</p>
-<p><img src="https://user-images.githubusercontent.com/46207/144711389-7fa99e14-3f77-4fef-a7e7-5d12724aacd1.gif" alt="guruguru" /></p>
-<p>一行だけを随時書き換えていってくれるので、見た目も非常に分かりやすくて良い感じです。これはとても良い。Kurukuru、今すぐ使いましょう。ちなみに今回の記事で一番時間がかかったのは、Kurukuruの並列リクエスト対応だったりして（対応していなかったのでコード書いてPR上げて、今日リリースしてもらいましたできたてほやほやコード）。</p>
-<p>AngleSharp側のコードですが、この例は<a href="https://file-examples.com/index.php/sample-video-files/sample-mp4-files/">File Examples
-</a>のMP4を並列で全部取るというものです。</p>
-<pre><code class="language-csharp">using AngleSharp;
-using AngleSharp.Dom;
-using AngleSharp.Html.Dom;
-using AngleSharp.Io;
-using Kurukuru;
-using System.Text;
-
-// Kurukuruを使う上で大事なおまじない
-// え、デフォルトのEncodingがUTF8じゃないシェルがあるんです！？←Windows
-Console.OutputEncoding = Encoding.UTF8;
-
-var config = Configuration.Default
-    .WithDefaultLoader()
-    .WithDefaultCookies();
-
-using var context = BrowsingContext.New(config);
-
-var requester = context.GetService&lt;DefaultHttpRequester&gt;();
-requester.Headers[&quot;User-Agent&quot;] = &quot;Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/47.0.2526.106 Safari/537.36&quot;;
-
-var doc = await context.OpenAsync(&quot;https://file-examples.com/index.php/sample-video-files/sample-mp4-files/&quot;);
-var loader = context.GetService&lt;IDocumentLoader&gt;();
-
-// ここから本体
-var mp4s = doc.QuerySelectorAll&lt;IHtmlAnchorElement&gt;(&quot;a&quot;).Where(x =&gt; x.Href.EndsWith(&quot;.mp4&quot;));
-Console.WriteLine(&quot;Download sample-mp4-files&quot;);
-await Parallel.ForEachAsync(mp4s, new ParallelOptions { MaxDegreeOfParallelism = 5 }, async (mp4, ct) =&gt;
-{
-    var bin = await loader.FetchBytesAsync(mp4.Href);
-    // あとはFile.WriteAllBytesするとか好きにして
-});
-</code></pre>
-<p>ポイントは <code>var bin = await loader.FetchBytesAsync(mp4.Href);</code> で、これは拡張メソッドです。loaderにProgress付きでbyte[]返すメソッドを生やしたことで、随分シンプルに書けるようになりました。StreamのままFileStreamに書いたほうがメモリ節約的にはいいんですが、中途半端なところでコケたりした場合のケアが面倒くさいので、ガチガチなパフォーマンスが重視される場合ではないならbyte[]のまま受けちゃってもいいでしょう。1つ4GBの動画を5並列なんですが？という場合でも、たかがメモリ20GB程度なので普通にメモリ積んで処理すればいいっしょ。</p>
-<p>FetchBytesAsyncの中身は以下のようなコードになります。</p>
-<pre><code class="language-csharp">public static class DocumentLoaderExtensions
-{
-    public static async Task&lt;byte[]&gt; FetchBytesAsync(this IDocumentLoader loader, string address, CancellationToken cancellationToken = default)
-    {
-        var url = new AngleSharp.Url(address);
-        var response = await loader.FetchAsync(new DocumentRequest(url)).Task;
-        if (response.StatusCode != System.Net.HttpStatusCode.OK)
-        {
-            return Array.Empty&lt;byte&gt;(); // return empty instead of throws error(ここをどういう挙動させるかは好みで……。)
-        }
-
-        // Content-Lengthが取れない場合は死でいいということにする
-        var contentLength = int.Parse(response.Headers[&quot;Content-Length&quot;]);
-
-        using var progress = new ProgressSpinner(url.Path.Split('/').Last(), contentLength);
-        try
-        {
-            return await ReadAllDataAsync(response.Content, contentLength, progress, cancellationToken);
-        }
-        catch
-        {
-            progress.Cancel();
-            throw;
-        }
-    }
-
-    static async Task&lt;byte[]&gt; ReadAllDataAsync(Stream stream, int contentLength, IProgress&lt;int&gt; progress, CancellationToken cancellationToken)
-    {
-        var buffer = new byte[contentLength];
-        var readBuffer = buffer.AsMemory();
-        var len = 0;
-        while ((len = await stream.ReadAsync(readBuffer, cancellationToken)) &gt; 0)
-        {
-            progress.Report(len);
-            readBuffer = readBuffer.Slice(len);
-        }
-        return buffer;
-    }
-}
-
-public class ProgressSpinner : IProgress&lt;int&gt;, IDisposable
-{
-    readonly Spinner spinner;
-    readonly string fileName;
-    readonly int? totalBytes;
-    int received = 0;
-
-    public ProgressSpinner(string fileName, int? totalBytes)
-    {
-        this.totalBytes = totalBytes;
-        this.fileName = fileName;
-        this.spinner = new Spinner($&quot;Downloading {fileName}&quot;);
-        this.spinner.Start();
-    }
-
-    public void Report(int value)
-    {
-        received += value;
-        if (totalBytes != null)
-        {
-            var percent = (received / (double)totalBytes) * 100;
-            spinner.Text = $&quot;Downloading {fileName} {ToHumanReadableBytes(received)} / {ToHumanReadableBytes(totalBytes.Value)} ( {Math.Floor(percent)}% )&quot;;
-        }
-        else
-        {
-            spinner.Text = $&quot;Downloading {fileName} {ToHumanReadableBytes(received)}&quot;;
-        }
-    }
-
-    public void Cancel()
-    {
-        spinner.Fail($&quot;Canceled {fileName}: {ToHumanReadableBytes(received)}&quot;);
-        spinner.Dispose();
-    }
-
-    public void Dispose()
-    {
-        spinner.Succeed($&quot;Downloaded {fileName}: {ToHumanReadableBytes(received)}&quot;);
-        spinner.Dispose();
-    }
-
-    static string ToHumanReadableBytes(int bytes)
-    {
-        var b = (double)bytes;
-        if (b &lt; 1024) return $&quot;{b:0.00} B&quot;;
-        b /= 1024;
-
-        if (b &lt; 1024) return $&quot;{b:0.00} KB&quot;;
-        b /= 1024;
-
-        if (b &lt; 1024) return $&quot;{b:0.00} MB&quot;;
-        b /= 1024;
-
-        if (b &lt; 1024) return $&quot;{b:0.00} GB&quot;;
-        b /= 1024;
-
-        if (b &lt; 1024) return $&quot;{b:0.00} TB&quot;;
-        b /= 1024;
-
-        return $&quot;{0:0.00} PB&quot;;
-    }
-}
-</code></pre>
-<p>KurukuruのSpinnerを内包した <code>IProgress&lt;T&gt;</code> を作ってあげて、その中でよしなにやってあげるということにしました。まぁちょっと長いですが、一回用意すれば後はコピペするだけなので全然いいでしょう。みなさんもこのProgressSpinner、使ってやってください。</p>
-<h2>コマンド引数やロギング処理やオプション取得</h2>
-<p>クローラーとしてガッツシやりたいなら、モードの切り替えとかロギングとか入れたいです、というか入れます。そこで私が定形として使っているのは<a href="https://github.com/Cysharp/ConsoleAppFramework">ConsoleAppFramework</a>と<a href="https://github.com/Cysharp/ZLogger">ZLogger</a>。Cysharpの提供です。ワシが作った。それと今回のようなケースだと<a href="https://github.com/Cysharp/Kokuban">Kokuban</a>も便利なので入れます。やはりCysharpの提供です。</p>
-<pre><code class="language-xml">&lt;ItemGroup&gt;
-    &lt;PackageReference Include=&quot;AngleSharp&quot; Version=&quot;1.0.0-alpha-844&quot; /&gt;
-    &lt;PackageReference Include=&quot;Kurukuru&quot; Version=&quot;1.4.0&quot; /&gt;
-    &lt;PackageReference Include=&quot;ConsoleAppFramework&quot; Version=&quot;3.3.2&quot; /&gt;
-    &lt;PackageReference Include=&quot;ZLogger&quot; Version=&quot;1.6.1&quot; /&gt;
-    &lt;PackageReference Include=&quot;Kokuban&quot; Version=&quot;0.2.0&quot; /&gt;
-&lt;/ItemGroup&gt;
-</code></pre>
-<p>この場合Program.csは以下のような感じになります。割と短いですよ！</p>
-<pre><code class="language-csharp">using ConsoleAppFramework;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
-using System.Text;
-using ZLogger;
-
-Console.OutputEncoding = Encoding.UTF8;
-
-await Host.CreateDefaultBuilder()
-    .ConfigureLogging(x =&gt;
-    {
-        x.ClearProviders();
-        x.AddZLoggerConsole();
-        x.AddZLoggerFile($&quot;logs/{args[0]}-{DateTime.Now.ToString(&quot;yyyMMddHHmmss&quot;)}.log&quot;);
-    })
-    .ConfigureServices((hostContext, services) =&gt;
-    {
-        services.Configure&lt;NanikaOptions&gt;(hostContext.Configuration.GetSection(&quot;Nanika&quot;));
-    })
-    .RunConsoleAppFrameworkAsync(args);
-
-public class NanikaOptions
-{
-    public string UserId { get; set; } = default!;
-    public string Password { get; set; } = default!;
-    public string SaveDirectory { get; set; } = default!;
-}
-</code></pre>
-<p>コンソールログだけだとウィンドウ閉じちゃったときにチッとかなったりするので（？）、ファイルログあると安心します。ZLoggerは秘伝のxmlコンフィグなどを用意する必要なく、これだけで有効化されるのが楽でいいところです。それでいてパフォーマンスも抜群に良いので。</p>
-<p>ConsoleAppFrameworkはGenericHostと統合されているので、コンフィグの読み込みもOptionsで行います。appsettings.jsonを用意して</p>
-<pre><code class="language-json">{
-  &quot;Nanika&quot;: {
-    &quot;UserId&quot;: &quot;hugahuga&quot;,
-    &quot;Password&quot;: &quot;takotako&quot;,
-    &quot;SaveDirectory&quot;: &quot;C:\\temp\\dir&quot;,
-  }
-}
-</code></pre>
-<p>.csprojのほうに</p>
-<pre><code class="language-xml">&lt;ItemGroup&gt;
-    &lt;None Update=&quot;appsettings.json&quot;&gt;
-    &lt;CopyToOutputDirectory&gt;Always&lt;/CopyToOutputDirectory&gt;
-    &lt;/None&gt;
-&lt;/ItemGroup&gt;
-</code></pre>
-<p>と書いてあげれば、自動で読み込まれるようになるという仕様です。そして本体のコードは</p>
-<pre><code class="language-csharp">public class NanikaDownloader : ConsoleAppBase
-{
-    readonly ILogger&lt;NanikaDownloader&gt; logger;
-    readonly NanikaOptions options;
-
-    // コンストラクタインジェクションでOptionsを受け取る
-    public NanikaDownloader(ILogger&lt;NanikaDownloader&gt; logger, IOptions&lt;NanikaOptions&gt; options)
-    {
-        this.logger = logger;
-        this.options = options.Value;
-    }
-
-    public async Task DownloadAre()
-    {
-        // Context.CancellationTokenを渡すのを忘れないように！(Ctrl+Cのキャンセル対応に必須)
-        await loader.FecthAsyncBytes(&quot;...&quot;, Context.CancellationToken)
-    }
-
-    public async Task DownloadSore(int initialPage)
-    {
-        // Kokubanを使うとConsoleに出す文字列の色分けが簡単にできる！( `Chalk.Color +` だけで色が付く)
-        logger.LogInformation(Chalk.Green + $&quot;Download sore {initialPage} start&quot;);
-    }
-}
-</code></pre>
-<p>のように書きます。これの場合は、引数で <code>NanikaDownloader.DownloadAre</code>, <code>NanikaDownloader.DownloadSore -initialPage *</code> の実行切り替えができるようになるわけですね……！</p>
-<p>また、文字色が一色だけだとコンソール上のログはかなり見づらいわけですが、Kokubanを使うことで色の出し分けが可能になります。これは、地味にめちゃくちゃ便利なのでおすすめ。別にバッチ系に限らず、コンソールログの色を調整するのってめっちゃ大事だと、最近実感しているところです。</p>
-<p>ASP .NET Core(とかMagicOnionとか)で、ZLoggerでエラーを赤くしたい！とか、フレームワークが吐いてくる重要でない情報はグレーにして目立たなくしたい！とかの場合は、ZLoggerのPrefix/SuffixFormatterを使うのをオススメしてます(Kokubanのようにさっくり書けはしないのですが、まぁConfigurationのところで一回やるだけなので)</p>
-<pre><code class="language-csharp">logging.AddZLoggerConsole(options =&gt;
-{
-#if DEBUG
-    // \u001b[31m =&gt; Red(ANSI Escape Code)
-    // \u001b[0m =&gt; Reset
-    // \u001b[38;5;***m =&gt; 256 Colors(08 is Gray)
-    options.PrefixFormatter = (writer, info) =&gt;
-    {
-        if (info.LogLevel == LogLevel.Error)
-        {
-            ZString.Utf8Format(writer, &quot;\u001b[31m[{0}]&quot;, info.LogLevel);
-        }
-        else
-        {
-            if (!info.CategoryName.StartsWith(&quot;MyApp&quot;)) // your application namespace.
-            {
-                ZString.Utf8Format(writer, &quot;\u001b[38;5;08m[{0}]&quot;, info.LogLevel);
-            }
-            else
-            {
-                ZString.Utf8Format(writer, &quot;[{0}]&quot;, info.LogLevel);
-            }
-        }
-    };
-    options.SuffixFormatter = (writer, info) =&gt;
-    {
-        if (info.LogLevel == LogLevel.Error || !info.CategoryName.StartsWith(&quot;MyApp&quot;))
-        {
-            ZString.Utf8Format(writer, &quot;\u001b[0m&quot;, &quot;&quot;);
-        }
-    };
-#endif
-
-}, configureEnableAnsiEscapeCode: true); // configureEnableAnsiEscapeCode
-</code></pre>
-<p>こういうの、地味に開発効率に響くので超大事です。やっていきましょう。</p>
-<h2>まとめ</h2>
-<p>AngleSharpにかこつけてウォッチウィンドウをとにかく紹介したかったのです！ウォッチウィンドウ最強！値の変化があると赤くなってくれたりするのも便利ですね、使いこなしていきましょう。別にUnityとかでもクソ便利ですからね？</p>
-<p>あ、で、AngleSharpはめっちゃいいと思います。他の言語のスクレピングライブラリ(Beautiful Soupとか)と比べても、全然張り合えるんじゃないかな。冒頭に書きましたがE2Eテストへの応用なども考えられるので、使いこなし覚えるのとてもいいんじゃないかと思います。ドキュメントが色々書いてあるようで実は別にほとんど大したこと書いてなくて役に立たないというのは若干問題アリなんですが、まぁ触って覚えるでもなんとかなるので、大丈夫大丈夫。</p>
-</div>
 <a href="https://neue.cc">Prev |</a>
 <a href="https://neue.cc/3">| Next</a>
 </div>
@@ -2953,6 +2535,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/05/">2024-05</a>
 <li><a href="https://neue.cc/2024/03/">2024-03</a>
 <li><a href="https://neue.cc/2024/02/">2024-02</a>
 <li><a href="https://neue.cc/2024/01/">2024-01</a>

@@ -5,7 +5,107 @@
     <link>http://neue.cc/</link>
     <description>C# Technical Blog</description>
     <language>ja</language>
-    <lastBuildDate>Thu, 21 Mar 2024 10:51:59 +0900</lastBuildDate>
+    <lastBuildDate>Wed, 01 May 2024 23:40:55 +0900</lastBuildDate>
+    <item>
+      <guid isPermaLink="true">https://neue.cc/2024/05/01_R3_Presentation.html</guid>
+      <link>https://neue.cc/2024/05/01_R3_Presentation.html</link>
+      <title>R3のコードから見るC#パフォーマンス最適化技法実例とTimeProviderについて</title>
+      <description>&lt;h1&gt;&lt;a href="https://neue.cc/2024/05/01_R3_Presentation.html"&gt;R3のコードから見るC#パフォーマンス最適化技法実例とTimeProviderについて&lt;/a&gt;&lt;/h1&gt;
+&lt;ul class="date"&gt;&lt;li&gt;2024-05-01&lt;/li&gt;&lt;/ul&gt;
+&lt;div class="entry_body"&gt;&lt;p&gt;4/27に大阪で開催された&lt;a href="https://cs-reading.connpass.com/event/309714/"&gt;C#パフォーマンス勉強会&lt;/a&gt;で「R3のコードから見る実践LINQ実装最適化・コンカレントプログラミング実例」という題でセッションしてきました！&lt;/p&gt;
+&lt;iframe class="speakerdeck-iframe" frameborder="0" src="https://speakerdeck.com/player/205627770b434599925567dbfeca229c" title="R3のコードから見る実践LINQ実装最適化・コンカレントプログラミング実例" allowfullscreen="true" style="border: 0px; background: padding-box padding-box rgba(0, 0, 0, 0.1); margin: 0px; padding: 0px; border-radius: 6px; box-shadow: rgba(0, 0, 0, 0.2) 0px 5px 40px; width: 100%; height: auto; aspect-ratio: 560 / 315;" data-ratio="1.7777777777777777"&gt;&lt;/iframe&gt;
+&lt;p&gt;タイトル的にあまりLINQでもコンカレントでもなかったかな、とは思いますが、&lt;a href="https://github.com/Cysharp/R3"&gt;R3&lt;/a&gt;を題材に、具体的なコードをもとにした最適化技法の紹介という点では面白みはあったのではないかと思います。&lt;/p&gt;
+&lt;h2&gt;Rxの定義&lt;/h2&gt;
+&lt;p&gt;R3は、やや挑発的な内容を掲げていることもあり、R3は「Rxではない」みたいなことを言われることもあります。なるほど！では、そもそも何をもってRxと呼ぶのか、呼べるのか。私は「Push型でLINQ風のオペレーターが適用できればRx」というぐらいの温度感で考えています。もちろん、R3はそれを満たしています。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;mutable struct&lt;/code&gt;の扱いと同じく、あまり教条主義的にならず、時代に合わせて、柔軟により良いシステムを考えていきましょう。コンピュータープログラミングにおいて、伝統や歴史を守ることは別に大して重要なことではないはずです。&lt;/p&gt;
+&lt;h2&gt;TimeProvider DeepDive&lt;/h2&gt;
+&lt;p&gt;&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.timeprovider?view=net-8.0"&gt;TimeProvider&lt;/a&gt;について、セッションでも話しましたが、大事なことなのでもう少し詳しくいきましょう。TimeProviderにまず期待するところとしては、ほとんどが&lt;code&gt;SystemClock.Now&lt;/code&gt;、つまりオレオレ&lt;code&gt;DateTime.Now&lt;/code&gt;生成器の代わりを求めているでしょう。それを期待しているとTimeProviderの定義は無駄に複雑に見えます。しかし&lt;code&gt;TimeProvider&lt;/code&gt;を分解してみると、これは4つの時間を司るクラスの抽象層になっています。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;public abstract class TimeProvider
+{
+    // TimeZoneInfo
+    public virtual TimeZoneInfo LocalTimeZone =&amp;gt; TimeZoneInfo.Local;
+
+    // DateTimeOffset
+    public virtual DateTimeOffset GetUtcNow() =&amp;gt; DateTimeOffset.UtcNow;
+    public DateTimeOffset GetLocalNow() =&amp;gt;
+
+    // Stopwatch
+    public virtual long TimestampFrequency =&amp;gt; Stopwatch.Frequency;
+    public virtual long GetTimestamp() =&amp;gt; Stopwatch.GetTimestamp();
+    public TimeSpan GetElapsedTime(long startingTimestamp, long endingTimestamp) =&amp;gt; 
+    public TimeSpan GetElapsedTime(long startingTimestamp) =&amp;gt; GetElapsedTime(startingTimestamp, GetTimestamp());
+
+    // System.Threading.Timer
+    public virtual ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) =&amp;gt;
+}
+
+public interface ITimer : IDisposable, IAsyncDisposable
+{
+    bool Change(TimeSpan dueTime, TimeSpan period);
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;4つの時間を司るクラス、すなわち&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.timezoneinfo?view=net-8.0"&gt;TimeZoneInfo&lt;/a&gt;、&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.datetimeoffset?view=net-8.0"&gt;DateTimeOffset&lt;/a&gt;、&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.diagnostics.stopwatch?view=net-8.0"&gt;Stopwatch&lt;/a&gt;、&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.threading.timer?view=net-8.0"&gt;System.Threading.Timer&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;この造りになっているからこそ、あらゆる時間にまつわる挙動を任意に変更することができるのです。&lt;/p&gt;
+&lt;p&gt;挙動を任意に変更するというとユニットテストでの時間のモックにばかり意識が向きますが（実際、&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.extensions.time.testing.faketimeprovider?view=net-8.0"&gt;FakeTimeProvider&lt;/a&gt;はとても有益です）、別にユニットテストに限らず、優れた時間の抽象化層として使うことができます。ということを実装とともに証明したのがR3で、特にR3では&lt;code&gt;CreateTimer&lt;/code&gt;をかなり弄っていて、WPFではDispatcherTimerを使うことで自動的にUIスレッドにディスパッチしたり、UnityではPlayerLoopベースのタイマーとしてScaledとUnsacledでTimescaleの影響を受けるタイマー・受けないタイマーなどといった実行時のカスタマイズ性を実現しました。&lt;/p&gt;
+&lt;p&gt;セッションではStopwatchについてフォーカスしました。二点の時刻の経過時間を求めるのにDateTimeの引き算、つまり&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;DateTime now = DateTime.UtcNow;
+/* do something... */
+TimeSpan elapesed = DateTime.UtcNow - now;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;といったコードを書くのはよくあることですが、これはバッドプラクティスです。DateTimeの取得はタダではありません。では、なるほどStopwatchですね？ということで&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;Stopwatch sw = Stopwatch.StartNew();
+/* do something... */
+TimeSpan elapsed = sw.Elapsed;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;これは、Stopwatchがclassなのでアロケーションがあります。うまく使いまわしてあげる必要があります。
+使いまわしができないシチュエーションのために、アロケーションを避けるためにstructのStopwatch、ValueStopwatchといったカスタム型を作ることもありますが、待ってください、そもそもStopwatchが不要です。&lt;/p&gt;
+&lt;p&gt;二点の経過時間を求めるなら、時計による時刻も不要で、その地点の何らかのタイムスタンプが取れればそれで十分なのです。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;// .NET 7以降での手法(GetElapsedTimeが追加された)
+long timestamp = Stopwatch.GetTimestamp();
+/* do something... */
+TimeSpan elapsed = Stopwatch.GetElapsedTime(timestamp);
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;このlongは、通常は高解像度タイムスタンプ、Windowsでは[QueryPerformanceCounter(https://learn.microsoft.com/ja-jp/windows/win32/sysinfo/acquiring-high-resolution-time-stamps)が使われています。TimeSpanでよく使うTicksではないことに注意してください。&lt;/p&gt;
+&lt;p&gt;ベンチマークを取ってみましょう。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;using BenchmarkDotNet.Attributes;
+using System.Diagnostics;
+
+BenchmarkDotNet.Running.BenchmarkRunner.Run&amp;lt;TimestampBenchmark&amp;gt;();
+
+public class TimestampBenchmark
+{
+    [Benchmark]
+    public long Stopwatch_GetTimestamp()
+    {
+        return Stopwatch.GetTimestamp();
+    }
+
+    [Benchmark]
+    public DateTime DateTime_UtcNow()
+    {
+        return DateTime.UtcNow;
+    }
+
+    [Benchmark]
+    public DateTime DateTime_Now()
+    {
+        return DateTime.Now;
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;&lt;img src="https://github.com/Cysharp/R3/assets/46207/75122cc7-c303-493f-bc78-40388529cf60" alt="image" /&gt;&lt;/p&gt;
+&lt;p&gt;NowではUtcNowに加えてTimeZoneからのオフセット算出が入るために更にもう一段遅くなります。&lt;/p&gt;
+&lt;p&gt;なお、マイクロベンチマークを取るときは必ず&lt;a href="https://github.com/dotnet/BenchmarkDotNet"&gt;BenchmarkDotNet&lt;/a&gt;を使ってください。(micro)benchmark is hard、です。Stopwatchで測られても、あらゆる要因から誤差が出まくるし、そもそも指標もよくわからないしで、数字を見ても何もわかりません。私はそういう数字の記事とかを見た場合、役に立たないと判断して無視します。&lt;/p&gt;
+&lt;h2&gt;まとめ&lt;/h2&gt;
+&lt;p&gt;セッション資料に盛り込めた最適化技法の紹介は極一部ではありますが、R3がどれだけ気合い入れて作られているかが伝わりましたでしょうか？10年の時を経て、私自身の成長とC#の成長が合わさり、UniRxからクオリティが桁違いです。&lt;/p&gt;
+&lt;p&gt;これからも足を止めずにやっていきますし、みなさんも是非モダンC#やっていきましょう……！（Unityも十分モダンC#の仲間入りで良いです！）&lt;/p&gt;
+&lt;p&gt;そういえばブログに貼り付けるのを忘れてたのですが3月末にはこんなセッションもしていました。&lt;/p&gt;
+&lt;iframe class="speakerdeck-iframe" frameborder="0" src="https://speakerdeck.com/player/c5a8898ac7c4464584068b0ee3180e94" title=".NETの非同期戦略とUnityとの相互運用" allowfullscreen="true" style="border: 0px; background: padding-box padding-box rgba(0, 0, 0, 0.1); margin: 0px; padding: 0px; border-radius: 6px; box-shadow: rgba(0, 0, 0, 0.2) 0px 5px 40px; width: 100%; height: auto; aspect-ratio: 560 / 315;" data-ratio="1.7777777777777777"&gt;&lt;/iframe&gt;
+&lt;p&gt;ええ、ええ。Unityもモダンですよ！大丈夫！&lt;/p&gt;
+&lt;/div&gt;</description>
+      <pubDate>Wed, 01 May 2024 00:00:00 +0900</pubDate>
+      <a10:updated>2024-05-01T00:00:00+09:00</a10:updated>
+    </item>
     <item>
       <guid isPermaLink="true">https://neue.cc/2024/03/19_Garnet.html</guid>
       <link>https://neue.cc/2024/03/19_Garnet.html</link>
@@ -2438,26 +2538,6 @@ A future framework update could break you. Or - more likely - you'll encounter m
 &lt;/div&gt;</description>
       <pubDate>Thu, 21 Sep 2023 00:00:00 +0900</pubDate>
       <a10:updated>2023-09-21T00:00:00+09:00</a10:updated>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://neue.cc/2023/07/28_yetanotherhttphandler.html</guid>
-      <link>https://neue.cc/2023/07/28_yetanotherhttphandler.html</link>
-      <title>Unity用のHTTP/2(gRPC) Client、YetAnotherHttpHandlerを公開しました</title>
-      <description>&lt;h1&gt;&lt;a href="https://neue.cc/2023/07/28_yetanotherhttphandler.html"&gt;Unity用のHTTP/2(gRPC) Client、YetAnotherHttpHandlerを公開しました&lt;/a&gt;&lt;/h1&gt;
-&lt;ul class="date"&gt;&lt;li&gt;2023-07-28&lt;/li&gt;&lt;/ul&gt;
-&lt;div class="entry_body"&gt;&lt;p&gt;Cysharpから(主に)Unity用のHTTP/2, gRPC, MagicOnion用の通信ネットワーククライアントを公開しました。実装者は週刊.NET情報配信&lt;a href="https://weekref.net/"&gt;WeekRef.NET&lt;/a&gt;を運営している&lt;a href="https://twitter.com/mayuki"&gt;@mayuki&lt;/a&gt;さんです。&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;a href="https://github.com/Cysharp/YetAnotherHttpHandler"&gt;Cysharp/YetAnotherHttpHandler&lt;/a&gt;&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;何故これが必要なのかの背景情報としては、&lt;a href="https://synamon.hatenablog.com/entry/grpc-dotnet-unity"&gt;Synamon’s Engineer blog - Unityでもgrpc-dotnetを使ったgRPCがしたい&lt;/a&gt; が詳しいのですが、まず、.NETには2つのgRPC実装があります。googleが提供してきたgRPCのネイティブバインディングのGrpc.Core(C-Core)と、Microsoftが提供しているPure C#実装のgrpc-dotnet。現在.NETのgRPCはサーバーもクライアントも完全にPure C#実装のほうに寄っていて、&lt;a href="https://github.com/Cysharp/MagicOnion/"&gt;MagicOnion&lt;/a&gt;もサーバーはPure C#実装のものを使っています。&lt;/p&gt;
-&lt;p&gt;しかしクライアントに関しては、諸事情によりUnityでは動かない（TLS関連の問題など）ため、ずっとC-Coreを推奨してきました。更に、Unity用のビルドは元々experimentalだったうえに、とっくにメンテナンスモードに入り、そしてついに今年5月にサポート期限も切れて完全に宜しくない気配が漂っていました。また、古いx64ビルドなので最近のMac(M1, M2チップ)では動かないためUnity Editorで使うのにも難儀するといった問題も出てきていました。&lt;/p&gt;
-&lt;p&gt;と、いうわけで、CysharpではUnityで使うgRPCを推奨してきたということもあり、Unityで問題なく使えるgRPC実装としてYetAnotherHttpHandlerを開発・リリースしました。HttpClientの通信レイヤーであるHttpHandlerを差し替えるという形で実装してあるので、ほとんど通常の .NET でのgRPCと同様に扱えます。&lt;/p&gt;
-&lt;p&gt;内部実装としてはPure Rust実装のHTTP/2ライブラリ&lt;a href="https://hyper.rs/"&gt;hyper&lt;/a&gt;とPure RustのTLSライブラリ&lt;a href="https://github.com/rustls/rustls"&gt;rustls&lt;/a&gt;を基盤として作ったネイティブライブラリに対して、&lt;a href="https://github.com/Cysharp/csbindgen"&gt;Cysharp/csbindgen&lt;/a&gt;で生成したC#バインディングを通して通信する形になっています。&lt;/p&gt;
-&lt;h2&gt;余談&lt;/h2&gt;
-&lt;p&gt;YetAnotherHttpHandlerはgRPCやMagicOnionに限らず、Unityで自由に使える HTTP/2 Clientなので、アセットダウンロードの高速化にHTTP/2を用いる、といったような使い道も考えられます。既にモバイルゲームでも幾つかのタイトルでHTTP/2でアセットダウンロードしているタイトルは確認できていまして、例えばセガさんは&lt;a href="https://speakerdeck.com/segadevtech/cedec2021-taunrotoshi-jian-woda-fu-jian-da-liang-falseasetutowosahakugao-su-nashi-zhuang-toyun-yong-shi-li-falsegong-you"&gt;CEDEC2021 ダウンロード時間を大幅減！～大量のアセットをさばく高速な実装と運用事例の共有～&lt;/a&gt;のような発表もされています。ネイティブプラグインを自前でビルドして持ち込むというのはだいぶ敷居が高い話でしたが、YetAnotherHttpHandlerを入れるだけでいいなら、だいぶやれるんじゃないか感も出てくるんじゃないでしょうか……？&lt;/p&gt;
-&lt;/div&gt;</description>
-      <pubDate>Fri, 28 Jul 2023 00:00:00 +0900</pubDate>
-      <a10:updated>2023-07-28T00:00:00+09:00</a10:updated>
     </item>
   </channel>
 </rss>

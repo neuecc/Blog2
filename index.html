@@ -28,7 +28,100 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2024/03/19_Garnet.html">Redis互換の超高速インメモリデータストア「Garnet」にC# CustomCommandを実装してコマンドを拡張する</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2024/05/01_R3_Presentation.html">R3のコードから見るC#パフォーマンス最適化技法実例とTimeProviderについて</a></h1>
+<ul class="date"><li>2024-05-01</li></ul>
+<div class="entry_body"><p>4/27に大阪で開催された<a href="https://cs-reading.connpass.com/event/309714/">C#パフォーマンス勉強会</a>で「R3のコードから見る実践LINQ実装最適化・コンカレントプログラミング実例」という題でセッションしてきました！</p>
+<iframe class="speakerdeck-iframe" frameborder="0" src="https://speakerdeck.com/player/205627770b434599925567dbfeca229c" title="R3のコードから見る実践LINQ実装最適化・コンカレントプログラミング実例" allowfullscreen="true" style="border: 0px; background: padding-box padding-box rgba(0, 0, 0, 0.1); margin: 0px; padding: 0px; border-radius: 6px; box-shadow: rgba(0, 0, 0, 0.2) 0px 5px 40px; width: 100%; height: auto; aspect-ratio: 560 / 315;" data-ratio="1.7777777777777777"></iframe>
+<p>タイトル的にあまりLINQでもコンカレントでもなかったかな、とは思いますが、<a href="https://github.com/Cysharp/R3">R3</a>を題材に、具体的なコードをもとにした最適化技法の紹介という点では面白みはあったのではないかと思います。</p>
+<h2>Rxの定義</h2>
+<p>R3は、やや挑発的な内容を掲げていることもあり、R3は「Rxではない」みたいなことを言われることもあります。なるほど！では、そもそも何をもってRxと呼ぶのか、呼べるのか。私は「Push型でLINQ風のオペレーターが適用できればRx」というぐらいの温度感で考えています。もちろん、R3はそれを満たしています。</p>
+<p><code>mutable struct</code>の扱いと同じく、あまり教条主義的にならず、時代に合わせて、柔軟により良いシステムを考えていきましょう。コンピュータープログラミングにおいて、伝統や歴史を守ることは別に大して重要なことではないはずです。</p>
+<h2>TimeProvider DeepDive</h2>
+<p><a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.timeprovider?view=net-8.0">TimeProvider</a>について、セッションでも話しましたが、大事なことなのでもう少し詳しくいきましょう。TimeProviderにまず期待するところとしては、ほとんどが<code>SystemClock.Now</code>、つまりオレオレ<code>DateTime.Now</code>生成器の代わりを求めているでしょう。それを期待しているとTimeProviderの定義は無駄に複雑に見えます。しかし<code>TimeProvider</code>を分解してみると、これは4つの時間を司るクラスの抽象層になっています。</p>
+<pre><code class="language-csharp">public abstract class TimeProvider
+{
+    // TimeZoneInfo
+    public virtual TimeZoneInfo LocalTimeZone =&gt; TimeZoneInfo.Local;
+
+    // DateTimeOffset
+    public virtual DateTimeOffset GetUtcNow() =&gt; DateTimeOffset.UtcNow;
+    public DateTimeOffset GetLocalNow() =&gt;
+
+    // Stopwatch
+    public virtual long TimestampFrequency =&gt; Stopwatch.Frequency;
+    public virtual long GetTimestamp() =&gt; Stopwatch.GetTimestamp();
+    public TimeSpan GetElapsedTime(long startingTimestamp, long endingTimestamp) =&gt; 
+    public TimeSpan GetElapsedTime(long startingTimestamp) =&gt; GetElapsedTime(startingTimestamp, GetTimestamp());
+
+    // System.Threading.Timer
+    public virtual ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) =&gt;
+}
+
+public interface ITimer : IDisposable, IAsyncDisposable
+{
+    bool Change(TimeSpan dueTime, TimeSpan period);
+}
+</code></pre>
+<p>4つの時間を司るクラス、すなわち<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.timezoneinfo?view=net-8.0">TimeZoneInfo</a>、<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.datetimeoffset?view=net-8.0">DateTimeOffset</a>、<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.diagnostics.stopwatch?view=net-8.0">Stopwatch</a>、<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.threading.timer?view=net-8.0">System.Threading.Timer</a>。</p>
+<p>この造りになっているからこそ、あらゆる時間にまつわる挙動を任意に変更することができるのです。</p>
+<p>挙動を任意に変更するというとユニットテストでの時間のモックにばかり意識が向きますが（実際、<a href="https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.extensions.time.testing.faketimeprovider?view=net-8.0">FakeTimeProvider</a>はとても有益です）、別にユニットテストに限らず、優れた時間の抽象化層として使うことができます。ということを実装とともに証明したのがR3で、特にR3では<code>CreateTimer</code>をかなり弄っていて、WPFではDispatcherTimerを使うことで自動的にUIスレッドにディスパッチしたり、UnityではPlayerLoopベースのタイマーとしてScaledとUnsacledでTimescaleの影響を受けるタイマー・受けないタイマーなどといった実行時のカスタマイズ性を実現しました。</p>
+<p>セッションではStopwatchについてフォーカスしました。二点の時刻の経過時間を求めるのにDateTimeの引き算、つまり</p>
+<pre><code class="language-csharp">DateTime now = DateTime.UtcNow;
+/* do something... */
+TimeSpan elapesed = DateTime.UtcNow - now;
+</code></pre>
+<p>といったコードを書くのはよくあることですが、これはバッドプラクティスです。DateTimeの取得はタダではありません。では、なるほどStopwatchですね？ということで</p>
+<pre><code class="language-csharp">Stopwatch sw = Stopwatch.StartNew();
+/* do something... */
+TimeSpan elapsed = sw.Elapsed;
+</code></pre>
+<p>これは、Stopwatchがclassなのでアロケーションがあります。うまく使いまわしてあげる必要があります。
+使いまわしができないシチュエーションのために、アロケーションを避けるためにstructのStopwatch、ValueStopwatchといったカスタム型を作ることもありますが、待ってください、そもそもStopwatchが不要です。</p>
+<p>二点の経過時間を求めるなら、時計による時刻も不要で、その地点の何らかのタイムスタンプが取れればそれで十分なのです。</p>
+<pre><code class="language-csharp">// .NET 7以降での手法(GetElapsedTimeが追加された)
+long timestamp = Stopwatch.GetTimestamp();
+/* do something... */
+TimeSpan elapsed = Stopwatch.GetElapsedTime(timestamp);
+</code></pre>
+<p>このlongは、通常は高解像度タイムスタンプ、Windowsでは[QueryPerformanceCounter(https://learn.microsoft.com/ja-jp/windows/win32/sysinfo/acquiring-high-resolution-time-stamps)が使われています。TimeSpanでよく使うTicksではないことに注意してください。</p>
+<p>ベンチマークを取ってみましょう。</p>
+<pre><code class="language-csharp">using BenchmarkDotNet.Attributes;
+using System.Diagnostics;
+
+BenchmarkDotNet.Running.BenchmarkRunner.Run&lt;TimestampBenchmark&gt;();
+
+public class TimestampBenchmark
+{
+    [Benchmark]
+    public long Stopwatch_GetTimestamp()
+    {
+        return Stopwatch.GetTimestamp();
+    }
+
+    [Benchmark]
+    public DateTime DateTime_UtcNow()
+    {
+        return DateTime.UtcNow;
+    }
+
+    [Benchmark]
+    public DateTime DateTime_Now()
+    {
+        return DateTime.Now;
+    }
+}
+</code></pre>
+<p><img src="https://github.com/Cysharp/R3/assets/46207/75122cc7-c303-493f-bc78-40388529cf60" alt="image" /></p>
+<p>NowではUtcNowに加えてTimeZoneからのオフセット算出が入るために更にもう一段遅くなります。</p>
+<p>なお、マイクロベンチマークを取るときは必ず<a href="https://github.com/dotnet/BenchmarkDotNet">BenchmarkDotNet</a>を使ってください。(micro)benchmark is hard、です。Stopwatchで測られても、あらゆる要因から誤差が出まくるし、そもそも指標もよくわからないしで、数字を見ても何もわかりません。私はそういう数字の記事とかを見た場合、役に立たないと判断して無視します。</p>
+<h2>まとめ</h2>
+<p>セッション資料に盛り込めた最適化技法の紹介は極一部ではありますが、R3がどれだけ気合い入れて作られているかが伝わりましたでしょうか？10年の時を経て、私自身の成長とC#の成長が合わさり、UniRxからクオリティが桁違いです。</p>
+<p>これからも足を止めずにやっていきますし、みなさんも是非モダンC#やっていきましょう……！（Unityも十分モダンC#の仲間入りで良いです！）</p>
+<p>そういえばブログに貼り付けるのを忘れてたのですが3月末にはこんなセッションもしていました。</p>
+<iframe class="speakerdeck-iframe" frameborder="0" src="https://speakerdeck.com/player/c5a8898ac7c4464584068b0ee3180e94" title=".NETの非同期戦略とUnityとの相互運用" allowfullscreen="true" style="border: 0px; background: padding-box padding-box rgba(0, 0, 0, 0.1); margin: 0px; padding: 0px; border-radius: 6px; box-shadow: rgba(0, 0, 0, 0.2) 0px 5px 40px; width: 100%; height: auto; aspect-ratio: 560 / 315;" data-ratio="1.7777777777777777"></iframe>
+<p>ええ、ええ。Unityもモダンですよ！大丈夫！</p>
+</div>
+<h1><a href="https://neue.cc/2024/03/19_Garnet.html">Redis互換の超高速インメモリデータストア「Garnet」にC# CustomCommandを実装してコマンドを拡張する</a></h1>
 <ul class="date"><li>2024-03-19</li></ul>
 <div class="entry_body"><p>Microsoftから<a href="https://www.microsoft.com/en-us/research/blog/introducing-garnet-an-open-source-next-generation-faster-cache-store-for-accelerating-applications-and-services/">Introducing Garnet – an open-source, next-generation, faster cache-store for accelerating applications and services</a>という記事が今日公開されて、Garnetという新しいインメモリデータストアがOSSとして公開されました。Microsoft Researchで<a href="https://github.com/microsoft/FASTER">FASTER</a>を手掛けていたチームによるもので、FASTERはC#実装の高速なキーバリューストアでした。今回のGarnetはその発展形のようなもので、FASTERベースのストレージと、Redis互換のプロトコルによる、インメモリデータストアになっています。詳しくはGarnetのほうのブログ<a href="https://microsoft.github.io/garnet/blog/brief-history">A Brief History of Garnet</a>で。GarnetもC#で作られています。</p>
 <p>ベンチマークによると、Redisはもちろんのこと、DragonflyというRedis互換の世界最速のインメモリデータストア（を公式で謳ってる）<a href="https://www.dragonflydb.io/">Dragonfly</a>よりも高速、だそうで。</p>
@@ -3060,54 +3153,6 @@ fixed (byte* p = bytes)
 <p>Cのライブラリを持ってくるのも圧倒的に楽なので、私の中でもちょっと考え方が変わってきました。今までは割とPure C#実装至上主義、みたいなところがあったんですが、うまい切り分け、使い分けみたいなのを考えられるようになりました。そして、Cライブラリ利用がより自由になると、まさに<a href="https://cysharp.co.jp/">Cysharp</a>の掲げる「C#の可能性を切り開いていく」ことにまた一つ繋がってしまったな、と。</p>
 <p>まずはこの後に数個、csbindgenを活用したC#ライブラリを提供する予定があります！のですが、その前に、Rustかー、とは思わずに是非csbindgen、試してみてもらえると嬉しいです。</p>
 </div>
-<h1><a href="https://neue.cc/2023/01/30-SimdLinq.html">SimdLinq - LINQをそのままSIMD対応して超高速化するライブラリ</a></h1>
-<ul class="date"><li>2023-01-30</li></ul>
-<div class="entry_body"><p>ついこないだの<a href="https://neue.cc/2023/01/27_StructureOfArraysGenerator.html">StructureOfArraysGenerator - C#でSoAを簡単に利用するためのSource Generator</a>は、SoAになってるとSIMDを適用しやすいよ、という話だったのですが、そもそもSIMD手書きはカジュアルにやらないし、気合い入れてSIMD書くシチュエーションなら構造も気合い入れて専用に設計するよなぁ。と、なると、カジュアルにSIMD使えるライブラリが必要で、まぁLINQですね、と。</p>
-<ul>
-<li><a href="https://github.com/Cysharp/SimdLinq">Cysharp/SimdLinq</a></li>
-</ul>
-<p>これを入れると別にSoA関係なく、SIMDが適用できる状態(例えばint[]にSum)だと、自動的にSIMDが適用されるようになります。そして、実際めちゃくちゃ速い。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/215410106-b68d8567-5abf-4aa4-a050-a803b1913187.png" alt="" /></p>
-<p>SIMDとLINQの組み合わせが威力を発揮するというのは、別に新しいことではなく、そもそも .NET 7でも<a href="https://devblogs.microsoft.com/dotnet/performance_improvements_in_net_7/#linq">Performance Improvements in .NET 7 LINQ</a>で、幾つかのメソッドが内部でSIMD化されて高速化されていることが発表されています。しかし、 .NET 7のSIMD対応は非常に限定的なもので、具体的には<code>int[]</code>の<code>Average</code>,<code>Min</code>,<code>Max</code>、それと<code>long[]</code>の<code>Min</code>,<code>Max</code>だけです。これには理由はなくはないのですが、本来SIMD対応できる範囲はもっと広いため、これでは非常にもったいない。</p>
-<p>SimdLinqを適用できるメソッドは <code>Sum</code>, <code>Average</code>, <code>Min</code>, <code>Max</code>, <code>MinMax</code>, <code>Contains</code>, <code>SequenceEqual</code>、要素の型は <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code> int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code>、コレクションの型は <code>T[]</code>, <code>List&lt;T&gt;</code>, <code>Span&lt;T&gt;</code>, <code>ReadOnlySpan&lt;T&gt;</code>, <code>Memory&lt;T&gt;</code>, <code>ReadOnlyMemory&lt;T&gt;</code> と理屈上SIMD化できるものを全て詰め込みました。特に<code>Span&lt;T&gt;</code>/<code>ReadOnlySpan&lt;T&gt;</code>は通常のLINQでは使えない（メソッドが定義されていない）ので、有益です。また、Min, Maxを同時に取得する<code>MinMax</code>というメソッドを独自に追加しています。</p>
-<p>専用メソッドを呼ばせる（例えば<code>SumSimd()</code>とか)ようでは使いにくいと思ったので、現在のコードを何も弄らずとも、ライブラリ参照してglobal usingを設定すれば、全ての適用可能なメソッドに自動適用される仕組みにしました。これは同名メソッドを定義して、具象型のほうにオーバーロード解決が優先採用されることを利用しています。</p>
-<h2>使い方</h2>
-<p>なので、使い方もなにもなく、usingすれば勝手にSimdLinqになって高速化されます。</p>
-<pre><code class="language-csharp">using SimdLinq; // enable SimdLinq extension methods
-
-var array = Enumerable.Range(1, 100000).ToArray();
-
-var sum = array.Sum(); // used SimdLinqExtensions.Sum
-</code></pre>
-<p>using忘れちゃうというのはあるので、そこでglobal usingです。csprojに</p>
-<pre><code class="language-xml">&lt;ItemGroup&gt;
-    &lt;Using Include=&quot;SimdLinq&quot; /&gt;
-&lt;/ItemGroup&gt;
-</code></pre>
-<p>というのを仕込んでやれば、SimdLinqが使える場合はSimdLinqに、そうじゃないものは普通のLinqでオーバーロードが解決されるようになります。便利。</p>
-<p>具体的にSimdLinqが適用されるメソッドは以下のものになります。</p>
-<ul>
-<li><code>Sum</code> for <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
-<li><code>LongSum</code> for <code>int</code>, <code>uint</code></li>
-<li><code>Average</code> for <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
-<li><code>Min</code> for <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
-<li><code>Max</code> for <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
-<li><code>MinMax</code> for <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
-<li><code>Contains</code> for <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
-<li><code>SequenceEqual</code> for <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>float</code>, <code>double</code></li>
-</ul>
-<h2>互換性と安全性</h2>
-<p>.NET 7の標準に、このSimdLinqのようなアグレッシブなSIMD化が入らなかった理由は、互換性と安全性になります。え、安全じゃないの？というと怖くなるので、何が違うのかはしっかり把握しておきましょう。別に危険、というわけではないですが。</p>
-<p>まずSumとAverage(Averageの中身はSumしたのをLengthで割るだけなので中身は実質Sum)ですが、LINQのSumはcheckedで、オーバーフローすると例外を吐きます。SimdLinqはuncheckedです、つまりオーバーフローするとそのままオーバーフローしたまま結果を返します。checkedのほうが挙動としてはいいんですが、SIMD演算がオーバーフローのチェックできないので、SimdLinqではuncheckedとして提供しています。オーバーフローに関しては自己責任で。さすがにbyteのSumとかだとすぐオーバーフローしちゃうので、SimdLinqのSumは32 bit以上の要素にだけ提供しています、つまり<code>int</code>, <code>long</code>, <code>uint</code>, <code>ulong</code>, <code>double</code>, <code>float</code> です。そもそも元々のLINQのSum(引数なし)も<code>int</code>からなので、その辺は一緒ということで。</p>
-<p>そうしたオーバーフローの危険性を避けたい場合、独自拡張として <code>LongSum</code> というlongを戻り値にするSumメソッドを追加しています。内部的にlongで処理するため、(若干性能は落ちますが)オーバーフローしなくなります。</p>
-<p>float/doubleの扱いは挙動の違いが若干あります。まず、通常のLINQのMin, Maxは<code>NaN</code>をチェックしますがSimdLinqは<code>NaN</code>をチェックしません。<code>NaN</code>チェックがあったほうが丁寧ですが、SIMDでそれは入れずらい＆NaNが入ってくるケースってあまりないので現実的にすごい問題か、というとそうではないかな、と。</p>
-<p>それとSumの場合に足し算の順序が変わって(LINQは前から順番に足しますが、SIMDだと並列に足すので)、浮動小数点演算だと足す順序が変わると微妙に誤差が出て同じ結果になりません。例えばLINQだと<code>1.5710588F</code>だけどSimdLinqだと<code>1.5710589F</code>になる、といったような違いが出てきます。結果としては別にどっちでも良い（ある意味で別にどっちも厳密にはあってない）と思いますが、結果の互換性がないですよ、ということは留意してください。</p>
-<h2>まとめ</h2>
-<p>高速なLINQのAlternativeって、結構あります。<a href="https://github.com/kevin-montrose/LinqAF">LinqAF</a>、<a href="https://github.com/jackmott/LinqFaster">LinqFaster</a>、<a href="https://github.com/NetFabric/NetFabric.Hyperlinq">NetFabric.Hyperlinq</a>など。ただ、どれも大仰なんですよね、StructのIteratorを作ってー、とか。専用メソッドを呼ぶためにラップするのも手間だし、その割に凄い効果的というほどでもないから、依存を増やす割にはメリットも薄くなので、私自身は使おうとはあまり思ってませんでした。</p>
-<p>そこでSimdLinqではLINQ全体を高速化させることを狙っているわけではなくて、SIMDが適用できるものだけピンポイントに、そしてソースコードには一切手を入れる必要のない&quot;Drop-in replacement&quot;になるようにデザインしました。また、SIMDのみに絞ったことで性能面に明らかに圧倒的な差をだして、あえて使う理由を作る、といったところですね。</p>
-<p>ついでにそうなると欲張ってどんどん適用できる箇所を増やしたい、つまりは<a href="https://github.com/Cysharp/StructureOfArraysGenerator">StructureOfArraysGenerator</a>だ、みたいなコンボも狙っています。エコシステム囲い込み！囲い込みはEvil！</p>
-<p>そんなわけでSIMDシリーズ第一弾でした。今年はSIMD関連も幾つか出していくかもしれませんし、Source Generatorネタがめちゃくちゃ溜まってるので時間が無限大に必要です。まぁ、ともかくまずはSimdLinqを使って見てください！</p>
-</div>
 <a href="https://neue.cc/2">| Next</a>
 </div>
         <div id="side">
@@ -3130,6 +3175,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/05/">2024-05</a>
 <li><a href="https://neue.cc/2024/03/">2024-03</a>
 <li><a href="https://neue.cc/2024/02/">2024-02</a>
 <li><a href="https://neue.cc/2024/01/">2024-01</a>
