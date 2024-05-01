@@ -112,6 +112,8 @@ public class TimestampBenchmark
 
 NowではUtcNowに加えてTimeZoneからのオフセット算出が入るために更にもう一段遅くなります。
 
+ちなみに、2点間の時間の算出にDateTimeではなくTimestampを使うもう一つの利点としては、システム時間の変更の影響を受けないという点があります。dotnet/reactiveではISchedulerがDateTimeOffsetベースで作られていたため、ISchedulerインターフェイスそのものがこの問題の影響を避けられないために、内部的にゴチャゴチャしたハックが繰り返され、パフォーマンスの大幅な劣化にも繋がっていました。
+
 なお、マイクロベンチマークを取るときは必ず[BenchmarkDotNet](https://github.com/dotnet/BenchmarkDotNet)を使ってください。(micro)benchmark is hard、です。Stopwatchで測られても、あらゆる要因から誤差が出まくるし、そもそも指標もよくわからないしで、数字を見ても何もわかりません。私はそういう数字の記事とかを見た場合、役に立たないと判断して無視します。
 
 まとめ
