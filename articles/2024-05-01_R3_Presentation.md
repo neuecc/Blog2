@@ -76,7 +76,7 @@ long timestamp = Stopwatch.GetTimestamp();
 TimeSpan elapsed = Stopwatch.GetElapsedTime(timestamp);
 ```
 
-このlongは、通常は高解像度タイムスタンプ、Windowsでは[QueryPerformanceCounter(https://learn.microsoft.com/ja-jp/windows/win32/sysinfo/acquiring-high-resolution-time-stamps)が使われています。TimeSpanでよく使うTicksではないことに注意してください。
+このlongは、通常は高解像度タイムスタンプ、Windowsでは[QueryPerformanceCounter](https://learn.microsoft.com/ja-jp/windows/win32/sysinfo/acquiring-high-resolution-time-stamps)が使われています。TimeSpanでよく使うTicksではないことに注意してください。
 
 ベンチマークを取ってみましょう。
 
