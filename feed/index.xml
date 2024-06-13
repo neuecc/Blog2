@@ -5,7 +5,354 @@
     <link>http://neue.cc/</link>
     <description>C# Technical Blog</description>
     <language>ja</language>
-    <lastBuildDate>Mon, 03 Jun 2024 19:33:18 +0900</lastBuildDate>
+    <lastBuildDate>Thu, 13 Jun 2024 20:46:00 +0900</lastBuildDate>
+    <item>
+      <guid isPermaLink="true">https://neue.cc/2024/06/13_ConsoleAppFramework_v5.html</guid>
+      <link>https://neue.cc/2024/06/13_ConsoleAppFramework_v5.html</link>
+      <title>ConsoleAppFramework v5 - ゼロオーバーヘッド・Native AOT対応のC#用CLIフレームワーク</title>
+      <description>&lt;h1&gt;&lt;a href="https://neue.cc/2024/06/13_ConsoleAppFramework_v5.html"&gt;ConsoleAppFramework v5 - ゼロオーバーヘッド・Native AOT対応のC#用CLIフレームワーク&lt;/a&gt;&lt;/h1&gt;
+&lt;ul class="date"&gt;&lt;li&gt;2024-06-13&lt;/li&gt;&lt;/ul&gt;
+&lt;div class="entry_body"&gt;&lt;p&gt;ConsoleAppFrameworkの完全に新しいバージョンをリリースしました。完全に設計しなおして実装も完全に作り直された、何もかもが新しいフレームワークになっています。設計指針として「Zero Dependency, Zero Overhead, Zero Reflection, Zero Allocation, AOT Safe」を掲げ、もちろん、他を圧倒的に引き離すパフォーマンスを実現しています。&lt;/p&gt;
+&lt;p&gt;&lt;img src="https://github.com/Cysharp/ConsoleAppFramework/assets/46207/db4bf599-9fe0-4ce4-801f-0003f44d5628" alt="image" /&gt;&lt;/p&gt;
+&lt;p&gt;これはコールドスタートアップ・ウォームアップなしでのベンチマークとなっていて、CLIアプリケーションでの実際での利用に最も即したものだと考えています。System.CommandLineと比較すれば280倍！メモリアロケーション量もほかのフレームワークの100~1000倍少なくなっています(表示されている400Bはほぼシステム自体のallocなのでフレームワーク自体は0です)。&lt;/p&gt;
+&lt;p&gt;このパフォーマンスは、全てをSource Generatorで生成することで実現しました。例えば以下のようなコード。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;using ConsoleAppFramework;
+
+// args: ./cmd --foo 10 --bar 20
+ConsoleApp.Run(args, (int foo, int bar) =&amp;gt; Console.WriteLine($&amp;quot;Sum: {foo + bar}&amp;quot;));
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;ConsoleAppFrameworkはSource GeneratorがRunで与えられているラムダ式の引数を解析して、Runメソッドそのものを生成します。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;internal static partial class ConsoleApp
+{
+    // Generate the Run method itself with arguments and body to match the lambda expression
+    public static void Run(string[] args, Action&amp;lt;int, int&amp;gt; command)
+    {
+        // code body
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;通常C#のSource Generatorは属性をクラスかメソッドに与えて、それを元に生成されますが、ConsoleAppFrameworkはメソッドの呼び出しを監視して生成のキーにしています。これはRustのマクロから発想を得ていて、Rustには&lt;a href="https://doc.rust-lang.org/book/ch19-06-macros.html"&gt;Attribute-like macros and Function-like macros&lt;/a&gt;といったような分類がありますが、今回のやりかたはFunction-likeなスタイルと言えるでしょう。&lt;/p&gt;
+&lt;p&gt;実際の生成されるコード全体は以下のようなものになります。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;internal static partial class ConsoleApp
+{
+    public static void Run(string[] args, Action&amp;lt;int, int&amp;gt; command)
+    {
+        if (TryShowHelpOrVersion(args, 2, -1)) return;
+
+        var arg0 = default(int);
+        var arg0Parsed = false;
+        var arg1 = default(int);
+        var arg1Parsed = false;
+
+        try
+        {
+            for (int i = 0; i &amp;lt; args.Length; i++)
+            {
+                var name = args[i];
+
+                switch (name)
+                {
+                    case &amp;quot;--foo&amp;quot;:
+                    {
+                        if (!TryIncrementIndex(ref i, args.Length) || !int.TryParse(args[i], out arg0)) { ThrowArgumentParseFailed(&amp;quot;foo&amp;quot;, args[i]); }
+                        arg0Parsed = true;
+                        break;
+                    }
+                    case &amp;quot;--bar&amp;quot;:
+                    {
+                        if (!TryIncrementIndex(ref i, args.Length) || !int.TryParse(args[i], out arg1)) { ThrowArgumentParseFailed(&amp;quot;bar&amp;quot;, args[i]); }
+                        arg1Parsed = true;
+                        break;
+                    }
+                    default:
+                        // omit...(case-insensitive compare codes)
+                        ThrowArgumentNameNotFound(name);
+                        break;
+                }
+            }
+            if (!arg0Parsed) ThrowRequiredArgumentNotParsed(&amp;quot;foo&amp;quot;);
+            if (!arg1Parsed) ThrowRequiredArgumentNotParsed(&amp;quot;bar&amp;quot;);
+
+            command(arg0!, arg1!);
+        }
+        catch (Exception ex)
+        {
+            Environment.ExitCode = 1;
+            if (ex is ValidationException or ArgumentParseFailedException)
+            {
+                LogError(ex.Message);
+            }
+            else
+            {
+                LogError(ex.ToString());
+            }
+        }
+    }
+
+    static partial void ShowHelp(int helpId)
+    {
+        Log(&amp;quot;&amp;quot;&amp;quot;
+Usage: [options...] [-h|--help] [--version]
+
+Options:
+  --foo &amp;lt;int&amp;gt;     (Required)
+  --bar &amp;lt;int&amp;gt;     (Required)
+&amp;quot;&amp;quot;&amp;quot;);
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;特にひねりもなさそうなド直球ドシンプルなコードに見えるのではないでしょうか。それが大事です！単純なコードであればあるほど速い！フレームワークなのに単純、だから速い。というのが目指している姿です。余計なコードはいっさいなく、メソッド本体に全ての処理が集約されているので、フレームワークとしてゼロ・オーバーヘッド、最適化した手書きコードと同等の速度を実現しました。&lt;/p&gt;
+&lt;p&gt;CLIアプリケーションは通常、コールドスタートからの単発の実行になるため、動的コード生成(IL.EmitやExpression.Compile)やキャッシュ(ArrayPoolやDictionary生成による以降のマッチング高速化)が効きにくい分野です。それらを作ったほうがオーバーヘッドが大きいですからね。かといってリフレクションなどをそのまま使うのは、それはそれで低速です。ConsoleAppFrameworkは全ての必要な処理をインライン生成することによって、単発実行での速度が圧倒的に高速化されています。&lt;/p&gt;
+&lt;p&gt;リフレクションもないのでNative AOTとの親和性も圧倒的に高く、コールドスタートアップ速度におけるC#の欠点は一切なくなります。&lt;/p&gt;
+&lt;p&gt;もう一つ特徴として、&lt;code&gt;ConsoleApp&lt;/code&gt;クラスを含めて、全てがSource Generatorによって生成されるために、ConsoleAppFramework自体も含めて依存が全くありません。&lt;/p&gt;
+&lt;p&gt;コンソールアプリケーションを作るシチュエーションは多用です。多数の依存を持った大きなバッチアプリケーションの場合もあれば、超単機能の小さなコマンドの場合もあります。小さなコマンドを作りたい時には、少しも追加の依存を入れたくはないでしょう。それこそ &lt;code&gt;Microsoft.Extensions.Hosting&lt;/code&gt; を参照すると、それだけで数十個の依存DLLが追加されてしまいます！ConsoleAppFrameworkなら、自身も含めて依存ゼロです。&lt;/p&gt;
+&lt;p&gt;依存ゼロの良いところは明らかにバイナリサイズが小さくなることです。特にNative AOTではバイナリサイズは気になるところですが、ConsoleAppFrameworkなら追加のコストはほぼゼロです。&lt;/p&gt;
+&lt;p&gt;そしてもちろん、単機能ではフレームワークとしてはさして機能しません、ということで以下のような機能が実現されています。他のフレームワークと比べても全く見劣りしないはずです。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;SIGINT/SIGTERM(Ctrl+C) handling with gracefully shutdown via &lt;code&gt;CancellationToken&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;Filter(middleware) pipeline to intercept before/after execution&lt;/li&gt;
+&lt;li&gt;Exit code management&lt;/li&gt;
+&lt;li&gt;Support for async commands&lt;/li&gt;
+&lt;li&gt;Registration of multiple commands&lt;/li&gt;
+&lt;li&gt;Registration of nested commands&lt;/li&gt;
+&lt;li&gt;Setting option aliases and descriptions from code document comment&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;System.ComponentModel.DataAnnotations&lt;/code&gt; attribute-based Validation&lt;/li&gt;
+&lt;li&gt;Dependency Injection for command registration by type and public methods&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;Microsoft.Extensions&lt;/code&gt;(Logging, Configuration, etc...) integration&lt;/li&gt;
+&lt;li&gt;High performance value parsing via &lt;code&gt;ISpanParsable&amp;lt;T&amp;gt;&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;Parsing of params arrays&lt;/li&gt;
+&lt;li&gt;Parsing of JSON arguments&lt;/li&gt;
+&lt;li&gt;Help(&lt;code&gt;-h|--help&lt;/code&gt;) option builder&lt;/li&gt;
+&lt;li&gt;Default show version(&lt;code&gt;--version&lt;/code&gt;) option&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;生成されるコードはモジュール化されていて、コードが使用する機能によって変化し、常にその機能の実現において最小のコードが生成されるようになっていることで、多機能と高速さを両立しています。また、どの機能も最速で実現できるよう念入りに調整してあるため、全機能が有効化されてもなお、他とは比較にならないほどに高速です。&lt;/p&gt;
+&lt;p&gt;余談ですが、デリゲートはデリゲート生成というアロケーションがあります。つまり真のゼロアロケーション・ゼロオーバーヘッドじゃないじゃん、と言うことができます。しかし、嘘は言いたくないので、ConsoleAppFrameworkは真のゼロアロケーションを実現する仕組みもちゃんと用意されています。以下のように静的関数をfunction pointerとして渡してください。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;unsafe
+{
+    ConsoleApp.Run(args, &amp;amp;Sum);
+}
+
+static void Sum(int x, int y) =&amp;gt; Console.Write(x + y);
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;すると、以下のような &lt;code&gt;delegate* managed&amp;lt;&amp;gt;&lt;/code&gt; （あまり見慣れないと思いますが、managed function pointerという言語機能がC#には追加されているのです）の引数を持ったメソッドの実体を生成します。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;public static unsafe void Run(string[] args, delegate* managed&amp;lt;int, int, void&amp;gt; command)
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;これならもう完全に文句なくゼロアロケーション・ゼロオーバーヘッドです！&lt;/p&gt;
+&lt;p&gt;実用的には別にデリゲートでも全く関係ないレベルですが、完全に完璧を目指す執拗な姿勢により、対応を入れました。これでどの角度からも絶対に文句は付けられないでしょう。&lt;/p&gt;
+&lt;h2&gt;高速な値変換&lt;/h2&gt;
+&lt;p&gt;文字列からC#の値に変換する最速の手段はなんでしょうか？intだったら &lt;code&gt;int.TryParse&lt;/code&gt; ですよね。では、他は？intは決め打ちだからいいとして、string -&amp;gt; T(あるいはobject)を汎用的にするには？というと少し難しい話になってきて、昔は&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.componentmodel.typeconverter?view=net-8.0"&gt;TypeConverter&lt;/a&gt;というものが使われてきました。もちろん、パフォーマンスは悪いです。&lt;/p&gt;
+&lt;p&gt;あるいは最近はJsonSerializerが標準搭載されているから、それに丸投げしてみるというのもアリでしょう。もちろん、パフォーマンスは決して良くはありません。特にコールドスタートアップで考えるとJsonSerializerのキャッシュ処理が必要になってきて、単発実行においてはかなりのオーバーヘッドが足されてしまいます。&lt;/p&gt;
+&lt;p&gt;ConsoleAppFrameworkでは&lt;a href="https://learn.microsoft.com/en-us/dotnet/api/system.iparsable-1?view=net-8.0"&gt;&lt;code&gt;IParsable&amp;lt;T&amp;gt;&lt;/code&gt;&lt;/a&gt;, &lt;a href="https://learn.microsoft.com/en-us/dotnet/api/system.ispanparsable-1?view=net-8.0"&gt;&lt;code&gt;ISpanParsable&amp;lt;T&amp;gt;&lt;/code&gt;&lt;/a&gt;を採用しています。これは .NET 7から追加され、C# 11で追加されたstatic abstract interfaceが使用されています。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;public interface IParsable&amp;lt;TSelf&amp;gt; where TSelf : IParsable&amp;lt;TSelf&amp;gt;?
+{
+	static abstract TSelf Parse(string s, IFormatProvider? provider);
+	static abstract bool TryParse([NotNullWhen(true)] string? s, IFormatProvider? provider, [MaybeNullWhen(returnValue: false)] out TSelf result);
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;C# 11になってようやく汎用的な 「文字列 -&amp;gt; 値」変換処理が実現するようになったのです！ ConsoleAppFrameworkでは .NET 8/C# 12 を最小実行可能環境としているため、問答無用で採用しました。HalfやInt128などの .NET 8で登場した新しい型や、自分で定義する方も&lt;code&gt;IParsable&amp;lt;T&amp;gt;&lt;/code&gt;を実装すればそれを使って高速に処理されます！&lt;/p&gt;
+&lt;p&gt;なお、intなどの基本型はそもそもSource Generatorがintであることを知っているので、直接int.TryParseのように直接実行されるようになっていたりはしますが。&lt;/p&gt;
+&lt;h2&gt;ドキュメントコメントによる定義&lt;/h2&gt;
+&lt;p&gt;DescriptionやAliasの追加は、今までは、あるいは他のフレームワークでは属性を使って記述していました。しかし、それは少しメソッドの各パラメーターに属性、更にかなり長めの文字列を付与するのは、メソッドとしてかなり読みづらくなります。&lt;/p&gt;
+&lt;p&gt;そこでConsoleAppFrameworkではドキュメントコメントを活用することにしました。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;class Commands
+{
+    /// &amp;lt;summary&amp;gt;
+    /// Display Hello.
+    /// &amp;lt;/summary&amp;gt;
+    /// &amp;lt;param name=&amp;quot;message&amp;quot;&amp;gt;-m, Message to show.&amp;lt;/param&amp;gt;
+    public static void Hello(string message) =&amp;gt; Console.Write($&amp;quot;Hello, {message}&amp;quot;);
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;これは&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-txt"&gt;Usage: [options...] [-h|--help] [--version]
+
+Display Hello.
+
+Options:
+  -m|--message &amp;lt;string&amp;gt;    Message to show. (Required)
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;というコマンドになります。ドキュメントコメントであれば、多くの引数があっても自然な見た目を保つことが可能です。この手法が取れるのはSource Generatorで生成するため.xmlは不要でコードから直接読み取れることの強みでもありますね。（ただしSource Generatorでドキュメントコメントをあらゆる環境で読み取れるようにするには若干のハックが必要でした）&lt;/p&gt;
+&lt;h2&gt;フィルターパイプライン&lt;/h2&gt;
+&lt;p&gt;実行の前後をフックする仕組みとしてConsoleAppFrameworkではFilterを採用しています。ミドルウェアパターンとも呼ばれて、特にasync/awaitが使える言語ではよく見かけるパターンだと思います。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;internal class NopFilter(ConsoleAppFilter next) : ConsoleAppFilter(next) // ctor needs `ConsoleAppFilter next` and call base(next)
+{
+    // implement InvokeAsync as filter body
+    public override async Task InvokeAsync(ConsoleAppContext context, CancellationToken cancellationToken)
+    {
+        try
+        {
+            /* on before */
+            await Next.InvokeAsync(context, cancellationToken); // invoke next filter or command body
+            /* on after */
+        }
+        catch
+        {
+            /* on error */
+            throw;
+        }
+        finally
+        {
+            /* on finally */
+        }
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;この設計パターンは本当に優れていて、実行をフックしたいような仕組みを用意したい場合は、このパターンを採用することを絶対にお薦めします。GoFの時代にasync/awaitがあったら、重要なデザインパターンとして載っていたことでしょう。&lt;/p&gt;
+&lt;p&gt;ReadMeにはフィルターでできることとして、実行時間のロギング・ExitCodeのカスタマイズ・多重実行禁止・認証処理などを紹介しています。&lt;code&gt;Task InvokeAsync&lt;/code&gt;一つで様々な処理を実現できる素晴らしさ。誰がこのパターンを最初に発見したんでしょうね？&lt;/p&gt;
+&lt;p&gt;フィルターの設計にも色々な手法があるのですが、ConsoleAppFrameworkでは最もパフォーマンスの出る方法を選びました。コンストラクターでNextを受け取ることと、コードジェネレート時に静的に全ての利用するフィルターが決定するので（動的な追加は許可していません）、全てを埋め込んで組み立てています。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;app.UseFilter&amp;lt;NopFilter&amp;gt;();
+app.UseFilter&amp;lt;NopFilter&amp;gt;();
+app.UseFilter&amp;lt;NopFilter&amp;gt;();
+app.UseFilter&amp;lt;NopFilter&amp;gt;();
+app.UseFilter&amp;lt;NopFilter&amp;gt;();
+
+// The above code will generate the following code:
+
+sealed class Command0Invoker(string[] args, Action command) : ConsoleAppFilter(null!)
+{
+    public ConsoleAppFilter BuildFilter()
+    {
+        var filter0 = new NopFilter(this);
+        var filter1 = new NopFilter(filter0);
+        var filter2 = new NopFilter(filter1);
+        var filter3 = new NopFilter(filter2);
+        var filter4 = new NopFilter(filter3);
+        return filter4;
+    }
+
+    public override Task InvokeAsync(ConsoleAppContext context, CancellationToken cancellationToken)
+    {
+        return RunCommand0Async(context.Arguments, args, command, context, cancellationToken);
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;これにより、中間の配列のアロケーションや、ラムダ式のキャプチャのアロケーションは発生せず、フィルターの個数 + 1(メソッド本体のラップ)の追加のアロケーションのみが追加のコストとなります。また、戻り値のTaskは、同期的に完了する場合はTask.Completed相当のものが使われることになるため、これをValueTaskにする必要はありません。&lt;/p&gt;
+&lt;p&gt;コンストラクターでNextを受け取ってbaseに渡すだけのコードも、primary constructorのお陰で簡単に書けるようになりました。&lt;/p&gt;
+&lt;h2&gt;コマンドライン引数の構文について&lt;/h2&gt;
+&lt;p&gt;コマンドライン引数はスペース区切りで&lt;code&gt;string[] args&lt;/code&gt;に渡されるということ以外は、完全に自由です。なんとなく &lt;code&gt;--&lt;/code&gt;や&lt;code&gt;-&lt;/code&gt;がパラメーター識別子だと思われていますが、実際はなんでもいいし、なんだったらWindowsは&lt;code&gt;/&lt;/code&gt;が使われることも多かった。&lt;/p&gt;
+&lt;p&gt;とはいえ、ある程度標準的なルールは存在します。代表的なものは&lt;a href="https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap12.html"&gt;POSIX規格&lt;/a&gt;と、その拡張である&lt;a href="https://www.gnu.org/prep/standards/html_node/Command_002dLine-Interfaces.html"&gt;GNU Coding Standards&lt;/a&gt;でしょうか。ConsoleAppFrameworkでも、POSIX規格にある程度は従いつつ、GNU Coding Stadardsで定義されている &lt;code&gt;--version&lt;/code&gt; と &lt;code&gt;--help&lt;/code&gt; を組み込みのオプションとしています。名前も &lt;code&gt;--lower-kebab-case&lt;/code&gt; がデフォルトです。&lt;/p&gt;
+&lt;p&gt;「ある程度」というのは、つまり、完全に従っているというわけではありません。規格にせよ伝統的な慣習にせよ、古いルールは現代的な観点から許容すべきでないルールも少なくありません。例えば&lt;code&gt;-x&lt;/code&gt;と&lt;code&gt;-X&lt;/code&gt;が区別されて異なる挙動をするというのは絶対にナシでしょう。あるいは広く使われているものでもバンドリング、&lt;code&gt;-fdx&lt;/code&gt;は&lt;code&gt;-f&lt;/code&gt;, &lt;code&gt;-d&lt;/code&gt;, &lt;code&gt;-x&lt;/code&gt;と解釈されるといったものも、あまり良いとは思えません。バンドリングに関しては、パフォーマンス上でも、パース処理を複雑化させるため問題があります。&lt;/p&gt;
+&lt;p&gt;ConsoleAppFrameworkで優先しているのはパフォーマンスであるため、パフォーマンス上問題を引き起こす可能性のあるルールに関しては採用していません。大文字小文字の区別はしないようにしていますが、これは小文字のマッチングを先に行った後、フォールバックとしてcase-insensitiveのマッチングを行うため、実用上のパフォーマンスの低下は起こらないと考えています。&lt;/p&gt;
+&lt;p&gt;&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/standard/commandline/syntax"&gt;System.CommandLine のコマンド ライン構文の概要 - .NET | Microsoft Learn&lt;/a&gt;を見ると、System.CommandLineがかなり柔軟な構文解釈を可能にしていることがわかるでしょう。それはとても良いことです！良いことではあるのですが、パフォーマンス劣化を引き起こしているなら問題です。そして実際、System.CommandLineの性能はベンチマーク結果から明らかなとおり、非常に悪い。これはちょっといただけません。&lt;/p&gt;
+&lt;p&gt;迷走を続けている&lt;a href="https://github.com/dotnet/command-line-api"&gt;System.CommandLine&lt;/a&gt;は、どうやら再度分解されて実装を変更するようです。&lt;a href="https://github.com/dotnet/command-line-api/issues/2338"&gt;Resetting System.CommandLine&lt;/a&gt;ということで、POSIX規格のパーサーとしての小さなコアを.NET 9 あるいは .NET 10で標準採用されることを目指している、ようです。&lt;/p&gt;
+&lt;p&gt;もしそれらが標準採用されたとしても、パフォーマンスの観点からは、ConsoleAppFrameworkを超えることは絶対にないでしょう。&lt;/p&gt;
+&lt;h2&gt;v4からの互換性について&lt;/h2&gt;
+&lt;p&gt;破壊的変更！破壊的変更を厭わないことはいいことです、イノベーションを妨げない、常に先端的であり続けるために必要なことです。C#の先端を走り続けるのはCysharpのアイデンティティでもあります。と、同時に、もちろん大迷惑なことです。今回の v4 -&amp;gt; v5 に関しては .NET Frameworkから.NET Coreに変わったような、 ASP.NET から ASP.NET Coreに変わったような、そんな変革なのでしょうがない、どうしても必要な変化だったのだ……。&lt;/p&gt;
+&lt;p&gt;ただし、実際のところは別にそこまで大きく変わっているわけではなかったりもします。名前変換処理(lower-kebab-case)のロジックは同じものを使っているため、名前がズレてしまうといったこともないので、コンパイルエラー出たメソッド名をマッピングするだけ、ではあります。そのぐらいのことはよくある、よね？&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;var app = ConsoleApp.Create(args); app.Run(); -&amp;gt; var app = ConsoleApp.Create(); app.Run(args);
+app.AddCommand/AddSubCommand -&amp;gt; app.Add(string commandName)
+app.AddRootCommand -&amp;gt; app.Add(&amp;quot;&amp;quot;)
+app.AddCommands&amp;lt;T&amp;gt; -&amp;gt; app.Add&amp;lt;T&amp;gt;
+app.AddSubCommands&amp;lt;T&amp;gt; -&amp;gt; app.Add&amp;lt;T&amp;gt;(string commandPath)
+app.AddAllCommandType -&amp;gt; NotSupported(use Add&amp;lt;T&amp;gt; manually)
+[Option(int index)] -&amp;gt; [Argument]
+[Option(string shortName, string description)] -&amp;gt; Xml Document Comment
+ConsoleAppFilter.Order -&amp;gt; NotSupported(global -&amp;gt; class -&amp;gt; method declrative order)
+ConsoleAppOptions.GlobalFilters -&amp;gt; app.UseFilter&amp;lt;T&amp;gt;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;全体的には、より単純化された、ようするに「良くなった」と思ってもらえる仕様変更だとは思います。&lt;/p&gt;
+&lt;p&gt;また、標準で &lt;code&gt;Microsoft.Extensions.Hosting&lt;/code&gt; に乗っからなくなったというのは大きな違いですが、これは一行追加するだけで解決します。Hostingの上に乗っかるというのは、つまりはHostingで生成するServiceProviderを使う、それだけのことなのだ、と。実際はLifetime管理もありますが、それはConsoleAppFrameworkが自前でやっているので、DIのためのServiceProviderだけ渡してやれば実用上の違いはありません。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;using var host = Host.CreateDefaultBuilder().Build(); // use using for host lifetime
+ConsoleApp.ServiceProvider = host.ServiceProvider;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;v4では&lt;code&gt;ConsoleAppBase&lt;/code&gt;を継承させていましたが、v5ではPOCOでよくなりました。代わりに&lt;code&gt;ConsoleAppContext&lt;/code&gt;や&lt;code&gt;CancellationToken&lt;/code&gt;に関してはコンストラクタインジェクションで受け取ってください。これも、C# 12のprimary constructorのお陰でそんなに手間じゃなくなりました。これもベースクラスを必要とする仕組みをやめた理由の一つになります。&lt;/p&gt;
+&lt;h2&gt;真のIncremental Generator&lt;/h2&gt;
+&lt;p&gt;Incremental Generatorって、ただたんに何も考えずに作るとIncrementalにならないのです。というのは知識として知ってはいたのですが、今まで見て見ぬふりをしていました！ありがたいことに指摘が入ったので、重い腰を上げてちゃんと抜本的な対応を取ることにしました。&lt;/p&gt;
+&lt;p&gt;まず最初にやらなければならないのは、Incrementalであるかどうかを視認できるようにすることです。普通に動かしていても内部状態は全く見えないので、ユニットテストで状態をチェックできるようにすることが大事です。例えばこんなユニットテストが書かれています。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;    [Fact]
+    public void RunLambda()
+    {
+        var step1 = &amp;quot;&amp;quot;&amp;quot;
+using ConsoleAppFramework;
+
+ConsoleApp.Run(args, int () =&amp;gt; 0);
+&amp;quot;&amp;quot;&amp;quot;;
+
+        var step2 = &amp;quot;&amp;quot;&amp;quot;
+using ConsoleAppFramework;
+
+ConsoleApp.Run(args, int () =&amp;gt; 100); // body change
+
+Console.WriteLine(&amp;quot;foo&amp;quot;); // unrelated line
+&amp;quot;&amp;quot;&amp;quot;;
+
+        var step3 = &amp;quot;&amp;quot;&amp;quot;
+using ConsoleAppFramework;
+
+ConsoleApp.Run(args, int (int x, int y) =&amp;gt; 100); // change signature
+
+Console.WriteLine(&amp;quot;foo&amp;quot;);
+&amp;quot;&amp;quot;&amp;quot;;
+
+        var reasons = CSharpGeneratorRunner.GetIncrementalGeneratorTrackedStepsReasons(&amp;quot;ConsoleApp.Run.&amp;quot;, step1, step2, step3);
+
+        reasons[0][0].Reasons.Should().Be(&amp;quot;New&amp;quot;);
+        reasons[1][0].Reasons.Should().Be(&amp;quot;Unchanged&amp;quot;);
+        reasons[2][0].Reasons.Should().Be(&amp;quot;Modified&amp;quot;);
+
+        VerifySourceOutputReasonIsCached(reasons[1]);
+        VerifySourceOutputReasonIsNotCached(reasons[2]);
+    }
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Incremental Generatorは &lt;code&gt;trackIncrementalGeneratorSteps: true&lt;/code&gt; というオプションを渡してDriverを動かすと、各ステップの状態の結果が見えるようになります。&lt;code&gt;IncrementalStepRunReason&lt;/code&gt;には&lt;code&gt;New&lt;/code&gt;, &lt;code&gt;Unchanged&lt;/code&gt;, &lt;code&gt;Modified&lt;/code&gt;, &lt;code&gt;Cached&lt;/code&gt;, &lt;code&gt;Removed&lt;/code&gt; という状態があり、最終出力の手前が&lt;code&gt;Unchanged&lt;/code&gt;か&lt;code&gt;Cached&lt;/code&gt;なら、出力処理がスキップされます。&lt;/p&gt;
+&lt;p&gt;上のユニットテストではstep2では出力コードに変更のない箇所に変更が加わっただけなので、Unchangedです。なので最終段ではCachedになっていました。step3は再生成が必要な変更が加わっているのでModifiedとなり、ソースコード生成処理まで走ります。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;IncrementalStepRunReason&lt;/code&gt;は&lt;code&gt;TrackedSteps&lt;/code&gt;から取り出すことが出来るのですが、そのままだとちょっと読みづらすぎるので、確認しやすいように整形しています、というのが&lt;code&gt;GetIncrementalGeneratorTrackedStepsReasons&lt;/code&gt;というユーティリティメソッドです。&lt;/p&gt;
+&lt;pre&gt;&lt;code class="language-csharp"&gt;public static (string Key, string Reasons)[][] GetIncrementalGeneratorTrackedStepsReasons(string keyPrefixFilter, params string[] sources)
+{
+    var parseOptions = new CSharpParseOptions(LanguageVersion.CSharp12); // 12
+    var driver = CSharpGeneratorDriver.Create(
+        [new ConsoleAppGenerator().AsSourceGenerator()],
+        driverOptions: new GeneratorDriverOptions(IncrementalGeneratorOutputKind.None, trackIncrementalGeneratorSteps: true))
+        .WithUpdatedParseOptions(parseOptions);
+
+    var generatorResults = sources
+        .Select(source =&amp;gt;
+        {
+            var compilation = baseCompilation.AddSyntaxTrees(CSharpSyntaxTree.ParseText(source, parseOptions));
+            driver = driver.RunGenerators(compilation);
+            return driver.GetRunResult().Results[0];
+        })
+        .ToArray();
+
+    var reasons = generatorResults
+        .Select(x =&amp;gt; x.TrackedSteps
+            .Where(x =&amp;gt; x.Key.StartsWith(keyPrefixFilter) || x.Key == &amp;quot;SourceOutput&amp;quot;)
+            .Select(x =&amp;gt;
+            {
+                if (x.Key == &amp;quot;SourceOutput&amp;quot;)
+                {
+                    var values = x.Value.Where(x =&amp;gt; x.Inputs[0].Source.Name?.StartsWith(keyPrefixFilter) ?? false);
+                    return (
+                        x.Key,
+                        Reasons: string.Join(&amp;quot;, &amp;quot;, values.SelectMany(x =&amp;gt; x.Outputs).Select(x =&amp;gt; x.Reason).ToArray())
+                    );
+                }
+                else
+                {
+                    return (
+                        Key: x.Key.Substring(keyPrefixFilter.Length),
+                        Reasons: string.Join(&amp;quot;, &amp;quot;, x.Value.SelectMany(x =&amp;gt; x.Outputs).Select(x =&amp;gt; x.Reason).ToArray())
+                    );
+                }
+            })
+            .OrderBy(x =&amp;gt; x.Key)
+            .ToArray())
+        .ToArray();
+
+    return reasons;
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;ごちゃごちゃしてよくわからないという感じですが、つまりそのままだと本当によくわからない代物ということで。Keyに関しては各ステップで &lt;code&gt;.WithTrackingName(&amp;quot;ConsoleApp.Run.0_CreateSyntaxProvider&amp;quot;)&lt;/code&gt; のような命名規則で付与しています。TrackedStepsが&lt;code&gt;ImmutableDictionary&lt;/code&gt;のため列挙の順番が順不同でイマイチ確認しづらいので、番号振ってソートするようにしました。また、複数のRegisterSourceOutputが走っていると(ConsoleAppFrameworkではRun系とBuilder系の2種が動いてる)混線してわかりづらくなるため、keyPrefixとしてフィルタリングするようにしています。&lt;/p&gt;
+&lt;p&gt;注意すべき点とか、いい感じに作る方法とか、色々説明しておかなければならないことが多いのですが、めちゃくちゃ長くなるので、それはまたの機会ということで……！&lt;/p&gt;
+&lt;h2&gt;まとめ&lt;/h2&gt;
+&lt;p&gt;もともとConsoleAppFrameworkはCysharpの製品ラインでは珍しく、パフォーマンスを重視していたわけではない、という成り立ちがあります。どちらかというと機能面、当時それなりに珍しかったHostingと融合してCLIフレームワークを作るといったコンセプトの立証を主軸に作り上げ、そして一定の成果を挙げました。何回かの改修でHelpがリッチになったりMinimal APIっぽく書けるようになったりもしましたが、どうしても古くささが目立ってきました。&lt;/p&gt;
+&lt;p&gt;特に&lt;a href="https://github.com/mayuki/Cocona"&gt;Cocona&lt;/a&gt;は、ConsoleAppFrameworkの影響を受けつつも、より柔軟で、より強力な機能を備えていてとても素晴らしいライブラリです。このままではConsoleAppFrameworkはただの劣化版ではないか、という意識もありました。自信をもってベストであると薦められないのは心苦しい。というかCoconaを作っているのはCysharpの同僚ですしですの。&lt;/p&gt;
+&lt;p&gt;なので、今回APIの幾つかは逆にCoconaからの影響を受けつつ(&lt;code&gt;[Argument]&lt;/code&gt;など)、全く異なるキャラクターを持ったフレームワークとなるように腐心しました。パースについての項目で説明したように、ConsoleAppFramework v5は柔軟性をある程度犠牲にしているため、豊富な機能が必要ならば、System.CommandLineやCoconaを使用することをお薦めします。&lt;/p&gt;
+&lt;p&gt;パフォーマンスや依存性なしといったメリットはもちろんですが、アプローチや設計面でも特異で面白いものになっていると思いますので、是非お試しください！もちろん、実用性もめちゃくちゃ高く、文句なしに必須ライブラリと考えてもらってもいいのではないでしょうか！&lt;/p&gt;
+&lt;/div&gt;</description>
+      <pubDate>Thu, 13 Jun 2024 00:00:00 +0900</pubDate>
+      <a10:updated>2024-06-13T00:00:00+09:00</a10:updated>
+    </item>
     <item>
       <guid isPermaLink="true">https://neue.cc/2024/05/01_R3_Presentation.html</guid>
       <link>https://neue.cc/2024/05/01_R3_Presentation.html</link>
@@ -2388,157 +2735,6 @@ Utf8String.Format($&amp;quot;Today is {DateTime.Now:yyyy-MM-dd}&amp;quot;);
 &lt;/div&gt;</description>
       <pubDate>Fri, 13 Oct 2023 00:00:00 +0900</pubDate>
       <a10:updated>2023-10-13T00:00:00+09:00</a10:updated>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://neue.cc/2023/09/21_privateproxy.html</guid>
-      <link>https://neue.cc/2023/09/21_privateproxy.html</link>
-      <title>.NET 8 UnsafeAccessor を活用したライブラリ PrivateProxy を公開しました</title>
-      <description>&lt;h1&gt;&lt;a href="https://neue.cc/2023/09/21_privateproxy.html"&gt;.NET 8 UnsafeAccessor を活用したライブラリ PrivateProxy を公開しました&lt;/a&gt;&lt;/h1&gt;
-&lt;ul class="date"&gt;&lt;li&gt;2023-09-21&lt;/li&gt;&lt;/ul&gt;
-&lt;div class="entry_body"&gt;&lt;p&gt;PrivateProxyというライブラリを公開しました。つまるところ、privateフィールド/プロパティ/メソッドにアクセスするライブラリなのですが、.NET 8 のUnsafeAccessorという新機能を活用することでNo Reflection、ハイパフォーマンス、AOTセーフになっています。&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;a href="https://github.com/Cysharp/PrivateProxy"&gt;Cysharp/PrivateProxy&lt;/a&gt;&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;もちろん .NET 8 でしか動きません！ので、.NET 8が正式リリースされた頃に思い出して使ってみてください。エクストリームな人は今すぐ試しましょう。&lt;/p&gt;
-&lt;p&gt;雰囲気としては、privateメンバーにアクセスしたい型があったとして、&lt;code&gt;[GeneratePrivateProxy(type)]&lt;/code&gt;をつけた型を用意します。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;using PrivateProxy;
-
-public class Sample
-{
-    int _field1;
-    int PrivateAdd(int x, int y) =&amp;gt; x + y;
-}
-
-[GeneratePrivateProxy(typeof(Sample))]
-public partial struct SampleProxy;
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;すると、いい感じにアクセスできるようになります。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;// You can access like this.
-var sample = new Sample();
-sample.AsPrivateProxy()._field1 = 10;
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;いいところとしては、 Source Generatorベースの生成なので、型がついていて入力補完も効くし、変数名を変更したらコンパイルエラーで検出可能です。&lt;/p&gt;
-&lt;p&gt;&lt;img src="https://user-images.githubusercontent.com/46207/269376472-f6dd22e1-e82e-4acc-ba6e-8895c8c8734b.png" alt="" /&gt;&lt;/p&gt;
-&lt;p&gt;ここまではSource Generatorベースで作れば、今まででもやれないことはなかったのですが、UnsafeAccessorのいいところとして、objectが一切出てこないで元のメソッドそのままの型がそのまま使えることです。生成されたコードを見ると、こうなっています。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;// Source Generator generate this type
-partial struct SampleProxy(Sample target)
-{
-    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = &amp;quot;_field1&amp;quot;)]
-    static extern ref int ___field1__(Sample target);
-
-    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = &amp;quot;PrivateAdd&amp;quot;)]
-    static extern int __PrivateAdd__(Sample target, int x, int y);
-
-    public ref int _field1 =&amp;gt; ref ___field1__(target);
-    public int PrivateAdd(int x, int y) =&amp;gt; __PrivateAdd__(target, x, y);
-}
-
-public static class SamplePrivateProxyExtensions
-{
-    public static SampleProxy AsPrivateProxy(this Sample target)
-    {
-        return new SampleProxy(target);
-    }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;これによって &lt;code&gt;ref&lt;/code&gt; や &lt;code&gt;readonly&lt;/code&gt; などの言語機能をそのまま反映できたり、mutableなstructの対応が自然にできたり、そして何よりパフォーマンスの低下も一切ありません。&lt;/p&gt;
-&lt;p&gt;使い道は、主にユニットテスト用になるとは思いますので、なのでパフォーマンスはそこまで重要ではないといえばないのですが、性能的にはアプリケーションの実行時に使っても問題ないものとなっています。&lt;/p&gt;
-&lt;p&gt;私は昔&lt;a href="https://github.com/neuecc/ChainingAssertion"&gt;Chaining Assertion&lt;/a&gt;というユニットテスト用のライブラリを作っていたのですが、現在は&lt;a href="https://fluentassertions.com/"&gt;Fluent Assertions&lt;/a&gt;という別のライブラリを使っています。ほとんどの機能は概ねなんとかなっているのですが、&lt;code&gt;AsDynamic()&lt;/code&gt;を呼ぶと、移行はprivateフィールドやメソッドにアクセスし放題という機能は結構便利で、そしてそれがFluent Assertionsにないのは若干不便と思ってたんですね。今回、やっとそれの進化系を作れたのでメデタシメデタシです。&lt;/p&gt;
-&lt;h2&gt;C# 12&lt;/h2&gt;
-&lt;p&gt;ところで、冒頭のSampleProxyの書き方、地味にこれはC# 12の記法を使っています。どこだかわかりますか？&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;[GeneratePrivateProxy(typeof(Sample))]
-public partial struct SampleProxy;
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;&lt;code&gt;SampleProxy;&lt;/code&gt; の部分で、空のクラスを作る際に &lt;code&gt;{ }&lt;/code&gt; じゃなくて &lt;code&gt;;&lt;/code&gt; だけで済ませられるようになりました。これは地味ですがかなりいい機能で、というのもSource Generatorだと空クラスに割り当てることが多かったんですよね。そして、たった2文字が1文字に変わっただけ、ではあるのですが、 &lt;code&gt;{ }&lt;/code&gt; だとコードフォーマットに影響があります。改行して3行で表現するのか、後ろにつけるのか。そうした判断のブレが &lt;code&gt;;&lt;/code&gt; だとなくなります。だから2文字が1文字に変わっただけ、以上のインパクトがある、良い機能追加だと思います。&lt;/p&gt;
-&lt;h2&gt;ref field&lt;/h2&gt;
-&lt;p&gt;PrivateProxyはstaticメソッドにも対応していますし、そしてmutable structにも対応しています。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;using PrivateProxy;
-
-public struct MutableStructSample
-{
-    int _counter;
-    void Increment() =&amp;gt; _counter++;
-
-    // static and ref sample
-    static ref int GetInstanceCounter(ref MutableStructSample sample) =&amp;gt; ref sample._counter;
-}
-
-// use ref partial struct
-[GeneratePrivateProxy(typeof(MutableStructSample))]
-public ref partial struct MutableStructSampleProxy;
-&lt;/code&gt;&lt;/pre&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;var sample = new MutableStructSample();
-var proxy = sample.AsPrivateProxy();
-proxy.Increment();
-proxy.Increment();
-proxy.Increment();
-
-// call private static method.
-ref var counter = ref MutableStructSampleProxy.GetInstanceCounter(ref sample);
-
-Console.WriteLine(counter); // 3
-counter = 9999;
-Console.WriteLine(proxy._counter); // 9999
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;mutable structの対応って結構難しい話で、というのもフィールドにstructを保持するとコピーが渡されることになるので、普通に書いていると変更が元のstructに反映されないんですね。この問題をPrivateProxyではC# 11 ref fieldで解決しました。&lt;/p&gt;
-&lt;p&gt;MutableStructSampleProxyはSource Generatorによって以下のようなコードが生成されます。&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;ref partial struct MutableStructSampleProxy
-{
-    ref MutableStructSample target;
-
-    public MutableStructSampleProxy(ref MutableStructSample target)
-    {
-        this.target = ref target;
-    }
-
-    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = &amp;quot;Increment&amp;quot;)]
-    static extern void __Increment__(ref MutableStructSample target);
-    
-    public void Increment() =&amp;gt; __Increment__(ref this.target);
-}
-
-public static class MutableStructSamplePrivateProxyExtensions
-{
-    public static MutableStructSampleProxy AsPrivateProxy(this ref MutableStructSample target)
-    {
-        return new MutableStructSampleProxy(ref target);
-    }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;AsPrivateProxy(これはthis refですが、拡張メソッドの場合、予備側はrefを書かなくていいので自然に使えます)で渡されたstructは、そのままずっとrefのまま保持されています。これにより、メソッド呼び出しでstructの状態に変更があった場合も問題なく変更が共有されています。&lt;/p&gt;
-&lt;h2&gt;privateメソッドの単体テスト&lt;/h2&gt;
-&lt;p&gt;&lt;a href="https://t-wada.hatenablog.jp/entry/should-we-test-private-methods"&gt;プライベートメソッドのテストは書かない&lt;/a&gt;みたいな流儀も世の中にはありますが、私は何言ってんの？と思ってます。パブリックメソッドのテストでprivateメソッドの確認が内包されるから不要というなら、はぁー？だったら全部E2Eテストでいいんじゃないですかー？真の振る舞いがテストされますよー？&lt;/p&gt;
-&lt;p&gt;もちろんそれは非現実的で、E2Eでパブリックメソッドのロジックを全て通過させるのは手間とコストがかかりすぎる。というのと同じ話で、privateメソッドのエッジケースを全てチェックする時に、public経由だとやりにくいことは往々にある。場合によってはコード通すためにモックを仕込まなければならないかもしれない。そこまでいくとアホらしいですよね、privateメソッドを直接テストすればすむだけの話なのに？メソッドは小さければ小さいほど良いし、テストもしやすい。そしてprivateを内包したpublicよりもprivateそのもののほうが小さく、テストしやすい。&lt;/p&gt;
-&lt;p&gt;ようするにコスト面を考えて境界をどこに置くかというだけの話で。そして、privateメソッドのテストそのものは、C#の場合reflection呼び出しだと、変更コストがかかるなど、コスパは悪い部類に入ってしまう。でもそれはただの言語からの制約であって、だからプライベートメソッドのテストは不要みたいなしょーもない理屈をこねて絶対視するほどのことでもない。リフレクション使うとコスパ感が合わないから原則publicで済ませること、ぐらいだったらいいけど、変な教義立てるのはおかしいでしょ。&lt;/p&gt;
-&lt;p&gt;チェックしたいがためにprivateであるべきものをinternalにする（たまによくやる、internalならInternalsVisibleToをテストプロジェクトに指定することで、ユニットテストプロジェクトで参照できるようになる）こともありますが、あまりお行儀の良いことではない。そもそもinternalなので同一アセンブリ内では不要に可視レベル上がっちゃってるし。&lt;/p&gt;
-&lt;p&gt;と、いうわけで、PrivateProxyは比較的低コストでprivateメソッドをテスト対象にすることができるので、全然使っちゃっていいし、テストも書いちゃって良い、わけです。&lt;/p&gt;
-&lt;h2&gt;UnsafeAccessor for InternalCall&lt;/h2&gt;
-&lt;p&gt;UnsafeAccessor の使い道として、corelibの InternalCall を強引に呼べることはかなりいいこと（？）だと思ってます。例えば string の生成には大元に &lt;a href="https://source.dot.net/#System.Private.CoreLib/src/System/String.CoreCLR.cs,12"&gt;FastAllocateString&lt;/a&gt; というのがあって、通常ユーザーはこれを呼ぶことはできないのですが&lt;/p&gt;
-&lt;pre&gt;&lt;code class="language-csharp"&gt;[UnsafeAccessor(UnsafeAccessorKind.StaticMethod, Name = &amp;quot;FastAllocateString&amp;quot;)]
-static extern string FastAllocateString(string _, int length);
-
-var rawString = FastAllocateString(null!, 10);
-var mutableSpan = MemoryMarshal.CreateSpan(ref MemoryMarshal.GetReference(rawString.AsSpan()), rawString.Length);
-
-&amp;quot;abcde&amp;quot;.CopyTo(mutableSpan);
-&amp;quot;fghij&amp;quot;.CopyTo(mutableSpan.Slice(5));
-
-Console.WriteLine(rawString); // abcdefghij
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;といったようにUnsafeAccessorを通せばやりたい放題できます。&lt;/p&gt;
-&lt;p&gt;Stringに関しては、やりたい放題させないために、&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.string.create"&gt;String.Create&lt;/a&gt;というメソッドが用意されていて、Actionのコールバックで変更して、不変のStringを返すというものが用意されてはいるのですが、ActionだとTStateに&lt;code&gt;Span&amp;lt;T&amp;gt;&lt;/code&gt;を渡せないとか、使えないケースがそれなりにあります、というか使いたいシチュエーションに限って使えないことが多い……。&lt;/p&gt;
-&lt;p&gt;なお、こういうFastAllocateStringを呼んでStringに変更をかけるというのは、&lt;a href="https://github.com/dotnet/runtime/issues/36989"&gt;dotnet/runtime#36989 Make string.FastAllocateString public&lt;/a&gt;で見事に却下されています。つまり、やるな、ということです。&lt;/p&gt;
-&lt;blockquote&gt;
-&lt;p&gt;It is never safe or supported to mutate the contents of a returned string instance.
-If you mutate a string instance within your own library or application, you are entering unsupported territory.
-A future framework update could break you. Or - more likely - you'll encounter memory corruption that will be very painful for you or your customers to diagnose.&lt;/p&gt;
-&lt;/blockquote&gt;
-&lt;p&gt;お怒りはご尤もです。しかしString.CreateでAction渡す口あるんだからそれでいいだろーというのはお粗末すぎだと思うんですよねー、どうせやってること一緒なんだから弄るの許可してよ、というのもそれはそれで理解してもらいたいです（私は弄りたいほうの人間なので！）。というわけで、自己責任で、やっていきましょう、つまりやっていくということです……！&lt;/p&gt;
-&lt;h2&gt;まとめ&lt;/h2&gt;
-&lt;p&gt;.NET 8でしか動きません！11月に .NET 8 がリリースされるので、その時まで忘れないでください！&lt;/p&gt;
-&lt;/div&gt;</description>
-      <pubDate>Thu, 21 Sep 2023 00:00:00 +0900</pubDate>
-      <a10:updated>2023-09-21T00:00:00+09:00</a10:updated>
     </item>
   </channel>
 </rss>

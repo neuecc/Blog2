@@ -23,7 +23,190 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2012/02/14_364.html">dynamicとQueryString、或いは無限に不確定なオプション引数について</a></h1>
+        <div id="content"><h1><a href="https://neue.cc/2012/02/18_365.html">ImplicitQueryString - 暗黙的変換を活用したC#用のクエリストリング変換ライブラリ</a></h1>
+<ul class="date"><li>2012-02-18</li></ul>
+<div class="entry_body"><ul>
+<li><a href="http://implicitquerystring.codeplex.com/">ImplicitQueryString - CodePlex</a></li>
+</ul>
+<p>QueryStringかったるいですね、変換するのが。intに。boolに。それ以外に。そのままじゃどうしようもなくストレスフル。そこで、以下のように書けるライブラリを作りました。勿論<a href="http://nuget.org/packages/ImplicitQueryString">NuGet</a>でのインストールも可能です。あと、ライブラリといっても例によって.csファイル一個だけなので、導入は超お手軽。</p>
+<p>以下はASP.NETの例ですが、NameValueCollectionを使っているものは全て対象になります。QueryStringだけじゃなくてRequest.Formなどにも使えますね。</p>
+<pre><code class="language-csharp">// using Codeplex.Web;
+
+int count;
+string query;
+bool? isOrdered; // support nullable
+
+protected void Page_Load(object sender, EventArgs e)
+{
+    count = Request.QueryString.ParseValue(&quot;c&quot;);
+    query = Request.QueryString.ParseValue(&quot;q&quot;);
+    isOrdered = Request.QueryString.ParseValue(&quot;ord&quot;);
+}
+</code></pre>
+<p>NameValueCollectionへの拡張メソッドとして実装しているので、using Codeplex.Webを忘れないように。ポイントは「型の明示が不要」というところです。クエリストリングを解析したい時って、通常はフィールドで既に変数自体は作っているのではないかと思います。なら、代入時に左から型を推論させてしまえばいいわけです、モダンなC#はわざわざ明示的に型なんて書かない、書きたくない。なのでこのライブラリ、ImplicitQueryStringではParseValueだけで全ての基本型(int, long, bool, string, DateTimeなど)へと型指定不要で代入可能となっています。代入先の型がNullableである場合は、キーが見つからなかったりパースに失敗した場合はnullにすることもサポートしてます。</p>
+<p>また、よくあるクエリストリングはUrlEncodeされているのでデコードしたかったりするケースにも簡単に対応しています、UrlDecodeを渡すだけ！他にもEnumへの変換も出来ますし、キーが見つからなかったり変換不可能だったりした場合は指定したデフォルト値を返すParseValueOrDefault/ParseEnumOrDefaultも用意してあります。キーがあるかチェックするContainsKeyも。</p>
+<pre><code class="language-csharp">enum Sex
+{
+    Unknown = 0, Male = 1, Female = 2
+}
+
+enum BloodType
+{
+    Unknown, A, B, AB, O
+}
+
+int age;
+string name;
+DateTime? requestTime;  // nullableやDateTimeもサポート
+bool hasChild;
+Sex sex;               // enumもいけます
+BloodType bloodType;
+
+protected void Page_Load(object sender, EventArgs e)
+{
+     // こんなQueryStringがあるとして
+    // a=20&amp;n=John%3dJohn+Ab&amp;s=1&amp;bt=AB
+
+    // ageは左から推論してintを返します
+    age = Request.QueryString.ParseValue(&quot;a&quot;); // 20
+
+    // UrlDecodeしたstringが欲しい時は第二引数にメソッドそのものを渡すだけ
+    name = Request.QueryString.ParseValue(&quot;n&quot;, HttpUtility.UrlDecode); // John=John Ab
+
+    // 代入先の型がnullableの場合は、もしキーが見つからなかったりパースに失敗したらnullにしてくれます
+    requestTime = Request.QueryString.ParseValue(&quot;t&quot;, HttpUtility.UrlDecode); // null
+
+    // キーが見つからなかったりパースに失敗したら指定した値を返してくれます
+    hasChild = Request.QueryString.ParseValueOrDefault(&quot;cld&quot;, false); // false
+    
+    // Enumの変換は数字の場合でも文字列の場合でも、どちらでも変換可能です
+    sex = Request.QueryString.ParseEnum&lt;Sex&gt;(&quot;s&quot;); // Sex.Male
+    bloodType = Request.QueryString.ParseEnumOrDefault&lt;BloodType&gt;(&quot;bt&quot;, BloodType.Unknown); // BloodType.AB
+
+    // ContainsKeyはキーの有無をチェックします
+    var hasFlag = qs.ContainsKey(&quot;flg&quot;); // false
+}
+</code></pre>
+<p>これで、あらゆるケースでサクッと変換することが可能なのではかと思います。ちなみに、ParseValue/ParseEnumでキーが見つからなかった場合はKeyNotFoundExceptionを返します。ParseValueで失敗したらFormatException、ParseEnumで失敗したらArgumentExceptionです。この二つが分かれているのは、int.Parseとかに渡しているだけなので、そちらの都合です。</p>
+<h2>仕組み</h2>
+<p>ImplicitQueryStringという名前がネタバレなのですが、単純に暗黙的変換をしているだけです。左から推論とか、ただのハッタリです。<a href="http://neue.cc/2012/02/14_364.html">neue cc - dynamicとQueryString、或いは無限に不確定なオプション引数について</a>を書いたときに、わざわざdynamicを持ち出さなくても、暗黙的変換で十分じゃないの？そのほうが利便性も上じゃないの？と思ったのでやってみたら、やはりドンピシャでした。</p>
+<p>暗黙的変換は、あまり使う機能じゃあないと思いますし、実際、乱用すべきでない機能であることには違いないのですが、たまに活用する分には中々刺激的で創造性に満ちています。大昔からあるけれど普段使わない機能だなんて、ロストテクノロジーっぽくて浪漫に溢れています。</p>
+<p>さて、ただし活用するにはコード中に型を並べなければならないので、汎用的というわけではないのもそうなのですが、人力で書くのもシンドイところ。勿論人力でやる気はしないので<a href="http://msdn.microsoft.com/ja-jp/library/bb126445.aspx">T4 Template</a>を使いました。</p>
+<pre><code class="language-csharp">&lt;#@ template language=&quot;C#&quot; #&gt;
+&lt;#@ output extension=&quot;cs&quot; #&gt;
+&lt;#@ assembly Name=&quot;System.Core.dll&quot; #&gt;
+&lt;#@ import namespace=&quot;System&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Linq&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Text.RegularExpressions&quot; #&gt;
+&lt;#@ import namespace=&quot;System.Reflection&quot; #&gt;
+&lt;#
+    var methods = typeof(Convert).GetMethods(BindingFlags.Static | BindingFlags.Public);
+
+    var converters = methods.Where(x =&gt; x.Name.StartsWith(&quot;To&quot;))
+        .Select(x =&gt; Regex.Replace(x.Name, &quot;^To&quot;, &quot;&quot;))
+        .Where(x =&gt; !x.StartsWith(&quot;Base64&quot;) &amp;&amp; x != &quot;String&quot;)
+        .Distinct()
+        .ToArray();
+#&gt;
+using System;
+using System.Collections.Generic;
+using System.Collections.Specialized;
+
+namespace Codeplex.Web
+{
+    public static class NameValueCollectionExtensions
+    {
+        public static ConvertableString ParseValue(this NameValueCollection source, string key)
+        {
+            return ParseValue(source, key, null);
+        }
+
+        public static ConvertableString ParseValue(this NameValueCollection source, string key, Func&lt;string, string&gt; converter)
+        {
+            var values = source.GetValues(key);
+            if (values == null) return new ConvertableString(null);
+
+            var value = values[0];
+            return new ConvertableString(converter == null ? value : converter(value));
+        }
+        
+        // 中略
+    }
+
+    public struct ConvertableString
+    {
+        public readonly string Value;
+
+        public ConvertableString(string value)
+        {
+            this.Value = value;
+        }
+
+&lt;# foreach (var converter in converters) { #&gt;
+        public static implicit operator &lt;#= converter #&gt;(ConvertableString self)
+        {
+            if (self.Value == null) throw new KeyNotFoundException();
+            return &lt;#= converter #&gt;.Parse(self.Value);
+        }
+
+        public static implicit operator &lt;#= converter #&gt;?(ConvertableString self)
+        {
+            &lt;#= converter #&gt; value;
+            return (self.Value != null &amp;&amp; &lt;#= converter #&gt;.TryParse(self.Value, out value))
+                ? new Nullable&lt;&lt;#= converter #&gt;&gt;(value)
+                : null;
+        }
+
+&lt;# } #&gt;
+        public static implicit operator String(ConvertableString self)
+        {
+            return self.Value;
+        }
+
+        public override string ToString()
+        {
+            return Value;
+        }
+    }
+}
+</code></pre>
+<p>以上のコードから、T4生成部分を取り出すと</p>
+<pre><code class="language-csharp">public static implicit operator Boolean(ConvertableString self)
+{
+    if (self.Value == null) throw new KeyNotFoundException();
+    return Boolean.Parse(self.Value);
+}
+
+public static implicit operator Boolean?(ConvertableString self)
+{
+    Boolean value;
+    return (self.Value != null &amp;&amp; Boolean.TryParse(self.Value, out value))
+        ? new Nullable&lt;Boolean&gt;(value)
+        : null;
+}
+
+public static implicit operator Char(ConvertableString self)
+{
+    if (self.Value == null) throw new KeyNotFoundException();
+    return Char.Parse(self.Value);
+}
+
+public static implicit operator Char?(ConvertableString self)
+{
+    Char value;
+    return (self.Value != null &amp;&amp; Char.TryParse(self.Value, out value))
+        ? new Nullable&lt;Char&gt;(value)
+        : null;
+}
+
+// 以下SByte, Byte, Int16, Int32, Int64, ..., DateTimeと繰り返し
+</code></pre>
+<p>といったコードがジェネレートされます。清々しいまでのゴリ押しっぷり。一周回ってむしろエレガント。ConvertableStringのほうでKeyNotFoundExceptionを出すのがイケてないのですが、まあそこはShoganaiかなー、ということで。さて、それはそれとして、やっぱVisual Studioに組み込みで、こういった自動生成のテンプレートエンジンが用意されているというのは非常に嬉しいところです。</p>
+<h2>まとめ</h2>
+<p>特にASP.NETを使っている方々にどうぞ。ASP.NET MVCの人はしらにゃい。なのでいつもの私だったら.NET 4.0専用にするところが、今回は.NET 3.5でも大丈夫！Visual Studio 2008でも動作確認取りました！</p>
+<p>それにしても実際ASP.NETを使いこなしてる人はクエリストリングの取得はどんな風にやっていたものなのでしょうかー。何かしらの手法がないとシンドすぎやしませんか？そう思って検索してみたんですが、どうにも見つからず。さすがに ParseValueAsInt() とかって拡張メソッドぐらい作ってやり繰りは私も大昔していたし、それでintに対応しておけばほぼほぼOKではありますが（拡張メソッドがなかった時代はさすがに想像したくない！）。そう考えると、ちょっとこれはやりすぎ感も若干。でも、一度できあがればずっと使えますしね。というわけで<a href="http://implicitquerystring.codeplex.com/">ImplicitQueryString</a>、是非是非使ってみてください。本当に楽になれると思います。</p>
+</div>
+<h1><a href="https://neue.cc/2012/02/14_364.html">dynamicとQueryString、或いは無限に不確定なオプション引数について</a></h1>
 <ul class="date"><li>2012-02-14</li></ul>
 <div class="entry_body"><p>どうもこんばんわ、30時間も寝てないわー。まあ、お陰で真昼間の就業中にうつらうつらしてましたが！ちなみに<a href="http://www.jp.playstation.com/scej/title/gravitydaze/">GRAVITY DAZE</a>にはまって延々とプレイしてたから寝てないだけです。PS陣営にくだるなんて！さて、それはそれとしてBlog更新頻度の低下っぷりはお察し下さい。そんなこんなで最近の仕事（仕事ですって！仕事してるんですって！？）はASP.NETなんですが、色々アレですね。ふふふ。ソウルジェムは真っ黒と真っ白を行ったり来たりしてて楽しいです。まあ、ようするに楽しいです。楽しいのはいいとしてBlogが停滞するのはいくないので、電車でGRAVITY DAZEやりながらQueryStringうぜえええええ、とか悶々としたので帰り道に殺害する算段を整えていました。</p>
 <p>QueryStringって、qとかnumとかiとかsとか、それそのものだけじゃ何を指してるかイミフなので、C#的にはちゃんと名前をつけてやりたいよね。だから、ただシンプルに触れるというだけじゃダメで。あと、コンバートもしたいよね。数字はintにしたいしboolは当然boolなわけで。さて、そんな時に私たちが持つツールと言ったら、dynamicです。C#とスキーマレスな世界を繋ぐ素敵な道具。今日も活躍してもらうことにしましょう。たまにしか出番ないですからね。</p>
@@ -1680,18 +1863,6 @@ Console.WriteLine(y.Value); // 130
 <p>悲しいことに私はいきなりACアダプタのコネクタを破壊してしまって充電不能に陥りました、ｵｩﾉｩ。地震で物が降ってきてですね。脆いものです。</p>
 <p>追記：ASUSのサポートセンターに連絡し、交換してもらいました。非常に対応もよかったので、全然問題ないです。ネガティブな方向でURLがばら蒔かれてしまって想定外だったのですが、全然大丈夫ですよ、とは書いておきます。</p>
 </div>
-<h1><a href="https://neue.cc/2011/10/24_350.html">Chaining Assertion ver1.6.1.0</a></h1>
-<ul class="date"><li>2011-10-24</li></ul>
-<div class="entry_body"><ul>
-<li><a href="http://chainingassertion.codeplex.com/">Chaining Assertion - Codeplex</a></li>
-</ul>
-<p>Chaining Assertionとは、メソッドチェーンな形で簡単にユニットテストを書けるようにする拡張メソッドです。何でそういうのが必要なのか、とかの理由などは<a href="http://neue.cc/2010/08/02_270.html">neue cc - テストを簡単にするほんの少しの拡張メソッド</a>で。</p>
-<p>最近こっそり小さな更新が続いているのですが、今回の更新は、IsNullにmessageが指定できるようになりました。実のところ、他のIsは指定できたのですが、IsNullだけ指定不可能でした。理由はただたんに忘れてたから、です。とてもしょうもない……。と、@okazukiさんに<a href="http://d.hatena.ne.jp/okazuki/20111022/1319257560">ChainingAssertion使ってみた</a>で指摘頂きました。いやあ、ありがとうございます。</p>
-<p>そんなこんなで見直していて、そういえば params object[] parameters なオーバーロードが欠けてるなあ、入れたほうがいいかしらん、と少し実装初めてからやめました。やりたければstring.Format使ってください、はい。ちなみに理由はオーバーロードが必要(messageのほうに{}が入っていてparametersは空、というケースを避けるため、paramsとはいえ別のオーバーロードを用意する必要がある)だからです。</p>
-<p>オーバーロードは減らしたいんです。少ないほうが分かりやすいというのは自明な話だと思います。使いやすいAPIのためには、クラスの数を減らそう、メソッドの数を減らそう、オーバーロードの数を減らそう、引数の数を減らそう。少ないことは美です。それでですね、メソッド数を減らすためもあって、Isはかなりオーバーロード嵩んでいるのですよね。だから、瑣末な機能を追加するためだけにホイホイとオーバーロードは足せません。</p>
-<h2>その他</h2>
-<p>@shinsukeodaさんに<a href="http://d.hatena.ne.jp/odashinsuke/20111005/1317813807">ChainingAssertion for MSTest のパラメタライズドテストを NUnit 感覚で利用すると… </a>で紹介頂き本当にありがとうございます。本題の、パラメタライズドテストについてですが、これが非常に悩ましい。実装的にビミョーになってしまう、というのもそうなのですが、NUnitは本当のパラメタライズドテストで、テストケースがバラバラになるのですが、ChainingAssertionのものは擬似的なものに過ぎないので、テスト結果的には一つのテストケースなのですね。そして、一つのケースなのにInitializeやCleanupを呼んでいく、という挙動がアリなのかナシなのかが、自分のなかで答えがでないのです。なので、今はちょっと見送りです。もう少し考えて答えが出たら、その時に、かしらん。</p>
-</div>
 <a href="https://neue.cc/14">Prev |</a>
 <a href="https://neue.cc/16">| Next</a>
 </div>
@@ -1715,6 +1886,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/06/">2024-06</a>
 <li><a href="https://neue.cc/2024/05/">2024-05</a>
 <li><a href="https://neue.cc/2024/03/">2024-03</a>
 <li><a href="https://neue.cc/2024/02/">2024-02</a>
