@@ -1,3 +1,0 @@
-# ConsoleAppFramework v5
-
-TODO:...
