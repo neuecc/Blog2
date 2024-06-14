@@ -9,6 +9,17 @@
         gtag('js', new Date());
         gtag('config', 'UA-2834006-1');
     </script>
+
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-4Z51JP7Z8W"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+
+      gtag('config', 'G-4Z51JP7Z8W');
+    </script>
+
     <meta charset="utf-8" />
     <title>neue cc - R3のコードから見るC#パフォーマンス最適化技法実例とTimeProviderについて</title>
     <link rel="shortcut icon" href="https://neue.cc/favicon.ico" />
@@ -28,7 +39,46 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2024/05/01_R3_Presentation.html">R3のコードから見るC#パフォーマンス最適化技法実例とTimeProviderについて</a></h1>
+        <link href="./pagefind/pagefind-ui.css" rel="stylesheet">
+        <script src="./pagefind/pagefind-ui.js"></script>
+        <div id="search"></div>
+        <script>
+            window.addEventListener('DOMContentLoaded', (event) => {
+                new PagefindUI({ 
+                    element: "#search", 
+                    pageSize: 10,
+                    highlightParam: "",
+                    excerptLength: 10,
+                    showImages: false,
+                    showSubResults: false,
+                    translations   : {
+                        placeholder  : '',
+                        clear_search : 'Clear',
+                        load_more    : 'More',
+                    }
+                })
+            });
+        </script>
+        <style>
+            :root {
+                --pagefind-ui-scale: 0.8;
+                --pagefind-ui-primary: #9ba29f;
+                --pagefind-ui-text: #9ba29f;
+                --pagefind-ui-background: black;
+                --pagefind-ui-border: #4d514f;
+                --pagefind-ui-tag: #eeeeee;
+                --pagefind-ui-border-width: 0.5px;
+                --pagefind-ui-border-radius: 0px;
+                --pagefind-ui-image-border-radius: 8px;
+                --pagefind-ui-image-box-ratio: 3 / 2;
+                --pagefind-ui-font: 'Lucida Sans Unicode','Lucida Grande','Verdana','MS UI Gothic','sans-serif';
+            }
+            mark {
+                background-color: blue;
+                font-size: 99px;
+            }
+        </style>
+        <div id="content"><h1 data-pagefind-meta="date:2024-05-01"><a href="https://neue.cc/2024/05/01_R3_Presentation.html">R3のコードから見るC#パフォーマンス最適化技法実例とTimeProviderについて</a></h1>
 <ul class="date"><li>2024-05-01</li></ul>
 <div class="entry_body"><p>4/27に大阪で開催された<a href="https://cs-reading.connpass.com/event/309714/">C#パフォーマンス勉強会</a>で「R3のコードから見る実践LINQ実装最適化・コンカレントプログラミング実例」という題でセッションしてきました！</p>
 <iframe class="speakerdeck-iframe" frameborder="0" src="https://speakerdeck.com/player/205627770b434599925567dbfeca229c" title="R3のコードから見る実践LINQ実装最適化・コンカレントプログラミング実例" allowfullscreen="true" style="border: 0px; background: padding-box padding-box rgba(0, 0, 0, 0.1); margin: 0px; padding: 0px; border-radius: 6px; box-shadow: rgba(0, 0, 0, 0.2) 0px 5px 40px; width: 100%; height: auto; aspect-ratio: 560 / 315;" data-ratio="1.7777777777777777"></iframe>
@@ -38,7 +88,7 @@
 <p><code>mutable struct</code>の扱いと同じく、あまり教条主義的にならず、時代に合わせて、柔軟により良いシステムを考えていきましょう。コンピュータープログラミングにおいて、伝統や歴史を守ることは別に大して重要なことではないはずです。</p>
 <h2>TimeProvider DeepDive</h2>
 <p><a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.timeprovider?view=net-8.0">TimeProvider</a>について、セッションでも話しましたが、大事なことなのでもう少し詳しくいきましょう。TimeProviderにまず期待するところとしては、ほとんどが<code>SystemClock.Now</code>、つまりオレオレ<code>DateTime.Now</code>生成器の代わりを求めているでしょう。それを期待しているとTimeProviderの定義は無駄に複雑に見えます。しかし<code>TimeProvider</code>を分解してみると、これは4つの時間を司るクラスの抽象層になっています。</p>
-<pre><code class="language-csharp">public abstract class TimeProvider
+<pre data-pagefind-ignore="all"><code class="language-csharp">public abstract class TimeProvider
 {
     // TimeZoneInfo
     public virtual TimeZoneInfo LocalTimeZone =&gt; TimeZoneInfo.Local;
@@ -66,26 +116,26 @@ public interface ITimer : IDisposable, IAsyncDisposable
 <p>この造りになっているからこそ、あらゆる時間にまつわる挙動を任意に変更することができるのです。</p>
 <p>挙動を任意に変更するというとユニットテストでの時間のモックにばかり意識が向きますが（実際、<a href="https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.extensions.time.testing.faketimeprovider?view=net-8.0">FakeTimeProvider</a>はとても有益です）、別にユニットテストに限らず、優れた時間の抽象化層として使うことができます。ということを実装とともに証明したのがR3で、特にR3では<code>CreateTimer</code>をかなり弄っていて、WPFではDispatcherTimerを使うことで自動的にUIスレッドにディスパッチしたり、UnityではPlayerLoopベースのタイマーとしてScaledとUnsacledでTimescaleの影響を受けるタイマー・受けないタイマーなどといった実行時のカスタマイズ性を実現しました。</p>
 <p>セッションではStopwatchについてフォーカスしました。二点の時刻の経過時間を求めるのにDateTimeの引き算、つまり</p>
-<pre><code class="language-csharp">DateTime now = DateTime.UtcNow;
+<pre data-pagefind-ignore="all"><code class="language-csharp">DateTime now = DateTime.UtcNow;
 /* do something... */
 TimeSpan elapesed = DateTime.UtcNow - now;
 </code></pre>
 <p>といったコードを書くのはよくあることですが、これはバッドプラクティスです。DateTimeの取得はタダではありません。では、なるほどStopwatchですね？ということで</p>
-<pre><code class="language-csharp">Stopwatch sw = Stopwatch.StartNew();
+<pre data-pagefind-ignore="all"><code class="language-csharp">Stopwatch sw = Stopwatch.StartNew();
 /* do something... */
 TimeSpan elapsed = sw.Elapsed;
 </code></pre>
 <p>これは、Stopwatchがclassなのでアロケーションがあります。うまく使いまわしてあげる必要があります。
 使いまわしができないシチュエーションのために、アロケーションを避けるためにstructのStopwatch、ValueStopwatchといったカスタム型を作ることもありますが、待ってください、そもそもStopwatchが不要です。</p>
 <p>二点の経過時間を求めるなら、時計による時刻も不要で、その地点の何らかのタイムスタンプが取れればそれで十分なのです。</p>
-<pre><code class="language-csharp">// .NET 7以降での手法(GetElapsedTimeが追加された)
+<pre data-pagefind-ignore="all"><code class="language-csharp">// .NET 7以降での手法(GetElapsedTimeが追加された)
 long timestamp = Stopwatch.GetTimestamp();
 /* do something... */
 TimeSpan elapsed = Stopwatch.GetElapsedTime(timestamp);
 </code></pre>
 <p>このlongは、通常は高解像度タイムスタンプ、Windowsでは<a href="https://learn.microsoft.com/ja-jp/windows/win32/sysinfo/acquiring-high-resolution-time-stamps">QueryPerformanceCounter</a>が使われています。TimeSpanでよく使うTicksではないことに注意してください。</p>
 <p>ベンチマークを取ってみましょう。</p>
-<pre><code class="language-csharp">using BenchmarkDotNet.Attributes;
+<pre data-pagefind-ignore="all"><code class="language-csharp">using BenchmarkDotNet.Attributes;
 using System.Diagnostics;
 
 BenchmarkDotNet.Running.BenchmarkRunner.Run&lt;TimestampBenchmark&gt;();
@@ -122,7 +172,7 @@ public class TimestampBenchmark
 <iframe class="speakerdeck-iframe" frameborder="0" src="https://speakerdeck.com/player/c5a8898ac7c4464584068b0ee3180e94" title=".NETの非同期戦略とUnityとの相互運用" allowfullscreen="true" style="border: 0px; background: padding-box padding-box rgba(0, 0, 0, 0.1); margin: 0px; padding: 0px; border-radius: 6px; box-shadow: rgba(0, 0, 0, 0.2) 0px 5px 40px; width: 100%; height: auto; aspect-ratio: 560 / 315;" data-ratio="1.7777777777777777"></iframe>
 <p>ええ、ええ。Unityもモダンですよ！大丈夫！</p>
 </div></div>
-        <div id="side">
+        <div id="side" data-pagefind-ignore="all">
 <h3>Profile</h3>
 <div class="side_body" align="center">
 <b>Yoshifumi Kawai</b><br />
@@ -288,7 +338,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 </ul>
 </div>
 </div>
-        <div id="footer"><ul>
+        <div id="footer" data-pagefind-ignore="all"><ul>
 <li>Index: <a href="https://neue.cc">neue.cc</a><li>
 <li>RSS feed: <a href="https://neue.cc/feed">neue.cc/feed</a><li>
 <li>Powered by: <a href="https://github.com/neuecc/Blog2">https://github.com/neuecc/Blog2</a>

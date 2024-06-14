@@ -9,6 +9,17 @@
         gtag('js', new Date());
         gtag('config', 'UA-2834006-1');
     </script>
+
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-4Z51JP7Z8W"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+
+      gtag('config', 'G-4Z51JP7Z8W');
+    </script>
+
     <meta charset="utf-8" />
     <title>neue cc - 2012-08</title>
     <link rel="shortcut icon" href="https://neue.cc/favicon.ico" />
@@ -23,12 +34,51 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2012/08/10_380.html">複数の値とC# 5.0 Async再び、或いはAsyncEnumerableへの渇望とRx</a></h1>
+        <link href="./pagefind/pagefind-ui.css" rel="stylesheet">
+        <script src="./pagefind/pagefind-ui.js"></script>
+        <div id="search"></div>
+        <script>
+            window.addEventListener('DOMContentLoaded', (event) => {
+                new PagefindUI({ 
+                    element: "#search", 
+                    pageSize: 10,
+                    highlightParam: "",
+                    excerptLength: 10,
+                    showImages: false,
+                    showSubResults: false,
+                    translations   : {
+                        placeholder  : '',
+                        clear_search : 'Clear',
+                        load_more    : 'More',
+                    }
+                })
+            });
+        </script>
+        <style>
+            :root {
+                --pagefind-ui-scale: 0.8;
+                --pagefind-ui-primary: #9ba29f;
+                --pagefind-ui-text: #9ba29f;
+                --pagefind-ui-background: black;
+                --pagefind-ui-border: #4d514f;
+                --pagefind-ui-tag: #eeeeee;
+                --pagefind-ui-border-width: 0.5px;
+                --pagefind-ui-border-radius: 0px;
+                --pagefind-ui-image-border-radius: 8px;
+                --pagefind-ui-image-box-ratio: 3 / 2;
+                --pagefind-ui-font: 'Lucida Sans Unicode','Lucida Grande','Verdana','MS UI Gothic','sans-serif';
+            }
+            mark {
+                background-color: blue;
+                font-size: 99px;
+            }
+        </style>
+        <div id="content"><h1 data-pagefind-meta="date:2012-08-10"><a href="https://neue.cc/2012/08/10_380.html">複数の値とC# 5.0 Async再び、或いはAsyncEnumerableへの渇望とRx</a></h1>
 <ul class="date"><li>2012-08-10</li></ul>
 <div class="entry_body"><p>以前に<a href="http://neue.cc/2012/07/11_377.html">Reactive Extensions + asyncによるC#5.0の非同期処理</a>では、単体の値であったらasync、複数の値であったらIObservable&lt;T&gt;が使い分け、とかかんとかと言ってましたが、本当にそうなの？もしくは、そもそも複数の値のシチュエーションって分かるような分からないようななのだけど？などなどと思ったりする昨今を如何様にお過ごしでしょうか。というわけで、今回はグッとこの部分に深く迫ってみましょう。</p>
 <h2>同期的なシチュエーション</h2>
 <p>さて、例、なのですけれど、データベースで行きましょう。生DataReaderを転がしてます。</p>
-<pre><code class="language-csharp">// 接続文字列に Asynchronous Processing=true は非同期でやるなら欠かさずに
+<pre data-pagefind-ignore="all"><code class="language-csharp">// 接続文字列に Asynchronous Processing=true は非同期でやるなら欠かさずに
 const string ConnectionString = @&quot;Data Source=.;Initial Catalog=AdventureWorks2012;Integrated Security=True;Asynchronous Processing=true;&quot;;
 
 // こういうreader.Readが尽きるまで列挙するだけのヘルパーがあるだけで
@@ -80,7 +130,7 @@ static void Main(string[] args)
 <p>ここまでは、いいと思います。じゃあ、非同期でやると、どうするの、と。</p>
 <h2>内部イテレータ的に考える</h2>
 <p>.NET Framework 4.5からは主要な非同期メソッドに全てXxxAsyncという名前のものがつきました。ADO.NETにおいては、OpenAsyncやExecuteReaderAyncなどがあります。というわけで、試してみましょう。</p>
-<pre><code class="language-csharp">// 非同期だったこうしたい、でもこれはコンパイル通らない！
+<pre data-pagefind-ignore="all"><code class="language-csharp">// 非同期だったこうしたい、でもこれはコンパイル通らない！
 static async Task&lt;IEnumerable&lt;DbDataReader&gt;&gt; EachReaderAsync(DbConnection connection, string query)
 {
     using (var command = connection.CreateCommand())
@@ -97,7 +147,7 @@ static async Task&lt;IEnumerable&lt;DbDataReader&gt;&gt; EachReaderAsync(DbConne
 </code></pre>
 <p>残念ながら、asyncとyield returnを共存させることはできないので、どうにもなりません。……はい。しかし出来ない、では困る。さすがに、非同期実行するところに全部生のままで、こんなCreateCommand..., ExecuteReaderAsync, .... なんて書いてられないし。</p>
 <p>じゃあどうするか、というと、内部イテレータ的にしましょう。つまりList&lt;T&gt;にあるようなForEachです。yield returnが外部イテレータ的であり、それが無理なら、内部イテレータ的にすればいいぢゃない。</p>
-<pre><code class="language-csharp">// ループを回してる最中に実行するaction引数をつけた(FuncじゃなくてAction&lt;DbDataReader&gt;のオーバーロードも作るとベター)
+<pre data-pagefind-ignore="all"><code class="language-csharp">// ループを回してる最中に実行するaction引数をつけた(FuncじゃなくてAction&lt;DbDataReader&gt;のオーバーロードも作るとベター)
 static async Task ForEachAsync(DbConnection connection, string query, Func&lt;DbDataReader, Task&gt; action)
 {
     using (var command = connection.CreateCommand())
@@ -152,7 +202,7 @@ public class Customer
 <h2>AsyncEnumerableで救われる</h2>
 <p>どうしても諦められないのならば、AsyncEnumerableを授けましょう。NuGetから<a href="http://nuget.org/packages/Ix_Experimental-Async">Ix_Experimental-Async</a>を引っ張ってきます。Ix、そう、みんな大好きReactive Extensionsの兄弟なわけですが、しかし紹介しておいてアレですが、このIx_Experimental-Asyncはお薦めはしません！完全に実験的に、できるから、というだけで実装例を掲示してみせてくれたというだけなノリがぷんぷんしているからです。実際、最初のAsync CTPが出た時に公開されて、それから更新されてませんしね……。</p>
 <p>ともあれ、どんなコンセプトの代物なのかは見ておきましょう。</p>
-<pre><code class="language-csharp">// こういうDB列挙用のIAsyncEnumerable/Enumeratorを作る。
+<pre data-pagefind-ignore="all"><code class="language-csharp">// こういうDB列挙用のIAsyncEnumerable/Enumeratorを作る。
 // yield returnのようなコンパイラサポートはないので手書きするんだよ！
 public class AsyncDbEnumerable : IAsyncEnumerable&lt;DbDataReader&gt;, IAsyncEnumerator&lt;DbDataReader&gt;
 {
@@ -247,7 +297,7 @@ static async Task Test()
 <p>とはいえともかく、例に出したAwaitメソッドのような、そういうのがないと、実用性に欠けると言わざるを得ません。また、これはあくまでもAsyncEnumerableであって、IEnumerableへのLINQ to Objectsとは別物です。Select, Where, Firstなどは挙動が同じというだけで、中身は全然違います。で、当然ながらコンセプト実装なので、内部的にもあまりこなれてませんね。なので、Ix_Experimental-Asyncは所詮はコンセプト実装であり、面白いとは思いますし満喫はしましたが、実世的なものとは言いがたいと結論づけます。</p>
 <h2>IObservable&lt;T&gt;の中へ</h2>
 <p>と、ここまで見てきたので、最後はRxで〆ましょう。ちなみにRxはバージョンが幾つかありますが、私としてはRx 2.0-RCしか使う気はありません。正直、1.0系とは雲泥の差ですからねえ。</p>
-<pre><code class="language-csharp">static IObservable&lt;DbDataReader&gt; EachReaderAsync(DbConnection connection, string query)
+<pre data-pagefind-ignore="all"><code class="language-csharp">static IObservable&lt;DbDataReader&gt; EachReaderAsync(DbConnection connection, string query)
 {
     // CreateAsyncで作る。OnErrorなどは手書きですが、十分に書きやすい
     return Observable.CreateAsync&lt;DbDataReader&gt;(async observer =&gt;
@@ -306,7 +356,7 @@ static async Task Test()
 <p>そんなわけでVS2012登場まで、もうすぐです(MSDN会員は一週間切ってる、そうでない人も一ヶ月後)。C# 5.0への備え、できてますか？さあ、カオスな非同期時代に突入しましょう！</p>
 </div>
 </div>
-        <div id="side">
+        <div id="side" data-pagefind-ignore="all">
 <h3>Profile</h3>
 <div class="side_body" align="center">
 <b>Yoshifumi Kawai</b><br />
@@ -472,7 +522,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 </ul>
 </div>
 </div>
-        <div id="footer"><ul>
+        <div id="footer" data-pagefind-ignore="all"><ul>
 <li>Index: <a href="https://neue.cc">neue.cc</a><li>
 <li>RSS feed: <a href="https://neue.cc/feed">neue.cc/feed</a><li>
 <li>Powered by: <a href="https://github.com/neuecc/Blog2">https://github.com/neuecc/Blog2</a>

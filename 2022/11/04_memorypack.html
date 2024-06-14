@@ -9,6 +9,17 @@
         gtag('js', new Date());
         gtag('config', 'UA-2834006-1');
     </script>
+
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-4Z51JP7Z8W"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+
+      gtag('config', 'G-4Z51JP7Z8W');
+    </script>
+
     <meta charset="utf-8" />
     <title>neue cc - MemoryPackにみる .NET 7/C# 11世代のシリアライザー最適化技法</title>
     <link rel="shortcut icon" href="https://neue.cc/favicon.ico" />
@@ -28,7 +39,46 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2022/11/04_memorypack.html">MemoryPackにみる .NET 7/C# 11世代のシリアライザー最適化技法</a></h1>
+        <link href="./pagefind/pagefind-ui.css" rel="stylesheet">
+        <script src="./pagefind/pagefind-ui.js"></script>
+        <div id="search"></div>
+        <script>
+            window.addEventListener('DOMContentLoaded', (event) => {
+                new PagefindUI({ 
+                    element: "#search", 
+                    pageSize: 10,
+                    highlightParam: "",
+                    excerptLength: 10,
+                    showImages: false,
+                    showSubResults: false,
+                    translations   : {
+                        placeholder  : '',
+                        clear_search : 'Clear',
+                        load_more    : 'More',
+                    }
+                })
+            });
+        </script>
+        <style>
+            :root {
+                --pagefind-ui-scale: 0.8;
+                --pagefind-ui-primary: #9ba29f;
+                --pagefind-ui-text: #9ba29f;
+                --pagefind-ui-background: black;
+                --pagefind-ui-border: #4d514f;
+                --pagefind-ui-tag: #eeeeee;
+                --pagefind-ui-border-width: 0.5px;
+                --pagefind-ui-border-radius: 0px;
+                --pagefind-ui-image-border-radius: 8px;
+                --pagefind-ui-image-box-ratio: 3 / 2;
+                --pagefind-ui-font: 'Lucida Sans Unicode','Lucida Grande','Verdana','MS UI Gothic','sans-serif';
+            }
+            mark {
+                background-color: blue;
+                font-size: 99px;
+            }
+        </style>
+        <div id="content"><h1 data-pagefind-meta="date:2022-11-04"><a href="https://neue.cc/2022/11/04_memorypack.html">MemoryPackにみる .NET 7/C# 11世代のシリアライザー最適化技法</a></h1>
 <ul class="date"><li>2022-11-04</li></ul>
 <div class="entry_body"><p><a href="https://github.com/Cysharp/MemoryPack">MemoryPack</a>という、C#に特化することで従来のシリアライザーとは比較にならないほどのパフォーマンスを発揮する新しいシリアライザーを新しく開発しました。</p>
 <p><img src="https://user-images.githubusercontent.com/46207/192748136-262ac2e7-4646-46e1-afb8-528a51a4a987.png" alt="" /></p>
@@ -39,7 +89,7 @@
 <p>というだけではアレなので、実際なんで速いのかというのを理屈で説明していきます……！きっと納得してもらえるはず！ C#の最適化のTipsとしてもどうぞ。</p>
 <h2>Incremental Source Generator</h2>
 <p>MemoryPackでは .NET 5/C# 9.0 から追加された <a href="https://learn.microsoft.com/en-us/dotnet/csharp/roslyn-sdk/source-generators-overview">Source Generator</a>、それも .NET 6 で強化された <a href="https://github.com/dotnet/roslyn/blob/main/docs/features/incremental-generators.md">Incremental Source Generator</a>を全面的に採用しています。使い方的には、対象型をpartialに変更する程度で、MessagePack for C#とあまり変わりません（というか極力同じAPIになるように揃えました）。</p>
-<pre><code class="language-csharp">using MemoryPack;
+<pre data-pagefind-ignore="all"><code class="language-csharp">using MemoryPack;
 
 [MemoryPackable]
 public partial class Person
@@ -62,7 +112,7 @@ var val = MemoryPackSerializer.Deserialize&lt;Person&gt;(bin);
 <h2>varint encoding vs fixed</h2>
 <p>Int32は4バイトですが、例えばJSONでは数値を文字列として、1バイト~11バイト(例えば <code>1</code> であったり <code>-2147483648</code> であったり)の可変長なエンコーディングが施されます。バイナリフォーマットでも、サイズの節約のために1~5バイトの可変長にエンコードされる仕様を持つものが多くあります。例えば<a href="https://developers.google.com/protocol-buffers/docs/encoding#varints">Protocol Buffersの数値型</a>は、値を7ビットに、後続があるかないかのフラグを1ビットに格納する可変長整数エンコーディングになっています(varint)。これにより数値が小さければ小さいほど、バイト数が少なくなります。逆にワーストケースでは本来の4バイトより大きい5バイトに膨れることになります。とはいえ現実的には小さい数値のほうが圧倒的に頻出するはずなので、とても理にかなった方式です。<a href="https://github.com/msgpack/msgpack/blob/master/spec.md">MessagePack</a>や<a href="https://cbor.io/">CBOR</a>も同じように、小さい数値では最小で1バイト、大きい場合は最大5バイトになる可変長エンコーディングで処理されます。</p>
 <p>つまり、固定長の場合よりも余計な処理が走ることになります。具体的なコードで比較してみましょう。可変長はprotobufで使われるvarint + <a href="https://developers.google.com/protocol-buffers/docs/encoding#varints">ZigZagエンコーディング</a>(負数と正数をまとめる)です。</p>
-<pre><code class="language-csharp">// 固定長の場合
+<pre data-pagefind-ignore="all"><code class="language-csharp">// 固定長の場合
 static void WriteFixedInt32(Span&lt;byte&gt; buffer, int value)
 {
     ref byte p = ref MemoryMarshal.GetReference(buffer);
@@ -88,12 +138,12 @@ static void WriteVarInt64(Span&lt;byte&gt; buffer, long value)
 </code></pre>
 <p>固定長は、つまりC#のメモリをそのまま書き出している(Zero encoding)わけで、さすがにどう見ても固定長のほうが速いでしょう。</p>
 <p>このことは配列に適用した場合、より顕著になります。</p>
-<pre><code class="language-csharp">// https://sharplab.io/
+<pre data-pagefind-ignore="all"><code class="language-csharp">// https://sharplab.io/
 Inspect.Heap(new int[]{ 1, 2, 3, 4, 5 });
 </code></pre>
 <p><img src="https://user-images.githubusercontent.com/46207/199924027-492a163c-9bd9-41e7-8489-4f5aa61cac52.png" alt="image" /></p>
 <p>C#のstructの配列は、データが直列に並びます。この時、<a href="https://learn.microsoft.com/ja-jp/dotnet/csharp/language-reference/builtin-types/unmanaged-types">structが参照型を持っていない場合(unmanaged type)</a>は、データが完全にメモリ上に並んでいることになります。MessagePackとMemoryPackでコードでシリアライズ処理を比較してみましょう。</p>
-<pre><code class="language-csharp">// 固定長の場合(実際には長さも書き込みます)
+<pre data-pagefind-ignore="all"><code class="language-csharp">// 固定長の場合(実際には長さも書き込みます)
 void Serialize(int[] value)
 {
     // サイズが算出可能なので事前に一発で確保
@@ -121,7 +171,7 @@ void Serialize(int[] value)
 <p><img src="https://user-images.githubusercontent.com/46207/199926307-bad558f9-b912-4b96-90fc-5c2d1a2837ea.png" alt="image" /></p>
 <p>float(4バイト)はMessagePackにおいて、固定長で5バイトです。追加の1バイトは、その値が何の型(IntなのかFloatなのかStringなのか...)を示す識別子が先頭に入ります。具体的には[0xca, x, x, x, x]といったように。いわばタグ付与エンコーディングを行っているわけです。MemoryPackのフォーマットは識別子を持たないため、4バイトをそのまま書き込みます。</p>
 <p>ベンチマークで50倍の差だった、Vector3[10000]で考えてみましょう。</p>
-<pre><code class="language-csharp">// 以下の型がフィールドにあるとする
+<pre data-pagefind-ignore="all"><code class="language-csharp">// 以下の型がフィールドにあるとする
 // byte[] buffer
 // int offset
 
@@ -181,7 +231,7 @@ void SerializeMessagePack(Vector3[] value)
 </code></pre>
 <p>MessagePackだと30000回のメソッド呼び出しが必要なところが(そしてそのメソッド内では、書き込みメモリが足りているかのチェックと、書き終わった後のオフセットの追加が(愚直に処理する場合)都度必要になる)、一回のメモリコピーだけになります。こうなると、処理時間が文字通り桁違いに変わってきて、冒頭のグラフの50倍~100倍の高速化の理由はここにあります。</p>
 <p>もちろん、デシリアライズ処理もコピー一発になります。</p>
-<pre><code class="language-csharp">// MemoryPackのデシリアライズ、コピーするだけ。
+<pre data-pagefind-ignore="all"><code class="language-csharp">// MemoryPackのデシリアライズ、コピーするだけ。
 Vector3[] DeserializeMemoryPack(ReadOnlySpan&lt;byte&gt; buffer, int size)
 {
     var dest = new Vector3[size];
@@ -210,7 +260,7 @@ Vector3[] DeserializeMessagePack(ReadOnlySpan&lt;byte&gt; buffer, int size)
 <p>しかし恐らく、ほとんどの人が使っていないでしょう。別に普通にシリアライズできるものを、言語間運用製を壊す、C#だけの独自拡張オプションをわざわざ使おうとは、中々思わない、というのは分かります。そこがまた歯痒かったんですよね、明らかに遅いのに、明らかに速くできるのに、だからせっかく用意したのに、デフォルトではない限り使われない、しかしデフォルトは絶対に仕様に従うべきであり……。</p>
 <h2>string処理の最適化</h2>
 <p>MemoryPackではStringに関して、2つの仕様を持っています。UTF8か、UTF16か、です。C#のstringはUTF16のため、UTF16のままシリアライズすると、UTF8へのエンコード/デコードコストを省くことができます。</p>
-<pre><code class="language-csharp">void EncodeUtf16(string value)
+<pre data-pagefind-ignore="all"><code class="language-csharp">void EncodeUtf16(string value)
 {
     var size = value.Length * 2;
     EnsureCapacity(size);
@@ -227,7 +277,7 @@ string DecodeUtf16(ReadOnlySpan&lt;byte&gt; buffer, int length)
 </code></pre>
 <p>ただし、MemoryPackのデフォルトはUTF8です。これは単純にペイロードのサイズの問題で、UTF16だとASCII文字が2倍のサイズになってしまうため、UTF8にしました（なお、日本語の場合はUTF16のほうがむしろ縮まる可能性が高いです）。</p>
 <p>UTF8の場合でも、他のシリアライザにはない最適化をしています。</p>
-<pre><code class="language-csharp">void WriteUtf8MemoryPack(string value)
+<pre data-pagefind-ignore="all"><code class="language-csharp">void WriteUtf8MemoryPack(string value)
 {
     var source = value.AsSpan();
     var maxByteCount = (source.Length + 1) * 3;
@@ -245,7 +295,7 @@ void WriteUtf8StandardSerializer(string value)
 <p><code>var bytes = Encoding.UTF8.GetBytes(value);</code> は論外です、stringの書き込みで <code>byte[]</code> のアロケーションは許されません。しかし、多くのシリアライザはで使われている <code>Encoding.UTF8.GetByteCount</code> も避けるべきです、UTF8は可変長のエンコーディングであり、 GetByteCount は正確なエンコード後のサイズを算出するために、文字列を完全に走査します。つまり GetByteCount -&gt; GetBytes は文字列を二度も走査することになります。</p>
 <p>通常シリアライザーは余裕を持ったバッファの確保が許されています。そこでMemoryPackではUTF8エンコードした場合のワーストケースである文字列長の3倍の確保にすることで、二度の走査を避けています。</p>
 <p>デコードの場合は、更に特殊な最適化を施しています。</p>
-<pre><code class="language-csharp">string ReadUtf8MemoryPack(int utf16Length, int utf8Length)
+<pre data-pagefind-ignore="all"><code class="language-csharp">string ReadUtf8MemoryPack(int utf16Length, int utf8Length)
 {
     unsafe
     {
@@ -266,7 +316,7 @@ string ReadStandardSerialzier(int utf8Length)
 }
 </code></pre>
 <p>通常、byte[]からstringを取り出すには Encoding.UTF8.GetString(buffer) を使います。MessagePack for C#でもそうです。しかし、改めて、UTF8は可変長のエンコーディングであり、そこからUTF16としての長さは分かりません。そのためUTF8.GetStringだと、stringに変換するためのUTF16としての長さ算出が必要なので、中では文字列を二度走査しています。擬似コードでいうと</p>
-<pre><code class="language-csharp">var length = CalcUtf16Length(utf8data);
+<pre data-pagefind-ignore="all"><code class="language-csharp">var length = CalcUtf16Length(utf8data);
 var str = String.Create(length);
 Encoding.Utf8.DecodeToString(utf8data, str);
 </code></pre>
@@ -279,7 +329,7 @@ Encoding.Utf8.DecodeToString(utf8data, str);
 <h2>.NET 7 / C#11を活用したハイパフォーマンスシリアライザーのための実装</h2>
 <p>MemoryPackは .NET Standard 2.1向けの実装と .NET 7向けの実装で、メソッドシグネチャが若干異なります。.NET 7向けには、最新の言語機能を活用した、より性能を追求したアグレッシブな実装になっています。</p>
 <p>まずシリアライザのインターフェイスは以下のような static abstract membersが活用されています。</p>
-<pre><code class="language-csharp">public interface IMemoryPackable&lt;T&gt;
+<pre data-pagefind-ignore="all"><code class="language-csharp">public interface IMemoryPackable&lt;T&gt;
 {
     // note: serialize parameter should be `ref readonly` but current lang spec can not.
     // see proposal https://github.com/dotnet/csharplang/issues/6010
@@ -289,7 +339,7 @@ Encoding.Utf8.DecodeToString(utf8data, str);
 }
 </code></pre>
 <p>MemoryPackはSource Generatorを採用し、対象型が <code>[MemortyPackable]public partial class Foo</code> であることを要求するため、最終的に対象型は</p>
-<pre><code class="language-csharp">[MemortyPackable]
+<pre data-pagefind-ignore="all"><code class="language-csharp">[MemortyPackable]
 partial class Foo : IMemoryPackable
 {
     static void IMemoryPackable&lt;Foo&gt;.Serialize&lt;TBufferWriter&gt;(ref MemoryPackWriter&lt;TBufferWriter&gt; writer, scoped ref Foo? value) 
@@ -302,7 +352,7 @@ partial class Foo : IMemoryPackable
 }
 </code></pre>
 <p>といったものを生成します。これにより、仮想メソッド経由呼び出しのコストを避けています。</p>
-<pre><code class="language-csharp">public void WritePackable&lt;T&gt;(scoped in T? value)
+<pre data-pagefind-ignore="all"><code class="language-csharp">public void WritePackable&lt;T&gt;(scoped in T? value)
     where T : IMemoryPackable&lt;T&gt;
 {
     // IMemoryPackableが対象の場合、静的メソッドを直接呼び出しに行く
@@ -318,7 +368,7 @@ public void WriteValue&lt;T&gt;(scoped in T? value)
 }
 </code></pre>
 <p>また、<code>MemoryPackWriter</code>/<code>MemoryPackReader</code> では <code>ref field</code> を活用しています。</p>
-<pre><code class="language-csharp">public ref struct MemoryPackWriter&lt;TBufferWriter&gt;
+<pre data-pagefind-ignore="all"><code class="language-csharp">public ref struct MemoryPackWriter&lt;TBufferWriter&gt;
     where TBufferWriter : IBufferWriter&lt;byte&gt;
 {
     ref TBufferWriter bufferWriter;
@@ -328,7 +378,7 @@ public void WriteValue&lt;T&gt;(scoped in T? value)
 <p><code>ref byte bufferReference</code>, <code>int bufferLength</code> の組み合わせは、つまり<code>Span&lt;byte&gt;</code>のインライン化です。また、<code>TBufferWriter</code>を<code>ref TBufferWriter</code>として受け取ることにより、ミュータブルな<code>struct TBufferWriter : IBufferWrite&lt;byte&gt;</code>を安全に受け入れて呼び出すことができるようになりました。</p>
 <h2>全ての型への最適化</h2>
 <p>例えばコレクションは <code>IEnumerable&lt;T&gt;</code> としてシリアライズ/デシリアライズすることで実装の共通化が可能ですが、MemoryPackでは全ての型に対して個別の実装をするようにしています。単純なところでは <code>List&lt;T&gt;</code>を処理するのに</p>
-<pre><code class="language-csharp">public void Serialize(ref MemoryPackWriter writer, IEnumerable&lt;T&gt; value)
+<pre data-pagefind-ignore="all"><code class="language-csharp">public void Serialize(ref MemoryPackWriter writer, IEnumerable&lt;T&gt; value)
 {
     foreach(var item in source)
     {
@@ -346,7 +396,7 @@ public void Serialize(ref MemoryPackWriter writer, List&lt;T&gt; value)
 </code></pre>
 <p>この2つでは全然性能が違います。<code>IEnumerable&lt;T&gt;</code>へのforeachは <code>IEnumerator&lt;T&gt;</code> を取得しますが、<code>List&lt;T&gt;</code>へのforeachは <code>struct List&lt;T&gt;.Enumerator</code> という最適化された専用の構造体のEnumeratorを取得するからです。</p>
 <p>しかし、もっと最適化する余地があります。</p>
-<pre><code class="language-csharp">public sealed class ListFormatter&lt;T&gt; : MemoryPackFormatter&lt;List&lt;T?&gt;&gt;
+<pre data-pagefind-ignore="all"><code class="language-csharp">public sealed class ListFormatter&lt;T&gt; : MemoryPackFormatter&lt;List&lt;T?&gt;&gt;
 {
     public override void Serialize&lt;TBufferWriter&gt;(ref MemoryPackWriter&lt;TBufferWriter&gt; writer, scoped ref List&lt;T?&gt;? value)
     {
@@ -403,7 +453,7 @@ public void DangerousWriteUnmanagedSpan&lt;T&gt;(scoped Span&lt;T&gt; value)
 <p>まず、そもそも現代では <code>List&lt;T&gt;</code> の列挙は <code>CollectionsMarshal.AsSpan(value)</code> 経由で、<code>Span&lt;T&gt;</code>を取得して、それを列挙するのが最適です。それによってEnumerator経由というコストすら省くことが可能です。更に、<code>Span&lt;T&gt;</code>が取得できているなら、<code>List&lt;int&gt;</code>や<code>List&lt;Vector3&gt;</code>の場合にコピーのみで処理することもできます。</p>
 <p>Deserializeの場合にも、興味深い最適化があります。まず、MemoryPackのDeserializeは <code>ref T? value</code> を受け取るようになっていて、valueがnullの場合は内部で生成したオブジェクトを（普通のシリアライザと同様）、valueが渡されている場合は上書きするようになっています。これによってDeserialize時の新規オブジェクト生成というアロケーションをゼロにすることが可能です。コレクションの場合も、<code>List&lt;T&gt;</code>の場合は<code>Clear()</code>を呼び出すことで再利用します。</p>
 <p>その上で、特殊なSpanの呼び出しをすることにより、 <code>List&lt;T&gt;.Add</code> すら避けることに成功しました。</p>
-<pre><code class="language-csharp">public sealed class ListFormatter&lt;T&gt; : MemoryPackFormatter&lt;List&lt;T?&gt;&gt;
+<pre data-pagefind-ignore="all"><code class="language-csharp">public sealed class ListFormatter&lt;T&gt; : MemoryPackFormatter&lt;List&lt;T?&gt;&gt;
 {
     public override void Deserialize(ref MemoryPackReader reader, scoped ref List&lt;T?&gt;? value)
     {
@@ -497,7 +547,7 @@ public void ReadSpanWithoutReadLengthHeader&lt;T&gt;(int length, scoped ref Span
 <p>なぜ開発しようかと思ったかというと、MessagePack for C#に不満がでてきたから、です。残念ながら .NET「最速」とはいえないような状況があり、その理由としてバイナリ仕様が足を引っ張っているため、改善するのにも限界があることには随分前から気づいていました。また、実装面でもIL生成とRoslynを使った外部ツールとしてのコードジェネレーター(mpc)の、二種のメンテナンスがかなり厳しくなってきているということもありました。外部ツールとしてのコードジェネレーターはトラブルの種で、何かと環境によって動かないということが多発していて、Source Generatorにフル対応できるのなら、もはや廃止したいぐらいにも思っていました。</p>
 <p>そこに .NET 7/C# 11 の ref fieldやstatic abstract methodを見た時、これをシリアライザー開発に応用したらパフォーマンスの底上げが可能になる、ついでにSource Generator化すれば、いっそIL生成も廃止してSource Generatorに一本化できるのではないか？それならもう、それをMessagPack for C#に適用する前に、パフォーマンス向上に問題のあるバイナリ仕様の限界も無視した、C#のためだけに究極の性能を実現するシリアライザーを作って、本当の最速を実証してしまえばいいのでは？と。</p>
 <p>性能特化の実験的シリアライザーではなくて、実用性も重視したシリアライザーであるために、MessagePack for C#での経験も元にして、多くの機能も備えるようにしました。</p>
-<pre><code>* .NETのモダンI/O API対応(IBufferWriter&lt;byte&gt;, ReadOnlySpan&lt;byte&gt;, ReadOnlySequence&lt;byte&gt;)
+<pre data-pagefind-ignore="all"><code>* .NETのモダンI/O API対応(IBufferWriter&lt;byte&gt;, ReadOnlySpan&lt;byte&gt;, ReadOnlySequence&lt;byte&gt;)
 * 既存オブジェクトへの上書きデシリアライズ
 * ポリモーフィズムなシリアライズ(Union)
 * PipeWriter/Readerを活用したストリーミングシリアライズ/デシリアライズ
@@ -509,7 +559,7 @@ public void ReadSpanWithoutReadLengthHeader&lt;T&gt;(int length, scoped ref Span
 <p>パフォーマンスのために特化したstructを作ってメモリコピーする、といったことはC#の最適化のための手段として、そこまで珍しいわけではなく、やったことある人もいるのではないかと思います。そこからすると、あるいはこの記事を読んで、MemoryPackは一見ただのメモリコピーの塊じゃん、みたいな感じがあるかもしれませんが、汎用シリアライザーとして成立させるのはかなり大変で、そこをやりきっているのが新しいところです。</p>
 <p>当初実現していなかった .NET 5/6(Standard 2.1)対応やUnity対応は完了したので、今後は<a href="https://github.com/Cysharp/MasterMemory">MasterMemory</a>のSource Generator/MemoryPack対応や、<a href="https://github.com/Cysharp/MagicOnion/">MagicOnion</a>のシリアライザ変更対応など、利用できる範囲をより広げることを考えています。Cysharpの C#ライブラリ のエコシステムの中心になると位置づけているので、今後もかなり力入れて成長させていこうと思っていますので、まずは、是非是非試してみてください！</p>
 </div></div>
-        <div id="side">
+        <div id="side" data-pagefind-ignore="all">
 <h3>Profile</h3>
 <div class="side_body" align="center">
 <b>Yoshifumi Kawai</b><br />
@@ -675,7 +725,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 </ul>
 </div>
 </div>
-        <div id="footer"><ul>
+        <div id="footer" data-pagefind-ignore="all"><ul>
 <li>Index: <a href="https://neue.cc">neue.cc</a><li>
 <li>RSS feed: <a href="https://neue.cc/feed">neue.cc/feed</a><li>
 <li>Powered by: <a href="https://github.com/neuecc/Blog2">https://github.com/neuecc/Blog2</a>

@@ -9,6 +9,17 @@
         gtag('js', new Date());
         gtag('config', 'UA-2834006-1');
     </script>
+
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-4Z51JP7Z8W"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+
+      gtag('config', 'G-4Z51JP7Z8W');
+    </script>
+
     <meta charset="utf-8" />
     <title>neue cc - MessagePack for C# v2によるC#における最新のI/Oパイプライン最適化</title>
     <link rel="shortcut icon" href="https://neue.cc/favicon.ico" />
@@ -28,7 +39,46 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js"></script>
     <div id="wrapper">
         <a href="https://neue.cc/"><div id="header"></div></a>
-        <div id="content"><h1><a href="https://neue.cc/2019/12/17_586.html">MessagePack for C# v2によるC#における最新のI/Oパイプライン最適化</a></h1>
+        <link href="./pagefind/pagefind-ui.css" rel="stylesheet">
+        <script src="./pagefind/pagefind-ui.js"></script>
+        <div id="search"></div>
+        <script>
+            window.addEventListener('DOMContentLoaded', (event) => {
+                new PagefindUI({ 
+                    element: "#search", 
+                    pageSize: 10,
+                    highlightParam: "",
+                    excerptLength: 10,
+                    showImages: false,
+                    showSubResults: false,
+                    translations   : {
+                        placeholder  : '',
+                        clear_search : 'Clear',
+                        load_more    : 'More',
+                    }
+                })
+            });
+        </script>
+        <style>
+            :root {
+                --pagefind-ui-scale: 0.8;
+                --pagefind-ui-primary: #9ba29f;
+                --pagefind-ui-text: #9ba29f;
+                --pagefind-ui-background: black;
+                --pagefind-ui-border: #4d514f;
+                --pagefind-ui-tag: #eeeeee;
+                --pagefind-ui-border-width: 0.5px;
+                --pagefind-ui-border-radius: 0px;
+                --pagefind-ui-image-border-radius: 8px;
+                --pagefind-ui-image-box-ratio: 3 / 2;
+                --pagefind-ui-font: 'Lucida Sans Unicode','Lucida Grande','Verdana','MS UI Gothic','sans-serif';
+            }
+            mark {
+                background-color: blue;
+                font-size: 99px;
+            }
+        </style>
+        <div id="content"><h1 data-pagefind-meta="date:2019-12-17"><a href="https://neue.cc/2019/12/17_586.html">MessagePack for C# v2によるC#における最新のI/Oパイプライン最適化</a></h1>
 <ul class="date"><li>2019-12-17</li></ul>
 <div class="entry_body"><p><a href="https://github.com/neuecc/MessagePack-CSharp">MessagePack for C#</a>のVersion 2を本日リリースしました。出る出る詐欺で、一年がかりでリリースまで漕ぎ着けました！とにかくめっちゃ時間かかった、死ぬほど私のリソースが取られていた、ので本当にリリースまで持ってこれてよかった……。めでたし。</p>
 <p>今回はとてもOSSっぽく開発していて、メインの開発はMicrosoftのVisual StudioチームのPrincipal Software Engineerである<a href="https://github.com/AArnott">Andrew Arnott</a>さんが書いています。私はそれに対してひたすら、APIデザインが好きじゃないだの、パフォーマンスが私の基準に満たしてないだの、文句つけまくる仕事をしていました。しかしコードのクオリティはさすがに非常に高くて、私だけだったらここには至れなかっただろうことを考えると、いい感じの共同開発ができたんじゃないかなあと思います。その結果として、一年前に掲示されたv2よりも、百億倍良くなってます。この一年間で磨きに磨き抜いたわけです。</p>
@@ -36,7 +86,7 @@
 <p>v1 -&gt; v2においては破壊的変更多数なので、移行ガイドを<a href="https://github.com/neuecc/MessagePack-CSharp/blob/master/doc/migration.md">migration.md</a>にまとめてあるので、適当に読んでおくと良いでしょう、詳しい解説は特にしません。ライブラリ類は一斉にバージョン上げないと詰みます。Cysharpで作っている<a href="https://github.com/Cysharp/MagicOnion/">MagicOnion</a>と<a href="https://github.com/Cysharp/MasterMemory">MasterMemory</a>は作業中なので、来週にはドバッと上げておきます多分予定。</p>
 <h2>パイプラインによるゼロコピー</h2>
 <p>MessagePack for C#の内部構造について、見るべきメソッドシグネチャは以下の2つです。</p>
-<pre><code class="language-csharp">public static void Serialize&lt;T&gt;(IBufferWriter&lt;byte&gt; writer, T value, MessagePackSerializerOptions options = null, CancellationToken cancellationToken = default)
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static void Serialize&lt;T&gt;(IBufferWriter&lt;byte&gt; writer, T value, MessagePackSerializerOptions options = null, CancellationToken cancellationToken = default)
 public static T Deserialize&lt;T&gt;(in ReadOnlySequence&lt;byte&gt; byteSequence, MessagePackSerializerOptions options = null, CancellationToken cancellationToken = default)
 </code></pre>
 <p>シリアライズにおいては <code>IBufferWriter&lt;byte&gt;</code>, デシリアライズにおいては <code>ReadOnlySequence&lt;byte&gt;</code> を入出力口に使うというのがポイントです。
@@ -60,7 +110,7 @@ public static T Deserialize&lt;T&gt;(in ReadOnlySequence&lt;byte&gt; byteSequenc
 <h2>理論とパフォーマンス</h2>
 <p>多くある誤解として、<code>async/await</code>にしたら速くなるわけでもないし、<code>Span&lt;byte&gt;</code>にしたから速くなるわけでもありません。そして、<code>IBufferWriter&lt;byte&gt;</code>や<code>ReadOnlySequence&lt;byte&gt;</code>にしても速くなるわけではありません。理屈上コピーが減ったとしても、遅くなりえます。素朴に実装すればコピーしたほうが10倍速い、といった状況はありえます。</p>
 <p>例えば <code>[10, 100, 100]</code> をシリアライズしたいと思ったとして、intが最大5バイト必要だとして、都度writter.GetSpanで取得した場合と、byte[]でどばっと取得した場合を比較すると……</p>
-<pre><code class="language-csharp">// IBufferWriter&lt;byte&gt;
+<pre data-pagefind-ignore="all"><code class="language-csharp">// IBufferWriter&lt;byte&gt;
 foreach(var v in values)
 {
     var buffer = writer.GetSpan(5);
@@ -102,7 +152,7 @@ foreach(var v in values)
 <p>というわけで、次回はMagicOnionのパイプライン化を最適化するために、通信層から手を入れる予定です。また、シリアライザはMessagePackだけではなく、JSONも重要なので、改めて<a href="https://github.com/neuecc/Utf8Json/">Utf8Json</a>の改修も行いたいと思っています。.NET Core 3で華々しくデビューしたMicrosoft公式実装のSystem.Text.JsonによるJsonSerializerの性能が極めて悪いので……。残念ながらMicrosoftは柔軟かつ性能の出るシリアライザの作り方を全く分かっていないのでしょう。</p>
 <p>また、このパイプラインはサーバーの入口→出口だけで閉じるものではなく、ネットワークを超えてクライアント側(Unity)にまで届くものだと考えています。サーバー/クライアントを大きなパイプラインに見立てて、見えるところ通るところ全てを最適化することが「C#大統一理論」であり、真に強力なのだ。ということを実証していくのが当座の目標で、やっと最初の一歩が踏めました。C#凄いな、と心の底から世界中の人が思ってもらうためにも（そしてあわよくば採用してもらう！）、まだ足りてないものは山のようにあるので、どんどん潰していきましょう。</p>
 </div></div>
-        <div id="side">
+        <div id="side" data-pagefind-ignore="all">
 <h3>Profile</h3>
 <div class="side_body" align="center">
 <b>Yoshifumi Kawai</b><br />
@@ -268,7 +318,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 </ul>
 </div>
 </div>
-        <div id="footer"><ul>
+        <div id="footer" data-pagefind-ignore="all"><ul>
 <li>Index: <a href="https://neue.cc">neue.cc</a><li>
 <li>RSS feed: <a href="https://neue.cc/feed">neue.cc/feed</a><li>
 <li>Powered by: <a href="https://github.com/neuecc/Blog2">https://github.com/neuecc/Blog2</a>
