@@ -360,6 +360,8 @@ await Task.Run(() => command(arg0!)).WaitAsync(posixSignalHandler.TimeoutToken);
 
 ただしCancellationTokenをハンドリングしないと終了命令を無視するだけになってしまい、それはそれで困るので、強制的に終了するタイムアウト時間が設けられています。デフォルトでは5秒に設定されていますが、これは `ConsoleApp.Timeout` プロパティで自由に変更できます。もし強制終了をオフにしたい場合は `ConsoleApp.Timeout = Timeout.InfiniteTimeSpan` を指定すると良いでしょう。
 
+[Task.WaitAsync](https://learn.microsoft.com/ja-jp/dotnet/api/system.threading.tasks.task.waitasync?view=net-8.0)は .NET 6 からです。TimeSpanを渡す以外に、CancellationTokenを渡すことも可能なので、単純な数秒後ではなく、WaitAsyncの発火するタイミングをPosixSignalRegistrationが発火した後にTimeout後、といった条件を作ることができました。
+
 フィルターパイプライン
 ---
 実行の前後をフックする仕組みとしてConsoleAppFrameworkではFilterを採用しています。ミドルウェアパターンとも呼ばれて、特にasync/awaitが使える言語ではよく見かけるパターンだと思います。
