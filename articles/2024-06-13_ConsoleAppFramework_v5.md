@@ -104,7 +104,7 @@ Options:
 
 特にひねりもなさそうなド直球ドシンプルなコードに見えるのではないでしょうか。それが大事です！単純なコードであればあるほど速い！フレームワークなのに単純、だから速い。というのが目指している姿です。余計なコードはいっさいなく、メソッド本体に全ての処理が集約されているので、フレームワークとしてゼロ・オーバーヘッド、最適化した手書きコードと同等の速度を実現しました。
 
-CLIアプリケーションは通常、コールドスタートからの単発の実行になるため、動的コード生成(IL.EmitやExpression.Compile)やキャッシュ(ArrayPoolやDictionary生成による以降のマッチング高速化)が効きにくい分野です。それらを作ったほうがオーバーヘッドが大きいですからね。かといってリフレクションなどをそのまま使うのは、それはそれで低速です。ConsoleAppFrameworkは全ての必要な処理をインライン生成することによって、単発実行での速度が圧倒的に高速化されています。
+CLIアプリケーションは通常、コールドスタートからの単発の実行になるため、動的コード生成(IL.EmitやExpression.Compile)やキャッシュ(ArrayPoolやDictionary生成による以降のマッチング高速化)が効きにくい分野です。それらを作ったほうがオーバーヘッドが大きいですから。かといってリフレクションなどをそのまま使うのは、それはそれで低速です。ConsoleAppFrameworkは全ての必要な処理をインライン生成することによって、単発実行での速度が圧倒的に高速化されています。
 
 リフレクションもないのでNative AOTとの親和性も圧倒的に高く、コールドスタートアップ速度におけるC#の欠点は一切なくなります。
 
@@ -114,7 +114,7 @@ CLIアプリケーションは通常、コールドスタートからの単発�
 
 依存ゼロの良いところは明らかにバイナリサイズが小さくなることです。特にNative AOTではバイナリサイズは気になるところですが、ConsoleAppFrameworkなら追加のコストはほぼゼロです。
 
-そしてもちろん、単機能ではフレームワークとしてはさして機能しません、ということで以下のような機能が実現されています。他のフレームワークと比べても全く見劣りしないはずです。
+そしてもちろん、単機能ではフレームワークとしては物足りない、ということで以下のような機能が実現されています。十分に充実した機能群は、他のフレームワークと比べても全く見劣りしないはずです。
 
 * SIGINT/SIGTERM(Ctrl+C) handling with gracefully shutdown via `CancellationToken`
 * Filter(middleware) pipeline to intercept before/after execution
@@ -132,9 +132,9 @@ CLIアプリケーションは通常、コールドスタートからの単発�
 * Help(`-h|--help`) option builder
 * Default show version(`--version`) option
 
-生成されるコードはモジュール化されていて、コードが使用する機能によって変化し、常にその機能の実現において最小のコードが生成されるようになっていることで、多機能と高速さを両立しています。また、どの機能も最速で実現できるよう念入りに調整してあるため、全機能が有効化されてもなお、他とは比較にならないほどに高速です。
+生成されるコードはモジュール化されていて、コードが使用する機能によって変化し、常にその機能の実現において最小のコードが生成されるようになっています。それにより多機能と高速さを両立しています。また、どの機能も最速で実行できるよう念入りに調整してあるため、全機能が有効化されてもなお、他とは比較にならないほどに高速です。
 
-余談ですが、デリゲートはデリゲート生成というアロケーションがあります。つまり真のゼロアロケーション・ゼロオーバーヘッドじゃないじゃん、と言うことができます。しかし、嘘は言いたくないので、ConsoleAppFrameworkは真のゼロアロケーションを実現する仕組みもちゃんと用意されています。以下のように静的関数をfunction pointerとして渡してください。
+余談ですが、デリゲートはデリゲート生成というアロケーションがあります。つまり真のゼロアロケーション・ゼロオーバーヘッドじゃないじゃん、と言うことができます。しかし、ちゃんとConsoleAppFrameworkは真のゼロアロケーションを実現する仕組みもちゃんと用意されています。以下のように静的関数をfunction pointerとして渡してください。
 
 ```csharp
 unsafe
@@ -161,7 +161,7 @@ public static unsafe void Run(string[] args, delegate* managed<int, int, void> c
 
 あるいは最近はJsonSerializerが標準搭載されているから、それに丸投げしてみるというのもアリでしょう。もちろん、パフォーマンスは決して良くはありません。特にコールドスタートアップで考えるとJsonSerializerのキャッシュ処理が必要になってきて、単発実行においてはかなりのオーバーヘッドが足されてしまいます。
 
-ConsoleAppFrameworkでは[`IParsable<T>`](https://learn.microsoft.com/en-us/dotnet/api/system.iparsable-1?view=net-8.0), [`ISpanParsable<T>`](https://learn.microsoft.com/en-us/dotnet/api/system.ispanparsable-1?view=net-8.0)を採用しています。これは .NET 7から追加され、C# 11で追加されたstatic abstract interfaceが使用されています。
+ConsoleAppFrameworkでは[IParsable](https://learn.microsoft.com/en-us/dotnet/api/system.iparsable-1?view=net-8.0), [ISpanParsable](https://learn.microsoft.com/en-us/dotnet/api/system.ispanparsable-1?view=net-8.0)を採用しています。これは .NET 7から追加され、C# 11で追加されたstatic abstract interfaceが使用されています。
 
 ```csharp
 public interface IParsable<TSelf> where TSelf : IParsable<TSelf>?
@@ -173,7 +173,26 @@ public interface IParsable<TSelf> where TSelf : IParsable<TSelf>?
 
 C# 11になってようやく汎用的な 「文字列 -> 値」変換処理が実現するようになったのです！ ConsoleAppFrameworkでは .NET 8/C# 12 を最小実行可能環境としているため、問答無用で採用しました。HalfやInt128などの .NET 8で登場した新しい型や、自分で定義する方も`IParsable<T>`を実装すればそれを使って高速に処理されます！
 
-なお、intなどの基本型はそもそもSource Generatorがintであることを知っているので、直接int.TryParseのように直接実行されるようになっていたりはしますが。
+とはいえ、intなどの基本型はそもそもSource Generatorがintであることを知っているので、直接int.TryParseのように直接実行されるようになっていたりはします。
+
+なお、値のバインディングに関してはparams arrayやデフォルト値にも対応しています。
+
+```csharp
+ConsoleApp.Run(args, (
+    [Argument]DateTime dateTime,  // Argument
+    [Argument]Guid guidvalue,     // 
+    int intVar,                   // required
+    bool boolFlag,                // flag
+    MyEnum enumValue,             // enum
+    int[] array,                  // array
+    MyClass obj,                  // object
+    string optional = "abcde",    // optional
+    double? nullableValue = null, // nullable
+    params string[] paramsArray 
+    ) => { });
+```
+
+ちょうどC# 12から[ラムダ式にデフォルト値やparamsが使用できるようになりました](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/lambda-expressions#input-parameters-of-a-lambda-expression)、ということが反映されています。
 
 ドキュメントコメントによる定義
 ---
@@ -204,6 +223,142 @@ Options:
 ```
 
 というコマンドになります。ドキュメントコメントであれば、多くの引数があっても自然な見た目を保つことが可能です。この手法が取れるのはSource Generatorで生成するため.xmlは不要でコードから直接読み取れることの強みでもありますね。（ただしSource Generatorでドキュメントコメントをあらゆる環境で読み取れるようにするには若干のハックが必要でした）
+
+複数コマンドの追加
+---
+`ConsoleApp.Run`は単独コマンドのためのショートカットでしたが、複数のコマンドやネストされているサブコマンドの追加も可能です。例えば以下のような設定を行った場合の生成を例を見ていきます。
+
+```csharp
+var app = ConsoleApp.Create();
+
+app.Add("foo", () => { });
+app.Add("foo bar", (int x, int y) => { });
+app.Add("foo bar barbaz", (DateTime dateTime) => { });
+app.Add("foo baz", async (string foo = "test", CancellationToken cancellationToken = default) => { });
+
+app.Run(args);
+```
+
+このコードのAddは、まず以下のように展開されます。Source Generatorが全てのAddされるラムダ式の型を知っているので、それぞれ固有の型を持ったフィールドに割り当てます。
+
+```csharp
+partial struct ConsoleAppBuilder
+{
+    Action command0 = default!;
+    Action<int, int> command1 = default!;
+    Action<global::System.DateTime> command2 = default!;
+    Func<string, global::System.Threading.CancellationToken, Task> command3 = default!;
+
+    partial void AddCore(string commandName, Delegate command)
+    {
+        switch (commandName)
+        {
+            case "foo":
+                this.command0 = Unsafe.As<Action>(command);
+                break;
+            case "foo bar":
+                this.command1 = Unsafe.As<Action<int, int>>(command);
+                break;
+            case "foo bar barbaz":
+                this.command2 = Unsafe.As<Action<global::System.DateTime>>(command);
+                break;
+            case "foo baz":
+                this.command3 = Unsafe.As<Func<string, global::System.Threading.CancellationToken, Task>>(command);
+                break;
+            default:
+                break;
+        }
+    }
+}
+```
+
+これによりDelegateを保持しておくための配列や、DelegateのままInvokeするリフレクション/ボクシングが防げています。
+
+Runでは、`string[] args`からコマンドを選択するために定数文字列のswitchが埋め込まれます。
+
+```csharp
+partial void RunCore(string[] args)
+{
+    if (args.Length == 0)
+    {
+        ShowHelp(-1);
+        return;
+    }
+    switch (args[0])
+    {
+        case "foo":
+            if (args.Length == 1)
+            {
+                RunCommand0(args, args.AsSpan(1), command0);
+                return;
+            }
+            switch (args[1])
+            {
+                case "bar":
+                    if (args.Length == 2)
+                    {
+                        RunCommand1(args, args.AsSpan(2), command1);
+                        return;
+                    }
+                    switch (args[2])
+                    {
+                        case "barbaz":
+                            RunCommand2(args, args.AsSpan(3), command2);
+                            break;
+                        default:
+                            RunCommand1(args, args.AsSpan(2), command1);
+                            break;
+                    }
+                    break;
+                case "baz":
+                    RunCommand3(args, args.AsSpan(2), command3);
+                    break;
+                default:
+                    RunCommand0(args, args.AsSpan(1), command0);
+                    break;
+            }
+            break;
+        default:
+            ShowHelp(-1);
+            break;
+    }
+}
+```
+
+C#で文字列から特定のコードにジャンプする最速の手段は、switchで文字列定数を使うことです。展開されるアルゴリズムは何度か修正されていて、C# 12では[Performance: faster switch over string objects · Issue #56374 · dotnet/roslyn](https://github.com/dotnet/roslyn/issues/56374)として、まず長さをチェックした後に、差が存在する1文字まで絞るといった形でマッチさせます。
+
+もちろん、こうしたC#コンパイラの助けを借りたマッチングができるのはSource Generator方式だけです。なので絶対に最速なわけです。
+
+DIとCancellationTokenとライフタイム
+---
+引数にはコマンドのパラメーターとして有効になるもの以外に、DI経由で渡したいもの(例えば`ILogger<T>`や`Option<T>`など)や、特別扱いする型として`ConsoleAppContext`と`CancellationToken`を定義することができます。
+
+DIによる受取は、コンソールアプリケーションがASP.NETのプロジェクトなどと設定ファイルを共有したいようなシチュエーションで有効でしょう。そうした場合のために、 Microsoft.Extensions.Hosting と連動させることが可能です。
+
+また、`CancellationToken`を渡した場合は、SIGINT/SIGTERM/SIGKILL(Ctrl+C)をフックするコンソールアプリケーションとしてのライフタイム管理が働くようになります。
+
+```csharp
+await ConsoleApp.RunAsync(args, async (int foo, CancellationToken cancellationToken) =>
+{
+    await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+    Console.WriteLine($"Foo: {foo}");
+});
+```
+
+上記のコードは以下のように展開されます。
+
+```csharp
+using var posixSignalHandler = PosixSignalHandler.Register(ConsoleApp.Timeout);
+var arg0 = posixSignalHandler.Token;
+
+await Task.Run(() => command(arg0!)).WaitAsync(posixSignalHandler.TimeoutToken);
+```
+
+.NET 6から追加された[PosixSignalRegistration](https://learn.microsoft.com/en-us/dotnet/api/system.runtime.interopservices.posixsignalregistration?view=net-8.0)を使って、SIGINT/SIGTERM/SIGKILLがフックし、CancellationTokenをキャンセルの状態にします。と同時に、即時終了を抑制します(通常Ctrl + Cを押すと即座にAbortされますが、Abortされなくなります)。
+
+それによりアプリケーションがCancellationTokenを正常にハンドリングする余地を残しています。
+
+ただしCancellationTokenをハンドリングしないと終了命令を無視するだけになってしまい、それはそれで困るので、強制的に終了するタイムアウト時間が設けられています。デフォルトでは5秒に設定されていますが、これは `ConsoleApp.Timeout` プロパティで自由に変更できます。もし強制終了をオフにしたい場合は `ConsoleApp.Timeout = Timeout.InfiniteTimeSpan` を指定すると良いでしょう。
 
 フィルターパイプライン
 ---
@@ -425,5 +580,7 @@ public static (string Key, string Reasons)[][] GetIncrementalGeneratorTrackedSte
 特に[Cocona](https://github.com/mayuki/Cocona)は、ConsoleAppFrameworkの影響を受けつつも、より柔軟で、より強力な機能を備えていてとても素晴らしいライブラリです。このままではConsoleAppFrameworkはただの劣化版ではないか、という意識もありました。自信をもってベストであると薦められないのは心苦しい。というかCoconaを作っているのはCysharpの同僚ですしですの。
 
 なので、今回APIの幾つかは逆にCoconaからの影響を受けつつ(`[Argument]`など)、全く異なるキャラクターを持ったフレームワークとなるように腐心しました。パースについての項目で説明したように、ConsoleAppFramework v5は柔軟性をある程度犠牲にしているため、豊富な機能が必要ならば、System.CommandLineやCoconaを使用することをお薦めします。
+
+また、パフォーマンスの観点から言うと、本体の実行時間が長ければ長いほどフレームワークのオーバーヘッドなんてどうでもよくはなります。10分、1分、いや、10秒ぐらいかかる処理であるなら、フレームワーク部分が1msだろうと50msだろうと誤差みたいなものでしょう。それはそもそもJITコンパイルにも言えることではありますが。とはいえ、Native AOTだのコールドスタートアップ速度だのがやいやい言われる昨今では、別にそんなもの無視できる程度の話だろう、と一刀両断できるわけでもなく、早いに越したことはないのは間違いないとも言えます。
 
 パフォーマンスや依存性なしといったメリットはもちろんですが、アプローチや設計面でも特異で面白いものになっていると思いますので、是非お試しください！もちろん、実用性もめちゃくちゃ高く、文句なしに必須ライブラリと考えてもらってもいいのではないでしょうか！
