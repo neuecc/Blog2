@@ -37,6 +37,17 @@ static string BuildHtml(string title, string content, string side, string footer
         gtag('js', new Date());
         gtag('config', 'UA-2834006-1');
     </script>
+
+    <!-- Google tag (gtag.js) -->
+    <script async src=""https://www.googletagmanager.com/gtag/js?id=G-4Z51JP7Z8W""></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){{dataLayer.push(arguments);}}
+      gtag('js', new Date());
+
+      gtag('config', 'G-4Z51JP7Z8W');
+    </script>
+
     <meta charset=""utf-8"" />
     <title>{title}</title>
     <link rel=""shortcut icon"" href=""https://neue.cc/favicon.ico"" />
@@ -51,9 +62,48 @@ static string BuildHtml(string title, string content, string side, string footer
     <script src=""https://cdnjs.cloudflare.com/ajax/libs/prism/1.25.0/plugins/normalize-whitespace/prism-normalize-whitespace.min.js""></script>
     <div id=""wrapper"">
         <a href=""https://neue.cc/""><div id=""header""></div></a>
+        <link href=""./pagefind/pagefind-ui.css"" rel=""stylesheet"">
+        <script src=""./pagefind/pagefind-ui.js""></script>
+        <div id=""search""></div>
+        <script>
+            window.addEventListener('DOMContentLoaded', (event) => {{
+                new PagefindUI({{ 
+                    element: ""#search"", 
+                    pageSize: 10,
+                    highlightParam: """",
+                    excerptLength: 10,
+                    showImages: false,
+                    showSubResults: false,
+                    translations   : {{
+                        placeholder  : '',
+                        clear_search : 'Clear',
+                        load_more    : 'More',
+                    }}
+                }})
+            }});
+        </script>
+        <style>
+            :root {{
+                --pagefind-ui-scale: 0.8;
+                --pagefind-ui-primary: #9ba29f;
+                --pagefind-ui-text: #9ba29f;
+                --pagefind-ui-background: black;
+                --pagefind-ui-border: #4d514f;
+                --pagefind-ui-tag: #eeeeee;
+                --pagefind-ui-border-width: 0.5px;
+                --pagefind-ui-border-radius: 0px;
+                --pagefind-ui-image-border-radius: 8px;
+                --pagefind-ui-image-box-ratio: 3 / 2;
+                --pagefind-ui-font: 'Lucida Sans Unicode','Lucida Grande','Verdana','MS UI Gothic','sans-serif';
+            }}
+            mark {{
+                background-color: blue;
+                font-size: 99px;
+            }}
+        </style>
         <div id=""content"">{content}</div>
-        <div id=""side"">{side}</div>
-        <div id=""footer"">{footer}</div>
+        <div id=""side"" data-pagefind-ignore=""all"">{side}</div>
+        <div id=""footer"" data-pagefind-ignore=""all"">{footer}</div>
     </div>
 </body>
 ";
@@ -84,9 +134,9 @@ var articles = Directory.EnumerateFiles(inputDir)
         }
 
         var title = first.TrimStart('#', ' ').TrimEnd(' ');
-        var bodyTitle = $"<h1><a href=\"https://neue.cc/{yyyy}/{mm}/{dd_no}.html\">{title}</a></h1>";
+        var bodyTitle = $"<h1 data-pagefind-meta=\"date:{yyyy}-{mm}-{dd}\"><a href=\"https://neue.cc/{yyyy}/{mm}/{dd_no}.html\">{title}</a></h1>";
         var bodyDate = $"<ul class=\"date\"><li>{yyyy}-{mm}-{dd}</li></ul>";
-        var body = "<div class=\"entry_body\">" + Markdown.ToHtml(others) + "</div>";
+        var body = "<div class=\"entry_body\">" + Markdown.ToHtml(others).Replace("<pre>", "<pre data-pagefind-ignore=\"all\">") + "</div>";
 
         return new Article(
             Url: new PageUrl(yyyy, mm, dd, dd_no),
