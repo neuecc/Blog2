@@ -325,9 +325,9 @@ partial void RunCore(string[] args)
 }
 ```
 
-C#で文字列から特定のコードにジャンプする最速の手段は、switchで文字列定数を使うことです。展開されるアルゴリズムは何度か修正されていて、C# 12では[Performance: faster switch over string objects · Issue #56374 · dotnet/roslyn](https://github.com/dotnet/roslyn/issues/56374)として、まず長さをチェックした後に、差が存在する1文字まで絞るといった形でマッチさせます。
+C#で文字列から特定のコードにジャンプする最速の手段は、switchで文字列定数を使うことです。展開されるアルゴリズムは何度か修正されていて、C# 12では[Performance: faster switch over string objects · Issue #56374 · dotnet/roslyn](https://github.com/dotnet/roslyn/issues/56374)として、まず長さをチェックした後に、差が存在する1文字だけを絞るといった形でマッチさせます。
 
-もちろん、こうしたC#コンパイラの助けを借りたマッチングができるのはSource Generator方式だけです。なので絶対に最速なわけです。
+`Dictionary<string, T>`からのマッチなどよりも高速で初期化時間もアロケーションもないのが、C#コンパイラの助けを借りれる強みであり、そうした処理ができるのはC#コードそのものを出力するSource Generator方式だけです。なので絶対に最速なわけです。
 
 DIとCancellationTokenとライフタイム
 ---
