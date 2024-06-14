@@ -74,6 +74,7 @@ static string BuildHtml(string title, string content, string side, string footer
                     excerptLength: 10,
                     showImages: false,
                     showSubResults: false,
+                    sort: {{ date: ""desc"" }},
                     translations   : {{
                         placeholder  : '',
                         clear_search : 'Clear',
@@ -89,7 +90,7 @@ static string BuildHtml(string title, string content, string side, string footer
                 --pagefind-ui-text: #9ba29f;
                 --pagefind-ui-background: black;
                 --pagefind-ui-border: #4d514f;
-                --pagefind-ui-tag: #eeeeee;
+                --pagefind-ui-tag: #181818;
                 --pagefind-ui-border-width: 0.5px;
                 --pagefind-ui-border-radius: 0px;
                 --pagefind-ui-image-border-radius: 8px;
@@ -134,7 +135,7 @@ var articles = Directory.EnumerateFiles(inputDir)
         }
 
         var title = first.TrimStart('#', ' ').TrimEnd(' ');
-        var bodyTitle = $"<h1 data-pagefind-meta=\"date:{yyyy}-{mm}-{dd}\"><a href=\"https://neue.cc/{yyyy}/{mm}/{dd_no}.html\">{title}</a></h1>";
+        var bodyTitle = $"<h1 data-pagefind-sort=\"date:{yyyy}-{mm}-{dd}\" data-pagefind-meta=\"published:{yyyy}-{mm}-{dd}\"><a href=\"https://neue.cc/{yyyy}/{mm}/{dd_no}.html\">{title}</a></h1>";
         var bodyDate = $"<ul class=\"date\"><li>{yyyy}-{mm}-{dd}</li></ul>";
         var body = "<div class=\"entry_body\">" + Markdown.ToHtml(others).Replace("<pre>", "<pre data-pagefind-ignore=\"all\">") + "</div>";
 
