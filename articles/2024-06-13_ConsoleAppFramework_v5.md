@@ -1,6 +1,6 @@
 # ConsoleAppFramework v5 - ゼロオーバーヘッド・Native AOT対応のC#用CLIフレームワーク
 
-ConsoleAppFrameworkの完全に新しいバージョンをリリースしました。完全に設計しなおして実装も完全に作り直された、何もかもが新しいフレームワークになっています。設計指針として「Zero Dependency, Zero Overhead, Zero Reflection, Zero Allocation, AOT Safe」を掲げ、もちろん、他を圧倒的に引き離すパフォーマンスを実現しています。
+[ConsoleAppFramework](https://github.com/Cysharp/ConsoleAppFramework)の完全に新しいバージョンをリリースしました。完全に設計しなおして実装も完全に作り直された、何もかもが新しいフレームワークになっています。設計指針として「Zero Dependency, Zero Overhead, Zero Reflection, Zero Allocation, AOT Safe」を掲げ、もちろん、他を圧倒的に引き離すパフォーマンスを実現しています。
 
 ![image](https://github.com/Cysharp/ConsoleAppFramework/assets/46207/db4bf599-9fe0-4ce4-801f-0003f44d5628)
 
