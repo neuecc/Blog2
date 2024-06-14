@@ -71,7 +71,7 @@ static string BuildHtml(string title, string content, string side, string footer
                     element: ""#search"", 
                     pageSize: 10,
                     highlightParam: """",
-                    excerptLength: 10,
+                    excerptLength: 80,
                     showImages: false,
                     showSubResults: false,
                     sort: {{ date: ""desc"" }},
