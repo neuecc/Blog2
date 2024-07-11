@@ -164,10 +164,10 @@ var side = $@"
 <a href=""https://cysharp.co.jp/"">Cysharp, Inc</a><br />
 CEO/CTO<br />
 <br />
-Microsoft MVP for Developer Technologies(C#)<br />
+Microsoft MVP for Developer Technologies(.NET)<br />
 April 2011<br />
 |<br />
-July 2024<br />
+July 2025<br />
 <br />
 Twitter:<a href=""https://twitter.com/neuecc/"">@neuecc</a>
 GitHub:<a href=""https://github.com/neuecc/"">neuecc</a>
