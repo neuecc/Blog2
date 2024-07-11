@@ -74,7 +74,128 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2012-02-18" data-pagefind-meta="published:2012-02-18"><a href="https://neue.cc/2012/02/18_365.html">ImplicitQueryString - 暗黙的変換を活用したC#用のクエリストリング変換ライブラリ</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2012-02-23" data-pagefind-meta="published:2012-02-23"><a href="https://neue.cc/2012/02/23_366.html">とあるRoslynではないC# Parser、NRefactoryの紹介</a></h1>
+<ul class="date"><li>2012-02-23</li></ul>
+<div class="entry_body"><p>ﾛｯｽﾞﾘｰﾝ、はっじまらないよ～。というわけで<a href="http://msdn.microsoft.com/ja-jp/roslyn">Microsoft “Roslyn” CTP</a>、Compiler as a Service。<a href="http://nuget.org/packages/Roslyn">NuGet - Roslyn</a>でも手に入るので、サンプル類やC# Interactiveとかはなしで、とりあえずScriptingやCompilerを触ってみたい、ということなら、お手軽です。しかし、まあ未実装も少なくなく、まだまだ先は長そうな雰囲気ではある。今すぐ欲しいのに！切実にC# Parserが！というわけで、今日はその良き代替となる（かもしれない）<a href="https://github.com/icsharpcode/NRefactory">NRefactory</a>を紹介します。</p>
+<p>NRefactoryは<a href="https://packages.nuget.org/packages/ICSharpCode.NRefactory/">NuGet - NRefactory</a>からも入ります。verは5.0.0.4、「This is an alpha release. Expect bugs and breaking changes in the future.」とのことで、こちらもまだまだこれからのよう(MonoDevelopの新しいC#エディタで使われる予定、だそうです)。とりあえずNuGetで参照してみませう。</p>
+<p>参照するとMono.Cecilが入ったり名前空間にMono.CSharpがあったりと、全体的に<a href="http://www.mono-project.com/CSharp_Compiler">MonoのCSharp Compiler</a>やその周辺が使われているふいんき。Mono.CSharpは単体でもついこないだ<a href="https://nuget.org/packages/Mono.CSharp">NuGet - Mono.CSharp</a>で入れられるようになりましたが、そのまんまだと、なんというかどう使っていいか分からないというか、はいEvalできた、さて、はて？みたいになってしまって。そのへん、NRefactoryはゆるふわで、結構すぐに使い方分かります。とりあえず使ってみませう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">using System;
+using System.IO;
+using System.Linq;
+using ICSharpCode.NRefactory.CSharp;
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        var code = File.ReadAllText(@&quot;../../Program.cs&quot;);
+        var parser = new CSharpParser();
+
+        var root = parser.Parse(code, &quot;&quot;);
+
+        var program = root.Descendants.OfType&lt;ICSharpCode.NRefactory.CSharp.TypeDeclaration&gt;().First();
+        program.Name = &quot;Hogegram&quot;;
+
+        Console.WriteLine(root.ToSourceString());
+    }
+}
+
+public static class CompilationUnitExtensions
+{
+    static readonly CSharpFormattingOptions DefaultOptions = new CSharpFormattingOptions()
+    {
+        // TODO:130のboolを自分の気にいるようなOption（というかVSのデフォ）に近づける
+    };
+
+    public static string ToSourceString(this CompilationUnit compilationUnit, int indentation = 4, string indentationString = &quot; &quot;)
+    {
+        return ToSourceString(compilationUnit, DefaultOptions, indentation, indentationString);
+    }
+
+    public static string ToSourceString(this CompilationUnit compilationUnit, CSharpFormattingOptions options, int indentation = 4, string indentationString = &quot; &quot;)
+    {
+        using (var sw = new StringWriter())
+        {
+            var formatter = new TextWriterOutputFormatter(sw)
+            {
+                Indentation = indentation,
+                IndentationString = indentationString
+            };
+
+            var visitor = new CSharpOutputVisitor(formatter, options);
+            compilationUnit.AcceptVisitor(visitor);
+            return sw.ToString();
+        }
+    }
+}
+</code></pre>
+<p>Program.csを読み込んで、クラス名をHogegramに変更したのを出力する、というだけのものです。今のところ整形した文字列化にはCSharpOutputVisitorを作って、AcceptVisitorしなきゃならないようで面倒ぃので、とりあえず拡張メソッドにしました。デフォルトの整形オプションが気に食わないのですが、フォーマット設定が超細かくて100個以上のboolをON/OFFしなきゃいけないのでとりあえず放置。</p>
+<p>構文木の取得自体は超単純で、new CSharpParser()してParse。そしてツリーを辿るのはLINQ to Xmlと同じ感覚でDescendantsやAncestors、Childrenなどなどが用意されているので、一発で分かりますね！そしてOfTypeで自分の欲しいのにフィルタリング、と。この辺は超簡単。そして名前を変えたければ、プロパティに代入するだけ。非常に楽ちんです、素晴らしい……！</p>
+<h2>vs Roslyn</h2>
+<p>さて、じゃあRoslynでも同じことをやってみましょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using Roslyn.Compilers.CSharp;
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        var code = File.ReadAllText(@&quot;../../Program.cs&quot;);
+        var tree = SyntaxTree.ParseCompilationUnit(code);
+
+        var program = tree.Root.DescendentNodes().OfType&lt;ClassDeclarationSyntax&gt;().First();
+
+        var newNode = new ClassNameRewriter(new Dictionary&lt;ClassDeclarationSyntax, string&gt; { { program, &quot;Hogegram&quot; } })
+            .Visit(tree.Root);
+
+        Console.WriteLine(newNode.ToString());
+    }
+}
+
+public class ClassNameRewriter : SyntaxRewriter
+{
+    readonly IDictionary&lt;ClassDeclarationSyntax, string&gt; replaceNames;
+
+    public ClassNameRewriter(IDictionary&lt;ClassDeclarationSyntax, string&gt; replaceNames)
+    {
+        this.replaceNames = replaceNames;
+    }
+
+    protected override SyntaxNode VisitClassDeclaration(ClassDeclarationSyntax node)
+    {
+        var oldIdentifierToken = node.Identifier;
+
+        if (replaceNames.ContainsKey(node))
+        {
+            var newNode = node.Update(node.Attributes,
+               node.Modifiers, node.Keyword,
+               Syntax.Identifier(
+                   oldIdentifierToken.LeadingTrivia,
+                   replaceNames[node], // ここだけ！
+                   oldIdentifierToken.TrailingTrivia),
+               node.TypeParameterListOpt, node.BaseListOpt,
+               node.ConstraintClauses, node.OpenBraceToken,
+               node.Members, node.CloseBraceToken,
+               node.SemicolonTokenOpt);
+
+            return newNode;
+        }
+        else
+        {
+            return base.VisitClassDeclaration(node);
+        }
+    }
+}
+</code></pre>
+<p>構文木の取得はこちらも簡単です、SyntaxTree.ParseCompilationUnitだけ。ツリーの辿り方も似ていて、DescendentNodes、ChildNodes、Ancestors、と、戸惑うことなく使える感じです。OfTypeでフィルタして絞り込みも同じ。書き換えたコードの出力は、こちらはToStringだけでOK、しかもフォーマットルールは何の設定もいらずVS標準と同じ状態になっているので楽ちん。</p>
+<p>が、しかし、こちらはクラス名の書き換えが面倒。Expression Treeと同じく基本的にイミュータブルになっているので、書き換えはプロパティに代入するだけ、とはいかず、大掛かりな仕掛けが必要です。というかこの程度のためだけにVisitorとか……。一応ReplaceNodeとかUpdateとかもあるんですが、うーん、まあ、何というか、よくわかってないので深く突っ込まれると窮します:)</p>
+<h2>まとめ</h2>
+<p>提供する機能は同じでも、使い心地とかは、両者、結構違くなるのではという印象。どちらも発展途上なのですが、ライセンス的にRoslynは今は使えないのに比べると、NRefactoryはMITライセンスで、アルファ版なのを留意しておけば使えるのではというのが、私的には大きいかなあ。割と切迫してC# Parserが必要なところなので、ここはちょっとNRefactoryを使い込んでみたいなあ、なんて思っています。いや、そこまでDeepに使い倒すというより簡単なコード解析と置換程度なので、しっかり使ってバグ報告、とかの貢献は出来なさそうですんがー。</p>
+</div>
+<h1 data-pagefind-sort="date:2012-02-18" data-pagefind-meta="published:2012-02-18"><a href="https://neue.cc/2012/02/18_365.html">ImplicitQueryString - 暗黙的変換を活用したC#用のクエリストリング変換ライブラリ</a></h1>
 <ul class="date"><li>2012-02-18</li></ul>
 <div class="entry_body"><ul>
 <li><a href="http://implicitquerystring.codeplex.com/">ImplicitQueryString - CodePlex</a></li>
@@ -1882,38 +2003,6 @@ Console.WriteLine(y.Value); // 130
 <p>勿論、Rx自体の可能性はGUI(や非同期)だけに閉じているわけではないので、全く別なところでの可能性、使い道というのも追い求めていきたいです。</p>
 <p>ともあれともかく、<a href="http://reactiveproperty.codeplex.com/">ReactiveProperty</a>、試してみてくださいな。</p>
 </div>
-<h1 data-pagefind-sort="date:2011-11-07" data-pagefind-meta="published:2011-11-07"><a href="https://neue.cc/2011/11/07_351.html">Rx連載開始とRx本感想とZenbook買ったという話</a></h1>
-<ul class="date"><li>2011-11-07</li></ul>
-<div class="entry_body"><p>まーたブログを放置気味な昨今は大変よろしくなく、だらだらTwitterを眺めているだけで一日が終わる症にかかっています。さて、そんなわけですが、@ITにてRx入門の連載を開始しました。</p>
-<ul>
-<li><a href="http://www.atmarkit.co.jp/fdotnet/introrx/introrx_01/introrx_01_01.html">Reactive Extensionsの概要と利用方法 － ＠IT</a></li>
-</ul>
-<p>導入なので細かいことは言わず、なんか凄そう！と思ってもらえればいいなー、という構成にしました。用語もそんな並べず、でも、ところどころ引っかかるワードがある、言い方を悪くするとハッタリ気味に、印象に残ってくれればいいなあ、と。初回とはいえ、導入だけであっさり終わってしまったのはちょっと反省。どんな形になるのかイマイチ掴めなくて、もう少し書けばよかったな、と思ってます。あと、図をもう少し入れるべきだったな、と……。そんなこんなな反省を生かし、次回はボリューム増でお送りします。</p>
-<p>@okazukiさんが<a href="http://d.hatena.ne.jp/okazuki/20111031/1320072227">Reactive Extensiions再入門</a>を始めたり、@zoetroさんが<a href="http://d.hatena.ne.jp/ZOETROPE/20111031#1320077799">Rx-Testingについて詳しい記事</a>を書かれていたり(これは素晴らしい！)、Rxも盛り上がってきた感じがしますね！それは気のせいです。というだけで終わらせないよう、ガンガン行きましょうー。</p>
-<h2>Rx本</h2>
-<p>(やっと)発売されました。まず印象ですが、薄いです。私は電子書籍で買っちゃってるのでリアルな厚さは分からないんですが、180ページです。それでこの値段かよ、という不満を最初は持ってしまうかもしれません。あと、LINQ and Rxです。どういうことかというと中身の半分はフツーのLINQの話です。それを差っ引くとRxは90ページしかありません。更にRxJSやReactiveUIの話もあります。そこを差っ引くと50ページぐらいしかないじゃないかゴルァ。というわけで、Rx本として考えると、分量には不満が残ると思われます。全てのメソッドをカバーする、という内容でもないのでリファレンスとしても使えません。</p>
-<iframe src="https://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as4&m=amazon&f=ifr&ref=ss_til&asins=1430237473" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
-<p>とはいえ、要素要素は満遍なくカバーできているのと、現在唯一のRx本ではあるので、本で学びたいなあ、と思うならこれしか選択肢はありません。WindowやJoin、Testingなんかは（私の怠慢により）このブログでは少しも紹介していないので、それらを知りたい方や、 Web上から断片的な情報を拾って組み上げるのは手間なので、購入するのは十分アリだとは思います。まあ、私の@IT連載が完了したら、第一の選択肢はそれを見ること、になります(ｷﾘｯ。となれるように、頑張ります。</p>
-<h2>ASUS Zenbook UX31</h2>
-<p>どうでもいいんですが、UX31を買いました。Intelの推奨するUltrabookの第一弾の中では大本命の一品です。さて、Ultrabookとは何か、というと、ようするところWindows版Macbook Airです。薄く軽く速い。宗教上の理由で林檎はお断りだ！な人にとっては救いの手なわけです。内心羨ましいとか思ってたりしたんだからね！しかしですよ、Win系の勉強会ではそうでもないですが、それ以外の勉強会でのMac率の高さといったら！会場の9割がMacだよ、とかドヤ顔でツイートされた日には！多様性は善、はどこに行ったんだよという話です。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/ux31body.jpg">
-</p>
-<p>側面は、実用的な意味ではフルフラットのほうが良いのでしょうし、特に日本メーカーはそこに拘っている印象があるのですが、審美的にはこうした処理をしたほうがいいですね、視覚上のトリックとはいえ、圧倒的に薄く見えるので。ちなみに側面から見ると本当にMacbook Airソックリでパク……と口から出てしまうのも已むを得ないかな、とは思いますが、それ以外の部分はそんなに似てるわけでもないですよ。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/ux31crystalmark.jpg">
-</p>
-<p>ZenbookはSSDがSATA 3.0（6Gbps）ということもあって、滅茶苦茶速いですね。今後はこの速度がスタンダードになっていくのかと思うと、いい時代です、ほんと。</p>
-<p>その他の印象ですが、キーボードはまぁまぁ、タッチパッドはサイテー。タッチパッドはキー入力中の誤動作率の高さ(位置とか大きさが悪いのだろうなあ)も酷くてストレスフル。基本はマウス使いますけれど、いつもマウス持ち歩くのもねえ。ああ、あと、UX31はUltrabookの中で唯一解像度が1600x900と高い(他は1366x768)のがポイントです。フルHDじゃないのかよ！とVAIO Zのオーダーメイドな人が言ってくるかもしれませんが、まぁVAIO Zは店頭モデルはともかくフルHDでオーダーすると高いですからね。こっちは10万円なのでコストパフォーマンスが違うわけです、はい。あと、13インチで1600x900は程良いですよ。フルHDだとちょっと文字が細かすぎになる感も。</p>
-<iframe src="https://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as4&m=amazon&f=ifr&ref=ss_til&asins=B005YWPI7O" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
-<iframe src="https://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as4&m=amazon&f=ifr&ref=ss_til&asins=B005YWPJLE" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
-<p>総じて満足度は高くお薦めなので、是非買ってください(上のリンク先から！)</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/ux31connector.jpg">
-</p>
-<p>悲しいことに私はいきなりACアダプタのコネクタを破壊してしまって充電不能に陥りました、ｵｩﾉｩ。地震で物が降ってきてですね。脆いものです。</p>
-<p>追記：ASUSのサポートセンターに連絡し、交換してもらいました。非常に対応もよかったので、全然問題ないです。ネガティブな方向でURLがばら蒔かれてしまって想定外だったのですが、全然大丈夫ですよ、とは書いておきます。</p>
-</div>
 <a href="https://neue.cc/14">Prev |</a>
 <a href="https://neue.cc/16">| Next</a>
 </div>
@@ -1925,10 +2014,10 @@ Console.WriteLine(y.Value); // 130
 <a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
 CEO/CTO<br />
 <br />
-Microsoft MVP for Developer Technologies(C#)<br />
+Microsoft MVP for Developer Technologies(.NET)<br />
 April 2011<br />
 |<br />
-July 2024<br />
+July 2025<br />
 <br />
 Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
 GitHub:<a href="https://github.com/neuecc/">neuecc</a>
@@ -1937,6 +2026,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/07/">2024-07</a>
 <li><a href="https://neue.cc/2024/06/">2024-06</a>
 <li><a href="https://neue.cc/2024/05/">2024-05</a>
 <li><a href="https://neue.cc/2024/03/">2024-03</a>

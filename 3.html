@@ -74,7 +74,82 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2021-12-22" data-pagefind-meta="published:2021-12-22"><a href="https://neue.cc/2021/12/22.html">NativeMemoryArray - .NET 6 APIをフル活用した2GB超えの巨大データを扱うライブラリ</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2021-12-30" data-pagefind-meta="published:2021-12-30"><a href="https://neue.cc/2021/12/30.html">ConsoleAppFramework v4 - Minimal API for CommandLine tool</a></h1>
+<ul class="date"><li>2021-12-30</li></ul>
+<div class="entry_body"><p>皆さん .NET 6で追加された<a href="https://docs.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis">Minimal API</a>使ってみました？最初は別にいらんやろ、とか思ってたんですが、いや、これ正直めっちゃ凄い、いい。まぁDelegateベースで書くかどうかは別として（書かないかなー）、謎Startupを葬り去ってBuilder/Runが素直に繋がった形が美しい。Top level statementとの相性も良いので、もうこっちのAPI以外で作る気しないなあ。</p>
+<p>さて、ところでConsoleAppFrameworkです。今までクラスが必要だったんですよね、たった一個のメソッドを実装するにも。それがTop level statementとの相性が悪い。Top level statementだけで完結できるとき、クラスって作りたくないんですよね。と、いうわけで、そろそろ大改修が必要かなーと思っていたところにMinimal APIですよ。特にその場でラムダ式でばしばしAPI作っていくスタイルは、むしろコマンドラインツールのほうがマッチするじゃんどう考えても？</p>
+<p>と、いうわけで大改修して、Minimal APIベースになったv4、作りました。何が凄いって、一行でコマンドライン引数をパースしてハンドラー定義できちゃうんですね。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/147662718-f7756523-67a9-4295-b090-3cfc94203017.png" alt="" /></p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">ConsoleApp.Run(args, (string name) =&gt; Console.WriteLine($&quot;Hello {name}&quot;));
+</code></pre>
+<p>これは嘘偽りなくNuGetからダウンロードしたら、そのままでこう書けます。C# 10.0のglobal using(をNuGetのライブラリ側に埋め込むというEvilな手法を使ってます)と、ラムダ式の推論の向上によって実現しました。内側では、Minimal APIの実現のために Microsoft.Extensions.* 側にもかなり改修が入っていたので、それをそっくりそのまま利用できました。そういう意味で、 .NET 6になった今だからようやく作れた形になりますね。もちろんv1~v3までの蓄積のお陰というところもあります。集大成……！</p>
+<ul>
+<li><a href="https://github.com/Cysharp/ConsoleAppFramework/">Cysharp/ConsoleAppFramework</a></li>
+</ul>
+<p>さて、Runはちょっとウケ狙いなところもあるんですが、それ以外のAPIもBuilderベースになったので、だいぶ様変わりしています。ただし特徴としてGeneric Hostの上に乗っているというのは変わらないので、DbContext埋めたりappconfig.jsonから取ったりというのは、変わらずスムーズにできます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// You can use full feature of Generic Host(same as ASP.NET Core).
+
+var builder = ConsoleApp.CreateBuilder(args);
+builder.ConfigureServices((ctx,services) =&gt;
+{
+    // Register EntityFramework database context
+    services.AddDbContext&lt;MyDbContext&gt;();
+
+    // Register appconfig.json to IOption&lt;MyConfig&gt;
+    services.Configure&lt;MyConfig&gt;(ctx.Configuration);
+
+    // Using Cysharp/ZLogger for logging to file
+    services.AddLogging(logging =&gt;
+    {
+        logging.AddZLoggerFile(&quot;log.txt&quot;);
+    });
+});
+
+var app = builder.Build();
+
+// setup many command, async, short-name/description option, subcommand, DI
+app.AddCommand(&quot;calc-sum&quot;, (int x, int y) =&gt; Console.WriteLine(x + y));
+app.AddCommand(&quot;sleep&quot;, async ([Option(&quot;t&quot;, &quot;seconds of sleep time.&quot;)] int time) =&gt;
+{
+    await Task.Delay(TimeSpan.FromSeconds(time));
+});
+app.AddSubCommand(&quot;verb&quot;, &quot;childverb&quot;, () =&gt; Console.WriteLine(&quot;called via 'verb childverb'&quot;));
+
+// You can insert all public methods as sub command =&gt; db select / db insert
+// or AddCommand&lt;T&gt;() all public methods as command =&gt; select / insert
+app.AddSubCommands&lt;DatabaseApp&gt;();
+
+app.Run();
+</code></pre>
+<p>単独のコマンドラインツール用に使ってもいいのですが、ASP.NETのウェブアプリが他にあって、それのバッチを作りたいみたいなときに、こうしたコンフィグの共通化はめっちゃ便利に使えるはずです。ConfigureServicesのコードはまんま一緒にできて、そのままDIできますからね。</p>
+<p>また、引き続き <code>AddCommands&lt;T&gt;</code> や <code>AddAllCommandType</code> によって、メソッド定義するだけで大量のコマンドを一括追加も可能になっています。</p>
+<h2>v3 -&gt; v4の破壊的変更</h2>
+<p>破壊的変更、は沢山あるのですが、基本的に今までの使い方をしている場合は互換オプションで動くようにしたので、アップデートしたから壊れるということはない、はずです。v4からは<code>ConsoleApp.Create/CreateBuilder</code> 経由で作るのが基本なのですが、v3は <code>Host.CreateDefaultBuilder().RunConsoleAppFrameworkAsync&lt;T&gt;()</code> 経由なので、ちょうど互換性オプションを突っ込むのに都合が良かったんですね。なお、<code>RunConsoleAppFrameworkAsync</code>はエディタから見えないようにしてます。今後は非推奨で、本当に互換のためだけに残してます。</p>
+<p>まず変わったところは、デフォルトで長いオプション名が<code>--</code>、短いオプション名が<code>-</code>になりました。v3では<code>-</code>が幾つついていてもいいというゆるふわマッチングだったのですが、(dotonet toolsと同じように)厳格化しています。</p>
+<p>また、デフォルトのコマンド/オプション名の変換ルールが単純なlower化から、hoge-hugaというlowerなkebab-caseになりました。これもdotnet tools合わせですね。</p>
+<p>また、<code>AddCommands&lt;T&gt;</code>した場合の挙動(v3では<code>RunConsoleAppFrameworkAsync&lt;T&gt;</code>した場合)が、全てのpublicメソッドをコマンドとして追加するようになりました。デフォルト(ルート)コマンドにしたい場合は<code>[RootCommand]</code>属性を付与してくださいということで。これは<code>AddSubCommand&lt;T&gt;</code>した時と挙動を合わせたかったからです、違うと一貫性がなくて戸惑うので。</p>
+<p>と、いうわけで、互換性モードで動かした場合は<code>ConsoleAppOptions</code>は以下のような変更で動くようになっています。よきかなよきかな。（それとargsのコマンド名でHoge.Hugaが来てたらHoge Hugaに分解するのも、この互換性モードだけの挙動です）</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">options.StrictOption = false;
+options.NoAttributeCommandAsImplicitlyDefault = true;
+options.NameConverter = x =&gt; x.ToLower();
+options.ReplaceToUseSimpleConsoleLogger = false;
+</code></pre>
+<p>そうだ、それとCtrl+Cした場合に、正しくCancellationTokenをハンドリングしていない場合でも、タイムアウトをハンドリングしてabortするようになりました。これは、なんか強制終了できなくてウゼーってなりがちというか、私自身よく引っかかってヤバかったので。むしろこれは今までがバグに近くて、正しく<code>HostOptions.ShutdownTimeout</code>を処理していないせいでした。</p>
+<p>ちなみにこのタイムアウト時間はデフォルトは5秒で、ConfigureHostOptions(地味にこれは.NET 6(というかMicrosoft.Extensionsのv6)からの新API)で変更できます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var app = ConsoleApp.CreateBuilder(args)
+    .ConfigureHostOptions(options =&gt;
+    {
+        // change timeout.
+        options.ShutdownTimeout = TimeSpan.FromMinutes(30);
+    })
+    .Build();
+</code></pre>
+<h2>まとめ</h2>
+<p>無計画にアドホックに作っていったせいで、どうにもクソコードすぎて、改修にめっちゃ手間取ったというか内部的にはほぼ作り直した……。弄るのだるくて嫌だなあと内心実際今まで思ってたんですが、やはりとても嫌なコードであった。v1の時の最初の発想が Class.Method にパラメータ分解してバッチを大量に作りたい(そもそもライブラリ名もMicroBatchFrameworkだったし)というものだけだったのが、徐々に汎用コマンドラインツールに進化していって、都度、適当に追加していった結果ではある。</p>
+<p>今回がっつし仕切り直したので、しばらくはメンテが楽になれるかなあ、という感じで、よきかなよきかな。</p>
+<p>まぁしかしC# 10.0は地味にヤバいですよ！使えば使うほど味が出てくるというか、最近ようやく手に馴染んで、よくわかってきた感じです。なんというか、とにかく、めっちゃいい。それとC# 10.0 + ConsoleAppFrameworkは全言語見渡しても最強のコマンドラインツール作成ライブラリじゃないです？いや、API自体のできの良さはほとんど ASP .NET CoreのMinimal APIのコピーにすぎないんですが、まぁしかしそれでもやっぱ、これはかなり良い感じじゃないかという手応えがあります。</p>
+</div>
+<h1 data-pagefind-sort="date:2021-12-22" data-pagefind-meta="published:2021-12-22"><a href="https://neue.cc/2021/12/22.html">NativeMemoryArray - .NET 6 APIをフル活用した2GB超えの巨大データを扱うライブラリ</a></h1>
 <ul class="date"><li>2021-12-22</li></ul>
 <div class="entry_body"><p><a href="https://qiita.com/advent-calendar/2021/microsoft">.NET 6 Advent Calendar 2021</a>の12日の代理投稿となります。プレゼント付きですと！？<a href="https://www.balmuda.com/jp/brew/special-model">BALMUDA The Brew STARBUCKS RESERVE LIMITED EDITION</a>が欲しいです！</p>
 <p>さて、先程NativeMemoryArrayという新しいライブラリを作成し、公開しました。.NET Standard 2.0でも動作しますが、全体的に .NET 6 の新API群(NativeMemory, Scatter/Gather I/O)を活かすための作りになっていますので、今回のAdvent Calendarにもピッタリ。実用性も、ある……！あります……！もちろんUnity版も用意してあります（NativeArrayと何が違うって？まぁ違うと言えば違います）。</p>
@@ -2313,195 +2388,6 @@ public class MessageDialogView : MonoBehaviour
 <p>Unity と .NET Coreが主軸というのは変わらず、そして両者を繋ぐ活動ができるのは世界に私だけ（能力的に、ではなくてアクティブに使命持ってやっている人が、ということですよネンノタメ）だと思っていて、OSSによる、C#の価値を広げていく、活用の幅を広げていくというのは引き続きやっていきたいことなのですが、もう一つ、会社としてもアクションを起こしていきたいと考えています。日本で、世界で大きなインパクトを出すためにも、まだまだ足りないことがいっぱいですから。</p>
 <p>というわけかで引き続きC#の最前線で戦っていきますので、今年もよろしくおねがいします。</p>
 </div>
-<h1 data-pagefind-sort="date:2020-04-22" data-pagefind-meta="published:2020-04-22"><a href="https://neue.cc/2020/04/22_591.html">GitHub ActionsでUnityでunitypackage生成とビルド＆実機(Linux)ユニットテストを実行する</a></h1>
-<ul class="date"><li>2020-04-22</li></ul>
-<div class="entry_body"><p>以前に<a href="http://neue.cc/2019/04/08_574.html">CircleCIでUnityをテスト/ビルドする、或いは.unitypackageを作るまで</a>、それと<a href="http://neue.cc/2019/05/06_576.html">CIや実機でUnityのユニットテストを実行してSlackに通知するなどする</a>という記事を書いたのですが、時代はGitHub Actionsということで、私も全体的にCircleCIからGitHub Actionsに移行を始めてまして、それに伴ってビルドスクリプトも最新化したので、紹介します。コンフィグ作成にあたっては<a href="https://qiita.com/pCYSl5EDgo/items/690dd56ffb0fcf64e70b">【Unity】GitHub Actions v2でUnity Test Runnerを走らせて、結果をSlackに報告する【入門】</a>と<a href="https://qiita.com/pCYSl5EDgo/items/7496f39eb1ab49a594bc">UnityをGitHub Actionsで動かす際にライセンス認証周りで注意するべき点</a>も参考にしました。</p>
-<p>実際のコンフィグは <a href="https://github.com/Cysharp/ZLogger/tree/master/.github/workflows">ZLogger/.github/workflows</a> にありますが、Unityの部分だけ取り出して実行可能な形式にすると</p>
-<pre data-pagefind-ignore="all"><code class="language-yaml">name: Build-Debug
-
-on:
-  push:
-    branches:
-      - &quot;**&quot;
-    tags:
-      - &quot;!*&quot; # not a tag push
-  pull_request:
-    types:
-      - opened
-      - synchronize
-
-jobs:
-  build-unity:
-    strategy:
-      matrix:
-        unity: ['2019.3.9f1', '2020.1.0b5']
-        include:
-          - unity: 2019.3.9f1
-            license: UNITY_2019_3
-          - unity: 2020.1.0b5
-            license: UNITY_2020_1
-    runs-on: ubuntu-latest
-    container:
-      # with linux-il2cpp. image from https://hub.docker.com/r/gableroux/unity3d/tags
-      image: gableroux/unity3d:${{ matrix.unity }}-linux-il2cpp
-    steps:
-      - run: apt update &amp;&amp; apt install git -y
-      - uses: actions/checkout@v2
-      # create unity activation file and store to artifacts.
-      - run: /opt/Unity/Editor/Unity -quit -batchmode -nographics -logFile -createManualActivationFile || exit 0
-      - uses: actions/upload-artifact@v1
-        with:
-          name: Unity_v${{ matrix.unity }}.alf
-          path: ./Unity_v${{ matrix.unity }}.alf
-      # activate Unity from manual license file(ulf)
-      - run: echo -n &quot;$UNITY_LICENSE&quot; &gt;&gt; .Unity.ulf
-        env:
-          UNITY_LICENSE: ${{ secrets[matrix.license] }}
-      - name: Activate Unity, always returns a success. But if a subsequent run fails, the activation may have failed(if succeeded, shows `Next license update check is after` and not shows other message(like GUID != GUID). If fails not). In that case, upload the artifact's .alf file to https://license.unity3d.com/manual to get the .ulf file and set it to secrets.
-        run: /opt/Unity/Editor/Unity -quit -batchmode -nographics -silent-crashes -logFile -manualLicenseFile .Unity.ulf || exit 0
-
-      # Execute scripts: RuntimeUnitTestToolkit
-      - name: Build UnitTest(Linux64, mono)
-        run: /opt/Unity/Editor/Unity -quit -batchmode -nographics -silent-crashes -logFile -projectPath . -executeMethod UnitTestBuilder.BuildUnitTest /headless /ScriptBackend mono /BuildTarget StandaloneLinux64
-        working-directory: src/ZLogger.Unity
-      - name: Execute UnitTest
-        run: ./src/ZLogger.Unity/bin/UnitTest/StandaloneLinux64_Mono2x/test
-
-      # Execute scripts: Export Package
-      - name: Export unitypackage
-        run: /opt/Unity/Editor/Unity -quit -batchmode -nographics -silent-crashes -logFile -projectPath . -executeMethod PackageExporter.Export
-        working-directory: src/ZLogger.Unity
-
-      # Store artifacts.      
-      - uses: actions/upload-artifact@v1
-        with:
-          name: ZLogger.Unity.unitypackage
-          path: ./src/ZLogger.Unity/ZLogger.Unity.unitypackage
-</code></pre>
-<p>となっています。微妙に長いね！（ショボいシンタックスハイライターの影響でインデントが腐ってて読みづらいので<a href="https://github.com/Cysharp/ZLogger/blob/c6c0436/.github/workflows/build-debug.yml">workflows/build-debug.yml</a>を見ていただいたほうがいいです）</p>
-<p>さて、とりあえずUnityにおいての第一関門は認証を通すことなのですが、ここは -createManualActivationFile して -manualLicenFile に投げる、というやり方を採用します（他にも幾つかやり方はある）。Unityのインストール等に関しては、インストール済みのコンテナイメージを使って、コンテナでビルドします。使用できるイメージ一覧は <a href="https://hub.docker.com/r/gableroux/unity3d/tags">DockerHub - gableroux/unity3d/tags</a>から選べますが、ここではIL2CPPビルドが実行できると謳ってる、かつ最新の2019.3.9f1-linux-il2cppと2020.1.0b5-linux-il2cppを使うことにしました。マトリックスビルドかけるなら、もっと古いのあたりも入れたほうがいいといえばいいんですが、LinuxでIL2CPPビルド可能なのは2019.3からなのでshoganai。</p>
-<p>matrix組むのは、特にアセット作っている人にとっては重要で、というのも新しいUnityサポートしたら古いUnityで使えないAPIを使っちゃってビルドエラーとか、たまによくやるんですよね、うっかり。if-def囲み忘れとか、逆に囲みすぎとか。というわけで、可能なら最低サポートバージョンから、マイナーバージョン毎ぐらいに組むのがいいと思います。そういう意味では、私は今のところ2018.3を最低サポートバージョンにしているので、2018.3, 2018.4もmatrixに組んだほうがいいのですがIL2CPPビルドのために以下略。</p>
-<p>さて、認証ですが、この辺で処理しています。</p>
-<pre data-pagefind-ignore="all"><code class="language-yaml"># create unity activation file and store to artifacts.
-- run: /opt/Unity/Editor/Unity -quit -batchmode -nographics -logFile -createManualActivationFile || exit 0
-- uses: actions/upload-artifact@v1
-    with:
-      name: Unity_v${{ matrix.unity }}.alf
-      path: ./Unity_v${{ matrix.unity }}.alf
-# activate Unity from manual license file(ulf)
-- run: echo -n &quot;$UNITY_LICENSE&quot; &gt;&gt; .Unity.ulf
-    env:
-      UNITY_LICENSE: ${{ secrets[matrix.license] }}
-- name: Activate Unity, always returns a success. But if a subsequent run fails, the activation may have failed(if succeeded, shows `Next license update check is after` and not shows other message(like GUID != GUID). If fails not). In that case, upload the artifact's .alf file to https://license.unity3d.com/manual to get the .ulf file and set it to secrets.
-  run: /opt/Unity/Editor/Unity -quit -batchmode -nographics -silent-crashes -logFile -manualLicenseFile .Unity.ulf || exit 0
-</code></pre>
-<p>基本的に認証の流れは .alf を作る -&gt; .alf を <a href="https://license.unity3d.com/manual">https://license.unity3d.com/manual</a> にアップロードして .ulf ファイルをダウンロード。そのulfファイル（中身はXMLテキスト）をGitHub ActionsのSettings -&gt; Secretsに設定する、ということなのですが、.alfを手元で作るのは面倒なのでCIに作ってもらって、artifactsにあげてます。</p>
-<p>初回実行時は.ulfがないので絶対に後続の実行は失敗します(Activate処理だけはエラーにならないので、その先で認証できなかったといってコケます）。ので、ActionsのArtifactsのところからalfをダウンロードして、.ulfを作ります。それをテキストエディタで開いてSecretsのところに適切な名前で保存すればOK。名前との関連付けは</p>
-<pre data-pagefind-ignore="all"><code class="language-yaml">matrix:
-unity: ['2019.3.9f1', '2020.1.0b5']
-include:
-    - unity: 2019.3.9f1
-      license: UNITY_2019_3
-    - unity: 2020.1.0b5
-      license: UNITY_2020_1
-</code></pre>
-<p>で設定してますが、ここでは2019.3.9f1用はUNITY_2019_3, 2020.1.0b5用はUNITY_2020_1にしました。2019_3といいつつ、コンテナイメージ毎に新しい認証ファイルがいるので、2019.3.10f1に変えたらSecretは設定しなおしです。面倒くさい。shoganai。</p>
-<p>ユニットテストの実行は<a href="https://github.com/Cysharp/RuntimeUnitTestToolkit/">Cysharp/RuntimeUnitTestToolkit</a>を使用します。これはUnity Test Runnerで書いたユニットテストからCUI/GUIでの実行シーンをビルド時に動的に生成するもので、まぁまぁ便利です。特にCUIでのテスト実行はCI用ですね、結果をそのまま出力で見れたり、エラーがあったらそのままエラーにしてくれたりするので非常に楽。それ以外に私はエディタからWindowsでのIL2CPPビルド実行を多用しています（よくIL2CPPで引っかかるライブラリを作っているので）</p>
-<p>設定は <code>-executeMethod UnitTestBuilder.BuildUnitTest /headless /ScriptBackend mono /BuildTarget StandaloneLinux64</code> といったものを書けばOK。そうすると <code>bin/UnitTest/StandaloneLinux64_Mono2x/test</code> に成果物ができてるので、すぐに実行すれば、CIでのテスト実行ということになります。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp"># Execute scripts: RuntimeUnitTestToolkit
-- name: Build UnitTest(Linux64, mono)
-    run: /opt/Unity/Editor/Unity -quit -batchmode -nographics -silent-crashes -logFile -projectPath . -executeMethod UnitTestBuilder.BuildUnitTest /headless /ScriptBackend mono /BuildTarget StandaloneLinux64
-    working-directory: src/ZLogger.Unity
-- name: Execute UnitTest
-    run: ./src/ZLogger.Unity/bin/UnitTest/StandaloneLinux64_Mono2x/test
-</code></pre>
-<p>ここで <code>/ScriptBackend mono</code> を <code>/ScriptBackend IL2CPP</code> にするとIL2CPPビルドになるので、やったーCIでIL2CPPのテストができるぞー！と思ったんですが、現在のコンテナイメージだとなんか謎エラーでビルドに失敗するので、一旦は諦めました。誰か成功させてください。何かとIL2CPPで引っかかるライブラリを作ってるので、できればここでテストしたいんですけどねえ。</p>
-<p>最後に.unitypackageの作成ですが、これはリポジトリに仕込んである生成メソッドをキックして、artifactsにアップロードします。</p>
-<pre data-pagefind-ignore="all"><code class="language-yaml"># Execute scripts: Export Package
-- name: Export unitypackage
-    run: /opt/Unity/Editor/Unity -quit -batchmode -nographics -silent-crashes -logFile -projectPath . -executeMethod PackageExporter.Export
-    working-directory: src/ZLogger.Unity
-
-# Store artifacts.      
-- uses: actions/upload-artifact@v1
-    with:
-    name: ZLogger.Unity.unitypackage
-    path: ./src/ZLogger.Unity/ZLogger.Unity.unitypackage
-</code></pre>
-<pre data-pagefind-ignore="all"><code class="language-csharp">using System;
-using System.IO;
-using System.Linq;
-using UnityEditor;
-using UnityEngine;
-
-public static class PackageExporter
-{
-    [MenuItem(&quot;Tools/Export Unitypackage&quot;)]
-    public static void Export()
-    {
-        var version = Environment.GetEnvironmentVariable(&quot;UNITY_PACKAGE_VERSION&quot;);
-
-        // configure
-        var root = &quot;Scripts/ZLogger&quot;;
-        var fileName = string.IsNullOrEmpty(version) ? &quot;ZLogger.Unity.unitypackage&quot; : $&quot;ZLogger.Unity.{version}.unitypackage&quot;;
-        var exportPath = &quot;./&quot; + fileName;
-
-        var path = Path.Combine(Application.dataPath, root);
-        var assets = Directory.EnumerateFiles(path, &quot;*&quot;, SearchOption.AllDirectories)
-            .Where(x =&gt; Path.GetExtension(x) == &quot;.cs&quot; || Path.GetExtension(x) == &quot;.meta&quot; || Path.GetExtension(x) == &quot;.asmdef&quot;)
-            .Where(x =&gt; Path.GetFileNameWithoutExtension(x) != &quot;_InternalVisibleTo&quot;)
-            .Select(x =&gt; &quot;Assets&quot; + x.Replace(Application.dataPath, &quot;&quot;).Replace(@&quot;\&quot;, &quot;/&quot;))
-            .ToArray();
-
-        UnityEngine.Debug.Log(&quot;Export below files&quot; + Environment.NewLine + string.Join(Environment.NewLine, assets));
-
-        var dir = new FileInfo(exportPath).Directory;
-        if (!dir.Exists) dir.Create();
-        AssetDatabase.ExportPackage(
-            assets,
-            exportPath,
-            ExportPackageOptions.Default);
-
-        UnityEngine.Debug.Log(&quot;Export complete: &quot; + Path.GetFullPath(exportPath));
-    }
-}
-</code></pre>
-<p>と、まぁこれでいい感じに？テストとパッケージ生成ができるようになりました！</p>
-<p>なお、リリースビルドは別ワークフローのymlになっているので、マトリックスビルドとalfの処理とテストを省いてます（本当はマトリックスもテストもしたほうがよくて、全部通ったらartifact生成とかにしたほうがいいんですが、まぁ多少ザルでもいいでしょう）。</p>
-<pre data-pagefind-ignore="all"><code class="language-yaml">  build-unity:
-    strategy:
-      matrix:
-        unity: ['2019.3.9f1']
-        include:
-          - unity: 2019.3.9f1
-            license: UNITY_2019_3
-    runs-on: ubuntu-latest
-    container:
-      # with linux-il2cpp. image from https://hub.docker.com/r/gableroux/unity3d/tags
-      image: gableroux/unity3d:${{ matrix.unity }}-linux-il2cpp
-    steps:
-    - run: apt update &amp;&amp; apt install git -y
-    - uses: actions/checkout@v2
-    - run: echo -n &quot;$UNITY_LICENSE&quot; &gt;&gt; .Unity.ulf
-      env:
-        UNITY_LICENSE: ${{ secrets[matrix.license] }}
-    - run: /opt/Unity/Editor/Unity -quit -batchmode -nographics -silent-crashes -logFile -manualLicenseFile .Unity.ulf || exit 0
-
-    # Execute scripts: Export Package
-    - name: Export unitypackage
-      run: /opt/Unity/Editor/Unity -quit -batchmode -nographics -silent-crashes -logFile -projectPath . -executeMethod PackageExporter.Export
-      working-directory: src/ZLogger.Unity
-
-    # Store artifacts.
-    - uses: actions/upload-artifact@v1
-      with:
-        name: ZLogger.Unity.unitypackage
-        path: ./src/ZLogger.Unity/ZLogger.Unity.unitypackage
-</code></pre>
-<h2>まとめ</h2>
-<p>GitHub Actions、最初は抵抗感あったんですが、というかCIの設定というのが、かなり嫌いな種類のエンジニアリングなので、一度覚えてコピペで済ませてるCircleCIから引っ越すのに腰が重かったんですが、まぁやってみればなんとかなる（社内でわちゃくちゃと手伝ってもらったお陰でもありますが）し、やってみれば、割といいんじゃないのかな、と思えるようになりました。CircleCIもいいんですが、最近のUI変更などがイケてない感じだったりで好感度下がっていたので、ぎっはぶActions、いいんじゃないでしょーか。</p>
-<p>とりあえずDOOM Eternalが超絶面白いのでやっておくといいです。<a href="https://www.youtube.com/watch?v=cd47x85C7Hk">YouTube - Doom Eternal - Cultist Base Master Level</a>がDoom Eternalの圧倒的なスピード感と暴力を表現しててとてもいいので、ぜひ見て買ってくださいな。今年のGame of the Yearなので。久しぶりにゲーム超面白い……！と思った。ただたんに（クラシックなFPS的に）スピード速くするだけじゃこうならないんですよねえ（実際、前作のDOOM(2016)をEternal後にやると、あまり面白く感じない）、近年ではバトルロイヤルも発明でしたが、DOOM EternalもFPSを、ゲームを進化させるゲームデザインの発明ですね、とにかく良い。めっちゃ良い。</p>
-</div>
 <a href="https://neue.cc/2">Prev |</a>
 <a href="https://neue.cc/4">| Next</a>
 </div>
@@ -2513,10 +2399,10 @@ public static class PackageExporter
 <a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
 CEO/CTO<br />
 <br />
-Microsoft MVP for Developer Technologies(C#)<br />
+Microsoft MVP for Developer Technologies(.NET)<br />
 April 2011<br />
 |<br />
-July 2024<br />
+July 2025<br />
 <br />
 Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
 GitHub:<a href="https://github.com/neuecc/">neuecc</a>
@@ -2525,6 +2411,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/07/">2024-07</a>
 <li><a href="https://neue.cc/2024/06/">2024-06</a>
 <li><a href="https://neue.cc/2024/05/">2024-05</a>
 <li><a href="https://neue.cc/2024/03/">2024-03</a>

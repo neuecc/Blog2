@@ -74,7 +74,123 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2014-01-06" data-pagefind-meta="published:2014-01-06"><a href="https://neue.cc/2014/01/06_442.html">OWINのパイプラインとMiddleware作成ガイド</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2014-01-14" data-pagefind-meta="published:2014-01-14"><a href="https://neue.cc/2014/01/14_445.html">C# ASP.NETのRESTフレームワークパフォーマンス比較大全</a></h1>
+<ul class="date"><li>2014-01-14</li></ul>
+<div class="entry_body"><p><a href="http://neuecc.github.io/LightNode/">LightNode</a>(という私の作ってるOwinで動くMicro REST Framework)の0.2出しました。でも皆さんあんま興味ないと思うので（！）、先にベンチマークの話をしましょふ。0.1を出した時にもグラフを出したのですが、よく見るまでもなく詐欺グラフで非常に良くなかったので載せ直し＆NancyとかWCF RESTとか他のフレームワークも追加しました。そして今回測りなおしてみると、そもそも前回のものは致命的に計測のための環境作りにミスッていたので、まるっきりナシでした、すびばせん。</p>
+<h2>パフォーマンステスト</h2>
+<p>各ソースコードは<a href="https://github.com/neuecc/LightNode/tree/master/Performance">LightNode/Performance</a>に置いてあるので再現できます。数字はrequest per secondで、Apache Benchで叩いているだけです。実行環境は「Windows 8.1/CPU Core i7-3770K(3.5GHz)/Memory 32GB」という、私の開発環境のデスクトップPC上で動かしてます。ホスト先はIIS ExpressじゃなくてローカルIIS。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2014/01/ab_performance_frameworks.jpg' alt='' />
+</p>
+<p>オレンジと緑はふつーのIISでホストしてるもの。グレーはちょっと別枠ということで色分けてます。</p>
+<p>結果に納得いきます？イメージとちょっと違う結果に？まず、<a href="http://msdn.microsoft.com/ja-jp/library/bb412169.aspx">WCFのRest</a>が一番遅いです。これはどうでもいいですはい。次点が<a href="http://www.asp.net/mvc">ASP.NET MVC</a>、そこからちょっと僅差で<a href="http://www.asp.net/web-api">ASP.NET Web API</a>。これはJSONシリアライザの問題もあるかなってところ(MVCのデフォルトシリアライザはJavaScriptSerializerで、あれは遅い)かどうかは知りませんけれど、ともかくWeb APIは言われるほど遅い遅いなんてことはない、ってとこでしょーか。安心して使っていきましょう。そこから別に大きく差がついてってことなく<a href="http://nancyfx.org/">Nancy</a>、ちゃんと定評通りにLightweightで速そうです、偉い。<a href="https://servicestack.net/">ServiceStack</a>は、一応謳い文句どおりちゃんとFastestでした。</p>
+<p><a href="https://katanaproject.codeplex.com/">生OwinHandler</a>(Async)と<a href="http://msdn.microsoft.com/ja-jp/library/system.web.httptaskasynchandler.aspx">HttpTaskAsyncHandler</a>はほとんど変わらない。といったところから、Owin(Katana)でラップされることは、そんなにパフォーマンスロスは発生しない、と考えられるでしょう。この事実はかなり安心できて嬉しい。で、LightNodeがそれらよりもグッと高速。そう、LightNodeはちゃんと最速フレームワークなのです。で、しかし生OwinHandler(Sync)と差がちょっと付いちゃってるので、ここはもう少し縮められないかなあ、といったところ（実際のところ、LightNodeのデフォルトは出力をバッファするようになってて、そのオプションをオフにすればもっと迫れますが、実用的にはオンにせざるを得ないので、ここはオン時で）。そして最速は<a href="http://msdn.microsoft.com/ja-jp/library/system.web.ihttphandler.aspx">SyncのHttpHandler</a>。生ハンドラ強い。</p>
+<p>SelfHostとHeliosはちょっと別枠。SelfHostは一節によるとSloooooooooowって話もあったのですけれど、手元でやると普通に速いのですよねえ。そのSloooowってコード見たら、なんかそもそも他のテストと出力物が全然違ったので、その人のミスなのかなぁ？って思ってますがどうなのでしょうね。ともあれ、私の環境でやってみた限りではSelfHostはかなり速いです。</p>
+<p>Helios(<a href="http://www.nuget.org/packages/Microsoft.Owin.Host.IIS/">Microsoft.Owin.Host.IIS</a>)は、System.Webを通さずにIISネイティブをペシペシ叩くことで超最速を引き出すとかいう代物で、まだ0.1.2-preでプロダクション環境に使える代物ではないとはいえ、とにかく速い。すぎょい。これだけ違うとニヨニヨしちゃうねぇ。</p>
+<h2>Sync vs Async</h2>
+<p>ベンチ結果の突っ込みどころは二点ほどあるかな、と。ひとつはHttpHandler(Async)がHttpHandler(Sync)に比べて険しく遅いこと。もう一つは、RawOwinHandler(ASync)とRawOwinHandler(Sync)ってなんだよハゲ、と。RawOwinHandlerはこんなコードになっています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">app.Run(context =&gt;
+{
+    // 中略
+
+    if (context.Request.Query.Get(&quot;sync&quot;) == &quot;true&quot;)
+    {
+        context.Response.Body.Write(enc, 0, enc.Length);
+        return EmptyTask; // Task.FromResult&lt;object&gt;(null)
+    }
+    else
+    {
+        return context.Response.Body.WriteAsync(enc, 0, enc.Length);
+    }
+}
+</code></pre>
+<p>違いはWriteしてるかWriteAsyncしてるか。で、これだけで1000rpsも変わってしまうんですねえ、お、おぅ……。HttpHandler(Async)とHttpHandler(Sync)も同じ話です。これねえ、困った話です。しかも、Heliosだと遅くならなかったりするので、原因はSystem.Webのネットワークストリームに対するWriteAsyncに何らかの欠陥があるのかなあ、と。それ以外にとりあえず考えつくのは、そもそもレスポンスサイズが小さいとかlocalhost同士だから、とかなくもないので（所詮マイクロベンチですから）、厳密にどーこうというのは言いづらくてまだ要調査ってところ。でもHeliosだと遅くならなかったりするのでもうHeliosでいいよ（投げやり）</p>
+<p>まぁネットワーク離したりサイズ大きくしたりとかは、そのうちやりませうか。そのうち。多分やらない（面倒くさいの！）</p>
+<h2>ベンチ実行環境の注意</h2>
+<p>Windows Defenderのリアルタイム保護が有効ならば、無効にしましょう。これ、有効か無効かでめちゃくちゃ結果変わります。3000rpsぐらい変わるしHeliosにしても別に大して差が出ないとか、もう根源的に結果が変わります。Defenderがオンの時に測った結果とかクソの役にも立たないゴミデータなので投げ捨てましょう。ネットにある計測しました、とかってのもそれの可能性があるので見なかったことにしましょう。ファイアウォールとかもとりあえず切っといたほうがいいんじゃないでしょーか。</p>
+<p>IISかIIS Expressかは、傾向としてそこまで大きく違うってこともないですけれど、IISのほうが成績は良好なので、一応測るのだったらIISでやったほうが良いかと思います。以前にやってた時は横着してIIS Expressでやってたのですけれど、反省ということで。そこまでやるならWindows Serverでー、とか無限に要求は加速しますが、フレームワーク同士の相対的な比較なので、そこまでやる必要はないかな？</p>
+<h2>LightNode 0.2</h2>
+<p>ここからタイトル詐欺の抱合せ商法。じゃなくて、最初はこっち本題で書いてたんですが思ったよりパフォーマンス比較が厚くなったので上に持ってきただけなんですよ……。ということでLightNode 0.2出しました。LightNode自体は0.1の解説<a href="http://neue.cc/2013/12/23_439.html">LightNode - Owinで構築するMicro RPC/REST Framework</a>を読んで欲しいのですけれど、0.1はOwinへの理解度が足りなかった成果、安定性に難があったり、細部が詰められてなかったりしました。けれど、今回はかなり完成度上がってます。このバージョンからは普通に投下しちゃって問題ないレベルに達しているかな、と。ベンチマークを細かく取って検証しているとおり、パフォーマンスについてもよりシビアに詰めています。</p>
+<p>変更点は割といっぱいあります。</p>
+<pre data-pagefind-ignore="all"><code class="language-text">Enumバインディングの高速化
+Enumパースの厳密化
+T4クライアントコード生成内容の変更、アセンブリロック回避
+ContentFormatterのコンストラクタ修正
+IContentFormatterにEncodingインターフェイス
+Extensionを|区切りで受け付けるように
+void/Task時は204を返す
+ReturnStatusCodeExceptionを投げることで任意のステータスコードで返せる
+Optionでstringはデフォルトではnull非許可に
+IgnoreOperationAttribute追加
+フィルター追加
+</code></pre>
+<p>こんなとこで。あと<a href="http://neuecc.github.io/LightNode/">GitHub Pages -LightNode</a>立てたのでトップページがちょっとオサレに。</p>
+<h2>Enum高速化・判定厳密化</h2>
+<p>C#のEnum自体は凄く好きなんですよ、プリミティブとほとんど変わらない、という、それがいい。Javaみたいにゴテゴテついてると逆に使い勝手悪かったりパフォーマンス上の問題で使われない(Android!)とかって羽目になってたりしますし、これはこれで良いかな、って思ってます。拡張メソッドによってちょっとしたメソッドは足すことが可能になりましたしね。ただ、静的メソッドが頂けない。リフレクションの塊なので速くない、なんか色々使い勝手悪い、などなどビミョー感半端ない。</p>
+<p>しょうがないので、LightNodeではEnum専用のインフラ層を構築して回避しました。高速化しただけじゃなくて、値の判定を厳密化しています。Enumの値が1,10,100の時に5を突っ込んだらダメ、って感じです。更にビットフラグに対しても厳密な判定がされるように加えているので([Flags]属性がついてるかどうかを見ます)、1,2,4,8の時に100が来たら死亡、7ならOK、って感じですにぇ。ASP.NET MVCなどでも、Enumでゆるふわな値が渡ってくるのはかなり嫌だったので、良いんじゃないかと思います。他、デフォルトでstringもnull非許可、配列の場合は空配列になるので、デフォではnullや範囲外の値というのは完全排除しています。</p>
+<p>なお、このEnumインフラストラクチャは、後日、もう少し機能を追加して専用ライブラリとして切り出そうと思っています。使い道はかなり多いんじゃないかなー、と思いますのでお楽しみに。</p>
+<h2>例外によるステータスコード変更</h2>
+<p><a href="http://miso-soup3.hateblo.jp/entry/2013/12/06/225220">ASP.NET Web API 2 で追加された機能について</a>見てて、いいですよねー、ということで。実際、戻り値の型をシンプルなオブジェクトで指定した場合って、例外でグローバルに吹っ飛ばすしか手段ないですしね。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class Hoge : LightNodeContract
+{
+    public int HugaHuga()
+    {
+        throw new ReturnStatusCodeException(HttpStatusCode.NotImplemented);
+    }
+}
+</code></pre>
+<p>単純明快でいいと思います。IHttpActionResultなんて作りゃあそりゃ最大の柔軟性ですがResponseType属性とかは、まぁ、やっぱあんまりだな、って思いますよ、ほんと……。</p>
+<p>さて、実際のとこWeb APIはやっぱり一番参考にしていて、機能眺めながら、どうするか考えてます。ルーティングや認証は他のMiddlewareがやればいい、Request Batchingは入れたい、ODataはOData自体がイラネ、フィルターオーバライドはうーん？とか。色々。色々。</p>
+<h2>Middleware vs Filter</h2>
+<p>そして、フィルター入れました。最初から当然入れる気ではあったのですが実装時間的に0.1では間に合わずで。まぁ、あと、0.1の時点ではミドルウェアパイプラインとフィルターパイプラインの違いを言語化出来なかったり、実装方法というかインターフェイスの提供方法についても全然考えが固まっていなかったので、無理ではあった。今はそれらはしっかり固まってます。</p>
+<p>というわけで、こんなインターフェイス。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class SampleFilterAttribute : LightNodeFilterAttribute
+{
+    public override async Task Invoke(OperationContext operationContext, Func&lt;Task&gt; next)
+    {
+        try
+        {
+            // OnBeforeAction
+
+            await next(); // next filter or operation handler
+
+            // OnAfterAction
+        }
+        catch
+        {
+            // OnExeception
+        }
+        finally
+        {
+            // OnFinally
+        }
+    }
+}
+</code></pre>
+<p>ASP．NET MVCとかの提供するOnActionExecuting/Executedとか、アレ、私は「大嫌い」でした。挙動が不明だから。Resultに突っ込むと何が起こるの？Executingで投げた例外はExecutedに届くの？（届かない）、などなど、分かりやすいとは言い難くて、LightNodeではその方式は採用したくなかった。</p>
+<p>かわりにシンプルなパイプラインを採用しています。OWINのInvokeパイプラインとほぼ同等の。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// app.Use
+Func&lt;IOwinContext, Func&lt;Task&gt;, Task&gt; handler
+// LightNode Filter
+Func&lt;OperationContext, Func&lt;Task&gt;, Task&gt; invoke
+// インターフェイスでは
+public abstract Task Invoke(OperationContext operationContext, Func&lt;Task&gt; next);
+</code></pre>
+<p>というか一緒です。見た目もやってることも一緒なミドルウェアとフィルターですが、違いは当然幾つかあります。第一に、ミドルウェアだとほとんどグローバルに適用されますが、フィルターはグローバル・クラス・メソッド単位の3つが選べます。そして、最大の違いは実行コンテキストを知っていること。フィルターが実行されるのはパラメータバインディングの後なので、実行されるメソッドが何かを知っています。どのAttributeが適用されているかを知っています。ここが、大きな違い。</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2014/01/lightnode_filterpipeline.jpg' alt='' />
+</p>
+<p>フィルタはGlobal/Contract/Operation単位で設定可能ですが、順番は全て設定されたOrderに従います。AuthenticationとかActionとかの順序パイプラインはなし。だって、あの細かい分け方、必要です？認証先にしたけりゃOrderを-int.MaxValueにでもすりゃあいいんです。というわけで、そのへんは取っ払って、Orderだけ、ただしOrderのレンジは-int.MaxValueからint.MaxValueまで、かつデフォルトはint.MaxValue（一番最後に発火される）。です。ASP.NET MVCのデフォが-1で最優先されるってOrderも意味不明で好きじゃないんですよねえ……。</p>
+<p>OperationContextはIsAttributeDefinedなど、属性のチェックや取り出しが容易になるメソッドが幾つか用意されてますにゃ。もし実行をキャンセルしたければ、nextを呼ばなければいい。その上で大きく結果を変えたければ、Owin Environmentを弄れば好きなようにStatusCodeでもResponseでもなんでも設定できます。十分十二分。</p>
+<h2>まとめ</h2>
+<p>パフォーマンスは、まぁ自分で測らないと納得しにゃいところもきっとあると思いますので自分で測るのが一番いーですね、そりゃそうかそりゃそうだ。生ハンドラに比べるとロスは少なくないなぁというのは現実かもしれませんねぇ（LightNodeは除く）。Owinを被せることのロスは少なめってのが確認できたのは安心できて良いですね、さぁ積極的に使っていきましょう。</p>
+<p>LightNodeは超簡単。超速い。十分なカスタマイズ性。というわけで、真面目に実用的です！使うべき！さぁ今すぐ！あと、意図的に既存のフレームワークの常識と崩しているところも含めて、全ての挙動の裏には多くの考えが含まれています。全ての挙動は明確に選択しています。そーいうのも読み取ってもらえると嬉しいですね。</p>
+<p>また、ちょっとした縁があって2014/2/8に北海道の<a href="http://clr-h.jp/">CLR/H</a>にてセッションを一つ持ちます。北海道！あんまり東京から出ない私なのですが、こないだは大阪に行きましたし、ちょっとだけたまにはお外にも出ていこうかな、なんて思っていなくもないです。北陸とかにもそのうち行きたいですね、色々なのと重ならなければ……。</p>
+<p>セッションタイトルは「LightNode Demystified - How to Make Extreme Fast Owin Framework」を予定しています。ネタは色々あるんですが、LINQはこないだ大阪でやったし、Real World Hyper Performance ASP.NET Architecture(Internal謎社)は、もう少し後でいいかなぁ（？）だし、前2つがうぇぶけー(Windows Azure 最新アップデート/最新Web アプリケーションパターンと .NET)なので、合わせて見るのが良いかにゃ、と。</p>
+<p>LightNode Demystified、ですけれど、LightNodeを作ることを通してOWINとはどのようなものなか、どのような未来が開けるのか、というのを伝えられれば良いと思っています。私自身、実際に作ることによる発見がかなり多かったし、作ってみないと分からないことというのはかなり多いと思いますので、そうして開けた視野をシェアできれば嬉しいですね。</p>
+<p>また、1/17には弊社で開催する<a href="http://partake.in/events/a531c0be-e8dd-46fe-a73c-e51d8ad7a69b">めとべや東京#3</a>にてLTでデモをするので、そちらのほうも都合がつく方は是非是非どうぞ。</p>
+</div>
+<h1 data-pagefind-sort="date:2014-01-06" data-pagefind-meta="published:2014-01-06"><a href="https://neue.cc/2014/01/06_442.html">OWINのパイプラインとMiddleware作成ガイド</a></h1>
 <ul class="date"><li>2014-01-06</li></ul>
 <div class="entry_body"><p>あけおめました。振り返る～系の記事はこっ恥ずかしいのでいつまでも先頭に出ていると嫌なので、割と流したくてshoganaiので、記事をでっち上げます。実際切実。記事あげてる場合じゃなくても、これはこれでsetsujitsuなので許してあげてほしいのね。</p>
 <p>Node.jsでKoaというフレームワークが盛り上がっているらすぃ。で、<a href="http://blog.kazupon.jp/post/71041135220/koa">新しいWebフレームワーク Koa について</a>を見てて、あー、まんま<a href="https://katanaproject.codeplex.com/">Katana</a> - Microsoft.Owinで置き換えられるなぁと思ったので、書いてみました。</p>
@@ -2166,230 +2282,6 @@ Console.WriteLine(v1 + &quot;-&gt;&quot; + v2 + &quot;-&gt;&quot; + v3);
 <p>非同期もいいんですけど、実際にマジでフルに使い出すと結構なんだかんだでハマりどころは多いですねぇ。幸い、デバッガビリティに関しては<a href="http://blogs.msdn.com/b/dotnet/archive/2013/06/26/announcing-the-net-framework-4-5-1-preview.aspx">Windows 8.1 + Visual Studio 2013である程度改善</a>するようで、待ち遠しいです。とはいえデッドロックだったりコンテキスト場外でヌルりだとかは、注意するしかない。</p>
 <p>ASP.NET MVCのフィルターはやく非同期に対応してくださいー。ASP.NET MVC 5でも予定に入ってないようでどうなってんだゴルァ。Resultで待つしかなくて非常にヒヤヒヤします。EF6も非同期対応とか、そもそもMVC 5では.NET 4.5からのみだとか、どんどん非同期使われてくにつれ、死亡率も間違いなく上がってきますにゃ。</p>
 </div>
-<h1 data-pagefind-sort="date:2013-06-30" data-pagefind-meta="published:2013-06-30"><a href="https://neue.cc/2013/06/30_411.html">Micro-ORMとテーブルのクラス定義自動生成について</a></h1>
-<ul class="date"><li>2013-06-30</li></ul>
-<div class="entry_body"><p>謎社のデータアクセスは<a href="http://neue.cc/2012/12/11_390.html">Micro-ORM</a>でやっています。生SQL書いて、シンプルなPOCOにマッピングするだけの。ですが、そこで困るのはPOCOの作成。データベースの写しなだけのクラスですが、手で作るには、ひじょーに面倒。Entity Frameworkならドラッグアンドドロップで！DataSetですらホイホイと作れるのに、100%手作業とか嫌だよー、200テーブルを延々とクラス作るだけの刺身たんぽぽなんてしてたら死んじゃうよー。</p>
-<p>というわけで、Micro-ORM使うなら避けては通れない定義。EFのクラス定義だけ流用しちゃうとか色々と逃げ道も考えられなくもないですが、もしくは数によっては手動で頑張ってしまうのも手ですが、ここは自動生成しましょうの会。</p>
-<h2>GetSchema</h2>
-<p>普通にSQLのクエリを書いてデータベースの情報を取ってくることも可能ですが、各データベースでそれぞれバラバラだったりするので、ここはADO.NETで用意されている<a href="http://msdn.microsoft.com/ja-jp/library/kcax58fh.aspx">GetSchema</a>を使いましょう。情報取得の部分が抽象化されていて、型無しDataTableとして受け取ることが可能です。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">using (var conn = new MySqlConnection(&quot;接続文字列。MySQLでもなんでもいいよ。&quot;))
-{
-    conn.Open();
-
-    var schema = conn.GetSchema();
-}
-</code></pre>
-<p>さて、schemaとやらをデバッガで見てみるとですね……</p>
-<p class="noindent">
-<img src="http://neue.cc/wp-content/uploads/image/dt_table_rows.jpg" />
-</p>
-<p>うおおお、これがDataTableか！な、なんだ、このデバッガビリティの低さは……。これはヤヴァい。マジキチ。RowsのKeyを辿るのも苦労するうえに、Valueが一覧で見れない。頑張ってもKeyだけ。なんだこりゃ。データの取得もLINQ to DataSet(笑)によって、普通に実に扱いづらい。話にならない。 クソが。というわけで、今時ならば型無しDataTableはdynamicで扱ったほうが楽です。ExpandoObjectに変換しましょう。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public static class DataTableExtensions
-{
-    /// &lt;summary&gt;DataTableの各RowをExpandoObjectに変換します。&lt;/summary&gt;
-    public static IEnumerable&lt;dynamic&gt; AsDynamic(this DataTable table)
-    {
-        return table.AsEnumerable().Select(x =&gt;
-        {
-            IDictionary&lt;string, object&gt; dict = new ExpandoObject();
-            foreach (DataColumn column in x.Table.Columns)
-            {
-                var value = x[column];
-                if (value is System.DBNull) value = null;
-                dict.Add(column.ColumnName, value);
-            }
-            return (dynamic)dict;
-        });
-    }
-}
-</code></pre>
-<p>こんなものを用意すると、 var schema = conn.GetSchema().AsDynamic() とするだけで</p>
-<p class="noindent">
-<img src="http://neue.cc/wp-content/uploads/image/dt_dynamic_view.jpg">
-</p>
-<p>うおおおおおおお、超捗る！ちゃんと動的ビューでKeyとValueが見える！ExpandoObjectありがとう。DataTableは死ね。また、DBNullをフツーのnullに変換したりなどもしているので、データを触るのもかなり捗るといったところもあります。item.Field&lt;string&gt;(&quot;CollectionName&quot;)と書くよりも、item.CollectionNameって書きたいですから。</p>
-<p>では、気を取り直してこれで解析していきましょう。まずは、件のCollectionNameを見てみますか。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// MetaDataCollections
-// DataSourceInformation
-// DataTypes
-// Restrictions
-// ReservedWords
-// Databases
-// Tables
-// Columns
-// Users
-// Foreign Keys
-// IndexColumns
-// Indexes
-// Foreign Key Columns
-// UDF
-// Views
-// ViewColumns
-// Procedure Parameters
-// Procedures
-// Triggers
-foreach (var item in conn.GetSchema().AsDynamic())
-{
-    Console.WriteLine(item.CollectionName);
-}
-</code></pre>
-<p>MySQLでは以上のデータが取れるようです。この辺は使ってるデータベースによってかなり変わるので、適宜調べながら合わせてみてくださいな。というわけで、それっぽそうなTablesを見てみます。var tables = conn.GetSchema(&quot;Tables&quot;).AsDynamic(); とすれば</p>
-<p class="noindent">
-<img src="http://neue.cc/wp-content/uploads/image/dt_table_schema.jpg" />
-</p>
-<p>テーブル一覧が取れるようです。で、しかし、今回必要なのはTablesではありません。TablesはほんとーにTableのデータだけなので。今回必要なのは、Columnsです。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">var columns = conn.GetSchema(&quot;Columns&quot;).AsDynamic()
-    .GroupBy(x =&gt; x.TABLE_NAME) // 全てのカラムが平らに列挙されてくるのでテーブル名でグルーピング
-    .Select(g =&gt; new
-    {
-        ClassName = g.Key, // クラス名はテーブル名(= グルーピングのキー)
-        Properties = g
-            .OrderBy(x =&gt; x.ORDINAL_POSITION) // どんな順序で来るか不明なので、カラム定義順にきちんと並び替え
-            .Select(x =&gt; new
-            {
-                Name = x.COLUMN_NAME,
-                Type = x.DATA_TYPE
-            })
-            .ToArray()
-    });
-</code></pre>
-<p class="noindent">
-<img src="http://neue.cc/wp-content/uploads/image/dt_columns_def.jpg" />
-</p>
-<p>良い感じに作れてきました。さて、クラスを自動生成するのに必要なのは「クラス名」「プロパティ名」「プロパティの型」です。DATA_TYPEだとDBの生の型名、bigintとかvarcharとかC#のデータ型じゃないよー。なので、このまんまじゃダメです。</p>
-<p>というわけで、マッピングを用意してあげます。といっても手動でやる必要はなくて、これはGetSchema(&quot;DataTypes&quot;)で取れます。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// 型名を決めるのに必要なのは
-// TypeName(MySQLの型名), DataType(.NETの型名), IsUnsigned
-var typeDictionary = conn.GetSchema(&quot;DataTypes&quot;).AsDynamic()
-    .ToDictionary(x =&gt;
-        Tuple.Create((string)x.TypeName.ToLower(), (bool?)x.IsUnsigned ?? false),
-        x =&gt; (Type)Type.GetType(x.DataType));
-
-// MySQLのtinyintはboolとして使われることが多いので、そちらにマッピングしちゃう（不要ならしなくていいです）
-typeDictionary[Tuple.Create(&quot;tinyint&quot;, true)] = typeof(bool);
-typeDictionary[Tuple.Create(&quot;tinyint&quot;, false)] = typeof(bool);
-
-// nullableの場合を考慮する必要があるのでTypeDictionaryは生では使わない
-Func&lt;string, bool, bool, string&gt; getTypeName = (dataType, isUnsigned, isNullable) =&gt;
-{
-    var type = typeDictionary[Tuple.Create(dataType.ToLower(), isUnsigned)];
-    return (isNullable &amp;&amp; type.IsValueType)
-        ? type.Name + &quot;?&quot; // 値型かつnull許可の時
-        : type.Name;
-};
-</code></pre>
-<p>TypeName(MySQLの型名), DataType(.NETの型名), IsUnsigned。それにNullableへの対応を組み合わせれば、マッピングできると考えられます。GetSchemaからの情報だけだとNullable対応が苦しくなるので、外にメソッド立てています。</p>
-<p>さて、この型定義辞書を使って変換すると、以下のようになります。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">var columns = conn.GetSchema(&quot;Columns&quot;).AsDynamic()
-    .GroupBy(x =&gt; x.TABLE_NAME) // 全てのカラムが平らに列挙されてくるのでテーブル名でグルーピング
-    .Select(g =&gt; new
-    {
-        ClassName = g.Key, // クラス名はテーブル名(= グルーピングのキー)
-        Properties = g
-            .OrderBy(x =&gt; x.ORDINAL_POSITION) // どんな順序で来るか不明なので、カラム定義順にきちんと並び替え
-            .Select(x =&gt; new
-            {
-                Name = x.COLUMN_NAME,
-                // unsignedの判定はCOLUMN_TYPEから、nullableの判定はYES/NOで行われる
-                Type = getTypeName(x.DATA_TYPE, x.COLUMN_TYPE.Contains(&quot;unsigned&quot;), x.IS_NULLABLE == &quot;YES&quot;)
-            })
-            .ToArray()
-    });
-</code></pre>
-<p>これで完璧！さて、定義の抽出はできたので、次はテンプレート作りにいきましょうか。</p>
-<h2>T4</h2>
-<p>（テキストとしての）C#コード生成は、C#コード上で文字列を切った貼ったする、わけは勿論ありません。この手の作業するときはテンプレートエンジンを使うのが良いでしょう。最近だとRazorを使った<a href="http://razorengine.codeplex.com/">RazorEngine</a>などもあるのですが、RazorはあくまでHTML/XMLを出力するのに向いている構文で、C#コードを出力するような用途で使うのは、あまり向いていません。ここは素直にVisual Studio標準の<a href="http://msdn.microsoft.com/ja-jp/library/bb126445.aspx">T4 Template</a>を使うのが良いでしょう。あえてStringTemplate.NETとか、他のを選ぶ理由は、ないかなぁ。T4でいいですよ。</p>
-<p>T4にはVisual Studioと連携して保存時にテンプレートが当てはまったテキストを出力するタイプと、ふつーのクラスとして、実行時に任意の変数をあてて、テキストを生成するもののニタイプが選べます。このブログでも何度か紹介してきたのは、全て前者でしたが、今回は後者のパターンを使います。</p>
-<p class="noindent">
-<img src="http://neue.cc/wp-content/uploads/image/dt_runtime_template.jpg" />
-</p>
-<p>昔の名前は「前処理されたテキストテンプレート」でした。VS2012から名前変わって「ランタイムテキストテンプレート」になったようです。見つからなかったら検索ウィンドウにT4と入れると良いですよ。では、まず、TableGeneratorTemplate.ttとしてテンプレートを定義します。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">&lt;#@ template language=&quot;C#&quot; #&gt;
-&lt;#@ assembly name=&quot;System.Core&quot; #&gt;
-&lt;#@ import namespace=&quot;System.Linq&quot; #&gt;
-&lt;#@ import namespace=&quot;System.Text&quot; #&gt;
-&lt;#@ import namespace=&quot;System.Collections.Generic&quot; #&gt;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
-public class &lt;#= ClassName #&gt;
-{
-&lt;# foreach(var x in Properties) {#&gt;
-    public &lt;#= x.Type #&gt; &lt;#= x.Name #&gt; { get; set; }
-&lt;# } #&gt;
-
-    public override string ToString()
-    {
-        return &quot;&quot;
-&lt;# foreach(var x in Properties) {#&gt;
-            + &quot;&lt;#= x.Name #&gt; : &quot; + &lt;#= x.Name #&gt; + &quot;|&quot;
-&lt;# } #&gt;
-            ;
-    }
-}
-</code></pre>
-<p>テンプレートの記法としては、#=で囲むだけなので、まぁそう難しいものでもないです、読みづらさはかなりありますが。さて、このままだとClassNameとかPropertiesとかいうのは未定義でコンパイルもできないので、パーシャルクラスを作ります。クラス名はテンプレートと同名で。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public partial class TableGeneratorTemplate
-{
-    public string ClassName { get; set; }
-    public IEnumerable&lt;dynamic&gt; Properties { get; set; }
-
-    public TableGeneratorTemplate(string className, IEnumerable&lt;dynamic&gt; properties)
-    {
-        this.ClassName = className;
-        this.Properties = properties;
-    }
-}
-</code></pre>
-<p>これで、パラメータを渡せるようになりました。コンパイルエラーも出ません。というわけで実際に出力しましょう。テンプレートをnewして、TransformTextを呼ぶだけです。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// あ、ちなみにここまでのはConsoleApplicationでの話でした、はい。
-// テーブル名.csにテンプレートを当てて全部出力
-foreach (var item in columns)
-{
-    var tt = new TableGeneratorTemplate(item.ClassName, item.Properties);
-    var text = tt.TransformText();
-    File.WriteAllText(item.ClassName + &quot;.cs&quot;, text, Encoding.UTF8);
-}
-</code></pre>
-<p>これで、以下の様なファイルがテーブル数だけ出力されます。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
-public class aiueo_test_table
-{
-    public Int64 id { get; set; }
-    public String name { get; set; }
-    public Int32 age { get; set; }
-    public DateTime? created { get; set; }
-    public DateTime? modified { get; set; }
-
-    public override string ToString()
-    {
-        return &quot;&quot;
-            + &quot;id : &quot; + id + &quot;|&quot;
-            + &quot;name : &quot; + name + &quot;|&quot;
-            + &quot;age : &quot; + age + &quot;|&quot;
-            + &quot;created : &quot; + created + &quot;|&quot;
-            + &quot;modified : &quot; + modified + &quot;|&quot;
-            ;
-    }
-}
-</code></pre>
-<p>やったね！刺身たんぽぽさようなら！ちなみにただのプロパティの塊というだけじゃなく、ToStringも生成しておいてやると、実アプリでのデバッグの時に割と便利ですねー。</p>
-<h2>応用</h2>
-<p>GetSchemaで得られる情報は他にも沢山ありますので、Diffを取るプログラムを書けたり、あと、Index, IndexColumnsでインデックスの情報が取れます。インデックスで貼られているものはselectクエリーをほぼほぼ発行するはず、とみなせるので、selectクエリを発行するメソッドを自動生成しちゃったりとかは、実際に謎社ではしています。</p>
-<p>つまり作業手順としては、どちらかというデータベースファーストになります。結局、コードとデータベースは違うので、データベース優先の定義・作業のほうが、どこまでいっても自然かな、と。(EF)コードファーストは私は幻想だと思っています。別に、SQL Server Management StudioなりHeidiSQLなどのツールでぽちぽち定義作るのは、そう面倒なわけでもない。そこからC#側のクラス定義も自動で生成できるのなら、むしろ、無理のあるコードでのデータベース表現をして回るよりも、結局、楽じゃない？DB定義をC#側から発行されて、どーのこーとか、なんてのに気を使わなくてもいいので、ずっと楽ちんだと思うんだ。原始的で全然スマートじゃないようで、実利はこっちにある。</p>
-<h2>まとめ</h2>
-<p>コードの詳細はMySQLなので、SQL Serverとかじゃ100%そのままは動かないかもですが、その辺は適宜調整してください、きっと似たようなのはあるはずなので。</p>
-<p>あと、GetSchemaのDataTableで何が取れるのか、どんなフィールドがあるのかって、特にMySQLだとドキュメントゼロなのですが、そこでAsDynamicは本当に死ぬほど役に立ちました。Visual Studio上でのデバッガビリティを高めるの超大事。その辺がクソなのがDataTableの嫌なところですねえ。今時DataSetを使いまくってるレガシー会社とかあると悲しいですねえ。</p>
-<p>ともあれ、dynamicはかなりデバッガビリティ高いので、活用してあげると良いです。dynamic、最近だと忘れ去られているC#の機能らしいので（笑）まあ、メインには使いませんけれど、あるとやっぱ便利なので、あって良かったなって、思いますよん。</p>
-</div>
 <a href="https://neue.cc/10">Prev |</a>
 <a href="https://neue.cc/12">| Next</a>
 </div>
@@ -2401,10 +2293,10 @@ public class aiueo_test_table
 <a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
 CEO/CTO<br />
 <br />
-Microsoft MVP for Developer Technologies(C#)<br />
+Microsoft MVP for Developer Technologies(.NET)<br />
 April 2011<br />
 |<br />
-July 2024<br />
+July 2025<br />
 <br />
 Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
 GitHub:<a href="https://github.com/neuecc/">neuecc</a>
@@ -2413,6 +2305,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/07/">2024-07</a>
 <li><a href="https://neue.cc/2024/06/">2024-06</a>
 <li><a href="https://neue.cc/2024/05/">2024-05</a>
 <li><a href="https://neue.cc/2024/03/">2024-03</a>

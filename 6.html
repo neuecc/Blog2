@@ -74,7 +74,820 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2017-09-29" data-pagefind-meta="published:2017-09-29"><a href="https://neue.cc/2017/09/29_559.html">Utf8Json - C#最速のJSONシリアライザ(for .NET Standard 2.0, Unity)</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2017-12-04" data-pagefind-meta="published:2017-12-04"><a href="https://neue.cc/2017/12/04_560.html">Introduction to the pragmatic IL via C#</a></h1>
+<ul class="date"><li>2017-12-04</li></ul>
+<div class="entry_body"><p>この記事は<a href="https://qiita.com/advent-calendar/2017/csharp">C# Advent Calendar 2017</a>のための記事になります。12/1は<a href="http://mslgt.hatenablog.com/entry/2017/12/01/000328">masanori_mslさんの【C#】処理の委譲で迷った話</a>でした。そしてこの記事は12/2、のはずが今は12/4、つまり……。すみません。</p>
+<p>ところでですが、私は今年の自身のテーマとして、「Extreme C#」を掲げています。C#で極限まで性能を出していく、ということを主題にして様々なものを公開してきました。その中でもILを書く技術というのは、どうしても欠かせないものです。実際、私が近年制作したライブラリはほとんどIL生成を含んでいます。</p>
+<p>例えば、シリアライザ - <a href="https://github.com/neuecc/ZeroFormatter">ZeroFormatter</a>, <a href="https://github.com/neuecc/MessagePack-CSharp">MessagePack for C#</a>, <a href="https://github.com/neuecc/Utf8Json">Utf8Json</a>。RPC - <a href="https://github.com/neuecc/PhotonWire">PhotonWire</a>, <a href="https://github.com/neuecc/MagicOnion">MagicOnion</a>。DI - <a href="https://github.com/neuecc/MicroResolver">MicroResolver</a>。これらから、実際に使われた例と、そして実地でしか知り得ないTipsを紹介します。</p>
+<p>この記事によって、IL書きが決して黒魔術ではなく、ごく当たり前の選択肢、になるのは行き過ぎにしても、必要な時に抵抗なく選べるようになってくれれば幸いです。</p>
+<h2>動的生成の本質</h2>
+<p>IL書けるのは凄いとか、黒魔術とか、そんなイメージがなくもないと思うんですが、とはいえ別に漠然とILを書いても、別に速いコードになるわけではありません。そして、最初のイメージとして浮かぶのは「リフレクションを高速にするもの」だと思いますが、本質的にはそうではありません。じゃあ何かっていうと、私は「生成時の最適なコード分岐の抽象化」というイメージで捉えています。</p>
+<p>具体例としてUtf8Jsonのシリアライズを見てみましょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">namespace ConsoleApp26
+{
+    // こんなどうでもいいクラスがあるとして
+    public class Person
+    {
+        public int Age { get; set; }
+        public string FirstName { get; set; }
+        public string LastName { get; set; }
+    }
+
+    class Program
+    {
+        static void Main(string[] args)
+        {
+            // これで生成したシリアライザが作られる(or 取り出される)
+            var serializer = DynamicObjectResolver.Default.GetFormatter&lt;Person&gt;();
+
+            // 生成型名：Utf8Json.Formatters.ConsoleApp26_PersonFormatter1
+            Console.WriteLine(serializer.GetType().FullName);
+
+            // まぁこんな風にシリアライズする
+            var writer = new JsonWriter();
+            serializer.Serialize(ref writer, new Person(), BuiltinResolver.Instance);
+            Console.WriteLine(writer.ToString()); // {&quot;Age&quot;:0,&quot;FirstName&quot;:null,&quot;LastName&quot;:null}
+        }
+    }
+}
+</code></pre>
+<p>Utf8Jsonのシリアライザ生成は、DynamicObjectResolverのGetFormatterで行われています（普段はこれより高レベルなAPI、JsonSerializer.Serializeに隠れて裏で行われているので、露出はしていません）。シリアライザの生成ってどういうことかというと、概ねこんな感じです。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// このインターフェイスは公開
+public interface IJsonFormatter&lt;T&gt; : IJsonFormatter
+{
+    void Serialize(ref JsonWriter writer, T value, IJsonFormatterResolver formatterResolver);
+    T Deserialize(ref JsonReader reader, IJsonFormatterResolver formatterResolver);
+}
+
+// この型が動的に生成された
+public class ConsoleApp26_PersonFormatter1
+{
+    public void Serialize(ref JsonWriter writer, T value, IJsonFormatterResolver formatterResolver)
+    {
+        // この中身をIL直書きで埋め込み
+    }
+
+    // Deserialize...
+}
+</code></pre>
+<p>よし、じゃあいっちょその生成部分見りゃあいいってことっすね、と見に行くときっと<a href="https://github.com/neuecc/Utf8Json/blob/02f69cbc3515cd75ccad0c2b9ca0c2b19cc4dc5f/src/Utf8Json/Resolvers/DynamicObjectResolver.cs#L734-L1389">わけわかんなくて挫折する(DynamicObjectResolver.cs#L734-L1389)</a>と思うのでお薦めしません（あばー）。この記事を最後まで読んでくれれば分かるようになりますよ！</p>
+<p>さて、ILを埋め込むというのは、そもそも普通のC#で書けるということなのです。動的生成というのは、汎用化/抽象化なので、Personが来たときにはこういうコードを生成しよう、というのは素のC#で書けます。IL直書きは別にマジックでもなんでもなく、原則C#で書けること以上のことはできませんから。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class ConsoleApp26_PersonFormatter1 : IJsonFormatter&lt;Person&gt;
+{
+    // writerで手書きするならこんなもんですよね、的な。
+    public void Serialize(ref JsonWriter writer, Person value, IJsonFormatterResolver formatterResolver)
+    {
+        if(value == null)
+        {
+            writer.WriteNull();
+            return;
+        }
+
+        // なんとなく挙動のイメージは伝わるでしょう（伝わりますよね？）
+
+        writer.WriteBeginObject(); // {
+
+        writer.WritePropertyName(&quot;Age&quot;); // &quot;Age&quot;:
+        writer.WriteInt32(value.Age);
+
+        writer.WriteValueSeparator(); // ,
+        writer.WritePropertyName(&quot;FirstName&quot;); // &quot;FirstName&quot;:
+        writer.WriteString(value.FirstName);
+
+        writer.WriteValueSeparator(); // ,
+        writer.WritePropertyName(&quot;LastName&quot;); // &quot;LastName&quot;:
+        writer.WriteString(value.LastName);
+
+        writer.WriteEndObject(); // }
+    }
+}
+</code></pre>
+<p>素朴に考えると、上のようなコードになるでしょう。 value.Age などの部分が、IL生成をしない汎用的なコードだとリフレクションが必要なものですが、IL生成によってそれを避ける、つまり「リフレクションを高速にするもの」状態です。また、高速化のポイントとしてはルックアップを最小に抑える、というのが挙げられます。プロパティ単位でアクセサーを生成していると、プロパティ名で辞書引き（文字列の辞書引きは比較的コストの高い処理です！）ではなく、型単位で全てまとまったものを生成することで、より高速なコードが得られます。</p>
+<p>「普通は」このぐらいのコードが出来ると満足してしまうところですが、真の魔術師になりたいなら、もっとアグレッシブに行きましょう。Utf8Jsonの最新版のコード生成はこうなっています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class ConsoleApp26_PersonFormatter1 : IJsonFormatter&lt;Person&gt;
+{
+    // プロパティ名は変わらないので、予めエンコード済みのキャッシュを持つ
+    byte[][] stringByteKeys;
+
+    public ConsoleApp26_PersonFormatter1()
+    {
+        stringByteKeys = new byte[][]
+        {
+            // Ageは一番最初なので{も含めて埋め込む。それ以外は二番目なので,も含めて埋め込む
+            JsonWriter.GetEncodedPropertyNameWithBeginObject(&quot;Age&quot;), // {&quot;Age&quot;:
+            JsonWriter.GetEncodedPropertyNameWithPrefixValueSeparator(&quot;FirstName&quot;), // ,&quot;FirstName&quot;:
+            JsonWriter.GetEncodedPropertyNameWithPrefixValueSeparator(&quot;LastName&quot;) // ,&quot;LasttName&quot;:
+        };
+    }
+
+    public void Serialize(ref JsonWriter writer, Person value, IJsonFormatterResolver formatterResolver)
+    {
+        if (value == null)
+        {
+            writer.WriteNull();
+            return;
+        }
+
+        // byte[]の長さが7だと「生成時」に知ってるので、長さに最適化したバイトコピーを使う
+        // 32Bit環境か64Bit環境なのかも、「生成時」に知っているので、その環境向けのコードを吐く
+        UnsafeMemory64.WriteRaw7(ref writer, this.stringByteKeys[0]);
+        writer.WriteInt32(value.Age);
+
+        UnsafeMemory64.WriteRaw13(ref writer, this.stringByteKeys[1]);
+        writer.WriteString(value.FirstName);
+
+        UnsafeMemory64.WriteRaw12(ref writer, this.stringByteKeys[2]);
+        writer.WriteString(value.LastName);
+
+        writer.WriteEndObject();
+    }
+}
+</code></pre>
+<p>初期化タイミングでキャッシュ出来るものは徹底的にキャッシュしよう、ですね。このぐらいまでなら手書きでもやってやれなくもないですが、そのbyte[]の長さに決め打たれたバイトコピーのメソッドを使う、というのは実質やれない、の領域です。また、「実行時」にしか知り得ない32Bitか64Bitという情報も含めて埋め込んでいけるのは実行時コード生成にだけ可能な芸当です（まぁif(IntPtr.Size == 4)ぐらいの分岐はJITで消えますが)。</p>
+<p>さて、JSONのシリアライズはオプションによって様々に変更させることが求められます。例えば、「nullの場合は出力しない、名前をスネークケースにする」というオプション(DynamicObjectResolver.ExcludeNullSnakeCase)の場合、このようなコードを生成します。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class ConsoleApp26_PersonFormatter1 : IJsonFormatter&lt;Person&gt;
+{
+    byte[][] stringByteKeys;
+
+    public ConsoleApp26_PersonFormatter1()
+    {
+        // snake_caseのものをキャッシュ。nullかどうかで先頭が変わるので{や,は埋めこまない
+        stringByteKeys = new byte[][]
+        {
+            JsonWriter.GetEncodedPropertyName(&quot;age&quot;),
+            JsonWriter.GetEncodedPropertyName(&quot;first_name&quot;),
+            JsonWriter.GetEncodedPropertyName(&quot;last_name&quot;)
+        };
+    }
+
+    public void Serialize(ref JsonWriter writer, Person value, IJsonFormatterResolver formatterResolver)
+    {
+        if (value == null)
+        {
+            writer.WriteNull();
+            return;
+        }
+
+        writer.WriteBeginObject(); // {
+
+        var first = true;
+
+        // structはnullチェックなし
+        // if (value.Age != null)
+        {
+            if (!first)
+            {
+                writer.WriteValueSeparator();
+            }
+            else
+            {
+                first = false;
+            }
+
+            UnsafeMemory64.WriteRaw6(ref writer, this.stringByteKeys[0]);
+            writer.WriteInt32(value.Age);
+        }
+
+        if (value.FirstName != null)
+        {
+            if (!first)
+            {
+                writer.WriteValueSeparator();
+            }
+            else
+            {
+                first = false;
+            }
+
+            UnsafeMemory64.WriteRaw13(ref writer, this.stringByteKeys[1]);
+            writer.WriteString(value.FirstName);
+        }
+
+        if (value.LastName != null)
+        {
+            if (!first)
+            {
+                writer.WriteValueSeparator();
+            }
+            else
+            {
+                first = false;
+            }
+
+            UnsafeMemory64.WriteRaw12(ref writer, this.stringByteKeys[2]);
+            writer.WriteString(value.LastName);
+        }
+
+        writer.WriteEndObject(); // }
+    }
+}
+</code></pre>
+<p>処理が多くなりましたね！そう、Defaultに比べるとExcludeNullは、条件分岐が増えることと、JSONとしてのプロパティの出力順番が不定のため、キャッシュのアグレッシブ度も下げざるを得ないため、実行速度が若干低下します。</p>
+<p>今回別にJSONの解説をしたいわけではなくて、大事なのは、オプションによって最高速なコードは変わっていくということです。そこを共通化してオプションによってコード分岐させたりせずに、オプション毎に最適化されたコードを生成することが肝要です。とはいえ、徹底的にオプション毎にコード生成を分けるのは生成部分が肥大化するため、記述には大いに苦痛を伴うでしょう。それをありえないほどクソ丁寧に徹頭徹尾やってるからMessagePack for C#やUtf8Jsonはデタラメに高速なのです。</p>
+<p>また、事前生成ではオプション毎の最適なコードの生成は事実上不可能（全ての組み合わせを用意することは出来ない！）ので、その点でもあらゆるパターンの最適化コードを作れる動的生成は有利です。もちろん、通常アプリケーションで使うオプションは固定なので、そのオプションに絞った生成をすればいい、とうのは回答の一つではありますが（実際、UnityのAOT環境であるIL2CPP向けのUtf8Json, MessagePack for C#では単一オプションでの生成を行う）。</p>
+<p>ともあれ、IL生成とかなんとかいっても、環境固定・対象固定であれば、C#で書けるコードが動的に生成されている、というだけの話です。C#で見ると、まぁちょっと面倒くさいことやってるな、程度の話で、別に特別に複雑なことはやってないんですよね。</p>
+<p>というわけで、コード生成をしたいと思ったら、考える順番として、必ず、C#だとどういうコードになるか、を想像して、いや、実際に書くところから始めましょう。それが出来上がれば、あとはILに起こすだけです。その起こすだけ、というのが難しそう！っていう話なのですが、実は現代はツールが充実しているので、以外と難しくありません！というわけで、本題に入っていきましょう。</p>
+<h2>動的生成の手段</h2>
+<p>それなりに色々あるので、何使えばいいのーガイド最新版。</p>
+<p><a href="https://msdn.microsoft.com/ja-jp/library/system.codedom(v=vs.110).aspx">CodeDom</a>。今はRoslyn(C#実装のC#コンパイラ)があるので、レガシー互換したいとかの余程の謎事情がない限りは不要かな。特に、動的生成したい、という目的で選ぶ必要性はあまりないでしょう。</p>
+<p><a href="https://msdn.microsoft.com/ja-jp/library/system.reflection.emit.assemblybuilder(v=vs.110)">AssemblyBuilder</a>。動的にアセンブリを生成します。アセンブリを生成するということは、動的にモジュールを作り、動的に型を作り、動的にメソッドを作ります。つまりなんでも出来ます。コードの埋め込みはIL手書き。今回の話のメイン。NuGetでは<a href="https://www.nuget.org/packages/System.Reflection.Emit/">System.Reflection.Emit</a>。</p>
+<p><a href="https://msdn.microsoft.com/ja-jp/library/system.reflection.emit.dynamicmethod(v=vs.110).aspx">DynamicMethod</a>。こちらは動的にデリゲートを作るというもの。コードの埋め込みはIL手書き。NuGetでは<a href="https://www.nuget.org/packages/System.Reflection.Emit.Lightweight/">System.Reflection.Emit.Lightweight</a>ということで、Lightweightエディションです。LCG(Lightweight CodeGen)と言われることもある。型そのものを作るAssemblyBuilderよりも出来ることが圧倒的に限られてしまうので、Lightweightに済ませたい局面以外では不要、と言いたいところなのですが、実はLCGでしか出来ないこともあるので、現実的にはAssemblyBuilderと併用していくことになります。</p>
+<blockquote>
+<p>LCGでしか出来ないことというのは、private変数への外側からのアクセスです。AssemblyBuilderでは、本当に外側からC#を書いた時のような制限がかかりますが、LCGではその辺を無視することが可能です。動的生成ではリフレクション系を扱うことが多いはずで、privateへもアクセスしたいというのは多くの場合要件に含まれるでしょう。</p>
+</blockquote>
+<p><a href="https://docs.microsoft.com/ja-jp/dotnet/csharp/programming-guide/concepts/expression-trees/">ExpressionTree</a>。できることはLCGと同じ(最終的にデリゲート生成ではLCGを通して作られているので)。ただし定義されているExpression以上のことはできないのと、正直いってIL書くのに慣れると、ExpressionTreeのほうが冗長で面倒くさいので、最近の私は使いません。特に.NET 4から足されたループなど「文」系の構文をExpressionTreeで書くのはかなりダルいので、無理して拘る必要はないでしょう。</p>
+<blockquote>
+<p>ただしExpressionTreeによるCompileはXamarin iOSなどのAOT環境(動的コード生成不可）でも動くデリゲートが生成できます。何故なら、AOT環境の場合はExpressionTree専用のインタプリタで動かすデリゲートを生成するからです。もちろん、インタプリタになるので低速ですが、互換性維持的に楽なので、その点ではLCGではなくExpressionTreeを選ぶという選択肢はアリです。</p>
+</blockquote>
+<p><a href="https://www.nuget.org/packages/Microsoft.CodeAnalysis.CSharp/">Microsoft.CodeAnalysis.CSharp(Roslyn)</a>。C#コンパイラ、ということでILを書かずとも、文字列としてのC#コードを書けばそこから実行時に使えるコードを生成できます。ILの知識も不要だしC#コンパイラの最適化も受けれるのでいいね！って話なのですが、あんま使われてないし、実際私もあまり使う気にはなれません。何故かというと、標準入りせず（5年前の.NET 4.5からは、コアフレームワーク標準入りという概念はなくなって、新規ライブラリはNuGetによる提供が主体になったため）、かなり大仰なパッケージを入れる必要があるため、依存関係にそれを仕込みたくないというのが一つ。もう一つは、割と面倒くさい。ソースコードをポンと放り投げれば出来上がり、というほどではなく、参照関係をかっちりかき集めてこなきゃいけないので、想像よりも遥かに手間がかかるんですね。一度テンプレートコードみたいなのを作ってしまえばいいといえばいいんですが……。また、初回生成時コストがかなり高いのが、初回のみなので無視できると言い張るにしても若干厳しいところもある。</p>
+<p>と、いうわけでこの記事ではAssemblyBuilderとDynamicMethodを中心に扱っていきます。</p>
+<h2>動的生成のためのツール</h2>
+<p>よし、じゃあ早速書いていくぜ、の前にツールです。はやる気持ちは抑えて、何はともあれツールです。ツールがあると理解がめちゃくちゃ早まりますし、ハマりどころもなくなってめちゃくちゃ楽になります。とにかく現代はツールがめちゃくちゃ充実しています。別にildasmとニラメッコしたり、デバッグシンポルを入れるのに四苦八苦したりする必要はありません。シンプルに書いて、ひたすらツールに突っ込むのがとにかく近道です。</p>
+<p><a href="https://github.com/0xd4d/dnSpy/">DnSpy</a>。最強の.NET逆コンパイラ。DynamicAssemblyで生成したコードなら、そのまま中身確認どころかステップ実行のデバッグができる。ヤバい。もうこれで何も怖くない。残念ながらDynamicMethodにたいしてのデバッグは出来ないので、それだけのためにもDynamicAssembly中心にしたい（が、DynamicMethodのプライベートアクセスの機能は重要なので頑張って両対応させるのが、一手間でも最終的には一番いい）。</p>
+<p><a href="https://github.com/icsharpcode/ILSpy">ILSpy</a>。みんな大好き定番.NET逆コンパイラ。DynamicAssemblyならDLLとして出力することが可能なので、それを流し込めば生成した結果がC#コードとして見れる。IL手書きは、たいてい一発でうまくいかなくてC#として解析できない腐ったILを作ってしまったりするのですが、それはそれで、生成されたILを見ることができるので間違っている場所を探し出すことができます。アセンブリのリロードがDnSpyと違ってサクサクできるので、未だにDnSpyよりもこちらのほうが出番ずっと多し。なお、この生成コードをDLLとして出力して確認する、というデバッグ手法はコード生成がめちゃくちゃ楽になるので、絶対欠かせません（で、DynamicMethodだとそれができないので頑張って両対応させるのが一番）。</p>
+<p><a href="https://www.linqpad.net/">LINQPad</a>。LINQPadの何がいいかというと、ILタブがあるところ。C#で書いたコードがどういうILに変換されるかは、LINQPadでミニマムなコードを書いて確認するのが一番手っ取り早い。いわばカンニングです。別にILの全てを知らなきゃIL手書きできないわけじゃないんです、普通にC#で書いて、書き写してくだけでいいんですよ。いやほんと。それを繰り返していくうちに、そのうち覚えていくでしょうしね。そう、別にミニマムなコードだけじゃなく、「コード生成をしたいと思ったら、考える順番として、必ず、C#だとどういうコードになるか、を想像して、いや、実際に書くところから始めましょう」と言いましたが、そのコード全体をLINQPadに通してILタブを見れば、それが生成すべきコードの答えです！汎用的にするため、ある程度は自分で展開しなきゃいけないんですが、「答え」が存在しているのといないのとでは、難易度は桁違いに変わります。</p>
+<p><a href="https://github.com/neuecc/linqpadspy">LINQPadSpy</a>。別に必ず必要でもないんですが、これはいわばC# to C#です。どういうことかというと、LINQPadの生成結果をILSpyに流したものがその場で確認できます。C# to C#って同じ結果だろ？と言いたいところなのですが、C#コンパイラもまたコンパイル時コード生成するので、全然異なるコードになってたりするんですね。例えば<a href="http://engineering.grani.jp/entry/2017/02/20/175816">C#のswitch文のコンパイラ最適化について</a>という記事では、switchが二分探索に化ける例を紹介しました。そういうのをサクッと確認できるようになります。このINQPadSpyは私がForkしてLINQPad 5に対応させたものになります。</p>
+<p><a href="https://msdn.microsoft.com/ja-jp/library/62bwd2yd%28v=vs.110%29.aspx">PEVerify</a>。Visual Studioを入れればついてきます(ildasm.exeとかsn.exeとかと同じ場所にある、例えば &quot;C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.7 Tools\x64\PEVerify.exe&quot; )。これの何がいいかというと、IL手書きに間違ったコード生成はつきもの、なんですが、 その場合にどこがどう間違ってるか教えてくれます。その場所に関してはILSpyで確認できるので、ILSpyとPEVerifyを合わせれば、修正が圧倒的なスピードでできます。これないと、ひたすら気合で探していくことになりますからね。ちなみにunsafeコードがあると、その部分はダメだと指摘が来ますが、別にそれはそのままでいいので、ノイズになるのは諦めましょう。</p>
+<p><a href="https://msdn.microsoft.com/ja-jp/library/f7dy01k1%28v=vs.110%29.aspx?f=255&amp;MSPPError=-2147217396">Ildasm</a>。99%、ILSpyがあれば不要な代物。ILSpyのほうが使いやすく、見やすいですからね。ただ、たまーに残り1%の部分でIldasmでしか表示できないものがあったりします。例えば.data領域に詰まった文字列定数のbytearrayなんかは、ILSpyだと見る術がありませんが、Ildasm経由で逆コンパイル結果を出力すると、そこの部分も見れたりします。別に見れると何があるというわけでもないですが、正しい理解のために、信頼できる無加工の生の出力をしてくれる、という性質は貴重なものがあります。めったに使いませんが。</p>
+<h2>ILの基礎</h2>
+<p>よし、じゃあ早速書くぞ、って話なのですが、まあ待ってください。まずは基礎の基礎ぐらいは軽く頭に入れておきましょう。ぶっちゃけ何も知らなくてもLINQPadで吐いたコードをカンニングコピペでなんとかなるといえばなんとかなる（ほんと！）んですが、さすがに少しぐらいは知ってたほうがエラー対処も容易になるので、覚えておきましょう。</p>
+<p>C#コンパイラの仕事は<a href="https://ja.wikipedia.org/wiki/%E5%85%B1%E9%80%9A%E4%B8%AD%E9%96%93%E8%A8%80%E8%AA%9E">IL</a>を作ることです。で、ILは<a href="https://ja.wikipedia.org/wiki/%E3%82%B9%E3%82%BF%E3%83%83%E3%82%AF%E3%83%9E%E3%82%B7%E3%83%B3">スタックマシン</a>として解釈され実行されます。どういうことかというと、Stackに命令をPushしたりPopしたりして計算するそうな。</p>
+<p>まぁ、LINQPadでふんいきを見てみましょう。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33274401-511675a6-d3d3-11e7-8e75-128ba92dcbfd.png" alt="image" /></p>
+<p>足し算は、Ldarg_0, Ldarg_1(引数ロード)がStackへPush。Add(足し算)がその詰まれた2つをPopして加算して、計算結果をPush。Ret(return)で、その最後の一つの値を返してStackを空に。というのが基本の流れです。</p>
+<p>ところでLINQPadを使う場合の注意事項として、右下に最適化ボタンがあるので、必ずONにしておきましょう。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33527490-2dcb57ee-d895-11e7-9c39-dd3bd28972f1.png" alt="image" /></p>
+<p>最適化がONじゃないとnop(何もしない命令、デバッガがこれで止まるようになるのでデバッグビルドで必要だけどリリースビルドでは不要)が大量に埋め込まれるので、見にくくなるためです。</p>
+<p>さて、このldargやretがOpCodeという代物で、今のとこ226種類あります。ええ、via C#なのでC#で確認してみましょう。LINQPadで以下のコードを打ちます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">typeof(OpCodes).GetFields().Select(x =&gt; x.GetValue(null)).OfType&lt;OpCode&gt;().Dump();
+</code></pre>
+<p><img src="https://user-images.githubusercontent.com/46207/33527433-4c06ac0a-d894-11e7-8154-885996a0ff7e.png" alt="image" /></p>
+<p>とりあえずNameとStackBehaviourPopとStackBehaviourPushに注目。StackBehaviourPopが幾つ取り出すか、StackBehaviourPushが幾つ詰むか。ldarg.0(0番目の引数をロードする)はPop0, Push1。add(足し算)はPop1_pop1(Pop2じゃないんですね)で、Push1。二個消費して、一個返すということ。。</p>
+<p>と、いうイメージで、一個のStackにPushしたりPopしたりして結果を作る。メソッドは大抵最後にreturnで戻り値を返すわけですが、その場合はStackに一個だけ値を残しておいて、OpCodes.Retを叩けばおｋ、と。</p>
+<p>というわけで実際のIL生成としてDynamicMethodにした場合は、こうなります。さっきの足し算コードに、+ 99を追加というのにしましょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// (int x, int y) =&gt; x + y + 99
+var dm = new DynamicMethod(&quot;Sum99&quot;, typeof(int), new[] { typeof(int), typeof(int) });
+var il = dm.GetILGenerator();
+
+// 引数0と引数1を詰んで加算、更に+99してreturn。
+il.Emit(OpCodes.Ldarg_0);    // [x]
+il.Emit(OpCodes.Ldarg_1);    // [x, y]
+il.Emit(OpCodes.Add);        // [(x + y)]
+il.Emit(OpCodes.Ldc_I4, 99); // [(x + y), 99]
+il.Emit(OpCodes.Add);        // [(x + y + 99)]
+il.Emit(OpCodes.Ret);        // []
+
+// そしてCreateDelegateでFuncを作る
+var sum = (Func&lt;int, int, int&gt;)dm.CreateDelegate(typeof(Func&lt;int, int, int&gt;));
+
+// 129
+Console.WriteLine(sum(10, 20));
+</code></pre>
+<p>AssemblyBuilderもDynamicMethodも基本の流れは一緒です。 GetILGenerator でILGeneratorを取得して、EmitでOpCodeの埋め込み。そして最後にCreateTypeかCreateDelegateする。Emitメソッドは引数にOpCodeと、パラメータを受け取ります。パラメータは定数であったりメソッド呼び出しであればMethodInfoなど様々。全然タイプセーフじゃないので間違ったパラメータ突っ込んじゃうことは多数ですが頑張って慣れましょう。なお、こういうのは完全に頭に叩き込んでおいてソラで手書きする必要は全くありません。基本はLINQPadで書いてカンニングコピペです。</p>
+<p>もう少し基礎知識を続けます、習うより慣れろ、ではあるものの、ある程度OpCodeの種類も知っておいたほうが良いでしょう。大雑把に解説しておきます。</p>
+<p>読み込む系 - ldarg.<em>, ldloc.</em>, ldc.i4.*, ldfld, ldsfld, など。ldはロードで、それぞれargは引数(argument)、locはローカル変数(local)、i4は整数(4byte integer)、fldはフィールド、sfldはスタティックフィールド、の読み込みをします。つまりPop0, Push1。長いILを書いてる時に（正しくはLINQPadからコピペって書き写している時に）スタティックとそうでないやつの書き間違いを起こすことが稀によくある。よくあるミスなのでエラーになった時はその辺を真っ先に疑います。</p>
+<p>ldargaやldfldaなど、最後にaがついてるやつがいますが、これはaddressだけ読むもので、参照系を扱う場合に使い分けが必要です。よくわからない場合は逆コンパイル結果を見ればOK。これもまた長いILを打ってるとたまに間違えて、死ぬ場合多数。</p>
+<p>また、.0, .1, .2, .3 や .s というのが後者についてるものがありますが(ldc.i4.1, ldc.i4.sなど)、これは最適化です。i4だと-1 ~ 8までは引数不要でそのOpCode自体が数字も示して読み込めますよ、と。sはshort formで、これまた最適化で、1バイト以内に収まるものはこちらを使ったほうが良い、という扱いです。</p>
+<p>面倒な場合は全部Ldc_I4でいいじゃん、ってところなのですが、何も考えずとも最適に扱えるよう、こういう拡張メソッドを用意しておくのは賢いやりかたです。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static void EmitLdc_I4(this ILGenerator il, int value)
+{
+    switch (value)
+    {
+        case -1:
+            il.Emit(OpCodes.Ldc_I4_M1);
+            break;
+        case 0:
+            il.Emit(OpCodes.Ldc_I4_0);
+            break;
+        case 1:
+            il.Emit(OpCodes.Ldc_I4_1);
+            break;
+        case 2:
+            il.Emit(OpCodes.Ldc_I4_2);
+            break;
+        case 3:
+            il.Emit(OpCodes.Ldc_I4_3);
+            break;
+        case 4:
+            il.Emit(OpCodes.Ldc_I4_4);
+            break;
+        case 5:
+            il.Emit(OpCodes.Ldc_I4_5);
+            break;
+        case 6:
+            il.Emit(OpCodes.Ldc_I4_6);
+            break;
+        case 7:
+            il.Emit(OpCodes.Ldc_I4_7);
+            break;
+        case 8:
+            il.Emit(OpCodes.Ldc_I4_8);
+            break;
+        default:
+            if (value &gt;= -128 &amp;&amp; value &lt;= 127)
+            {
+                il.Emit(OpCodes.Ldc_I4_S, (sbyte)value);
+            }
+            else
+            {
+                il.Emit(OpCodes.Ldc_I4, value);
+            }
+            break;
+    }
+</code></pre>
+<p>Ldc_I4に限らず、慣れてきたら幾つか予め容易しておくと色々はかどります。この辺のユーティリティが勢揃いフルセットなのが<a href="https://github.com/kevin-montrose/Sigil">Sigil</a>なのですが、これはこれでToo Muchなきらいもあるし、ツール類から流したりコピペったりする分には素のほうがやりやすかったりなので、むしろ最初のうちは素のままやっていったほうが良いでしょう。Sigilの検証などは一見良さそうなのですが、素で書いてILSpy/ILVerifyに流したほうが結局情報豊富だったりしますしね。</p>
+<p>なお、<a href="https://github.com/neuecc/Utf8Json/blob/master/src/Utf8Json/Internal/Emit/ILGeneratorExtensions.cs">Utf8JsonのILGeneratorExtensions</a>を参考までに。基本的には素朴にやれるものしか定義していません。</p>
+<p>代入する系 - stloc, starg, stfld, stsfld, など。stはストアということで代入、まんまですね。スタックへの挙動はPop1, Push0です。そりゃそーだ。</p>
+<p>算術演算系 - add, sub, mul, div, など。まぁこれはまんまですね。二項演算子なので、みんなPop1_pop1, Push1です</p>
+<p>分岐系 - br, brtrue, beq, bgt, ble, bne, blt, など。brはbranchで、ようするところif + gotoです。C#でifで書いたものは、全てbr*に変換されています。値をPopして、それを元にしてジャンプするかどうかを決めます。beqはbranch equal, bneはbranch not equal, bleはbranch less than equal, bltはbranch less than, bgeはbranch greater than equal, bgtはbranch greater thanと、3文字で圧縮されると呪文のようでわかりにくくあるんですが、概ねそういうことですね。switchもありますが、C#のswitchとは異なることに注意。C#のswitchはコンパイラが場合によって二分探索に置き換えたりしますが、OpCodeのswitchは[0..]のジャンプテーブル(goto先が詰まってる)しかありません。</p>
+<p>その他 - callはメソッド呼ぶ。Pop数は引数によりけりなので不定(Varpop)。callvirtというものもあって、違いはcallvirtが仮想メソッド呼び出し（インターフェース経由とかの場合）、callが直呼び出しということで、よくわかんなかったらcallvirtに倒しときゃとりあえず安全、という雑な言い方もできますが、例によって出し分け拡張メソッドを作っておくと、何も考えなくてラクかもしれません。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static void EmitCall(this ILGenerator il, MethodInfo methodInfo)
+{
+    if (methodInfo.IsFinal || !methodInfo.IsVirtual)
+    {
+        il.Emit(OpCodes.Call, methodInfo);
+    }
+    else
+    {
+        il.Emit(OpCodes.Callvirt, methodInfo);
+    }
+}
+</code></pre>
+<p>こうやってIL眺めてると、高速なのはきっとCallのほうなんだろうなぁ、みたいなイメージが湧いてきます。取っ掛かりは、そういう雑なイメージからでいいんですよ。</p>
+<p>retはreturn。voidのメソッドであってもメソッドの最後は必ずretでしめます。</p>
+<p>dup。これはスタックの値を複製する。例えば連続してインスタンスのプロパティに代入する場合なんかに、インスタンスをdupしたりします。ようはオブジェクト初期化子なんかそうですね。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33527733-45d22d78-d899-11e7-9388-31b6488866f7.png" alt="image" /></p>
+<p>スタックの状態を書くと、</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">newobj(myclass)
+dup(myclass, myclass)
+ldc.i4(myclass, myclass, 15)
+callvirt(myclass)
+dup(myclass, myclass)
+ldstr(myclass, myclass, &quot;HogeHoge&quot;)
+callvirt(myclass)
+ret()
+</code></pre>
+<p>と、いうわけです。dupは何かとよく出てくるんですが、スタックの状況によって増えるものが違うんで混乱の原因ではありますね。まぁ、大抵はインスタンスのはずです。手書きの際に条件分岐などでdupすべきスタックの状態がグチャグチャでよくわからん！ってなる場合は、ローカル変数を作ってしまって、それをロードする、という形で逃げる手も割と良い手段です。LINQPadからのカンニングコピペは基本ですが、時に自分の意志で逸脱できるようになれば上級者！</p>
+<h2>AssemblyBuilderことはじめ</h2>
+<p>というわけで本編。AssemblyBuilderを始めましょう。習うより慣れろ、ということでまずやってみましょう。注意点としては、まずは.NET Coreや.NET Standardじゃなく、.NET Frameworkで作ってみてください(Linux環境下の人はmonoで！)。理由は、.NET Coreではアセンブリの保存ができないため、デバッグ難易度が跳ね上がるからです。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">const string ModuleName = &quot;FooBar&quot;;
+
+// .NET 4.5から。それ以前ではAppDomain.CurrentDomain.DefineDynamicAssemblyをかわりに使う
+// AssemblyBuilderAccessは.NET Coreでは現状Runしか使えないが、デバッグに超便利なので少なくともデバッグ用にだけはRunAndSaveの口を確保しておきたい
+// 一つのAssemblyに複数ModuleをDefineすることが可能ですが、何かと混乱を招くので、わかりやすさのためにも1:1にしておくと良い
+var assemblyBuilder = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName(ModuleName), AssemblyBuilderAccess.RunAndSave);
+
+// 基本的にはmoduleBuilderをstatic変数などに保持しておいて、必要な際に都度DefineTypeで動的に型定義していく
+var moduleBuilder = assemblyBuilder.DefineDynamicModule(ModuleName, ModuleName + &quot;.dll&quot;); // RunAndSaveの場合、ここでファイル名を指定しておく
+
+// Foo型を定義
+var typeBuilder = moduleBuilder.DefineType(&quot;Foo&quot;, TypeAttributes.Public);
+
+// Foo型からSumインスタンスメソッドを定義
+var sum = typeBuilder.DefineMethod(&quot;Sum&quot;, MethodAttributes.Public, typeof(int), new[] { typeof(int), typeof(int) });
+
+// そしてメソッドの中身をEmit
+var il = sum.GetILGenerator();
+il.Emit(OpCodes.Ldarg_1); // インスタンスメソッドの場合、arg0がthisになる
+il.Emit(OpCodes.Ldarg_2);
+il.Emit(OpCodes.Add);
+il.Emit(OpCodes.Ret);
+
+// CreateTypeで型を実体化する
+var fooType = typeBuilder.CreateType(); // これで「型」のできあがり
+var instance = Activator.CreateInstance(fooType); // まぁ大抵は？生成したインスタンスをキャッシュするのでしょう
+
+var result = fooType.GetMethod(&quot;Sum&quot;).Invoke(instance, new object[] { 10, 20 });
+Console.WriteLine(result); // 30, ちゃんとSumが呼べてる。
+
+// 保存する時はDefineDynamicModuleの時に指定したのと同じ名前で吐くのが安全のために良い
+#if DEBUG
+assemblyBuilder.Save(ModuleName + &quot;.dll&quot;);
+#endif
+</code></pre>
+<p>これでFooBarモジュールにSumメソッドを持つFoo型ができました。DefineDynamicAssembly -&gt; DefineDynamicModuleは定形なので、こんなもんだと思ってください。ここで作るAssemblyBuilder/ModuleBuilderはアプリケーション中でずっと使いまわします（さすがに一つの型毎にAssembly生成してたら過剰すぎるので！）。</p>
+<p>DefineTypeにより型定義、このDefineTypeはスレッドセーフなので安心して（？）グローバルに保存しているModuleBuilderから呼び出せます(ただしmonoでは非スレッドセーフなので、mono環境での実行を意識するならDefineTypeにlockかけましょう、例えばUnityとかね……)。</p>
+<p>型を定義したら次はメソッド、ということでDefineMethod。Defineには他にDefineField, DefineConstructor, DefinePropertyなどあります。そして中身の記述のためILGeneratorを取り出し、Emit。最後にCreateTypeしてできあがり、です。</p>
+<p>ここまでで通常は終わりですが、デバッグ時はSaveを呼んで、中身を確認すると色々と楽になれます。今回はFooBar.dllができたので、ILSpyで開いてみましょう。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33528628-33ad7978-d8a7-11e7-803b-ae832bf0131e.png" alt="image" /></p>
+<p>問題なし、と。まぁ問題ない場合は問題なしでいいんですが、たいてい問題アリなので（特に長いコード書いてくと本当に辛い！）、こうして見れるのめちゃくちゃ大事です。</p>
+<p>或いはdnSpyを使うという手もあります。dnSpyの場合はそのままステップ実行までできます！やり方は簡単で、Startボタンを押して、exeを指定。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33528674-ad4eafcc-d8a7-11e7-90b3-db69a1518068.png" alt="image" /></p>
+<p>あとは、Invokeしているところに止めて、F11連打してくと、Sumの呼び出しまでステップ実行で降りていけます。そうなるとロードしたインメモリアセンブリも表示されていて中身丸見えに。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33528727-96658816-d8a8-11e7-943b-348ec745305b.png" alt="image" /></p>
+<p>なので、dnSpyを使っていくならSaveしなくても大丈夫です。ただ、そもそもILが腐っている場合にILSpyならSaveして腐ったILを見ることができますがdnSpyでは無理なので、ILのデバッグ的には腐ったILを修正していくフェーズのほうが多いので、できればSave可能な環境を作ったほうが良いでしょう。</p>
+<p>でも最終成果物は.NET StandardなのでSaveできないんです！って場合は、というかもう今からライブラリ作る人はみんなそうだと思うんですが、そういう人はメインライブラリは.NET Standardで作って、それとは別に.NET Frameworkのコンソールアプリを作って、プロジェクト参照でライブラリを引っ張り、コンパイラシンボルで.NET Frameworkからの参照のときのみSaveの口を開けておく、みたいなやり方で確保するのがオススメです。例えばUtf8JsonはこんなAssemblyBuilder用のヘルパーを使っています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">using System.Reflection;
+using System.Reflection.Emit;
+
+namespace Utf8Json.Internal.Emit
+{
+    internal class DynamicAssembly
+    {
+#if NET45 || NET47
+        readonly string moduleName;
+#endif
+        readonly AssemblyBuilder assemblyBuilder;
+        readonly ModuleBuilder moduleBuilder;
+
+        public ModuleBuilder ModuleBuilder { get { return moduleBuilder; } }
+
+        public DynamicAssembly(string moduleName)
+        {
+#if NET45 || NET47
+            this.moduleName = moduleName;
+            this.assemblyBuilder = System.AppDomain.CurrentDomain.DefineDynamicAssembly(new AssemblyName(moduleName), AssemblyBuilderAccess.RunAndSave);
+            this.moduleBuilder = assemblyBuilder.DefineDynamicModule(moduleName, moduleName + &quot;.dll&quot;);
+#else
+#if NETSTANDARD
+            this.assemblyBuilder = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName(moduleName), AssemblyBuilderAccess.Run);
+#else
+            this.assemblyBuilder = System.AppDomain.CurrentDomain.DefineDynamicAssembly(new AssemblyName(moduleName), AssemblyBuilderAccess.Run);
+#endif
+
+            this.moduleBuilder = assemblyBuilder.DefineDynamicModule(moduleName);
+#endif
+        }
+
+#if NET45 || NET47
+
+        public AssemblyBuilder Save()
+        {
+            assemblyBuilder.Save(moduleName + &quot;.dll&quot;);
+            return assemblyBuilder;
+        }
+
+#endif
+    }
+}
+</code></pre>
+<h2>PEVerifyことはじめ</h2>
+<p>最初のうちどころか、慣れてきても、大抵はEmitには失敗します。どっか間違えます。例えばスタックにあまったものが存在している場合</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var il = sum.GetILGenerator();
+il.Emit(OpCodes.Ldarg_1);
+il.Emit(OpCodes.Ldarg_2);
+il.Emit(OpCodes.Add);
+il.Emit(OpCodes.Ldc_I4, 999); // 一個余計なものを足す
+il.Emit(OpCodes.Ret);
+</code></pre>
+<p>これは、Sumを呼んだ時に実行時エラーとして「System.InvalidProgramException: JIT コンパイラで内部的な制限が発生しました。」がでます。この「JIT コンパイラで内部的な制限が発生しました。」はもう悲すぃぐらいに付き合うことになるでしょう。こいつの倒し方ですが、まぁようするにどこでエラーが起きたかを突き止めていくということ。で、役に立つ（？）のが、スタックをとりあえず空にしてダミーでreturnする方。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// こういうヘルパーメソッド用意しておくと便利
+public static void EmitPop(this ILGenerator il, int count)
+{
+    for (int i = 0; i &lt; count; i++)
+    {
+        il.Emit(OpCodes.Pop);
+    }
+}
+
+// で、こういうふうにしてひたすら探る
+var il = sum.GetILGenerator();
+il.Emit(OpCodes.Ldarg_1);
+il.Emit(OpCodes.Ldarg_2);
+il.EmitPop(2); // 二個消す（いくつPopすれば分からない場合も多いけど、そのときは1, 2, 3...と適当にPop数を増やして例外が起きないように探ればOK）
+il.Emit(OpCodes.Ldc_I4_1);
+il.Emit(OpCodes.Ret);
+// --- ここまでは大丈夫だった --
+/*
+il.Emit(OpCodes.Add);
+il.Emit(OpCodes.Ldc_I4, 999); // 一個余計なものを足す
+il.Emit(OpCodes.Ret);
+*/
+</code></pre>
+<p>Popとダミーのリターンで、どこまでのEmitは大丈夫で、どこからがダメなのかを探していきます。このやり方で9割ぐらいは最終的に見つかります。例えばldargとldarg_Sの間違いとかはサクッと見つかりますね。残り1割は、しょうがないケースなので頑張ろう。</p>
+<p>この原始的なやり方は最後の最後まで役に立ちます。が、もう少し楽をしたいので、PEVerifyを使いましょう。PEVerifyによって95%ぐらいのエラーを一撃必殺で見抜くことができます。アセンブリのSaveとセット販売で用意しておくとデバッグが捗ります。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// ようはこういうヘルパーメソッドを用意しておく
+static void Verify(params AssemblyBuilder[] builders)
+{
+    var path = @&quot;C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.6.1 Tools\x64\PEVerify.exe&quot;;
+
+    foreach (var targetDll in builders)
+    {
+        var psi = new ProcessStartInfo(path, targetDll.GetName().Name + &quot;.dll&quot;)
+        {
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+
+        var p = Process.Start(psi);
+        var data = p.StandardOutput.ReadToEnd();
+        Console.WriteLine(data);
+    }
+}
+
+// Invokeタイミングで死ぬのでDLLの生成自体は可能。SaveしてVerifyを通すようにしておきましょう。
+try
+{
+    var result = fooType.GetMethod(&quot;Sum&quot;).Invoke(instance, new object[] { 10, 20 });
+    Console.WriteLine(result); // ↑のとこで例外を吐く
+}
+finally
+{
+    assemblyBuilder.Save(ModuleName + &quot;.dll&quot;);
+    Verify(assemblyBuilder);
+}
+</code></pre>
+<p>PEVerifyによって、例えばこういうメッセージが得られます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[IL]: エラー:[FooBar.dll : Foo::Sum][オフセット 0x00000008] スタックに含めることができるのは、戻り値だけです。
+</code></pre>
+<p>ILSpyでDLLをIL Viewにして見てみると</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33528907-292a37ac-d8ac-11e7-8e92-a8c24e1fa310.png" alt="image" /></p>
+<p>オフセットはIL_0008に対応していて、retのあたりがダメなんだ、ということが分かります。で、まぁメッセージとニラメッコして、なんとなくスタックの数がおかしいんだろうなあ、と辺りをつけましょう。</p>
+<p>さて、もう一個よくみる例外が「共通言語ランタイムが無効なプログラムを検出しました。」です。これもようするところ間違えたILをEmitしてるってことなんですが。例えばこういうコードをEmitしてPEVerifyにかけましょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var il = sum.GetILGenerator();
+il.Emit(OpCodes.Ldarg_1);
+// il.Emit(OpCodes.Ldarg_2); // スタック足りなくしてみる
+il.Emit(OpCodes.Add);
+il.Emit(OpCodes.Ret);
+</code></pre>
+<p>こういう結果が得られます！</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[IL]: エラー:[FooBar.dll : Foo::Sum][オフセット 0x00000001] スタックのアンダーフロー
+</code></pre>
+<p>腐ったILを生成すると、ILSpyのC#ビューがウンともスンとも言わなくなります。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33528986-f0cc8e86-d8ac-11e7-89c8-764576f8c004.png" alt="image" /></p>
+<p>が、ILビューは生きているので頑張りましょう。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33528988-0ebccb68-d8ad-11e7-8e71-2d13498aa57a.png" alt="image" /></p>
+<p>オフセット0x00000001、つまりaddのところでスタック足りてませんよ、っていうことでした。OK。まぁこのぐらい短いとどうってことないですが、長いILだとスタックの数がオカシイのは分かるけど、どのへんイジりゃあいいんだこれ、って混乱したりしなかったりしますが、場所さえ突き止められれば、あとは気合でなんとでもなります。問題なし。</p>
+<h2>DynamicMethodことはじめ</h2>
+<p>DynamicMethodは、ようするところAssemblyBuilderからDefineAssembly/DefineModule/DefineTypeを抜いたものです。デリゲート生成しかできませんが、AssemblyBuilderをstaticなどっかに保存しておく、とか別に大したことないといえば大したことないけど、面倒っちゃあ面倒なので、いーんじゃないでしょうか。それと、大事なことが一つ。DynamicMethodならプライベートな変数やメソッドにアクセスできます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// こんな型があるとして、ぷらいべーとなフィールドを高速に書き換えれるアクセサを用意してみましょう
+public class Person
+{
+    int age; // private field!
+
+    public Person(int age)
+    {
+        this.age = age;
+    }
+
+    public int GetAge()
+    {
+        return age;
+    }
+}
+
+// DefineMethodとほぼ同等に戻り値、引数の型を並べて作る
+// ただしDynamicMethodだけの要素として、ModuleとSkipVisibilityに注意！
+var dynamicMethod = new DynamicMethod(&quot;SetAge&quot;, null, new[] { typeof(Person), typeof(int) }, m: typeof(Person).Module, skipVisibility: true);
+
+// ILGeneratorに関してはDefineMethodとかわりなし
+var il = dynamicMethod.GetILGenerator();
+il.Emit(OpCodes.Ldarg_0); // staticメソッドなので0はじまり
+il.Emit(OpCodes.Ldarg_1);
+il.Emit(OpCodes.Stfld, typeof(Person).GetField(&quot;age&quot;, BindingFlags.NonPublic | BindingFlags.Instance));
+il.Emit(OpCodes.Ret);
+
+// 最後にCreateDelegateでデリゲートを作る
+var setAge = (Action&lt;Person, int&gt;)dynamicMethod.CreateDelegate(typeof(Action&lt;Person, int&gt;));
+
+var person = new Person(10);
+setAge(person, 999);
+
+Console.WriteLine(person.GetAge()); // 999
+</code></pre>
+<p>よくあるゲッターへのアクセサ/セッターへのアクセサ、です。汎用的なものにすると引数/戻り値がobject型にならざるを得なくて、ボクシングが避けられずエクストリームなパフォーマンス追求には使えないんですが、カジュアル用途でやってくには十分以上に便利でしょう。</p>
+<p>DynamicMethodの注目点はm:とskipVisibility:です。これを指定しておくとプライベート変数へのアクセスが可能になるほか、実はパフォーマンス的にも有利なので、別にプライベートへのアクセスがなくても、必ず指定するようにしておくと良いでしょう。</p>
+<p>キャッシュが型単位だったり、インターフェイス単位で使う、などの場合にDynamicMethodだとやりづらくはあるんですが、コンストラクタにデリゲートを渡して、各メソッドはそれを移譲して呼び出すだけの入れ物型を用意してあげれば、DynamicMethodでも型付きのものとほぼ同様のことが可能です。DynamicAssemblyでのコンストラクタでキャッシュ用のフィールドを初期化する、といったケース(Utf8Jsonではエンコード済みのプロパティ名とか)も、同じようにコンストラクタで渡してあげれば良いでしょう。</p>
+<p>例えばUtf8Jsonでは、基本はDynamicAssemblyで生成したシリアライザを使いますが、AllowPrivateオプションのシリアライザを使う場合は、DynamicMethod経由で生成し、以下の入れ物を通して型をキャッシュしています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">internal delegate void AnonymousJsonSerializeAction&lt;T&gt;(byte[][] stringByteKeysField, object[] customFormatters, ref JsonWriter writer, T value, IJsonFormatterResolver resolver);
+internal delegate T AnonymousJsonDeserializeFunc&lt;T&gt;(object[] customFormatters, ref JsonReader reader, IJsonFormatterResolver resolver);
+
+internal class DynamicMethodAnonymousFormatter&lt;T&gt; : IJsonFormatter&lt;T&gt;
+{
+    readonly byte[][] stringByteKeysField;
+    readonly object[] serializeCustomFormatters;
+    readonly object[] deserializeCustomFormatters;
+    readonly AnonymousJsonSerializeAction&lt;T&gt; serialize;
+    readonly AnonymousJsonDeserializeFunc&lt;T&gt; deserialize;
+
+    public DynamicMethodAnonymousFormatter(byte[][] stringByteKeysField, object[] serializeCustomFormatters, object[] deserializeCustomFormatters, AnonymousJsonSerializeAction&lt;T&gt; serialize, AnonymousJsonDeserializeFunc&lt;T&gt; deserialize)
+    {
+        this.stringByteKeysField = stringByteKeysField;
+        this.serializeCustomFormatters = serializeCustomFormatters;
+        this.deserializeCustomFormatters = deserializeCustomFormatters;
+        this.serialize = serialize;
+        this.deserialize = deserialize;
+    }
+
+    public void Serialize(ref JsonWriter writer, T value, IJsonFormatterResolver formatterResolver)
+    {
+        if (serialize == null) throw new InvalidOperationException(this.GetType().Name + &quot; does not support Serialize.&quot;);
+        serialize(stringByteKeysField, serializeCustomFormatters, ref writer, value, formatterResolver);
+    }
+
+    public T Deserialize(ref JsonReader reader, IJsonFormatterResolver formatterResolver)
+    {
+        if (deserialize == null) throw new InvalidOperationException(this.GetType().Name + &quot; does not support Deserialize.&quot;);
+        return deserialize(deserializeCustomFormatters, ref reader, formatterResolver);
+    }
+}
+</code></pre>
+<p>DynamicMethodの困った点は、Saveできないこと。dnSpyでのステップ実行もできません。これはデバッガビリティが恐ろしく落ちます。特に解決策という解決策もないんですが、しいていえばILGeneratorからの流れはDynamicAssemblyと変わらないので、Emit部分をメソッドで分けて、生成部分を共通化してやると良いでしょう。</p>
+<p>その際の注意点は、引数の順番がズレること。これは、ArgumentFieldという構造体を用意して、Ldargなどはそれ経由で呼ぶようにして解決しました。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">internal struct ArgumentField
+{
+    readonly int i;
+    readonly bool @ref;
+    readonly ILGenerator il;
+
+    public ArgumentField(ILGenerator il, int i, bool @ref = false)
+    {
+        this.il = il;
+        this.i = i;
+        this.@ref = @ref;
+    }
+
+    public ArgumentField(ILGenerator il, int i, Type type)
+    {
+        this.il = il;
+        this.i = i;
+        this.@ref = (type.IsClass || type.IsInterface || type.IsAbstract) ? false : true;
+    }
+
+    public void EmitLoad()
+    {
+        if (@ref)
+        {
+            il.EmitLdarga(i);
+        }
+        else
+        {
+            il.EmitLdarg(i);
+        }
+    }
+
+    public void EmitStore()
+    {
+        il.EmitStarg(i);
+    }
+}
+</code></pre>
+<p>もう一つは、インスタンスの呼び出し/インスタンスフィールドの呼び出しができないこと(DynamicMethodはインスタンスが存在しませんからね！)。そこでフィールドキャッシュのLoadなどは、Actionで外から渡すようにして、両者が共通でない部分は外出しするようにしました。正直言って、手間だし、ややグチャグチャしてしまうところもあるのですが、やる価値はあります。SaveなしでIL手書きと戦うのは本当にキツいので……。</p>
+<h2>ILGeneratorことはじめ</h2>
+<p>基本、今まで見た通りEmitするだけなんですが、まだループや分岐に関しては説明していないですね！で、ILにはそれらへの気の利いた文法はありません。全部labelとgotoで実現するものと思いましょう。そして、ループや分岐が絡むと途端にIL書く気が失せます。というのも、複雑怪奇になるので。例えばこんな単純なループですら……</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33529421-1309bdb4-d8b4-11e7-911d-661281cd975d.png" alt="image" /></p>
+<p>なんかもう嫌な感じでいっぱいです。ああ、ああ……。といっても書かなきゃいけない局面もいっぱいあるんで、書きましょう。</p>
+<p>まず、forはないものと思って、この手のイメージコードを作る場合は全部gotoに直します。それがILに近くなるので。近いほうがイメージもしやすい。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">	var i = 0;
+	goto FOR_CONDITION;
+
+FOR_BODY:
+	if (i == 50) goto FOR_END;
+FOR_CONTINUE: // 今回は使いませんが
+	i += 1;
+FOR_CONDITION:
+	if (i &lt; 100)
+	{
+		goto FOR_BODY;
+	}
+FOR_END:
+	Console.WriteLine(&quot;End&quot;);
+</code></pre>
+<p>なるほど古き良きgoto。既に帰りたい感じですが、更にこれをEmitに直します。まぁ基本はLINQPadのコピペなのですが、LabelのDefineが必要です！</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">const string ModuleName = &quot;FooBar&quot;;
+var assemblyBuilder = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName(ModuleName), AssemblyBuilderAccess.RunAndSave);
+var moduleBuilder = assemblyBuilder.DefineDynamicModule(ModuleName, ModuleName + &quot;.dll&quot;);
+var typeBuilder = moduleBuilder.DefineType(&quot;Foo&quot;, TypeAttributes.Public);
+
+var methodBuilder = typeBuilder.DefineMethod(&quot;For&quot;, MethodAttributes.Public, null, Type.EmptyTypes);
+
+// -- ここから --
+ILGenerator il = methodBuilder.GetILGenerator();
+
+// gotoの行き先をあらかじめDefineLabelで持つ
+var forBodyLabel = il.DefineLabel();
+var forContinueLabel = il.DefineLabel();
+var forConditionLabel = il.DefineLabel();
+var forEndLabel = il.DefineLabel();
+
+// ローカル変数を宣言する
+var iLocal = il.DeclareLocal(typeof(int));
+
+il.Emit(OpCodes.Ldc_I4_0);
+il.Emit(OpCodes.Stloc, iLocal); // i = 0;
+il.Emit(OpCodes.Br, forConditionLabel); // goto FOR_CONDITION;
+
+// MarkLabelでラベルの位置を確定させる
+il.MarkLabel(forBodyLabel); // FOR_BODY:
+il.Emit(OpCodes.Ldloc, iLocal);
+il.Emit(OpCodes.Ldc_I4, 50);
+il.Emit(OpCodes.Beq, forEndLabel); // if(i == 50) goto FOR_END;
+
+il.MarkLabel(forContinueLabel);
+il.Emit(OpCodes.Ldloc, iLocal);
+il.Emit(OpCodes.Ldc_I4_1);
+il.Emit(OpCodes.Add);
+il.Emit(OpCodes.Stloc, iLocal);  // i += 1;
+            
+il.MarkLabel(forConditionLabel); // FOR_CONDTION:
+il.Emit(OpCodes.Ldloc, iLocal);
+il.Emit(OpCodes.Ldc_I4, 100);
+il.Emit(OpCodes.Blt, forBodyLabel); // if(i &lt; 100) goto FOR_BODY;
+
+il.MarkLabel(forEndLabel); // FOR_END:
+il.EmitWriteLine(&quot;End&quot;); // Stfld, Call WriteLine
+
+il.Emit(OpCodes.Ret);
+// -- ここまで --
+
+var t = typeBuilder.CreateType();
+dynamic instance = Activator.CreateInstance(t);
+
+try
+{
+    instance.For(); // 実行確認
+}
+finally
+{
+    assemblyBuilder.Save(ModuleName + &quot;.dll&quot;);
+    Verify(assemblyBuilder);
+}
+</code></pre>
+<p>DefineLabelで予め宣言する、MarkLabelでラベル位置を決める、分岐系OpCodeでLabelを指定する。ということになります。まぁ、全部gotoなんだって思えば別になんてことない話ではあるんですが、だいぶ見辛くなりました。ただの、ほぼ空のfor文ですら！また、分岐はBeq_SなどがLINQPadなどの解析結果に出ると思うのですが、これはジャンプ先が近ければ_Sが使えて、遠ければ実行時エラーになります。埋め込み量がわかっている場合は_Sでいいんですが、動的生成の都合上、長さわからない場合っていうのも少なくなかったりするので、安全側に倒すなら、とりあえず_Sナシでやるってのは手だと思っています。ちょっとね、怖いんですよね。</p>
+<p>ちなみに私はこれを書き写すにあたって、二回ミスってPEVerifyのお世話になりました（笑）。ちょっと長くなったり分岐入ると、やっぱミスってしまうんですよねぇ。で、これ、PEVerifyなしで探れって言われると、たかだかfor文一つだけでしかなくても、めっちゃ辛いわけです。実際の生成コードだとこれの比じゃなく長くなりますから、いやはや、大変な話です……。</p>
+<h2>キャッシュの手法</h2>
+<p>生成したコードは再利用するためにどこかに保持する必要があります。ああ、Dictionaryの出番だね。その通りですが、その通りではありません。Dictionaryのルックアップコストはタダではない！GetHashCodeとEqualsを呼び出すわけですが、例えばStringがキーなら、GetHashCodeで一回全舐めして、Equalsでやはり全舐めするわけです。おお……（もちろん、文字列の長さが長ければ長いほどコストは嵩む）。とはいえ、通常はTypeをキーにすると思うので、ルックアップのコストはそこまで高くはないので、構わないっちゃあ構わないでしょう。</p>
+<p>が、もしTypeなら、ジェネリクスを有効に使うと、より高速なルックアップが可能です。MessagePack for C#やUtf8JsonではResolverという形で、生成した型をキャッシュ/取得する機構を全面採用しています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">internal sealed class DynamicObjectResolverAllowPrivateFalseExcludeNullFalseNameMutateOriginal : IJsonFormatterResolver
+{
+    public static readonly IJsonFormatterResolver Instance = new DynamicObjectResolverAllowPrivateFalseExcludeNullFalseNameMutateOriginal();
+    
+    static readonly Func&lt;string, string&gt; nameMutator = StringMutator.Original;
+    static readonly bool excludeNull = false;
+    const string ModuleName = &quot;Utf8Json.Resolvers.DynamicObjectResolverAllowPrivateFalseExcludeNullFalseNameMutateOriginal&quot;;
+
+    static readonly DynamicAssembly assembly;
+
+    static DynamicObjectResolverAllowPrivateFalseExcludeNullFalseNameMutateOriginal()
+    {
+        assembly = new DynamicAssembly(ModuleName);
+    }
+
+    DynamicObjectResolverAllowPrivateFalseExcludeNullFalseNameMutateOriginal()
+    {
+    }
+
+    // DynamicObjectResolverAllowPrivateFalseExcludeNullFalseNameMutateOriginal.Instance.GetFormatter&lt;T&gt;で取得する
+    public IJsonFormatter&lt;T&gt; GetFormatter&lt;T&gt;()
+    {
+        // 中身は型キャッシュのフィールドを取りに行くだけ
+        return FormatterCache&lt;T&gt;.formatter;
+    }
+
+    // 型キャッシュ
+    static class FormatterCache&lt;T&gt;
+    {
+        public static readonly IJsonFormatter&lt;T&gt; formatter;
+
+        // 静的コンストラクタはスレッドセーフが保証される
+        static FormatterCache()
+        {
+            // ここでILのEmitしてIJsonFormatter&lt;T&gt;を一度だけ生成している
+            formatter = (IJsonFormatter&lt;T&gt;)DynamicObjectTypeBuilder.BuildFormatterToAssembly&lt;T&gt;(assembly, Instance, nameMutator, excludeNull);
+        }
+    }
+}
+</code></pre>
+<p>難点はアンロードできないことと、動的に生成しづらい（できないわけではない, ただしそれで生成した型もアンロード不可能）になりますが、大抵この手のライブラリの生成データはアプリケーションの生存期間でずっと生き続けるので、あまり問題にはならないでしょう。</p>
+<h2>その他Tips</h2>
+<p>C#コンパイラがコード生成するもの(yield returnやawaitなど)をIL生成でやるのは、無理です。が、そういうのが必要なのだという場合は、ヘルパーメソッドを作ってあげて、それを呼ぶ形にしてあの手この手でIL手書き部分を減らしてあげましょう。</p>
+<p>unsafeをIL手書きで書くのは地獄の一里塚です。しかし、やらなければならない時はあります（実際MessagePack for C#やUtf8Jsonはunsafeが含まれてる）。そして、何気にfixedのコードもまた、コンパイラ生成だったりします。LINQPadで見てみましょう。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/33529917-75e4f6a0-d8ba-11e7-9160-2c24e985f78c.png" alt="image" /></p>
+<p>fixed(byte* p = xs) のコードは生成量が多くてうげー、って感じなので、基本 fixed(byte* p = &amp;xs[0]) のほうでいいでしょう(nullチェック？それは外側でしましょ)。若干ややこしいですが、こんな感じで。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// DeclareLocalの際にpinned: trueを指定する
+var p = il.DeclareLocal(typeof(byte).MakePointerType(), pinned: true); // byte*
+
+// begin fixed定型文
+il.Emit(OpCodes.Ldarg_1); // staticメソッドじゃないので1で。
+il.Emit(OpCodes.Ldc_I4_0);
+il.Emit(OpCodes.Ldelema, typeof(byte));
+il.Emit(OpCodes.Stloc, p); // byte* p = &amp;xs[0];
+
+// -- ここに好きにBodyをどうぞ--
+
+// end fixed定型文
+il.Emit(OpCodes.Ldc_I4_0);
+il.Emit(OpCodes.Conv_U);
+il.Emit(OpCodes.Stloc, p);
+
+il.Emit(OpCodes.Ret);
+</code></pre>
+<p>このfixed含みのコードをPEVerifyにかけると</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[IL]: エラー:[Foo::For][オフセット 0x00000007][address of Byte が見つかりました][unmanaged pointerS が必要です] スタックに予期しない型があります。
+[IL]: エラー:[Foo::For][オフセット 0x0000000A][Native Int が見つかりました][unmanaged pointerS が必要です] スタックに予期しない型があります。
+</code></pre>
+<p>という2つのエラーメッセージが必ず出てしまいますが、これはもうそういうものだと思うことにしましょう、しょうがない……。</p>
+<p>ニッチトピックスとしてはGeneric型の生成は、結構大変です。いや、大変でもないんですが、そのジェネリックとしてのTを使って、別の型で生成するのがむつかしいのです。IntelliSenseから出てこないし普通に書いてると辿りつけないんですが、TypeBuilder.GetMethod経由だとDefineGenericParametersとMakeGenericTypeからMethodInfoが取れる。って、何言ってるのか全く意味不明と思うんですが、いつか誰かがはまった時のヒントとして残しておきます。もしジェネリック型を生成して、なにかよくわからないけれど、どうにもならないことがあったら、思い出してください。はい。</p>
+<h2>まとめ</h2>
+<p>とにかくツールの使いこなしが全てです。徒手空拳でILGeneratorと戦うのは、そりゃあ大変な努力が必要ですが、きっちりとツールを使っていけば、超絶難易度の黒魔術、というほどではなく、まぁまぁ常識的な範囲に収まります。書くだけなら。読み解くのはやっぱ一苦労だし、人の書いたのを読めるかって言ったら、まぁ読めないんですが（自分の書いたのだって数日置いたら読めないぞ！）、その辺はアセンブラなんでしょうがないね。読みの難易度と書きの難易度は非対称だし、読みに比べると、書きのほうがずっと楽、ということです（なんせカンニングコピペというテクが使えますからね）。</p>
+<p>というわけで、あまり恐れずに、自分の中のツールセットとして持っておくと、なんらかのフレームワーク的なレイヤーを作る際にやれることが大きく広がるんじゃないかと思います。</p>
+<p>とはいえ、別に無闇に使うのはお薦めしません！必要ないところでは必要ないのままでいいし、場合によってはベタなリフレクションで構わない場合も多いでしょう。そこの辺の選択は冷静にやったほうがいいですね、麻疹にかかるのも大事ですが、IL書きは割と冗談じゃなく本人以外メンテ不能になるので。</p>
+<p>さて、そんなわけで明日のAdvent Calendardは既に書いていただいているのですが<a href="https://qiita.com/NumAniCloud/items/f2fc95fbe650bf9f8f80">@NumAniCloudさんのC#で実装！RPGのパッシブ効果の作り方を通じたオブジェクト指向のノウハウ</a>です。</p>
+</div>
+<h1 data-pagefind-sort="date:2017-09-29" data-pagefind-meta="published:2017-09-29"><a href="https://neue.cc/2017/09/29_559.html">Utf8Json - C#最速のJSONシリアライザ(for .NET Standard 2.0, Unity)</a></h1>
 <ul class="date"><li>2017-09-29</li></ul>
 <div class="entry_body"><p>Utf8Jsonという新しいC#用のJSONシリアライザを作りました。.NET Standard 2.0で作っているのでふつーの.NETでもXamarinでも概ね動くはずです（.NET 4.5版もあります）。また、Unity用にもちゃんと用意しています。Unityの場合はJsonUtilityと比較してどうよ、ってことなんですが、いいと思いますよ（あとで少しだけ説明します）</p>
 <ul>
@@ -2317,24 +3130,6 @@ DateTimeOffset.Now.ToString(&quot;o&quot;);
 <h2>まとめ</h2>
 <p>DateTimeOffsetも可愛い子ではある。時に使ってあげてください。というわけで、次のアドベントカレンダーは<a href="http://qiita.com/Marimoiro">@Marimoiro</a>さんです！</p>
 </div>
-<h1 data-pagefind-sort="date:2016-12-02" data-pagefind-meta="published:2016-12-02"><a href="https://neue.cc/2016/12/02_545.html">ZeroFormatterに見るC#で最速のシリアライザを作成する方法</a></h1>
-<ul class="date"><li>2016-12-02</li></ul>
-<div class="entry_body"><p>というタイトルで発表してきました。連続して<a href="https://github.com/neuecc/ZeroFormatter">ZeroFormatter</a>ネタなのですが、今回はC#実装のほうにフォーカスして紹介しています。</p>
-<iframe src="//www.slideshare.net/slideshow/embed_code/key/Fh2CqunIBPjdqg" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/zeroformatterc100" title="ZeroFormatterに見るC#で最速のシリアライザを作成する100億の方法" target="_blank">ZeroFormatterに見るC#で最速のシリアライザを作成する100億の方法</a> </strong> from <strong><a target="_blank" href="//www.slideshare.net/neuecc">Yoshifumi Kawai</a></strong> </div>
-<p>intをシリアライズするところにフォーカスして、何故、既存のシリアライザは遅くて、何故ZeroFormatterは速いのかというところを解説しました。読んでもらえれば、理屈でパフォーマンスについて納得してもらえるんじゃないかと思います。</p>
-<p>以下、会場であったFAQなどなぞ。</p>
-<h2>エンディアン違いは？</h2>
-<p>現在はリトルエンディアンしかサポートしてません。C#の動く環境ってほとんどリトルエンディアンなのでそこまで大きな問題ではないかな、と（Xboxはダメらしいですが）。対応しようと思えば当然できるんですが、Buffer.BlockCopyを多用しているので、そこの部分をバラさなきゃいけないので若干手間なのですよね（あと、性能面では低下します）。というわけで、要望があって困った、というレポートが来てから対応を考えます。一応、ビッグエンディアン下では例外を吐くようになっていて、そこの例外メッセージの中で、issueに自分の環境を書いていってください、みたいなメッセージを乗せています。</p>
-<h2>LINQ使っちゃダメなの？</h2>
-<p>んなこたぁないです。場所によりけりで、ZeroFormatter内部でも、コード動的生成する部分の型情報を舐めてどうこうするところでは使っています。それは「アプリケーションの寿命の中で最初の一回だけだから」「動的に作ったILをコンパイルする時間のほうが比較にならないぐらいに長いので、その程度を節約するのは無意味」だからです。</p>
-<p>基本的には使おうよ、ってのは変わりはしないのですけれど、とはいえ、今まで良いとされてきた領域が、必ずしもそうなの？実はそうじゃないんじゃないの？というのを頭に入れて、都度都度考える必要は出てきているんじゃないかな、と思ってます。以前よりも。ゲームなんかでは今も昔も当然そうなのですけれど、ふつーのアプリケーションでも、今まで、単体のコンピューターで動くものは、まぁ限界もあるし、コンピューターの性能は上昇し続けるで、気にする必要はそんななかった。サーバーアプリケーションも。でも、今、サーバーアプリケーションって数十台、数百台のクラスタで動かすことも少なくなくて、それらの場合って少し性能を上げるだけで、数百台の見返りがあるんですよね。塵も積もれば山となる、今まではチリはつもらなかったけれど、今はつもりやすい環境になってきた。ってことを考えると、まぁ、特にライブラリや基盤部分のフレームワークなんかはどこでどう使われるか分からないので、気合入れてこう！っと。</p>
-<h2>2番じゃダメなんですか</h2>
-<p>まぁ、ダメですね！</p>
-<p>せっかくライブラリ公開するなら多くの人に使ってもらいたいんですよね。これは、単純に使ってもらって嬉しいっていうのと、多くの人に使われることによって、バグが減る、機能のためのアイディアがもらえる、コントリビュートしてもらえてより強力なライブラリになれる、などなどもあります。そういうのって、会社にとってもメリットなんですよね。大きめの規模だったり独自性の高いライブラリは、社内だけで抱えたくないんです。まず、未来がない。未来がないものなんて使いたくない。というわけで、出来る限り、最初から公開を意識して作って、実際公開するわけですが、別に公開したからって未来があるわけでもない。多くの人に使われて、ある程度メジャー感が出て、はじめて未来が生まれる。なので、やるからには精一杯頑張ろうって感じですね。少なくとも何らかのインパクトは残したいと思ってやってます、いつも。</p>
-<p>んで、2番ってヒキが全くないわけですよ。1番と2番があったら、そりゃ1番選ぶでしょ。 <a href="https://en.wiktionary.org/wiki/first_loser">&quot;Second Place is the First Loser&quot;</a>なわけです（ちょうど勉強会の時に聞いたので早速使ってみた）。というわけで、ヒキのある要素は色々必要で、一点目が「無限大に高速」で、これは勿論、非常に差別化要素になりうる目玉機能です。でも、それだけだとキワモノ臭さが抜けない。やっぱパフォーマンスが最大の機能なんですよね、この手のものは。だから、最速。最初はそれを目指してたわけじゃなかったんですが、スライド中に書いたように、初期設計段階でStreamを排除していたりステートを抜いてたりしたのが功を奏して、ある程度出来た段階で、最速が現実的に狙えると分かったので、そっから先はギアを切り替えてガチガチに書きました。そのせいで完成が若干遅れはしたんですが、結果としては非常に良かったと思ってます。</p>
-<h2>名前の由来</h2>
-<p>ゼロ速度のシリアライザということで。ZeroSerializerよりZeroFormatterのほうが格好良いと思います、語感が。</p>
-</div>
 <a href="https://neue.cc/5">Prev |</a>
 <a href="https://neue.cc/7">| Next</a>
 </div>
@@ -2346,10 +3141,10 @@ DateTimeOffset.Now.ToString(&quot;o&quot;);
 <a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
 CEO/CTO<br />
 <br />
-Microsoft MVP for Developer Technologies(C#)<br />
+Microsoft MVP for Developer Technologies(.NET)<br />
 April 2011<br />
 |<br />
-July 2024<br />
+July 2025<br />
 <br />
 Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
 GitHub:<a href="https://github.com/neuecc/">neuecc</a>
@@ -2358,6 +3153,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/07/">2024-07</a>
 <li><a href="https://neue.cc/2024/06/">2024-06</a>
 <li><a href="https://neue.cc/2024/05/">2024-05</a>
 <li><a href="https://neue.cc/2024/03/">2024-03</a>

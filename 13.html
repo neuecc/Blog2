@@ -74,7 +74,117 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2013-02-02" data-pagefind-meta="published:2013-02-02"><a href="https://neue.cc/2013/02/02_395.html">Razorで空テンプレートとセパレータテンプレート</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2013-02-08" data-pagefind-meta="published:2013-02-08"><a href="https://neue.cc/2013/02/08_396.html">連打対策などりの同時アクセス禁止機構</a></h1>
+<ul class="date"><li>2013-02-08</li></ul>
+<div class="entry_body"><p>ゆるふわ連打対策のお時間です。連打されて無限にあーーーーーーー！という悲鳴を上げたり上げなかったりするとかしないとしても、何らかの対策したいよね！ということで、ASP.NETのお話。Application.Lock使ってSessionに、というのは複数台数あったら死ぬのでナシね(Application.Lockは当然、一台単位でのロックなので複数台数でロックは共有されてない)。そんなわけで、カジュアルな一手を打ちます。先に利用例から。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">static void StandardUsage(string token)
+{
+    // 複数サーバーで共有されるロックもどきの取得
+    using (var rock = DistributedLock.Acquire(&quot;StandardUsage-Lock-Token-&quot; + token))
+    {
+        rock.ThrowIfLockAlreadyExists(); // 二重に取得された場合は即座に例外！
+
+        // 以下、本体を書けばいい
+    }
+}
+</code></pre>
+<p>こんなふーに書けると、楽ですね。tokenは、まあ好きな単位で。ユーザー一人の単位だったら、認証済みなら何らかのIDを。非認証状態なら、POSTのHiddenにGUIDでも仕込んでおけばいい、と。ただの連打対策ってわけじゃなく、複数ユーザー間で同時処理されるのを抑えたければ、何らかのキーを、例えばソーシャルゲームだとチーム単位で、チームIDでかけたりとかします。</p>
+<p>ロックもどきには↑の例ではMemcachedを使いました。単純に、Memcachedに指定キーでAddしにいく→Keyが既に存在していると上書きしないで追加に失敗→二重実行時は必ず失敗したという結果を受け取れる(bool:falseで)→Disposeで追加出来たときのみキーを必ず削除する（＆保険でexpireもつけておく)</p>
+<p>usingの部分は割と定型なので、毎回コントローラーを丸ごと囲むとかなら、属性作って、属性ペタッと貼るだけでOKみたいな形にするといいと思われます！</p>
+<p>ド単純ですが、普通に機能して、結構幸せになれるかな？Memcachedならカジュアルに叩いても、相当耐えきれますから。あ、勿論、固定の台にリクエストが飛ぶの前提なのでノードがぐいぐい動的に追加削除されまくるよーな状況ではダメですよ、はい。あんまないでしょうが（Memcachedはクライアントサイドの分散で、複数台あってもキーが同一の場合は基本的に同じ台に飛ぶ）。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class DistributedLockAlreadyExistsException : Exception
+{
+    public DistributedLockAlreadyExistsException(string key)
+        : base(&quot;LockKey:&quot; + key)
+    { }
+}
+
+public class DistributedLock : IDisposable
+{
+    static MemcachedClient client = new MemcachedClient();
+    static readonly TimeSpan DefaultExpire = TimeSpan.FromSeconds(5);
+
+    public bool IsAcquiredLock { get; private set; }
+    string key;
+    bool disposed;
+
+    private DistributedLock(string key, TimeSpan expire)
+    {
+        this.key = key;
+        this.IsAcquiredLock = client.Store(StoreMode.Add, key, DateTime.Now.Ticks, expire);
+    }
+
+    public static DistributedLock Acquire(string key)
+    {
+        return Acquire(key, DefaultExpire);
+    }
+
+    public static DistributedLock Acquire(string key, TimeSpan expire)
+    {
+        return new DistributedLock(key, expire);
+    }
+
+    public async Task&lt;bool&gt; WaitAndRetry(int retryCount, TimeSpan waitTime)
+    {
+        var count = 0;
+        while (count++ &lt; retryCount &amp;&amp; !IsAcquiredLock)
+        {
+            await Task.Delay(waitTime);
+            IsAcquiredLock = client.Store(StoreMode.Add, key, DateTime.Now.Ticks, DefaultExpire);
+        }
+        return IsAcquiredLock;
+    }
+
+    public void ThrowIfLockAlreadyExists()
+    {
+        if (!IsAcquiredLock)
+        {
+            throw new DistributedLockAlreadyExistsException(key);
+        }
+    }
+
+    public void Dispose()
+    {
+        if (!disposed &amp;&amp; IsAcquiredLock)
+        {
+            disposed = true;
+            var removeSuccess = client.Remove(key);
+        }
+        GC.SuppressFinalize(this);
+    }
+
+    ~DistributedLock()
+    {
+        Dispose();
+    }
+}
+</code></pre>
+<p>Memcachedのライブラリは<a href="https://github.com/enyim/EnyimMemcached">EnyimMemcached</a>です。</p>
+<h2>Asyncとリトライ</h2>
+<p>取得に失敗したら、間隔おいてリトライぐらいはしたいですよね、いや、連打対策なら不要ですが、そうでないように使う場合は。でも、ベタにThread.Sleepでまったりしたくないよねえ、という、そこでasyncですよ！async！</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">async static Task TaskUsage(string token)
+{
+    using (var rock = DistributedLock.Acquire(&quot;TaskUsage-Lock-Token-&quot; + token))
+    {
+        if (!rock.IsAcquiredLock)
+        {
+            // 200ミリ秒感覚で3回取得に挑戦する
+            await rock.WaitAndRetry(3, TimeSpan.FromMilliseconds(200));
+            rock.ThrowIfLockAlreadyExists(); // それでもダメなら例外投げるん
+        }
+
+        // 以下、本体を書けばいい！
+    }
+}
+</code></pre>
+<p>WaitAndRetryメソッドではawait Task.Delay(waitTime)によって待機させています。少し前だとまんどくせ、と思って書く気のしない処理も、C# 5.0のお陰でカジュアルに書けるようになっていいですね。</p>
+<h2>Memcachedを立てないサーバー一台の場合</h2>
+<p>サーバー一台の場合は、わざわざMemcached立てるのも馬鹿らしいので、インメモリなキャッシュを代替として使えばいいと思われます。HttpRuntime.Cacheでも、System.Runtime.Caching.MemoryCacheでも、なんでもを、client.Storeのとこに差し替えてもらえれば。ただ、MemoryCacheは何かちょっと今回試すためにもぞもぞ弄ってたんですが、Addまわりの挙動がすんごく怪しくて信用ならない気がするので私は使うのパス。大丈夫なのかなあ。</p>
+<h2>まとめ</h2>
+<p>うーん、まんま、かつ、ゆるふわ単純な話なので特にまとめる話はないかしらん。</p>
+<p>ので、We're Hiringということで<a href="http://grani.jp/">謎社のほめぱげが少しだけリニューアル</a>、ただしリクルートページが諸事情でまだ工事中！メールフォーム入れるつもりなので、↑のような感じにC# 5.0をすぐに振り回すような最先端な環境のC#でウェブな開発がやりたい方は、是非応募してください。相当本気で人が欲しいところですねー。現状ですけれど、<a href="http://gamebiz.jp/?p=93013">リリース2週間で早くもランキング3位を獲得</a>などと、あまり細かくは言えないのですけれど、まあ非常に好調ですので、安心して＆是非とも一緒に加速させましょう。</p>
+</div>
+<h1 data-pagefind-sort="date:2013-02-02" data-pagefind-meta="published:2013-02-02"><a href="https://neue.cc/2013/02/02_395.html">Razorで空テンプレートとセパレータテンプレート</a></h1>
 <ul class="date"><li>2013-02-02</li></ul>
 <div class="entry_body"><p>Razorに限らずT4でもなんでもいいんですが、テンプレートで素のforeachだと、セパレータだったり空の時の代替テンプレートだったりを、どういう風に表現すればいいのかなあ、と悩ましいのです、どうなっているのでしょう実際世の中的に。</p>
 <p>WebFormsのRepeaterだとSeparatorTemplateタグと、拡張すればEmptyTemplateなども作れますね。Smarty(PHPのテンプレート、最近ペチパーなので)には{foreachelse}で配列が空の時のテンプレートが吐かれます。カスタムの構文を定義すれば、勿論なんだってありです。</p>
@@ -1752,69 +1862,6 @@ declare var Enumerable; // linq.js
 <p>言語設計者が同じということもありますが、特にC#erには絶対馴染むと思うので、(linq.jsとセットで)今までJavaScriptとは無縁だった人も手を出して欲しいですね。きっと気に入りますし、視点が変わります。勿論、ネイティブJSerも是非是非触ってみるといいと思います！というか触ってほしいです。</p>
 <p>あ、あと、軽く流しましたがVisual StudioユーザーならWeb Essentialsも必ず入れておきましょう。これがあるのとないのとでは、TypeScriptの使い勝手全然違ってくるので、TypeScript試すならば必須です。</p>
 </div>
-<h1 data-pagefind-sort="date:2012-09-16" data-pagefind-meta="published:2012-09-16"><a href="https://neue.cc/2012/09/16_381.html">linq.js ver.3.0.2-RC, WinRT対応、最新RxJS対応など</a></h1>
-<ul class="date"><li>2012-09-16</li></ul>
-<div class="entry_body"><p>RCリリースしました！これでAPI弄りは終了で、あとはドキュメント周りの調整のみといったところです。</p>
-<ul>
-<li><a href="http://linqjs.codeplex.com/">linq.js - LINQ for JavaScript</a></li>
-</ul>
-<p>ダウンロードはダウンロードボタンからではなく、ダウンロードタブからlinq.js ver.3.0.2-RCを選択してください。というか<a href="http://linqjs.codeplex.com/releases/view/91395">ここからダイレクトに飛んでください</a>。</p>
-<p>Beta2から結構立ちましたが、その間に、ノートPCがぶっ壊れたり（今もサポートで修理中、ちょうどうっかり未Pushなコミットが溜まってた状態で逝ってしまったのが痛手でどぅーにもこーにも）、そもそも日本にいなかったり（シンガポールにいましたというか、今は日本にいますが、これからは基本的にシンガポール中心になる感）とか、まぁ色々で色々で捗らずで。</p>
-<p>さて、その間でもないですが、プログラミング生放送で8/25にセッションを持ちまして、そこでlinq.js ver.3の紹介をしましたので、スライド・録画ともどもにどうぞ。</p>
-<iframe src="https://www.slideshare.net/slideshow/embed_code/14066937" width="597" height="486" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC;border-width:1px 1px 0;margin-bottom:5px" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="http://www.slideshare.net/neuecc/linqjs-ver3-and-visual-studio-2012-in-javascript" title="linq.js ver.3 and JavaScript in Visual Studio 2012" target="_blank">linq.js ver.3 and JavaScript in Visual Studio 2012</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">neuecc</a></strong> </div>
-<iframe width="312" height="176" src="http://ext.nicovideo.jp/thumb/sm18738964" scrolling="no" style="border:solid 1px #CCC;" frameborder="0"><a href="http://www.nicovideo.jp/watch/sm18738964">【ニコニコ動画】linq.js ver.3 (Part 1/2) - プロ生勉強会第17回＠品川 #pronama</a></iframe>
-<iframe width="312" height="176" src="http://ext.nicovideo.jp/thumb/sm18739125" scrolling="no" style="border:solid 1px #CCC;" frameborder="0"><a href="http://www.nicovideo.jp/watch/sm18739125">【ニコニコ動画】linq.js ver.3 (Part 2/2) - プロ生勉強会第17回＠品川 #pronama</a></iframe>
-<p>Visual Studio 2012はJavaScript関係がハイパー強化されているのですけれど、そのビッグウェーブにフルに乗っかって強力なんだぞ！みたいな。そういったVS2012のパワーとかの部分は、デモの比率が高いので、時間に余裕があれば、是非とも録画を見ていただけると嬉しいです。</p>
-<p>あと、こそっとLINQ to XMLのアナウンスを、こそっと、ね。ふふり。</p>
-<p>あ、そうだ、スライドに関しては一点、嘘があります。VS2012にはjQueryのIntelliSenseドキュメントの日本語版は入っていません。英語のみです。本当にごめんなさい、これ、確認していなくて、VS2010では日本語訳されたのが入ってたからそうなんだろうなあ、とか思ってたのですが、そんなことはなかったです。予算的な都合なのでしょうか……？ともあれ、申し訳ありませんでした。</p>
-<h2>更新事項</h2>
-<p>今回も破壊的変更が入っていて、firstOrDefault, lastOrDefault, singleOrDefaultの引数が変わりました。</p>
-<pre data-pagefind-ignore="all"><code class="language-javascript">// 以前
-.firstOrDefault(defaultValue, [predicate]);
-
-// これから
-.firstOrDefault([predicate], [defaultValue]);
-</code></pre>
-<p>です。ようするに引数が逆になりました。predicateが先にあるのがC#のLINQと同じ並び順なわけで、ここだけ、何故かlinq.jsはC#に従ってなかったのですね。理由としてはJavaScriptにはdefault(T)は存在しないのでdefaultValueの指定を強制するために、第一引数に持ってきてやらなければならない。と、当時、3年前は思ってたらしーんですが、別に普通にないならないでnullでいいだろ馬鹿が、むしろ引数がこれだけ違うとか紛らわしいだろクソが。ということにやっと至りまして、変えられるのは今しかない！ということで変えました。</p>
-<h2>コードスニペット</h2>
-<p>そういえば3.0.1-Beta2のリリース時にはブログ書いてませんでしたが、そこでコードスニペットを改良したのを入れました。linq.js ver.2に同梱してたものよりずっと良くなってるのでリプレースするといいです。非常に捗ります。というか、もうこれなしで書く気しないぐらいに。</p>
-<h2>RxJS</h2>
-<p><a href="https://github.com/Reactive-Extensions/RxJS">Reactive Extensions for JavaScript(RxJS)</a>がオープンソースになりました、完全にソースコード公開です、ぱちぱちぱち。今までは<a href="http://scriptsharp.com/">ScriptSharp</a>で変換してたような気配だったのですが、完全手書きに移行したようです。</p>
-<p>それに伴ってlinq.jsのRxJS連携も、若干手を加えました。ところで、今のところNuGetにあがっているものは、GitHubの最新に追随してません。古いままです。なので、NuGet版だとlinq.jsのRxJS連携は動かなかったりします(ビミョーに中身変わってるんですよ、いやはや……)</p>
-<p>今のところ新RxJSに関してはリリースとかも打たれていないので、ステータスがどうなっているのか、よくわかりません。まあ、近日中に、かなあ？どうなのでしょうね。とりあえず、動向には注目、ということで。</p>
-<h2>WinMD</h2>
-<p>Windows 8のアプリケーション(Metroとは言えなくなりました！)はJavaScriptでも開発できるわけでして＆C++やC#で作成されたライブラリも条件付きというか専用のコンポーネントとして作れば、JavaScriptでも読み込むことができます。
-コレクション周り、IList&lt;T&gt;はJavaScriptでは配列として扱えます。なので、これは何もなく普通に列挙できるし、今までのlinq.jsでも扱うことができました。しかし、IEnumerable&lt;T&gt;はIIterable&lt;T&gt;というものに化け、これは独特の列挙の仕方を要求するため、フツーには扱いづらく、また、今までのlinq.jsでも使えませんでした。</p>
-<p>が、ver.3.0.2-RCからは、IIterable&lt;T&gt;対応を入れたので、列挙可能です！</p>
-<pre data-pagefind-ignore="all"><code class="language-javascript">// IIterable&lt;T&gt;を列挙できるのはlinq.jsだけ！
-var iterable = ToaruLib.GetIterable();
-Enumerable.from(iterable).forEach();
-</code></pre>
-<p>WSH(JScript)対応といい、Windows固有のニッチ需要に100%応えるのはlinq.jsだけ。いやほんと。</p>
-<h2>文字列ラムダと無名関数</h2>
-<p>これは今までもの話なのですが、文字列ラムダに抵抗あるー、というのは分かります。しかし、無名関数を渡すこともできますぜ、というのは、分かって欲しいというか、利用シーンとしては半々なイメージなんですよね。例えばですが二つのJSONをJoinするのに</p>
-<pre data-pagefind-ignore="all"><code class="language-javascript">var jsArrayA = [{ &quot;projectid&quot;: 122, &quot;projecttype&quot;: &quot;radio&quot; },{ &quot;projectid&quot;: 133, &quot;projecttype&quot;: &quot;tv&quot; }];
-
-var jsArrayB = [ { &quot;actionid&quot;: 1, &quot;name&quot;: &quot;kuow&quot;, &quot;pid&quot;: 122 }, { &quot;actionid&quot;: 2, &quot;name&quot;: &quot;kplu&quot;, &quot;pid&quot;: 122 }, { &quot;actionid&quot;: 3, &quot;name&quot;: &quot;abc&quot;, &quot;pid&quot;: 133 }, { &quot;actionid&quot;: 4, &quot;name&quot;: &quot;espn&quot;, &quot;pid&quot;: 133 } ];
-
-var queryResult = Enumerable.from(jsArrayA)
-    .join(jsArrayB, &quot;$.projectid&quot;, &quot;$.pid&quot;, function (a, b) {
-        return {
-            projectid: a.projectid,
-            projecttype: a.projecttype,
-            actionid: b.actionid,
-            name: b.name,
-            pid: b.pid
-        }
-    })
-    .toArray();
-</code></pre>
-<p>これ、全部、無名関数で書くことも可能です。&quot;$.projectid&quot;をfunction(x){ return x.projectid} と書けばいいので。&quot;$.pid&quot;の部分もそうです。でも、それってすごくだるいですよね。</p>
-<p>LINQはプロパティ名を指定するだけの無名関数を要求するシーンが多いです。どうせ、JavaScriptは動的言語、コンパイルチェックも働かないのですから、文字列で指定しても一緒でしょう。また、これは、jQueryのセレクターと同じようなものです。そう考えれば、文字列指定にもさして抵抗感はないのではないでしょうか？短くサラッと文字列でプロパティ名を指定したほうが、書きやすいし可読性も高いです。</p>
-<p>同様に、最後のJOIN結果を新しいオブジェクトに変換しているところは、文字列ラムダで書くことも可能です。&quot;{projectid:$.projectid, projecttype:$.projecttype,....}&quot;といったように。でも、それって今度は逆にとても見づらくて可読性落ちますよね。長いコード、入り組んだコードになるようならば、素直に無名関数を使ってもらうのがいいな、と思っています。</p>
-<h2>次回</h2>
-<p>次は正式リリースです！いつになるかは、いつになるかしらん！8月末が正式リリースのつもりだったのに、一か月遅れでRCリリースですからねえ、んもぅー。ともあれ、間違いなく良い出来になっているので、楽しみにしてください。で、もうその前にRCじゃんじゃん使ってくだしあ。</p>
-</div>
 <a href="https://neue.cc/12">Prev |</a>
 <a href="https://neue.cc/14">| Next</a>
 </div>
@@ -1826,10 +1873,10 @@ var queryResult = Enumerable.from(jsArrayA)
 <a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
 CEO/CTO<br />
 <br />
-Microsoft MVP for Developer Technologies(C#)<br />
+Microsoft MVP for Developer Technologies(.NET)<br />
 April 2011<br />
 |<br />
-July 2024<br />
+July 2025<br />
 <br />
 Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
 GitHub:<a href="https://github.com/neuecc/">neuecc</a>
@@ -1838,6 +1885,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/07/">2024-07</a>
 <li><a href="https://neue.cc/2024/06/">2024-06</a>
 <li><a href="https://neue.cc/2024/05/">2024-05</a>
 <li><a href="https://neue.cc/2024/03/">2024-03</a>

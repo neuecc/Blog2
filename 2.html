@@ -74,7 +74,125 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2023-03-09" data-pagefind-meta="published:2023-03-09"><a href="https://neue.cc/2023/03/09-csbindgen.html">csbindgen - C#のためのネイティブコード呼び出し自動生成、或いはC#からのネイティブコード呼び出しの現代的手法について</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2023-07-04" data-pagefind-meta="published:2023-07-04"><a href="https://neue.cc/2023/07/04_MagicPhysX.html">MagicPhysX - .NET用のクロスプラットフォーム物理エンジン</a></h1>
+<ul class="date"><li>2023-07-04</li></ul>
+<div class="entry_body"><p>MagicPhysXというライブラリを新しく公開しました！.NETで物理エンジンを動かすというもので、その名の通り、<a href="https://github.com/NVIDIA-Omniverse/PhysX">NVIDIA PhysX
+</a>のC#バインディングとなっています。</p>
+<ul>
+<li><a href="https://github.com/Cysharp/MagicPhysX">Cysharp/MagicPhysX</a></li>
+</ul>
+<p>使い道としては</p>
+<ul>
+<li>GUIアプリケーションの3D部分</li>
+<li>自作ゲームエンジンへの物理エンジン組み込み</li>
+<li>ディープラーニングのためのシミュレーション</li>
+<li>リアルタイム通信におけるサーバーサイド物理</li>
+</ul>
+<p>といったことが考えられます。</p>
+<p>.NET用のPhysXバインディングは他にも存在しますが、C++/CLIでバインディングを生成している都合上Windowsでしか動かせなかったり、バージョンが最新ではない4.xベースだったりしますが、MagicPhysXは最新のPhysX 5ベースで、かつ、Windows, MacOS, Linuxの全てで動きます！(win-x64, osx-x64, osx-arm64, linux-x64, linux-arm64)。これはバインディングの作り方としてクロスプラットフォームコンパイルに強いRustと、<a href="https://github.com/Cysharp/csbindgen">Cysharp/csbindgen</a>によってC#のバインディングの自動生成をしているからです。</p>
+<p>先にアーキテクチャの話をしましょう。MagicPhysXは<a href="https://www.embark-studios.com/">EmbarkStudios</a>による<a href="https://github.com/EmbarkStudios/physx-rs">physx-rs</a>をビルド元に使っています。</p>
+<blockquote>
+<p>EmbarkStudiosはEA DICEで<a href="https://www.ea.com/frostbite">Frostbite</a>ゲームエンジン(Battlefield)を作っていた人たちが独立して立ち上げたスタジオで、Rustによるゲームエンジンを作成中です。また、その過程で生まれたRustのライブラリをOSSとして積極的に公開しています。一覧は<a href="https://embark.dev/">Embark Studios Open Source</a>にあります。必見！</p>
+</blockquote>
+<p>PhysXのライブラリはC++で出来ていて、他の言語で使うことは考慮されていません。そのために他の言語に持ち込むためには、C++上で別言語で使うためのブリッジ部分を作った上で、バインディングを用意するという二度手間が必要になってきます。それはRustであっても例外ではありません。また、二度手間というだけではなく、PhysXのソースコードはかなり大きいため、その作業量も膨大です。</p>
+<p>以前に<a href="https://neue.cc/2023/03/09-csbindgen.html">csbindgen - C#のためのネイティブコード呼び出し自動生成、或いはC#からのネイティブコード呼び出しの現代的手法について</a>で紹介しましたが、<a href="https://www.swig.org/">SWIG</a>などのC++からの自動生成、Rustであれば<a href="https://cxx.rs/">cxx</a>、<a href="https://github.com/google/autocxx">autocxx</a>のような自動化プロジェクトも存在しますが、C++そのものの複雑さからいっても、求めるものを全自動で出力するのは難しかったりします。</p>
+<p>physx-rsでは<a href="https://www.youtube.com/watch?v=RxtXGeDHu0w">An unholy fusion of Rust and C++ in physx-rs (Stockholm Rust Meetup, October 2019)</a>というセッションでPhysXをRustに持ち込むための手段の候補、実際に採用した手段についての解説があります。最終的に採用された手段について端的に言うと、PhysXに特化してコード解析してC APIを生成する独自ジェネレーターを用意した、といったところでしょうか。そしてつまり、physx-rsには他言語でもバインディング手段として使えるPhysXのC APIを作ってくれたということにもなります！</p>
+<p>更にcsbindgenには、rsファイル内のextern &quot;C&quot;の関数からC#を自動生成する機能が備わっているので、Rustを経由することでC++のPhysXをC#に持ち込めるというビルドパイプラインとなりました。</p>
+<p>そういう成り立ちであるため、MagicPhysXのAPIはPhysXのAPIそのものになっています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">using MagicPhysX; // for enable Extension Methods.
+using static MagicPhysX.NativeMethods; // recommend to use C API.
+
+// create foundation(allocator, logging, etc...)
+var foundation = physx_create_foundation();
+
+// create physics system
+var physics = physx_create_physics(foundation);
+
+// create physics scene settings
+var sceneDesc = PxSceneDesc_new(PxPhysics_getTolerancesScale(physics));
+
+// you can create PhysX primitive(PxVec3, etc...) by C# struct
+sceneDesc.gravity = new PxVec3 { x = 0.0f, y = -9.81f, z = 0.0f };
+
+var dispatcher = phys_PxDefaultCpuDispatcherCreate(1, null, PxDefaultCpuDispatcherWaitForWorkMode.WaitForWork, 0);
+sceneDesc.cpuDispatcher = (PxCpuDispatcher*)dispatcher;
+sceneDesc.filterShader = get_default_simulation_filter_shader();
+
+// create physics scene
+var scene = physics-&gt;CreateSceneMut(&amp;sceneDesc);
+
+var material = physics-&gt;CreateMaterialMut(0.5f, 0.5f, 0.6f);
+
+// create plane and add to scene
+var plane = PxPlane_new_1(0.0f, 1.0f, 0.0f, 0.0f);
+var groundPlane = physics-&gt;PhysPxCreatePlane(&amp;plane, material);
+scene-&gt;AddActorMut((PxActor*)groundPlane, null);
+
+// create sphere and add to scene
+var sphereGeo = PxSphereGeometry_new(10.0f);
+var vec3 = new PxVec3 { x = 0.0f, y = 40.0f, z = 100.0f };
+var transform = PxTransform_new_1(&amp;vec3);
+var identity = PxTransform_new_2(PxIDENTITY.PxIdentity);
+var sphere = physics-&gt;PhysPxCreateDynamic(&amp;transform, (PxGeometry*)&amp;sphereGeo, material, 10.0f, &amp;identity);
+PxRigidBody_setAngularDamping_mut((PxRigidBody*)sphere, 0.5f);
+scene-&gt;AddActorMut((PxActor*)sphere, null);
+
+// simulate scene
+for (int i = 0; i &lt; 200; i++)
+{
+    // 30fps update
+    scene-&gt;SimulateMut(1.0f / 30.0f, null, null, 0, true);
+    uint error = 0;
+    scene-&gt;FetchResultsMut(true, &amp;error);
+
+    // output to console(frame-count: position-y)
+    var pose = PxRigidActor_getGlobalPose((PxRigidActor*)sphere);
+    Console.WriteLine($&quot;{i:000}: {pose.p.y}&quot;);
+}
+
+// release resources
+PxScene_release_mut(scene);
+PxDefaultCpuDispatcher_release_mut(dispatcher);
+PxPhysics_release_mut(physics);
+</code></pre>
+<p>つまり、そのままでは決して扱いやすくはないです。部分的に動かすだけではなく、本格的にアプリケーションを作るなら、ある程度C#に沿った高レベルなフレームワークを用意する必要があるでしょう。MagicPhysX内ではそうしたサンプルを用意しています。それによって上のコードはこのぐらいシンプルになります。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">using MagicPhysX.Toolkit;
+using System.Numerics;
+
+unsafe
+{
+    using var physics = new PhysicsSystem(enablePvd: false);
+    using var scene = physics.CreateScene();
+
+    var material = physics.CreateMaterial(0.5f, 0.5f, 0.6f);
+
+    var plane = scene.AddStaticPlane(0.0f, 1.0f, 0.0f, 0.0f, new Vector3(0, 0, 0), Quaternion.Identity, material);
+    var sphere = scene.AddDynamicSphere(1.0f, new Vector3(0.0f, 10.0f, 0.0f), Quaternion.Identity, 10.0f, material);
+
+    for (var i = 0; i &lt; 200; i++)
+    {
+        scene.Update(1.0f / 30.0f);
+
+        var position = sphere.transform.position;
+        Console.WriteLine($&quot;{i:D2} : x={position.X:F6}, y={position.Y:F6}, z={position.Z:F6}&quot;);
+    }
+}
+</code></pre>
+<p>ただしあくまでサンプルなので、参考にしてもらいつつも、必要な部分は自分で作ってもらう必要があります。</p>
+<p>Unityのようなエディターがないと可視化されてなくて物理エンジンが正しい挙動になっているのか確認できない、ということがありますが、PhysXにはPhysX Visual Debuggerというツールが用意されていて、MagicPhysXでも設定することでこれと連動させることが可能です。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/250030945-2018e821-41c4-44a2-aac6-f0705993ab9b.png" alt="" /></p>
+<h2>Dedicated Server</h2>
+<p>Cysharpでは<a href="https://github.com/Cysharp/MagicOnion">MagicOnion</a>や<a href="https://github.com/Cysharp/LogicLooper">LogicLooper</a>といったサーバーサイドでゲームのロジックを動かすためのライブラリを開発しています。その路線から行って物理エンジンが必要なゲームでさえも通常の .NET サーバーで動かしたいという欲求が出てくるのは至極当然でしょう……（？）</p>
+<p>UEやUnityのDedicated Serverの構成だとヘッドレスなUE/Unityアプリケーションをサーバー用ビルドしてホスティングすることになりますが、サーバー用のフレームワークではないので、あまり作りやすいとは言えないんですよね。通常用サーバー向けのライブラリとの互換性、ライフサイクルの違い、ランタイムとしてのパフォーマンスの低さ、などなど。</p>
+<p>というわけで、MagicOnionのようなサーバー向けフレームワークを使ったほうがいいのですが、物理エンジンだけはどうにもならない。今までは……？</p>
+<p>と、言いたいのですが、まずちゃんとしっかり言っておきたいのですが、現実的には少々（かなり）難しいでしょう！コライダーどう持ってくるの？とかAPIが違う（Unityの物理エンジンはPhysXですが、API的に1:1の写しではないので細かいところに差異がある）のでそもそも挙動を合わせられないし、でもこういう構成ならサーバーだけじゃなくクライアントでも動かしたい、そもそもそうじゃないとデバッガビリティが違いすぎる。</p>
+<p>と、ようするに、もしゲーム自体にある程度、物理エンジンに寄せた挙動が必要なら、「物理エンジン大統一」が必須だと。MagicPhysXは残念ながらそうではありません。実のところ当初はそれを目指していました、Unityとほぼ同一挙動でほぼ同一APIになるのでシームレスに持ち込むことができるライブラリなのだ、と。しかし現状はそうではないということは留意してください。また、その当初予定である互換APIを作り込む予定もありません。</p>
+<h2>まとめ</h2>
+<p>このライブラリ、かなり迷走したプロジェクトでもあって、そもそも最初は<a href="https://github.com/bulletphysics/bullet3">Bullet Physics</a>を採用する予定でした。ライブラリ名が先に決めてあってMagicBulletってカッコイイじゃん、みたいな。その後に<a href="https://github.com/jrouwe/JoltPhysics">Jolt Physics</a>を使おうとして、これもバインディングをある程度作って動く状態にしたのですが、「物理エンジン大統一」のためにPhysXにすべきだろうな、という流れで最終的にPhysXを使って作ることにしました。</p>
+<p>形になって良かったというのはありますが（そしてcsbindgenの実用性！）、「物理エンジン大統一」を果たせなかったのは少々残念ではあります。最初の完成予想図ではもっともっと革命的なもののはずだったのですが……！</p>
+<p>とはいえ、PhysX 5をクロスプラットフォームで.NETに持ち込んだということだけでも十分に難易度が高く新しいことだと思っているので、試す機会があれば、是非触って見ください。</p>
+</div>
+<h1 data-pagefind-sort="date:2023-03-09" data-pagefind-meta="published:2023-03-09"><a href="https://neue.cc/2023/03/09-csbindgen.html">csbindgen - C#のためのネイティブコード呼び出し自動生成、或いはC#からのネイティブコード呼び出しの現代的手法について</a></h1>
 <ul class="date"><li>2023-03-09</li></ul>
 <div class="entry_body"><p>ネイティブコードとC#を透過的に接続するために、RustのFFIからC#のDllImportコードを自動生成するライブラリを作成し、公開しました。Cysharp初のRustライブラリです！先週にプレビューを出していましたが、しっかりした機能強化とReadMeの充実をして正式公開、です！</p>
 <ul>
@@ -2843,81 +2961,6 @@ public class BoolZeroOneSerializer : IWebSerializer&lt;bool&gt;
 <p>というわけで、来年の中旬までにその「世の中の開発生産性を革命的に改善するプロダクト」をリリースするために全力でやっていくぞ、というのが目標です。実際出来上がってきて、かなりいいものになりそうな手応えはあるので、早く世の中に出して評価されたいものです。</p>
 <p>まぁ、そんなわけで大きな何かがあったわけではないですが、確実に前進した年だと思うので、来年は爆発させる年にしましょう。</p>
 </div>
-<h1 data-pagefind-sort="date:2021-12-30" data-pagefind-meta="published:2021-12-30"><a href="https://neue.cc/2021/12/30.html">ConsoleAppFramework v4 - Minimal API for CommandLine tool</a></h1>
-<ul class="date"><li>2021-12-30</li></ul>
-<div class="entry_body"><p>皆さん .NET 6で追加された<a href="https://docs.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis">Minimal API</a>使ってみました？最初は別にいらんやろ、とか思ってたんですが、いや、これ正直めっちゃ凄い、いい。まぁDelegateベースで書くかどうかは別として（書かないかなー）、謎Startupを葬り去ってBuilder/Runが素直に繋がった形が美しい。Top level statementとの相性も良いので、もうこっちのAPI以外で作る気しないなあ。</p>
-<p>さて、ところでConsoleAppFrameworkです。今までクラスが必要だったんですよね、たった一個のメソッドを実装するにも。それがTop level statementとの相性が悪い。Top level statementだけで完結できるとき、クラスって作りたくないんですよね。と、いうわけで、そろそろ大改修が必要かなーと思っていたところにMinimal APIですよ。特にその場でラムダ式でばしばしAPI作っていくスタイルは、むしろコマンドラインツールのほうがマッチするじゃんどう考えても？</p>
-<p>と、いうわけで大改修して、Minimal APIベースになったv4、作りました。何が凄いって、一行でコマンドライン引数をパースしてハンドラー定義できちゃうんですね。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/147662718-f7756523-67a9-4295-b090-3cfc94203017.png" alt="" /></p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">ConsoleApp.Run(args, (string name) =&gt; Console.WriteLine($&quot;Hello {name}&quot;));
-</code></pre>
-<p>これは嘘偽りなくNuGetからダウンロードしたら、そのままでこう書けます。C# 10.0のglobal using(をNuGetのライブラリ側に埋め込むというEvilな手法を使ってます)と、ラムダ式の推論の向上によって実現しました。内側では、Minimal APIの実現のために Microsoft.Extensions.* 側にもかなり改修が入っていたので、それをそっくりそのまま利用できました。そういう意味で、 .NET 6になった今だからようやく作れた形になりますね。もちろんv1~v3までの蓄積のお陰というところもあります。集大成……！</p>
-<ul>
-<li><a href="https://github.com/Cysharp/ConsoleAppFramework/">Cysharp/ConsoleAppFramework</a></li>
-</ul>
-<p>さて、Runはちょっとウケ狙いなところもあるんですが、それ以外のAPIもBuilderベースになったので、だいぶ様変わりしています。ただし特徴としてGeneric Hostの上に乗っているというのは変わらないので、DbContext埋めたりappconfig.jsonから取ったりというのは、変わらずスムーズにできます。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// You can use full feature of Generic Host(same as ASP.NET Core).
-
-var builder = ConsoleApp.CreateBuilder(args);
-builder.ConfigureServices((ctx,services) =&gt;
-{
-    // Register EntityFramework database context
-    services.AddDbContext&lt;MyDbContext&gt;();
-
-    // Register appconfig.json to IOption&lt;MyConfig&gt;
-    services.Configure&lt;MyConfig&gt;(ctx.Configuration);
-
-    // Using Cysharp/ZLogger for logging to file
-    services.AddLogging(logging =&gt;
-    {
-        logging.AddZLoggerFile(&quot;log.txt&quot;);
-    });
-});
-
-var app = builder.Build();
-
-// setup many command, async, short-name/description option, subcommand, DI
-app.AddCommand(&quot;calc-sum&quot;, (int x, int y) =&gt; Console.WriteLine(x + y));
-app.AddCommand(&quot;sleep&quot;, async ([Option(&quot;t&quot;, &quot;seconds of sleep time.&quot;)] int time) =&gt;
-{
-    await Task.Delay(TimeSpan.FromSeconds(time));
-});
-app.AddSubCommand(&quot;verb&quot;, &quot;childverb&quot;, () =&gt; Console.WriteLine(&quot;called via 'verb childverb'&quot;));
-
-// You can insert all public methods as sub command =&gt; db select / db insert
-// or AddCommand&lt;T&gt;() all public methods as command =&gt; select / insert
-app.AddSubCommands&lt;DatabaseApp&gt;();
-
-app.Run();
-</code></pre>
-<p>単独のコマンドラインツール用に使ってもいいのですが、ASP.NETのウェブアプリが他にあって、それのバッチを作りたいみたいなときに、こうしたコンフィグの共通化はめっちゃ便利に使えるはずです。ConfigureServicesのコードはまんま一緒にできて、そのままDIできますからね。</p>
-<p>また、引き続き <code>AddCommands&lt;T&gt;</code> や <code>AddAllCommandType</code> によって、メソッド定義するだけで大量のコマンドを一括追加も可能になっています。</p>
-<h2>v3 -&gt; v4の破壊的変更</h2>
-<p>破壊的変更、は沢山あるのですが、基本的に今までの使い方をしている場合は互換オプションで動くようにしたので、アップデートしたから壊れるということはない、はずです。v4からは<code>ConsoleApp.Create/CreateBuilder</code> 経由で作るのが基本なのですが、v3は <code>Host.CreateDefaultBuilder().RunConsoleAppFrameworkAsync&lt;T&gt;()</code> 経由なので、ちょうど互換性オプションを突っ込むのに都合が良かったんですね。なお、<code>RunConsoleAppFrameworkAsync</code>はエディタから見えないようにしてます。今後は非推奨で、本当に互換のためだけに残してます。</p>
-<p>まず変わったところは、デフォルトで長いオプション名が<code>--</code>、短いオプション名が<code>-</code>になりました。v3では<code>-</code>が幾つついていてもいいというゆるふわマッチングだったのですが、(dotonet toolsと同じように)厳格化しています。</p>
-<p>また、デフォルトのコマンド/オプション名の変換ルールが単純なlower化から、hoge-hugaというlowerなkebab-caseになりました。これもdotnet tools合わせですね。</p>
-<p>また、<code>AddCommands&lt;T&gt;</code>した場合の挙動(v3では<code>RunConsoleAppFrameworkAsync&lt;T&gt;</code>した場合)が、全てのpublicメソッドをコマンドとして追加するようになりました。デフォルト(ルート)コマンドにしたい場合は<code>[RootCommand]</code>属性を付与してくださいということで。これは<code>AddSubCommand&lt;T&gt;</code>した時と挙動を合わせたかったからです、違うと一貫性がなくて戸惑うので。</p>
-<p>と、いうわけで、互換性モードで動かした場合は<code>ConsoleAppOptions</code>は以下のような変更で動くようになっています。よきかなよきかな。（それとargsのコマンド名でHoge.Hugaが来てたらHoge Hugaに分解するのも、この互換性モードだけの挙動です）</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">options.StrictOption = false;
-options.NoAttributeCommandAsImplicitlyDefault = true;
-options.NameConverter = x =&gt; x.ToLower();
-options.ReplaceToUseSimpleConsoleLogger = false;
-</code></pre>
-<p>そうだ、それとCtrl+Cした場合に、正しくCancellationTokenをハンドリングしていない場合でも、タイムアウトをハンドリングしてabortするようになりました。これは、なんか強制終了できなくてウゼーってなりがちというか、私自身よく引っかかってヤバかったので。むしろこれは今までがバグに近くて、正しく<code>HostOptions.ShutdownTimeout</code>を処理していないせいでした。</p>
-<p>ちなみにこのタイムアウト時間はデフォルトは5秒で、ConfigureHostOptions(地味にこれは.NET 6(というかMicrosoft.Extensionsのv6)からの新API)で変更できます。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">var app = ConsoleApp.CreateBuilder(args)
-    .ConfigureHostOptions(options =&gt;
-    {
-        // change timeout.
-        options.ShutdownTimeout = TimeSpan.FromMinutes(30);
-    })
-    .Build();
-</code></pre>
-<h2>まとめ</h2>
-<p>無計画にアドホックに作っていったせいで、どうにもクソコードすぎて、改修にめっちゃ手間取ったというか内部的にはほぼ作り直した……。弄るのだるくて嫌だなあと内心実際今まで思ってたんですが、やはりとても嫌なコードであった。v1の時の最初の発想が Class.Method にパラメータ分解してバッチを大量に作りたい(そもそもライブラリ名もMicroBatchFrameworkだったし)というものだけだったのが、徐々に汎用コマンドラインツールに進化していって、都度、適当に追加していった結果ではある。</p>
-<p>今回がっつし仕切り直したので、しばらくはメンテが楽になれるかなあ、という感じで、よきかなよきかな。</p>
-<p>まぁしかしC# 10.0は地味にヤバいですよ！使えば使うほど味が出てくるというか、最近ようやく手に馴染んで、よくわかってきた感じです。なんというか、とにかく、めっちゃいい。それとC# 10.0 + ConsoleAppFrameworkは全言語見渡しても最強のコマンドラインツール作成ライブラリじゃないです？いや、API自体のできの良さはほとんど ASP .NET CoreのMinimal APIのコピーにすぎないんですが、まぁしかしそれでもやっぱ、これはかなり良い感じじゃないかという手応えがあります。</p>
-</div>
 <a href="https://neue.cc">Prev |</a>
 <a href="https://neue.cc/3">| Next</a>
 </div>
@@ -2929,10 +2972,10 @@ options.ReplaceToUseSimpleConsoleLogger = false;
 <a href="https://cysharp.co.jp/">Cysharp, Inc</a><br />
 CEO/CTO<br />
 <br />
-Microsoft MVP for Developer Technologies(C#)<br />
+Microsoft MVP for Developer Technologies(.NET)<br />
 April 2011<br />
 |<br />
-July 2024<br />
+July 2025<br />
 <br />
 Twitter:<a href="https://twitter.com/neuecc/">@neuecc</a>
 GitHub:<a href="https://github.com/neuecc/">neuecc</a>
@@ -2941,6 +2984,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/07/">2024-07</a>
 <li><a href="https://neue.cc/2024/06/">2024-06</a>
 <li><a href="https://neue.cc/2024/05/">2024-05</a>
 <li><a href="https://neue.cc/2024/03/">2024-03</a>
