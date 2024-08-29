@@ -74,7 +74,95 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2019-05-06" data-pagefind-meta="published:2019-05-06"><a href="https://neue.cc/2019/05/06_576.html">CIや実機でUnityのユニットテストを実行してSlackに通知するなどする</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2019-05-14" data-pagefind-meta="published:2019-05-14"><a href="https://neue.cc/2019/05/14_577.html">MagicOnion Ver 2.1.0</a></h1>
+<ul class="date"><li>2019-05-14</li></ul>
+<div class="entry_body"><p><a href="https://github.com/Cysharp/MagicOnion/">MagicOnion</a>のVer 2.1.0を出しました。前回が2月28日なので、3ヶ月ぶりで少し間が空いてしまった感じもありますが、色々良くなったので紹介していきまうまう。</p>
+<h2>StramingHubClientでメッセージが詰まるバグの修正</h2>
+<p>いきなり致命的な話なんですが、StreamingHubClientが1フレにつき1メッセージしか送信されないという、しょうもないバグが存在していました。このバグの原因が面白くて（？）、元はこんな感じのコードだったんですよ。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// readerはIAsyncEnumeratorというMoveNext, Currentでデータを取ってくる非同期イテレーター
+while (await reader.MoveNext())
+{
+    var message = reader.Current; // byte[]
+    OnBroadcastEvent(message);    // messageは実際にはヘッダ解析したり色々してます
+}
+</code></pre>
+<p>gRPCはIAsyncEnumeratorというかっこつけたインターフェイスを採用しているので、awaitでサーバーからデータが届くのを非同期で待機できる。</p>
+<p>で、このawaitが問題で、UnityだとUnitySynchronizationContext経由してawaitの先が実行されます。なので安全にメインスレッドでOnBroadcastEvent(これは最終的にユーザーが実装したインターフェイス定義のメソッドが呼ばれる)が呼ばれて嬉しい。のですが、reader自体は別スレッドで動いているので、awaitの度にメインスレッドへの同期を待っているのです。</p>
+<p>正確には<a href="https://github.com/Unity-Technologies/UnityCsReference/blob/9c7b88327d1b48000ea94dc52a405068a140980f/Runtime/Export/Scripting/UnitySynchronizationContext.cs#L53-L60%5D(https://github.com/Unity-Technologies/UnityCsReference/blob/9c7b88327d1b48000ea94dc52a405068a140980f/Runtime/Export/Scripting/UnitySynchronizationContext.cs#L53-L60)">UnitySynchronizationContext</a>がawaitの度にメインスレッド上だろうがなんだろうが問答無用で次フレームに叩き込む仕様だから、なのですけれど。</p>
+<p>何れにせよ、そんなわけで、サーバーから同一フレームで沢山のデータが送られてきたとしても、クライアント側は1フレームに1メッセージしか捌けないので、どんどん詰まっていくわけです。もちろん、バグです。仕様じゃなく。普通に。バグ。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var syncContext = SynchronizationContext.Current;
+
+// ConfigureAwait(false)でSyncContextを外して、このループはずっと別スレッドで動かす
+while (await reader.MoveNext().ConfigureAwait(false))
+{
+    var message = reader.Current;
+    if (syncContext != null)
+    {
+        // 手動でPostする（待たない）
+        syncContext.Post(() =&gt; OnBroadcastEvent(message));
+    }
+    else
+    {
+        OnBroadcastEvent(message);
+    }
+}
+</code></pre>
+<p>と、いうわけで、こんな具合に半手動でPostするコードに書き換えました(Postでラムダ式のキャプチャが発生する問題がありますがshoganai。正確にはobject stateが渡せるのですが、実際のデータでは複数の値が必要になるのでTupleを作る必要があって、余計なオブジェクトが必要という点で変わらない)。ConfigureAwait(false)をつけないことは意識して、意図してやったこと(同期コンテキストを維持してメインスレッド上でコールバックを飛ばす)だったんですが、そこまで意識しといてこういうバグにつなげちゃうのは完全に甘かった、ということで反省しきりです。</p>
+<p>ともあれこれで詰まり問題は大解決です。</p>
+<h2>MagicOnion.Hosting</h2>
+<p>最初のサンプルがConsole.ReadLineで待っているコードなのでアレなのですが、普通に実開発ではMagicOnion.Hostingというプロジェクトを使って欲しいと思っています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// using MagicOnion.Hosting
+static async Task Main(string[] args)
+{
+    await MagicOnionHost.CreateDefaultBuilder()
+        .UseMagicOnion(
+            new MagicOnionOptions(isReturnExceptionStackTraceInErrorDetail: true),
+            new ServerPort(&quot;localhost&quot;, 12345, ServerCredentials.Insecure))
+        .RunConsoleAsync();
+}
+</code></pre>
+<p>Hostingとは何かと言うと、<a href="https://docs.microsoft.com/ja-jp/aspnet/core/fundamentals/host/generic-host?view=aspnetcore-2.2">Genric Host</a>という.NET Core時代の基盤フレームワークの上に乗っかっています。これは、こないだ作った <a href="http://tech.cygames.co.jp/archives/3241/">MicroBatchFramework – クラウドネイティブ時代のC#バッチフレームワーク</a> と同じ仕組みです。</p>
+<blockquote>
+<p>.NET Generic Hostは、標準的な仕組みとしてロギング／コンフィグ読み込み／DIをサポートしています。これによりコンフィグのマッピング、ロギングなどを標準的な作法でフルサポートしています。</p>
+</blockquote>
+<p>というわけで、何が嬉しいかと言うと、↑の件をフルサポートしてくれていることです。コンフィグとか何をどう読み込めばいいんですかー？という話は、Generic Hostの仕組みを使ってください、というのが答えになります。ドキュメントもMicrosoftのドキュメントサイトで沢山解説されていて、それがそっくりそのまま使えるので、良いことしかない！</p>
+<p>また、これによってコンストラクタインジェクションでのDIも使えるようになりました。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">static async Task Main(string[] args)
+{
+    await MagicOnionHost.CreateDefaultBuilder()
+        .ConfigureServices((hostContext, services) =&gt;
+        {
+            // DI, you can register types on this section.
+
+            // mapping config json to IOption&lt;MyConfig&gt;
+            // requires &quot;Microsoft.Extensions.Options.ConfigurationExtensions&quot; package
+            services.Configure&lt;MyConfig&gt;(hostContext.Configuration);
+        })
+        .RunConsoleAsync();
+}
+
+public class MyFirstService : ServiceBase&lt;IMyFirstService&gt;, IMyFirstService
+{
+    IOptions&lt;MyConfig&gt; config;
+    ILogger&lt;MyFirstService&gt; logger;
+
+    public MyFirstService(IOptions&lt;MyConfig&gt; config, ILogger&lt;MyFirstService&gt; logger)
+    {
+        this.config = config;
+        this.logger = logger;
+    }
+
+    // ...
+}
+</code></pre>
+<p>好きな型を、ConfigureServicesのとこで追加してもらえれば、コンストラクタで設定されたのが入ってきます。</p>
+<h2>今後</h2>
+<p>v2のリリース告知から半年経って、かなり注目度が上がっているというのが肌感としてあります。GitHub Starも962まで来ていますし、海外からの問い合わせも国内からも来ていて、盛り上がりありますよ！時代はC#！かもしれない！</p>
+<p>というわけかで、来月の6月4日に初の<a href="https://connpass.com/event/127369/">MagicOnion勉強会</a>が開催されます。私も登壇しますので、ぜひぜひ来てください（今はもうキャンセル待ちですが……！）</p>
+<p>開発的には、サーバーサイドゲームループ（まだ未サポート）などの追加を挟みつつ、もう少し野心的なものも狙っていますので、是非是非楽しみにしていただければと思います。コードジェネレーターの使い勝手が悪いのも、(MessagePack-CSharpともども)改善の最優先タスクの一つになってますので、なんとかします。</p>
+<p>また、フィードバック超大事！なので、ぜひ使ってみて、Twitterでつぶやくなり(捕捉してます)、Qiitaに書いてくれるなり（やったー！）、Issueで報告してもらったりなどなどしてくれると嬉しいです。</p>
+</div>
+<h1 data-pagefind-sort="date:2019-05-06" data-pagefind-meta="published:2019-05-06"><a href="https://neue.cc/2019/05/06_576.html">CIや実機でUnityのユニットテストを実行してSlackに通知するなどする</a></h1>
 <ul class="date"><li>2019-05-06</li></ul>
 <div class="entry_body"><p>前回（？）<a href="http://neue.cc/2019/04/08_574.html">CircleCIでUnityをテスト/ビルドする、或いは.unitypackageを作るまで</a>では、ユニットテストに関する部分がうまく行ってなくて放置でした。放置でいっかな、と思ってたんですが、改めてユニットテストをCIでがっつり実行したい、というかIL2CPPのテストをがっつしやりたい。という切実な要望が私の中で発生したので（N回目）、改めて取り組んでみました。</p>
 <p>さて、オフィシャルな（？）ユニットテストのコマンドラインの実行の口は、<a href="https://docs.unity3d.com/Manual/PlaymodeTestFramework.html">Writing and executing tests in Unity Test Runner</a>の最後の方のRunning from the command lineの節に書いてありました(コマンドライン引数のほうのマニュアルにはリンクすら張ってなかったので気づかなかった……！)。つまり、こんなふうにやればいい、と。</p>
@@ -923,45 +1011,6 @@ public class ReactivePropertySlim&lt;T&gt; : IReactiveProperty&lt;T&gt;, IReadOn
 <p>パフォーマンス向上の原則はオブジェクトを作らない！オブジェクトを作らないためには、機能を一つのクラスに詰める！機能は分けない！まぁ、分けないことによって使い勝手が悪くなるのは最悪なので、パブリックAPIは適切な分割と集約をきっちり意識して、プライベートAPIは、性能を意識して、あえて統合する、というのもアリ（必ずしも性能が最重要案件ではないというか、最適化は後回しでいい場合が多いので、別に全てをそうしろとはいいませんよ）。ということで。</p>
 <p>ReactivePropertySlimはSlimの名前の通り、小さくはあるんですが、大きく作るよりも、小さく作るほうが存外難しく、そして価値あるものです。実装自体は見た通り簡単なもので、別に複雑なアルゴリズムやコーディングが入っているわけでもないですが、アイディアが大事ということで。言われてみれば、そうですねー、っていう話ではあるのだけれど、そこに気づいて実装まで回せるかというのは全然難易度が違うんですよね。ともあれ、中々良い仕上がりになったと思うので、是非試してみてください（機能的には無印と一緒ですが！）。</p>
 </div>
-<h1 data-pagefind-sort="date:2017-12-31" data-pagefind-meta="published:2017-12-31"><a href="https://neue.cc/2017/12/31_561.html">2017年を振り返る</a></h1>
-<ul class="date"><li>2017-12-31</li></ul>
-<div class="entry_body"><p>毎年恒例ということにしているので、今年も振り返ってみます。</p>
-<p>まず、「<a href="https://kuro-kishi.jp/">黒騎士と白の魔王</a>」がリリースされました。開発2年分の成果が結実ということで、まずはメデタシ。セールス的にも一定の足跡を残せています。昨今モバイルゲームもシブい状況になってきてはいますが、その中でキャラ物ではないノンIPのオリジナルタイトルでこのレベルに達せているものがどれだけあるか、ということを考えると、自分達でいうのもアレですが、実際やりますな、みたいなのは、ありますね！</p>
-<p>さて、私個人としても、今年は大きな弾を幾つか出して、大きなインパクトを与えられたんじゃないかと思います。去年ではC#を書く技量が向上した、というのが実感としてありました。そして今年も引き続き、技量向上しました！と、はっきりと言い切れる、感じ取れるだけの成長は果たせています。人間どこででも、どこまでも成長できるし、完成したと思った瞬間に下り坂は始まるのでしょう。そして、成長を対外的にちゃんと証明し続けられている限りは、まだ下り坂、ではなさそうです。</p>
-<p>というわけで、対外的には良い感じかな？対外的に、という言い方がアレですが、個人的なところだと、今年は前半は良かったんですが、後半の息切れ加減が酷くて、来年は気合い入れ直さないとなー、というところが結構あります。今年はCTOという職種が色々な意味で話題になる機会が、狭い世界では多かったわけですが、んー、スキャンダルはないんですが（笑）役割として全うできているかというと、反省として特に後半はダメかな。自己採点でほんと良くないんで、ごめんなさい＆がんばります、です。</p>
-<h2>C#</h2>
-<p>今年の自身のテーマとして、C#で極限まで性能を出していく(Extreme C#)、ということを主題にして様々なものを公開してきました。目的は2つあって、繰り返すことで、本気で、正しく、自分の血肉にしようというのがまず一つ。外に出せるレベルの品質を担保し（面倒くさい汚れ/単調な仕事もきっちりこなして）、しつこく変奏を弾き続けることで、曖昧さが1ミリもない100%の自信と理屈の裏付けをしようということですね。まぁ別にえらいことはなく、何事も反復練習と経験です。</p>
-<p>もう一つは自分のブランディングの再構築。もういい加減「LINQの人」的なブランドはさすがに古臭いし、いつまでも引きずっててもダサいし、何の役にも立たないところもある。というわけで、「パフォーマンスといったら」のブランドに変えよう、と。単発だとやっぱ弱いんで、2つ3つと呆れるぐらいにひたすら連発されれば、強固にイメージも上塗りされていくでしょう。きっと。</p>
-<p>というわけかでブログを振り返る。ブログの記事数は年々減ってきているのですが、そのかわり一発一発が重めなので、その辺でカバー。でいいかしらん？</p>
-<p>今年の第一弾はMessagePack for C#、<a href="http://neue.cc/2017/03/13_550.html">C#(.NET, .NET Core, Unity, Xamarin)用の新しい高速なMessagePack実装</a>でした。MessagePack for C#は、一気に知名度も得て、世界中で使われる最速のC#バイナリシリアライザとしてある程度の地位を確立できました。実際、今年一番の成果で、世界に貢献してて偉いですね！</p>
-<p>誕生理由は、完全に黒騎士のため。これ完成してなかったらヤバかった……！元々、前年に作った<a href="https://github.com/neuecc/ZeroFormatter">ZeroFormatter</a>を導入してたんですが、想定してたよりも性能面で機能しなかったというか、むしろ全然機能してなくて、マズいな、というのを感じてたのです（ZeroFormatterが悪いというかは黒騎士の用法とマッチしてなかった)。</p>
-<p>とはいえ作っちゃったし入れちゃったんだし、そこはそのままにするしかないんじゃない？（開発時期的にも後期でリサーチとかしてる余裕ゼロだし）。と、常識的な判断をするところだったんですが、本能的にこのまま進めるべきではないと判断して、裏でコソコソ作り始めて<a href="https://twitter.com/neuecc/status/830946835967533056">最初にポソッと呟いた</a>のが2017年2月13日。黒騎士のリリースが 2017年4月26日 なので本当に直前で（この辺は職権濫用というか私の立場がCTOだからやれたことですね、ほんと）。3月に完成したら、それを受けて<a href="https://github.com/neuecc/MagicOnion">MagicOnion</a>のシリアライザもZeroFormatterからMessagePack for C#に差し替えました。</p>
-<p>スケジュールもテストもクソもないんですが、まぁ最高のもの作りゃあ問答無用で良いから大丈夫でしょ、ぐらいの勢いはありました。一度シリアライザ作りきった経験(ZeroFormatter)と、それの導入と結果で黒騎士で求められる性能特性とかその他その他とかをしっかり把握出来てたんで、強くてニューゲームの気分で、絶対出来るという確信はあったし、その通りになったのでヨカッタネ（終わってみればそう言えるんであって、自信はあれど、作ってる最中のプレッシャーは普通にキツかったですよ）。</p>
-<p>この辺の、技術判断は、自分自身でやるものに関してはあまりミスらないなぁ、という自信と実績はそこそこあります。ダメだと判断したらすぐに自分でリカバーすればいいということでもあり。ただ、大きなプロジェクトの責任者としての立ち位置だと、自分でやれるものもあれば、当然やれないものもあって、その場合の、人に任せること、判断するってことは、単純じゃないですね。そして、その辺のところで、失敗だ、といえるものもそれなりにあったのが（今年の判断で、というかここ数年での結果として下ったのが今年だ、ということですが）いささか悔いるところです。根気と眼力が問われるところで、とりあえず自分には両方が足りなかったし、今はどうなのかな、正直今も全然ではありそう。</p>
-<p>そして引き続きで<a href="https://github.com/neuecc/MagicOnion">MagicOnion</a>が正式リリースを迎えていない……！のが良くない。前からの傾向ですが、今年は特にとっちらかってしまった感は否めず……。MagicOnion自体は、gRPC(モバイルで/Unityで)いち早く実践投下したりの珍奇性と、そして今年は特に日本ではgRPCの知名度/採用率が飛躍的に上がったと思うのですが、それにいち早く手を付けていたりと、悪くない判断だったんじゃないでしょふか。実装的にも<a href="http://neue.cc/2017/04">C# 7.0 custom task-like の正しいフレームワークでの利用法</a>とか、面白く仕上がっていますしね。だから、ちゃんと完成させて正式リリースするんじゃもん……。</p>
-<p><a href="https://www.slideshare.net/UnityTechnologiesJapan/unite-2017-tokyocunirx">【Unite 2017 Tokyo】「黒騎士と白の魔王」にみるC#で統一したサーバー/クライアント開発と現実的なUniRx使いこなし術</a>でクライアントサイドを、AWS Summitで<a href="https://www.slideshare.net/neuecc/grpchttp2-api-streaming">「黒騎士と白の魔王」gRPCによるHTTP/2 - API, Streamingの実践</a>としてサーバーサイドのセッションをしました。この2つは大きなイベントで、ちゃんと話せてこれたのはいい感じ。クライアントサイドをもう少し誇れる感じで言いたかったのですが、うーみぅ。</p>
-<p><a href="http://neue.cc/2017/07/09_554.html">MicroResolver - C#最速のDIコンテナライブラリと、最速を支えるメタプログラミングテクニック</a>は、突然のDI。なんでもいいからIL書き技術を磨く実験台が欲しかった説はある。素振り大事。総合ベンチマークがあって、1msを競う戦いができる環境ってのがヨカッタですね。色々学びあったし、実際ベンチ勝負で勝った。この辺で、C#で最速を叩き出すための勘所を、完全に掴みました。なぜ遅いのかが理解できて、どうすりゃ速くできるか知っている。そして、そのとおりに書くことができる。</p>
-<p>そして自信をつけた私は、<a href="http://neue.cc/2017/08/07_556.html">C#の高速なMySQLのドライバを書こうかという話、或いはパフォーマンス向上のためのアプローチについて</a>、という、長年の懸念だったC#のMySQLドライバ遅い問題に手をいれるぜ、と思って始めたプロジェクト。未完！こういうやりかけ放置よくない。今年の放置っぷりは酷い。</p>
-<p><a href="http://neue.cc/2017/08/28_558.html">MessagePack for C#におけるオートマトンベースの文字列探索によるデシリアライズ速度の高速化</a>、これはいい話ですねー。ところでMessagePack for C#はめちゃくちゃ更新してまして<a href="https://www.nuget.org/packages/MessagePack">NuGetのVersion History</a>を見てもらえれば分かるんですが</p>
-<p><img src="https://user-images.githubusercontent.com/46207/34461399-e4225ed4-ee6b-11e7-9237-70bfe0ca9a3e.png" alt="image" /></p>
-<p>今年58回も更新してるんですよ！58回！シリアライザは本当に大変なんです！JSON.NETが無限に更新し続ける理由がわかりましたよ、なにをそんなに更新する必用あるんだって話ですが、あるんですよ、ほんと。そしてprotobuf-netやJilやMsgPack-Cliに沢山issueが詰まれる理由もわかりましたよ。シリアライザは無限にバグるんです！いやー、シリアライザのメンテマンとか大変ですよぅー、私は二個抱えることになって本当に本当に本当に大変なのです、そりゃ他のことに中々手がつけられなくなるというのも分かってほすぃ。</p>
-<p>というわけかで、二個抱えるうちのもう一個、<a href="http://neue.cc/2017/09/29_559.html">Utf8Json - C#最速のJSONシリアライザ(for .NET Standard 2.0, Unity)</a>の公開。これも世界的にかなりインパクトあってヨカッタ。Utf8JsonやMessagePack for C#の意義って、新しい時代のパフォーマンスのベースラインを示した、ヌルい眼前に実証をもって叩きつけたことにあると思ってます。C#はねー、やっぱ実装がヌルいものが多いです、というか、BCL含めて99%のものがヌルいです。それはしょうがないんですけどね、そういう時代じゃなかったからだし。でも時代は明らかに変わった、変わってている、その中で新しい基準が必要だし、その基準というものを私は作って、突きつけられたんじゃないかな、と。</p>
-<p>もちろん、Utf8Json自体も「ちゃんと使える」JSONライブラリになってます。JSONってかなりフワフワなので、おしきかせの決め打ちフォーマットだけじゃなく、あらゆるJSONをちゃんとデシリアライズできるようにするカスタマイズ性が絶対に必要なんですね。そこをきちんと満たしつつ、超高性能も実現している、というのがもう一つのUtf8Jsonのキモです（一番の目玉はUtf8バイナリとみなして読み書きするってところですが）</p>
-<p>最後に総決算として<a href="http://neue.cc/2017/12/04_560.html">Introduction to the pragmatic IL via C#</a>、ILの書き方を残しました。</p>
-<h2>お仕事</h2>
-<p>マジカル変化球で負債を返却する、というのを去年後半から今年前半にかけてやって、それを成立させました（黒騎士リリース）。中盤は成果のスポークスマンで、それもまぁ悪くないでしょう(Unite, AWS Summit講演)。この辺は考えていた既定路線でちゃんとハマっていたと思うんですが、後半も技術にフォーカスに脳みそを意識しすぎて、しかも出来たもの(Utf8Jsonとか)が会社のプロダクトとして直接役立ったかというと、役立ってないわけではないが凄い貢献するわけではない、ぐらいになったのがいくなかったですねえ。MySQLドライバをほっぽりだしてしまったのがロードマップ的にはまずかった（それの代替/副産物がUtf8Jsonなのですけれど）。</p>
-<p>さすがに技術フォーカスすれば、してない時に比べると脳みそが回ってる度は高くなるとはいえ、リサーチやってるわけでもないんで、もちっとプロダクトの改善に目を向けたいし、積み残して放置気味な厄介なバグをちゃんと潰したいし、MagicOnionの正式リリースもしたい。マネジメントとまでは言わないですが、一区切りついたということもあるので、開発組織の方向付けとかもあるでしょう。</p>
-<h2>漫画/音楽/ゲーム/その他...</h2>
-<p>すっかりkindleで電子書籍中心になりました。iPhone * Plus(今はXですが)の、やや大きめサイズのスマフォのお陰で、漫画や小説の小さな文字がギリギリ読めるサイズ（欲を言えばもう少し大きい方がいい）で、いつでも手軽に開けるようになったのが大きい。iPadも持ってるのですが、やっぱスマフォでサクッとになりがちですね。なので、スマフォは大きめサイズのもの一択。もう小さいのには戻りたくない（ので、XでPlusからちょっと画面サイズ小さくなったのはなんとも言い難いところ)。</p>
-<p>で、見直してみると凄い良かった、って思えるのがナカッタ。カモ。うーん、どういうこっちゃら。駆け込みで<a href="https://www.amazon.co.jp/dp/B078GL51L2/">センチメントの行方</a>(12/21, センチメントの季節の新章)が出たのが良かった。変わらずとてもドキッと来る感じで。好き。</p>
-<p>音楽は<a href="https://ja.wikipedia.org/wiki/NUITO">NUITO</a>を今年知ったのです！最高……！2009年に出た唯一のアルバム、Unutellaめっちゃ聴いた(Apple Musicにもあります)！ライブ（去年から7年ぶりに再開したそうで）も行った！超良かった！<a href="http://www.ele-king.net/news/005519/">Shobaleader One（スクエアプッシャーのバンド名義）の来日公演</a>も行けたし、今年は中々に満喫したかもしれない。</p>
-<p>ライブとか美術展とか演劇とか、一期一会で、基本、次はないよねー、と思う度が強くなったので（逃した後悔がそれなりにあったせいかも）、なるべく気になったら行くようにしたい。してる。しはじめた。<a href="http://brdg.tokyo/">VRDG</a>も開催される毎に行ってましたが、毎回面白くてよきかなよきかな。来年はコンテンポラリーダンスを色々見ていきたいですねぇ。</p>
-<p>ゲームはSwitchも買ったしPS4もそこそこ稼働させたしで色々買ってはみたものの、んー、ロクに最後までプレイしたものが、ない……！その中でいうと<a href="http://ruinergame.com/">RUINER</a>は良かったし最後までやりました。このビジュアルは最高。ゲーム的には、まぁそこそこまぁまぁだけど、とにかくビジュアルが最高。ゲーム的には年末に買ったばかりではあるんですが、<a href="http://bluerevolvergame.com/">BLUE REVOLVER</a>は間違いなく面白い。良い。あとはみんな挙げますが実際<a href="http://www.jp.square-enix.com/nierautomata/">NieR:Automata</a>はヨカッタ。</p>
-<h2>来年は</h2>
-<p>今年は技術面では普通の（？）C#にフォーカスしすぎたきらいがありますね。Unityが手付かずで。ついでにUniRxも放置で（ひどぅぃ、あ、アセットストアにアップデート申請は年末のこないだ出したので来年頭には通ってそうです)。というわけで、Unityに再フォーカスしたい。</p>
-<p>というのと、あとここ数年ずっと頭のなかにあったやりたいこと、をやる手法というのが年末の末の末にやっと見いだせて光が指したんで、技術的にそれを実装したいというのが密やかにあります。今までのお得意のプログラミング、とは違う領域になるので、そこをやりきるのがチャレンジでもありますねー。C#じゃゲロ遅いってことでC++かCompute Shaderでやるかなー、とも思ってるんで、C#と付き合って10年目にして脱C#かもしれないしそうじゃないかもしれない。まぁ部分的ってだけで、相変わらず技術のベースはC#であり続ける気がします。</p>
-<p>ともあれ来年は来年で、新しい何かを示し続けよう、というのは絶対に変わらないものとしてあります。C#も客観的には正直しょっぱい情勢と言わざるをえないのですが、そこもちゃんと尽力していきましょう。そして、黒騎士リリース以後のグラニの技術にもご期待下さい。</p>
-</div>
 <a href="https://neue.cc/4">Prev |</a>
 <a href="https://neue.cc/6">| Next</a>
 </div>
@@ -985,6 +1034,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/08/">2024-08</a>
 <li><a href="https://neue.cc/2024/07/">2024-07</a>
 <li><a href="https://neue.cc/2024/06/">2024-06</a>
 <li><a href="https://neue.cc/2024/05/">2024-05</a>

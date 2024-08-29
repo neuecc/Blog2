@@ -74,7 +74,273 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2010-05-24" data-pagefind-meta="published:2010-05-24"><a href="https://neue.cc/2010/05/24_260.html">JavaScriptエディタとしてのVisual Studioの使い方入門</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2010-05-29" data-pagefind-meta="published:2010-05-29"><a href="https://neue.cc/2010/05/29_261.html">.NET(C#)におけるシリアライザのパフォーマンス比較</a></h1>
+<ul class="date"><li>2010-05-29</li></ul>
+<div class="entry_body"><p>ちょっとしたログ解析(細々としたのを結合して全部で10万件ぐらい)に書き捨てコンソールアプリケーションを使って行っていたのですが(データ解析はC#でLinqでコリっと書くのが楽だと思うんです、出力するまでもなく色々な条件を書いておいてデバッガで確認とか出来るし)、実行の度に毎回読んでパースして整形して、などの初期化に時間がかかってどうにも宜しくない。そこで、データ丸ごとシリアライズしてしまえばいいんじゃね？と思い至り、とりあえずそれならバイナリが速いだろうとBinaryFormatterを使ってみたら異常に時間がかかってあらあら……。</p>
+<p>というしょうもない用途から始まっているので状況としては非現実的な感じではありますが、標準/非標準問わず.NET上で実装されている各シリアライザで、割と巨大なオブジェクトをシリアライズ/デシリアライズした時間を計測しました。そんなヘンテコな状況のパフォーマンスなんてどうでもいー、という人は、各シリアライザの基本的な使いかたの参考にでもしてください(いやまあ、どれもnewしてSerializeメソッド呼ぶだけですが)。ソースは後で出しますが、具体的に計測に使ったオブジェクトはテスト用クラスが10万件含まれたListです。まずは結果のほうを。</p>
+<pre data-pagefind-ignore="all"><code class="language-text">Serialize BinaryFormatter
+00:00:06.4701421
+53MB
+Serialize XmlSerializer
+00:00:07.7035246
+59MB
+Serialize DataContractSerializer
+00:00:02.1545153
+149MB
+Serialize DataContractSerializer Binary
+00:00:01.4706517
+78MB
+Serialize DataContractJsonSerializer
+00:00:02.6021908
+47MB
+Serialize DataContractJsonSerializer Binary
+00:00:02.5019512
+75MB
+Serialize NetDataContractSerializer
+00:00:09.1802584
+183MB
+Serialize NetDataContractSerializer Binary
+00:00:08.1960399
+99MB
+Serialize Formatter`1 - Protocol Buffers
+00:00:00.7043000
+13MB
+Serialize MsgPackFormatter - MessagePack
+00:01:33.3844083
+46MB
+Serialize JsonSerializer - JSON.NET
+00:00:07.4997295
+38MB
+Serialize JsonSerializer - JSON.NET BSON
+00:00:11.7767353
+44MB
+
+Deserialize BinaryFormatter
+00:00:59.1693980
+Check =&gt; OK
+Deserialize XmlSerializer
+00:00:02.7073623
+Check =&gt; NG
+Deserialize DataContractSerializer
+00:00:06.3459340
+Check =&gt; OK
+Deserialize DataContractSerializer Binary
+00:00:03.5622500
+Check =&gt; OK
+Deserialize DataContractJsonSerializer
+00:00:10.5392504
+Check =&gt; OK
+Deserialize DataContractJsonSerializer Binary
+00:00:07.2658857
+Check =&gt; OK
+Deserialize NetDataContractSerializer
+00:00:09.1020073
+Check =&gt; OK
+Deserialize NetDataContractSerializer Binary
+00:00:07.4024345
+Check =&gt; OK
+Deserialize Formatter`1 - Protocol Buffers
+00:00:00.9176016
+Check =&gt; OK
+Deserialize MsgPackFormatter - MessagePack
+00:00:29.8292134
+Check =&gt; OK
+Deserialize JsonSerializer - JSON.NET
+00:00:11.7517757
+Check =&gt; OK
+Deserialize JsonSerializer - JSON.NET BSON
+00:00:12.0099519
+Check =&gt; OK
+</code></pre>
+<p>対象シリアライザ、かかった時間、シリアライズ時は出力ファイルサイズ、デシリアライズ時は正しく復元できたかを表示しています。</p>
+<p>.NET標準ライブラリからはBinaryFormatter, XmlSerializer, DataContractSerializerとそのバイナリ出力, DataContractJsonSerializerとそのバイナリ出力, NetDataContractSerializerとそのバイナリ出力。オープンソースライブラリからは、GoogleのProtocol Buffersの.NET移植<a href="http://code.google.com/p/protobuf-net/">protobuf-net</a>、国産のMessagePackの<a href="http://d.hatena.ne.jp/saiya_moebius/20081227">C#実装</a>、<a href="http://json.codeplex.com/">Json.NET</a>のJSONシリアライズとBSON(Mong DBで使われているバイナリ形式のJSON)のシリアライズを出力しました。</p>
+<p>BinaryFormatter遅くね？が発端であり裏付けるように、BinaryFormatterのデシリアライズが異常に遅い。他が数秒なのに1分かかってます。テスト用データの詳細は後で述べますが、どうもObjectの配列が含まれていると遅くなるようです。テストデータにはKeyValuePair[]を含んでいるので、それが引っかかって激遅に。シリアライザする対象によって速度が変化するのは分かりますが、幾らなんでも限度を超えた速度低下。バグじゃないかしら？と言いたい。DataContractSerializerでもバイナリが吐ける昨今、もはやObsoleteにしてもいい雰囲気すら漂う。</p>
+<p>XmlSerializerが速い・サイズ少ないという感じですがデシリアライズでCheck =&gt; NGと表記されているように、シリアライズに失敗しています。テストデータにKeyValuePair[]が含まれているのですが、それがシリアライズ出来なくて空配列になってしまったため。Dictionaryがシリアライズ出来なかったりと、XmlSerializerは割と使いにくいところがあります。今だとガイドライン的にも、XmlのAttributeの設定とか出力するXMLを細かく制御するならXmlSerializer、そうでないならDataContractSerializerのほうを推奨、とのことです。</p>
+<p>そのDataContractSerializerはファイルサイズが嵩んでいるのが難点。属性などを付与していないため、テストデータ中の自動プロパティが &lt;_x003C_MyProperty1_x003E_k__BackingField&gt;hoge1&lt;/_x003C_MyProperty1_x003E_k__BackingField&gt; といったような、とんでもなく長ったらしいタグになってしまっているのが原因。DataMember属性で名前を振ってあげればマシになりますが、今回は属性未使用で計測としました。そんなDataContractSerializerですが、バイナリXMLとして保存するとファイルサイズが縮むので気になる場合はそちらを使えばいいのかも。パフォーマンスも良くなります。</p>
+<p>DataContractJsonSerializerは、シリアライズ・デシリアライズの速度はXMLよりも劣っていますが、ファイルサイズに関しては（JSONなので当然とはいえ)比較にならないほど小さい。バイナリXMLよりも小さくて、中々優秀のようです。しかし、バイナリ化して保存すると逆にファイルサイズが膨らむという罠が。</p>
+<p>NetDataContractSerializerはシリアライザ作る時に型指定がいらなかったりと利便性はちょびっと○。また、循環参照が含まれていても問題なくシリアライズ出来たりと、DataContractSerializer（素の状態だと循環参照が含まれると例外）とは若干毛色が違います。といった点から言っても、BinaryFormatterの後継はこれになるのでしょう。</p>
+<p>Protocol Buffersは爆速な上に非常に縮んで素晴らしい！さすがGoogle。ということだけじゃなく、protobuf-netの実装も良いのでしょうね。APIも非常に練られていて使いやすいし、C#でのクラスから.protoファイルの生成とかも出来て大変便利。Silverlightで使えるし、Windows Phone 7でも動かせるよう調整中、とのことでかなり気に入りました。</p>
+<p>MsgPackFormatterはシリアライズ、デシリアライズ共にかなり時間が……。これは、MessagePackが、というよりも、実装の方でオブジェクトグラフの生成に時間がかかってるようです。</p>
+<p>JSON.NETは中々優秀な結果を出しています。しかし、<a href="http://james.newtonking.com/archive/2010/01/01/net-serialization-performance-comparison.aspx" title=".NET Serialization Performance Comparison - James Newton-King">Performance Comparison</a>でDataContractSerializerよりも速いぜ！と謳っていたけれど、そんなことはなく。こういうのは計測する内容によって変わってくるので一概にどうこう言えないんですねー、というのを知るなど。バイナリ化で逆にサイズが膨らむのはDataContractJsonSerializerと同様。なお、JSON.NETはAPIが正直使いにくくてどうにかならないのかねー、と思うので個人的には好きじゃありません。使いやすいAPI設計ってセンスが必要ですよね……。</p>
+<h2>コード</h2>
+<p>割と長ったらしいので、分割して。追試したい方は<a href="http://neue.cc/wp-content/uploads/file/SerializerBench.cs">こちら</a>に元ソース置いておくので使ってみてください。VS2010用。ライブラリ全部揃えるのも大変だと思うので、測定を省きたい項目はMainメソッドのリスト初期化子の部分で該当するものをコメントアウトすれば省けます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[ProtoContract]
+[Serializable]
+public class TestClass : IEquatable&lt;TestClass&gt;
+{
+    [ProtoMember(1)]
+    public string MyProperty1 { get; set; }
+    [ProtoMember(2)]
+    public int MyProperty2 { get; set; }
+    [ProtoMember(3)]
+    public DateTime MyProperty3 { get; set; }
+    [ProtoMember(4)]
+    public bool MyProperty4 { get; set; }
+    [ProtoMember(5)]
+    public KeyValuePair&lt;string, string&gt;[] MyProperty5 { get; set; }
+
+    public bool Equals(TestClass other)
+    {
+        return this.MyProperty1 == other.MyProperty1
+            &amp;&amp; this.MyProperty2 == other.MyProperty2
+            &amp;&amp; this.MyProperty3 == other.MyProperty3
+            &amp;&amp; this.MyProperty4 == other.MyProperty4
+            &amp;&amp; this.MyProperty5.SequenceEqual(other.MyProperty5);
+    }
+
+    public override int GetHashCode()
+    {
+        return this.MyProperty1.GetHashCode() + this.MyProperty2.GetHashCode();
+    }
+}
+</code></pre>
+<p>これがテスト用クラスの中身です。string, int, DateTime, bool, KeyValuePair&lt;string,string&gt;[] とそこそこ満遍なく散りばめて、それとデシリアライズがちゃんと出来たか確認出来るようIEquatable&lt;TestClass&gt;を実装して値比較出来るようにしています。&amp;&amp;や||や三項演算子の:は前置にする派。綺麗に揃う感じが好き。属性はProtocol Buffersはつけないと動かないのでProtoMemberを指定していますが、それ以外は無指定です。指定した方が縮んだりとかありそうですが、私的には無指定の状態で調べたいなあ、と思ったのでなし。最適じゃない状態からのそれぞれのシリアライズ形式への生成、書き戻しの具合を見たいと思ったので。いや、単純に各実装で使う属性を調べるのが面倒だったという手抜きな理由もありますが。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public abstract class SerializerBenchmark
+{
+    public static readonly List&lt;TestClass&gt; TestData;
+
+    static SerializerBenchmark()
+    {
+        TestData = Enumerable.Range(1, 100000)
+            .Select(i =&gt; new TestClass
+            {
+                MyProperty1 = &quot;hoge&quot; + i,
+                MyProperty2 = i,
+                MyProperty3 = new DateTime(1999, 12, 11).AddDays(i),
+                MyProperty4 = i % 2 == 0,
+                MyProperty5 = Enumerable.Range(1, 10)
+                    .ToDictionary(x =&gt; x.ToString(), _ =&gt; i.ToString()).ToArray()
+            })
+            .ToList();
+    }
+
+    public static SerializerBenchmark&lt;T&gt; Create&lt;T&gt;(T serializer, Func&lt;T, Action&lt;Stream, Object&gt;&gt; serializeSelector, Func&lt;T, Func&lt;Stream, Object&gt;&gt; deserializeSelector, string optional = null)
+    {
+        return new SerializerBenchmark&lt;T&gt;(serializer, serializeSelector, deserializeSelector, optional);
+    }
+
+    public abstract void Serialize();
+    public abstract void Deserialize();
+}
+</code></pre>
+<p>ベンチマークで重複コードのコピペ(ストップウォッチを前後に挟んだり)を省くために抽象クラスを作りました。このList&lt;TestClass&gt; TestDataが実際にシリアライズ/デシリアライズに使ったデータになります。Enumerable.Range(1, 100000)のToListで10万件のリスト生成。KeyValuePairの配列は、全て長さ10で、DictionaryのToArrayで作っています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class SerializerBenchmark&lt;T&gt; : SerializerBenchmark
+{
+    private T serializer;
+    private string name;
+    Action&lt;Stream, Object&gt; serialize;
+    Func&lt;Stream, Object&gt; deserialize;
+
+    private string FileName { get { return name + &quot;.temp&quot;; } }
+
+    public SerializerBenchmark(T serializer, Func&lt;T, Action&lt;Stream, Object&gt;&gt; serializeSelector, Func&lt;T, Func&lt;Stream, Object&gt;&gt; deserializeSelector, string optional = null)
+    {
+        this.serializer = serializer;
+        this.name = serializer.GetType().Name + ((optional == null) ? &quot;&quot; : &quot; &quot; + optional);
+        this.serialize = serializeSelector(serializer);
+        this.deserialize = deserializeSelector(serializer);
+    }
+
+    private void Bench(string label, Action action)
+    {
+        GC.Collect();
+        Console.WriteLine(label + &quot; &quot; + name);
+        var sw = Stopwatch.StartNew();
+        action();
+        Console.WriteLine(sw.Elapsed);
+    }
+
+    private void OpenAndExecute(string path, Action&lt;FileStream&gt; action)
+    {
+        using (var fs = File.Open(path, FileMode.OpenOrCreate))
+        {
+            action(fs);
+        }
+    }
+
+    public override void Serialize()
+    {
+        Bench(&quot;Serialize&quot;, () =&gt; OpenAndExecute(FileName, fs =&gt; serialize(fs, TestData)));
+        Console.WriteLine(new FileInfo(FileName).Length / 1024 / 1024 + &quot;MB&quot;);
+    }
+
+    public override void Deserialize()
+    {
+        List&lt;TestClass&gt; data = null;
+        Bench(&quot;Deserialize&quot;, () =&gt; OpenAndExecute(FileName, fs =&gt; data = (List&lt;TestClass&gt;)deserialize(fs)));
+        Console.Write(&quot;Check =&gt; &quot;);
+        Console.WriteLine(TestData.SequenceEqual(data) ? &quot;OK&quot; : &quot;NG&quot;);
+    }
+}
+</code></pre>
+<p>こちらがベンチマークの中身。処理を共通化したかったのですが、各シリアライザがIFormatter（Serialize,Deserializeメソッドを持つインターフェイス）を実装している、なんてことは全くなくて共通化しようがなくてうぎゃー。せめてメソッド名が全てSerializeならdynamic使うという最終手段もあるけれど、DataContractSerializerのメソッド名はWriteObjectだし、ダメだこりゃ。</p>
+<p>で、気づいたのがSerializeはAction&lt;Stream, Object&gt;、DeserializeはFunc&lt;Stream, Object&gt;だということ。というわけで、各メソッドそのものをコンストラクタで渡してあげる形にすることで共通化できた。めでたしめでたし。もはやFuncやActionのない世界は考えられませんね！え、Javaのことですか知りません。</p>
+<p>Deserialize時には、正しくデシリアライズ出来たかのチェックを仕込んでいます。データがListなのでLinqのSequenceEqualで元データと値比較。Listの要素であるTestClassもIEquatableなので、全部値比較で確認。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">static class Program
+{
+    static void Main(string[] args)
+    {
+        var bench = new List&lt;SerializerBenchmark&gt;
+        {
+            SerializerBenchmark.Create(new BinaryFormatter(), x =&gt; x.Serialize, x =&gt; x.Deserialize),
+            SerializerBenchmark.Create(new XmlSerializer(typeof(List&lt;TestClass&gt;)), x =&gt; x.Serialize, x =&gt; x.Deserialize),
+            SerializerBenchmark.Create(new DataContractSerializer(typeof(List&lt;TestClass&gt;)), x =&gt; x.WriteObject, x =&gt; x.ReadObject),
+            SerializerBenchmark.Create(new DataContractSerializer(typeof(List&lt;TestClass&gt;)),
+                x =&gt; (s, data) =&gt; XmlDictionaryWriter.CreateBinaryWriter(s).Using(xw =&gt; x.WriteObject(xw, data)),
+                x =&gt; s =&gt; XmlDictionaryReader.CreateBinaryReader(s,XmlDictionaryReaderQuotas.Max).Using(xr =&gt; x.ReadObject(xr)),
+                &quot;Binary&quot;),
+            SerializerBenchmark.Create(new DataContractJsonSerializer(typeof(List&lt;TestClass&gt;)), x =&gt; x.WriteObject, x =&gt; x.ReadObject),
+            SerializerBenchmark.Create(new DataContractJsonSerializer(typeof(List&lt;TestClass&gt;)),
+                x =&gt; (s, data) =&gt; XmlDictionaryWriter.CreateBinaryWriter(s).Using(xw =&gt; x.WriteObject(xw, data)),
+                x =&gt; s =&gt; XmlDictionaryReader.CreateBinaryReader(s,XmlDictionaryReaderQuotas.Max).Using(xr =&gt; x.ReadObject(xr)),
+                &quot;Binary&quot;),
+            SerializerBenchmark.Create(new NetDataContractSerializer(), x =&gt; x.Serialize, x =&gt; x.Deserialize),
+            SerializerBenchmark.Create(new NetDataContractSerializer(),
+                x =&gt; (s, data) =&gt; XmlDictionaryWriter.CreateBinaryWriter(s).Using(xw =&gt; x.WriteObject(xw, data)),
+                x =&gt; s =&gt; XmlDictionaryReader.CreateBinaryReader(s,XmlDictionaryReaderQuotas.Max).Using(xr =&gt; x.ReadObject(xr)),
+                &quot;Binary&quot;),
+            SerializerBenchmark.Create(ProtoBuf.Serializer.CreateFormatter&lt;List&lt;TestClass&gt;&gt;(), x =&gt; x.Serialize, x =&gt; x.Deserialize, &quot;- Protocol Buffers&quot;),
+            SerializerBenchmark.Create(new MsgPackFormatter(), x =&gt; x.Serialize, x =&gt; x.Deserialize, &quot;- MessagePack&quot;),
+            SerializerBenchmark.Create(new JsonSerializer(),
+                x =&gt; (s, data) =&gt; new StreamWriter(s).Using(sw =&gt; new JsonTextWriter(sw).Using(tw=&gt; x.Serialize(tw, data))),
+                x =&gt; s =&gt; new StreamReader(s).Using(sr =&gt; new JsonTextReader(sr).Using(tr=&gt; x.Deserialize&lt;List&lt;TestClass&gt;&gt;(tr))),
+                &quot;- JSON.NET&quot;),
+            SerializerBenchmark.Create(new JsonSerializer(),
+                x =&gt; (s, data) =&gt; new BsonWriter(s).Using(bw =&gt; x.Serialize(bw, data)),
+                x =&gt; s =&gt; new BsonReader(s){ReadRootValueAsArray = true}.Using(br =&gt; x.Deserialize&lt;List&lt;TestClass&gt;&gt;(br)),
+                &quot;- JSON.NET BSON&quot;)
+        };
+
+        bench.ForEach(b =&gt; b.Serialize());
+        Console.WriteLine();
+        bench.ForEach(b =&gt; b.Deserialize());
+
+        Console.ReadKey();
+    }
+
+    // IDisposable extensions
+
+    static void Using&lt;T&gt;(this T disposable, Action&lt;T&gt; action) where T : IDisposable
+    {
+        using (disposable) action(disposable);
+    }
+
+    static TR Using&lt;T, TR&gt;(this T disposable, Func&lt;T, TR&gt; func) where T : IDisposable
+    {
+        using (disposable) return func(disposable);
+    }
+}
+</code></pre>
+<p>Listに突っ込んで、まとめてForEachで計測。でも何だかゴチャゴチャしててキタナイですね……。Listの最初の3つまでは良いんです。それぞれ一行で。SerializeとDeserialize登録するだけで。その次から想定外でして……。そう、Serializeは決して必ずしもAction&lt;Stream, Object&gt;じゃあなかった！例えばDataContractSerializerでバイナリXML化を行うには、WriteObjectにStreamじゃなくてXmlDictionaryWriterを渡さなきゃいけない。と、いうわけで、そういった特別対応が必要なメソッドには入れ子のラムダ式を作って処理しています。そのせいでゴチャゴチャと。もはや可読性の欠片もない。がくり。入れ子のラムダが出てくると読むのシンドイんですよね、可能な限り避けたいとは思ってるんですが……。</p>
+<p>Using拡張メソッドは、using構文使うと式じゃなくて文になってラムダ式で書きづらくてウザいので無理やり式にするためのシロモノ。そのせいで入れ子が更に入れ子になって可読性落としてる気がする。何事もやりすぎはいけない。</p>
+<h2>まとめ</h2>
+<p>DataContractSerializer良いよね。XmlDictionaryWriter.CreateBinaryWriter突っ込めばバイナリ化も出来るし。あと<a href="http://code.google.com/p/protobuf-net/">protobuf-net</a>はこうして数字見ると本当に凄いね。と、いったことことぐらいしか言うことがなく。</p>
+<p>それとは関係あったりなかったりで、Twitter素晴らしい。毎回思うけれど、やっぱTwitterは素晴らしい。もともと<a href="http://twitter.com/neuecc/status/14755041874" title="Twitter / neuecc: そういえばですが、BinaryFormatterのデ ...">BinaryFormatterなんか遅くね？</a>とTwitterに愚痴ったところからスタートして、色々な人にアドバイスを受けて最終的にこんな記事（斜め上なだけな気はする）になったわけで、Twitterなかったら「遅くね？以上終了」で終わってた。</p>
+<p>私がTwitterをはじめたのは<a href="http://neue.cc/2008/01/04_48.html" title="neue cc - Twitterはじめました">Twitterはじめました</a>とかいう記事で確認出来るところでは2008/01/04(CoD4について書いてますけど、CoD4のシングルはあんま好きじゃなかった、でもその後マルチプレイヤーにはまったので結局MW2買ってますね！)。しかも、この後も当分は何もポストしないままでいて、同年9月の<a href="http://neue.cc/2008/09/30_106.html" title="neue cc - 三度目の正直">三度目の正直</a>とかいう記事でTwitter→はてダへの転送ツールを作ってからようやく始めてました。コードの一部が載ってますけど、postList.Addとかいうのが初々しいなあ。今だとforeach使ったら負け、.ToList()だろ常識的に考えて。ですね。あと、TrimStartの使い方を間違えてるという。1年半前の私のド素人っぷりが伺えて面白い。ていうか、考えてみると物凄く成長しましたね……。</p>
+<p>そして今ではすっかりTwitter中毒です。あらあらうふふ。</p>
+<p>アドバイス受けてばかりというのもアレですので、私でも応えられそうなのがTLに流れてきたり検索(キーワード「Linq」を割と頻繁に眺めてる)にかかった時は答えるようにしています。いや、あんましてないかも。積極的に答えるようにしていきたいなあ、と。そんなわけで、<a href="http://twitter.com/neuecc/" title="neuecc (neuecc) on Twitter">@neuecc</a>でTwitterやってるので気が向いたらフォローしてやってください。</p>
+</div>
+<h1 data-pagefind-sort="date:2010-05-24" data-pagefind-meta="published:2010-05-24"><a href="https://neue.cc/2010/05/24_260.html">JavaScriptエディタとしてのVisual Studioの使い方入門</a></h1>
 <ul class="date"><li>2010-05-24</li></ul>
 <div class="entry_body"><p class="noindent">
 <object width="640" height="385"><param name="movie" value="http://www.youtube.com/v/pyNqIGJVpHs&hl=ja_JP&fs=1&rel=0&hd=1"></param><param name="allowFullScreen" value="true"></param><param name="allowscriptaccess" value="always"></param><embed src="http://www.youtube.com/v/pyNqIGJVpHs&hl=ja_JP&fs=1&rel=0&hd=1" type="application/x-shockwave-flash" allowscriptaccess="always" allowfullscreen="true" width="640" height="385"></embed></object>
@@ -1741,107 +2007,6 @@ $(function()
 </ul>
 <p>Matthew PodwysockiによるRxJSの解説シリーズ。From(mousemove).TakeUntil(mouseup)のネタ元はここだったりして。最高にクール！</p>
 </div>
-<h1 data-pagefind-sort="date:2010-03-09" data-pagefind-meta="published:2010-03-09"><a href="https://neue.cc/2010/03/09_246.html">はてなダイアリー to HTML</a></h1>
-<ul class="date"><li>2010-03-09</li></ul>
-<div class="entry_body"><p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/hatenadiarytohtml.jpg">
-</p>
-<ul>
-<li><a href="http://apps.neue.cc/HatenaDiaryToHTML/0001.zip">ダウンロード ver.0.0.0.1(zip)</a></li>
-</ul>
-<p>はてなダイアリーの記事を根こそぎ取得してローカルHTMLに保存するアプリケーションです。過去ログを全部取得して昇順に並び替えます。カテゴリ指定も可。
-本文抽出アルゴリズムだなんて高尚なことはせず、HTMLをそのまま切り出しているだけのはてなダイアリー完全特化なぶんだけ、デザインやsyntax-highlightなどもそのままで見ることができます。上の画像は<a href="http://d.hatena.ne.jp/NyaRuRu/" title="NyaRuRuの日記">NyaRuRuの日記</a>(勝手に貼ってすみません)の.NETカテゴリーを抽出しているところ。私がC#やLinqを覚えられたのはNyaRuRuさんの日記のお陰といっても過言ではなく、しかも読み返す度に新しい発見があって本当に素晴らしい。ので、度々読み返しているのですが、はてな重い。重い。なら全部ぶっこぬけばいいぢゃない。というのが作った理由でして……。</p>
-<p>あと、最近こそこそごそごそとC++も勉強中なので、 <a href="http://d.hatena.ne.jp/Cryolite/searchdiary?word=%2A%5BC%2B%2B%5D" title="[C++] - Cry’s Diary">[C++] - Cry’s Diary</a>や <a href="http://d.hatena.ne.jp/faith_and_brave/searchdiary?word=%2A%5BC%2B%2B%5D" title="[C++] - Faith and Brave - C++で遊ぼう">[C++] - Faith and Brave - C++で遊ぼう</a>を読むと、(大体は全く分からないのですが)勉強になります。なお、Permalinkは相対パスになってしまい使えないのですが、日付の部分は絶対パスなので、コメント見たくなったりPermalinkを取りたくなったら日付から辿れます。</p>
-<p>こうしてHTMLを自炊(？)すると、電子ブックリーダー欲しくなりますね。それと、リーダーはやっぱブラウザが載ってないとダメよねー。PDF(と独自形式？)だけ見れても嬉しくぁない。そんなに本には興味ない。HTMLが見たいのです。Twitterのログが見たいのです。2chまとめサイトが見たいのです。海外の技術書は結構PDFで買える感じなのでそれはそれで気になるところですが――。</p>
-<p>以下ソースコード。↑のzipにも同梱してありますが。コンパイルには<a href="http://neue.cc/2010/03/02_244.html" title="neue cc - C#でスクレイピング:HTMLパース(Linq to Html)のためのSGMLReader利用法">SGMLReader</a>が必要です。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">static class Program
-{
-    static IEnumerable&lt;T&gt; Unfold&lt;T&gt;(T seed, Func&lt;T, T&gt; func)
-    {
-        for (var value = seed; ; value = func(value))
-        {
-            yield return value;
-        }
-    }
-
-    const string HatenaUrl = &quot;http://d.hatena.ne.jp&quot;;
-
-    static void Main()
-    {
-        Thread.GetDomain().UnhandledException += (sender, e) =&gt;
-        {
-            Console.WriteLine(e.ExceptionObject);
-            Console.ReadLine();
-        };
-
-        Console.WriteLine(&quot;抽出対象のはてなIDを入力してください&quot;);
-        var id = Console.ReadLine();
-        Console.WriteLine(&quot;カテゴリを入力してください(全ての場合は空白)&quot;);
-        var word = Console.ReadLine();
-        Console.WriteLine(&quot;出力ファイル名を入力してください&quot;);
-        var fileName = Console.ReadLine();
-
-        // 抽出クエリ！
-        var root = XElement.Load(new SgmlReader { Href = HatenaUrl + &quot;/&quot; + id + ((word == &quot;&quot;) ? &quot;&quot; : &quot;/searchdiary?word=*[&quot; + Uri.EscapeDataString(word) + &quot;]&quot;) });
-        var contents = Unfold(root,
-            x =&gt;
-            {
-                var prev = x.Element(&quot;head&quot;).Elements(&quot;link&quot;)
-                    .FirstOrDefault(e =&gt; e.Attribute(&quot;rel&quot;) != null &amp;&amp; e.Attribute(&quot;rel&quot;).Value == &quot;prev&quot;);
-                if (prev == null) return null;
-            retry:
-                try
-                {
-                    var url = HatenaUrl + prev.Attribute(&quot;href&quot;).Value;
-                    Console.WriteLine(url); // こういうの挟むのビミョーではある
-                    return XElement.Load(new SgmlReader { Href = url });
-                }
-                catch (WebException) // タイムアウトするので
-                {
-                    Console.WriteLine(&quot;Timeout at &quot; + DateTime.Now.ToString() + &quot; wait 15 seconds...&quot;);
-                    Thread.Sleep(TimeSpan.FromSeconds(15)); // とりあえず15秒待つ
-                    goto retry; // 何となくGOTO使いたい人
-                }
-            })
-            .TakeWhile(x =&gt; x != null)
-            .SelectMany(x =&gt; x
-                .Descendants(&quot;div&quot;)
-                .Where(e =&gt; e.Attribute(&quot;class&quot;) != null &amp;&amp; e.Attribute(&quot;class&quot;).Value == &quot;day&quot;))
-            .TakeWhile(e =&gt; !Regex.IsMatch(e.Value, @&quot;^「\*\[.+\]」に一致する記事はありませんでした。検索語を変えて再度検索してみてください。$&quot;)) // 間違ったカテゴリ入力した時対策
-            .Reverse(); // 古いのから順に見たいので
-
-        // style抽出
-        var styles = root.Element(&quot;head&quot;).Elements(&quot;link&quot;)
-            .Where(e =&gt; e.Attribute(&quot;rel&quot;).Value == &quot;stylesheet&quot;)
-            .Select(e =&gt; { e.SetAttributeValue(&quot;href&quot;, HatenaUrl + e.Attribute(&quot;href&quot;).Value); return e; }) // 副作用ダサい
-            .Concat(root.Element(&quot;head&quot;).Elements(&quot;style&quot;));
-
-        // HTML組み立て！
-        var html = new XStreamingElement(&quot;html&quot;, // まあ、Reverseでバッファに貯めるので焼け石に水ですけどね、XStreamingElement
-            new XStreamingElement(&quot;head&quot;, styles),
-            new XStreamingElement(&quot;body&quot;,
-            // new XElement(&quot;div&quot;, new XAttribute(&quot;class&quot;, &quot;hatena-body&quot;), サイドバーとか邪魔なので無視
-            // new XElement(&quot;div&quot;, new XAttribute(&quot;class&quot;, &quot;main&quot;),
-                new XStreamingElement(&quot;div&quot;, new XAttribute(&quot;id&quot;, &quot;days&quot;),
-                    contents)));
-
-        // 保存
-        var path = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().FullName), fileName + &quot;.html&quot;);
-        var xws = new XmlWriterSettings { Indent = true, CheckCharacters = false }; // 不正な文字のあるサイトを書き出すと落ちるので防止
-        using (var xw = XmlWriter.Create(path, xws))
-        {
-            html.Save(xw);
-        }
-    }
-}
-</code></pre>
-<p>try-catchが出るとゴチャついて嫌。なのだけど、しょうがないか。それと
-Unfoldはどうしたものかねえ。極力、標準演算子のみで済ませたいんですが、今回はちょっと使わざるを得なかったと思っています。次のページのURLを得るには、取得したHTMLから解析しなければならない。下流で解析し取得した次のURLは、上流に渡さなきゃいけない。のですが、通常は下から上に渡せないのがLinqなのよね。そんな場合、外部変数を介して渡すか、Unfoldか、場合によってはScanなんかを使うかになるわけで、とにかく外部変数は避けたかったのでUnfoldを使いました。</p>
-<p>HTMLへの書き出し部分では物珍しい
-XStreamingElementを使ってみました。今回はただ単に書き出すだけなので、通常のXElementのようにメモリ内にツリーを保持する必要はないし、相当大きいXmlを扱うため効率も気になってくるところ。そこで遅延ストリーム書き込みを可能にするXStreamingElementの出番です。詳しくは <a href="http://msdn.microsoft.com/ja-jp/library/bb387013.aspx" title="方法: 大きな XML ドキュメントのストリーミング変換を実行する">方法: 大きな XML ドキュメントのストリーミング変換を実行する</a> をどうぞ。とはいっても、このプログラムでは反転させるためReverseでバッファに全て溜め込んでいるので、まあ……。XStreamingElementって言いたいだけちゃうんか、みたいな。</p>
-<p>デザインはdiv class=hatena-bodyとdiv class=mainを抜いているので(不必要なサイドバーの描画を除去するため)、この二つに依存するCSSが書かれているサイトの場合はデザインが崩れることがあります。ちなみに<a href="http://d.hatena.ne.jp/neuecc/" title="neuecc clip">neuecc clip</a>はこの二つどころか、その他にもwrapperを置いているというデタラメなCSS構造をしているため、デザインは保存出来ません。全くもって酷い。もっとスクレイピングに優しいHTMLを書かないとダメですな。</p>
-<p>HTMLへの書き出し部分ははまりどころでした。最初Save(fileName)で保存していたんですが、特定のサイトの特定の部分で落ちてしまって困りました。具体的には <a href="http://d.hatena.ne.jp/faith_and_brave/20080723">2008-07-23 - Faith and Brave - C++で遊ぼう</a> で(例に出してすみません)、Protocol Bufferによる出力結果がInvalidXmlCharに引っかかってアウト、のようです。回避する方法は、XmlWriterSettingsのCheckCharactersをfalseに設定したXmlWriterを生成して書き出せばOK。</p>
-</div>
 <a href="https://neue.cc/21">Prev |</a>
 <a href="https://neue.cc/23">| Next</a>
 </div>
@@ -1865,6 +2030,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/08/">2024-08</a>
 <li><a href="https://neue.cc/2024/07/">2024-07</a>
 <li><a href="https://neue.cc/2024/06/">2024-06</a>
 <li><a href="https://neue.cc/2024/05/">2024-05</a>

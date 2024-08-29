@@ -74,7 +74,109 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2013-02-08" data-pagefind-meta="published:2013-02-08"><a href="https://neue.cc/2013/02/08_396.html">連打対策などりの同時アクセス禁止機構</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2013-02-19" data-pagefind-meta="published:2013-02-19"><a href="https://neue.cc/2013/02/19_397.html">C#でぬるぽを回避するどうでもいい方法</a></h1>
+<ul class="date"><li>2013-02-19</li></ul>
+<div class="entry_body"><p>どうもペチパーです。嘘です逃げないで。まあ、どうでもいいPHPの例をまずは出しませう。あ、逃げないで、PHPの話はすぐやめるんで。</p>
+<pre data-pagefind-ignore="all"><code class="language-php">// ネストしてる配列
+$hoge[&quot;huga&quot;][&quot;hage&quot;][&quot;tako&quot;] = &quot;なのなの&quot;;
+
+// なのなの
+$v = isset($hoge[&quot;huga&quot;][&quot;hage&quot;][&quot;tako&quot;])
+    ? $hoge[&quot;huga&quot;][&quot;hage&quot;][&quot;tako&quot;]
+    : &quot;ない&quot;;
+
+// 途中で欠けてる配列
+$hoge[&quot;huga&quot;] = &quot;なのなの&quot;;
+
+// ない
+$v = isset($hoge[&quot;huga&quot;][&quot;hage&quot;][&quot;tako&quot;])
+    ? $hoge[&quot;huga&quot;][&quot;hage&quot;][&quot;tako&quot;]
+    : &quot;ない&quot;;
+</code></pre>
+<p>全体的にキモいんですが、まあ無視してもらって、何が言いたいか、と言うとisset。これはネストしてる部分も一気に評価してくれるのです。フツーの関数だと常識的に考えて評価は先に内側で行うので配列の境界外で死ぬんですが、issetは関数みたいな見た目だけど実は言語構文なのだ！キモチワルイ。ともあれ、そんなわけでネストしてるものの有無を一気にチェックできるのです。</p>
+<p>で、PHPのこと書いてるとサイト違うので、C#の話をしませう。</p>
+<h2>C#でネストネスト</h2>
+<p>PHPは何でも連想配列なのですが、C#だったらクラスのプロパティでしょうか。以下のようなシチュエーション。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// こういうドカドカした構造があるとして
+class Hoge
+{
+    public Huga Prop1 { get; set; }
+}
+
+class Huga
+{
+    public Hage Prop2 { get; set; }
+}
+
+class Hage
+{
+    public string Prop3 { get; set; }
+}
+
+// こっちプログラム本体
+var hoge = new Hoge();
+
+// とちゅーでヌルぽが発生すると死んじゃうんの回避が醜悪！
+var prop3 = (hoge != null &amp;&amp; hoge.Prop1 != null &amp;&amp; hoge.Prop1.Prop2 != null &amp;&amp; hoge.Prop1.Prop2.Prop3 != null)
+    ? hoge.Prop1.Prop2.Prop3
+    : null;
+</code></pre>
+<p>!=nullの連鎖が面倒くさいですぅー。なんとかしてくださいぃー。ぴーHPに負けてるんじゃないですかぁー？とか言われてないですが言われてるってことにするので、しょうがないからエレガントな解決策を探してあげました、誰にも頼まれてませんが！</p>
+<h2>Love ExpressionTree</h2>
+<p>こーいう風に書ければいいんでしょ！下のhoge.GetValueOrDefaultってとこです。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// こんなHogeがあるとして
+var hoge = new Hoge();
+
+// すっきり！
+var value = hoge.GetValueOrDefault(x =&gt; x.Prop1.Prop2.Prop3);
+Console.WriteLine(value == null); // true
+
+// 中身が詰まってたら
+hoge = new Hoge { Prop1 = new Huga { Prop2 = new Hage { Prop3 = &quot;ほげ！&quot; } } };
+var value2 = hoge.GetValueOrDefault(x =&gt; x.Prop1.Prop2.Prop3);
+Console.WriteLine(value2); // ほげ！
+</code></pre>
+<p>すっごくスッキリしますね！イイね！</p>
+<p>で、どーやってるかというと、ExpressionTreeでグルグルですよ。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static class MonyaMonyaExtensions
+{
+    public static TR GetValueOrDefault&lt;T, TR&gt;(this T value, Expression&lt;Func&lt;T, TR&gt;&gt; memberSelector)
+        where T : class
+    {
+        var expression = memberSelector.Body;
+
+        var memberNames = new List&lt;string&gt;();
+        while (!(expression is ParameterExpression))
+        {
+            if ((expression is UnaryExpression) &amp;&amp; (expression.NodeType == ExpressionType.Convert))
+            {
+                expression = ((UnaryExpression)expression).Operand;
+                continue;
+            }
+
+            var memberExpression = (MemberExpression)expression;
+            memberNames.Add(memberExpression.Member.Name);
+            expression = memberExpression.Expression;
+        }
+
+        object value2 = value;
+        for (int i = memberNames.Count - 1; i &gt;= 0; i--)
+        {
+            if (value2 == null) return default(TR);
+            var memberName = memberNames[i];
+            dynamic info = value2.GetType().GetMember(memberName)[0];
+            value2 = info.GetValue(value2);
+        }
+
+        return (TR)value2;
+    }
+}
+</code></pre>
+<p>はい。というわけで、一つ言えるのは、これ、あんま速くないんで実用には使わないでくださいね、あくまでネタです、ネタ。</p>
+<h2>もにゃど</h2>
+<p>それもにゃど、という人はLINQでMaybeモナドでも検索しませう。既出なので私は書きません。</p>
+</div>
+<h1 data-pagefind-sort="date:2013-02-08" data-pagefind-meta="published:2013-02-08"><a href="https://neue.cc/2013/02/08_396.html">連打対策などりの同時アクセス禁止機構</a></h1>
 <ul class="date"><li>2013-02-08</li></ul>
 <div class="entry_body"><p>ゆるふわ連打対策のお時間です。連打されて無限にあーーーーーーー！という悲鳴を上げたり上げなかったりするとかしないとしても、何らかの対策したいよね！ということで、ASP.NETのお話。Application.Lock使ってSessionに、というのは複数台数あったら死ぬのでナシね(Application.Lockは当然、一台単位でのロックなので複数台数でロックは共有されてない)。そんなわけで、カジュアルな一手を打ちます。先に利用例から。</p>
 <pre data-pagefind-ignore="all"><code class="language-csharp">static void StandardUsage(string token)
@@ -1782,86 +1884,6 @@ static void Main(string[] args)
 <h2>まとめ</h2>
 <p>まあ、今までは細かい罠があってクソが、となる局面も少なからず多かったわけですが、ようやく整理された、感があります。しょっぱいことは考えないで、甘受していきたいですねー。</p>
 </div>
-<h1 data-pagefind-sort="date:2012-10-12" data-pagefind-meta="published:2012-10-12"><a href="https://neue.cc/2012/10/12_382.html">linq.jsのTypeScript対応とTypeScript雑感</a></h1>
-<ul class="date"><li>2012-10-12</li></ul>
-<div class="entry_body"><p>Microsoftから<a href="http://www.typescriptlang.org/">TypeScript</a>という新言語が発表されました。驚くべきは、あのC#のAnders Hejlsbergが関わっている！これはもう触るしかない。そしてこれはコンパイル後にJavaScriptになる言語(CoffeeとかJSXとかみたいな)なわけで、じゃあlinq.jsを対応させるしかない！というわけで、させました。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// TypeScript
-Enumerable.range(1, 10)
-    .where(x =&gt; x % 2 == 0)
-    .select(x =&gt; x * x)
-    .writeLine();
-
-// コンパイル後
-Enumerable.range(1, 10).where(function (x) {
-    return x % 2 == 0;
-}).select(function (x) {
-    return x * x;
-}).writeLine();
-</code></pre>
-<p>ひゃっはー、もうfunction() { return }とはオサラバだ！そしてこの記述性と最強のコレクション操作であるLINQが合わさると最強に見える。</p>
-<ul>
-<li><a href="http://linqjs.codeplex.com/releases/view/91395">linq.js ver.3.0.3-Beta4</a></li>
-</ul>
-<p>に型定義ファイルは同梱してありますので、是非是非お試しを。NuGetのlinq.js -Preでも入ります。NPMは予定はありますが、まだです、すみません。</p>
-<h2>TypeScriptについて</h2>
-<p>型安全なCoffee Script、といった印象ですね。基本的にはCoffee Scriptに近いと思います。JavaScriptにプラスアルファな構文を採用することで、既存のJSライブラリとの繋がりを良くすることと、綺麗なJavaScriptを吐くことに重きが置かれている。TypeScriptは、比較的素直にJavaScriptに読み解くことが出来て、独自のコード生成は、現状はほぼほぼ無いし、意図的に省かれているようです（例えば非同期にたいしてasync構文を入れたりすると、大量のコード生成が入り、出力されるJavaScriptが機械的に汚れがち）。</p>
-<p>そういった点、機能面では、TypeScriptには物足りなさを感じるところが多いかもしれません。じゃあJavaScriptに対する強みってどこなんだよ！といったら、一つはJavaScriptの冗長な記述性の補正(class,module, arrow function, Object.create/definePropertyとかも最低だしね)。もう一つは、無理なく自然に馴染んだ型付け。</p>
-<p>型はないよりあったほうがいい。でも、型を付けるのがあまりにも苦痛だったら？ちょっとしたコードを書くのにも型！型！型！と押し付けられたら？そりゃあ、嫌だ。というわけで、型推論によって、比較的スムースに書けるようになっています。</p>
-<p>型推論の性質というか範囲というか強さというかは、C#と非常に近いというかC#とまるで一緒なので、C#erならサクッと馴染めます。もっと強力な型推論のある言語に馴染んでいる人だと、え、ここで効かないの？みたいな違和感はあるかもですが。</p>
-<p>また、さすがはMicrosoftというかAnders Hejlsbergというか、入力補完のことを念頭に置いた言語設計になっているので、IDEとの相性が非常に良い。そして最初からVisual StudioによるIDE環境が用意されていることで、型のある利点の一つであるリアルタイムエラー通知や入力補完をたっぷり満喫できます。さらに、それは<a href="http://www.typescriptlang.org/Playground/">TypeScript Playground</a>によってWeb上でも体感できます。というか、もはやPlaygroundはWeb IDEとでも言うべき驚異的な動き！</p>
-<p>また、Windowsだけではなく、最初から<a href="http://blogs.msdn.com/b/interoperability/archive/2012/10/01/sublime-text-vi-emacs-typescript-enabled.aspx">Sublime, Vim, Emacs</a>の対応ファイルが用意されているというところからも、Windowsに限らず幅広く請求したい、という表れだと思います。そして実際、言語はプラットフォーム中立なわけです(最終的にはJavaScriptだしね！)。</p>
-<h2>Structural Subtyping</h2>
-<p>TypeScriptの最も面白いところは、ここです。C#とかのインターフェイスとLLのダックタイピングの中間、みたいな。実にゆるふわなJavaScriptと絶妙に合っててイイ！というかそもそも私はStructural Subtypingって名前だけでぜーんぜん分かってなかったのですが、TypeScriptだと自然と馴染めます。ほむ、どういうことか、というと、一例を。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">union(second: any[], compareSelector?: (element: any) =&gt; any): Enumerable;
-union(second: Enumerable, compareSelector?: (element: any) =&gt; any): Enumerable;
-union(second: { length: number;[index: number]: any; }, compareSelector?: (element: any) =&gt; any): Enumerable;
-</code></pre>
-<p>これはlinq.jsの型定義の一つでunion、和集合を生成するためのメソッドです。なので、元シーケンスと、対象シーケンス(second)が対象になるわけですが、じゃあシーケンスって何？と。列挙できればいいので、配列もそうだし、Enumerableもそう。そして、JavaScriptに特有の存在として、配列みたいだけど配列じゃあないもの(lengthを持っていてインデクサでアクセスできる)、例えばDOMのNodeListとか、もそう。</p>
-<p>で、そういった「lengthを持っていてインデクサでアクセスできる」という型の定義が{ length: number;[index: number]: any; }。これにより、DOMのNodeListやjQuery([0]とかでHTMLElementが取れる)など、配列みたいだけど配列じゃないもの全てが型安全に定義されました。やったね！</p>
-<p>もしC#だったら、対象はインターフェイスで指定するしかないので、IEnumerable&lt;T&gt;を実装していないクソコレクションクラスが存在したら、それは列挙不能になってしまいます。片っ端からオーバーロードを作るのは不可能だし、かといってdynamic secondなどとしてしまってはアレ。</p>
-<p>とはいえ、基本的にC#では最初から全てのシーケンスはIEnumerable&lt;T&gt;を実装している、という前提が成り立っているので、問題はおこらない。でも、JavaScriptは違う。配列みたいだけど配列じゃあないもの、が跋扈してる。でも、そこをanyとして何でも受け入れられるようにしたら型安全じゃあない。安全にしたい。そこをStructural Subtypingが華麗に解決してくれました！惚れた……。</p>
-<h2>TypeScriptはJavaScriptか？</h2>
-<p>JavaScriptコードはそのままTypeScriptだ！ということにYesと言えるかというと、イエスでもあり、しかし割とノーです。私がこの話を聞いて、最初に思ったのは、既存JSコード、つまりライブラリ類もそのままで動くのかな？と。答えはNOです。JS固有の、実行時に切った貼ったして構造作っていくの、ああいうのTypeScriptだと軒並みコンパイルエラーになるので、ダメです。ほとんどのライブラリが絶滅でしょう。</p>
-<p>と、勘違いしていたのですが(yharaさん指摘ありがとうございます！)</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">declare var $; // jQuery
-declare var _; // underscore
-declare var Enumerable; // linq.js
-</code></pre>
-<p>とかって定義すると、これはそれぞれ $:any, _:any, Enumerable:any という扱いになって、以降はどんなチェーンを繋げてもエラーが起こらない、つまりライブラリが正常に読み込めたかのようになります。</p>
-<p>ただ、型チェックや入力補完が効かなくなるので、TypeScript用の型注釈ファイルはあったほうがいいですね。有名ライブラリはともあれ、無名プラグインとかは自前で型注釈書かなければならないかもり。手書きだとかったるいので、自動生成である程度テンプレート吐き出してくれないと、面倒くさい。この辺はMicrosoftだしやってくれるんじゃないかなあ、という淡い期待を抱いていますが……。</p>
-<p>とはいえ、ちょっとしたコンパクトなプラグインを使ったり、ライブラリ使うとしても一部分だけだしー、などというのに、わざわざ型定義も馬鹿らしいわけで、さくっと動的な感じにdeclareできちゃう、というのは素晴らしい話。</p>
-<p>そんなわけで、JavaScript→TypeScriptの相互運用性としては、繋がりはかなり良好。勿論、jQueryなどもスムースに扱うことができます。これは、文法がJavaScriptプラスアルファで構築されているがことの利点です。そしてTypeScript→JavaScriptは、というと、素直なJavaScriptを吐いてくれることもあり、良好です。TypeScriptで作られた生成物は、TypeScriptだけに閉じません。</p>
-<p>JavaScriptを中間言語とする選択肢が増えた。JavaScriptを介することで他の言語とも自由に繋がる。ここには、Webの互換性、中立性を崩す要素は一切ありません。独自言語による囲い込みとかではありません。素直に歓迎できるはずです。ただし、言語としてはあくまでTypeScriptはTypeScriptです。そこだけは、誤解しないほうがいいと思います。文法的に、ES6を若干取り入れているとはいえ、違う言語です。将来的にもTypeScriptはEcmaScriptにならないでしょうし、EcmaScriptはTypeScriptにはならないでしょう。TypeScriptはEcmaScript6のただの代替なのではない、別の価値ある言語です。</p>
-<p>変な期待をして、これJavaScriptじゃないじゃん、とかって難癖つけたりは、あまり良くないですね。</p>
-<h2>TypeScriptとVisual Studio</h2>
-<p>別にMicrosoft環境に閉じる言語ではないので、EmacsでもVimでもいいですが、やはりVisual Studioが第一な点は少なからずあります。LinuxでもIDEで書きたい？きっとJetBrainsがWebStormに搭載してくれるはずです！(実際、Voteはかなり集まってました)</p>
-<p>ともあれ、Visual Studioです。専用拡張のインストールはTypeScriptのサイトから出来ます。プロジェクトテンプレートが何故かC#のところにあって気づきにくいことに注意！それともう一つ、<a href="http://visualstudiogallery.msdn.microsoft.com/07d54d12-7133-4e15-becb-6f451ea3bea6">Web Essentials</a>を入れましょう。元々Coffee ScriptとLESSに対応していたのですが、今回TypeScriptにも対応してくれました。Web Essentialsを入れることで、保存時のコンパイル（通常の拡張だとビルド時のみ）と、ウィンドウ分割での出力後のJS表示、それとSourceMapファイルの出力を行ってくれます。</p>
-<p class="noindent">
-<img src="http://neue.cc/wp-content/uploads/image/typescript_vs.jpg" />
-</p>
-<p>勿論、IntelliSenseはフルに効くしエラーはリアルタイムでがんがん通知してくれます。TypeScript Playgroundと違うのは、エラーがあるとJSに変換してくれないところですね。まあ、それは正しい挙動なのでいいです。Playgroundで中途半端なエラーのある状態でもガンガン変更表示してくれるのは、それはそれで便利なので、それもまたいいです。</p>
-<p>ちなみに、TypeScript Playgroundでは赤波線が出ている状態は、一応、JSを出力してくれてますが、それはコンパイルエラーの状態で完全な出力がされていないと思って良いです。つまり、本来的には動いてないわけです。この動いていない出力を指して、(現状Firefoxにしか乗ってない)JavaScriptへの互換が不完全とかって難癖つけたりするのは、ほんと良くないですね……。</p>
-<h2>SourceMap</h2>
-<p>Web Essentialsの吐いてくれるSourceMapとは何ぞや、というと、これはTypeScriptのままデバッグができます。コンパイル時にJSを吐いてくれる系言語の欠点として、デバッガを使ったデバッグが困難、というのが挙げられますがSourceMapを使うとそれも解決、します。</p>
-<p class="noindent">
-<img src="http://neue.cc/wp-content/uploads/image/typescript_source.jpg" />
-</p>
-<p>現状、対応ブラウザはChromeと、まあ、他は知らないのですが、とりあえずChromeは対応しています。IE10(とVS2012内蔵デバッガ)も対応してくれると嬉しいなあ。Chromeのデバッガの不満点としては、ブレークポイントが行単位でしか貼れないことですね。ラムダ式の内側に貼れないと、特にLINQのような一行ラムダを多用するものではデバッグがとても不便でして。この辺、改善されていってくれると嬉しい話。</p>
-<h2>vs JavaScript(のIntelliSense)</h2>
-<p>実は、VisualStudio 2012のJavaScriptはかなりサポートが手厚く、裏で常にコードを実行して補完候補を出してくれたりします。</p>
-<p class="noindent">
-<img src="http://neue.cc/wp-content/uploads/image/typescript_js.jpg" />
-</p>
-<p>なので、純粋なIntelliSenseの効きだけでいうと、TypeScriptはJavaScriptに負けているかもしれない！如何せん、特にlinq.jsではシーケンスの要素がanyになってしまいますからね。JavaScript(を裏で動かして解釈する)ならば、ここも補完効いてしまうという。最近のJavaScript IDEは進化しすぎで恐ろしい……。</p>
-<h2>ジェネリクス</h2>
-<p>仕様書にも明言されていますが、正式リリースまでには搭載する予定があるそうです（ちなみに現在は0.8）。ジェネリクスが乗っかるとlinq.jsがすっごくパワフルになるんですよ。如何せん、今はシーケンスの要素の型が全てany扱いで補完が全く効かなくてTypeSafeでもなんでもないのですが、ここが型付けされると完璧なIntelliSense生活！C#並というかむしろC#超えるぐらいの勢いでパーフェクトなLINQ to Objects！なので、相当に待ち遠しいです。</p>
-<h2>Compiler as a Serviceの未来</h2>
-<p>TypeScriptのコンパイラはTypeScriptで書かれてます。これ、別にかっこつけとかでもなんでもなく、非常に重要な意味を持ちます。で、いきなり分かりやすく成果物として出してくれているのが<a href="http://www.typescriptlang.org/Playground/">TypeScript Playground</a>。構文解析がJavaScriptで可能だから、Web上で全て完結するIDEが作れる。C#も次のバージョンではC#コンパイラがC#で書かれるという計画があります。そのことがもたらす価値の一部分は、TypeScriptが教えてくれます。いや、むしろブラウザ上で全て完結というのは、C#以上の魅力がありますね、正直……。</p>
-<h2>結論</h2>
-<p>TypeScriptは、良い言語だと本当に本当に思います。私は、素のJavaScriptも別にそこまで嫌いではないのですけれど、やっぱ、違うなあ、と。なので今後は積極的に使っていきたいところです(CSSもLESSで！)。</p>
-<p>言語設計者が同じということもありますが、特にC#erには絶対馴染むと思うので、(linq.jsとセットで)今までJavaScriptとは無縁だった人も手を出して欲しいですね。きっと気に入りますし、視点が変わります。勿論、ネイティブJSerも是非是非触ってみるといいと思います！というか触ってほしいです。</p>
-<p>あ、あと、軽く流しましたがVisual StudioユーザーならWeb Essentialsも必ず入れておきましょう。これがあるのとないのとでは、TypeScriptの使い勝手全然違ってくるので、TypeScript試すならば必須です。</p>
-</div>
 <a href="https://neue.cc/12">Prev |</a>
 <a href="https://neue.cc/14">| Next</a>
 </div>
@@ -1885,6 +1907,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/08/">2024-08</a>
 <li><a href="https://neue.cc/2024/07/">2024-07</a>
 <li><a href="https://neue.cc/2024/06/">2024-06</a>
 <li><a href="https://neue.cc/2024/05/">2024-05</a>
