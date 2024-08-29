@@ -1,4 +1,4 @@
-# .NET 9 AlternateLookup によるUTF8文字列の高速なDictionary参照
+# .NET 9 AlternateLookup によるC# 13時代のUTF8文字列の高速なDictionary参照
 
 .NET 9 から辞書系のクラス、`Dictionary`, `ConcurrentDictionary`, `HashSet`, `FrozenDictionary`, `FrozenSet`に `GetAlternateLookup<TKey, TValue, TAlternate>()` というメソッドが追加されました。今までDictionaryの操作はTKey経由でしかできませんでした。それは当たり前、なのですが、困るのが文字列キーで、これはstringでも操作したいし、`ReadOnlySpan<char>`でも操作したくなります。今までは`ReadOnlySpan<char>`しか手元にない場合はToStringでstring化が必須でした、ただたんにDictionaryの値を参照したいだけなのに！
 
