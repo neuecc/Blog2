@@ -12,7 +12,7 @@ var dict = new Dictionary<string, int>
     { "baz", 30 }
 };
 
-var lookup = dict.GetAlternateLookup<string, int, ReadOnlySpan<char>>();
+var lookup = dict.GetAlternateLookup<ReadOnlySpan<char>>();
 
 var keys = "foo, bar, baz";
 
@@ -121,7 +121,7 @@ var dict = new Dictionary<byte[], bool>(Utf8StringEqualityComparer.Default)
     { "baz"u8.ToArray(), false }
 };
 
-var lookup = dict.GetAlternateLookup<byte[], bool, ReadOnlySpan<byte>>();
+var lookup = dict.GetAlternateLookup<ReadOnlySpan<byte>>();
 
 // こんな入力があるとする
 
