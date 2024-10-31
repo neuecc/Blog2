@@ -419,7 +419,7 @@ Providerを繋げて、実際にSource Generateさせるやつ。大事という
 
 * RegisterImplementationSourceOutput
 
-ドキュメントが一切ない上に、なんか想定通りの動きをしていないような私の想定が悪いのか、まぁよくわからないけどよくわからないのでよくわからないです。ドキュメントも無なので、とりあえず無視しておきましょう。
+ドキュメントが一切ない上に、なんか想定通りの動きをしていないような私の想定が悪いのか、まぁよくわからないけどよくわからないのでよくわからないです。というか、ビルド時のみ動くRegisterSourceOutput想定、といった内容らしいのですが現状はその辺が実装されていないので実際想定通り動作しない。でよいようです。つまり無視が一番。そのうちなんとかなると思って数年経ってもなんともなってないので、これはなんともならないでフィニッシュっぽい。
 
 ユニットテスト
 ---
@@ -636,6 +636,157 @@ Incremental Generatorを前提にするなら、特に通常の.NET版とやる�
 なお、Unity用限定のSource Generatorを作る場合でも、通常の .NET のライブラリとして扱い、普通に .NET ライブラリとしての開発環境やユニットテストプロジェクトを作ったほうが良いでしょう。普通に作るにもかなり環境をしっかり作らないと大変なので、Unity限定だから！みたいな気持ちで挑むとしんどみが爆発します。
 
 また、ライブラリの配布として[NuGetForUnity](https://github.com/GlitchEnzo/NuGetForUnity)を使ってNuGet経由で落としてきた場合は自動的にRoslynAnalyzerのLabelを張ってくれます、便利！
+
+真のIncremental Generator
+---
+そして最後に、ではないですが重要なことがあり、Incremental Generatorは単純に作ってもIncrementalにはなりません。各ステップで通過するオブジェクトのEqualsを一つ前の生成結果と比較して、合致してれば同一生成結果扱いと判定して後続のステップをスキップする、という仕様になっています。
+
+なので、ここで正しくEqualsが処理できないと、一文字打つたびに最終ステップに進み続けて毎回生成処理までしてしまうため、重たいSource Generatorが出来上がります。
+
+そして単純に作ると、正しくEqualsが処理できない場合が多いです。ContextやCompilationは、毎回別物になるため、それが含まれていれば、それだけで比較は失敗します。TypeSymbolやSyntaxTreeも、同じようでいて別物扱いになります。そこで、取るべき戦略は、早い段階で実際にパース処理までしてしまって、プリミティブのみで構築されたrecordに変換することです。
+
+例えばConsoleAppFrameworkでは以下のようなrecordを用意して
+
+```csharp
+public record class Command
+{
+    public required bool IsAsync { get; init; }
+    public required bool IsVoid { get; init; }
+    public required string Name { get; init; }
+    public required EquatableArray<CommandParameter> Parameters { get; init; }
+    public required string Description { get; init; }
+    public required MethodKind MethodKind { get; init; }
+    public required DelegateBuildType DelegateBuildType { get; init; }
+```
+
+SytnaxProviderを抜けた段階でrecordを生成しています。
+
+```csharp
+var runSource = context.SyntaxProvider
+    .CreateSyntaxProvider((node, ct) =>
+    {
+        if (node.IsKind(SyntaxKind.InvocationExpression))
+        {
+            var invocationExpression = (node as InvocationExpressionSyntax);
+            if (invocationExpression == null) return false;
+
+            var expr = invocationExpression.Expression as MemberAccessExpressionSyntax;
+            if ((expr?.Expression as IdentifierNameSyntax)?.Identifier.Text == "ConsoleApp")
+            {
+                var methodName = expr?.Name.Identifier.Text;
+                if (methodName is "Run" or "RunAsync")
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        return false;
+    }, (context, ct) =>
+    {
+        var reporter = new DiagnosticReporter();
+        var node = (InvocationExpressionSyntax)context.Node;
+        var wellknownTypes = new WellKnownTypes(context.SemanticModel.Compilation);
+        var parser = new Parser(reporter, node, context.SemanticModel, wellknownTypes, DelegateBuildType.MakeCustomDelegateWhenHasDefaultValueOrTooLarge, []);
+        var isRunAsync = (node.Expression as MemberAccessExpressionSyntax)?.Name.Identifier.Text == "RunAsync";
+
+        var command = parser.ParseAndValidateForRun();
+        return new CommanContext(command, isRunAsync, reporter, node); // CommandContextが上のCommandも持っている
+    })
+    .WithTrackingName("ConsoleApp.Run.0_CreateSyntaxProvider"); // annotate for IncrementalGeneratorTest
+
+context.RegisterSourceOutput(runSource, EmitConsoleAppRun);
+```
+
+これによりEqualsが正常に働き、同一内容ならばRegisterSourceOutputでのEmit処理まで行かなくなります。
+
+こうしたrecordを使う場合の注意点は二つあり、一つは配列は参照比較で値比較にならないので、値比較になるようなラッパーを用意してあげるといいでしょう。上で上げた`EqutableArray<T>`は以下のような内容になっています。
+
+
+```csharp
+public readonly struct EquatableArray<T> : IEquatable<EquatableArray<T>>, IEnumerable<T>
+    where T : IEquatable<T>
+{
+    readonly T[]? array;
+
+    public EquatableArray() // for collection literal []
+    {
+        array = [];
+    }
+
+    public EquatableArray(T[] array)
+    {
+        this.array = array;
+    }
+
+    public static implicit operator EquatableArray<T>(T[] array)
+    {
+        return new EquatableArray<T>(array);
+    }
+
+    public ref readonly T this[int index]
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => ref array![index];
+    }
+
+    public int Length => array!.Length;
+
+    public ReadOnlySpan<T> AsSpan()
+    {
+        return array.AsSpan();
+    }
+
+    public ReadOnlySpan<T>.Enumerator GetEnumerator()
+    {
+        return AsSpan().GetEnumerator();
+    }
+
+    IEnumerator<T> IEnumerable<T>.GetEnumerator()
+    {
+        return array.AsEnumerable().GetEnumerator();
+    }
+
+    IEnumerator IEnumerable.GetEnumerator()
+    {
+        return array.AsEnumerable().GetEnumerator();
+    }
+
+    public bool Equals(EquatableArray<T> other)
+    {
+        return AsSpan().SequenceEqual(other.AsSpan());
+    }
+}
+```
+
+もう一つはrecordは全フィールド比較になるため、無視したいデータをパイプライン上に保持できません、が、それだとDiagnosticsもやりづらいし、TypeSymbolなどを持っておきたい場合もあるでしょう。そこでrecordのプロパティとして保持できる、が、イコール比較では無視するようなラッパーも用意すると、回避策としては良いかもしれません。
+
+```csharp
+public readonly struct IgnoreEquality<T>(T value) : IEquatable<IgnoreEquality<T>>
+{
+    public readonly T Value => value;
+
+    public static implicit operator IgnoreEquality<T>(T value)
+    {
+        return new IgnoreEquality<T>(value);
+    }
+
+    public static implicit operator T(IgnoreEquality<T> value)
+    {
+        return value.Value;
+    }
+
+    public bool Equals(IgnoreEquality<T> other)
+    {
+        // always true to ignore equality check.
+        return true;
+    }
+}
+```
+
+このあたりを駆使することで真にIncrementalなGeneratorを作ることが出来ます！また、大事なこととしてはIncrementalで動作しているのかどうかをテストで確認することです。WithTrackingNameというのがその助けになりますが、TrackingNameを取り出すためには、テスト用のGeneratorRunner側でも一工夫いります。そのことについては[neue cc - ConsoleAppFramework v5 - ゼロオーバーヘッド・Native AOT対応のC#用CLIフレームワーク](https://neue.cc/2024/06/13_ConsoleAppFramework_v5.html)に具体例と共に詳しく書いてあるので、そちらを参照ください。
 
 まとめ
 ---
