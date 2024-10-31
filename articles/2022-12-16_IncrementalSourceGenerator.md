@@ -639,7 +639,7 @@ Incremental Generatorを前提にするなら、特に通常の.NET版とやる�
 
 真のIncremental Generator
 ---
-そして最後に、ではないですが重要なことがあり、Incremental Generatorは単純に作ってもIncrementalにはなりません。各ステップで通過するオブジェクトのEqualsを一つ前の生成結果と比較して、合致してれば同一生成結果扱いと判定して後続のステップをスキップする、という仕様になっています。
+そして最後に、ではないですが重要なことがあり、Incremental Generatorは単純に作ってもIncrementalにはなりません。各ステップで通過するオブジェクトのEqualsを前回の生成結果と比較して、合致してれば同一生成結果扱いと判定して後続のステップをスキップする、という仕様になっています。
 
 なので、ここで正しくEqualsが処理できないと、一文字打つたびに最終ステップに進み続けて毎回生成処理までしてしまうため、重たいSource Generatorが出来上がります。
 
@@ -657,6 +657,7 @@ public record class Command
     public required string Description { get; init; }
     public required MethodKind MethodKind { get; init; }
     public required DelegateBuildType DelegateBuildType { get; init; }
+}
 ```
 
 SytnaxProviderを抜けた段階でrecordを生成しています。
@@ -665,6 +666,7 @@ SytnaxProviderを抜けた段階でrecordを生成しています。
 var runSource = context.SyntaxProvider
     .CreateSyntaxProvider((node, ct) =>
     {
+        // このラムダ式内は超高頻度で呼び出されるため軽量なフィルタリングを心掛ける、ToString()などのアロケーションも禁止！
         if (node.IsKind(SyntaxKind.InvocationExpression))
         {
             var invocationExpression = (node as InvocationExpressionSyntax);
@@ -686,6 +688,8 @@ var runSource = context.SyntaxProvider
         return false;
     }, (context, ct) =>
     {
+        // こちらではパース処理をしてEmit時に使う構造だけを抽出する
+        // Diagnosticsとの絡みもあるので、各自工夫が必要
         var reporter = new DiagnosticReporter();
         var node = (InvocationExpressionSyntax)context.Node;
         var wellknownTypes = new WellKnownTypes(context.SemanticModel.Compilation);
@@ -693,10 +697,11 @@ var runSource = context.SyntaxProvider
         var isRunAsync = (node.Expression as MemberAccessExpressionSyntax)?.Name.Identifier.Text == "RunAsync";
 
         var command = parser.ParseAndValidateForRun();
-        return new CommanContext(command, isRunAsync, reporter, node); // CommandContextが上のCommandも持っている
+        return new CommanContext(command, isRunAsync, reporter, node); // record CommandContextが上のCommandも持っている
     })
     .WithTrackingName("ConsoleApp.Run.0_CreateSyntaxProvider"); // annotate for IncrementalGeneratorTest
 
+// 上記で生成しているCommanContextが一致している場合は生成不要ということで、Emitの発火はしない
 context.RegisterSourceOutput(runSource, EmitConsoleAppRun);
 ```
 
