@@ -434,7 +434,7 @@ context.RegisterSourceOutput(source, static (context, source) =&gt;
 <ul>
 <li>RegisterImplementationSourceOutput</li>
 </ul>
-<p>ドキュメントが一切ない上に、なんか想定通りの動きをしていないような私の想定が悪いのか、まぁよくわからないけどよくわからないのでよくわからないです。ドキュメントも無なので、とりあえず無視しておきましょう。</p>
+<p>ドキュメントが一切ない上に、なんか想定通りの動きをしていないような私の想定が悪いのか、まぁよくわからないけどよくわからないのでよくわからないです。というか、ビルド時のみ動くRegisterSourceOutput想定、といった内容らしいのですが現状はその辺が実装されていないので実際想定通り動作しない。でよいようです。つまり無視が一番。そのうちなんとかなると思って数年経ってもなんともなってないので、これはなんともならないでフィニッシュっぽい。</p>
 <h2>ユニットテスト</h2>
 <p>厳密にやるとキリがないので、そこそこゆるふわ感覚でやるようにしてます。もちろんTDDなんてしません。基本的な考え方としては、ユニットテストプロジェクトがAnalyzerとして開発中のSource Generatorプロジェクトをプロジェクト参照して、ソース生成されるようにしておいて、ユニットテストでは、その生成されたコードが期待通り動いているかのテストをする、みたいな雰囲気で良いんじゃないかと思います。生成ソースコードの中身をチェックして一致するか、みたいなのはちょっと手間が無駄にかかりすぎるので……。</p>
 <p>テストプロジェクトはxUnitと、補助ライブラリとして<a href="https://fluentassertions.com/">FluentAssertion</a>を好んで使っています。また、GlobalUsingにテスト系の名前空間を突っ込んでおくと気持ち楽です。</p>
@@ -622,6 +622,138 @@ public partial class MyClass
 <p>Incremental Generatorを前提にするなら、特に通常の.NET版とやることは変わりません。<a href="https://docs.unity3d.com/Manual/roslyn-analyzers.html">Unityのマニュアル</a>通りにビルド済みdllを配置してRoslynAnalyzerとしてLabel設定したmetaを置いておけば、UPMのgit参照とかでも、特に何もせずに自動で認識されます。dllの配置場所はUnityの公式のジェネレーター(例えば com.unity.properties とか)がRuntime配下にいるので、Editorではなく、Runtime側に配置することとしています。</p>
 <p>なお、Unity用限定のSource Generatorを作る場合でも、通常の .NET のライブラリとして扱い、普通に .NET ライブラリとしての開発環境やユニットテストプロジェクトを作ったほうが良いでしょう。普通に作るにもかなり環境をしっかり作らないと大変なので、Unity限定だから！みたいな気持ちで挑むとしんどみが爆発します。</p>
 <p>また、ライブラリの配布として<a href="https://github.com/GlitchEnzo/NuGetForUnity">NuGetForUnity</a>を使ってNuGet経由で落としてきた場合は自動的にRoslynAnalyzerのLabelを張ってくれます、便利！</p>
+<h2>真のIncremental Generator</h2>
+<p>そして最後に、ではないですが重要なことがあり、Incremental Generatorは単純に作ってもIncrementalにはなりません。各ステップで通過するオブジェクトのEqualsを一つ前の生成結果と比較して、合致してれば同一生成結果扱いと判定して後続のステップをスキップする、という仕様になっています。</p>
+<p>なので、ここで正しくEqualsが処理できないと、一文字打つたびに最終ステップに進み続けて毎回生成処理までしてしまうため、重たいSource Generatorが出来上がります。</p>
+<p>そして単純に作ると、正しくEqualsが処理できない場合が多いです。ContextやCompilationは、毎回別物になるため、それが含まれていれば、それだけで比較は失敗します。TypeSymbolやSyntaxTreeも、同じようでいて別物扱いになります。そこで、取るべき戦略は、早い段階で実際にパース処理までしてしまって、プリミティブのみで構築されたrecordに変換することです。</p>
+<p>例えばConsoleAppFrameworkでは以下のようなrecordを用意して</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public record class Command
+{
+    public required bool IsAsync { get; init; }
+    public required bool IsVoid { get; init; }
+    public required string Name { get; init; }
+    public required EquatableArray&lt;CommandParameter&gt; Parameters { get; init; }
+    public required string Description { get; init; }
+    public required MethodKind MethodKind { get; init; }
+    public required DelegateBuildType DelegateBuildType { get; init; }
+</code></pre>
+<p>SytnaxProviderを抜けた段階でrecordを生成しています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var runSource = context.SyntaxProvider
+    .CreateSyntaxProvider((node, ct) =&gt;
+    {
+        if (node.IsKind(SyntaxKind.InvocationExpression))
+        {
+            var invocationExpression = (node as InvocationExpressionSyntax);
+            if (invocationExpression == null) return false;
+
+            var expr = invocationExpression.Expression as MemberAccessExpressionSyntax;
+            if ((expr?.Expression as IdentifierNameSyntax)?.Identifier.Text == &quot;ConsoleApp&quot;)
+            {
+                var methodName = expr?.Name.Identifier.Text;
+                if (methodName is &quot;Run&quot; or &quot;RunAsync&quot;)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        return false;
+    }, (context, ct) =&gt;
+    {
+        var reporter = new DiagnosticReporter();
+        var node = (InvocationExpressionSyntax)context.Node;
+        var wellknownTypes = new WellKnownTypes(context.SemanticModel.Compilation);
+        var parser = new Parser(reporter, node, context.SemanticModel, wellknownTypes, DelegateBuildType.MakeCustomDelegateWhenHasDefaultValueOrTooLarge, []);
+        var isRunAsync = (node.Expression as MemberAccessExpressionSyntax)?.Name.Identifier.Text == &quot;RunAsync&quot;;
+
+        var command = parser.ParseAndValidateForRun();
+        return new CommanContext(command, isRunAsync, reporter, node); // CommandContextが上のCommandも持っている
+    })
+    .WithTrackingName(&quot;ConsoleApp.Run.0_CreateSyntaxProvider&quot;); // annotate for IncrementalGeneratorTest
+
+context.RegisterSourceOutput(runSource, EmitConsoleAppRun);
+</code></pre>
+<p>これによりEqualsが正常に働き、同一内容ならばRegisterSourceOutputでのEmit処理まで行かなくなります。</p>
+<p>こうしたrecordを使う場合の注意点は二つあり、一つは配列は参照比較で値比較にならないので、値比較になるようなラッパーを用意してあげるといいでしょう。上で上げた<code>EqutableArray&lt;T&gt;</code>は以下のような内容になっています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public readonly struct EquatableArray&lt;T&gt; : IEquatable&lt;EquatableArray&lt;T&gt;&gt;, IEnumerable&lt;T&gt;
+    where T : IEquatable&lt;T&gt;
+{
+    readonly T[]? array;
+
+    public EquatableArray() // for collection literal []
+    {
+        array = [];
+    }
+
+    public EquatableArray(T[] array)
+    {
+        this.array = array;
+    }
+
+    public static implicit operator EquatableArray&lt;T&gt;(T[] array)
+    {
+        return new EquatableArray&lt;T&gt;(array);
+    }
+
+    public ref readonly T this[int index]
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get =&gt; ref array![index];
+    }
+
+    public int Length =&gt; array!.Length;
+
+    public ReadOnlySpan&lt;T&gt; AsSpan()
+    {
+        return array.AsSpan();
+    }
+
+    public ReadOnlySpan&lt;T&gt;.Enumerator GetEnumerator()
+    {
+        return AsSpan().GetEnumerator();
+    }
+
+    IEnumerator&lt;T&gt; IEnumerable&lt;T&gt;.GetEnumerator()
+    {
+        return array.AsEnumerable().GetEnumerator();
+    }
+
+    IEnumerator IEnumerable.GetEnumerator()
+    {
+        return array.AsEnumerable().GetEnumerator();
+    }
+
+    public bool Equals(EquatableArray&lt;T&gt; other)
+    {
+        return AsSpan().SequenceEqual(other.AsSpan());
+    }
+}
+</code></pre>
+<p>もう一つはrecordは全フィールド比較になるため、無視したいデータをパイプライン上に保持できません、が、それだとDiagnosticsもやりづらいし、TypeSymbolなどを持っておきたい場合もあるでしょう。そこでrecordのプロパティとして保持できる、が、イコール比較では無視するようなラッパーも用意すると、回避策としては良いかもしれません。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public readonly struct IgnoreEquality&lt;T&gt;(T value) : IEquatable&lt;IgnoreEquality&lt;T&gt;&gt;
+{
+    public readonly T Value =&gt; value;
+
+    public static implicit operator IgnoreEquality&lt;T&gt;(T value)
+    {
+        return new IgnoreEquality&lt;T&gt;(value);
+    }
+
+    public static implicit operator T(IgnoreEquality&lt;T&gt; value)
+    {
+        return value.Value;
+    }
+
+    public bool Equals(IgnoreEquality&lt;T&gt; other)
+    {
+        // always true to ignore equality check.
+        return true;
+    }
+}
+</code></pre>
+<p>このあたりを駆使することで真にIncrementalなGeneratorを作ることが出来ます！また、大事なこととしてはIncrementalで動作しているのかどうかをテストで確認することです。WithTrackingNameというのがその助けになりますが、TrackingNameを取り出すためには、テスト用のGeneratorRunner側でも一工夫いります。そのことについては<a href="https://neue.cc/2024/06/13_ConsoleAppFramework_v5.html">neue cc - ConsoleAppFramework v5 - ゼロオーバーヘッド・Native AOT対応のC#用CLIフレームワーク</a>に具体例と共に詳しく書いてあるので、そちらを参照ください。</p>
 <h2>まとめ</h2>
 <p>C#に最初にこの手の機構が登場したのは2014年、 <a href="https://neue.cc/2014/11/20_485.html">VS2015のRoslynでCode Analyzerを自作する(ついでにUnityコードも解析する)</a> といった記事も書いていたのですが、まぁ正直めっっっちゃくちゃ作りづらかったんですね。</p>
 <p>で、現代、この2022年のSource Generator開発はめっっっっちゃくちゃ作りやすくなってます。もちろん、Roslyn自体の知識が必要で、そしてRoslynはドキュメントが無なので、どちらかというとIntelliSenseから勘をどう働かせるかという勝負になっていて、それはそれで大変ではあるのですが、しかし本当に作りやすくなったな、と思います。もちろんそしてIL.Emitよりも遥かに作りやすいし、パフォーマンスも良い。もうEmitの時代は終わりです。もはや黒魔術を誇る時代でもないのです！動的コード生成の民主化！</p>
