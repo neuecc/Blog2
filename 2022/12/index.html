@@ -623,7 +623,7 @@ public partial class MyClass
 <p>なお、Unity用限定のSource Generatorを作る場合でも、通常の .NET のライブラリとして扱い、普通に .NET ライブラリとしての開発環境やユニットテストプロジェクトを作ったほうが良いでしょう。普通に作るにもかなり環境をしっかり作らないと大変なので、Unity限定だから！みたいな気持ちで挑むとしんどみが爆発します。</p>
 <p>また、ライブラリの配布として<a href="https://github.com/GlitchEnzo/NuGetForUnity">NuGetForUnity</a>を使ってNuGet経由で落としてきた場合は自動的にRoslynAnalyzerのLabelを張ってくれます、便利！</p>
 <h2>真のIncremental Generator</h2>
-<p>そして最後に、ではないですが重要なことがあり、Incremental Generatorは単純に作ってもIncrementalにはなりません。各ステップで通過するオブジェクトのEqualsを一つ前の生成結果と比較して、合致してれば同一生成結果扱いと判定して後続のステップをスキップする、という仕様になっています。</p>
+<p>そして最後に、ではないですが重要なことがあり、Incremental Generatorは単純に作ってもIncrementalにはなりません。各ステップで通過するオブジェクトのEqualsを前回の生成結果と比較して、合致してれば同一生成結果扱いと判定して後続のステップをスキップする、という仕様になっています。</p>
 <p>なので、ここで正しくEqualsが処理できないと、一文字打つたびに最終ステップに進み続けて毎回生成処理までしてしまうため、重たいSource Generatorが出来上がります。</p>
 <p>そして単純に作ると、正しくEqualsが処理できない場合が多いです。ContextやCompilationは、毎回別物になるため、それが含まれていれば、それだけで比較は失敗します。TypeSymbolやSyntaxTreeも、同じようでいて別物扱いになります。そこで、取るべき戦略は、早い段階で実際にパース処理までしてしまって、プリミティブのみで構築されたrecordに変換することです。</p>
 <p>例えばConsoleAppFrameworkでは以下のようなrecordを用意して</p>
@@ -636,11 +636,13 @@ public partial class MyClass
     public required string Description { get; init; }
     public required MethodKind MethodKind { get; init; }
     public required DelegateBuildType DelegateBuildType { get; init; }
+}
 </code></pre>
 <p>SytnaxProviderを抜けた段階でrecordを生成しています。</p>
 <pre data-pagefind-ignore="all"><code class="language-csharp">var runSource = context.SyntaxProvider
     .CreateSyntaxProvider((node, ct) =&gt;
     {
+        // このラムダ式内は超高頻度で呼び出されるため軽量なフィルタリングを心掛ける、ToString()などのアロケーションも禁止！
         if (node.IsKind(SyntaxKind.InvocationExpression))
         {
             var invocationExpression = (node as InvocationExpressionSyntax);
@@ -662,6 +664,8 @@ public partial class MyClass
         return false;
     }, (context, ct) =&gt;
     {
+        // こちらではパース処理をしてEmit時に使う構造だけを抽出する
+        // Diagnosticsとの絡みもあるので、各自工夫が必要
         var reporter = new DiagnosticReporter();
         var node = (InvocationExpressionSyntax)context.Node;
         var wellknownTypes = new WellKnownTypes(context.SemanticModel.Compilation);
@@ -669,10 +673,11 @@ public partial class MyClass
         var isRunAsync = (node.Expression as MemberAccessExpressionSyntax)?.Name.Identifier.Text == &quot;RunAsync&quot;;
 
         var command = parser.ParseAndValidateForRun();
-        return new CommanContext(command, isRunAsync, reporter, node); // CommandContextが上のCommandも持っている
+        return new CommanContext(command, isRunAsync, reporter, node); // record CommandContextが上のCommandも持っている
     })
     .WithTrackingName(&quot;ConsoleApp.Run.0_CreateSyntaxProvider&quot;); // annotate for IncrementalGeneratorTest
 
+// 上記で生成しているCommanContextが一致している場合は生成不要ということで、Emitの発火はしない
 context.RegisterSourceOutput(runSource, EmitConsoleAppRun);
 </code></pre>
 <p>これによりEqualsが正常に働き、同一内容ならばRegisterSourceOutputでのEmit処理まで行かなくなります。</p>
