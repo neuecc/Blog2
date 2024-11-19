@@ -74,7 +74,80 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2024-08-29" data-pagefind-meta="published:2024-08-29"><a href="https://neue.cc/2024/08/29_AlternateLookup.html">.NET 9 AlternateLookup によるC# 13時代のUTF8文字列の高速なDictionary参照</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2024-11-19" data-pagefind-meta="published:2024-11-19"><a href="https://neue.cc/2024/11/19_cysharp_oss.html">CysharpのOSS Top10まとめ / Ulid vs .NET 9 UUID v7 / MagicOnion</a></h1>
+<ul class="date"><li>2024-11-19</li></ul>
+<div class="entry_body"><p>「CysharpのOSS群から見るModern C#の現在地」というタイトルでセッションしてきました。</p>
+<script defer class="speakerdeck-embed" data-id="73bfd578c3324a6e8ce74457445fe9c0" data-ratio="1.7777777777777777" src="//speakerdeck.com/assets/embed.js"></script>
+<p>作りっぱなし、というわけではないですが（比較的メンテナンスしてるとは思います！）、リリースから年月が経ったライブラリをどう思っているかは見えないところありますよね、というわけで、その辺を軽く伝えられたのは良かったのではないかと思います。</p>
+<p>この中だと非推奨に近くなっているのが<a href="https://github.com/Cysharp/ZString">ZString</a>と<a href="https://github.com/Cysharp/Ulid">Ulid</a>でしょうか。</p>
+<h2>Ulid vs .NET 9 UUID v7</h2>
+<p>スライドにも書きましたが、ULIDをそこそこ使ってきての感想としては、「Guidではないこと」が辛いな、と。独自文字列形式とか要らないし。そんなわけで私はむしろUUID v7のほうを薦めたいレベルだったりはします。.NET 9から<code>Guid.CreateVersion7()</code>という形で、標準で生成できるようになりました。</p>
+<p>パフォーマンス的なところは些細なことなので問題ないのですが、 .NET 9未満との互換性が取れないのは厳しいところかもしれません。というわけで、自作のV7実装を用意してあげるといいでしょう。以下に置いておきますのでどうぞ（コードのベースはdotnet/runtimeのCCreateVersion7です）</p>
+<pre data-pagefind-ignore="all"><code class="language-Csharp">public static class GuidEx
+{
+    private const byte Variant10xxMask = 0xC0;
+    private const byte Variant10xxValue = 0x80;
+    private const ushort VersionMask = 0xF000;
+    private const ushort Version7Value = 0x7000;
+
+    public static Guid CreateVersion7() =&gt; CreateVersion7(DateTimeOffset.UtcNow);
+
+    public static Guid CreateVersion7(DateTimeOffset timestamp)
+    {
+        // 普通にGUIDを作る
+        Guid result = Guid.NewGuid();
+
+        // 先頭48bitをいい感じに埋める
+        var unix_ts_ms = timestamp.ToUnixTimeMilliseconds();
+
+        // GUID layout is int _a; short _b; short _c, byte _d;
+        Unsafe.As&lt;Guid, int&gt;(ref Unsafe.AsRef(ref result)) = (int)(unix_ts_ms &gt;&gt; 16); // _a
+        Unsafe.Add(ref Unsafe.As&lt;Guid, short&gt;(ref Unsafe.AsRef(ref result)), 2) = (short)(unix_ts_ms); // _b
+
+        ref var c = ref Unsafe.Add(ref Unsafe.As&lt;Guid, short&gt;(ref Unsafe.AsRef(ref result)), 3);
+        c = (short)((c &amp; ~VersionMask) | Version7Value);
+
+        ref var d = ref Unsafe.Add(ref Unsafe.As&lt;Guid, byte&gt;(ref Unsafe.AsRef(ref result)), 8);
+        d = (byte)((d &amp; ~Variant10xxMask) | Variant10xxValue);
+
+        return result;
+    }
+
+    // GuidにはTimestamp部分を取り出すメソッドがないので、これも用意してあげると便利
+    public static DateTimeOffset GetTimestamp(in Guid guid)
+    {
+        // エンディアンについては特に考慮してません
+        ref var p = ref Unsafe.As&lt;Guid, byte&gt;(ref Unsafe.AsRef(in guid));
+        var lower = Unsafe.ReadUnaligned&lt;uint&gt;(ref p);
+        var upper = Unsafe.ReadUnaligned&lt;ushort&gt;(ref Unsafe.Add(ref p, 4));
+        var time = (long)upper + (((long)lower) &lt;&lt; 16);
+        return DateTimeOffset.FromUnixTimeMilliseconds(time);
+    }
+}
+</code></pre>
+<p>UUID v7のよくあるユースケースはDBの主キーにGUID(UUID v4)の代わりに使う、ということです。UUID v4だとランダムに配置されるので断片化して、auto incrementの主キーに比べると色々と遅くなる。それがv7だとランダムの性質を持ちつつも配置場所はタイムスタンプベースなのでauto incrementと同様になるため性能劣化がない。</p>
+<p>という理屈を踏まえたうえで、.NETのUUID v7事情を踏まえると単純に置き換えるだけで良い、とはなりません。</p>
+<p>GUIDは内部的なバイナリデータとしてはリトルエンディアンで保持していて、出力時に切り分けるというデザインになっています(無指定の場合はlittleEndianでの出力)。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public readonly struct Guid
+{
+    public byte[] ToByteArray()
+    public byte[] ToByteArray(bool bigEndian)
+    public bool TryWriteBytes(Span&lt;byte&gt; destination)
+    public bool TryWriteBytes(Span&lt;byte&gt; destination, bool bigEndian, out int bytesWritten)
+}
+</code></pre>
+<p>String(char36)として格納するなら気にしなくてもいいのですが、GUID型やバイナリ型としてデータベースに格納する時は、UUID v7に関してはビッグエンディアンで書き出さないと、ソート可能にならない非常に都合が悪い。これのハンドリングは言語のデータベースドライバーライブラリの責務となっています。</p>
+<p>代表的なライブラリを見ていくと、MySQLの<a href="https://mysqlconnector.net/connection-options/">mysqlconnector-netはコネクションストリング</a>で <code>GuidFormat=Binary16</code> を指定することでbig-endianでBINARY(16)に書き込む設定となります。</p>
+<p>PostgreSQLの場合、<a href="https://github.com/npgsql/npgsql/blob/94de20fed2e7e64a1eb6f26c9fc044131a362958/src/Npgsql/Internal/Converters/Primitive/GuidUuidConverter.cs#L29">npgsqlのGuidUuidConverter</a>が常にbigEndianとして処理するようになっているようです。</p>
+<p>ではMicrosoft SQL Serverはどうかというと、ばっちしlittle-endianです。ダメです。というわけで、性能を期待してCreateVersion7を使うと、逆に断片化して遅くなるような憂き目にあいます。</p>
+<p>こちらは<a href="https://github.com/dotnet/SqlClient/discussions/2999">dotnet/SqlClientのdiscussions#2999</a>で議論されているようなので、成り行きに注目ということで。今までとの互換性などを考えると一括でbigにしてしまえばいいじゃん、というわけにもいかないしで、中々素直にはいかないかもしれませんね……。</p>
+<p>なお、このことは別に.NET 9がリリースされる前にもわかっていたことなのに（私でもダメだという状況は把握していた）、リリースされるまでアクションが全く起きないというところに、今のSQL Serverへのやる気を感じたりなかったり。</p>
+<h2>MagicOnion</h2>
+<p>イベントではCysharpの @mayuki さんからMagicOnionの入門セッションもありました！</p>
+<script defer class="speakerdeck-embed" data-id="d5b4ad47f5cd4e9f984022e64d623d51" data-ratio="1.7777777777777777" src="//speakerdeck.com/assets/embed.js"></script>
+<p>MagicOnionも2016年の初リリース、2018年のリブート(v2)、googleのgRPC C Coreからgrpc-dotnetベースへの変更、クライアントのHttpClientベースへの変更など、内部的には色々変わってきたし機能面でも磨かれてきています。まだまだ次のアップデートが控えている、最前線で戦える強力なフレームワークとなっています！</p>
+</div>
+<h1 data-pagefind-sort="date:2024-08-29" data-pagefind-meta="published:2024-08-29"><a href="https://neue.cc/2024/08/29_AlternateLookup.html">.NET 9 AlternateLookup によるC# 13時代のUTF8文字列の高速なDictionary参照</a></h1>
 <ul class="date"><li>2024-08-29</li></ul>
 <div class="entry_body"><p>.NET 9 から辞書系のクラス、<code>Dictionary</code>, <code>ConcurrentDictionary</code>, <code>HashSet</code>, <code>FrozenDictionary</code>, <code>FrozenSet</code>に <code>GetAlternateLookup&lt;TKey, TValue, TAlternate&gt;()</code> というメソッドが追加されました。今までDictionaryの操作はTKey経由でしかできませんでした。それは当たり前、なのですが、困るのが文字列キーで、これはstringでも操作したいし、<code>ReadOnlySpan&lt;char&gt;</code>でも操作したくなります。今までは<code>ReadOnlySpan&lt;char&gt;</code>しか手元にない場合はToStringでstring化が必須でした、ただたんにDictionaryの値を参照したいだけなのに！</p>
 <p>その問題も、.NET 9から追加された<code>GetAlternateLookup</code>を使うと、辞書に別の検索キーを持たせることが出来るようになりました。</p>
@@ -2197,6 +2270,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/11/">2024-11</a>
 <li><a href="https://neue.cc/2024/08/">2024-08</a>
 <li><a href="https://neue.cc/2024/07/">2024-07</a>
 <li><a href="https://neue.cc/2024/06/">2024-06</a>

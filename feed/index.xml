@@ -5,7 +5,87 @@
     <link>http://neue.cc/</link>
     <description>C# Technical Blog</description>
     <language>ja</language>
-    <lastBuildDate>Thu, 31 Oct 2024 15:24:39 +0900</lastBuildDate>
+    <lastBuildDate>Tue, 19 Nov 2024 15:51:19 +0900</lastBuildDate>
+    <item>
+      <guid isPermaLink="true">https://neue.cc/2024/11/19_cysharp_oss.html</guid>
+      <link>https://neue.cc/2024/11/19_cysharp_oss.html</link>
+      <title>CysharpのOSS Top10まとめ / Ulid vs .NET 9 UUID v7 / MagicOnion</title>
+      <description>&lt;h1 data-pagefind-sort="date:2024-11-19" data-pagefind-meta="published:2024-11-19"&gt;&lt;a href="https://neue.cc/2024/11/19_cysharp_oss.html"&gt;CysharpのOSS Top10まとめ / Ulid vs .NET 9 UUID v7 / MagicOnion&lt;/a&gt;&lt;/h1&gt;
+&lt;ul class="date"&gt;&lt;li&gt;2024-11-19&lt;/li&gt;&lt;/ul&gt;
+&lt;div class="entry_body"&gt;&lt;p&gt;「CysharpのOSS群から見るModern C#の現在地」というタイトルでセッションしてきました。&lt;/p&gt;
+&lt;script defer class="speakerdeck-embed" data-id="73bfd578c3324a6e8ce74457445fe9c0" data-ratio="1.7777777777777777" src="//speakerdeck.com/assets/embed.js"&gt;&lt;/script&gt;
+&lt;p&gt;作りっぱなし、というわけではないですが（比較的メンテナンスしてるとは思います！）、リリースから年月が経ったライブラリをどう思っているかは見えないところありますよね、というわけで、その辺を軽く伝えられたのは良かったのではないかと思います。&lt;/p&gt;
+&lt;p&gt;この中だと非推奨に近くなっているのが&lt;a href="https://github.com/Cysharp/ZString"&gt;ZString&lt;/a&gt;と&lt;a href="https://github.com/Cysharp/Ulid"&gt;Ulid&lt;/a&gt;でしょうか。&lt;/p&gt;
+&lt;h2&gt;Ulid vs .NET 9 UUID v7&lt;/h2&gt;
+&lt;p&gt;スライドにも書きましたが、ULIDをそこそこ使ってきての感想としては、「Guidではないこと」が辛いな、と。独自文字列形式とか要らないし。そんなわけで私はむしろUUID v7のほうを薦めたいレベルだったりはします。.NET 9から&lt;code&gt;Guid.CreateVersion7()&lt;/code&gt;という形で、標準で生成できるようになりました。&lt;/p&gt;
+&lt;p&gt;パフォーマンス的なところは些細なことなので問題ないのですが、 .NET 9未満との互換性が取れないのは厳しいところかもしれません。というわけで、自作のV7実装を用意してあげるといいでしょう。以下に置いておきますのでどうぞ（コードのベースはdotnet/runtimeのCCreateVersion7です）&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-Csharp"&gt;public static class GuidEx
+{
+    private const byte Variant10xxMask = 0xC0;
+    private const byte Variant10xxValue = 0x80;
+    private const ushort VersionMask = 0xF000;
+    private const ushort Version7Value = 0x7000;
+
+    public static Guid CreateVersion7() =&amp;gt; CreateVersion7(DateTimeOffset.UtcNow);
+
+    public static Guid CreateVersion7(DateTimeOffset timestamp)
+    {
+        // 普通にGUIDを作る
+        Guid result = Guid.NewGuid();
+
+        // 先頭48bitをいい感じに埋める
+        var unix_ts_ms = timestamp.ToUnixTimeMilliseconds();
+
+        // GUID layout is int _a; short _b; short _c, byte _d;
+        Unsafe.As&amp;lt;Guid, int&amp;gt;(ref Unsafe.AsRef(ref result)) = (int)(unix_ts_ms &amp;gt;&amp;gt; 16); // _a
+        Unsafe.Add(ref Unsafe.As&amp;lt;Guid, short&amp;gt;(ref Unsafe.AsRef(ref result)), 2) = (short)(unix_ts_ms); // _b
+
+        ref var c = ref Unsafe.Add(ref Unsafe.As&amp;lt;Guid, short&amp;gt;(ref Unsafe.AsRef(ref result)), 3);
+        c = (short)((c &amp;amp; ~VersionMask) | Version7Value);
+
+        ref var d = ref Unsafe.Add(ref Unsafe.As&amp;lt;Guid, byte&amp;gt;(ref Unsafe.AsRef(ref result)), 8);
+        d = (byte)((d &amp;amp; ~Variant10xxMask) | Variant10xxValue);
+
+        return result;
+    }
+
+    // GuidにはTimestamp部分を取り出すメソッドがないので、これも用意してあげると便利
+    public static DateTimeOffset GetTimestamp(in Guid guid)
+    {
+        // エンディアンについては特に考慮してません
+        ref var p = ref Unsafe.As&amp;lt;Guid, byte&amp;gt;(ref Unsafe.AsRef(in guid));
+        var lower = Unsafe.ReadUnaligned&amp;lt;uint&amp;gt;(ref p);
+        var upper = Unsafe.ReadUnaligned&amp;lt;ushort&amp;gt;(ref Unsafe.Add(ref p, 4));
+        var time = (long)upper + (((long)lower) &amp;lt;&amp;lt; 16);
+        return DateTimeOffset.FromUnixTimeMilliseconds(time);
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;UUID v7のよくあるユースケースはDBの主キーにGUID(UUID v4)の代わりに使う、ということです。UUID v4だとランダムに配置されるので断片化して、auto incrementの主キーに比べると色々と遅くなる。それがv7だとランダムの性質を持ちつつも配置場所はタイムスタンプベースなのでauto incrementと同様になるため性能劣化がない。&lt;/p&gt;
+&lt;p&gt;という理屈を踏まえたうえで、.NETのUUID v7事情を踏まえると単純に置き換えるだけで良い、とはなりません。&lt;/p&gt;
+&lt;p&gt;GUIDは内部的なバイナリデータとしてはリトルエンディアンで保持していて、出力時に切り分けるというデザインになっています(無指定の場合はlittleEndianでの出力)。&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;public readonly struct Guid
+{
+    public byte[] ToByteArray()
+    public byte[] ToByteArray(bool bigEndian)
+    public bool TryWriteBytes(Span&amp;lt;byte&amp;gt; destination)
+    public bool TryWriteBytes(Span&amp;lt;byte&amp;gt; destination, bool bigEndian, out int bytesWritten)
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;String(char36)として格納するなら気にしなくてもいいのですが、GUID型やバイナリ型としてデータベースに格納する時は、UUID v7に関してはビッグエンディアンで書き出さないと、ソート可能にならない非常に都合が悪い。これのハンドリングは言語のデータベースドライバーライブラリの責務となっています。&lt;/p&gt;
+&lt;p&gt;代表的なライブラリを見ていくと、MySQLの&lt;a href="https://mysqlconnector.net/connection-options/"&gt;mysqlconnector-netはコネクションストリング&lt;/a&gt;で &lt;code&gt;GuidFormat=Binary16&lt;/code&gt; を指定することでbig-endianでBINARY(16)に書き込む設定となります。&lt;/p&gt;
+&lt;p&gt;PostgreSQLの場合、&lt;a href="https://github.com/npgsql/npgsql/blob/94de20fed2e7e64a1eb6f26c9fc044131a362958/src/Npgsql/Internal/Converters/Primitive/GuidUuidConverter.cs#L29"&gt;npgsqlのGuidUuidConverter&lt;/a&gt;が常にbigEndianとして処理するようになっているようです。&lt;/p&gt;
+&lt;p&gt;ではMicrosoft SQL Serverはどうかというと、ばっちしlittle-endianです。ダメです。というわけで、性能を期待してCreateVersion7を使うと、逆に断片化して遅くなるような憂き目にあいます。&lt;/p&gt;
+&lt;p&gt;こちらは&lt;a href="https://github.com/dotnet/SqlClient/discussions/2999"&gt;dotnet/SqlClientのdiscussions#2999&lt;/a&gt;で議論されているようなので、成り行きに注目ということで。今までとの互換性などを考えると一括でbigにしてしまえばいいじゃん、というわけにもいかないしで、中々素直にはいかないかもしれませんね……。&lt;/p&gt;
+&lt;p&gt;なお、このことは別に.NET 9がリリースされる前にもわかっていたことなのに（私でもダメだという状況は把握していた）、リリースされるまでアクションが全く起きないというところに、今のSQL Serverへのやる気を感じたりなかったり。&lt;/p&gt;
+&lt;h2&gt;MagicOnion&lt;/h2&gt;
+&lt;p&gt;イベントではCysharpの @mayuki さんからMagicOnionの入門セッションもありました！&lt;/p&gt;
+&lt;script defer class="speakerdeck-embed" data-id="d5b4ad47f5cd4e9f984022e64d623d51" data-ratio="1.7777777777777777" src="//speakerdeck.com/assets/embed.js"&gt;&lt;/script&gt;
+&lt;p&gt;MagicOnionも2016年の初リリース、2018年のリブート(v2)、googleのgRPC C Coreからgrpc-dotnetベースへの変更、クライアントのHttpClientベースへの変更など、内部的には色々変わってきたし機能面でも磨かれてきています。まだまだ次のアップデートが控えている、最前線で戦える強力なフレームワークとなっています！&lt;/p&gt;
+&lt;/div&gt;</description>
+      <pubDate>Tue, 19 Nov 2024 00:00:00 +0900</pubDate>
+      <a10:updated>2024-11-19T00:00:00+09:00</a10:updated>
+    </item>
     <item>
       <guid isPermaLink="true">https://neue.cc/2024/08/29_AlternateLookup.html</guid>
       <link>https://neue.cc/2024/08/29_AlternateLookup.html</link>
@@ -2203,657 +2283,6 @@ partial class MagicOnionGeneratedClientInitializer {}
 &lt;/div&gt;</description>
       <pubDate>Sat, 30 Dec 2023 00:00:00 +0900</pubDate>
       <a10:updated>2023-12-30T00:00:00+09:00</a10:updated>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://neue.cc/2023/12/19_zlogger2.html</guid>
-      <link>https://neue.cc/2023/12/19_zlogger2.html</link>
-      <title>ZLogger v2 による .NET 8活用事例 と Unity C# 11対応の紹介</title>
-      <description>&lt;h1 data-pagefind-sort="date:2023-12-19" data-pagefind-meta="published:2023-12-19"&gt;&lt;a href="https://neue.cc/2023/12/19_zlogger2.html"&gt;ZLogger v2 による .NET 8活用事例 と Unity C# 11対応の紹介&lt;/a&gt;&lt;/h1&gt;
-&lt;ul class="date"&gt;&lt;li&gt;2023-12-19&lt;/li&gt;&lt;/ul&gt;
-&lt;div class="entry_body"&gt;&lt;p&gt;C#用の新しい超高速＆低アロケーションの.NET用ロギングライブラリ、ZLogger v2を公開しました。v1からは何もかもを完全に作り替えた、最新のC#に合わせた新設計になっています。対応プラットフォームは.NET 8が最良ですが .NET Standard 2.0 以上、また Unity 2022.2 以上にも対応しています。.NET / Unityどちらもテキストメッセージと構造化ログの両方に対応しています。&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;a href="https://github.com/Cysharp/ZLogger"&gt;Cysharp/ZLogger&lt;/a&gt;&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;新設計のキーポイントはString Interpolationの全面採用によるクリーンなシンタックスとパフォーマンスの両立です。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;logger.ZLogInformation($&amp;quot;Hello my name is {name}, {age} years old.&amp;quot;);
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;といったように書いたコードは&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;if (logger.IsEnabled(LogLvel.Information))
-{
-    var handler = new ZLoggerInformationInterpolatedStringHandler(30, 2, logger);
-    handler.AppendLiteral(&amp;quot;Hello my name is &amp;quot;);
-    handler.AppendFormatted&amp;lt;string&amp;gt;(name, 0, null, &amp;quot;name&amp;quot;);
-    handler.AppendLiteral(&amp;quot;, &amp;quot;);
-    handler.AppendFormatted&amp;lt;int&amp;gt;(age, 0, null, &amp;quot;age&amp;quot;);
-    handler.AppendLiteral(&amp;quot; years old.&amp;quot;);
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;のようにコンパイル時に分解されます。フォーマット文字列を実行時ではなくコンパイル時に展開すること、パラメーターは&lt;code&gt;AppendFormatted&amp;lt;T&amp;gt;&lt;/code&gt;の形でジェネリクスで受け取ることによりボクシングが発生しないなど、コードからも明らかに効率的なことが見てとれます。ちなみにコンストラクターの30は文字列の長さ、2はパラメーターの数を指していて、ここから必要な初期バッファ数を算出していることも効率化の一つに繋がっています。&lt;/p&gt;
-&lt;p&gt;String Interpolation自体はC# 6.0から搭載されている機能ですが、文法上同じながら&lt;a href="https://devblogs.microsoft.com/dotnet/string-interpolation-in-c-10-and-net-6/"&gt;C# 10.0から強化されたString Interpolation&lt;/a&gt;が搭載されていて、カスタムのString Interpolationを提供することも可能になりました。&lt;/p&gt;
-&lt;p&gt;こうして得られた文字列断片とパラメーターは、最終的には&lt;a href="https://github.com/Cysharp/Utf8StringInterpolation"&gt;Cysharp/Utf8StringInterpolation&lt;/a&gt;を通して文字列化せずに、直接UTF8としてStreamに書き込むことによって、高速化と低アロケーションを実現しています。&lt;/p&gt;
-&lt;p&gt;また、Structured Loggingにおいても、System.Text.JsonのUtf8JsonWriterとタイトに結びつくことにより&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;// 例えば {&amp;quot;name&amp;quot;:&amp;quot;foo&amp;quot;,age:33} のようにUtf8JsonWriterに書き込む
-
-// Source Generator版、実際どうなってるかのイメージがとても分かりやすい。
-public void WriteJsonParameterKeyValues(Utf8JsonWriter writer, JsonSerializerOptions jsonSerializerOptions)
-{
-    writer.WriteString(_jsonParameter_name, this.name);
-    writer.WriteNumber(_jsonParameter_age, this.age);
-}
-
-// StringInterpolation版、ちょっと遠回りな感じですがやってることは一緒。
-public void WriteJsonParameterKeyValues(Utf8JsonWriter writer, JsonSerializerOptions jsonSerializerOptions)
-{
-    for (var i = 0; i &amp;lt; ParameterCount; i++)
-    {
-        ref var p = ref parameters[i];
-        writer.WritePropertyName(p.Name.AsSpan());
-        // MagicalBoxの説明は後述
-        if (!magicalBox.TryReadTo(p.Type, p.BoxOffset, jsonWriter, jsonSerializerOptions))
-        {
-            // ....
-        }
-    }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;やはり直接UTF8として書き込みます。Structured Loggingは最近のトレンドなので、色々な言語のロガーに実装されていますが、パフォーマンスを両立しつつ、ここまでクリーンなシンタックスで実現できているものは他にない！という感じなのでかなり良いのではないでしょうか。&lt;/p&gt;
-&lt;p&gt;では実際ベンチマーク結果でどれぐらい？というと、アロケーションは少なくとも圧倒的です。&lt;/p&gt;
-&lt;p&gt;&lt;img src="https://github.com/Cysharp/ZLogger/assets/46207/ab9c1f8b-a3b4-44fc-86aa-ba8dd6bdbe40" alt="image" /&gt;&lt;/p&gt;
-&lt;p&gt;アロケーションは、という歯切れの悪い言い方をしているのは、念入りに高速になるよう設定したNLogが思ったよりも速かったせいですね、ぐぬぬ……。&lt;/p&gt;
-&lt;p&gt;さて、ZLoggerの特徴のもう一つは、&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/core/extensions/logging"&gt;Microsoft.Extensions.Logging&lt;/a&gt;の上に直接構築していることです。通常のロガーは独自のシステムを持っていて、Microsoft.Extensions.Loggingと繋げる場合はブリッジを通します。現実的なアプリケーションでは ASP .NETを使う場合などMicrosoft.Extensions.Loggingを避けることはほぼ不可能です。.NET 8からはOpenTelemetry対応の強化や&lt;a href="https://learn.microsoft.com/en-us/dotnet/aspire/get-started/aspire-overview"&gt;Aspire&lt;/a&gt;など、ますますMicrosoft.Extensions.Loggingの重要性は増しています。ZLogger v1と異なり、v2ではScopeなど、Microsoft.Extensions.Loggingの全機能に対応しています。&lt;/p&gt;
-&lt;p&gt;そして例えばSerilogのブリッジライブラリの品質は（ソースコードも確認しましたが）かなり低く、実際のパフォーマンスの数字にも現れています。ZLoggerはそうしたオーバーヘッドが一切かかりません。&lt;/p&gt;
-&lt;p&gt;また、デフォルトの設定も非常に重要です。ほとんどのロガーの標準設定は、例えばファイルストリームに書く場合は都度Flushするなど、かなり遅い設定が標準になっています。それを高速化するにはasync, bufferedを適切に調整する必要があり、かつ、取りこぼさないように終了時に確実にFlushさせる必要があるのですが、かなり難しいので、ほとんど標準設定のままの人も多いのではないでしょうか？ZLoggerではデフォルトで最高速になるように調整してあり、かつ、Microsoft.ExtensionsのDIのライフサイクルで最後のFlushも自動でかかるようになっているので、ApplicationBuilderなどでアプリケーションを構築した場合は何も意識しなくても取りこぼしは発生しません。&lt;/p&gt;
-&lt;p&gt;なお、都度Flushのパフォーマンスはストレージの書き込み性能に強く依存するため、例えば最近のマシンのM.2 SSDは非常に高速なため、ローカルでベンチマークすると意外と遅くない、といったことを確認できるかもしれません。ただし、実際にアプリケーションを配置する、例えばクラウドサーバーのストレージ性能がそこまで高いことはないので、ローカルでの結果を過信しないほうがいいでしょう。&lt;/p&gt;
-&lt;h2&gt;MagicalBox&lt;/h2&gt;
-&lt;p&gt;ここからは、パフォーマンスを実現した幾つかのトリックを紹介します。v1から引き継いでいるのは&lt;a href="https://devblogs.microsoft.com/dotnet/an-introduction-to-system-threading-channels/"&gt;System.Threading.Channels&lt;/a&gt;を活用したasyncな非同期書き込みプロセスの作成と、&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.buffers.ibufferwriter-1"&gt;&lt;code&gt;IBufferWriter&amp;lt;byte&amp;gt;&lt;/code&gt;&lt;/a&gt;による効率的なbufferedの利用による、Streamへの書き込み最適化ですが、説明は割愛します。&lt;/p&gt;
-&lt;p&gt;JSON化のために、パラメーターはInterpolatedStringHandlerで、一時的に値として保持します。その場合に、&lt;code&gt;&amp;lt;T&amp;gt;&lt;/code&gt;の値をどのように保持するか、という問題がでてきます。普通に考えると、&lt;code&gt;List&amp;lt;object&amp;gt;&lt;/code&gt;といったようなobject型で保持することになります。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;[InterpolatedStringHandler]
-public ref struct ZLoggerInterpolatedStringHandler
-{
-    // あらゆる&amp;lt;T&amp;gt;の型を格納するためにobjectを使う、ボクシングが発生するので良くはない。
-    List&amp;lt;object&amp;gt; parameters = new ();
-
-    public void AppendFormatted&amp;lt;T&amp;gt;(T value, int alignment = 0, string? format = null, [CallerArgumentExpression(&amp;quot;value&amp;quot;)] string? argumentName = null)
-    {
-        parameters.Add((object)value);
-    }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;それを避けるために、ZLoggerではMagicalBoxという仕組みを用意しました。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;[InterpolatedStringHandler]
-public ref struct ZLoggerInterpolatedStringHandler
-{
-    // 魔法の箱に無限に詰め込む
-    MagicalBox magicalBox;
-    List&amp;lt;int&amp;gt; boxOffsets = new (); // 実際はこの辺は入念にキャッシュされています
-
-    public void AppendFormatted&amp;lt;T&amp;gt;(T value, int alignment = 0, string? format = null, [CallerArgumentExpression(&amp;quot;value&amp;quot;)] string? argumentName = null)
-    {
-        if(magicalBox.TryWrite(value, out var offset)) // boxingが発生しない！
-        {
-            boxOffsets.Add(offset);
-        }
-    }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;MagicalBoxはどんな型(unmanaged型に限る)でも、ボクシングなしに書き込むことができる。というコンセプトで、その実態は&lt;code&gt;byte[]&lt;/code&gt;にUnsafe.Write、offsetを元にUnsafe.Readするというだけの代物です。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;internal unsafe partial struct MagicalBox
-{
-    byte[] storage;
-    int written;
-
-    public MagicalBox(byte[] storage)
-    {
-        this.storage = storage;
-    }
-
-    public bool TryWrite&amp;lt;T&amp;gt;(T value, out int offset)
-    {
-        if (RuntimeHelpers.IsReferenceOrContainsReferences&amp;lt;T&amp;gt;())
-        {
-            offset = 0;
-            return false;
-        }
-
-        Unsafe.WriteUnaligned(ref storage[written], value);
-        offset = written;
-        written += Unsafe.SizeOf&amp;lt;T&amp;gt;();
-        return true;
-    }
-
-    public bool TryRead&amp;lt;T&amp;gt;(int offset, out T value)
-    {
-        if (!RuntimeHelpers.IsReferenceOrContainsReferences&amp;lt;T&amp;gt;())
-        {
-            value = default!;
-            return false;
-        }
-
-        value = Unsafe.ReadUnaligned&amp;lt;T&amp;gt;(ref storage[offset]);
-        return true;
-    }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;この辺は&lt;a href="https://github.com/Cysharp/MemoryPack"&gt;MemoryPack&lt;/a&gt;での実装経験が元になっていて、うまく機能しています。&lt;/p&gt;
-&lt;p&gt;なお、実際のコードでは&lt;code&gt;byte[] storage&lt;/code&gt;の効率的な再利用や非ジェネリクスなRead対応、Enumへの特別対応が入ったりなど、もう少し&lt;a href="https://github.com/Cysharp/ZLogger/blob/ccc3b0e6/src/ZLogger/Internal/MagicalBox.cs"&gt;複雑なコード&lt;/a&gt;になってはいます。さすがに。&lt;/p&gt;
-&lt;h2&gt;カスタムフォーマット文字列&lt;/h2&gt;
-&lt;p&gt;ZLoggerのString Interpolationのいいところは、パラメーター値にメソッド呼び出しを含めると、LogLevelのチェックが入った後に呼び出されるので無駄な実行を防げるところです。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;// これは
-logger.ZLogDebug($&amp;quot;Id {obj.GetId()}: Data: {obj.GetData()}.&amp;quot;);
-
-// このようにLogLevelが有効かどうかチェックした後にメソッドが呼ばれる
-if (logger.IsEnabled(LogLvel.Debug))
-{
-    // snip...
-    writer.AppendFormatterd(obj.GetId());
-    writer.AppendFormatterd(obj.GetData());
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;しかし、メソッド呼び出しをStructured Loggingに出力した場合、ZLoggerはC# 10.0以降から追加された&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.runtime.compilerservices.callerargumentexpressionattribute?view=net-8.0"&gt;CallerArgumentExpression&lt;/a&gt;でパラメーター名を取得しているため、メソッド呼び出しの場合は &amp;quot;obj.GetId()&amp;quot; という微妙極まりない名前で出力されてしまいます。そこで、特殊なカスタムフォーマット文字列で別名を指定することができます。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;// @name で別名を付けられる
-logger.ZLogDebug($&amp;quot;Id {obj.GetId():@id}: Data: {obj.GetData():@data}.&amp;quot;);
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;ZLoggerでは、String Interpolationの本来の式に従って、&amp;quot;,&amp;quot;でアラインメント、&amp;quot;:&amp;quot;でフォーマット文字列を指定することができます。それに加えて特殊な指定として、フォーマット文字列を@から始めた場合はパラメーター名として出力します。&lt;/p&gt;
-&lt;p&gt;@によるパラメーター名指定とフォーマット文字列は併用することができます。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;// Today is 2023-12-19.
-// {&amp;quot;date&amp;quot;:&amp;quot;2023-12-19T11:25:34.3642389+09:00&amp;quot;}
-logger.ZLogDebug($&amp;quot;Today is {DateTime.Now:@date:yyyy-MM-dd}.&amp;quot;);
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;もう一つ、共通の特殊なフォーマット文字列として&amp;quot;json&amp;quot;を指定するとJsonSerializeした形で出力できます（この辺はSerilogの持つ機能からインスパイアされました）&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;var position = new { Latitude = 25, Longitude = 134 };
-var elapsed = 34;
-
-// {&amp;quot;position&amp;quot;:{&amp;quot;Latitude&amp;quot;:25,&amp;quot;Longitude&amp;quot;:134},&amp;quot;elapsed&amp;quot;:34}
-// Processed {&amp;quot;Latitude&amp;quot;:25,&amp;quot;Longitude&amp;quot;:134} in 034 ms.
-logger.ZLogInformation($&amp;quot;Processed {position:json} in {elapsed:000} ms.&amp;quot;);
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;特殊フォーマット文字列は、例えばログレベルやカテゴリー、日付を先頭/末尾に付与するためのPrefixFormatter/SuffixFormatterにも幾つか用意してあります。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;logging.AddZLoggerConsole(options =&amp;gt;
-{
-    options.UsePlainTextFormatter(formatter =&amp;gt;
-    {
-        // 2023-12-19 02:46:14.289 [DBG]......
-        formatter.SetPrefixFormatter($&amp;quot;{0:utc-longdate} [{1:short}]&amp;quot;, (template, info) =&amp;gt; template.Format(info.Timestamp, info.LogLevel));
-    });
-});
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;Timestampには&lt;code&gt;longdate&lt;/code&gt;, &lt;code&gt;utc-longdate&lt;/code&gt;, &lt;code&gt;dateonly&lt;/code&gt;など。LogLevelには&lt;code&gt;short&lt;/code&gt;で3文字ログレベル表記(先頭の長さが一致するのでエディタで開いた時に読みやすくなる)へと変換されます。これら組み込みの特殊フォーマット文字列は、パフォーマンス最適化という意味合いもあります。例えばLogLevelは以下のようなコードになっているので、手で書式を作るよりも、事前組み込みのUTF8文字列で書き込むことで、絶対的に効率がよくなっています。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;static void AppendLogLevel(ref Utf8StringWriter&amp;lt;IBufferWriter&amp;lt;byte&amp;gt;&amp;gt; writer, ref LogLevel value, ref MessageTemplateChunk chunk)
-{
-    if (!chunk.NoAlignmentAndFormat)
-    {
-        if (chunk.Format == &amp;quot;short&amp;quot;)
-        {
-            switch (value)
-            {
-                case LogLevel.Trace:
-                    writer.AppendUtf8(&amp;quot;TRC&amp;quot;u8);
-                    return;
-                case LogLevel.Debug:
-                    writer.AppendUtf8(&amp;quot;DBG&amp;quot;u8);
-                    return;
-                case LogLevel.Information:
-                    writer.AppendUtf8(&amp;quot;INF&amp;quot;u8);
-                    return;
-                case LogLevel.Warning:
-                    writer.AppendUtf8(&amp;quot;WRN&amp;quot;u8);
-                    return;
-                case LogLevel.Error:
-                    writer.AppendUtf8(&amp;quot;ERR&amp;quot;u8);
-                    return;
-                case LogLevel.Critical:
-                    writer.AppendUtf8(&amp;quot;CRI&amp;quot;u8);
-                    return;
-                case LogLevel.None:
-                    writer.AppendUtf8(&amp;quot;NON&amp;quot;u8);
-                    return;
-                default:
-                    break;
-            }
-        }
-
-        writer.AppendFormatted(value, chunk.Alignment, chunk.Format);
-        return;
-    }
-
-    switch (value)
-    {
-        case LogLevel.Trace:
-            writer.AppendUtf8(&amp;quot;Trace&amp;quot;u8);
-            break;
-        case LogLevel.Debug:
-            writer.AppendUtf8(&amp;quot;Debug&amp;quot;u8);
-            break;
-        case LogLevel.Information:
-            writer.AppendUtf8(&amp;quot;Information&amp;quot;u8);
-            break;
-        case LogLevel.Warning:
-            writer.AppendUtf8(&amp;quot;Warning&amp;quot;u8);
-            break;
-        case LogLevel.Error:
-            writer.AppendUtf8(&amp;quot;Error&amp;quot;u8);
-            break;
-        case LogLevel.Critical:
-            writer.AppendUtf8(&amp;quot;Critical&amp;quot;u8);
-            break;
-        case LogLevel.None:
-            writer.AppendUtf8(&amp;quot;None&amp;quot;u8);
-            break;
-        default:
-            writer.AppendFormatted(value);
-            break;
-    }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;h2&gt;.NET 8 XxHash3 + Non-GC Heap&lt;/h2&gt;
-&lt;p&gt;.NET 8から&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.io.hashing.xxhash3"&gt;XxHash3&lt;/a&gt;が追加されました。最速のハッシュアルゴリズムである&lt;a href="https://github.com/Cyan4973/xxHash/"&gt;XxHash&lt;/a&gt;の最新シリーズで、小さいデータから大きいデータまで、迷ったらほぼこれ一択で問題ないだろうという性能になっています。なお、利用にはNuGetから&lt;code&gt;System.IO.Hashing&lt;/code&gt;が必要なので、逆に.NET 8ではなくNET Standard 2.0でも使えます。&lt;/p&gt;
-&lt;p&gt;ZLoggerでも複数箇所で使っているのですが、その中から一例として、String Interpolationの文字列リテラルからキャッシュを取り出す処理の例を。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;// $&amp;quot;Hello my name is {name}, {age} years old.&amp;quot; が生成する文字列リテラルの並び(LiteralList)
-// [&amp;quot;Hello my name is &amp;quot;, &amp;quot;name&amp;quot;, &amp;quot;, &amp;quot;, &amp;quot;age&amp;quot;, &amp;quot; years old.&amp;quot;]
-// これからUTF8変換済みのキャッシュ(MessageSequence)を取り出すという処理
-static readonly ConcurrentDictionary&amp;lt;LiteralList, MessageSequence&amp;gt; cache = new();
-
-// 非.NET 8版
-#if !NET8_0_OR_GREATER
-
-struct LiteralList(List&amp;lt;string?&amp;gt; literals) : IEquatable&amp;lt;LiteralList&amp;gt;
-{
-    [ThreadStatic]
-    static XxHash3? xxhash;
-
-    public override int GetHashCode()
-    {
-        var h = xxhash;
-        if (h == null)
-        {
-            h = xxhash = new XxHash3();
-        }
-        else
-        {
-            h.Reset();
-        }
-
-        var span = CollectionsMarshal.AsSpan(literals);
-        foreach (var item in span)
-        {
-            h.Append(MemoryMarshal.AsBytes(item.AsSpan()));
-        }
-
-        // https://github.com/Cyan4973/xxHash/issues/453
-        // XXH3 64bit -&amp;gt; 32bit, okay to simple cast answered by XXH3 author.
-        return unchecked((int)h.GetCurrentHashAsUInt64());
-    }
-
-    public bool Equals(LiteralList other)
-    {
-        var xs = CollectionsMarshal.AsSpan(literals);
-        var ys = CollectionsMarshal.AsSpan(other.literals);
-
-        if (xs.Length == ys.Length)
-        {
-            for (int i = 0; i &amp;lt; xs.Length; i++)
-            {
-                if (xs[i] != ys[i]) return false;
-            }
-            return true;
-        }
-
-        return false;
-    }
-}
-
-#endif
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;XxHash3はclassなので(&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.hashcode?view=net-8.0"&gt;System.HashCode&lt;/a&gt;みたいにstructが良かったなあ)、ThreadStaticで使いまわしつつ、GetHashCodeを生成しています。XxHash3はulongの出力しかありませんが、作者によると、32bitに落とす場合は特にXORとかかけることもなく直接落として問題ないそうです。&lt;/p&gt;
-&lt;p&gt;ここまでが普通の使い方ですが、.NET 8版ではエクストリームな最適化を入れました。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;#if NET8_0_OR_GREATER
-
-struct LiteralList(List&amp;lt;string?&amp;gt; literals) : IEquatable&amp;lt;LiteralList&amp;gt;
-{
-    // literals are all const string, in .NET 8 it is allocated in Non-GC Heap so can compare by address.
-    // https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-8/#non-gc-heap
-    static ReadOnlySpan&amp;lt;byte&amp;gt; AsBytes(ReadOnlySpan&amp;lt;string?&amp;gt; literals)
-    {
-        return MemoryMarshal.CreateSpan(
-            ref Unsafe.As&amp;lt;string?, byte&amp;gt;(ref MemoryMarshal.GetReference(literals)),
-            literals.Length * Unsafe.SizeOf&amp;lt;string&amp;gt;());
-    }
-
-    public override int GetHashCode()
-    {
-        return unchecked((int)XxHash3.HashToUInt64(AsBytes(CollectionsMarshal.AsSpan(literals))));
-    }
-
-    public bool Equals(LiteralList other)
-    {
-        var xs = CollectionsMarshal.AsSpan(literals);
-        var ys = CollectionsMarshal.AsSpan(other.literals);
-
-        return AsBytes(xs).SequenceEqual(AsBytes(ys));
-    }
-}
-
-#endif
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;&lt;code&gt;List&amp;lt;string&amp;gt;?&lt;/code&gt;を&lt;code&gt;ReadOnlySpan&amp;lt;byte&amp;gt;&lt;/code&gt;に変換して、それでXxHash3.HashToUInt64やSeqeunceEqualを一発で呼んでます。見るからにこちらのほうが効率的なわけですが、しかし、そもそも&lt;code&gt;List&amp;lt;string&amp;gt;?&lt;/code&gt;を&lt;code&gt;ReadOnlySpan&amp;lt;byte&amp;gt;&lt;/code&gt;に変換するのは合法なのか？と。この場合のstringの変換は、&lt;code&gt;ReadOnlySpan&amp;lt;IntPtr&amp;gt;&lt;/code&gt;への変換という意味合いで、つまりヒープにあるstringのアドレスのリストへと変換しているという意図になります。&lt;/p&gt;
-&lt;p&gt;そこまではいいとして、問題はアドレスの比較は危険すぎないか、ということです。まず第一に、stringは文字列として同一であっても実態は別のアドレスにある場合も多い。第二に、ヒープにあるstringのアドレスは固定されていない、移動することがあるということです。辞書のキーとしてGetHashCodeやEqualsを求めるなら、アプリケーション実行中は完全に固定されていなければなりません。&lt;/p&gt;
-&lt;p&gt;ところが今回の利用例に着目すると、String Inteprolationで呼ばれるAppendLiteralはコンパイル時に &lt;code&gt;handler.AppendLiteral(&amp;quot;Hello my name is &amp;quot;);&lt;/code&gt; のように、必ず定数で渡されています。そのため同じ実体を指すことが保証されています。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;[InterpolatedStringHandler]
-public ref struct ZLoggerInterpolatedStringHandler
-{
-    public void AppendLiteral([ConstantExpected] string s)
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;一応保険として、.NET 8から有効化されている&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.diagnostics.codeanalysis.constantexpectedattribute?view=net-8.0"&gt;ConstantExpected&lt;/a&gt;によって、定数だけが渡されることを明示しています。&lt;/p&gt;
-&lt;p&gt;もう一つは、そうした定数の文字列は最初からインターン化されているのですが、そのインターン化された場所が移動しないことは.NET 8まで保証されていませんでした。ところが、.NET 8からはNon-GC Heapが導入されたため、移動しないことが保証されている、といえます。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;// .NET 8からは定数のGC.GetGenerationの結果がint.MaxValue(Non-GC Heapにいる)
-var str = &amp;quot;foo&amp;quot;;
-Console.WriteLine(GC.GetGeneration(str)); // 2147483647
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;これによって、C#だとどうしても避けられないUTF16 StringからUTF8 Stringへの変換を、限界まで高速化することができました。なお、Source Generator版ではこのルックアップコスト自体を削れているため、ベンチマーク結果が最速であった通り、より高速です。&lt;/p&gt;
-&lt;h2&gt;.NET 8 IUtf8SpanFormattable&lt;/h2&gt;
-&lt;p&gt;ZLoggerでは値を文字列を通さずUTF8に直接書き込むことをパフォーマンスの柱にしています。.NET 8から&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.iutf8spanformattable?view=net-8.0"&gt;IUtf8SpanFormattable&lt;/a&gt;という、値の汎用的なUTF8への直接変換を可能にしたインターフェイスが追加されました。ZLoggerは.NET 8以前の.NET Standard 2.0にも対応させるために、intやdoubleなど基本的なプリミティブは特殊な対応によって、UTF8への直接書き込みを実現していますが、.NET 8の場合は対応範囲がより広がるため、できれば.NET 8がお薦めです。&lt;/p&gt;
-&lt;p&gt;なお、IUtf8SpanFormattableはフォーマット文字列のalignmentには関知しないため、分離しているライブラリである&lt;a href="https://github.com/Cysharp/Utf8StringInterpolation"&gt;Cysharp/Utf8StringInterpolation&lt;/a&gt;では.NET Standard 2.0対応と同時に、alignment対応の機能も追加されたライブラリとなっています。&lt;/p&gt;
-&lt;h2&gt;.NET 8 TimeProvider&lt;/h2&gt;
-&lt;p&gt;&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.timeprovider?view=net-8.0"&gt;TimeProvider&lt;/a&gt;は.NET 8から追加された時間に関するAPIの抽象化(TimeZone, Timerなども含む)となっていて、ユニットテスト等でも非常に役に立つ、今後の必須クラスです。TimeProviderは.NET 8未満でも&lt;a href="https://www.nuget.org/packages/Microsoft.Bcl.TimeProvider/"&gt;Microsoft.Bcl.TimeProvider&lt;/a&gt;を通して提供されているため、.NET Standard 2.0やUnityでも利用可能です。&lt;/p&gt;
-&lt;p&gt;そこでZLoggerではZLoggerOptionsにTimerProviderを指定することで、ログ出力の時間を固定することができます。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;// Microsoft.Extensions.TimeProvider.TestingのFakeTimeProviderを使うとよりよい
-class FakeTime : TimeProvider
-{
-    public override DateTimeOffset GetUtcNow()
-    {
-        return new DateTimeOffset(1999, 12, 30, 11, 12, 33, TimeSpan.Zero);
-    }
-
-    public override TimeZoneInfo LocalTimeZone =&amp;gt; TimeZoneInfo.Utc;
-}
-
-public class TimestampTest
-{
-    [Fact]
-    public void LogInfoTimestamp()
-    {
-        var result = new List&amp;lt;string&amp;gt;();
-        using var factory = LoggerFactory.Create(builder =&amp;gt;
-        {
-            builder.AddZLoggerInMemory((options, _) =&amp;gt;
-            {
-                options.TimeProvider = new FakeTime(); // TimeProviderをカスタムのものに設定
-                options.UsePlainTextFormatter(formatter =&amp;gt;
-                {
-                    // Timestampを先頭に付与
-                    formatter.SetPrefixFormatter($&amp;quot;{0} | &amp;quot;, (template, info) =&amp;gt; template.Format(info.Timestamp));
-                });
-            }, x =&amp;gt;
-            {
-                x.MessageReceived += msg =&amp;gt; result.Add(msg);
-            });
-        });
-
-        var logger = factory.CreateLogger&amp;lt;TimestampTest&amp;gt;();
-        logger.ZLogInformation($&amp;quot;Foo&amp;quot;);
-
-        Assert.Equal(&amp;quot;1999-12-30 11:12:33.000 | Foo&amp;quot;, result[0]);
-    }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;ログ出力の完全一致でのテストが必要……！などといった場合に有効に使うことができます。&lt;/p&gt;
-&lt;h2&gt;Source Generator&lt;/h2&gt;
-&lt;p&gt;Microsoft.Extensions.Loggingではハイパフォーマンスなログ出力のために&lt;a href="https://learn.microsoft.com/ja-jp/dotnet/core/extensions/logger-message-generator"&gt;LoggerMessageAttribute&lt;/a&gt;とSource Generatorが標準で提供されています。&lt;/p&gt;
-&lt;p&gt;これは確かにUTF16文字列の生成では非常に優秀ですが、Structured Logging生成部分に関しては疑問符がつきます。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;// このpartial methodは
-[LoggerMessage(LogLevel.Information, &amp;quot;My name is {name}, age is {age}.&amp;quot;)]
-public static partial void MSLog(this ILogger logger, string name, int age, int other);
-
-// このクラスを生成する
-private readonly struct __MSLogStruct : global::System.Collections.Generic.IReadOnlyList&amp;lt;global::System.Collections.Generic.KeyValuePair&amp;lt;string, object?&amp;gt;&amp;gt;
-{
-    private readonly global::System.String _name;
-    private readonly global::System.Int32 _age;
-
-    public __MSLogStruct(global::System.String name, global::System.Int32 age)
-    {
-        this._name = name;
-        this._age = age;
-    }
-
-    public override string ToString()
-    {
-        var name = this._name;
-        var age = this._age;
-
-        return $&amp;quot;My name is {name}, age is {age}.&amp;quot;; // 文字列生成は高速そう（C# 10.0のString Interpolation Improvementsにベタ乗りなので言うことなし！）
-    }
-
-    public static readonly global::System.Func&amp;lt;__MSLogStruct, global::System.Exception?, string&amp;gt; Format = (state, ex) =&amp;gt; state.ToString();
-
-    public int Count =&amp;gt; 4;
-
-    // こちらがStrcuted Loggingのコードですが、ん……？
-    public global::System.Collections.Generic.KeyValuePair&amp;lt;string, object?&amp;gt; this[int index]
-    {
-        get =&amp;gt; index switch
-        {
-            0 =&amp;gt; new global::System.Collections.Generic.KeyValuePair&amp;lt;string, object?&amp;gt;(&amp;quot;name&amp;quot;, this._name),
-            1 =&amp;gt; new global::System.Collections.Generic.KeyValuePair&amp;lt;string, object?&amp;gt;(&amp;quot;age&amp;quot;, this._age),
-            2 =&amp;gt; new global::System.Collections.Generic.KeyValuePair&amp;lt;string, object?&amp;gt;(&amp;quot;other&amp;quot;, this._other),
-            3 =&amp;gt; new global::System.Collections.Generic.KeyValuePair&amp;lt;string, object?&amp;gt;(&amp;quot;{OriginalFormat}&amp;quot;, &amp;quot;My name is {name}, age is {age}.&amp;quot;),
-
-            _ =&amp;gt; throw new global::System.IndexOutOfRangeException(nameof(index)),  // return the same exception LoggerMessage.Define returns in this case
-        };
-    }
-
-    public global::System.Collections.Generic.IEnumerator&amp;lt;global::System.Collections.Generic.KeyValuePair&amp;lt;string, object?&amp;gt;&amp;gt; GetEnumerator()
-    {
-        for (int i = 0; i &amp;lt; 4; i++)
-        {
-            yield return this[i];
-        }
-    }
-
-    global::System.Collections.IEnumerator global::System.Collections.IEnumerable.GetEnumerator() =&amp;gt; GetEnumerator();
-}
-
-[global::System.CodeDom.Compiler.GeneratedCodeAttribute(&amp;quot;Microsoft.Extensions.Logging.Generators&amp;quot;, &amp;quot;8.0.9.3103&amp;quot;)]
-public static partial void MSLog(this global::Microsoft.Extensions.Logging.ILogger logger, global::System.String name, global::System.Int32 age)
-{
-    if (logger.IsEnabled(global::Microsoft.Extensions.Logging.LogLevel.Information))
-    {
-        logger.Log(
-            global::Microsoft.Extensions.Logging.LogLevel.Information,
-            new global::Microsoft.Extensions.Logging.EventId(764917357, nameof(MSLog)),
-            new __MSLogStruct(name, age),
-            null,
-            __MSLogStruct.Format);
-    }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;&lt;code&gt;KeyValuePair&amp;lt;string, object?&amp;gt;&lt;/code&gt; ということで、基本的に普通に作るとボクシングは避けられません、しょーがない。&lt;/p&gt;
-&lt;p&gt;そこで、ZLoggerでは似たようなSource Generator属性である&lt;code&gt;ZLoggerMessageAttribute&lt;/code&gt;を提供しています。これにより、UTF8最適化、ボクシングレスなJSONロギングを可能にしています。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;// LoggerMessageをZLoggerMessageに変えるだけ
-// なお、ZLoggerMessageのフォーマット文字列部分では、String Interpolation版と同じように@による別名やjsonによるJSON化も可能
-[ZLoggerMessage(LogLevel.Information, &amp;quot;My name is {name}, age is {age}.&amp;quot;)]
-static partial void ZLoggerLog(this ILogger logger, string name, int age);
-
-// このようなコードが生成される
-readonly struct ZLoggerLogState : IZLoggerFormattable
-{
-    // JSON用にJsonEncodedTextを事前生成
-    static readonly JsonEncodedText _jsonParameter_name = JsonEncodedText.Encode(&amp;quot;name&amp;quot;);
-    static readonly JsonEncodedText _jsonParameter_age = JsonEncodedText.Encode(&amp;quot;age&amp;quot;);
-
-    readonly string name;
-    readonly int age;
-
-    public ZLoggerLogState(string name, int age)
-    {
-        this.name = name;
-        this.age = age;
-    }
-
-    public IZLoggerEntry CreateEntry(LogInfo info)
-    {
-        return ZLoggerEntry&amp;lt;ZLoggerLogState&amp;gt;.Create(info, this);
-    }
-    
-    public int ParameterCount =&amp;gt; 2;
-    public bool IsSupportUtf8ParameterKey =&amp;gt; true;
-    public override string ToString() =&amp;gt; $&amp;quot;My name is {name}, age is {age}.&amp;quot;;
-
-    // テキストメッセージはUTF8への直接書き込み
-    public void ToString(IBufferWriter&amp;lt;byte&amp;gt; writer)
-    {
-        var stringWriter = new Utf8StringWriter&amp;lt;IBufferWriter&amp;lt;byte&amp;gt;&amp;gt;(literalLength: 21, formattedCount: 2, bufferWriter: writer);
-
-        stringWriter.AppendUtf8(&amp;quot;My name is &amp;quot;u8); // u8でリテラルは直接書き込み
-        stringWriter.AppendFormatted(name, 0, null);
-        stringWriter.AppendUtf8(&amp;quot;, age is &amp;quot;u8);
-        stringWriter.AppendFormatted(age, 0, null);
-        stringWriter.AppendUtf8(&amp;quot;.&amp;quot;u8);            
-
-        stringWriter.Flush();
-    }
-
-    // JSON出力の場合はUtf8JsonWriterに直接書き込むことで完全にボクシング避け
-    public void WriteJsonParameterKeyValues(Utf8JsonWriter writer, JsonSerializerOptions jsonSerializerOptions, IKeyNameMutator? keyNameMutator = null)
-    {
-        // 型によって呼び出すメソッドは異なる(WriteString, WriteNumber, etc...)
-        writer.WriteString(_jsonParameter_name, this.name);
-        writer.WriteNumber(_jsonParameter_age, this.age);
-    }
-
-    // 以下にMessagePack対応などの拡張用のメソッドが実際には生成されますが省略
-} 
-
-static partial void ZLoggerLog(this global::Microsoft.Extensions.Logging.ILogger logger, string name, int age)
-{
-    if (!logger.IsEnabled(LogLevel.Information)) return;
-    logger.Log(
-        LogLevel.Information,
-        new EventId(-1, nameof(ZLoggerLog)),
-        new ZLoggerLogState(name, age),
-        null,
-        (state, ex) =&amp;gt; state.ToString()
-    );
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;Utf8JsonWriterに直接書く、また、キー名はJsonEncodedTextを事前に生成して持っておく、という仕様によってJSON化のパフォーマンスを最大化しています。&lt;/p&gt;
-&lt;p&gt;また、Structured LoggingはJSONに限らず他のフォーマットもありえます。例えばMessagePackを利用することで、より小さく、より高速にすることができるでしょう。ZLoggerでは、そうしたJSON特化のようなビルトインではないプロトコルへの出力においてもボクシングを避けるためのインターフェイスが定義されています。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;public interface IZLoggerFormattable : IZLoggerEntryCreatable
-{
-    int ParameterCount { get; }
-
-    // メッセージ出力に使う
-    void ToString(IBufferWriter&amp;lt;byte&amp;gt; writer);
-
-    // JSON出力に使う
-    void WriteJsonParameterKeyValues(Utf8JsonWriter jsonWriter, JsonSerializerOptions jsonSerializerOptions, IKeyNameMutator? keyNameMutator = null);
-
-    // それ以外の構造化ログ出力に使う
-    ReadOnlySpan&amp;lt;byte&amp;gt; GetParameterKey(int index);
-    ReadOnlySpan&amp;lt;char&amp;gt; GetParameterKeyAsString(int index);
-    object? GetParameterValue(int index);
-    T? GetParameterValue&amp;lt;T&amp;gt;(int index);
-    Type GetParameterType(int index);
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;ちょっと変わったインターフェイスになっていますが、以下のようなループを回すことでボクシングの発生をなくせます。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;for (var i in ParameterCount)
-{
-    var key = GetParameterKey(i);
-    var value = GetParameterValue&amp;lt;int&amp;gt;();
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;こうした設計はADO.NETのIDataRecordの使い方と同じ設計です。また、Unityでもネイティブ→マネージドでの配列のアロケーションを避けるために、インデックス経由で取得することがよくあります。&lt;/p&gt;
-&lt;h2&gt;Unity&lt;/h2&gt;
-&lt;p&gt;UnityはUnity 2023の時点でも正式な対応C#のバージョンは9.0です。ZLoggerはC# 10.0以上のString Interpolationが大前提となっているので、普通は動きません。普通は。ところが、正式にアナウンスはされていないのですが &lt;code&gt;Unity 2022.2&lt;/code&gt; から同梱されているコンパイラのバージョンが上がっていて、内部的にはC# 10.0でコンパイル可能になっていることを発見しました。&lt;/p&gt;
-&lt;p&gt;&lt;code&gt;csc.rsp&lt;/code&gt; ファイルによってコンパイラオプションを渡すことができるので、そこで明示的に言語バージョンを指定してあげると、C# 10.0の全ての文法が利用可能になります。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;-langVersion:10
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;このままだと出力されるcsprojには依然として&lt;code&gt;&amp;lt;LangVersion&amp;gt;9.0&amp;lt;/LangVersion&amp;gt;&lt;/code&gt;が指定されているため、IDE上ではC# 10.0で書けません。そこで&lt;a href="https://github.com/Cysharp/CsprojModifier"&gt;Cysharp/CsprojModifier&lt;/a&gt;を用いて、LangVersionを上書きしてしまいましょう。以下のような&lt;code&gt;LangVersion.props&lt;/code&gt;というファイルを作成して、CsprojModifierに混ぜてもらえば、IDE上でもC# 10.0として記述できるようになります。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-xml"&gt;&amp;lt;Project xmlns=&amp;quot;http://schemas.microsoft.com/developer/msbuild/2003&amp;quot;&amp;gt;
-  &amp;lt;PropertyGroup&amp;gt;
-    &amp;lt;LangVersion&amp;gt;10&amp;lt;/LangVersion&amp;gt;
-    &amp;lt;Nullable&amp;gt;enable&amp;lt;/Nullable&amp;gt;
-  &amp;lt;/PropertyGroup&amp;gt;
-&amp;lt;/Project&amp;gt;
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;Unity向けには&lt;code&gt;AddZLoggerUnityDebug&lt;/code&gt;という拡張を追加してあるので、&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;// こんなグローバルのユーティリティーを用意してあげて
-public static class LogManager
-{
-    static ILoggerFactory loggerFactory;
-
-    public static ILogger&amp;lt;T&amp;gt; CreateLogger&amp;lt;T&amp;gt;() =&amp;gt; loggerFactory.CreateLogger&amp;lt;T&amp;gt;();
-    public static readonly Microsoft.Extensions.Logging.ILogger Global;
-
-    static LogManager()
-    {
-        loggerFactory = LoggerFactory.Create(logging =&amp;gt;
-        {
-            logging.SetMinimumLevel(LogLevel.Trace);
-            logging.AddZLoggerUnityDebug(); // log to UnityDebug
-        });
-        Global = loggerFactory.CreateLogger(&amp;quot;Logger&amp;quot;);
-
-        Application.exitCancellationToken.Register(() =&amp;gt;
-        {
-            loggerFactory.Dispose(); // flush when application exit.
-        });
-    }
-}
-
-// 例えばこんな感じに使ってみる
-public class NewBehaviourScript : MonoBehaviour
-{
-    static readonly ILogger&amp;lt;NewBehaviourScript&amp;gt; logger = LogManager.CreateLogger&amp;lt;NewBehaviourScript&amp;gt;();
-
-    void Start()
-    {
-        var name = &amp;quot;foo&amp;quot;;
-        var hp = 100;
-        logger.ZLogInformation($&amp;quot;{name} HP is {hp}.&amp;quot;);
-    }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;blockquote&gt;
-&lt;p&gt;なお、C# 10.0のString Interpolation性能向上の恩恵を受けれるのはZLogを使った場合のみの話で、通常のString生成にString Interpolationを使っても性能向上はしません。string生成の性能向上にはランタイムにDefaultInterpolatedStringHandlerが必要で、これは .NET 6 以上にのみ同梱されているからです。DefaultInterpolatedStringHandlerが存在しない場合は今まで通りのstring.Formatにフォールバックされるため、普通にボクシングされます。&lt;/p&gt;
-&lt;/blockquote&gt;
-&lt;p&gt;JSONによる構造化ログや出力のカスタマイズ、ファイルへの出力などにも全て対応しています。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;var loggerFactory = LoggerFactory.Create(logging =&amp;gt;
-{
-    logging.AddZLoggerFile(&amp;quot;/path/to/logfile&amp;quot;, options =&amp;gt;
-    {
-        options.UseJsonFormatter();
-    });
-});
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;そしてもう一つボーナスとして、&lt;code&gt;Unity 2022.3.12f1&lt;/code&gt; 以上だとC#のコンパイラバージョンがもう少し上がっていて、&lt;code&gt;-langVersion:preview&lt;/code&gt;を指定するとC# 11.0が使えます。また、ZLoggerのSource Generatorが自動で有効になっているので、&lt;code&gt;[ZLoggerMessage]&lt;/code&gt;を使って生成することができます。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;public static partial class LogExtensions
-{
-    [ZLoggerMessage(LogLevel.Debug, &amp;quot;Hello, {name}&amp;quot;)]
-    public static partial void Hello(this ILogger&amp;lt;NewBehaviourScript&amp;gt; logger, string name);
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;Source Generatorの生成するコードがC# 11.0を要求するので(UTF8 String Literalなどを多用しているため)、&lt;code&gt;[ZLoggerMessage]&lt;/code&gt;が使えるのは&lt;code&gt;Unity 2022.3.12f1&lt;/code&gt; 以上限定となります。&lt;/p&gt;
-&lt;p&gt;なお、Unityには同種の標準ロギングライブラリとして&lt;a href="https://docs.unity3d.com/Packages/com.unity.logging@1.2/manual/index.html"&gt;com.unity.logging&lt;/a&gt;がリリースされています。同じように構造化ロギングやファイル出力が可能なほか、Source Generatorを使ってクラスそのものを自動生成して、メソッドのオーバーロードを引数に応じて生成することで値のボクシング避けをするといった、面白い設計をしていました。Burst云々という話がよく出てきますが、このSource Generatorの大胆な使い方のほうがパフォーマンスの肝だと思います。ZLoggerはC# 10.0のString Interpolationを活用しているわけですが、そういうアプローチでの回避策というのはちょっと考えたことがなかったので、かなり目から鱗です。パフォーマンス的にもかなり練られています。&lt;/p&gt;
-&lt;p&gt;ZLoggerのほうがString Interpolationによる書き味は上、パフォーマンスは、まぁいい勝負するんじゃないかなとは思いたいんですが、どうでしょうね……？&lt;/p&gt;
-&lt;h2&gt;NuGetForUnity&lt;/h2&gt;
-&lt;p&gt;今回Unityへのライブラリの配布は&lt;a href="https://github.com/GlitchEnzo/NuGetForUnity"&gt;NuGetForUnity&lt;/a&gt;を採用しました。これは普通の.NETライブラリへの依存が多いものへの配布に非常に便利で、NuGetForUnityを入れたあとに、GUIでZLoggerをこうして入れると&lt;/p&gt;
-&lt;p&gt;&lt;img src="https://github.com/Cysharp/Utf8StringInterpolation/assets/46207/5ce038b8-85be-4bed-97ec-17aec260fa84" alt="image" /&gt;&lt;/p&gt;
-&lt;p&gt;こんなように依存関係も解決して、Assets/Packagesの下にDLLがばらまかれます。&lt;/p&gt;
-&lt;p&gt;&lt;img src="https://github.com/Cysharp/Utf8StringInterpolation/assets/46207/62a71516-874e-4bc2-bc75-29bf0fac9dd8" alt="image" /&gt;&lt;/p&gt;
-&lt;p&gt;Source Generatorが含まれている場合は、ちゃんと&lt;code&gt;RoslynAnalyzer&lt;/code&gt;のラベルも付与してくれるので、そのままSource GeneratorもUnity上で有効化されています。&lt;/p&gt;
-&lt;p&gt;良い点としては、やはり大量のマネージドDLLの管理を一括でやってくれることと、動作がシンプル（基本的には解決したファイルをAssets/Packagesにばらまくだけ)なのでやっていることがイメージつきやすいところです。同じようなツールとして&lt;a href="https://github.com/xoofx/unitynuget"&gt;UnityNuGet&lt;/a&gt;というものがあるのですが、そちらは独自レジストリに配布しているファイルを引っ張ってくるという作りなので、NuGetForUnity(MS公式のNuGetのレジストリから引っ張ってくる)のほうが素直な挙動で好ましく思います。&lt;/p&gt;
-&lt;p&gt;反面、UnityEngine.dllに依存したコードやUnityのバージョンで分岐するコードは配りにくいところがあります。ZLoggerではそのためのファイル(ZLoggerUnityDebugLoggerProvider)は別途git参照で引っ張ってくるハイブリッド方式での配布としました。かなりバランスの良いやり方かなと思うんですがどうでしょう……？特にCysharpのライブラリはコア部分はUnity非依存のものが多いので、問題なければ今後のCysharpのライブラリはこの形式での配布を基本としていきたいところです。&lt;/p&gt;
-&lt;p&gt;ライブラリ作者側としては、コア部分はDLLで配ることになるのでC# 12のままで良い（今まではUnityのためにC# 9にダウングレードさせて書いたりしてた）のが、とにかくとても楽ですね……！&lt;/p&gt;
-&lt;h2&gt;まとめ&lt;/h2&gt;
-&lt;p&gt;この記事は&lt;a href="https://qiita.com/advent-calendar/2023/csharplang"&gt;C# Advent Calendar 2023&lt;/a&gt;の12月3日分の記事となります。すごい遅刻ですが間に合ったので（？）よし。よくない。&lt;/p&gt;
-&lt;p&gt;なお、ZLogger v2の作成にあたっては &lt;a href="https://github.com/hadashiA/VContainer"&gt;VContainer&lt;/a&gt; や &lt;a href="https://github.com/hadashiA/VYaml"&gt;VYaml&lt;/a&gt; で有名な &lt;a href="https://twitter.com/hadashiA"&gt;@hadashiA&lt;/a&gt; さんに、アイディア出しから細かい実装、度重なる仕様のちゃぶ台返しに付き合ってもらいました。今回のv2は非常に完成度高くなったと思うのですが、自分一人ではここまで達しなかったので大変感謝です。&lt;/p&gt;
-&lt;p&gt;ともあれZLoggerは使いやすさでもパフォーマンスでも最強！のロガーに仕上がったと思いますので、是非使ってみてください。&lt;/p&gt;
-&lt;/div&gt;</description>
-      <pubDate>Tue, 19 Dec 2023 00:00:00 +0900</pubDate>
-      <a10:updated>2023-12-19T00:00:00+09:00</a10:updated>
     </item>
   </channel>
 </rss>

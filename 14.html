@@ -74,7 +74,141 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2012-10-12" data-pagefind-meta="published:2012-10-12"><a href="https://neue.cc/2012/10/12_382.html">linq.jsのTypeScript対応とTypeScript雑感</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2012-10-16" data-pagefind-meta="published:2012-10-16"><a href="https://neue.cc/2012/10/16_383.html">非同期WebRequestとTimeout処理の今昔</a></h1>
+<ul class="date"><li>2012-10-16</li></ul>
+<div class="entry_body"><p>最近はTypeScriptにお熱ですが、とはいえ、C#も大好きな私です。むしろC#は大好きです。今日はすっかり飽き飽きな非同期のTimeout処理について、おさらいすることにしましょう！題材はいつもどーりWebRequestでいいですよね。</p>
+<p>まず、都合のいいTimeoutをシミュレートできるAPIは探せば多分あるでしょうが、面倒なので自分で作りましょう。いえ、簡単です。「空のASP.NET WebApplication」を立ち上げてジェネリックハンドラを追加。とりあえずレスポンスを返すのに3秒かかるということにしときましょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class Timeout : HttpTaskAsyncHandler
+{
+    public override async Task ProcessRequestAsync(HttpContext context)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(3)); // 3秒かかるってことにする
+        context.Response.ContentType = &quot;text/plain&quot;;
+        context.Response.Write(&quot;Hello World&quot;);
+    }
+}
+</code></pre>
+<p>で、そのまま実行してIIS Expressで動いてもらってれば準備できあがり。</p>
+<h2>同期の場合</h2>
+<p>さて、そしてConsoleApplicationを立ちあげて、まずは同期でやる場合でも見ましょうか。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var req = WebRequest.Create(&quot;http://localhost:18018/Timeout.ashx&quot;);
+req.Timeout = 1000; // 1秒でタイムアウト
+
+req.GetResponse();
+</code></pre>
+<p>これはちゃんとタイムアウトでWebExceptionを返してくれます。そりゃそーだ。</p>
+<h2>古き良き非同期の場合</h2>
+<p>じゃあBegin-Endパターンの非同期でやってみましょうか。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var req = WebRequest.Create(&quot;http://localhost:18018/Timeout.ashx&quot;);
+req.Timeout = 1000; // 1秒でタイムアウトのつもり
+
+req.BeginGetResponse(ar =&gt;
+{
+    var res = req.EndGetResponse(ar);
+    Console.WriteLine(new StreamReader(res.GetResponseStream()).ReadLine());
+}, null);
+
+Console.ReadLine(); // 適当に待つ
+</code></pre>
+<p>この結果はなんと、普通にHello Worldと表示されてしまいます。はい、Timeout機能していません、全く。そう、WebRequestのTimeoutプロパティによる設定は同期限定なのだよ、なんだってー。このことはMSDNの<a href="http://msdn.microsoft.com/ja-jp/library/system.net.httpwebrequest.begingetresponse.aspx">BeginGetResponse</a>のとこにも書いてあって、「非同期要求の場合は、クライアント側のアプリケーションが独自のタイムアウト機構を実装する必要があります」ということになっています。</p>
+<h2>ThreadPool.RegisterWaitForSingleObject</h2>
+<p>なので、そこに書いてあるとおり、ThreadPool.RegisterWaitForSingleObjectで実装してみましょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var req = WebRequest.Create(&quot;http://localhost:18018/Timeout.ashx&quot;);
+// req.Timeout = 1000; このTimeoutはイミナイのでイラナイ
+
+var result = req.BeginGetResponse(ar =&gt;
+{
+    var res = req.EndGetResponse(ar);
+    Console.WriteLine(new StreamReader(res.GetResponseStream()).ReadLine());
+}, null);
+
+ThreadPool.RegisterWaitForSingleObject(result.AsyncWaitHandle, (state, timeout) =&gt;
+{
+    // 引数で指定した時間の後にここの部分が発火する。
+    // そのとき非同期処理が完了していなければ(Timeoutしていれば)timeoutがtrue, 普通に終了してればfalse
+    if (timeout)
+    {
+        Console.WriteLine(&quot;TIMEOUT!!&quot;);
+
+        var _req = (WebRequest)state;
+        if (_req != null) _req.Abort(); // あぼーんでキャンセルというか打ち切る
+    }
+}, req, timeout: TimeSpan.FromSeconds(1), executeOnlyOnce: true);
+
+Console.ReadLine(); // 適当に待つ
+</code></pre>
+<p>うん、ややこしいですね。ウンザリです。しかし昔はこれぐらいしか手段がなかったのだからShoganai！</p>
+<h2>C# 5.0で救われよう</h2>
+<p>そんなこんなで一気に時代が進んで、C# 5.0です。GetResponseAsyncですね！GetResponseAsyncなら、GetResponseAsync先生ならやってくれる、と思っていた時がありました。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">static async Task Run()
+{
+    var req = WebRequest.Create(&quot;http://localhost:18018/Timeout.ashx&quot;);
+    req.Timeout = 1000; // ま、このTimeoutはイミナイですよ
+
+    var res = await req.GetResponseAsync();
+
+    Console.WriteLine(new StreamReader(res.GetResponseStream()).ReadLine());
+}
+
+static void Main(string[] args)
+{
+    Run().Wait();
+}
+</code></pre>
+<p>結果はBegin-Endの時と同じでTimeout指定は無視されます。はい残念残念。所詮別にBegin-Endと何も変わってはいないわけです。とはいえ、Taskならば、この辺、柔軟に処理を仕込めます。</p>
+<h2>Timeoutという拡張メソッドを作る</h2>
+<p>async/awaitやTaskといった道具立てはあるのですが、細かい色々なものはない(<a href="http://blogs.msdn.com/b/pfxteam/archive/2012/10/05/how-do-i-cancel-non-cancelable-async-operations.aspx">Cancelを足す</a>とかTimeoutを足すとかRetryを足すとか、この辺はよく使うであろうシチュエーションだと思うので、自分の道具箱に仕込んでおくと幸せになれます)ので、作りましょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static async Task Timeout(this Task task, TimeSpan timeout)
+{
+    var delay = Task.Delay(timeout);
+    if (await Task.WhenAny(task, delay) == delay)
+    {
+        throw new TimeoutException();
+    }
+}
+
+public static async Task&lt;T&gt; Timeout&lt;T&gt;(this Task&lt;T&gt; task, TimeSpan timeout)
+{
+    await ((Task)task).Timeout(timeout);
+    return await task;
+}
+</code></pre>
+<p>単純ですね。ポイントはTask.WhenAnyで、これは特殊なやり方ではなくて、イディオムです。C# 5.0を使っていくなら覚えておきましょう、絶対に。</p>
+<p>さて、これを使えば</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">static async Task Run()
+{
+    var req = WebRequest.Create(&quot;http://localhost:18018/Timeout.ashx&quot;);
+    var res = await req.GetResponseAsync().Timeout(TimeSpan.FromSeconds(1));
+
+    Console.WriteLine(new StreamReader(res.GetResponseStream()).ReadLine());
+}
+
+static void Main(string[] args)
+{
+    Run().Wait();
+}
+</code></pre>
+<p>超シンプルになりました。やったね！</p>
+<h2>HttpClient</h2>
+<p>ちなみに.NET 4.5から入ったHttpClientは、非同期操作しか提供していない、だけに、ちゃんとTimeoutプロパティが非同期でも対応していますので、フツーはこっちを使うと良いでしょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">static async Task Run()
+{
+    var client = new System.Net.Http.HttpClient() { Timeout = TimeSpan.FromSeconds(1) };
+    var s = await client.GetStringAsync(&quot;http://localhost:18018/Timeout.ashx&quot;);
+
+    Console.WriteLine(s);
+}
+
+static void Main(string[] args)
+{
+    Run().Wait();
+}
+</code></pre>
+<p>吐いてくる例外はSystem.Threading.Tasks.TaskCanceledExceptionです。これは、中でCancellationTokenSource.CreateLinkedTokenSourceとリンクさせた上で、CancellationTokenSourceのCancelAfterによってTimeoutを処理しているからです。HttpClientも、最終的にネットワークとやり取りしている部分はWebRequestですから。</p>
+<h2>まとめ</h2>
+<p>まあ、今までは細かい罠があってクソが、となる局面も少なからず多かったわけですが、ようやく整理された、感があります。しょっぱいことは考えないで、甘受していきたいですねー。</p>
+</div>
+<h1 data-pagefind-sort="date:2012-10-12" data-pagefind-meta="published:2012-10-12"><a href="https://neue.cc/2012/10/12_382.html">linq.jsのTypeScript対応とTypeScript雑感</a></h1>
 <ul class="date"><li>2012-10-12</li></ul>
 <div class="entry_body"><p>Microsoftから<a href="http://www.typescriptlang.org/">TypeScript</a>という新言語が発表されました。驚くべきは、あのC#のAnders Hejlsbergが関わっている！これはもう触るしかない。そしてこれはコンパイル後にJavaScriptになる言語(CoffeeとかJSXとかみたいな)なわけで、じゃあlinq.jsを対応させるしかない！というわけで、させました。</p>
 <pre data-pagefind-ignore="all"><code class="language-csharp">// TypeScript
@@ -1296,163 +1430,6 @@ Console.WriteLine(e2.GetType());
 <p>インタビュー記事が求人記事なので、会社員として宣伝しました！なので基本的にイイ事しか言いませんが、勿論イクナイ面もそれなりにあります。例えば最近の私の記事を見ると某テクノロジーをやたらDisってますが、なんでなんでしょうかねー、ふふり。とはいえ、不満に思うなら自分でぶち壊して再構築すればいいし、それが許される（勿論ちゃんと能力を証明したうえで）環境だとは思います。スキルある人が何の制約もなく存分に腕をふるえるのなら、素敵な話ではないでしょうか。</p>
 <p>ちなみに私のスキルはC#/LINQに偏っていてウェブとかASP.NETの知識は並なので、毎日勉強です、人はそれを付け焼刃とも言う。</p>
 </div>
-<h1 data-pagefind-sort="date:2012-03-18" data-pagefind-meta="published:2012-03-18"><a href="https://neue.cc/2012/03/18_368.html">Visual Studio 11の非同期("C#, ASP.NET, Web Forms, MVC")</a></h1>
-<ul class="date"><li>2012-03-18</li></ul>
-<div class="entry_body"><p>世の中ひどぅーきひどぅーきと騒ぐばかりで、猫も杓子もNode.js。でもですね、<a href="http://codezine.jp/article/detail/6461">【デブサミ2012】16-A-5 レポート　ソーシャルアプリケーションにおけるNode.jsの活かし方（1/2）：CodeZine</a>なんかを見ても、そこで独自に作りこんでる例外処理だの非同期フロー管理だのは、そりゃあ必要ですよね、まずはそこから始めるのは当然ですよね、と思いつつC#は最初から備えているんですよね。むしろ色々とC#のほうが、とか思ったりするわけですが（勿論Node.jsのほうがGoodなものもありますが）、こんなところで嘆いていても始まらないのでC#流の非同期の活かし方を見ていきましょうか。</p>
-<h2>HttpTaskAsyncHandler</h2>
-<p>ASP.NETの非同期ハンドラはIHttpAsyncHandlerなわけですが、VS11ではそれをTask(つまりC# 5.0 async/await)で扱いやすくした基底クラス、<a href="http://msdn.microsoft.com/ja-jp/library/system.web.httptaskasynchandler(v=vs.110).aspx">HttpTaskAsyncHandler</a>が用意されています。例えばTwitterの検索を叩いて返すだけどのものは以下のようになります。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public class TwitterSearchHandler : HttpTaskAsyncHandler
-{
-    public async override Task ProcessRequestAsync(HttpContext context)
-    {
-        var term = context.Request.QueryString[&quot;q&quot;];
-        var json = await new HttpClient().GetStringAsync(&quot;http://search.twitter.com/search.json?q=&quot; + term);
-
-        context.Response.ContentType = &quot;application/json&quot;;
-        context.Response.Write(json);
-    }
-}
-</code></pre>
-<p>普通と違うのはasyncとawaitだけなので、特に混乱もなく同期→非同期に乗り換えられると思います。非常に簡単。</p>
-<p><a href="http://msdn.microsoft.com/ja-jp/library/system.net.http.httpclient(v=vs.110).aspx">HttpClient</a>も.NET 4.5からの新顔で、WebClientの後継的な位置付けでしょうか。細かいコントロールも可能で、かつ、WebRequestよりも簡単で、非同期にもきっちりマッチしている。というかHttpClientには同期的なメソッドは用意されていません。これからの非同期世代に完全準拠した新しいクラスということですね。</p>
-<p>そして、テスト用のサーバー立てるのも非常に簡単で。Visual Studioで新規で空のASP.NETサイトプロジェクトを作って、↑のハンドラ足して、Ctrl + F5すればIIS Expressが立ち上がって、もうそれだけでOKなわけですよ。超簡単なわけですよ、マジでマジで。</p>
-<p>こないだ、<a href="http://atnd.org/events/24951">RIA アーキテクチャー研究会　第3回</a>でのセッションではそうして作ったHttpTaskAsyncHandlerで、 context.Response.StatusCode = 404 にしてエラーを返した状態を再現したりしながらデモしていました。</p>
-<div style="width:595px" id="__ss_11947538"> <strong style="display:block;margin:12px 0 4px"><a href="http://www.slideshare.net/neuecc/asynchronous-rx-andtask" title="C#次世代非同期処理概観 - Task vs Reactive Extensions" target="_blank">C#次世代非同期処理概観 - Task vs Reactive Extensions</a></strong> <iframe src="https://www.slideshare.net/slideshow/embed_code/11947538?rel=0" width="595" height="497" frameborder="0" marginwidth="0" marginheight="0" scrolling="no"></iframe> <div style="padding:5px 0 12px"> View more <a href="http://www.slideshare.net/" target="_blank">presentations</a> from <a href="http://www.slideshare.net/neuecc" target="_blank">neuecc</a> </div> </div>
-<p>今回はTaskを中心にしましたが、Rxを中心にしたものを<a href="http://silverlightsquare.com/index.php/tokyo06.html">Silverlightを囲む会in東京#6</a>で3/31に話す予定なので、まだ募集中なので是非来て下さい。また、Rx v2.0に関しては<a href="http://blogs.msdn.com/b/rxteam/archive/2012/03/12/reactive-extensions-v2-0-beta-available-now.aspx">Reactive Extensions v2.0 Beta available now! - Reactive Extensions Team Blog - Site Home - MSDN Blogs</a>で超詳細に書かれていますね。私もちょいちょいと書きたいことは溜まってるのですが中々にぐぬぬぬ。</p>
-<h2>非同期ページ</h2>
-<p>今更Web Formsとか超どうでもいいって感じが世界全体に漂ってるし真面目に色々と腐ってると本気で思うしDataSetとWeb Formsは今となっては.NET三大汚点の筆頭かなとか思ったり思わなかったり適当に言ったり呪詛を吐いたり、もう色々アレなのですが、それでも現実とは戦わなければならないのです！</p>
-<p>というわけでVS11のASP.NET Web Formsの非同期の強化でも見てみましょう。C# 5.0でasync/awaitが入るのでASP.NET MVCのほうは非同期コントローラーでﾋｬｯﾎｲなのですがWeb Formsも一応対応してきました、一応ね、一応。</p>
-<pre data-pagefind-ignore="all"><code class="language-xml">// Web.config
-&lt;appSettings&gt;
-  &lt;add key=&quot;aspnet:UseTaskFriendlySynchronizationContext&quot; value=&quot;true&quot; /&gt;
-&lt;/appSettings&gt; 
-</code></pre>
-<pre data-pagefind-ignore="all"><code class="language-xml">&lt;%@ Page Language=&quot;C#&quot; AutoEventWireup=&quot;true&quot; CodeBehind=&quot;~/WebForm1.aspx.cs&quot; Inherits=&quot;WebApplication8.WebForm1&quot;
-　　　　Async=&quot;true&quot; ViewStateMode=&quot;Disabled&quot; %&gt;
-
-&lt;!DOCTYPE html PUBLIC &quot;-//W3C//DTD XHTML 1.0 Transitional//EN&quot; &quot;http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd&quot;&gt;
-&lt;html xmlns=&quot;http://www.w3.org/1999/xhtml&quot;&gt;
-&lt;head runat=&quot;server&quot;&gt;
-    &lt;title&gt;Async Test&lt;/title&gt;
-&lt;/head&gt;
-&lt;body&gt;
-    &lt;form id=&quot;form1&quot; runat=&quot;server&quot;&gt;
-    &lt;asp:TextBox ID=&quot;WordTextBox&quot; runat=&quot;server&quot; /&gt;
-    &lt;asp:Button ID=&quot;SearchButton&quot; runat=&quot;server&quot; Text=&quot;Button&quot; OnClick=&quot;SearchButton_Click&quot; /&gt;
-    &lt;asp:Repeater runat=&quot;server&quot; ID=&quot;TwitterStatuses&quot; ItemType=&quot;dynamic&quot;&gt;
-        &lt;ItemTemplate&gt;
-            &lt;p&gt;
-                &lt;asp:Label runat=&quot;server&quot; Text=&quot;&lt;%#: Item.from_user %&gt;&quot; /&gt;&lt;br /&gt;
-                &lt;asp:Label runat=&quot;server&quot; Text=&quot;&lt;%#: Item.text %&gt;&quot; /&gt;
-            &lt;/p&gt;
-        &lt;/ItemTemplate&gt;
-    &lt;/asp:Repeater&gt;
-    &lt;/form&gt;
-&lt;/body&gt;
-&lt;/html&gt;
-</code></pre>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// namespace WebApplication8
-public partial class WebForm1 : System.Web.UI.Page
-{
-    protected void SearchButton_Click(object sender, EventArgs e)
-    {
-        var task = new PageAsyncTask(async () =&gt;
-        {
-            var word = WordTextBox.Text;
-            using (var stream = await new HttpClient().GetStreamAsync(&quot;http://search.twitter.com/search.json?q=&quot; + word))
-            {
-                var json = System.Json.JsonObject.Load(stream);
-                TwitterStatuses.DataSource = json[&quot;results&quot;];
-            }
-            DataBind();
-        });
-
-        RegisterAsyncTask(task);
-    }
-}
-</code></pre>
-<p>非同期ページの利用には Async=&quot;true&quot; 属性をつける必要があります。.NET 4.0まではつけていない場合は、同期的に動作するようになっていたのですが、.NET 4.5からはエラーになるように挙動が変更されています。また、PageAsyncTaskを利用する場合はWeb.configにUseTaskFriendlySynchronizationContext = true する必要もあるっぽいです。</p>
-<p>これ自体はテキストボックスに検索語を入れてボタンを押すとひどぅーきでTwitter検索して表示する、というだけのDoudemoii代物です。PageAsyncTaskが引数にTaskを受け入れるようになったので、そこでasyncなラムダ式を突っ込んでやればいい、というわけで、まあまあ簡単と言えなくもなく仕上がっています。理想的には/直感的にはasync void SearchButton_Clickと書けるようになるべきなのですが、そうはいかないようです、残念。</p>
-<p>JSONは.NET 4.5からお目見えの<a href="http://msdn.microsoft.com/ja-jp/library/system.json(v=vs.110).aspx">System.Json</a>を使いました。これ、AsDynamic()とするとdynamicで扱えるのでサクサクッと使えて便利です。また、そのdynamicとして使える性質を活かして、dynamicのままバインドしてみました(AsDynamicはコード上dynamicにキャストするというだけで、JsonValueはそのもの自身がdynamic = IDynamicMetaObjectProviderなのです)。System.Jsonは<a href="http://nuget.org/packages/System.Json">NuGet - System.Json</a>にもあるので、.NET 4ではそれを使えばいいでしょう。<a href="http://dynamicjson.codeplex.com/">DynamicJson</a>はお払い箱で。</p>
-<p>それとRepeaterのItemType=&quot;dynamic&quot;。これでItem.from_userといったように、dynamicに使えるようになっています。匿名型をバインドしたい時なんかも、同じようにItemType=&quot;dynamic&quot;にしてしまうといいかな、と思ったんですが、それは出来ませんでした。あともう一歩、気を利かせてくれても良かったですねえ。</p>
-<p>まあ、VS11からは、念願のバインディング式の中でIntelliSenseが効くようになっていて、それはRepeaterのItemTypeも例外ではないので、ちゃんと型作ってあげるのも良いとは思います。あと%:でHtmlEncodeもしてくれますのも良いところ。</p>
-<p>ViewStateMode=&quot;Disabled&quot;で無駄なViewStateは生成しないようにするのも大事。これは.NET 4.0からですね。EnableViewStateとは別物という紛らわしさが残っているのも、まあなんともかんとも。ところでPageのViewStateModeをDisableにしてしまうと、this.ViewState[]が使えなくなってしまうので、マスターページからの、asp:Contentにしかけたほうがいいかもです。</p>
-<h2>EventHandlerTaskAsyncHelper</h2>
-<p>ASP.NETの非同期関連はMSDNマガジンの<a href="http://msdn.microsoft.com/ja-jp/magazine/cc163463.aspx">WickedCode: ASP.NET の非同期プログラミングを使ったスケール変換可能なアプリケーション</a>にまとまっていますが、そこにあるとおり非同期ページの実現方法にはもうひとつ、AddOnPreRenderCompleteAsyncを使う方法があります。それにもTask用のやり方がありますので、見てみましょう。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">var helper = new EventHandlerTaskAsyncHelper(async (_, __) =&gt;
-{
-    var word = WordTextBox.Text;
-    using (var stream = await new HttpClient().GetStreamAsync(&quot;http://search.twitter.com/search.json?q=&quot; + word))
-    {
-        var json = System.Json.JsonObject.Load(stream);
-        TwitterStatuses.DataSource = json[&quot;results&quot;];
-    }
-    DataBind();
-});
-
-AddOnPreRenderCompleteAsync(helper.BeginEventHandler, helper.EndEventHandler);
-</code></pre>
-<p>EventHandlerTaskAsyncHelperを作り、それのBeginとEndをAddOnPreRenderCompleteAsyncに渡してあげます。ちょっとPageAsyncTaskより面倒ですね。まあ、でも、どちらでもいいでしょう。大した違いはありません。二つやり方があるとどちらにすればいいのかと迷ってしまうのが良くないところなんですよねえ、しかもどちらも似たようなものだと……。</p>
-<h2>非同期モジュール</h2>
-<p>Moduleについても見てみましょう。感覚的にはAddOnPreRenderCompleteAsyncと一緒で、EventHandlerTaskAsyncHelperを作り、追加したいイベントにBeginとEndを渡します。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public class MyModule : IHttpModule
-{
-    public void Init(HttpApplication application)
-    {
-        var helper = new EventHandlerTaskAsyncHelper(async (sender, e) =&gt;
-        {
-            var app = (HttpApplication)sender;
-            var path = app.Server.MapPath(&quot;~/log.txt&quot;);
-
-            using (var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read, 4096, useAsync: true))
-            using (var sw = new StreamWriter(fs, Encoding.UTF8))
-            {
-                await sw.WriteLineAsync(&quot;Request:&quot; + DateTime.Now);
-            }
-        });
-
-        application.AddOnBeginRequestAsync(helper.BeginEventHandler, helper.EndEventHandler);
-    }
-
-    public void Dispose() { }
-}
-</code></pre>
-<p>AddOnXxxAsyncは沢山あるので、追加したいイベントを選べばいいでしょう。また、非同期でファイルを扱いたい時は、useAsync: trueにするのが大事です。デフォルトはfalseになっているので、Begin-Endをしても非同期にならない（というかスレッドプールを使った挙動になってしまう）そうです（と、プログラミング.NET Frameworkに書いてあった）。</p>
-<h2>非同期コントローラー</h2>
-<p>一応ASP.NET MVCでも見てみましょうか。TwitterのPublicTimelineを表示するだけのものを（テキストボックスすら作るのが面倒になってきた）</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public class PublicTimelineController : AsyncController
-{
-    public async Task&lt;ActionResult&gt; Index()
-    {
-        using (var stream = await new HttpClient().GetStreamAsync(&quot;https://twitter.com/statuses/public_timeline.json&quot;))
-        {
-            var json = System.Json.JsonObject.Load(stream);
-            return View(json);
-        }
-    }
-}
-</code></pre>
-<pre data-pagefind-ignore="all"><code class="language-xml">&lt;!DOCTYPE html&gt;
-&lt;html&gt;
-&lt;head&gt;&lt;/head&gt;
-&lt;body&gt;
-    @foreach (var item in Model)
-    {
-        &lt;p&gt;
-            @item.user.screen_name
-            &lt;br /&gt;
-            @item.text
-        &lt;/p&gt;
-    }
-&lt;/body&gt;
-&lt;/html&gt;
-</code></pre>
-<p>AsyncControllerの自然さと、きゃーRazor最高ー抱いてー。</p>
-<h2>まとめ</h2>
-<p>HttpTaskAsyncHandlerにせよEventHandlerTaskAsyncHelperにせよ、中身は割とシンプルにTaskでラップしただけなので、それを自前で用意すればTask自体は.NET 4.0に存在するので、async/awaitは使えませんがそれなりに簡単に書けるようにはなります。とりあえず私はWeb Forms用のものを仕事で使うために用意しました。コードは会社で書いたものなので上げられませんが！というほど大したものでもないので上げちゃってもいいんですが上げません！Web Formsにはとっととお亡くなりになってもらいたいので。延命措置禁止。</p>
-<p>Web Formsだって悪くないものだ、全力で頑張ればほら、こんなに出来るじゃないか、ということは容易い、ことはまったくなく全力なわけですが、しかし可能ではあるんですね、モバイル対応だろうがハイパフォーマンスサイトだろうが。きっとたぶん。でもね、なんかもうIE6にも対応しつつHTML5サイトです、とかやるぐらいに不毛感漂ってるし、その労力は別のとこに向けたいですよね、っていうか別のとこに向けばどれだけ幸せになれるだろうか、と思ってしまうのです。</p>
-<p>考えてみると、こうもうぇぶけーな話を書くのも初めてな気がする。近頃はお仕事がそっち方面なので、出せる範囲でちょいちょい出してこうかと思います。とにかく結論としてはWeb Formsちゃんは、もう沢山頑張ったと思うのでそろそろ逝ってもらって構いません。</p>
-</div>
 <a href="https://neue.cc/13">Prev |</a>
 <a href="https://neue.cc/15">| Next</a>
 </div>
@@ -1476,6 +1453,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/11/">2024-11</a>
 <li><a href="https://neue.cc/2024/08/">2024-08</a>
 <li><a href="https://neue.cc/2024/07/">2024-07</a>
 <li><a href="https://neue.cc/2024/06/">2024-06</a>

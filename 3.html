@@ -74,7 +74,105 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2021-12-31" data-pagefind-meta="published:2021-12-31"><a href="https://neue.cc/2021/12/31.html">2021年を振り返る</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2022-01-09" data-pagefind-meta="published:2022-01-09"><a href="https://neue.cc/2022/01/09_WebSerializer.html">WebSerializer - オブジェクトからクエリストリングに変換するHttpClientリクエスト用シリアライザ</a></h1>
+<ul class="date"><li>2022-01-09</li></ul>
+<div class="entry_body"><p><code>T value</code>から URLエンコードされたクエリストリング、または<code>x-www-form-urlencoded</code>なHttpContentを生成する、つまりはウェブ(HTTP/1)リクエスト用のシリアライザを作りました。</p>
+<ul>
+<li><a href="https://github.com/Cysharp/WebSerializer/">github.com/Cysharp/WebSerializer</a></li>
+</ul>
+<p>クエリストリングの生成、意外と面倒くさいな！と。(C#用の)専用のSDKが存在しないWeb APIの場合は、自分でURL組み立てたり<code>FormUrlEncodedContent</code>を組み立てたりしますが、数が多いとまぁ面倒くさい。リクエストのパラメーター数が多いと、null抜いたりも面倒くさい。</p>
+<p>レスポンス側は<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.net.http.json.httpcontentjsonextensions.readfromjsonasync?view=net-6.0">ReadFromJsonAsync</a>などでダイレクトに変換できるようになって特に問題はないのですが、リクエスト側は、かなりの手作業が要求されます。そのへんを全部やってくれる<a href="https://github.com/reactiveui/refit">refit</a>というライブラリもありますが(Androidの<a href="https://github.com/square/retrofit">retrofit</a>にインスパイアされたもの)、導入するにはちょっと大仰だな、と思うときも多々あります、というか私は今まで一度も使ってません。</p>
+<p>HttpClient用にURLを組み立てるのを簡略化してくれるぐらいでいいな、と思って考えていたら、そういえばそもそもそれってT valueから何かに変換する、つまりシリアライザじゃん、ということに気づきました。T -&gt; msgpack byte[]に変換すればMessagePackシリアライザだし、T -&gt; Json stringに変換すればJSONシリアライザだし、これはT -&gt; UrlEncoded stringに変換するということなのだと。シリアライザ脳なので、そう理解すれば話が早い。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">using Cysharp.Web;
+
+var req = new Request(sortBy: &quot;id&quot;, direction: SortDirection.Desc, currentPage: 3)
+
+// sortBy=id&amp;direction=Desc&amp;currentPage=3
+var q = WebSerializer.ToQueryString(req);
+
+await httpClient.GetAsync(&quot;/sort?&quot;+ q);
+
+// data...
+public record Request(string? sortBy, SortDirection direction, int currentPage);
+
+public enum SortDirection
+{
+    Default,
+    Asc,
+    Desc
+}
+</code></pre>
+<p>基本的に使うメソッドは <code>WebSerializer.ToQueryString</code> か <code>WebSerializer.ToHttpContent</code> だけです。URLエンコードされてname=valueで&amp;連結された文字列が取り出せます。メソッドとして叩いたりする場合は、そのまま匿名型で渡してあげればちょうど良い。urlも一緒に渡してあげれば全て同時に組み立ててくれます。値が<code>null</code>のものは文字列化対象から自動で外されます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">const string UrlBase = &quot;https://foo.com/search&quot;;
+
+// null, SortDirection.Asc, 0
+async Task SearchAsync(string? sortBy, SortDirection direction, int currentPage)
+{
+    // &quot;https://foo.com/search?direction=Asc&amp;currentPage=0&quot;
+    var url = WebSerializer.ToQueryString(UrlBase, new { sortBy, direction, currentPage });
+    await httpClient.GetAsync(url);
+}
+</code></pre>
+<p>動的に組み立てる場合は、<code>Dictionary&lt;string, object&gt;</code> も渡せます。(<code>FormUrlEncodedContent</code>は<code>Dictionary&lt;string, string&gt;</code>で、Value側のToString()が必須なのが地味に面倒くさいので、<code>object</code>で良いというのは何気に楽だったりします)。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var req = new Dictionary&lt;string, object&gt;
+{
+    { &quot;sortBy&quot;, &quot;id&quot; },
+    { &quot;direction&quot;, SortDirection.Desc },
+    { &quot;currentPage&quot;, 10 }
+};
+var q = WebSerializer.ToQueryString(req);
+</code></pre>
+<p>POST用には、<code>ToHttpContent</code>を使います。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">async Task PostMessage(string name, string email, string message)
+{
+    var content = WebSerializer.ToHttpContent(new { name, email, message });
+    await httpClient.PostAsync(&quot;/postmsg&quot;, content);
+}
+</code></pre>
+<p>内部的には<code>FormUrlEncodedContent</code>は使わずに、専用のHttpContentを通しているため、<code>byte[]</code>変換のオーバーヘッドがありません。</p>
+<h2>シリアライザ設計</h2>
+<p>ただたんにクエリストリング組み立てるだけっしょ！というと軽く見られてしまうかもしれないのですが、中身はかなりガチめに作ってあって、構成としては<a href="https://github.com/neuecc/MessagePack-CSharp/">MessagePack for C#</a>と同様です。パフォーマンスに関しても超ギチギチに詰めているわけではないですが、かなり気を配って作られているので、手で組み立てるよりもむしろ高速になるケースも多いはずです。拡張性もかなり高く作れているはずです。</p>
+<p>シリアライザのデザインに関してはMessagePack for C#の次期バージョン(v3)をどうしていこうかなあ、と考えているタイミングでもあるので、そのプロトタイプ的な意識もありますね。なので設計としてはむしろ最新型で、かなり洗練されています。.NET 5/6のみにしているので、レガシーも徹底的に切り捨てていますし。最初は .NET 6のみだったのですが、さすがにそれはやりすぎかと思い .NET 5は足しました。（が、2022-01-21のv1.3.0にて、.NET Standard 2.0/2.1対応もしました）</p>
+<p>例えばコンフィグ(<code>WebSerializerOptions</code>)はイミュータブルなのですが、これ自体はrecordで作ってあってwith式でカスタムのコンフィグを作れます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// CultureInfo: 数値型やDateTimeの文字列化変換に渡すCultureInfo、デフォルトはnull
+// CollectionSeparator: 配列などを変換する場合のセパレーター、デフォルトはnullでname=value&amp;name=value...
+// Provider: 対象の型をどのように変換するか(`IWebSerialzier&lt;T&gt;`)の変更
+var newConfig = WebSerializerOptions.Default with
+{
+    CultureInfo = CultureInfo.InvariantCulture,
+    CollectionSeparator = &quot;,&quot;,
+    Provider = WebSerializerProvider.Create(
+        new[] { new BoolZeroOneSerializer() },
+        new[] { WebSerializerProvider.Default })
+};
+
+// Bool値を0, 1に変換する（こういうの求めてくるWeb APIあるんですよねー！）
+public class BoolZeroOneSerializer : IWebSerializer&lt;bool&gt;
+{
+    public void Serialize(ref WebSerializerWriter writer, bool value, WebSerializerOptions options)
+    {
+        // true =&gt; 0, false =&gt; 1
+        writer.AppendPrimitive(value ? 0 : 1);
+    }
+}
+</code></pre>
+<p><code>IWebSerializer&lt;T&gt;</code>のインターフェイスについて、<code>ref T value</code>にしようか検討したのですが、最終的にやめました。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public interface IWebSerializer&lt;T&gt; : IWebSerializer
+{
+    void Serialize(ref WebSerializerWriter writer, T value, WebSerializerOptions options);
+}
+</code></pre>
+<p><code>ref T value</code>にすると、プロパティをそのまま渡せなくて、かなり面倒くさくなってね。理屈的にはlarge structに対するコピーコスト削減、ではあるけれど、まぁこのままだと99%効力ないかなあ、という感じがあり。入り口だけinにして一回分コピーを消すぐらいを落とし所にしました、とりあえず今回は。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static string ToQueryString&lt;T&gt;(in T value, WebSerializerOptions? options = default)
+</code></pre>
+<p>それとSource Generator対応についても考えましたが、まぁ一旦今回は見送って、後でやるかもという感じでしょうか。アイディアは色々ありますが、まずは作ってみないとうまくハマるか見えないところがあるし、MessagePack for C#のような大きなものでドカンとやるよりは、最初は小さなものでテストしていくのが良いものを作る正攻法でもありますね。</p>
+<h2>Deserializeがない問題</h2>
+<p>ASP.NET CoreのAddControllerなら、Model Bindingでデシリアライズできるので、不要でしょう。.NET 6時点でのMinimal APIだとなんと自動モデルバインディングがなくて手動でQueryStringから組み立てるという手間が必要になってて、まぁそこでは必要かなあ？と思ったんですが、いや、それしたいならMinimal APIではなくてAddControllerしろや、と思ったので、機能入れるのやめました。実際、そのうちバインディング自体はいれるそうです（さすがに不便なので）。</p>
+<h2>まとめ</h2>
+<p>手で組み立てている人は結構多いと思うので、使えるシチュエーションはかなりあると思ってます。ただまあ、こんぐらいなら手でやるよ！と思う人は多いと思うので、その点ではニッチかなあ、というところですね。Web APIの仕様によってはリクエストパラメーターが微妙にデカくてイライラすることがあったり、まぁあとは数を作るときにはやっぱダルいので、ハマるシチュエーションも少なくはないかな、と。</p>
+<p>とりあえずは試してみてもらえればと思います。</p>
+</div>
+<h1 data-pagefind-sort="date:2021-12-31" data-pagefind-meta="published:2021-12-31"><a href="https://neue.cc/2021/12/31.html">2021年を振り返る</a></h1>
 <ul class="date"><li>2021-12-31</li></ul>
 <div class="entry_body"><p>例年、30日に投稿しているはずなのですが、今年は、どうしても今年中に作りきりたいという思いで<a href="https://neue.cc/2021/12/30.html">ConsoleAppFramework v4</a>のリリースをしてしまったので31日で。今年の後半から道具をガラーッと変えて、それがいい感じに作用していったので、なんか満足した気でいます。</p>
 <h2>Heyをとにかく薦めたい</h2>
@@ -2427,13 +2525,6 @@ public class MessageDialogView : MonoBehaviour
 <p>キャンセル処理に癖があるのは事実ですが（実際、最後に書いた明示的にOperationCanceledExceptionを投げよう、とかは一から発想していくのは難しいかもしれません）、「引数の最後に渡す」「明示的に投げてもいい」の二点だけなので、これは慣れるしかないし、それを理由にして利用範囲を限定的にするのはよくないかなー、と思ってます。</p>
 <p>まぁ、ようするに普通に使ってね！便利ですよ実際！ということで。</p>
 </div>
-<h1 data-pagefind-sort="date:2020-07-09" data-pagefind-meta="published:2020-07-09"><a href="https://neue.cc/2020/07/09_593.html">ライブラリ作成のすゝめ - 40以上のOSS作成事例から見る個人OSSによる効能とキャリアの開発</a></h1>
-<ul class="date"><li>2020-07-09</li></ul>
-<div class="entry_body"><iframe src="//www.slideshare.net/slideshow/embed_code/key/4eUpWKiOa9rO8W" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/oss-236734450" title="ライブラリ作成のすゝめ - 事例から見る個人OSS開発の効能" target="_blank">ライブラリ作成のすゝめ - 事例から見る個人OSS開発の効能</a> </strong> from <strong><a href="https://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
-<p>去年に専門学校の学生さん向けに講演した資料で、それ以外には未発表のスライドです。デベロッパーのキャリアとしてのエモい話になっているのでデブサミ向けにいいかな、と思って公募したところ落ちた！（←微妙にショックだった）のでずっとお蔵入りで眠っていたのですが、このご時世ですし他で講演できるところもなさそうなので、ここで放出することにしました。</p>
-<p>作ることが能力の向上に繋がり、キャリアにも繋がっていく。別にそれだけが唯一解ではないけれど、一つの道筋として力になれたらな、と思っています。</p>
-<p>大量に作るというのは、いや、大量ではなくても、メンテナンスが回るわけじゃないから大変だったり、時に無責任に見えてしまう（そういうわけではないけれど大変なのです！ごめんなさい！）とか、Issueに埋もれてシンドイとか、そういう負の側面も色々あるのですけれど、それでもね、やっていくのはいいことだと思います。そしてやるからには、一つ一つには真剣に取り組むことが、大きなリターンを得るための秘訣かな、と。</p>
-</div>
 <a href="https://neue.cc/2">Prev |</a>
 <a href="https://neue.cc/4">| Next</a>
 </div>
@@ -2457,6 +2548,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/11/">2024-11</a>
 <li><a href="https://neue.cc/2024/08/">2024-08</a>
 <li><a href="https://neue.cc/2024/07/">2024-07</a>
 <li><a href="https://neue.cc/2024/06/">2024-06</a>

@@ -74,7 +74,47 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2010-12-24" data-pagefind-meta="published:2010-12-24"><a href="https://neue.cc/2010/12/24_291.html">Reactive ExtensionsとPublishによるシーケンスの分配</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2010-12-25" data-pagefind-meta="published:2010-12-25"><a href="https://neue.cc/2010/12/25_292.html">Rx Christmas Release 2010によるPublishの変化解説</a></h1>
+<ul class="date"><li>2010-12-25</li></ul>
+<div class="entry_body"><p>メリークルシミマス。Happyなことに、<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Reactive Extensions for .NET (Rx)</a>が更新されました。なんと、WP7に標準搭載されたことだし安定性・互換性はある程度保証されてきたよねー、とか思った側から完全に互換を崩壊させる素晴らしいBreaking Changesをかましてきました！常識では計り知れない大胆な所業。そこにしびれるあこがれれぅ。</p>
+<p>さて、今回の変化はJoin/GroupJoin/Windowの新規搭載とPublish系の変更です。Joinについてはまた後日ということで、今回はPublishの変更について解説します。で、ですねえ、これはもう100%変わってます。昨日ちょうどPublishによる分配、とか書いたわけですが、出したコードは全部動かないです！素晴らしいタイミング！Ouch！</p>
+<p>端的に言えばPublishは引数にISubjectを受け取るよう変化。Prune/ReplayはPublishに統合されたことにより消滅。何でかというと、元々、分配ソースにSubjectを使うのがPublish、BehaviorSubjectを使うのが初期値付きPublish、AsyncSubjectを使うのがPrune、ReplaySubjectを使うのがReplayでした。分配ソースを任意で受け取るようになったため、メソッドが分かれる意味がなくなったというわけですね。</p>
+<p>ナンタラSubjectの解説は、まあまた後日にでも。簡単に言えばSubjectは普通のイベントと同じで素直な挙動、つまりOnNextしたら値が流れる。AsyncSubjectは非同期を模していて、OnNextされたら値を一つだけキャッシュし、OnCompletedされたらキャッシュした値を流す。以降はSubscribeされるたびにキャッシュした値を即座に流し、OnCompletedも発行。ReplaySubjectはOnNextされる度に値をキャッシュし、それを流す。Subscribeされるとキャッシュした値を全て即座に流す。BehaviorSubjectはOnNextされる度に最新の値一つのみをキャッシュし、それを流す。Subscribeされるとキャッシュした値を即座に流す。</p>
+<p>イマイチ分かりづらいですね:) というわけで本当に詳しいことは後日で。AsyncSubjectだけは、今までにも、そういう挙動であることの意味とかしつこく書いてきましたが。</p>
+<p>そして、IConnectableObservableが戻り値となるものはMulticastというメソッド名になりました。引数は勿論、ISubjectを受け取るという形に。では、<a href="http://neue.cc/2010/12/24_291.html" title="neue cc - Reactive ExtensionsとPublishによるシーケンスの分配">昨日のコード</a>で例を。新旧比較ということで。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">Observable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()))
+    .Publish(new Subject&lt;int&gt;(), xs =&gt; xs.Min().Zip(xs.Max(), (min, max) =&gt; new { min, max }))
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>Publishの第一引数にSubjectを突っ込みました。第二引数にはそれで分配されたIObservableが渡ってくるという塩梅です。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var input = Observable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()))
+    .Multicast(new Subject&lt;int&gt;());
+
+input.Min().Zip(input.Max(), (min, max) =&gt; new { min, max })
+    .Subscribe(Console.WriteLine);
+
+input.Connect();
+</code></pre>
+<p>こちらがMulticastです。まあ、普通にISubjectを受け取るようになったというだけで、今までのPublishでIConnectableObservableが返ってくるのと同じです。さて、ISubjectを受け取るということは、外部のISubjectを渡してもOKです。新しくこんな分配が可能になりました。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var input = new ReplaySubject&lt;int&gt;();
+
+Observable.Range(0, 10)
+    .Select(_ =&gt; int.Parse(Console.ReadLine()))
+    .Publish(input) // 流れてくる値をReplaySubjectに保存する
+    .Max()
+    .Subscribe(i =&gt; Console.WriteLine(&quot;Max:&quot; + i));
+
+var inputArray = input.ToEnumerable().ToArray(); // 入力値を配列に変換
+</code></pre>
+<p>といっても、この例は全く意味がなくて、Max()で止めておいて、その戻り値をinputとして受ければいいだけの話なのですが。上手い利用例が浮かばなかったのです！まあ、色々と応用しどころというのは生まれてくるのではないかと思います。</p>
+<h2>まとめ</h2>
+<p>この破壊的変更ですが、私としては好意的に捉えたいです。如何せんPruneというメソッド名は意味不明でしたし、オーバーロードが8つもあるという状況も良くなかった。今回整理されたことで、使いやすくなったと思います。が、しかし、WP7版との互換性が切れてしまったのは相当痛い。今までusingをプリプロセッサディレクティブで#if WINDOWS_PHONE using Microsoft.Phone.Reactive という感じに切り替えてWPF/SL/WP7で互換を取っていたのですが、ここまで派手に互換性なくなるとなあ。</p>
+<p>ちなみにWP7標準搭載&quot;ではない&quot;DevLabs版のRx for WP7というのも用意されているので、そちらを使えばいいわけなのですが、それはそれでどうかなー、どうかなー、困った話で。</p>
+<p>それと、この変更はまだ追随されていませんが、そのうち System.Interactive(Ix.NET/EnumerableEx) や RxJS にも派生してくるような気がするので、再びAPI安定していない状態に戻った感がありますねー。要チェックで要注意で。Rxチームは大変なクリスマスプレゼントを贈ってきました。そして、Rxが.NET 4 SP1に入るの？入らないの？的な希望観測もあったわけですが、私個人の印象としては、SP1入りな可能性はなくなったな、という気がしてます。まだまだ作り替える気満々だもの、これ。</p>
+</div>
+<h1 data-pagefind-sort="date:2010-12-24" data-pagefind-meta="published:2010-12-24"><a href="https://neue.cc/2010/12/24_291.html">Reactive ExtensionsとPublishによるシーケンスの分配</a></h1>
 <ul class="date"><li>2010-12-24</li></ul>
 <div class="entry_body"><p>Twitter上で見たお題、10個コンソールから整数の入力を受けて最少と最大を出す。Linqで書くならこうでしょうか。通常は0-10でfor文を回すところはRangeで。あとはMinとMax。int.Parseなので数字以外は例外飛んでしまいますが、その辺は無視で。</p>
 <pre data-pagefind-ignore="all"><code class="language-csharp">var input = Enumerable.Range(0, 10)
@@ -2125,198 +2165,6 @@ static void Main(string[] args)
 <p>それにしてもMSDNマガジン素晴らしいなあ。この記事は実に入門向けに満遍なくも濃密で、素敵な時間を過ごせた。いやあ、一時期は機械翻訳のみになってたけれど、再び翻訳に戻って大変ありがたい。そして、そろそろRxもMSDNマガジンに記事が来てもいいのでは？もしくはMSKKの人がですね。どうでしょう。どうなんでしょう。どうなってるんでしょう。</p>
 <p>あ、そういえば私は10月期のMicrosoft MVPに応募してたんですがそれはやっぱりダメだったよ。言うことを聞かないからね。これを見てるそこの君、以下略。来年の1月にretryしようかなー。それまでには記事増量、ってやること変わってないんじゃ結果は同じじゃないのというのががが。</p>
 </div>
-<h1 data-pagefind-sort="date:2010-09-28" data-pagefind-meta="published:2010-09-28"><a href="https://neue.cc/2010/09/28_277.html">Reactive Extensionsの非同期周りの解説と自前実装</a></h1>
-<ul class="date"><li>2010-09-28</li></ul>
-<div class="entry_body"><p>最近<a href="http://d.hatena.ne.jp/okazuki/" title="かずきのBlog@Hatena">id:okazuki</a>さんが凄い勢いでRx解説を書いていて凄い！そして、刺激を受けますねー。というわけで、今回はRxの非同期周りの解説をします。今日の昼に<a href="http://d.hatena.ne.jp/okazuki/20100927/1285553227" title="非同期処理を行うメソッドの戻り値は全てIObservable&lt;T&gt;にしてしまえばいいんじゃないんだろうか - かずきのBlog@Hatena">非同期処理を行うメソッドの戻り値は全てIObservable&lt;T&gt;にしてしまえばいいんじゃないんだろうか</a>を読んで、Twitterで少しAsyncSubjectについて書いたのでそれをまとめて……、と思ったら<a href="http://d.hatena.ne.jp/okazuki/20100927/1285590312" title="Reactive Extensions入門 11「非同期処理用のSubject」 - かずきのBlog@Hatena">Reactive Extensions入門 11「非同期処理用のSubject」</a>ですって！早！私なんて一年かけて何も書いていやしなかったりするのに、この早さは本当に見習いたい、ごほごほ。</p>
-<p>そんなわけかで、色々と被ってしまっているのですが、Rxの非同期実行についてまとめます。まず、Rxの非同期の起点はStart, ToAsync, FromAsyncPatternの3つ。Start,ToAsyncはFromAsyncPatternの簡易化みたいなものなので、実質は1つです。これらを使うと長さ1のIObservable&lt;T&gt;として非同期処理が扱えるわけです。ところで非同期処理が完了するまでの間に複数Subscribeしたらどうなるのだろう、または非同期処理が完了してしまった後にSubscribeしたらどうなるのだろう？ Silverlightで実際に触って試してみてください。</p>
-<p class="noindent">
-<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="300px">
-<param name="source" value="http://neue.cc/wp-content/uploads/silverlight/RxConsoleAsyncSubject.xap"/>
-<param name="background" value="white" />
-<param name="minRuntimeVersion" value="4.0.50401.0" />
-<param name="initparams" value="Start=1" />
-<a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=4.0.50401.0" style="text-decoration:none">
- 	<img src="http://go.microsoft.com/fwlink/?LinkId=161376" alt="Microsoft Silverlight の取得" style="border-style:none"/>
-</a>
-</object>
-</p>
-<p>ボタンだらけでイミフ？ 解説します……。Rxの非同期系処理は全てAsyncSubjectを通ります。AsyncSubjectのOnNextが非同期で実行された値の戻り値を、OnCompletedが非同期処理の完了を示します。通常はOnNextとOnCompletedはワンセットで非同期処理です。というわけで、例えばSubscribeを二回押す→OnNextを一回押す→OnCompletedを一回押すで、非同期のIObservable&lt;int&gt;に対して二つSubscribe(Console.WriteLine)したということになり、1が二つ右側のログに表示されたはずです。続けてSubscribeを押す（非同期処理が完了した後にSubscribeした場合）とどうなるか？というと、1が追加されたはずです。</p>
-<p>以前に<a href="http://neue.cc/2010/06/24_263.html" title="neue cc - Reactive Extensions for .NET (Rx) メソッド探訪第7回:IEnumerable vs IObservable">Hot vs Cold</a>としてIObservableの性質を少し取り上げました。ColdはSubscribeするとすぐに実行される。HotはSubscribeしても値が流れてくるまで待機する。非同期におけるIObservable&lt;T&gt; = AsyncSubjectは、つまり、両方の性質を持ちます。OnCompleted以前はHotで、値が流れてくる（非同期処理が完了する）まで待機される。OnCompleted以後はColdとなって、Subscribeするとすぐに値を流す。</p>
-<p>何となくAsyncSubjectの中身が想像付いてきました？そう、非同期の実行結果である値をキャッシュしています。もし複数回OnNextされたらどうなるか、というと、これは最後の値だけが残ります。(一度Resetしてから)OnNextを連打してからOnCompletedを押して、Subscribeしてみてください。</p>
-<p>非同期というとキャンセルはどうするの？というと、ありますよ！Subscribeの戻り値はIDisposable。イベントのRx化、FromEventの場合はイベントのデタッチでしたが、非同期で使う場合はキャンセルになります。例えばSubscribeを押してから、Disposeを押して（キャンセル！）、OnNext→OnCompleted(非同期処理完了)を押してみてください。ログに何も出てきません。非同期処理が完了する前にDisposeしたということで、Subscribeがキャンセルされた、ということです。では、続けて(OnCompleted完了後)Subscribeを押すと……、ログに値が表示されます。Disposeは処理自体をキャンセルするわけではなく、 Subscribeのキャンセルということですね。</p>
-<p>そうそう、ResetボタンはSubscribeやDispose、AsyncSubjectの状態をリセットして初期化します。Clearボタンはログの消去になります。</p>
-<h2>AsyncSubjectの簡易実装</h2>
-<p>AsyncSubjectの実態が大体分かったので、次は自分で実装してみましょう！その前にSubjectって何ぞや、というと、IObservable&lt;T&gt;かつIObserver&lt;T&gt;。これはRxネイティブのイベントだと思ってください。<a href="http://neue.cc/2010/07/28_269.html" title="neue cc - Reactive Extensions入門 + メソッド早見解説表">詳しくはReactive Extensions入門 + メソッド早見解説表</a>をどうぞ。</p>
-<p>とりあえず実装したコードを。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public class MyAsyncSubject&lt;T&gt; : IObservable&lt;T&gt;, IObserver&lt;T&gt;
-{
-    bool isCompleted = false;
-    T lastValue = default(T);
-    readonly List&lt;IObserver&lt;T&gt;&gt; observers = new List&lt;IObserver&lt;T&gt;&gt;();
-
-    // OnCompleted済みなら即座にOnNext呼び出し、そうでないならListへAdd
-    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
-    {
-        if (isCompleted)
-        {
-            observer.OnNext(lastValue);
-            observer.OnCompleted();
-            return Disposable.Empty;
-        }
-        else
-        {
-            observers.Add(observer);
-            // 正しくはキャンセルが可能なように、Disposeが呼ばれた際にListからremoveされるよう
-            // ラップした特別なIDisposableを返す必要があるけれど、簡略化した例ということでその辺は省きます
-            return Disposable.Empty;
-        }
-
-    }
-
-    // 初回呼び出しの場合は最後の値で全てのobserverのOnNextとOnCompletedを呼ぶ
-    public void OnCompleted()
-    {
-        if (isCompleted) return;
-        isCompleted = true;
-        observers.ForEach(o =&gt;
-        {
-            o.OnNext(lastValue);
-            o.OnCompleted();
-        });
-        observers.Clear();
-    }
-
-    // OnCompletedと同じ。これも呼ばれたらCompleted済みとなる
-    public void OnError(Exception error)
-    {
-        if (isCompleted) return;
-        isCompleted = true;
-        observers.ForEach(o =&gt;
-        {
-            o.OnError(error);
-        });
-        observers.Clear();
-    }
-
-    // Completed済みでなければキャッシュを置き換える
-    public void OnNext(T value)
-    {
-        if (isCompleted) return;
-        lastValue = value;
-    }
-}
-</code></pre>
-<p>あくまでこれは簡易化したものです。実際はこれより、もう少し複雑です。あとlockを省いているのにも注意。まあ、ちゃんとしたのが知りたい場合はリフレクタとキャッキャウフフしてくださいということで。コードの中身ですが、Silverlightのデモで見てきた通りの、比較的単純な作りになっています。OnCompleted前後のSubscribeの挙動なんて、コードで見たほうが一目瞭然で早いですね。</p>
-<p>これの挙動がRxの非同期系の挙動です。もしAsyncSubjectではなくSubject(値のキャッシュなし)を使った場合は、非同期開始からSubscribeまでの間に完了してしまった場合、何も起きないことになってしまいます。キャッシュを取るというのは、非同期に最適な理に叶った、というか、少なくとも不都合は起きないような挙動になります。もし自前で非同期でIObservable&lt;T&gt;を返すようなメソッドを実装する場合は、必ずAsyncSubjectを使いましょう。ユーザーの期待する挙動を取らなければならないという、義務として。</p>
-<h2>FromAsyncPatternの簡易実装</h2>
-<p>ここまで来たら、ついでなのでFromAsyncPatternも実装してしまいましょう！AsyncSubjectがあれば簡単です。あ、こちらでも断っておくと、あくまで簡易実装であって実際のものとは若干異なります。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">static class Program
-{
-    static Func&lt;T, IObservable&lt;TR&gt;&gt; MyFromAsyncPattern&lt;T, TR&gt;(Func&lt;T, AsyncCallback, object, IAsyncResult&gt; begin, Func&lt;IAsyncResult, TR&gt; end)
-    {
-        return arg =&gt;
-        {
-            var asyncSubject = new AsyncSubject&lt;TR&gt;(Scheduler.ThreadPool); // おや、引数に……
-
-            // 引数を渡されたら、Subscribeを待たずBeginInvokeで非同期実行が始まります
-            begin.Invoke(arg, ar =&gt;
-            {
-                TR result;
-                try
-                {
-                    result = end.Invoke(ar); // EndInvokeで結果を得て
-                }
-                catch (Exception error)
-                {
-                    asyncSubject.OnError(error);
-                    return;
-                }
-                asyncSubject.OnNext(result); // OnNext!
-                asyncSubject.OnCompleted();
-            }, null);
-
-            return asyncSubject.AsObservable(); // SubjectのOnNextなどを隠す(なので昔はHideというメソッド名でした)
-        };
-    }
-
-    // ToAsyncはFunc/ActionのBeginInvoke,EndInvoke簡略化版です
-    // というのは少し嘘です、実際はSchedulerを使うのであってBeginInvokeは使いません、詳しくはまたそのうち
-    static Func&lt;T, IObservable&lt;TR&gt;&gt; MyToAsync&lt;T, TR&gt;(this Func&lt;T, TR&gt; func)
-    {
-        return MyFromAsyncPattern&lt;T, TR&gt;(func.BeginInvoke, func.EndInvoke);
-    }
-
-    // StartはToAsyncの引数無しのものを即時実行というものです
-    // Func&lt;T&gt;のみのFromAsyncPatternを作っていないので、Rx本来のToAsyncで書きます
-    static IObservable&lt;T&gt; MyStart&lt;T&gt;(Func&lt;T&gt; func)
-    {
-        return Observable.ToAsync(func).Invoke(); // ここで即座にInvoke
-    }
-
-    static void Main(string[] args)
-    {
-        // *が引数の分だけ並ぶという関数があったとする
-        Func&lt;int, string&gt; repeat = i =&gt; new String('*', i);
-
-        var obs = MyFromAsyncPattern&lt;int, string&gt;(repeat.BeginInvoke, repeat.EndInvoke)
-            .Invoke(3); // Subscribe時ではなく、Invokeした瞬間に非同期の実行は開始されていることに注意
-
-        obs.Subscribe(Console.WriteLine); // ***
-        Console.ReadKey();
-    }
-}
-</code></pre>
-<p>FromAsyncPatternは引数の多さや引数のイミフさにビビりますが、デリゲートのBeginInvoke, EndInvokeに合わせてやるだけです。こんなの私もソラでは書けませんよー。さて、今回は引数を一つ取るFromAsyncPatternを定義してみました。戻り値がFunc&lt;T, IObservable&lt;TR&gt;&gt;なのは、引数を一つ取ってIObservable&lt;T&gt;にする、ということです。</p>
-<p>中身は割と簡単で、とりあえずBeginInvokeして、EndInvokeを待たずに（そりゃ非同期なので当然だ）とりあえずAsyncSubjectを戻します。つまり、これでIObservableとしてはHotの状態。そして何らかの処理が終えたらEndInvokeで戻り値を得て、AsyncSubjectのOnNext, OnCompletedを呼んでやる。これでSubscribeされていたものが実行されて、ついでにIObservableとしてColdになる。これだけ。意外とシンプル。</p>
-<p>ついでのついでなのでObservable.ToAsyncとObservable.Startも定義してみました。ToAsyncはFunc/Actionを簡単にRx化するもの。FromAsyncPatternだとジェネリックの引数を書いたりと、何かと面倒くさいですから。StartはToAsyncを更に簡略化したもので、引数なしのものならInvoke不要で即時実行するというもの。</p>
-<h2>実行開始タイミングについて</h2>
-<p>FromAsyncPatternは(ToAsync/Startも)Invokeした瞬間に非同期実行が始まります。　FromAsyncPattern().Invoke().Subscribe() といったように、直接繋げる場合は気にする必要も特にないかもですが、一時変数などに置いたりする場合などは、Subscribeされたときに初めて非同期実行が開始されて欲しい、と思ったりあるかもですね。そんな場合はDeferを使います。</p>
-<p class="noindent">
-<object data="data:application/x-silverlight-2," type="application/x-silverlight-2" width="640px" height="300px">
-<param name="source" value="http://neue.cc/wp-content/uploads/silverlight/RxConsoleAsyncSubject.xap"/>
-<param name="background" value="white" />
-<param name="minRuntimeVersion" value="4.0.50401.0" />
-<param name="initparams" value="Start=2" />
-<a href="http://go.microsoft.com/fwlink/?LinkID=149156&v=4.0.50401.0" style="text-decoration:none">
- 	<img src="http://go.microsoft.com/fwlink/?LinkId=161376" alt="Microsoft Silverlight の取得" style="border-style:none"/>
-</a>
-</object>
-</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// 100を返すだけのどうでもいい関数
-Func&lt;int&gt; func = () =&gt;
-{
-    Console.WriteLine(&quot;fire&quot;);
-    return 100;
-};
-
-var start = Observable.Start(func);
-var defer = Observable.Defer(() =&gt; Observable.Start(func));
-var prune= Observable.Defer(() =&gt; Observable.Start(func)).Prune();
-
-StartButton.Click += (sender, e) =&gt;
-{
-    start.Subscribe(Console.WriteLine);
-};
-
-DeferButton.Click += (sender, e) =&gt;
-{
-    defer.Subscribe(Console.WriteLine);
-};
-
-var isConnected = false;
-ReplayButton.Click += (sender, e) =&gt;
-{
-    if (!isConnected) { prune.Connect(); isConnected = true; }
-    prune.Subscribe(Console.WriteLine);
-};
-</code></pre>
-<p>何もボタンを押さなくてもログにfireと出てしまっています。Observable.Startのせいなわけですががが。そんなわけで、Deferを使うとSubscribeまで実行を遅延することができます。ところで注意なのが、どちらもIObservable&lt;T&gt;なのですが、StartはColdとしてキャッシュされた値を返し続けるのに対して、Deferは中の関数を再度実行します。もしキャッシュしたい場合は、Pruneを使うといいでしょう。Pruneはこのブログでも延々と出してきた値の分配のためのPublishの親戚で、Connect後は最後の値をキャッシュして返し続けるという、AsyncSubjectと同じ動作をします（というか中身がAsyncSubjectなのですが）。この辺の使い分けというのもヤヤコシイところですねえ、そもそもPruneっていうメソッド名がイミフ……。</p>
-<h2>まとめ</h2>
-<p>Linq to Objectsで、最初分からなかったんですよ、yield returnなどで返される遅延評価としてのIEnumerable&lt;T&gt;と、配列(これもIEnumerable&lt;T&gt;ではある)の違いが。初めてLinqを知った後、半年ぐらいは分からないままだった（C#歴も半年でしたが）。同じインターフェイスなのに、状態としては、ちょっと違う。こういうのって結構分かりづらくて、躓いてしまうところです。</p>
-<p>Rxの厄介なところは、IObservable&lt;T&gt;が一つで色々な状態を持ちすぎ。HotとColdの違いもある上に、更には混じり合った状態まである、Deferと非Deferも、外からだけだと全く区別がつかない。もう分かりづらいったらない。これに関しては一個一個丁寧に見ていくしかない、かな。今回はRxにおける非同期を徹底的に解剖してみました。一つ一つ、丁寧に。Rxも徐々に盛り上がりつつあるようなので、これからも、私なりに出来る限りに情報を発信していけたらと思います。</p>
-<p>ところで、凄くシンプルなんですよね、Rxって。何を言ってるんだ？って話ですが、ええと、ほら、あくまでも「簡易」だからってのもありますが、実装のコード行数も少ないし全然難しいことやってないという。Linq to Objectsもそれ自体は凄くシンプルで、シンプルなのにとんでもなく強力という。それと同じで。Rx触ってて、内部をリフレクタでちょろちょろと見てて、本当に驚く。シンプルなのだけど、自分じゃ絶対書けないし思いつけないしっていう。悔しいし、そして、憧れるところですねえ。</p>
-<p>特に魔法もなく、素直に中間層厚めな実装は、パフォーマンスは（もがもがもがもが）。何か言いました？</p>
-</div>
 <a href="https://neue.cc/19">Prev |</a>
 <a href="https://neue.cc/21">| Next</a>
 </div>
@@ -2340,6 +2188,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/11/">2024-11</a>
 <li><a href="https://neue.cc/2024/08/">2024-08</a>
 <li><a href="https://neue.cc/2024/07/">2024-07</a>
 <li><a href="https://neue.cc/2024/06/">2024-06</a>

@@ -74,7 +74,217 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2017-12-31" data-pagefind-meta="published:2017-12-31"><a href="https://neue.cc/2017/12/31_561.html">2017年を振り返る</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2018-01-18" data-pagefind-meta="published:2018-01-18"><a href="https://neue.cc/2018/01/18_562.html">ReactivePropertySlim詳解</a></h1>
+<ul class="date"><li>2018-01-18</li></ul>
+<div class="entry_body"><p><a href="http://blog.okazuki.jp/entry/2018/01/18/103347">ReactiveProperty v4.1.0 をリリースしました</a>ということで、Pull Requestしたコードをリリースして頂きました。ReactivePropertyはオリジナルは私が作ったのですが、数年前からokazukiさんがメインに開発/リリースしてもらっています。</p>
+<p>今回はReactivePropertySlimという新クラスが追加されました！名前の通り、軽量なReactivePropertyで、これはもともと社内で(Unityの)ReactivePropertyを大量に使っていて、改善のやり玉に上がっていて、その中で施された/施した施策を移植してきたという代物になります。当初そんな乗り気じゃなかったんですが、同僚に書き換えてもらったのを見て、ようやくやる気が上がったという、最低ですね、はい。</p>
+<p>無印との違いは</p>
+<ul>
+<li>フィールド数を最小限にしてアロケーションを抑えた（無印はバリデーション系などのためにSubjectやLazyの保持がかなりある）</li>
+<li>内部で使ってるSubjectをやめて完全自前管理＆Subscription(IDisposable)自体を連結リストのノード自身にすることで、複数Subscribeでのアロケーションをなくした</li>
+<li>変更通知の実行をスケジューラー経由で行わず直接する（無印はデフォルトでDispatcher経由になるけれど、パフォーマンス上の問題と、厄介な挙動を時折示していた）</li>
+<li>バリデーション系のメソッドを除去</li>
+<li>ReactivePropertySlimからObservable Sourceを受けとる機能/コンストラクタを削除（ReadOnlyReactivePropertySlimのみがその機能を持つ）</li>
+</ul>
+<p>もともとReactivePropertyはViewModelでのViewへのバインディング用を主に考えて機能を足していったため、Modelで使う分には不適切な重さがあるな、と考えていました。なので今回、一掃して、2018年エディションとして再デザインしました。基本的な箇所の設計は2011年と6年前のものなので、今視点で見ると考慮が甘い部分も割とあったのですよね。</p>
+<p>パフォーマンスを見てみましょう。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/35102451-5cd2f4d6-fca6-11e7-865c-6c473fd3a032.png" alt="image" /></p>
+<p><img src="https://user-images.githubusercontent.com/46207/35102357-1404b7da-fca6-11e7-8bf0-001ef3e68637.png" alt="image" /></p>
+<p>上がコンストラクタ＋3つSubscribeした場合。下がValueへの代入を3回した場合。Subscribeの高速化と生成時も含めた省メモリは意図通りなのですが、Valueの代入のほうがインパクト大きいですね。こっちは想定外。これはScheduler経由をなくした効果だと思われるけれど、かなりの差がでてて、あらあら、という感じ……(ちなみにSchedulerはImmediate指定してるのでSchedulerの中では最速ではあるはず）。</p>
+<p>生成/Subscribeの高速化は起動時間（Unityだとシーン初期化だとか、WPFでもWindow作ったりとか）に影響あるので、短いにこしたこたぁないですねん。いいことです。</p>
+<h2>ReactiveProperty/Subject分解</h2>
+<p>Slim、について考える前に、改めてReactivePropertyについて見てみましょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// 最小のReactivePropertyはSubjectのラッパーというイメージ
+public class MinimumReactiveProperty&lt;T&gt; : IObservable&lt;T&gt;
+{
+    readonly Subject&lt;T&gt; subject = new Subject&lt;T&gt;();
+    T latestValue;
+
+    public T Value
+    {
+        get
+        {
+            return latestValue;
+        }
+        set
+        {
+            // 値の設定で通知
+            latestValue = value;
+            subject.OnNext(value);
+        }
+    }
+
+    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
+    {
+        return subject.Subscribe(observer);
+    }
+}
+</code></pre>
+<p>これ以上ないってぐらいシンプルで、まぁいいじゃんって話で、2011年は不満はなかったんですが、今視点で見るとちょっと引っかかるところがあったりします。</p>
+<p>というわけで、Subjectを展開してみます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class MinimumReactiveProperty&lt;T&gt; : IObservable&lt;T&gt;
+{
+    // Subjectの内部のobserverのリスト
+    IObserver&lt;T&gt;[] data;
+
+    public T Value
+    {
+        set
+        {
+            // subject.OnNext(value);
+            for (var i = 0; i &lt; data.Length; i++)
+            {
+                data[i].OnNext(value);
+            }
+        }
+    }
+
+    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
+    {
+        // observerの追加のたびに新しい配列に詰め直し(ImmutableArray)
+        var newData = new IObserver&lt;T&gt;[data.Length + 1];
+        Array.Copy(data, newData, data.Length);
+        newData[data.Length] = value;
+        data = newData; // (代入時、実際にはThreadsafeのための挙動も入ります)
+
+        // 購読解除のためのIDisposableの生成
+        return new Subscription(this, observer);
+    }
+}
+</code></pre>
+<p>Subjectは内部でIObserverをImmutableArrayとして保持しています。なのでSubscribeがある度に、新規配列を生成してコピーしてます。古いやつはゴミ行き！これは一見無駄に見えますが、別に悪い話ではなくて、一点目はスレッドセーフになること（しやすいこと、実際には代入前後にThreadSafeを確保する処理は必要）。二点目は、OnNextが最速になること。C#において列挙は、配列をその配列の長さでforで回すのが最速です。通常、この手のイベント処理は、購読が初回の一回で、その後に大量の配信があるという構成になるのが普通なので、OnNext側の性能を最大限にするというのは全然アリです。</p>
+<p>また、こう見ると、Subjectではなく生のevent構文を使ったほうが安価に見えるかもしれませんが、実はC#のeventも似たような実装になっているため<a href="https://referencesource.microsoft.com/#mscorlib/system/multicastdelegate.cs,267">MulticastDelegate.CompibeImpl</a>ぶっちゃけ同じです（この辺は特にイベント専用のマジックとかなく、割と実装されたまんまに実行されます）。</p>
+<p>そして、最後に購読解除のためのSubscriptionを作って返す。これは必要コストですよねshoganai。</p>
+<p>で、まぁ、OnNextの性能を最大限にするとはいえImmutableArrayは生成コストがちょっと高いよねー、と思ってました。また、Subscriptionを都度生成しなきゃいけないのも必要コストとはいえ勿体無くて、気になるものは気になる。うーむ。</p>
+<p>それらを何とかするアイディアとして、必要コストとして絶対に存在するSubscriptionを線形リストのノードにすることで、最小限の生成に抑えました。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// 別添えでLinkedList本体は作らず、ReactivePropertySlim自体をLinkedListにする（節約）
+internal interface IObserverLinkedList&lt;T&gt;
+{
+    void UnsubscribeNode(ObserverNode&lt;T&gt; node);
+}
+
+// LinkedListNode自体がSubscriptionになる(節約)
+internal sealed class ObserverNode&lt;T&gt; : IObserver&lt;T&gt;, IDisposable
+{
+    readonly IObserver&lt;T&gt; observer;
+    IObserverLinkedList&lt;T&gt; list;
+
+    public ObserverNode&lt;T&gt; Previous { get; internal set; }
+    public ObserverNode&lt;T&gt; Next { get; internal set; }
+
+    public ObserverNode(IObserverLinkedList&lt;T&gt; list, IObserver&lt;T&gt; observer)
+    {
+        this.list = list;
+        this.observer = observer;
+    }
+
+    public void OnNext(T value)
+    {
+        observer.OnNext(value);
+    }
+
+    public void OnError(Exception error)
+    {
+        observer.OnError(error);
+    }
+
+    public void OnCompleted()
+    {
+        observer.OnCompleted();
+    }
+
+    public void Dispose()
+    {
+        var sourceList = Interlocked.Exchange(ref list, null);
+        if (sourceList != null)
+        {
+            sourceList.UnsubscribeNode(this);
+            sourceList = null;
+        }
+    }
+}
+
+// というのを使って実装すると
+public class ReactivePropertySlim&lt;T&gt; : IReactiveProperty&lt;T&gt;, IReadOnlyReactiveProperty&lt;T&gt;, IObserverLinkedList&lt;T&gt;
+{
+    // LinkedListでいうFirstとLastを保持(ReactivePropertySlim自体がLinkedList本体になる)
+    ObserverNode&lt;T&gt; root;
+    ObserverNode&lt;T&gt; last;
+
+    public T Value
+    {
+        set
+        {
+            this.latestValue = value;
+            
+            // LinkedListを辿ってObserverを発火
+            var node = root;
+            while (node != null)
+            {
+                node.OnNext(value);
+                node = node.Next;
+            }
+
+            this.PropertyChanged?.Invoke(this, SingletonPropertyChangedEventArgs.Value);
+        }
+    }
+
+    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
+    {
+        // 線形リストのノードを作って、自身でノードを管理する
+        var next = new ObserverNode&lt;T&gt;(this, observer);
+        if (root == null)
+        {
+            root = last = next;
+        }
+        else
+        {
+            last.Next = next;
+            next.Previous = last;
+            last = next;
+        }
+
+        return next; // ノード自体がSubscription
+    }
+    
+    // SubscriptionのDisposeでLinkedListを張り替える
+    void IObserverLinkedList&lt;T&gt;.UnsubscribeNode(ObserverNode&lt;T&gt; node)
+    {
+        if (node == root)
+        {
+            root = node.Next;
+        }
+        if (node == last)
+        {
+            last = node.Previous;
+        }
+
+        if (node.Previous != null)
+        {
+            node.Previous.Next = node.Next;
+        }
+        if (node.Next != null)
+        {
+            node.Next.Previous = node.Previous;
+        }
+    }
+}
+</code></pre>
+<p>良い所は、生成において無駄が全くない。同居できるものは徹底的に同居させることで、もうこれ以上は削れないでしょう。多分。悪い所は、線形リストの列挙は、配列列挙よりも明らかに遅いので、通知のパフォーマンスの低下がある。まあこのへんは購読料にもよりけりなので、なんとも言い難いところですね。（それとReactiveProperty, ReactivePropertySlim比較だと、スケジューラー経由を削ったことによってそれどころじゃないパフォーマンス向上を果たした）。</p>
+<p>悪い所は、スレッドセーフじゃないです。うーん、Subscriptionの解除側ぐらいはスレッドセーフにしたほうがいいかなあ。ここちょっと悩ましい所で、考えさせてください。</p>
+<h2>***Slim</h2>
+<p>***Slimという命名は、<a href="https://msdn.microsoft.com/ja-jp/library/system.threading.manualresetevent(v=vs.110).aspx">ManualResetEvent</a>と<a href="https://msdn.microsoft.com/ja-jp/library/system.threading.manualreseteventslim(v=vs.110).aspx">ManualResetEventSlim</a>の関係性にならって付けています。ManualResetEventは、通常Slim版しか使わないです。</p>
+<p>と、いうわけで、ReactivePropertySlimも、Model専用での推奨というかは、ViewModel側でも支障がなければ積極的に使ったほうが幸せになれると思っています。機能的には、バリデーションが必要なところだけ、無印を使うのがいいと考えています。</p>
+<p>機能的に低下した所は他に、ToReactivePropertySlimがありません。これは、Sourceから流れてくるのとValueへのセットの二通りで値が変化する(Mergeされてる)のが気持ち悪いというか、使いみちあるのそれ？みたいに思ったからです。ない、とはいわないまでも、存在がおかしい。のでいっそ消しました。かわりにToReadOnlyReactivePropertySlimがあります。値の変化はSourceからのみ。このほうが自然でしょふ。</p>
+<h2>UniRx</h2>
+<p>Unityは元々ほとんどシングルスレッドなので、スレッドセーフじゃなくても概ね問題はないし、ゴミにたいして敏感な環境でもあるので、むしろReactiveProeprty（無印）をSlim版に変えたいと思ってます（今の無印版の命名をどうしようか問題はある、どうしよう）。が、破壊的変更になるので、どうしようか……。でも明らかにSlimのほうがいいし、デフォで使ってもらうべきなので、まぁ、多分、変えます。近いうち（ほんとか？）に。</p>
+<p>あとToReactivePropertyでReadOnlyReactivePropertyを返すようにするかも。前述のように普通のToReactivePropertyがなくなるので、そっちのほうが自然にまとまった感じでいいんじゃないかなー、とか。</p>
+<p>ところでちなみに.NET版のReactivePropertyよりもUniRxのReactivePropertyのほうが元々スリムなので、冒頭のベンチマークほどのOnNext(Valueへの代入)の性能差は出ませんので、そこは安心してください。</p>
+<h2>まとめ</h2>
+<p>パフォーマンス向上の原則はオブジェクトを作らない！オブジェクトを作らないためには、機能を一つのクラスに詰める！機能は分けない！まぁ、分けないことによって使い勝手が悪くなるのは最悪なので、パブリックAPIは適切な分割と集約をきっちり意識して、プライベートAPIは、性能を意識して、あえて統合する、というのもアリ（必ずしも性能が最重要案件ではないというか、最適化は後回しでいい場合が多いので、別に全てをそうしろとはいいませんよ）。ということで。</p>
+<p>ReactivePropertySlimはSlimの名前の通り、小さくはあるんですが、大きく作るよりも、小さく作るほうが存外難しく、そして価値あるものです。実装自体は見た通り簡単なもので、別に複雑なアルゴリズムやコーディングが入っているわけでもないですが、アイディアが大事ということで。言われてみれば、そうですねー、っていう話ではあるのだけれど、そこに気づいて実装まで回せるかというのは全然難易度が違うんですよね。ともあれ、中々良い仕上がりになったと思うので、是非試してみてください（機能的には無印と一緒ですが！）。</p>
+</div>
+<h1 data-pagefind-sort="date:2017-12-31" data-pagefind-meta="published:2017-12-31"><a href="https://neue.cc/2017/12/31_561.html">2017年を振り返る</a></h1>
 <ul class="date"><li>2017-12-31</li></ul>
 <div class="entry_body"><p>毎年恒例ということにしているので、今年も振り返ってみます。</p>
 <p>まず、「<a href="https://kuro-kishi.jp/">黒騎士と白の魔王</a>」がリリースされました。開発2年分の成果が結実ということで、まずはメデタシ。セールス的にも一定の足跡を残せています。昨今モバイルゲームもシブい状況になってきてはいますが、その中でキャラ物ではないノンIPのオリジナルタイトルでこのレベルに達せているものがどれだけあるか、ということを考えると、自分達でいうのもアレですが、実際やりますな、みたいなのは、ありますね！</p>
@@ -2930,189 +3140,6 @@ public class SampleGroup
 <p>というわけかで、去年の目標であったグラフィックプログラミングはちっとも前進しませんでした。今年はVRにもしっかり手を出したかったんですが、あまりやれてないですね、まぁそうしたグラフィックプログラミングも、VRも、あと最近興味あるのはディープラーニングも、ゲームをリリースするまではお預け。</p>
 <p>というわけで、リリースしましょう、ってことですね！</p>
 </div>
-<h1 data-pagefind-sort="date:2016-12-25" data-pagefind-meta="published:2016-12-25"><a href="https://neue.cc/2016/12/25_547.html">ASP.NET Coreを利用してASP.NET Coreを利用しないMiddlewareの作り方</a></h1>
-<ul class="date"><li>2016-12-25</li></ul>
-<div class="entry_body"><p>今回の記事は<a href="http://qiita.com/advent-calendar/2016/asp-net">ASP.NET Advent Calendar 2016</a>向けのものとなります。最終日！特に書くつもりもなかったのですが、たまたま表題のような機能を持つMiddlewareを作ったので、せっかくなので書いておくか、みたいなみたいな。</p>
-<h2>.NET 4.6でASP.NET Core</h2>
-<p>まぁ普通に.NET 4.6でASP.NET Coreのパッケージ入れるだけなんですが。別にASP.NET Coreは.NET Coreでしか動かせないわけではなくて、ちゃんと（？）.NET 4.6でも動きます。如何せん.NET Coreがまだ環境として成熟してはいないので、強くLinuxで動かしたいという欲求がなければ、まだまだWindows/.NET 4.6で動かすほうが無難でしょう。Visual Studioのサポートも2015だとちょっとイマイチだとも思っていて、私的には本格的に作り出していくのはVisual Studio 2017待ちです。脱Windowsとして、Linuxでホスティングするというシナリオ自体にはかなり魅力的に思っていますし、ライブラリを作るのだったら今だと.NET Core対応は必須だと思いますけれど。</p>
-<h2>Hello Middleware</h2>
-<p>Middlewareとはなんぞやか、というと、<a href="https://docs.microsoft.com/en-us/aspnet/core/fundamentals/middleware">ASP.NET公式のMiddlewareのドキュメント</a>が見れば良いですね。</p>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/21470367/d665e7b0-cac8-11e6-8bec-41495e3aa63f.png" alt="image" /></p>
-<p>Httpのリクエストを受けつけて、レスポンスを返す。ASP.NET Core MVCなどのフレームワークも、Middlewareの一種（図で言うところのMiddleware3にあたる、パイプラインの終点に位置する）と見なせます。このパイプラインのチェーンによって、事前に認証を挟んだりロギングを仕込んだりルーティングしたりなど、機能をアプリケーションに足していくことができます。</p>
-<blockquote>
-<p>考え方も、実質的なメソッドシグネチャもASP.NET Coreの前身の<a href="http://owin.org/">OWIN</a>と同一です。今ではOWIN自体の機能や周辺フレームワークは完全に整っていて、ASP.NET Coreで全て賄えるようになっているので、新しく作る場合はASP.NET Coreのことだけを考えればいいでしょう。逆に、OWINで構築したものをASP.NET Coreへ移行することはそう難しくないです</p>
-</blockquote>
-<p>ASP.NET Coreのパッケージはいろいろあって、どれを参照すべきか悩ましいのですが、最小のコア部分となるのは<a href="https://www.nuget.org/packages/Microsoft.AspNetCore.Http.Abstractions/">Microsoft.AspNetCore.Http.Abstractions</a>です。これさえあればMiddlewareが作れます。</p>
-<p>では、パイプラインの各部にフックするだけの単純なMiddlewareを作りましょう！</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public class HelloMiddleware
-{
-    // RequestDelegate = Func&lt;HttpContext, Task&gt;
-    readonly RequestDelegate next;
-
-    public HelloMiddleware(RequestDelegate next)
-    {
-        this.next = next;
-    }
-
-    public async Task Invoke(HttpContext context)
-    {
-        try
-        {
-            Console.WriteLine(&quot;Before Next&quot;);
-            
-            // パイプラインの「次」のミドルウェアを呼ぶ
-            // 条件を判定して「呼ばない」という選択を取ることもできる
-            await next.Invoke(context);
-
-            Console.WriteLine(&quot;After Next&quot;);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine(&quot;Exception&quot; + ex.ToString());
-        }
-        finally
-        {
-            Console.WriteLine(&quot;Finally&quot;);
-        }
-    }
-}
-</code></pre>
-<p>注意点としては、完全に「規約ベース」です。コンストラクタの第一引数はRequestDelegateを持ち（その他のパラメータが必要な場合は第二引数以降に書く）、public Task Invoke(HttpContext context)メソッドを持つ必要があります。逆に、それを満たしていればどのような形になっていても構いません。</p>
-<p>この規約ベースなところは賛否あるかなぁ、というところですが（私はどちらかというと否）、C#の言語機能としてはしょうがない面もあります。（自分でもこの手のフレームワークを何個か作った経験があるところから理解している上で）実装面の話をすると、この規約で最も大事なところは、コンストラクタの第一引数でRequestDelegateを受け入れるところにあります。そして、C#は具象型のコンストラクタの型の制約は入れられないんですよね。なので、MiddlewareBaseとか作ってもあんま意味がなくて、ならもう全部規約ベースで処理しちゃおうって気持ちは分かります。</p>
-<p>Invokeのメソッドシグネチャをpublic Task Invoke(HttpContext context, RequestDelegate next)にすることで、そうしたコンストラクタの制約を受ける必要がなくなって、メソッドに対するインターフェイスでC#として綺麗な制約をかけることは可能になるんですが（私も、なので以前はそういうデザインを取っていた）、そうなるとパフォーマンス上の問題を抱えることになります。Invoke(HttpContext context, RequestDelegate next)というメソッドシグネチャだと実行時に&quot;next&quot;を解決していくことになるのですが、これやるとどうしても、nextを解決するための余計なオブジェクト（クロージャを作るかそれ用の管理オブジェクトを新しく作るか）が必要になりますし、呼び出し階層もその中間層を挟むため、どうしても一個深くなってしまいます。</p>
-<p>ミドルウェアパイプラインは構築時にnextを解決することができるわけで、そうした実行時のコストを構築時に抑え込むことが原理上可能です。それが、コンストラクタでnextを受け入れることです。C#を活かした設計の美しさ vs パフォーマンス。このMiddlewareチェーンはASP.NET Coreにおける最も最下層のレイヤー。この局面ではパフォーマンスを選ぶべきでしょう。実に良いチョイスだと思います。</p>
-<p>最後に、使いやすいように拡張メソッドを用意しましょう。拡張メソッドなのでnamespaceは浅めのところにおいておくと使いやすいので、その辺は適当に気をつけましょう:)</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public static class HelloMiddlewareExtensions
-{
-    public static IApplicationBuilder UseHello(this IApplicationBuilder builder)
-    {
-        // 規約ベースで実行時にnewされる。パラメータがある場合はparams object[] argsで。
-        return builder.UseMiddleware&lt;HelloMiddleware&gt;();
-    }
-}
-</code></pre>
-<h2>Middlewareを使う</h2>
-<p>作ったら使わないと動作確認もできません！というわけでホスティングなのですが、これもAspNetCoreのパッケージはいっぱいありすぎてよくわからなかったりしますが、「Microsoft.AspNetCore.Server.*」がサーバーを立てるためのライブラリになってます。IISならIISIntegration、Linuxで動かすならKestrel、コンソールアプリなどでのセルフホストならWebListenerを選べばOK。今回は<a href="https://www.nuget.org/packages/Microsoft.AspNetCore.Server.WebListener">Microsoft.AspNetCore.Server.WebListener</a>で行きましょう。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">class Program
-{
-    static void Main(string[] args)
-    {
-        var webHost = new WebHostBuilder()
-            .UseWebListener()      // ホスティングサーバーを決める
-            .UseStartup&lt;Startup&gt;() // サーバー起動時に呼ばれるクラスを指定
-            .UseUrls(&quot;http://localhost:54321&quot;) // 立ち上げるアドレスを指定
-            .Build();
-
-        webHost.Run();
-    }
-}
-
-public class Startup
-{
-    // Configure(IApplicationBuilder app)というのも規約ベースで名前固定
-    public void Configure(IApplicationBuilder app)
-    {
-        // さっき作ったMiddlewareを使う
-        app.UseHello();
-
-        // この場で最下層の匿名Middleware(nextがない)を作る
-        app.Run(async ctx =&gt;
-        {
-            var now = DateTime.Now.ToString();
-            Console.WriteLine(&quot;---------&quot; + now + &quot;----------&quot;);
-            await ctx.Response.WriteAsync(DateTime.Now.ToString());
-        });
-    }
-}
-</code></pre>
-<p>例によって規約ベースなところが多いので、まぁ最初はコピペで行きましょう、しょーがない。これでブラウザでlocalhost:54321を叩いてもらえば、現在時刻が出力されるのと、コンソールにはパイプライン通ってますよーのログが出ます。</p>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/21470512/d6509b1a-cacf-11e6-83c6-fd2904dc8608.png" alt="image" /></p>
-<p>基本のHello Worldはこんなところでしょう、後は全部これの応用に過ぎません。</p>
-<h2>ASP.NET Coreを利用してASP.NET Coreを利用しない</h2>
-<p>さて、本題（？）。現在、私は<a href="https://github.com/neuecc/MagicOnion">MagicOnion</a>というフレームワークを作っていて（まぁまぁ動いてますが、一応alpha段階）、謳い文句は「gRPC based HTTP/2 RPC Streaming Framework for .NET, .NET Core and Unity」。つまり……？<a href="http://www.grpc.io/">gRPC</a>というGoogleの作っている「A high performance, open-source universal RPC framework」を下回りで使います。つまり、ASP.NET Coreは使いません。さよならASP.NET Core……。</p>
-<p>gRPCは(.NET以外では)非常に盛り上がりを見せていて、ググればいっぱい日本語でもお話が見つかるので、知らない方は適当に検索を。非常に良いものです。</p>
-<p>gRPCはHTTP/2ベースで、しかもデータは基本的にはProtocol Buffersでやり取りされているので、従来のエコシステム(HTTP/1 + JSON)からのアクセスが使えません。そこで<a href="https://github.com/grpc-ecosystem/grpc-gateway/">grpc-gateway</a>というプロキシを間に挟むことで HTTP/1 + JSONで受けてHTTP/2 + Protobuf にルーティングします。それにより<a href="http://swagger.io/">Swagger</a>などの便利UIも使えて大変捗るという図式です。素晴らしい！</p>
-<p>grpc-gatewayは素晴らしいんですが、Pure Windows環境で使うのは恐らく無理があるのと、MagicOnionではデータを<a href="https://github.com/neuecc/ZeroFormatter/">ZeroFormatter</a>でやり取りするようにしているので、そのまま使えません。残念ながら。しかし、特にSwaggerが使いたいんで絶対にgrpc-gateway的なものは欲しい。と、いうわけで、用意しました。ASP.NET Coreを利用して(HTTP/1 + JSON)、ASP.NET Coreを利用しない(HTTP/2 + gRPC/MagicOnion/ZeroFormatter)。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public class MagicOnionHttpGatewayMiddleware
-{
-    readonly RequestDelegate next;
-    // MagicOnionのHandler（キニシナイ）
-    readonly IDictionary&lt;string, MethodHandler&gt; handlers;
-    // gRPCのコネクション
-    readonly Channel channel;
-
-    public MagicOnionHttpGatewayMiddleware(RequestDelegate next, IReadOnlyList&lt;MethodHandler&gt; handlers, Channel channel)
-    {
-        this.next = next;
-        this.handlers = handlers.ToDictionary(x =&gt; &quot;/&quot; + x.ToString());
-        this.channel = channel;
-    }
-
-    public async Task Invoke(HttpContext httpContext)
-    {
-        try
-        {
-            var path = httpContext.Request.Path.Value;
-
-            // HttpContextのパスをgRPCのパスと適当に照合する
-            MethodHandler handler;
-            if (!handlers.TryGetValue(path, out handler))
-            {
-                await next(httpContext);
-                return;
-            }
-
-            // BodyにJSONがやってきてるということにする（実際はFormからの場合など分岐がいっぱいでもっと複雑ですが！）
-            string body;
-            using (var sr = new StreamReader(httpContext.Request.Body, Encoding.UTF8))
-            {
-                body = sr.ReadToEnd();
-            }
-
-            // JSON -&gt; C# Object
-            var deserializedObject = Newtonsoft.Json.JsonConvert.DeserializeObject(body, handler.RequestType);
-
-            // C# Object -&gt; ZeroFormatter
-            var requestObject = handler.BoxedSerialize(deserializedObject);
-
-            // gRPCのMethodをリクエストを動的に作る
-            var method = new Method&lt;byte[], byte[]&gt;(MethodType.Unary, handler.ServiceName, handler.MethodInfo.Name, MagicOnionMarshallers.ByteArrayMarshaller, MagicOnionMarshallers.ByteArrayMarshaller);
-            
-            // gRPCで通信、レスポンスを受け取る(ZeroFormatter)
-            var rawResponse = await new DefaultCallInvoker(channel)
-                .AsyncUnaryCall(method, null, default(CallOptions), requestObject);
-
-            // ZeroFormatter -&gt; C# Object
-            var obj = handler.BoxedDeserialize(rawResponse);
-
-            // C# Object -&gt; JSON
-            var v = JsonConvert.SerializeObject(obj, new[] { new Newtonsoft.Json.Converters.StringEnumConverter() });
-
-            // で、HttpContext.Responseに書く。
-            httpContext.Response.ContentType = &quot;application/json&quot;;
-            await httpContext.Response.WriteAsync(v);
-        }
-        catch (Exception ex)
-        {
-            // とりあえず例外はそのまんまドバーッと出しておいてみる
-            httpContext.Response.StatusCode = 500;
-            await httpContext.Response.WriteAsync(ex.ToString());
-        }
-    }
-}
-</code></pre>
-<p>細かいところはどうでもいいんですが（あと一部端折ってます、実際はもう少し複雑なので）、基本的な流れはJSONをZeroFormatterに変換→内部で動いてるgRPCと通信→ZeroFormatterをJSONに変換。です。見事に左から右にデータを流すだけー、のお仕事、ですね！</p>
-<p>MagicOnion本体は限界までボクシングが発生しないように、ラムダのキャプチャなどにも気を使って、ギチギチにパフォーマンスチューニングしてあるんですが、このGatewayはそんなに気を使ってません:) まぁ、もとより複数回の変換が走ってる、パフォーマンス最優先のレイヤーではないから、いっかな、という。どっちかというとデバッグ用途でSwaggerを使いたいがために用意したようなものです。本流の通信はこのレイヤーを通ることはないので。</p>
-<p><img src="https://cloud.githubusercontent.com/assets/46207/21470717/d905c37c-cad8-11e6-86b6-88071b1474a8.png" alt="image" /></p>
-<p>ちゃんとgRPCでもSwagger使えてめっちゃ捗る。</p>
-<h2>What is MagicOnion?</h2>
-<p>gRPCは.protoを記述してサーバーコードの雛形とクライアントコードを生成します。私はこのIDL(Interface Definition Language)の層があまり好きじゃないんですね。そもそも、クライアントもサーバーも、ありとあらゆる層をC#で統一しているので、C#以外を考慮する必要がないというのもあるので。なので、C#自体をIDLとして使えるように調整したり、MVCフレームワークでいうフィルターが標準でないので、それを差し込めるようにしたり、gRPCは(int x, int y, int z)のような引数に並べるような書き方ができない（必ずRequestクラスを要求する！）ので、動的にそれを生成するようにしたりして、より自然にC#で使えるように、かつ、パフォーマンスも一切犠牲にしない（中間層が入ってるからオーバーヘッドと思いきや、むしろプリミティブ型が使えるようになったのでむしろ素のgRPCより速くなる）ようにしています。そもそもそしてUnityでも動作出来るような調整/カスタマイズなどなども込みで、ですね。</p>
-<p>それ以外の話は<a href="http://neue.cc/2016/11/28_544.html">ZeroFormatterと謎RPCについて発表してきました。</a>にて少し書いてあります。もう少し詳細な話は、完成した時に……。</p>
-<h2>まとめ</h2>
-<p>.NET Coreを本格的に（プロダクション環境で）使うということは、特に開発環境という点でまだ足りないところが多くて(project.json廃止とかゴタついたところもあるし）、VS2017待ちだと判断しています。しかし、ASP.NET Coreのフレームワーク面では十分完成していて、問題ないですね。なので、そちらから随時移行していきたいという気持ちでいます。</p>
-<p>まぁ、とはいえ↑で書いたとおり、ほとんどASP.NET Core自体すら使わないんですが。うーん、そうですね、やっぱスタンダードな作り(JSON API)をクロスプラットフォームを紳士に取り組んでます、みたいなことやってる間に、世界は凄いスピードで回ってるんですよね。Microsoftは常に一歩遅いと思っていて、まぁ今回もやっぱそうですよね、という感じで、世間が成熟した頃にやっと乗り出すようなスピード感だと思ってます。ナデラでOSSでスピーディーなのかといったら、別に私はそう思ってないですね、スピードという点では相変わらずだなぁ、と。むしろ「正しくやろうとする」圧力の高さに自分で縛られてしまっている気すらします。スタンダードだからとJSONでコンフィグ頑張ろうとしてやっぱダメでした撤回、みたいな。そういうのあんま良くないし、その辺の束縛から自由になれた時が真のスタートなんじゃないかな。</p>
-<p>ともあれ、私はgRPCにベットしてるんで、ASP.NET Core自体は割とどうでも良く思ってます、今のところ。でもそれはそれとして、当然（補助的に）使ってく必要はあるんで、そういう時にちょいちょいと出番はあるでしょう。</p>
-</div>
 <a href="https://neue.cc/5">Prev |</a>
 <a href="https://neue.cc/7">| Next</a>
 </div>
@@ -3136,6 +3163,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/11/">2024-11</a>
 <li><a href="https://neue.cc/2024/08/">2024-08</a>
 <li><a href="https://neue.cc/2024/07/">2024-07</a>
 <li><a href="https://neue.cc/2024/06/">2024-06</a>
