@@ -186,9 +186,9 @@ using var reader = new StreamReader(stream);
 JSON.DeserializeDynamic(reader);
 ```
 
-以上！完璧！便利！一度手順を理解してしまえば、そこまで難しいことではないので、是非ハンズオンでやってみることをお薦めします。
+以上！完璧！便利！一度手順を理解してしまえば、そこまで難しいことではないので、是非ハンズオンでやってみることをお薦めします。なお、ps1のスクリプトは実行対象自身へのインジェクトは除外されるようになっているので、小規模な自分のコードでfuzzingを試してみたいと思った場合は、対象コードはexeとは異なるプロジェクトに分離しておく必要があります。
 
-なお、AFLにはdictionaryという仕組みがあり、既知のキーワード集がある場合は生成速度を大幅に上昇させることが可能です。例えば[json.dict](https://github.com/AFLplusplus/AFLplusplus/blob/stable/dictionaries/json.dict)を使う場合は
+ところで、AFLにはdictionaryという仕組みがあり、既知のキーワード集がある場合は生成速度を大幅に上昇させることが可能です。例えば[json.dict](https://github.com/AFLplusplus/AFLplusplus/blob/stable/dictionaries/json.dict)を使う場合は
 
 ```cmd
 PowerShell -ExecutionPolicy Bypass ./fuzz-libfuzzer.ps1 -libFuzzer "./libfuzzer-dotnet-windows.exe" -project "ConsoleApp24.csproj" -corpus "Testcases" -dict ./json.dict
