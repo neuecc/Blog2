@@ -74,7 +74,311 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2014-12-03" data-pagefind-meta="published:2014-12-03"><a href="https://neue.cc/2014/12/03_491.html">kpm wrapでVS2015 Previewでもcsprojをkprojで参照する</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2014-12-08" data-pagefind-meta="published:2014-12-08"><a href="https://neue.cc/2014/12/08_496.html">VS2015+RoslynによるCodeRefactoringProviderの作り方と活用法</a></h1>
+<ul class="date"><li>2014-12-08</li></ul>
+<div class="entry_body"><p>この記事は<a href="http://qiita.com/advent-calendar/2014/csharp">C# Advent Calendar 2014</a>のための記事になります。私は去年のAdvent Calendarでは<a href="http://neue.cc/2013/12/04_435.html">非同期時代のLINQ</a>というものを書いていました、うん、中々良い記事であった（自分で言う）。今年のテーマはRoslynです。</p>
+<p>先月に<a href="http://neue.cc/2014/11/20_485.html">VS2015のRoslynでCode Analyzerを自作する(ついでにUnityコードも解析する)</a>という記事を書きましたが、VS2015 PreviewではRoslynで作る拡張にもう一つ、Code Refactoringがあります。こちらも簡単に作れて、中々ベンリなので（前にVS2015のRoslynは以前から後退して「あんま大したことはできない」と言いましたが、それはそれでかなり役立ちです）、是非作っていきましょう。Code Analyzerと同じく非常に簡単に作れるのと、テンプレートがよくできていてちゃんとガイドになってるので、すんなり入れるかと思います。なお、こちらはCode Analyzerと違いNuGet配布やプロジェクト単位での参照は不可能、VSIXのみ。そこはちょっと残念……。</p>
+<h2>Code Refactoring</h2>
+<p>下準備としてはCode Analyzerの時と同じく<a href="http://www.visualstudio.com/downloads/visual-studio-2015-downloads-vs">Visual Studio 2015 Preview</a>のインストールの他に、<a href="http://www.visualstudio.com/downloads/visual-studio-2015-downloads-vs">Visual Studio 2015 Preview SDK</a>と<a href="https://visualstudiogallery.msdn.microsoft.com/849f3ab1-05cf-4682-b4af-ef995e2aa1a5">.NET Compiler Platform SDK Templates</a>、そして<a href="https://visualstudiogallery.msdn.microsoft.com/70e184da-9b3a-402f-b210-d62a898e2887">.NET Compiler Platform Syntax Visualizer</a>を入れてください。</p>
+<p>さて、まずテンプレートのVisual C#→Extensibilityから「Code Refactoring(VSIX)」を選びます。とりあえずこのテンプレート（がサンプルになってます）をCtrl+F5で実行しましょう。これで立ち上がるVSは通常のVSに影響を及ぼさず自作拡張がインストールされる特殊なインスタンスになってます（devenv.exeを引数「/rootsuffix Roslyn」で立ち上げてる、のがDebugのとこで確認できる）。というわけで、このテンプレートの拡張によりクラス名をCtrl+.することにより</p>
+<p><img src="http://neue.cc/wp-content/uploads/2014/12/roslyn_reverse.jpg" alt="" /></p>
+<p>クラス名が逆になる、という（実にどうでもいい）機能拡張が追加されました！と、いうわけで、Code RefactoringはCode Analyzerと同じく「Light Bulb」によるCode Actionが実装可能になります。Code AnalyzerはDiagnosticが起点でしたが、こちらは、指し示された位置を起点にコードの削除/追加/変更を行えるという感じ。「リファクタリング」というとコード修正のイメージが個人的には強いんですが、RoslynのCode Refactoringはどちらかというと「コード生成」に使えるな、という印象です。例えばプロパティを選択してCode RefactoringでINotifyPropertyChangedのコードに展開してしまうとか。大量に作る場合、一個一個コードスニペットで作るより、そっちのほうが速く作れそうですよね？など、色々使い手はあるでしょふ。結構可能性を感じるし、良い機能だと思っています（それR#で今までも出来たよ！とかそれEclipseで既に！とか言いたいことはあるかもしれませんが！）</p>
+<p>ただまあ、Code Refactoringって名前は好きじゃない。けれど、じゃあ何がいいかっていうと、なんでしょうねぇ。Code Generate、ジェネレートだけじゃないから、まぁCode Actionかなぁ。AnalyzerもCode Actionだから区別付かなくて嫌だって可能性もあるか、うーん、うーん、ま、いっか……。</p>
+<h2>ArgumentNullExceptionProvider</h2>
+<p>サンプルコードがたった1ファイルのように、作るのはとても簡単です。CodeRefactoringProviderを継承してComputeRefactoringsAsyncを実装する、だけ。適当にシンタックスツリーを探索して、もしLight Bulbを出したければcontext.RegisterRefactoringにCodeActionを追加する、と。</p>
+<p>というわけで早速何か一個作ってみましょう。実用的なのがいいなぁ、ということでnullチェック、if(hoge == null) throw new ArgumetNullException(); というクソ面倒くさい恒例のアレを自動生成しよう！絶対使うし、あるとめちゃくちゃ捗りますものね！</p>
+<p class="noindent">
+<img src="http://neue.cc/wp-content/uploads/2014/12/roslyn_argnullfix2.jpg" />
+</p>
+<p>上の画像のが完成品です。便利そう！便利そう！</p>
+<p>さて、まずはLight Bulbをどこで出したいか。メソッドの引数で出すんで、引数を選択してたらそれは対象にしたいかなぁ？あと、一々選択するのも面倒だから、メソッド名でも出しましょうか。ふむ、とりあえず実装が簡単そうなメソッド名だけで行きましょう。何事も作る時は単純なところから広げていくのが一番、特に初めてのものはね。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// ArgumentNullExceptionProviderという名前でプロジェクト作ったらクラス名が酷いことに、その辺はちゃんと調整しましょふ
+[ExportCodeRefactoringProvider(ArgumentNullExceptionProviderCodeRefactoringProvider.RefactoringId, LanguageNames.CSharp), Shared]
+internal class ArgumentNullExceptionProviderCodeRefactoringProvider : CodeRefactoringProvider
+{
+    public const string RefactoringId = &quot;ArgumentNullExceptionProvider&quot;;
+
+    public sealed override async Task ComputeRefactoringsAsync(CodeRefactoringContext context)
+    {
+        // とりあえずコード全体を取る（これはほとんど定形）
+        var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
+        
+        // SemanticModel(コードをテキストとしてではなく意味を持ったモデルとして取るようにするもの、これもほぼ必須)
+        var model = await context.Document.GetSemanticModelAsync(context.CancellationToken).ConfigureAwait(false);
+        
+        // context.Spanが選択位置、ということで選択位置のコードを取る（この辺もほぼ定形かな）
+        // もし選択範囲に含まれてるものから一部のものを取り出す、とかならroot.DescendantNodes(context.Span).OfType&lt;XxxSyntax&gt;() という手とか色々
+        var node = root.FindNode(context.Span);
+        
+        // メソッド定義じゃなかったら無視
+        var methodDecl = node as MethodDeclarationSyntax;
+        if (methodDecl == null) return;
+        
+        // コード生成作る
+        var action = CodeAction.Create(&quot;Generate ArgumentNullException&quot;, c =&gt; GenerateArgumentNullException(context.Document, model, root, methodDecl, c));
+        
+        // とりあえず追加
+        context.RegisterRefactoring(action);
+    }
+
+    async Task&lt;Document&gt; GenerateArgumentNullException(Document document, SemanticModel model, SyntaxNode root, MethodDeclarationSyntax methodDecl, CancellationToken cancellationToken)
+    {
+        // あとで書く:)
+        return document;
+    }
+}
+</code></pre>
+<p>まずはこんなとこですね、ようはサンプルからClassDeclarationSyntaxをMethodDeclarationSyntaxに変えただけ + CodeActionを作るところの引数にSemanticModelとrootのSyntaxNodeを足してあります。この辺はほとんど定形で必要になってくるので、とりあえず覚えておくといいでしょう。さて、一旦こいつで実行してみて、ちゃんとLight Bulbが思ったところに出るか確認してから次に行きましょー。続いて本題のコード生成部分。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">Task&lt;Document&gt; GenerateArgumentNullException(Document document, SemanticModel model, SyntaxNode root, MethodDeclarationSyntax methodDecl, CancellationToken cancellationToken)
+{
+    // 引数はParameterListから取れる。
+    // この辺はVSでMethodDeclarationSyntaxをF12で飛んで、metadataからそれっぽいのを探しだすといいんじゃないかな？
+    // ドキュメントがなくてもVisual StudioとIntelliSenseがあれば、なんとなく作れてしまうのがC#のいいところだからね！
+    var parameterList = methodDecl.ParameterList;
+
+    // ただのType(TypeSyntax)はコード上のテキスト以上の意味を持たない、
+    // そこからstructかclassか、など型としての情報を取るにはSemanticModelから照合する必要がある
+    var targets = parameterList.Parameters
+        .Where(x =&gt;
+        {
+            var typeSymbol = model.GetTypeInfo(x.Type).Type;
+            return typeSymbol != null &amp;&amp; typeSymbol.IsReferenceType;
+        });
+
+    // C#コードを手組みするのは(Trivia対応とか入れると)死ぬほど面倒なのでParseする
+    var statements = targets.Select(x =&gt;
+    {
+        var name = x.Identifier.Text;
+        // String Interpolationベンリ(ただし文法はまだ変更される模様……)
+        return SyntaxFactory.ParseStatement(&quot;if (\{name} == null) throw new ArgumentNullException(nameof(\{name}));&quot;);
+    }).ToArray();
+
+    // 追加、メソッドBodyはBody以下なのでそこの先頭に(AddStatementsだと一番下に置かれてしまうのでダメ、nullチェックは「先頭」にしたい)
+    var newBody = methodDecl.Body.WithStatements(methodDecl.Body.Statements.InsertRange(0, statements));
+
+    // 入れ替え
+    var newRoot = root.ReplaceNode(methodDecl.Body, newBody);
+    var newDocument = document.WithSyntaxRoot(newRoot);
+
+    return Task.FromResult(newDocument);
+}
+</code></pre>
+<p>SemanticModelがキーです。SyntaxTreeから取ってきただけのものは、何の情報も持ってません、ほんとただのコード上の字面だけです。今回で言うとnullチェックしたいのは参照型だけですが、それを識別することが出来ません。そこからTypeInfoを取り出すことができるのがSemanticModelになります。例えば「Dictionary」から「System.Collections.Generic.Dictionary」といったフルネームを取り出したりなど、とかくコード操作するには重要です。今回はこれでIsReferenceTypeを引き出しています。</p>
+<p>あとは、コードの手組みは辛すぎるのでSyntaxFactory.ParseXxxを活用して済ませちゃうのは楽です。その後は、rootからReplaceと、documentから丸っと差し替えなどは定形ですね。あ、そうそう、あとnameofはC# 6.0の新機能です。ベンリベンリ。</p>
+<p>では、実際使ってみると……。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// これが
+static void Hoge(string[] a, string b, Dictionary&lt;int, int&gt; huga, int tako)
+{
+}
+
+// こうなる、あ、れ……？
+static void Hoge(string[] a, string b, Dictionary&lt;int, int&gt; huga, int tako)
+{
+if (a == null) throw new ArgumentNullException(nameof(a));if (b == null) throw new ArgumentNullException(nameof(b));if (huga == null) throw new ArgumentNullException(nameof(huga));}
+</code></pre>
+<p>はい。ちゃんと機能するコードができてはいます。が、なんじゃこりゃーーーーー。なんでかっていうとTrivia（空白とか改行）が一切考慮されてないから、なんですね。Code Refactoringを作る上でメンドウクサイのは、こうしたTriviaへの考慮です。置換なら既存のTriviaをそのまま使えるんですが、コード追加系だと、自分でTrivia入れたり削ったりの調整しないと見れたもんじゃなくなります。というわけで、こっから先が地獄……。まぁ、頑張りましょう。さすがにそのままだと使えないので、調整しましょう。</p>
+<p>まずは改行です。改行は結構簡単で、（大抵の場合）TrailingTrivia（後方のTrivia（空白や改行など））にCRLFを仕込むだけ。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// statementsのところをこう変更すると
+var statements = targets.Select(x =&gt;
+{
+    var name = x.Identifier.Text;
+    var statement = SyntaxFactory.ParseStatement(&quot;if (\{name} == null) throw new ArgumentNullException(nameof(\{name}));&quot;);
+    // TrailingTriviaは行末、というわけで改行を仕込む
+    return statement.WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed);
+})
+.ToArray();
+
+        // 置換結果はこうなります、だいぶ良くなった！
+        static void Hoge(string[] a, string b, Dictionary&lt;int, int&gt; huga, int tako)
+        {
+if (a == null) throw new ArgumentNullException(nameof(a));
+if (b == null) throw new ArgumentNullException(nameof(b));
+if (huga == null) throw new ArgumentNullException(nameof(huga));
+        }
+</code></pre>
+<p>だいぶいい線いってますね！このぐらいできれば、あとは実行後にCtrl+K, D（ドキュメントフォーマット）押してね、で済むんで全然妥協ラインです。が、もう少し完璧にしたいならインデントも挟みましょうか。インデントの量は直前の{から引っ張ってきて調整してみましょふ。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// WithLeadingTriviaの追加
+var statements = targets.Select(x =&gt;
+{
+    var name = x.Identifier.Text;
+    var statement = SyntaxFactory.ParseStatement(&quot;if (\{name} == null) throw new ArgumentNullException(nameof(\{name}));&quot;);
+
+    // LeadingTriviaに「{」のとこのインデント + 4つ分の空白を入れる
+    return statement
+        .WithLeadingTrivia(methodDecl.Body.OpenBraceToken.LeadingTrivia.Add(SyntaxFactory.Whitespace(&quot;    &quot;)))
+        .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed);
+})
+.ToArray();
+
+        // 置換結果はこうなります、完璧！
+        static void Hoge(string[] a, string b, Dictionary&lt;int, int&gt; huga, int tako)
+        {
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (huga == null) throw new ArgumentNullException(nameof(huga));
+        }
+
+</code></pre>
+<p>こんなところですね。さて、勿論このコードはOpenBraceTokenが改行された位置にあることを前提にしているので、後ろに{を入れるスタイルのコードには適用できません。また、空白4つをインデントとして使うというのが決め打ちされています。また、なんども実行しても大丈夫なように既にthrow new ArgumentNullExceptionが記述されてる引数は無視したいよねえ、などなど、完璧を求めるとキリがありません。キリがないということは、適当なところでやめておくのが無難ということです、適度な妥協大事！</p>
+<h2>フォーマットする</h2>
+<p>とはいえ、フォーマットはもう少しきちんとやりたいところです。実は簡単にやる手段が用意されていて、.WithAdditionalAnnotations(Formatter.Annotation) を呼ぶことで、その部分だけフォーマットがかかります。正確にはフォーマットが可能になるタイミングでフォーマットがかかるようになります、どういうことかというと、例えばインデントのフォーマットは前後のコード情報がなければかけることは出来ません。このコード例でいうとif()...は前後空白もない完全一行だけなのでフォーマットもなにもできない。なのでAnnotationのついたコード片がフォーマット可能なドキュメントにくっついたタイミングで自動でかかるようになります。AnnotationはRoslynの構文木内でのみ使われるオプション情報とでも思ってもらえれば。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var statements = targetParameters
+    .Select(x =&gt;
+    {
+        var name = x.Identifier.Text;
+        var statement = SyntaxFactory.ParseStatement(&quot;if (\{name} == null) throw new ArgumentNullException(nameof(\{name}));&quot;);
+
+        // Formatter.Annotationつけてフォーマット
+        return statement
+            .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed)
+            .WithAdditionalAnnotations(Formatter.Annotation);
+    })
+    .ToArray();
+</code></pre>
+<p>これは簡単でイイですね！！！なのでTriviaの付与は、最低限のCRLFぐらいを部分的に入れるだけでOK。これは、これからもめちゃくちゃ多用するのではかと思われます。他にAnnotationにはSimplifier.Annotationなどが用意されてます。</p>
+<h2>フルコード</h2>
+<p>最初に妥協した（？）引数を選択してたらそれも対象に、ってコードも入れましょうか。というのを含めたフルコードは以下になります。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CodeActions;
+using Microsoft.CodeAnalysis.CodeRefactorings;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Formatting;
+using System.Collections.Generic;
+using System.Composition;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace Grani.RoslynTools
+{
+    [ExportCodeRefactoringProvider(GenerateArgumentNullExceptionCodeRefactoringProvider.RefactoringId, LanguageNames.CSharp), Shared]
+    internal class GenerateArgumentNullExceptionCodeRefactoringProvider : CodeRefactoringProvider
+    {
+        public const string RefactoringId = &quot;GenerateArgumentNullException&quot;;
+
+        public sealed override async Task ComputeRefactoringsAsync(CodeRefactoringContext context)
+        {
+            // とりあえずコード全体を取る（これはほとんど定形）
+            var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
+
+            // SemanticModel(コードをテキストとしてではなく意味を持ったモデルとして取るようにするもの、これもほぼ必須)
+            var model = await context.Document.GetSemanticModelAsync(context.CancellationToken).ConfigureAwait(false);
+
+            // context.Spanが選択位置、ということで選択位置のコードを取る（この辺もほぼ定形かな）
+            var node = root.FindNode(context.Span);
+
+            // パラメータリストの場合はそれだけ、クラス名だったらその定義の全部の引数を取る
+            MethodDeclarationSyntax methodDecl;
+            IEnumerable&lt;ParameterSyntax&gt; selectedParameters;
+            if (node is MethodDeclarationSyntax)
+            {
+                methodDecl = (MethodDeclarationSyntax)node;
+                selectedParameters = methodDecl.ParameterList.Parameters;
+            }
+            else
+            {
+                // 単品選択のばやい(名前の部分選択でParameterSyntax、型の部分選択でParentがParameterSyntax)
+                if (node is ParameterSyntax || node.Parent is ParameterSyntax)
+                {
+                    var targetParameter = (node as ParameterSyntax) ?? (node.Parent as ParameterSyntax);
+                    // 親方向にMethodDeclarationSyntaxを探す
+                    methodDecl = targetParameter.Ancestors().OfType&lt;MethodDeclarationSyntax&gt;().FirstOrDefault();
+                    selectedParameters = new[] { targetParameter };
+                }
+                else
+                {
+                    // 選択範囲から取り出すばやい
+                    var parameters = root.DescendantNodes(context.Span).OfType&lt;ParameterSyntax&gt;().ToArray();
+                    if (parameters.Length == 0) return;
+                    methodDecl = parameters[0].Ancestors().OfType&lt;MethodDeclarationSyntax&gt;().FirstOrDefault();
+                    selectedParameters = parameters;
+                }
+            }
+            if (methodDecl == null) return;
+
+            // ただのType(TypeSyntax)はコード上のテキスト以上の意味を持たない、
+            // そこからstructかclassか、など型としての情報を取るにはSemanticModelから照合する必要がある
+            var replaceTargets = selectedParameters
+                .Where(x =&gt;
+                {
+                    var typeSymbol = model.GetTypeInfo(x.Type).Type;
+                    // ジェネリック型で型引数がclassでstructでもない場合はIsXxxが両方false、これはif(xxx == null)の対象にする
+                    return typeSymbol != null &amp;&amp; typeSymbol.IsReferenceType || (!typeSymbol.IsReferenceType &amp;&amp; !typeSymbol.IsValueType);
+                })
+                .ToArray();
+
+            if (replaceTargets.Length == 0) return;
+
+            // コード生成作る(nameof利用の有無で2つ作ってみたり)
+            var action1 = CodeAction.Create(&quot;Generate ArgumentNullException&quot;, c =&gt; GenerateArgumentNullException(context.Document, root, methodDecl, replaceTargets, true, c));
+            var action2 = CodeAction.Create(&quot;Generate ArgumentNullException(unuse nameof)&quot;, c =&gt; GenerateArgumentNullException(context.Document, root, methodDecl, replaceTargets, false, c));
+
+            // 追加
+            context.RegisterRefactoring(action1);
+            context.RegisterRefactoring(action2);
+        }
+        
+        Task&lt;Document&gt; GenerateArgumentNullException(Document document, SyntaxNode root, MethodDeclarationSyntax methodDecl, ParameterSyntax[] targetParameters, bool useNameof, CancellationToken cancellationToken)
+        {
+            // nameof版と非nameof版を用意
+            var template = (useNameof)
+                ? &quot;if ({0} == null) throw new ArgumentNullException(nameof({0}));&quot;
+                : &quot;if ({0} == null) throw new ArgumentNullException(\&quot;{0}\&quot;);&quot;;
+
+            var statements = targetParameters
+                .Select(x =&gt;
+                {
+                    // C#コードを手組みするのは(Trivia対応とか入れると)死ぬほど面倒なのでParseする
+                    var name = x.Identifier.Text;
+                    var statement = SyntaxFactory.ParseStatement(string.Format(template, name));
+
+                    // Formatter.Annotationつけてフォーマット
+                    return statement
+                        .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed)
+                        .WithAdditionalAnnotations(Formatter.Annotation);
+                })
+                .ToArray();
+
+            // 追加
+            var newBody = methodDecl.Body.WithStatements(methodDecl.Body.Statements.InsertRange(0, statements));
+
+            // 入れ替え
+            var newRoot = root.ReplaceNode(methodDecl.Body, newBody);
+            var newDocument = document.WithSyntaxRoot(newRoot);
+
+            return Task.FromResult(newDocument);
+        }
+    }
+}
+</code></pre>
+<p>まずLight Bulbを出すためのチェックがFindNodeだけでは済まなくなるので、root.DescendantNodes(context.Span)が活躍します。あとは、もう、色々もしゃもしゃと。とにかくコーナーケース探していくとかなり面倒くさかったり。例えば、引数の型の部分を選択した時と、名前の部分を選択した時の対処、などなど……。しょうがないけれどね。</p>
+<p>それと、もしメソッドの中に参照型の引数がなかったらLight Bulbを出さないようにするため、replaceTargetsの生成をRegisterRefactoringの前に変更しています。それと、ジェネリックな型引数の場合で制約がついてない状態も生成対象に含めるよう微調整。といったような、この辺の細かい調整はある程度出来上がってからやってくのが良いでしょうねー。</p>
+<h2>Portable？</h2>
+<p>ところで、CodeRefactoringにせよAnalyzerにせよ、テンプレートではコア部分はPCLで生成されています。ということは、実は、System.IOとか使えない。これ、ちょっと色々な邪道な操作したい時に不便なんですよ……。ていうかVisual Studio前提なんだからPCLである必要ないじゃん！いみわからない、なんでもPCLって言っておけばいいってもんでもないでしょう！あー、もう私はPCL大嫌いだよぅー。しかもPCLで生成されたプロジェクトは普通のプロジェクトタイプには簡単には戻せないんですよ、うわぁ……。</p>
+<p>まあcsprojを手で書き換えればできます。やりかたは</p>
+<pre data-pagefind-ignore="all"><code class="language-xml">&lt;!-- こいつを消す --&gt;
+&lt;ProjectTypeGuids&gt;{786C830F-07A1-408B-BD7F-6EE04809D6DB};{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}&lt;/ProjectTypeGuids&gt;
+
+&lt;!-- こいつを消す --&gt;
+&lt;TargetFrameworkProfile&gt;Profile7&lt;/TargetFrameworkProfile&gt;
+
+&lt;!-- こいつを消して --&gt;
+&lt;Import Project=&quot;$(MSBuildExtensionsPath32)\Microsoft\Portable\$(TargetFrameworkVersion)\Microsoft.Portable.CSharp.targets&quot; /&gt;
+&lt;!-- かわりにこれを追加 --&gt;
+&lt;Import Project=&quot;$(MSBuildToolsPath)\Microsoft.CSharp.targets&quot; /&gt;
+</code></pre>
+<p>なんだかなぁー。</p>
+<h2>ビルトイン拡張</h2>
+<p>VS2015ではビルトインで幾つかCode Refactoringが入っています。が、ノーヒント（Ctrl+.を押すまではLight Bulbが出ない)なので、宝探し状態です！例えばプロパティを選択すると「Generate Constructor」が出てきたり。まぁ、これはそのうちリストが公開されるでしょう。</p>
+<h2>まとめ</h2>
+<p>拡張を作るのは簡単！うーん、んー、簡単？まぁ簡単！少なくとも今までよりは比較的遥かに簡単カジュアルに作れるようになりました。こうした自動生成って、一般的なものだけではなく、プロジェクト固有で必要になるものもあると思います。例えばうちの会社ではシリアライザに<a href="https://code.google.com/p/protobuf-net/">protobuf-net</a>を使っているので、クラスのプロパティの各属性にDataMemberをつけて回る必要がある。ちゃんとOrderの順番を連番にして。でも手作業は面倒、そこで、CodeRefactoring。</p>
+<p><img src="http://neue.cc/wp-content/uploads/2014/12/roslyn_adddatamember.jpg" alt="" /></p>
+<p>こんな風にプロパティを選択してCtrl+.でほいっと生成できる。このコードはちゃんと属性の振り直しとかも配慮してある（場合によって追加、場合によって置き換え、とかのコードを書くのはやっぱり結構面倒！フルコードは<a href="https://gist.github.com/neuecc/cc1578e8ee85b3ddadcf">neuecc/AddDataMemberWithOrderCodeRefactoringProvider.cs</a>に置いておきます、使いたい方 もしくは CodeRefactoring作りの参考にどうぞ）</p>
+<p>こうしたプロジェクト固有の必要な自動生成のためのコードがサクッと作れるようになったのは地味に革命的かなぁ、なんて思ってます。どんどん活用されていくといいですね、少なくともうちの会社（グラニ）では社内用に皆で色々作って配布していこうかなあと計画しています（ところで<a href="http://grani.jp/">グラニ</a>はまだまだアクティブにエンジニアの求人してます！最先端のC#に興味のある方は是非是非どうぞ、「今から」VS2015を使い倒しましょう）。</p>
+<p>AnalyzerもCode Refactoringも、すっごくミニマムな仕様に落ち着いていて、限りなく削っていった形なんだろうなぁ、と想像します。すごく小さくて、でも、すごく使い手がある。いい落とし所だと思ってます。あとはもう活用するもしないも全て自分達次第。とにかくまずは、是非触ってみてください。可能性を感じましょう。</p>
+</div>
+<h1 data-pagefind-sort="date:2014-12-03" data-pagefind-meta="published:2014-12-03"><a href="https://neue.cc/2014/12/03_491.html">kpm wrapでVS2015 Previewでもcsprojをkprojで参照する</a></h1>
 <ul class="date"><li>2014-12-03</li></ul>
 <div class="entry_body"><p>この記事は土壇場駆け込みで爆誕した<a href="http://qiita.com/advent-calendar/2014/aspnet">ASP.NET Advent Calendar 2014</a>の3日目の記事です。昨日は<a href="http://gooner.azurewebsites.net/2014/12/02/jil-json-serializer/">ASP.NET Web API で Jil JSON Serializer を使ってみる</a>でした。Jilいいよね、うん、使われるようになるといいと思ってます。</p>
 <p>さて、次のASP.NET(ASP.NET 5/vNext)は、もうみんな薄々気付いていると思いますが、Web APIとかOwinとかは結局vNextにおいて……。口には出せなくても！絶対にオフィシャルにアナウンスされることはなくても！ふむ、まぁ、その辺は置いておきましょう、はい。そんな不穏なことはね！ね！というわけでそんなことは全く関係なく今回はkpm wrapの話です。何それ、というと、多分、今の間しか使うことはないと思います。いや、むしろ今の間だからこそ直接使う人はそんないないと思います。つまり、誰にとっても全く役に立たないお話。</p>
@@ -2341,96 +2645,6 @@ VSのプロジェクト構造はUnityとミスマッチがある<br />
 <p>さて、個人として、MVPのありようというのはScott Hanslemanのアナウンス<a href="http://www.hanselman.com/blog/ChangesInTheMicrosoftMVPProgramMVPsForOpenSourceContributions.aspx">Changes in the Microsoft MVP Program - MVPs for Open Source Contributions</a>のアナウンスの通りかな、と。ただのMicrosoftの広告塔だけじゃない貢献をしなければならない。そしてコードを現実に落としこむ馬力が求められるのではないか、と。</p>
 <p>私はそうしてきたつもりですし、これからも、もっと、他の言語圏と較べても、より先進的に、そしてより実践的に。いつまでも.NETの、Microsoftのローカルな世界で閉じている場合ではない。C#こそが魅力的な選択であるということを、あらゆる角度から示し続けたいと思います。引き続き、今年もよろしくお願いします。</p>
 </div>
-<h1 data-pagefind-sort="date:2014-03-14" data-pagefind-meta="published:2014-03-14"><a href="https://neue.cc/2014/03/14_448.html">ForEachAsync - 非同期の列挙の方法 Part2</a></h1>
-<ul class="date"><li>2014-03-14</li></ul>
-<div class="entry_body"><p>Part2って、Part1はあったのかというと、うーん、<a href="http://neue.cc/2013/12/04_435.html">非同期時代のLINQ</a>、かな……？さて、今回はForEachがテーマです。といってもそれってSelect+WhenAllでしょ！「Selectは非同期時代のForEach」って言ってたじゃない、というと、はい、言ってました。まだ他に言うことあるの？というと、例えば以下のシチュエーション。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">var httpClient = new HttpClient();
-var tasks = Enumerable.Range(1, 100000)
-    .Select(async x =&gt;
-    {
-        var str = await httpClient.GetStringAsync(&quot;http://hogehoge?q=&quot; + x);
-        Console.WriteLine(str);
-    });
-await Task.WhenAll(tasks);
-</code></pre>
-<p>別に動きはしますが、制御不能に10万件、同時リクエスト走ります。これはまぁいくないですよね。もはや途中で死んだりしますので動くとも言えない……。というわけで、元シーケンスが巨大な時は、Select+WhenAllはForEachになりえないのです。</p>
-<p>さて、この事態に手抜きで対抗すると？</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">var httpClient = new HttpClient();
-Parallel.ForEach(Enumerable.Range(1, 100000), x =&gt;
-{
-    var str = httpClient.GetStringAsync(&quot;http://hogehoge?q=&quot; + x).Result;
-    Console.WriteLine(str);
-});
-</code></pre>
-<p>みんな大好きParallel.ForEachです。CPUバウンドとかI/Oバウンドとか面倒くさいんですよ、動きゃあいいんですよ(ﾎｼﾞﾎｼﾞ。という楽さ。実際これは普通に機能します。ので、バッチとかはこんなんでもいーんじゃないでしょうか、マジで。でも、これ、序盤はじわじわと並列数が上がってくので、初速がイマイチに感じるかもしれません。最初はコア数分しか並列にならず、待ちが多いことを検出してからじわじわ上がっていくので。あと終盤の挙動をアレゲに感じたりするかもしれません。待ち時間が長いと、際限なく並列数が上がってっちゃうんですよ。でも別に極端に上がっても速くなるわけじゃなくて、逆にむしろ余計遅くなる。</p>
-<p>※これは別に作り話じゃなくて、私はプロダクション環境で実際に数十万リクエストを叩くコードを走らせていて、常に同時並列数やスレッド消費量のモニタ取って、調整いれてます。</p>
-<p>どう調整入れるか、というと……</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// 最小スレッドプール数を最初に適当に伸ばしてやると初速に効く
-// 設定は一回でいいので、アプリケーションスタートアップのところにでも置いときましょう
-ThreadPool.SetMinThreads(200, 200);
-
-// 無尽蔵に伸び続けるのもいくないのでMaxDegreeOfParallelismを設定
-var httpClient = new HttpClient();
-Parallel.ForEach(Enumerable.Range(1, 100000), new ParallelOptions { MaxDegreeOfParallelism = 200 }, x =&gt;
-{
-    var str = httpClient.GetStringAsync(&quot;http://hogehoge?q=&quot; + x).Result;
-    Console.WriteLine(str);
-});
-</code></pre>
-<p>SetMinThreadsとMaxDegreeOfParallelism、この2つはふとぅーに影響大きくて大事。なので適当に、とか書きましたがあんまり適当にやるのはよくない。</p>
-<h2>ForEachAsync</h2>
-<p>とはいえ、非同期は非同期として扱いたい！そりゃそーだ。で、つまり、ようするに、同時実行数を抑えながら非同期を走らせられればいい。それにうってつけのクラスが<a href="http://msdn.microsoft.com/ja-jp/library/system.threading.semaphoreslim.aspx">SemaphoreSlim</a>。「リソースまたはリソースのプールに同時にアクセスできるスレッドの数を制限する Semaphore の軽量版です。SemaphoreSlim は、Windows カーネルのセマフォを使用しない、軽量セマフォ クラスを提供します。」。です。.NET 4.0からの登場。使うメソッドはWaitAsync(これは.NET 4.5から)とReleaseがほとんどかな。.NET 4.0の場合はWaitAsyncのかわりにWaitで。</p>
-<p>内部にCountを持っていて、それをWaitAsyncで減らし、Releaseで増やします。Countが0に達すると、WaitAsyncは待機するようになります。これを用いてForEachAsyncを作ってみると？</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public static class EnumerableExtensions
-{
-    public static async Task ForEachAsync&lt;T&gt;(this IEnumerable&lt;T&gt; source, Func&lt;T, Task&gt; action, int concurrency, CancellationToken cancellationToken = default(CancellationToken), bool configureAwait = false)
-    {
-        if (source == null) throw new ArgumentNullException(&quot;source&quot;);
-        if (action == null) throw new ArgumentNullException(&quot;action&quot;);
-        if (concurrency &lt;= 0) throw new ArgumentOutOfRangeException(&quot;concurrencyは1以上の必要があります&quot;);
-
-        using (var semaphore = new SemaphoreSlim(initialCount: concurrency, maxCount: concurrency))
-        {
-            var exceptionCount = 0;
-            var tasks = new List&lt;Task&gt;();
-
-            foreach (var item in source)
-            {
-                if (exceptionCount &gt; 0) break;
-                cancellationToken.ThrowIfCancellationRequested();
-
-                await semaphore.WaitAsync(cancellationToken).ConfigureAwait(configureAwait);
-                var task = action(item).ContinueWith(t =&gt;
-                {
-                    semaphore.Release();
-
-                    if (t.IsFaulted)
-                    {
-                        Interlocked.Increment(ref exceptionCount);
-                        throw t.Exception;
-                    }
-                });
-                tasks.Add(task);
-            }
-
-            await Task.WhenAll(tasks.ToArray()).ConfigureAwait(configureAwait);
-        }
-    }
-}
-</code></pre>
-<p>ほむ、わからん。ExceptionとかCancellationTokenとかでゴチャついてますが、よーわ、実行開始しようとするとWaitAsyncでカウントを減らして、実行完了したらReleaseでカウントを増やす。初期値の指定がそのまま並列実行数になる、って感じ。利用例を見ると</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">var httpClient = new HttpClient();
-await Enumerable.Range(1, 100000)
-    .ForEachAsync(async x =&gt;
-    {
-        var str = await httpClient.GetStringAsync(&quot;http://hogehoge?q=&quot; + x);
-        Console.WriteLine(str);
-    }, concurrency: 200);
-</code></pre>
-<p>実に簡単にひどぅーきなForEachができました。これは、Taskの実行開始はシーケンシャルです。これも何気に有難かったりしますねえ。実行完了のほうは順不同です。まあ、そりゃそうだ、って話ですね。</p>
-<h2>まとめ</h2>
-<p>SemaphoreSlimかわいい。</p>
-</div>
 <a href="https://neue.cc/9">Prev |</a>
 <a href="https://neue.cc/11">| Next</a>
 </div>
@@ -2454,6 +2668,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2024/12/">2024-12</a>
 <li><a href="https://neue.cc/2024/11/">2024-11</a>
 <li><a href="https://neue.cc/2024/08/">2024-08</a>
 <li><a href="https://neue.cc/2024/07/">2024-07</a>
