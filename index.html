@@ -79,7 +79,129 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2024-12-03" data-pagefind-meta="published:2024-12-03"><a href="https://neue.cc/2024/12/03_SharpFuzz.html">Fuzzing in .NET: Introducing SharpFuzz</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2024-12-06" data-pagefind-meta="published:2024-12-06"><a href="https://neue.cc/2024/12/06_MessagePack_v3.html">SourceGenerator対応のMessagePack for C# v3リリースと今後について</a></h1>
+<ul class="date"><li>2024-12-06</li></ul>
+<div class="entry_body"><p>先月<a href="https://github.com/MessagePack-CSharp/MessagePack-CSharp">MessagePack for C#プロジェクト</a>は <a href="https://dotnetfoundation.org/">.NET Foundation</a>に参加しました！より安定した視点で利用していただけるという一助になればいいと思っています。</p>
+<p>そして、長く開発を続けていたメジャーバージョンアップ、v3がリリースされました。コア部分はv2とはほぼ変わらずですが、Source Generatorを全面的に導入しています。引き続きIL動的生成も存在するため、IL動的生成とSource Generatorのハイブリッドなシリアライザーとなります。v3にはSource GeneratorとAnalyzerがビルトインで同梱されていて、今までのコードはv3でコンパイルするだけで自動的にSource Generator化されます。v2 -&gt; v3アップデートでSource Generator対応するために追加でユーザーがコードを記述する必要はありません！</p>
+<p>挙動を詳しく見ていきましょう。例えば、</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[MessagePackObject]
+public class MyTestClass
+{
+    [Key(0)]
+    public int MyProperty { get; set; }
+}
+</code></pre>
+<p>というコードを書くと、自動的に以下のコードがSource Generatorによって内部的に生成されます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">partial class GeneratedMessagePackResolver
+{
+    internal sealed class MyTestClassFormatter : IMessagePackFormatter&lt;MyTestClass&gt;
+    {
+        public void Serialize(ref MessagePackWriter writer, MyTestClass value, MessagePackSerializerOptions options)
+        {
+            if (value == null)
+            {
+                writer.WriteNil();
+                return;
+            }
+
+            writer.WriteArrayHeader(1);
+            writer.Write(value.MyProperty);
+        }
+
+        public MyTestClass Deserialize(ref MessagePackReader reader, MessagePackSerializerOptions options)
+        {
+            if (reader.TryReadNil())
+            {
+                return null;
+            }
+
+            options.Security.DepthStep(ref reader);
+            var length = reader.ReadArrayHeader();
+            var ____result = new MyTestClass();
+
+            for (int i = 0; i &lt; length; i++)
+            {
+                switch (i)
+                {
+                    case 0:
+                        ____result.MyProperty = reader.ReadInt32();
+                        break;
+                    default:
+                        reader.Skip();
+                        break;
+                }
+            }
+
+            reader.Depth--;
+            return ____result;
+        }
+    }
+}
+</code></pre>
+<p>また、このGeneratedMessagePackResolverはデフォルトのオプション(StandardResolverなど)に最初から登録されているため、</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static readonly IFormatterResolver[] DefaultResolvers = [
+    BuiltinResolver.Instance,
+    AttributeFormatterResolver.Instance,
+    SourceGeneratedFormatterResolver.Instance, // here
+    ImmutableCollection.ImmutableCollectionResolver.Instance,
+    CompositeResolver.Create(ExpandoObjectFormatter.Instance),
+    DynamicGenericResolver.Instance, // only enable for RuntimeFeature.IsDynamicCodeSupported
+    DynamicUnionResolver.Instance];
+</code></pre>
+<p>ユーザーコードのアセンブリに含まれているシリアライズ対象クラスは、Source Generatorによって生成されたコードが優先的に使われることになります。GeneratedMessagePackResolverは既定の名前空間や名前を変えたり、生成フォーマッターをmapベースに変更するなど、幾つかのカスタマイズポイントも用意されています。より詳しくは新しいドキュメントを見てください。また、v2 -&gt; v3の変更箇所の詳細を知りたい人は<a href="https://github.com/MessagePack-CSharp/MessagePack-CSharp/blob/develop/doc/migrating_v2-v3.md">Migration Guide v2 -&gt; v3</a>をチェックしてください。</p>
+<p>Unityにおいては導入方法が大きく変わりました。コアライブラリは .NET 版と共通になりNuGetからのインストールが必要となります。そのうえでUPMでUnity用の追加コードをダウンロードする必要があります。詳しくは<a href="https://github.com/MessagePack-CSharp/MessagePack-CSharp/#unity-support">MessagePack-CSharp#unity-support</a>のセクションを確認してください。</p>
+<p>.unitypackageの提供は廃止されています。また、IL2CPP対応のために要求していたmpcはなくなりました。完全にSource Generatorに移行されます。そのため、Unityのサポートバージョンは <code>2022.3.12f1</code> からとなります。Source Generatorに関してはNuGetForUnityでのコアライブラリインストール時に自動的に有効化されるため、追加の作業は必要ありません。</p>
+<h2>History and Next</h2>
+<p>MessagePack for C#のオリジナル(v1)は私(Yoshifumi Kawai/@neuecc)によって、2017年にリリースしました。当時開発していたゲームのパフォーマンス問題を解決するために、2016年時点で存在していた(バイナリ)シリアライザーでは需要を満たせなかったため、パフォーマンスを最重要視したバイナリシリアライザーとして作成しました。合わせて、同じくネットワークシステムとして作成したgRPCベースのRPCフレームワーク<a href="https://github.com/Cysharp/MagicOnion">MagicOnion</a>もリリースしています。</p>
+<p>v1リリース当時は<code>byte[]</code>のみを対象としていましたが、<code>Span&lt;T&gt;</code>や<code>IBufferWriter&lt;T&gt;</code>など、.NETには次々と新しいI/O系のAPIが追加されていったため、v2ではそれらに焦点を当てた新しいデザインが導入されました。この実装はMicrosoftのEngineerである<a href="https://github.com/AArnott">Andrew Arnott / @AArnott</a>氏によって主導され、リリースしています。</p>
+<p>以降、共同のメンテナンス体制として、そして私の個人リポジトリ(neuecc/MessagePack-CSharp)からオーガナイゼーション(MessagePack-CSharp/MessagePack-CSharp)して今に至ります。Visual Studio内部での利用や<a href="https://learn.microsoft.com/en-us/aspnet/core/signalr/messagepackhubprotocol">SignalRのバイナリープロトコル</a>、Blazor Serverのプロトコルなど大きなMicrosoftのプロダクトでも使用され、GitHubでのスター数は.NETのバイナリーシリアライザーとしては最も大きなスターを集めています。<a href="https://learn.microsoft.com/en-us/dotnet/standard/serialization/binaryformatter-migration-guide/">.NET 9で廃止されたBinaryFormatter</a>の移行先の一つとしても推奨されています。</p>
+<p>v3ではSource Generatorに対応することで、より高いパフォーマンスと柔軟性、AOT対応への第一段階に踏み出すことができました。</p>
+<p>MessagePack for C#プロジェクトは大きな成功を収めたと考えていますが、しかし現在、AArnott氏は個人の新しいMessagePackプロジェクトの開発を開始しています。私もその間、<a href="https://github.com/Cysharp/MemoryPack">MemoryPack</a>という異なるフォーマットのシリアライザーをリリースしています。そのため、MessagePack for C#の今後と、その特性について、ある程度説明する必要があると思います。</p>
+<p>引き続きメンテナンス体制は2人だと考えていますが、アクティブな活動に関しては、再び私が担うことになるかもしれません。私はMessagePackとMemoryPackとでは異なる性質を持ったフォーマットであるため、どちらも重要であるという認識で動いています。オリジナルの実装であるMessagePack for C#も気に入ってますし、現在においても決して引けを取ることのないものだと思っています。</p>
+<p>AArnott氏の別のMessagePackシリアライザーとは根本的な哲学が若干異なります。その点で、私はそれはより良く改善されたシリアライザーではなく、別の個性のシリアライザーだと認識しています。そこで、違いについて説明させてください。</p>
+<h2>Binary spec, default settings and performance</h2>
+<p>シリアライザーのパフォーマンスに重要なのは、「仕様と実装」の両方です。例えばテキストフォーマットのJSONよりもバイナリフォーマットのほうが一般的には速いでしょう。しかし、よくできたJSONシリアライザーは、中途半端な実装のバイナリシリアライザーよりも高速です（私はそれを<a href="https://github.com/neuecc/Utf8Json">Utf8Json</a>というシリアライザーを作成することで実証したことがあります）。なので、仕様も大事だし、実装も大事です。どちらも兼ねることができれば、それがベストなパフォーマンスのシリアライザーとなります。</p>
+<p><a href="https://msgpack.org/">MessagePackのバイナリ仕様</a>は &quot;It's like JSON. but fast and small.&quot; を標語にしている通り、JSONのバイナリ化としてあらわされています。ところが、MemoryPack for C#のデフォルトは必ずしもJSON likeを狙っているわけではありません。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[MessagePackObject]
+public class MsgPackSchema
+{
+    [Key(0)]
+    public bool Compact { get; set; }
+    [Key(1)]
+    public int Schema { get; set; }
+}
+</code></pre>
+<p>このクラスをシリアライズした場合は、JSONで表現すると<code>[true, 0]</code>のようになります。これはオブジェクトをarrayベースでシリアライズしているからで、mapベースでシリアライズすると<code>{&quot;Compact&quot;:true,&quot;Schema&quot;:0}</code>のような表現になります。</p>
+<p>arrayベースの利点は見た通りに、バイナリ容量として、よりコンパクトになります。容量がコンパクトなことは処理量が少なくなるためシリアライズの速度にも良い影響を与えます。また、デシリアライズにおいては、文字列を比較してデシリアライズするプロパティを探索する必要がなくなるため、より高速なデシリアライズ速度が期待できます。</p>
+<p>なお、arrayベースのシリアライズはMessagePackの仕様策定者である Sadayuki Furuhashi 氏によるリファレンス実装であるmsgpack-javaなどでも採用されているため、決して異端のやり方というわけではありません。</p>
+<p>MessagePack-CSharpではJSONライクなmapベースでシリアライズしたい場合は<code>[MessagePackObject(true)]</code>と記述することができます。また、Source Generatorの場合はResolver単位でオーバーライドして強制的にmapベースにすることも可能です。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[MessagePackObject(keyAsPropertyName: true)]
+public class MsgPackSchema
+{
+    public bool Compact { get; set; }
+    public int Schema { get; set; }
+}
+</code></pre>
+<p>mapの利点は、柔軟なスキーマエボリューションの実現と、他言語との疎通する際にコミュニケーションが取りやすいこと、バイナリそのものの自己記述性が高いことです。デメリットは容量とパフォーマンスへの悪影響、特にオブジェクトの配列においては一要素毎にプロパティ名が含まれることになってしまい、かなりの無駄となります。</p>
+<p>デフォルトをarrayにしているのは、コンパクトさとパフォーマンスの追求のためです。私はMessagePackをJSON likeの前に、高いパフォーマンスを実現可能なバイナリ仕様として考えました。もちろん、mapも重要なので、その上で比較的簡単にmapモードを実現するために属性に<code>(true)</code>を追加するだけで可能にしました。</p>
+<p>arrayモードの場合はKey属性を全てのプロパティに付与する必要があります。これは、例えばProtocol Buffersなどでも数値タグを必要とするように、プロパティ名そのものをキーとするわけではなければ、必須だと考えています。もちろん、連番で自動採番させることも可能ですが、バイナリフォーマットのキーを暗黙的に処理するのはリスクが大きすぎる(順番を弄ったりするだけでバイナリ互換性が壊れることになる)と判断しています。つまり、明示的がデフォルト、ということです。大きなプロジェクト開発ではシニアメンバーからジュニアメンバーまでコードを触ることになるでしょう、全てを理解している人だけがコードを触るわけではありません。なので、暗黙的な挙動は避けるべきで、明示的にすべきだという強い意志で、この設計を選んでいます。</p>
+<p>ただしKeyを全てのプロパティに付与する作業はとても苦痛です(私はMessagePack-CSharp開発以前には、DataContractやprotobuf-netで辛い思いをしました)。そこで、Analyzer + Code Fixによって、自動的に付与する機能を用意しました。これにより明示的であることの苦痛は和らげられ、良いとこどりができているのだと考えています。</p>
+<p>別のMessagePackシリアライザーのデフォルトはmapのようです。これは<a href="https://github.com/eiriktsarpalis/PolyType">PolyType</a>というSource Generatorベースのライブラリ作成のための抽象化ライブラリがベースとしているためでもあり、また、そちらのほうを好んでいるという明示的な判断でもあるようです。</p>
+<p>「デフォルト」はライブラリで一つしか選べません。どちらのモードで処理することができたとしても、「デフォルト」はただ一つです。改めて言うと、私はバイナリフォーマットとしての「コンパクトとパフォーマンス」を好み、優先しています。</p>
+<p>皆さんはPolyTypeについて初めて知ったかもしれません。私はPolyTypeはあまり好意的には考えていません。ちょっとしたものを作るには非常に便利だとは思いますが、ベストなパフォーマンスを狙ったり、ベストなアイディアを表現するには、抽象層であることの制限が大きすぎると考えています。なので、MessagePack for C#で採用することはありませんし、他の何かを作る際にも採用することはないでしょう。</p>
+<h2>Unity(multiplatform) Support</h2>
+<p>MessagePack for C#ではv1の時代からゲームエンジンUnityの1st classのサポートを実行してきました。これは私が<a href="https://en.wikipedia.org/wiki/Cygames">Cygames</a>という日本のゲーム会社の関連会社(<a href="https://cysharp.com/">Cysharp</a>)のCEOを務めていて、ビデオゲームインダストリーと関係性が深いという都合もあります。自分たちで実際にUnityで動くものを作り、使ってきました。もちろん、サーバーサイドやデスクトップアプリケーションでも使っています。</p>
+<p>UnityにはIL2CPPという独自のAOTシステムがあり、特にiOSなどモバイルプラットフォームでのリリースには必須なのですが、それもSource Generatorが存在しなかった時代から、mpcというRoslynを使ったコードジェネレートツールを作り、提供してきました。数百のモバイルゲームでMessagePackが使われているのは、これら私の熱心なサポートのお陰といっても過言ではないでしょう。v3ではついにSource Generatorベースになったことにより、ワークフローが大きく簡易化されることとなります！</p>
+<p>一般的に、.NETコミュニティにおいてはUnityサポートはかなり軽視されていました。また、外から見ているとMicrosoftやMicrosoftの従業員もそのようで、自社のプラットフォーム以外への関心は薄そうです。こうした態度は、あまり好ましいとは思っていませんし、せっかくの .NET の可能性を狭めていることにもなっています。Xamarinがうまく成長軌道に乗らなかったのも、そのようなMicrosoft自体の冷たい視線のせいだとも思っています。</p>
+<p>私は、私の作るライブラリはなるべくUnityにもしっかり対応できるように気を付けて作っています（最新は新しいReactive Extensionsライブラリーである<a href="https://github.com/Cysharp/R3">Cysharp/R3</a>）。別のMessagePackシリアライザーに関しては、あまりしっかりした対応はされなさそうですが……。</p>
+<h2>Beyond v3</h2>
+<p>v3のNative AOT Supportは完全ではありません。Source Generatorにするだけでは完全なNative AOT対応とはならないのは難しいところです。これはUnityのAOTであるIL2CPPでは完璧に動作しているだけに、正直不可解なことでもあり、また、Microsoftのよくない癖が出ているな、とも思っています。つまり、完璧な対応をするために、複雑なものを提供している。それが現在のNative AOTです。複雑怪奇な属性やフローは、理解できるところもありますが、もう少し簡略化すべきだったと思います。まぁ、もう修正されることもないのでしょうが……。</p>
+<p>パフォーマンス面でもv1からv2で退化してしまった点もあるので、最新の知見を元に、実装面での改善を施す必要があります。特にReadOnlySequenceの利用幅が大きいことは、かなりの制約を生み出していて、不満があります。</p>
+<p>.NET 9でPipeReader/PipeWriterが標準化されたことによる、より良い非同期APIや、パフォーマンスを両立したストリーミング対応というのも、大きなトピックとなるかもしれません。</p>
+<p>MessagePack for C#は広く使われているが故に、破壊的変更はしづらいし、互換性の維持は最重要トピックスです。しかし、世の中が変わっていく以上、進化しないことを選んだら、それは滅びる道でしかありません。やれることはまだまだあると思っていますので、.NETにおける最先端の、最高のバイナリシリアライザーであり続けたいと思っています（<a href="https://github.com/Cysharp/MemoryPack">MemoryPack</a>もね……！)</p>
+<p>まずは、v3のSource Generatorをぜひ試してみてください。皆の力でより良いものを作っていけるというのも、OSSの良さだと思っています。</p>
+</div>
+<h1 data-pagefind-sort="date:2024-12-03" data-pagefind-meta="published:2024-12-03"><a href="https://neue.cc/2024/12/03_SharpFuzz.html">Fuzzing in .NET: Introducing SharpFuzz</a></h1>
 <ul class="date"><li>2024-12-03</li></ul>
 <div class="entry_body"><p>この記事は<a href="https://qiita.com/advent-calendar/2024/csharplang">C# Advent Calendar 2024</a>に参加しています。また、先月開催された<a href="https://dotnetnew.connpass.com/event/335955/">dotnet new</a>というイベントでの発表のフォローアップ、のつもりだったのですがコロナ感染につき登壇断念……。というわけで、セッション資料はないので普通にブログ記事とします！</p>
 <h2>dotnet/runtime と Fuzzing</h2>
@@ -3280,150 +3402,6 @@ Utf8String.Format($&quot;Today is {DateTime.Now:yyyy-MM-dd}&quot;);
 <h2>Next</h2>
 <p>さて、とはいえ、UTF8文字列を直接扱わなければならないケースというのは、別にそんなに多くはないでしょう。実際、私も本命は<a href="https://github.com/Cysharp/ZLogger">ZLogger</a>の大型バージョンアップでの利用を考えています。ZLoggerは今まではZStringベースでしたが、根本からデザインをやり直した新しいものを開発中です。その中の文字列化にUtf8StringInterpolationを使っています。</p>
 <p>といったように、アプリケーションの基盤レイヤーに差し込んであげると有効に機能するシチュエーションは色々あると思います。もちろん、直接使ってもらってもいいのですが……！？</p>
-</div>
-<h1 data-pagefind-sort="date:2023-09-21" data-pagefind-meta="published:2023-09-21"><a href="https://neue.cc/2023/09/21_privateproxy.html">.NET 8 UnsafeAccessor を活用したライブラリ PrivateProxy を公開しました</a></h1>
-<ul class="date"><li>2023-09-21</li></ul>
-<div class="entry_body"><p>PrivateProxyというライブラリを公開しました。つまるところ、privateフィールド/プロパティ/メソッドにアクセスするライブラリなのですが、.NET 8 のUnsafeAccessorという新機能を活用することでNo Reflection、ハイパフォーマンス、AOTセーフになっています。</p>
-<ul>
-<li><a href="https://github.com/Cysharp/PrivateProxy">Cysharp/PrivateProxy</a></li>
-</ul>
-<p>もちろん .NET 8 でしか動きません！ので、.NET 8が正式リリースされた頃に思い出して使ってみてください。エクストリームな人は今すぐ試しましょう。</p>
-<p>雰囲気としては、privateメンバーにアクセスしたい型があったとして、<code>[GeneratePrivateProxy(type)]</code>をつけた型を用意します。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">using PrivateProxy;
-
-public class Sample
-{
-    int _field1;
-    int PrivateAdd(int x, int y) =&gt; x + y;
-}
-
-[GeneratePrivateProxy(typeof(Sample))]
-public partial struct SampleProxy;
-</code></pre>
-<p>すると、いい感じにアクセスできるようになります。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// You can access like this.
-var sample = new Sample();
-sample.AsPrivateProxy()._field1 = 10;
-</code></pre>
-<p>いいところとしては、 Source Generatorベースの生成なので、型がついていて入力補完も効くし、変数名を変更したらコンパイルエラーで検出可能です。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/269376472-f6dd22e1-e82e-4acc-ba6e-8895c8c8734b.png" alt="" /></p>
-<p>ここまではSource Generatorベースで作れば、今まででもやれないことはなかったのですが、UnsafeAccessorのいいところとして、objectが一切出てこないで元のメソッドそのままの型がそのまま使えることです。生成されたコードを見ると、こうなっています。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// Source Generator generate this type
-partial struct SampleProxy(Sample target)
-{
-    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = &quot;_field1&quot;)]
-    static extern ref int ___field1__(Sample target);
-
-    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = &quot;PrivateAdd&quot;)]
-    static extern int __PrivateAdd__(Sample target, int x, int y);
-
-    public ref int _field1 =&gt; ref ___field1__(target);
-    public int PrivateAdd(int x, int y) =&gt; __PrivateAdd__(target, x, y);
-}
-
-public static class SamplePrivateProxyExtensions
-{
-    public static SampleProxy AsPrivateProxy(this Sample target)
-    {
-        return new SampleProxy(target);
-    }
-}
-</code></pre>
-<p>これによって <code>ref</code> や <code>readonly</code> などの言語機能をそのまま反映できたり、mutableなstructの対応が自然にできたり、そして何よりパフォーマンスの低下も一切ありません。</p>
-<p>使い道は、主にユニットテスト用になるとは思いますので、なのでパフォーマンスはそこまで重要ではないといえばないのですが、性能的にはアプリケーションの実行時に使っても問題ないものとなっています。</p>
-<p>私は昔<a href="https://github.com/neuecc/ChainingAssertion">Chaining Assertion</a>というユニットテスト用のライブラリを作っていたのですが、現在は<a href="https://fluentassertions.com/">Fluent Assertions</a>という別のライブラリを使っています。ほとんどの機能は概ねなんとかなっているのですが、<code>AsDynamic()</code>を呼ぶと、移行はprivateフィールドやメソッドにアクセスし放題という機能は結構便利で、そしてそれがFluent Assertionsにないのは若干不便と思ってたんですね。今回、やっとそれの進化系を作れたのでメデタシメデタシです。</p>
-<h2>C# 12</h2>
-<p>ところで、冒頭のSampleProxyの書き方、地味にこれはC# 12の記法を使っています。どこだかわかりますか？</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">[GeneratePrivateProxy(typeof(Sample))]
-public partial struct SampleProxy;
-</code></pre>
-<p><code>SampleProxy;</code> の部分で、空のクラスを作る際に <code>{ }</code> じゃなくて <code>;</code> だけで済ませられるようになりました。これは地味ですがかなりいい機能で、というのもSource Generatorだと空クラスに割り当てることが多かったんですよね。そして、たった2文字が1文字に変わっただけ、ではあるのですが、 <code>{ }</code> だとコードフォーマットに影響があります。改行して3行で表現するのか、後ろにつけるのか。そうした判断のブレが <code>;</code> だとなくなります。だから2文字が1文字に変わっただけ、以上のインパクトがある、良い機能追加だと思います。</p>
-<h2>ref field</h2>
-<p>PrivateProxyはstaticメソッドにも対応していますし、そしてmutable structにも対応しています。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">using PrivateProxy;
-
-public struct MutableStructSample
-{
-    int _counter;
-    void Increment() =&gt; _counter++;
-
-    // static and ref sample
-    static ref int GetInstanceCounter(ref MutableStructSample sample) =&gt; ref sample._counter;
-}
-
-// use ref partial struct
-[GeneratePrivateProxy(typeof(MutableStructSample))]
-public ref partial struct MutableStructSampleProxy;
-</code></pre>
-<pre data-pagefind-ignore="all"><code class="language-csharp">var sample = new MutableStructSample();
-var proxy = sample.AsPrivateProxy();
-proxy.Increment();
-proxy.Increment();
-proxy.Increment();
-
-// call private static method.
-ref var counter = ref MutableStructSampleProxy.GetInstanceCounter(ref sample);
-
-Console.WriteLine(counter); // 3
-counter = 9999;
-Console.WriteLine(proxy._counter); // 9999
-</code></pre>
-<p>mutable structの対応って結構難しい話で、というのもフィールドにstructを保持するとコピーが渡されることになるので、普通に書いていると変更が元のstructに反映されないんですね。この問題をPrivateProxyではC# 11 ref fieldで解決しました。</p>
-<p>MutableStructSampleProxyはSource Generatorによって以下のようなコードが生成されます。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">ref partial struct MutableStructSampleProxy
-{
-    ref MutableStructSample target;
-
-    public MutableStructSampleProxy(ref MutableStructSample target)
-    {
-        this.target = ref target;
-    }
-
-    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = &quot;Increment&quot;)]
-    static extern void __Increment__(ref MutableStructSample target);
-    
-    public void Increment() =&gt; __Increment__(ref this.target);
-}
-
-public static class MutableStructSamplePrivateProxyExtensions
-{
-    public static MutableStructSampleProxy AsPrivateProxy(this ref MutableStructSample target)
-    {
-        return new MutableStructSampleProxy(ref target);
-    }
-}
-</code></pre>
-<p>AsPrivateProxy(これはthis refですが、拡張メソッドの場合、予備側はrefを書かなくていいので自然に使えます)で渡されたstructは、そのままずっとrefのまま保持されています。これにより、メソッド呼び出しでstructの状態に変更があった場合も問題なく変更が共有されています。</p>
-<h2>privateメソッドの単体テスト</h2>
-<p><a href="https://t-wada.hatenablog.jp/entry/should-we-test-private-methods">プライベートメソッドのテストは書かない</a>みたいな流儀も世の中にはありますが、私は何言ってんの？と思ってます。パブリックメソッドのテストでprivateメソッドの確認が内包されるから不要というなら、はぁー？だったら全部E2Eテストでいいんじゃないですかー？真の振る舞いがテストされますよー？</p>
-<p>もちろんそれは非現実的で、E2Eでパブリックメソッドのロジックを全て通過させるのは手間とコストがかかりすぎる。というのと同じ話で、privateメソッドのエッジケースを全てチェックする時に、public経由だとやりにくいことは往々にある。場合によってはコード通すためにモックを仕込まなければならないかもしれない。そこまでいくとアホらしいですよね、privateメソッドを直接テストすればすむだけの話なのに？メソッドは小さければ小さいほど良いし、テストもしやすい。そしてprivateを内包したpublicよりもprivateそのもののほうが小さく、テストしやすい。</p>
-<p>ようするにコスト面を考えて境界をどこに置くかというだけの話で。そして、privateメソッドのテストそのものは、C#の場合reflection呼び出しだと、変更コストがかかるなど、コスパは悪い部類に入ってしまう。でもそれはただの言語からの制約であって、だからプライベートメソッドのテストは不要みたいなしょーもない理屈をこねて絶対視するほどのことでもない。リフレクション使うとコスパ感が合わないから原則publicで済ませること、ぐらいだったらいいけど、変な教義立てるのはおかしいでしょ。</p>
-<p>チェックしたいがためにprivateであるべきものをinternalにする（たまによくやる、internalならInternalsVisibleToをテストプロジェクトに指定することで、ユニットテストプロジェクトで参照できるようになる）こともありますが、あまりお行儀の良いことではない。そもそもinternalなので同一アセンブリ内では不要に可視レベル上がっちゃってるし。</p>
-<p>と、いうわけで、PrivateProxyは比較的低コストでprivateメソッドをテスト対象にすることができるので、全然使っちゃっていいし、テストも書いちゃって良い、わけです。</p>
-<h2>UnsafeAccessor for InternalCall</h2>
-<p>UnsafeAccessor の使い道として、corelibの InternalCall を強引に呼べることはかなりいいこと（？）だと思ってます。例えば string の生成には大元に <a href="https://source.dot.net/#System.Private.CoreLib/src/System/String.CoreCLR.cs,12">FastAllocateString</a> というのがあって、通常ユーザーはこれを呼ぶことはできないのですが</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">[UnsafeAccessor(UnsafeAccessorKind.StaticMethod, Name = &quot;FastAllocateString&quot;)]
-static extern string FastAllocateString(string _, int length);
-
-var rawString = FastAllocateString(null!, 10);
-var mutableSpan = MemoryMarshal.CreateSpan(ref MemoryMarshal.GetReference(rawString.AsSpan()), rawString.Length);
-
-&quot;abcde&quot;.CopyTo(mutableSpan);
-&quot;fghij&quot;.CopyTo(mutableSpan.Slice(5));
-
-Console.WriteLine(rawString); // abcdefghij
-</code></pre>
-<p>といったようにUnsafeAccessorを通せばやりたい放題できます。</p>
-<p>Stringに関しては、やりたい放題させないために、<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.string.create">String.Create</a>というメソッドが用意されていて、Actionのコールバックで変更して、不変のStringを返すというものが用意されてはいるのですが、ActionだとTStateに<code>Span&lt;T&gt;</code>を渡せないとか、使えないケースがそれなりにあります、というか使いたいシチュエーションに限って使えないことが多い……。</p>
-<p>なお、こういうFastAllocateStringを呼んでStringに変更をかけるというのは、<a href="https://github.com/dotnet/runtime/issues/36989">dotnet/runtime#36989 Make string.FastAllocateString public</a>で見事に却下されています。つまり、やるな、ということです。</p>
-<blockquote>
-<p>It is never safe or supported to mutate the contents of a returned string instance.
-If you mutate a string instance within your own library or application, you are entering unsupported territory.
-A future framework update could break you. Or - more likely - you'll encounter memory corruption that will be very painful for you or your customers to diagnose.</p>
-</blockquote>
-<p>お怒りはご尤もです。しかしString.CreateでAction渡す口あるんだからそれでいいだろーというのはお粗末すぎだと思うんですよねー、どうせやってること一緒なんだから弄るの許可してよ、というのもそれはそれで理解してもらいたいです（私は弄りたいほうの人間なので！）。というわけで、自己責任で、やっていきましょう、つまりやっていくということです……！</p>
-<h2>まとめ</h2>
-<p>.NET 8でしか動きません！11月に .NET 8 がリリースされるので、その時まで忘れないでください！</p>
 </div>
 <a href="https://neue.cc/2">| Next</a>
 </div>

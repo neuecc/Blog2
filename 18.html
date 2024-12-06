@@ -74,7 +74,210 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2011-05-24" data-pagefind-meta="published:2011-05-24"><a href="https://neue.cc/2011/05/24_324.html">基礎からのCode Contracts</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2011-05-30" data-pagefind-meta="published:2011-05-30"><a href="https://neue.cc/2011/05/30_325.html">はぢめてのWindows Phone 7でのデータベース(Linq to Sql)</a></h1>
+<ul class="date"><li>2011-05-30</li></ul>
+<div class="entry_body"><p>Windows Phone 7に新しいSDKが来ました！9月頃リリースという話のMangoアップデート(Windows Phone 7.1)対応SDK。まだベータですが色々触れます。そしてついにデータベースが搭載されました。というわけで軽く触ってみました。</p>
+<h2>Code First</h2>
+<p>フツーだとSQLを書いてデータベースの定義を用意しなければならないところですが、WP7でのデータベースプログラミングにおいて、SQLは不要です。と、いうよりも、そもそも使えません。データベース本体(SQLCE)や、データベースにSQLを発行するクラス(ADO.NET)はMicrosoft.Phone.Data.Internalに格納されており、Internalという名のとおり、外から触ることは出来ません。ではどうするか、というと、WP7ではデータベースはLinq to Sqlを介して操作します。</p>
+<p>じゃあテーブル定義どうするの、リレーションどうするの、というと、それはクラスから生成します。クラスを書いて、ある程度DB的に属性を付与して、CreateDatabaseとすれば、それらのテーブルを持ったデータベースが生成されます。まずコードを。あ、そうそう、System.Data.Linqの参照が別途必要です。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class Meibo : DataContext
+{
+    public Meibo()
+        : base(&quot;isostore:/Meibo.sdf&quot;) // connection string
+    { }
+
+    public Table&lt;Person&gt; Persons { get { return GetTable&lt;Person&gt;(); } }
+}
+
+[Table]
+public class Person
+{
+    [Column(IsPrimaryKey = true, IsDbGenerated = true)]
+    public int Id { get; set; }
+
+    [Column(CanBeNull = false)]
+    public string Name { get; set; }
+
+    [Column]
+    public int Age { get; set; }
+}
+</code></pre>
+<p>名前と年齢のあるPersonというテーブルを持つ、Meiboというデータベースを定義しました。データベースはDataContextを継承し、各Tableを持つプロパティを。そしてテーブルはTable属性とColumn属性を。IsPrimaryKeyは主キー、IsDbGeneratedは自動連番、CanBeNullはnull非許可です。Columnを付けて回るのが面倒くさそうですが、まぁ単純明快ではありますねん。</p>
+<p>接続文字列は基底クラスに渡す形で。保存場所はIsolatedStorage内です。どうせ場所固定で弄らないでしょ？と思うので、上の例では直接定義しちゃっていますが、弄りたい場合はその辺調整で。ちなみにisostore:/です。isostore://にするとダメです（最初うっかり引っかかった）。</p>
+<p>実際に使う場合は</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// 初回実行時はデータベースを作る、これはapp.xaml.csに書いておくといい
+using (var db = new Meibo())
+{
+    if (!db.DatabaseExists())
+    {
+        db.CreateDatabase();
+    }
+}
+
+// Insertの例
+var meibo = new Meibo();
+
+var person1 = new Person { Name = &quot;ほげほげ&quot;, Age = 20 };
+var person2 = new Person { Name = &quot;ふがふが&quot;, Age = 15 };
+var person3 = new Person { Name = &quot;たこたこ&quot;, Age = 23 };
+
+meibo.Persons.InsertOnSubmit(person1); // Insertする
+meibo.Persons.InsertAllOnSubmit(new[] { person2, person3 }); // 複数の場合
+
+meibo.SubmitChanges(); // SubmitChangesまではDBへの挿入はされていない
+
+// Selectの例(Ageが20以上のものを抽出)
+var query = meibo.Persons.Where(p =&gt; p.Age &gt;= 20);
+
+foreach (var item in query)
+{
+    MessageBox.Show(item.Id + &quot;:&quot; + item.Name + &quot;:&quot; + item.Age);
+}
+</code></pre>
+<p>というわけで、DBの存在を全く意識せず自然に書けます。実に素晴らすぃー。</p>
+<h2>リレーション</h2>
+<p>リレーションも勿論張れます。例はマクドナルドのバーガーの価格表で。地域で価格が違うので、Burger(バーガー名)、Price(値段)、Place(地域)の3つをBurger-Price-Placeで関連付けてきませう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class McDonald : DataContext
+{
+    public McDonald()
+        : base(&quot;isostore:/McD.sdf&quot;)
+    { }
+
+    public Table&lt;Burger&gt; Burgers { get { return GetTable&lt;Burger&gt;(); } }
+    public Table&lt;Price&gt; Prices { get { return GetTable&lt;Price&gt;(); } }
+    public Table&lt;Place&gt; Places { get { return GetTable&lt;Place&gt;(); } }
+}
+
+[Table]
+public class Burger
+{
+    [Column(IsPrimaryKey = true, IsDbGenerated = true)]
+    public int Id { get; set; }
+    [Column]
+    public string Name { get; set; }
+
+    [Association(Storage = &quot;_Prices&quot;, OtherKey = &quot;BurgerId&quot;)]
+    public EntitySet&lt;Price&gt; Prices
+    {
+        get { return this._Prices; }
+        set { this._Prices.Assign(value); }
+    }
+    private EntitySet&lt;Price&gt; _Prices = new EntitySet&lt;Price&gt;();
+}
+
+[Table]
+public class Price
+{
+    [Column(IsPrimaryKey = true, IsDbGenerated = true)]
+    public int Id { get; set; }
+    [Column]
+    public int BurgerId { get; set; }
+    [Column]
+    public int PlaceId { get; set; }
+    [Column]
+    public int Value { get; set; }
+
+    [Association(IsForeignKey = true, Storage = &quot;_Burger&quot;, ThisKey = &quot;BurgerId&quot;)]
+    public Burger Burger
+    {
+        get { return _Burger.Entity; }
+        set { _Burger.Entity = value; }
+    }
+    private EntityRef&lt;Burger&gt; _Burger = new EntityRef&lt;Burger&gt;();
+
+    [Association(IsForeignKey = true, Storage = &quot;_Place&quot;, ThisKey = &quot;PlaceId&quot;)]
+    public Place Place
+    {
+        get { return _Place.Entity; }
+        set { _Place.Entity = value; }
+    }
+    private EntityRef&lt;Place&gt; _Place = new EntityRef&lt;Place&gt;();
+}
+
+[Table]
+public class Place
+{
+    [Column(IsPrimaryKey = true, IsDbGenerated = true)]
+    public int Id { get; set; }
+
+    [Column]
+    public string Name { get; set; }
+
+    [Association(Storage = &quot;_Prices&quot;, OtherKey = &quot;PlaceId&quot;)]
+    public EntitySet&lt;Price&gt; Prices
+    {
+        get { return this._Prices; }
+        set { this._Prices.Assign(value); }
+    }
+    private EntitySet&lt;Price&gt; _Prices = new EntitySet&lt;Price&gt;();
+}
+</code></pre>
+<p>ぎゃー。面倒くさ。本来のLinq to Sqlではデータベースが先にあって、そこから機械生成でこれを作るんですが、コードを先で作るのはちょっと骨が折れます。Entity Framework Code Firstは、コードを先に作るのが大前提だけあって書きやすいように色々調整してある感じですが、WP7/Linq to Sqlは、本当にただただ手で書きますというわけで全くイケてない。</p>
+<p>さて、リレーションはAssociation属性でつけます。また、多を辿る場合はEntitySet、一を辿る場合はEntityRefのプロパティを用意します。これがまた面倒くさ……。たいしたことはない機械的作業ですが、自動プロパティで済ませられないとウザったいことこの上なく。コードスニペットでも用意しますかねえー。</p>
+<p>しかし苦労するだけの価値は、あります！</p>
+<p>まずデータを用意しなきゃということでInsertを。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// Insertの例
+var mcd = new McDonald();
+
+var hamburger = new Burger() { Name = &quot;ハンバーガー&quot; };
+var blt = new Burger() { Name = &quot;ベーコンレタストマト&quot; };
+
+var kanto = new Place() { Name = &quot;関東&quot; };
+var qshu = new Place() { Name = &quot;九州&quot; };
+var hokkaido = new Place() { Name = &quot;北海道&quot; };
+
+var prices = new[]
+{
+    new Price { Burger = hamburger, Place = kanto, Value = 100 },
+    new Price { Burger = hamburger, Place = qshu, Value = 150 },
+    new Price { Burger = hamburger, Place = hokkaido, Value = 160 },
+    new Price { Burger = blt, Place = kanto, Value = 250 },
+    new Price { Burger = blt, Place = qshu, Value = 230 },
+    new Price { Burger = blt, Place = hokkaido, Value = 220 }
+};
+
+mcd.Places.InsertAllOnSubmit(new[] { kanto, qshu, hokkaido });
+mcd.Burgers.InsertAllOnSubmit(new[] { hamburger, blt });
+mcd.Prices.InsertAllOnSubmit(prices);
+
+mcd.SubmitChanges();
+</code></pre>
+<p>リレーションを軽やかに片付けて、挿入してくれます。実に自然でイイ！それに、こういうののinsert文手書きはカッタルイですからねえ。更にSelectは</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var mcd = new McDonald();
+
+// 関東のバーガーのNameとPriceを抽出
+var query = mcd.Burgers.Select(b =&gt; new
+{
+    b.Name,
+    Price = b.Prices.First(p =&gt; p.Place.Name == &quot;関東&quot;).Value
+});
+
+// ハンバーガー:100, ベーコンレタス:250
+foreach (var item in query)
+{
+    MessageBox.Show(item.Name + &quot;:&quot; + item.Price);
+}
+
+// なお、IQueryable&lt;T&gt;をToStringすると手軽に発行されるSQLが確認出来る
+// もう一つの手はDataContext.Logから取ること
+MessageBox.Show(query.ToString());
+</code></pre>
+<p>コード上にjoinはないけど、発行されるSQLはjoinしています。手動でjoinすることも可能ですが、基本的にはオブジェクト間をドットで辿って操作します。その方が自然に書けるし、何より、楽ですもの。</p>
+<h2>DataContextのDispose</h2>
+<p>usingで括ってあげるのが礼儀正しいわけですが、WP7では実際どう考えるべきだろう。<a href="http://msdn.microsoft.com/en-us/library/hh202860.aspx">サンプル</a>見てると、CreateDatabaseやSchemaUpdateではusingで囲んでますが、そうでない普通の操作ではコードビハインド内でDataContext使い回してるんですね。基本的にIsolatedStorageに隔離されているわけだし、画面外に出るときだけ切った繋げたすればいいのかなあ、といったふうに思いましたがどうなのでしょ。</p>
+<h2>.NET版との差分</h2>
+<p>ほとんど.NET版のLinq to Sqlと同じなのですが、若干追加があります。一つはデータベースのスキーマのアップデート。<a href="http://msdn.microsoft.com/en-us/library/microsoft.phone.data.linq(VS.96).aspx">Microsoft.Phone.Data.Linq Namespace</a>名前空間の参照で、DataContextにCreateDatabaseSchemaUpdaterが追加されます。これにより、アップデートなどによるテーブル構造の変化にも対応出来ます。もう一つは
+<a href="http://msdn.microsoft.com/en-us/library/microsoft.phone.data.linq.mapping.indexattribute(v=VS.96).aspx">IndexAttribute Class</a>。</p>
+<p>これらは、通常Linq to Sqlが用いられていたデータベースからのクラス自動生成じゃなく、クラスからのデータベース生成になったことにより、テーブル作りに足りていなかった面の補足と見れるかな。また、その逆で.NET版でサポートされているけれど、WP7版にはないものも幾つかあります。詳しいリストはMSDNの<a href="http://msdn.microsoft.com/en-us/library/hh202872.aspx">LINQ to SQL Support for Windows Phone</a>を見ればいいんじゃないかな、ということで。</p>
+<h2>学習リソース</h2>
+<p>若干の差異はあるとはいえ、Linq to SqlはLinq to Sqlなので、<a href="http://msdn.microsoft.com/ja-jp/library/bb386976.aspx">MSDN - LINQ to SQL</a>を見るのが良いでしょう。また、慣れない間はWP7版ではなく.NET版で、ConsoleApplicationで挙動をあらかた確認しておいたほうが、スムースに行くかとは思います。属性貼ったりは、結構面倒だし罠もあるところですからね……。</p>
+<h2>まとめ</h2>
+<p>諸君らの愛したLinq to Sqlは死んだ！何故だ！そうしてEntity Frameworkに置き換えられる運命を辿ったLinq to Sqlですが、ここにきて華麗に復活するとは誰も予想だにしなかったところで、こういう展開は面白い。そして生SQLが使えないのは英断。縛りではあるのですが、Phoneでのアプリケーションの9.9割は、生SQLを必要とすることはないのではないか、とも。</p>
+<p>生SQL触れるだろうと思ってWP7版も作るぜ！な勢いで用意していた<a href="http://dbexecutor.codeplex.com/">DbExecutor</a>のWP7版は永劫さようならになってしまいましたががが。DbExecutorはDbExecutorで、もう少し機能追加しますがー。</p>
+<p>ところでMangoで、他に追加されたクラスを少し。System.Reflection.Emitが追加されました。これはILを直弄りして動的コード生成するためのクラスですが、WP7でIL生成とかヤラネーヨ。というわけでもなくはなく実は有益。シリアライザの高速化のために動的コード生成は常套手段となっているので、自分は直に使わなくても、普通にメリットは大きく。例えばJSON.NETのJSONシリアライズ/デシリアライズは、WP7版だけリフレクションを直に使ったもので見たところ遅そうでしたが、恐らく次からは.NET版と同じく動的コード生成になり、高速化されるでしょう。ORマッパーなどもそうです。そう、Linq to Sqlでも<a href="http://msdn.microsoft.com/ja-jp/library/system.data.linq.mapping.metaaccessor.aspx" title="MetaAccessor クラス (System.Data.Linq.Mapping)">MetaAccessor</a>クラスなどの辺りを覗いてみれば、ILをEmitしているコードが見えます。</p>
+<p>そういえばLambdaExpressionもCompile出来るようになりました。が、AssignやLoopなどは搭載されていません、ぐぬー。コード生成したい人はExpressionTreeでお手軽、ではなく、まだまだILGeneratorでEmit頼りしかなさそうです。更に言えばExpressionVisitorも入っていませんね。SL4に近くなったけれどSL4とは言えない、WP7はWP7としか言いようのないAPIになってまいりました。</p>
+</div>
+<h1 data-pagefind-sort="date:2011-05-24" data-pagefind-meta="published:2011-05-24"><a href="https://neue.cc/2011/05/24_324.html">基礎からのCode Contracts</a></h1>
 <ul class="date"><li>2011-05-24</li></ul>
 <div class="entry_body"><p>23日に<a href="http://msdn.microsoft.com/en-us/devlabs/dd491992">Code Contracts</a>についてのセッションを行いました。</p>
 <div style="width:595px" id="__ss_8069150"> <strong style="display:block;margin:12px 0 4px"><a href="http://www.slideshare.net/neuecc/code-contracts-8069150" title="基礎からのCode Contracts">基礎からのCode Contracts</a></strong> <iframe src="https://www.slideshare.net/slideshow/embed_code/8069150?rel=0" width="595" height="497" frameborder="0" marginwidth="0" marginheight="0" scrolling="no"></iframe> <div style="padding:5px 0 12px"> View more <a href="http://www.slideshare.net/">presentations</a> from <a href="http://www.slideshare.net/neuecc">neuecc</a> </div> </div>
@@ -1579,294 +1782,6 @@ private class EqualsComparer&lt;TX&gt; : IEqualityComparer&lt;TX&gt;
 <p>ところで、dynamic使ってます？ぶっちけ全然使ってません。結局のところvarが最高に便利なわけで、dynamicは、例えば以前書いた<a href="http://dynamicjson.codeplex.com/" title="DynamicJson">DynamicJson</a>であったり、これのようなリフレクションであったりと、通常のC#とは違う場所との糊なわけで、そうそう出番のあるものでもない、ですねん。C#4.0の言語的な追加の最たるものはdynamicなわけですが、普段はそんな使わない代物なわけだと、言語的にはC#4.0はあんま変わらなかったねー、という印象で。LL的な視点から、C#にはdynamicで動的言語でもあるんだって？という意見をたまに見ますが、純C#上ではぶっちゃけほとんど使わないのでそんなでもない。</p>
 <p>じゃあなくてもいいか、というと、んー、まあ、このように、たまにある分には便利だし、言語的にもスムースに入り込んでいるので、良いのではないか、むしろ良いのではないか、とは思います。あんま使わないけどたまには思い出してあげると大変可愛い。</p>
 <p>そういえば私は<a href="http://ja.wikipedia.org/wiki/%E3%83%A1%E3%82%BF%E6%A7%8B%E6%96%87%E5%A4%89%E6%95%B0" title="メタ構文変数 - Wikipedia">メタ構文変数</a>としてhoge, huga, hageの順にhogehogeと使ってるのですが、Twiterでhomuにする。というのを見て、なんかいいな、とか思ってしまったので、当分はhomu, mogu, mamiの順に使おうかと思っている昨今。こーいうのは半年後ぐらいに、あちゃーという気持ちになるのが常なのですがー。</p>
-</div>
-<h1 data-pagefind-sort="date:2011-03-10" data-pagefind-meta="published:2011-03-10"><a href="https://neue.cc/2011/03/10_309.html">Rx + MolesによるC#での次世代非同期モックテスト考察</a></h1>
-<ul class="date"><li>2011-03-10</li></ul>
-<div class="entry_body"><p>最近、妙にテストブームです。<a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>を作ったからですね。ライブラリドリブンデベロップメント。とりあえずでも何か作って公開すると、その分野への情報収集熱に火がつくよね。そして<a href="http://gihyo.jp/dev/serial/01/tdd/0014">テスト厨</a>へ。さて、ユニットテストで次に考えるべきは、モックの活用。C#でモックといえば<a href="http://code.google.com/p/moq/">Moq</a>が評価高い。メソッドチェーンとExpression Treeを活かしたモック生成は、なるほど、良さそうです。読み方も可愛いしね。もっきゅ。もっきゅ。</p>
-<p>というわけでスルーして(えー)<a href="http://research.microsoft.com/en-us/projects/pex/">Moles</a>を使いましょう。Microsoft Research謹製のモックフレームワークです。PexとのセットはMSDN Subscriptionが必要ですが、MolesのみならばFreeです。VS Galleryに置かれているので、VSの拡張機能マネージャーからでも検索に引っかかります。</p>
-<p>Moles。Pex and Molesとして、つまりPex(パラメータ自動生成テスト)のオマケですよねー、と考えていたりしたりした私ですが(実際、Pexがこの種のモックシステムを必要とする、という要請があって出来た副産物のよう)、これがオマケだなんてとんでもない！アセンブリ解析＋DLL自動生成＋ILジャックという、吹っ飛んだ発想による出鱈目すぎる魔法の力でモック生成してしまうMolesは、他のモックフレームワークとは根源的に違いすぎる。</p>
-<p>Molesとは何か。既存のクラスの静的/インスタンスメソッドやプロパティの動作を、自由に置き換えるもの。既存のクラスとは、自分の作ったものは勿論、.NET Frameworkのクラスライブラリも例外ではありません。Console.WriteLineやDateTime.Now、File.ReadAllTextなども、そのままに乗っ取ることが可能です。PublicもPrivateも、どちらでも乗っ取れます。</p>
-<p>しかも使うのは簡単。往々に強力なものは扱いも難しくなってしまうものですが、常識はずれに強力な魔法が働いている場合は、逆に非常に簡単になります。対象となるメソッドにラムダ式を代入する。それだけ。moqなどよりも遥かに簡単。</p>
-<h2>Molesを使う</h2>
-<p>日本語での紹介は<a href="http://d.hatena.ne.jp/jamzz/20100416/1271399591">Moles - .NETのモック・スタブフレームワーク - Jamzzの日々</a>に、また、<a href="http://research.microsoft.com/en-us/projects/pex/documentation.aspx">MSRのページのDocumentation</a>にLevel分けされた沢山のドキュメントが用意されているので(素晴らしい！Rxも見習うべし！)、そちらに目を通せば大体分かると思われます。</p>
-<p>とりあえず使ってみましょう。Molesをインストールしたら、テストプロジェクトを作って、参照設定を右クリックし、Add Moles Assembly for mscorlibを選択。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/addmolesref.jpg">
-</p>
-<p>するとmscorlib.molesというファイル(中身はただのXML)が追加されます。そして、とりあえずビルドするとMicrosoft.Moles.Framework, mscorlib.Behavior, mscorlib.Molesが参照設定に追加されます。つまり、mscorlibが解析され、モッククラスが自動生成されました！mscorlib以外のものも生成したい場合は、参照設定の対象dll上で右クリックし、Add Moles Assemblyを選べば、.molesが追加されます。なお、解析対象が更新されてHoge.Molesも更新したい、という場合はリビルドすれば更新されます（逆に言えばリビルドしないと更新されないため、コンパイルは通るものの実行時エラーになります）。また、もし追加したことによって何かエラーが出る場合(VS2010 SP1で私の環境ではSystem.dllでエラーが発生する)は、.molesの対象アセンブリの属性にReflectionOnly=&quot;true&quot;も記載すると回避できることもあります。</p>
-<p>では簡単な例を。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// mscorlibに含まれる型の場合のみ、Molesで乗っ取りたい型を定義しておく必要があります
-// 定義なしで実行すると、この型定義してね、って例外メッセージが出るので
-// それが出たらコピペってAssemblyInfo.csの下にでも書いておけばいいんぢゃないかな
-[assembly: MoledType(typeof(System.DateTime))]
-
-[TestClass]
-public class UnitTest1
-{
-    // 現在時刻を元に&quot;午前&quot;か&quot;午後&quot;かを返すメソッド
-    public static string ImaDocchi()
-    {
-        return (DateTime.Now.Hour &lt; 12) ? &quot;午前&quot; : &quot;午後&quot;;
-    }
-
-    // HostType(&quot;Moles&quot;)属性を付与する必要がある
-    [TestMethod, HostType(&quot;Moles&quot;)]
-    public void TestMethod1()
-    {
-        // ラムダ式で置き換えたいメソッドを定義する
-        // プリフィックスMが自動生成されているクラス、
-        // サフィックスGetはプロパティのgetの意味
-
-        MDateTime.NowGet = () =&gt; new DateTime(2000, 1, 1, 5, 0, 0);
-        ImaDocchi().Is(&quot;午前&quot;);
-
-        MDateTime.NowGet = () =&gt; new DateTime(2000, 1, 1, 15, 0, 0);
-        ImaDocchi().Is(&quot;午後&quot;);
-    }
-}
-</code></pre>
-<p>お約束ごと(属性付与)が若干ありますが、エラーメッセージで親切に教えてくれるので、そう手間もなくMoles化出来ます。モック定義自体は何よりも簡単で、見たとおり、デリゲートで置き換えるだけです。非常に直感的。(Isは<a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>利用のものでAssert.AreEqualです、この場合)</p>
-<p>システム時刻に依存したメソッドのテストは、単体テストの書き方として、よく例に上がります。そのままじゃテスト出来ないのでリファクタリング対象行き。メソッドの引数に時刻を渡すようにするか、時刻取得を含んだインターフェイスを定義して、それを渡すとか、ともかく、共通するのは、外部から時刻を操れるようにすることでテスト可能性を確保する。ということ。</p>
-<p>Molesを使えば、そもそもDateTime.Now自体をジャックして任意の値を返すように定義出来てしまいます。これは単純な例でしかないので、いくら出来てもそんなことやらねーよ、かもですね。はい。それが良い設計かどうかは別としても、Molesの存在を前提とすると、テスト可能にするための設計方法にも、かなりの変化が生じるのは間違いないでしょう。時に、テスト可能性のために歪んだ設計となることも、Molesで乗っ取れるのだと思えば、自然な設計が導出できるはず。</p>
-<h2>イベントのモック化</h2>
-<p>続けてイベントの乗っ取りも画策してみましょう。イベントの乗っ取りは、正直なところ少し面倒です。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// こんな非同期でダウンロードして結果を表示するメソッドがあるとして
-public static void ShowGoogle()
-{
-    var client = new WebClient();
-    client.DownloadStringCompleted += (sender, e) =&gt;
-    {
-        Console.WriteLine(e.Result);
-    };
-    client.DownloadStringAsync(new Uri(&quot;http://google.co.jp/&quot;));
-}
-
-[TestMethod, HostType(&quot;Moles&quot;)]
-public void WebClientTest()
-{
-    // 外から発火出来るように外部にデリゲートを用意
-    DownloadStringCompletedEventHandler handler = (s, e) =&gt; { };
-
-    // AddHandlerとRemoveHandlerを乗っ取って↑のものに差し替えてしまう
-    MWebClient.AllInstances.DownloadStringCompletedAddDownloadStringCompletedEventHandler =
-        (wc, h) =&gt; handler += h;
-    MWebClient.AllInstances.DownloadStringCompletedRemoveDownloadStringCompletedEventHandler =
-        (wc, h) =&gt; handler -= h;
-
-    // DownloadStringAsyncをトリガに用意したデリゲートを実行
-    MWebClient.AllInstances.DownloadStringAsyncUri = (wc, uri) =&gt;
-    {
-        // DownloadStringCompletedEventArgsはコンストラクタがinternalなので↓じゃダメ
-        // handler(wc, new DownloadStringCompletedEventArgs(&quot;google!modoki&quot;));
-        // というわけで、モックインスタンス作ってしまってそれを渡せばいいぢゃない
-        var mockArgs = new MDownloadStringCompletedEventArgs()
-        {
-            ResultGet = () =&gt; &quot;google!modoki&quot;
-        };
-        handler(wc, mockArgs);
-    };
-
-    // 出力はConsole.WriteLineなので、それを乗っ取って、結果にたいしてアサート
-    MConsole.WriteLineString = s =&gt; s.Is(&quot;google!modoki&quot;);
-
-    ShowGoogle(); // 準備が終わったので、実行(本来非同期だけど、全て同期的処理に置き換えられてます)
-}
-</code></pre>
-<p>ちょっと複雑です。テストしたい処理はDownloadStringCompletedの中ですが、外からこれを発火する手段は、ない。この例だとAddHandlerだけ乗っ取って、直に発火させてもいいのですが、（非同期だけじゃなく）他のイベントの場合でも応用が効くように、正攻法（？）でいきましょう。イベントの発火を自分でコントロール出来るように、まずはAddとRemoveに対し、外部デリゲートに通すよう差し替えます。なお、インスタンスメソッドを乗っ取る場合は.AllInstancesの下にあるインスタンスメソッドを、静的メソッドと同じようにラムダ式で直に書き換えるだけです。非常に簡単。なお、第一引数は必ず、そのインスタンス自身となっていることには注意。</p>
-<p>あとは、トリガとなるメソッドがあればそれを（この場合はDownloadStringAsync）通して、そうでない場合（例えばただのボタンクリックとか）なら直にイベントを乗っ取ったデリゲートを発火してやれば完了。で、ここでEventArgsがコンストラクタがprivateなせいで生成出来なかったりというケースも少なくないのですが、それはモックインスタンスを作って、そいつを渡してやるだけで簡単に回避できます。</p>
-<p>少し手順が多いですが、「出来る」ということと、まあ流れ自体は分かるしそれぞれは置き換えるだけで複雑じゃない。ということは分かるのではと思います。でも、それでも面倒くさいですよ。ええ、どう見ても面倒くさいです。しかし、このことはReactive Extensionsを使えば解決出来ます。んが、その前にもう一つ別の例を。</p>
-<h2>APMのモック化</h2>
-<p>非同期繋がりで、APM(Asynchronous Programming Model, BeginXxx-EndXxx)のモック化もやってみましょう。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// こんな非同期でダウンロードして結果を表示するメソッドがあるとして
-public static void ShowBing()
-{
-    var req = WebRequest.Create(&quot;http://bing.co.jp/&quot;);
-    req.BeginGetResponse(ar =&gt;
-    {
-        var res = req.EndGetResponse(ar);
-        using (var stream = res.GetResponseStream())
-        using (var sr = new StreamReader(stream))
-        {
-            var result = sr.ReadToEnd();
-            Console.WriteLine(result);
-        }
-    }, null);
-}
-
-[TestMethod, HostType(&quot;Moles&quot;)]
-public void WebRequestTest()
-{
-    // Beginでコールバックを呼ぶ、EndでWebResponseを返す
-    MHttpWebRequest.AllInstances.BeginGetResponseAsyncCallbackObject =
-        (req, ac, obj) =&gt; { ac(null); return null; };
-    MHttpWebRequest.AllInstances.EndGetResponseIAsyncResult = (req, ar) =&gt;
-    {
-        return new MHttpWebResponse
-        {
-            GetResponseStream = () =&gt; new MemoryStream(Encoding.UTF8.GetBytes(&quot;bing!modoki&quot;))
-        };
-    };
-
-    MConsole.WriteLineString = s =&gt; s.Is(&quot;bing!modoki&quot;);
-
-    ShowBing(); // 実行
-}
-</code></pre>
-<p>イベントよりは少し簡単ですが、BeginとEndの絡み具合は混乱してしまいます。また、HttpWebResponseのダミーを作るのも面倒。</p>
-<h2>Reactive Extensions</h2>
-<p>見てきたように、イベントもAPMも、モック化は面倒です。そこで出てくるのが<a href="http://msdn.microsoft.com/en-us/data/gg577609" title="Reactive Extensions">Reactive Extensions</a>。RxならばIObservableとして一つにまとまるので、その一点をモック化してしまえばそれだけですむ、しかもダミーのIObservableを生成するのは非常に簡単！というわけで、例を見ましょう。モック化、の前に非同期のRx化と、そのテストを。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// こっち本体
-
-public class Tweet
-{
-    public string Name { get; set; }
-    public string Text { get; set; }
-
-    // 実際やるなら静的メソッドじゃなくて、API操作はまとめて別のクラスで、と思いますが、まあとりあえずこれで
-    public static IObservable&lt;Tweet&gt; FromPublicTL()
-    {
-        var req = WebRequest.Create(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
-        return Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)()
-            .Select(r =&gt;
-            {
-                // StreamはSilverlightでも同期で書けるので、同期で取得しちゃいます
-                using (var stream = r.GetResponseStream())
-                using (var sr = new StreamReader(stream))
-                {
-                    return sr.ReadToEnd();
-                }
-            })
-            .SelectMany(s =&gt; XElement.Parse(s).Elements()) // 配列上のものをバラして
-            .Select(x =&gt; new Tweet // Tweetに変換
-            {
-                Text = x.Element(&quot;text&quot;).Value,
-                Name = x.Element(&quot;user&quot;).Element(&quot;screen_name&quot;).Value
-            });
-    }
-}
-
-// こっちがTest
-
-[TestMethod]
-[Timeout(3000)] // Timeoutはテスト全体のオプションで設定してもいいね
-public void FromPublicTL()
-{
-    var tl = Tweet.FromPublicTL().ToEnumerable().ToArray();
-
-    // 20件あって、NameとかTextが
-    // 全部空じゃなければ正常にParse出来てるんじゃないの、的な(適当)
-    tl.Length.Is(20);
-    tl.All(t =&gt; t.Name != &quot;&quot; &amp;&amp; t.Text != &quot;&quot;).Is(true);
-}
-</code></pre>
-<p>Twitterのpublic_timeline.xml、つまり認証のかかってない世界中のパブリックなツイートが20件(オプション無しの場合)XMLで取れるAPIを叩いています。RxのFromAsyncPatternを使い、リクエストは非同期。非同期のテストは通常難しい、のですが、Rxの場合はFirstやToEnumerableで簡単にブロックして同期的なものに変換出来るため、それで結果を取って、何食わぬ顔でアサートしちゃえます。</p>
-<p>Rxは非同期が簡単にテスト出来てメデタシメデタシ。これはこれで良いのですが、ところでパブリックじゃなくて認証入るものを取るときはどうするの？ストリーミングAPI(ツイートだけじゃなくFavoriteなど色々な形式のXMLが届く)を試したいけど、誰かがFavoriteつけるまで待機とか、テストに不定な時間がかかるものはどうするの？などなどで、本物のウェブ上のデータをテストで毎回取ってくるのは大変です。また、誤ったデータが流れてきた/サーバーが応答不能状態な場合などの例外処理のテストは、通常では出来ないですね？</p>
-<p>そこで、モック。ウェブからじゃなくてモックがダミーのデータを返せばいいわけだ。そして改めてFromPublicTLメソッドを見ると「データ取得」と「データパース」の二つを行っている。なので、ここはその二つに分けて、後者の「データパース」がモックでテスト出来るようにしてやりましょう。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public class Tweet
-{
-    public string Name { get; set; }
-    public string Text { get; set; }
-
-    private static IObservable&lt;String&gt; GetRawPublicTL()
-    {
-        var req = WebRequest.Create(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
-        return Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)()
-            .Select(r =&gt;
-            {
-                using (var stream = r.GetResponseStream())
-                using (var sr = new StreamReader(stream))
-                {
-                    return sr.ReadToEnd();
-                }
-            });
-    }
-
-    public static IObservable&lt;Tweet&gt; FromPublicTL()
-    {
-        return GetRawPublicTL()
-            .SelectMany(s =&gt; XElement.Parse(s).Elements())
-            .Select(x =&gt; new Tweet
-            {
-                Text = x.Element(&quot;text&quot;).Value,
-                Name = x.Element(&quot;user&quot;).Element(&quot;screen_name&quot;).Value
-            });
-    }
-}
-</code></pre>
-<p>リファクタリングというほど大仰なものでもなく、メソッドチェーンのうちのネットワークアクセス部分をprivateメソッドとして切り出しただけです。Rxは、メソッドチェーンの一つ一つが独立しているので、切った貼ったが簡単なのもメリット。では、このprivateメソッドをMolesで差し替えてしまおう！</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">[TestMethod, HostType(&quot;Moles&quot;)]
-public void FromPublicTLMock()
-{
-    // これは省略した文字列ですが、実際は取得したXMLをファイルに置いて、それを読み込むといいかも
-    var statuses = @&quot;
-        &lt;statuses&gt;
-            &lt;status&gt;
-                &lt;text&gt;Hello&lt;/text&gt;
-                &lt;user&gt;
-                    &lt;screen_name&gt;neuecc&lt;/screen_name&gt;
-                &lt;/user&gt;
-            &lt;/status&gt;
-            &lt;status&gt;
-                &lt;text&gt;Moles&lt;/text&gt;
-                &lt;user&gt;
-                    &lt;screen_name&gt;xbox99&lt;/screen_name&gt;
-                &lt;/user&gt;
-            &lt;/status&gt;
-        &lt;/statuses&gt;
-        &quot;;
-
-    // 本来ネットワーク取得のものを、たった一行でただのシーケンスに置き換える
-    MTweet.GetRawPublicTL = () =&gt; Observable.Return&lt;string&gt;(statuses);
-
-    var tl = Tweet.FromPublicTL().ToEnumerable().ToArray();
-
-    tl.Length.Is(2);
-    tl[0].Is(t =&gt; t.Name == &quot;neuecc&quot; &amp;&amp; t.Text == &quot;Hello&quot;);
-    tl[1].Is(t =&gt; t.Name == &quot;xbox99&quot; &amp;&amp; t.Text == &quot;Moles&quot;);
-}
-</code></pre>
-<p>これだけです。データ用意は別として、モックへの差し替えはたった一行書いただけ。既存のコードに一切手を加えず、こんなにも簡単にモックへの置き換えが可能だなんて、わけがわからないよ。</p>
-<p>理由として、Rxの持つ非同期もイベントも普通のシーケンスも、全て等しく同じ基盤に乗っている、という性質が生きています。この性質は時に分かりづらさを生むこともありますが、しかしそれ故に絶大な柔軟性も持っていて、その結果、本来非同期処理のものをただのシーケンスに置き換えることを可能にしています。非同期が、イベントがテストしづらいならMolesでただのシーケンスに差し替えてしまえばいい。別段「テストのため」の設計を意識しなくても、Rxで書くということ、それだけで自然にテスト可能な状態になっています。</p>
-<p>なんて、さらっと流してしまっているわけですが、この事に気づいた瞬間にこれはヤバい！と悶えました。いや、凄いよ、凄過ぎるよRx + Moles。</p>
-<h2>Moq vs Moles、あるいは検証のやり方</h2>
-<p>Molesは非常に強力ですが、ではMoqと、どう使いわけよう？もしくは、全て代替出来てしまう？Molesは純粋な置き換えのみなので、呼び出しの検証はありません。モックとスタブの用語の違い、を言うならば、Molesの提供するものはモックではなくスタブ。自動生成クラスにつくプリフィックスのSは勿論Stubですが、MはMockではなく、Moleを指します(じゃあMoleって何よ、っていうと、何なんでしょうね……)</p>
-<p>さて、使い分けとかいうほどのものでもないので、基本はMolesのみでいいんじゃないかなあー。もし呼び出しを保証したければ、こういうふうに書ける。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// IDisposableのDisposeは1回しか呼ばれないとしたい場合を検証する
-// インターフェイスの場合はMHogeではなくSHogeなことに注意
-var callCount = 0;
-var mock = new SIDisposable()
-{
-    Dispose = () =&gt; { callCount += 1; }
-};
-
-(mock as IDisposable).Dispose(); // mockを使った処理があるとする...
-callCount.Is(1); // 1回のみ
-</code></pre>
-<p>フレームワークに用意されていないから一手間なのは事実ですが、Molesの持つシンプルさを失ってまで足したいほどでもなく、好きなようなチェックを自前で書けるのだから、それでいいかな。むしろこのほうが大抵スッキリ。といったようなことは、MolesのマニュアルのComparison to Existing Frameworksに書かれています。Molesの提供するシンプルさが、私は好きです。</p>
-<p>フレームワークは最大限のシンプルさを保って、機能は他の機構に回すというのは<a href="http://chainingassertion.codeplex.com/">Chaining Assertion</a>も一緒ですよ←比較するとはなんておこがましい</p>
-<p>もう一つ、もっと具体的なもので行きましょうか。LinqのCount()はICollectionの場合は全部列挙せず、Countプロパティのほうを使ってくれる(詳細は過去記事：<a href="http://neue.cc/2009/07/21_178.html" title="neue cc - LinqとCountの効率">LinqとCountの効率</a>をどうぞ)ことのテスト。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">var countCalled = false;
-var enumeratorCalled = false;
-var mock = new SICollection01&lt;int&gt;
-{
-    CountGet = () =&gt; { countCalled = true; return 100; },
-    GetEnumerator = () =&gt; { enumeratorCalled = true; return null; }
-};
-
-// 呼んでるのはLinqのCount()のほうね
-mock.Count().Is(100);
-countCalled.Is(true);
-enumeratorCalled.Is(false);
-</code></pre>
-<p>CountGetで100返せば、それだけでいい気もしますが、念のため+意図を表明するということで。</p>
-<p>そういえばですが、Chaining AssertionのIsは、散々DisったAssertThatに存外近かったりします。 Assert.That(actual, Is(expected)) と書くものを、 actual.Is(expected) と書けるようになった、ですから(但しこれはAreEqualsの場合であって、Shuold.Be.GreaterThanとかやり始めたらぶん殴る)。</p>
-<h2>Silverlight? Windows Phone 7?</h2>
-<p>Silverlightのテスト環境は貧弱です。当然それに連なってWP7のテスト環境も貧弱です。というかMSTestが使えない！というだけじゃなく、Molesも動かせませんし。どうする？そこは、「リンクとして追加」でSilverlight/WP7のファイルをWPFのプロジェクトにでも移して、そのWPFのコードをテストするという手段が取れなくもないです。非同期周りはRxが吸収出来るし、互換性は、元来クラス群が貧弱なSLのほうが第一ターゲットなので、まあまあ大丈夫なはず。ViewModelはともかくとして、Modelのテストなら行けるはずです。</p>
-<p>非同期のテストは難しいって？うん、Rxを使えば簡単なんだ。大丈夫。</p>
-<h2>まとめ</h2>
-<p>次世代というか、もう現世代なんですよ。今まで理想論に過ぎなかったものを、急速に現実のものとしてくれています。徒手空拳では難しい領域はいっぱいあった。でも、今、手元にはRxとMolesがある。この二つを手に、もう一度領域を見てみたらどうだろう？晴れた景色が広がっているはずです。</p>
-<p>それにしてもRxの素晴らしさがMolesで更に輝くことといったらない。</p>
-<p>今回はRxと組み合わせた例を中心に説明しましたが、Molesは単体でも文句なく素晴らしい。Moqも悪くないけれど、選ぶならMolesです。とにかく抜群に使いやすい。機能が極まっていることと、APIのシンプルさは両立するんだって。自動生成を活かしきった事例ですねー。VSとのシームレスな一体化といい、文句のつけようがない。ついこないだまで軽視していた私が言うのもアレですが、これがそんなに知られていない(少なくともググッて引っかかる記事はid:jamzzさんの記事だけだ)のは勿体無い話。<a href="http://research.microsoft.com/en-us/projects/pex/">Moles</a>、是非試してみてください。</p>
 </div>
 <a href="https://neue.cc/17">Prev |</a>
 <a href="https://neue.cc/19">| Next</a>

@@ -74,7 +74,199 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2020-08-20" data-pagefind-meta="published:2020-08-20"><a href="https://neue.cc/2020/08/20_594.html">async decoratorパターンによるUnityWebRequestの拡張とUniTaskによる応用的設計例</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2020-10-01" data-pagefind-meta="published:2020-10-01"><a href="https://neue.cc/2020/10/01_595.html">ConsoleAppFramework v3 - より強化されたC#のためのコマンドラインツール用フレームワーク</a></h1>
+<ul class="date"><li>2020-10-01</li></ul>
+<div class="entry_body"><p>.NET 5も控えていることだし、というのは関係ないのですが、CLIアプリケーションや大量のバッチをC#で簡単に作れるフレームワークであるところのConsoleAppFrameworkを思い立って更新しました。</p>
+<ul>
+<li>github - <a href="https://github.com/Cysharp/ConsoleAppFramework/">Cysharp/ConsoleAppFramework</a></li>
+</ul>
+<p>基本的な構成である、Generic Hostの上に乗っかるCLIフレームワークというコンセプトには変更ありません。</p>
+<p class="noindent">
+<img src="https://user-images.githubusercontent.com/46207/72047323-a08e0c80-32fd-11ea-850a-7f926adf3d22.png" width=640 />
+</p>
+<p>メソッド定義がそのままコマンドライン引数になって、ヘルプなども自動生成してくれます。Host(ASP.NET Coreなどでも使う)の設定によってロガーやDIの設定、オプションの読み込みとバインディングも可能なので、細かいコンフィグレーションもそれで行えますし、基盤が一緒なためASP.NET Coreなどとの共通化なども可能になります。</p>
+<p>一番単純な例を出すとこんな感じになります。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class Program : ConsoleAppBase
+{
+    static async Task Main(string[] args)
+    {
+        await Host.CreateDefaultBuilder().RunConsoleAppFrameworkAsync&lt;Program&gt;(args);
+    }
+
+    public void Hello([Option(&quot;m&quot;, &quot;Message to display.&quot;)]string message)
+    {
+        Console.WriteLine(&quot;Hello &quot; + message);
+    }
+}
+</code></pre>
+<pre data-pagefind-ignore="all"><code class="language-csharp">&gt; SampleApp.exe help
+
+Usage: SampleApp [options...]
+
+Options:
+  -m, -message &lt;String&gt;    Message to display. (Required)
+
+Commands:
+  help          Display help.
+  version       Display version.
+
+&gt; SampleApp.exe -m World
+Hello World
+</code></pre>
+<p>今回の変更内容は</p>
+<ul>
+<li>厳密っぽいオプション引数指定</li>
+<li>version, helpコマンドをデフォルトでヘルプ表示</li>
+<li>class/methodによる自動コマンド定義を class method コマンド引数で実行可能に(以前はClass.Methodだった)</li>
+<li>Interceptorを廃止してFilterによる拡張</li>
+</ul>
+<p>Interceptorの廃止だけが破壊的変更で、それ以外は互換性取れています。</p>
+<h2>厳密っぽいオプション引数指定</h2>
+<p>厳密っぽいというか、 <code>-i, --input</code> のようにショート版の名前を-、ロング版の名前を--で一致を見るスタイルを適用可能にしました。デフォルトは-の数を無視します、つまり-inputでも--inputでも-----inputでも同じ扱いにしています。これ区別するの面倒くさいなーと思っていて、例えばgoのコマンドは全て-o, -outputみたいな-だけで済ませていて、私もそれでいいじゃん、むしろそれがいいじゃん、と思ってはいるのですが（なのでデフォルトはそう）、区別したい人も世の中には大勢いるとは思うので、そーいうオプションを足しました。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class Program : ConsoleAppBase
+{
+    static async Task Main(string[] args)
+    {
+        await Host.CreateDefaultBuilder().RunConsoleAppFrameworkAsync&lt;Program&gt;(args, new ConsoleAppOptions
+        {
+            StrictOption = true, // default is false.
+            ShowDefaultCommand = false, // default is true
+        });
+    }
+
+    public void Hello([Option(&quot;m&quot;, &quot;Message to display.&quot;)]string message)
+    {
+        Console.WriteLine(message);
+    }
+}
+</code></pre>
+<pre data-pagefind-ignore="all"><code class="language-csharp">&gt; SampleApp.exe help
+
+Usage: SampleApp [options...]
+
+Options:
+  -m, --message &lt;String&gt;    Message to display. (Required)
+</code></pre>
+<p>デフォルトが <code> -m, --message &lt;String&gt;</code>だったhelpが、 <code>-m, --message</code> になっています。-messageという指定をすると、名前が合わないというエラーが出るようになります。</p>
+<p>また、version, helpコマンドがデフォルトでヘルプ表示されるように今回からなりました。これもオプションで ShowDefaultCommand = false にすれば表示されなくなります（表示されなくなるだけで、コマンドとして存在はしています）。</p>
+<h2>class/methodによる自動コマンド定義</h2>
+<p>プロジェクトに沿ったバッチを作成する場合に、数十、時に数百個のバッチを作る必要があります。そうなると一々コマンド定義をしてる場合じゃねえ、という感じなので、自動でルーティングしてくれる機能がConsoleAppFrameworkにはあります。 MVCフレームワークがclass/methodでURLルーティングするのと同様に、class methodというサブコマンド階層を自動で生成してくれます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">class Program
+{
+    static async Task Main(string[] args)
+    {
+        // &lt;T&gt;を指定しないとアセンブリ全体から実行コマンドとなるクラスを検索して登録する
+        await Host.CreateDefaultBuilder().RunConsoleAppFrameworkAsync(args);
+    }
+}
+
+public class Foo : ConsoleAppBase
+{
+    public void Echo(string msg)
+    {
+        Console.WriteLine(msg);
+    }
+
+    public void Sum([Option(0)]int x, [Option(1)]int y)
+    {
+        Console.WriteLine((x + y).ToString());
+    }
+}
+
+public class Bar : ConsoleAppBase
+{
+    public void Hello2()
+    {
+        Console.WriteLine(&quot;H E L L O&quot;);
+    }
+}
+</code></pre>
+<pre data-pagefind-ignore="all"><code class="language-csharp">&gt; SampleApp.exe help
+Usage: SampleApp &lt;Command&gt;
+
+Commands:
+  foo echo
+  foo sum
+  bar hello2
+  help          Display help.
+  version       Display version.
+
+&gt; SampleApp.exe foo sum 10 30
+40
+</code></pre>
+<p>前のバージョンでは &quot;Foo.Sum&quot; というコマンド名での呼び出しだったのですが、それはコマンドラインツールとして不自然だろう、ということで、小文字の &quot;class method&quot; で実行されるようになりました。互換性のために &quot;Foo.Sum&quot;といった指定でも実行可能です。</p>
+<h2>Filterによる拡張</h2>
+<p>ASP.NET Core や <a href="https://github.com/Cysharp/MagicOnion/">MagicOnion</a> のように、フィルターによって実行前後を拡張できるようになりました。実装はConsoleAppFilterを継承して、await nextを実行するという非同期スタイルです。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class MyFilter : ConsoleAppFilter
+{
+    // Filter is instantiated by DI so you can get parameter by constructor injection.
+
+    public async override ValueTask Invoke(ConsoleAppContext context, Func&lt;ConsoleAppContext, ValueTask&gt; next)
+    {
+        try
+        {
+            /* on before */
+            await next(context); // next
+        }
+        catch
+        {
+            /* on after */
+            throw;
+        }
+        finally
+        {
+            /* on finally */
+        }
+    }
+}
+
+// ConsoleAppContext
+public class ConsoleAppContext
+{
+    public string?[] Arguments { get; }
+    public DateTime Timestamp { get; }
+    public CancellationToken CancellationToken { get; }
+    public ILogger&lt;ConsoleAppEngine&gt; Logger { get; }
+    public MethodInfo MethodInfo { get; }
+    public IServiceProvider ServiceProvider { get; }
+    public IDictionary&lt;string, object&gt; Items { get; }
+}
+</code></pre>
+<p>フィルターはグローバル(全てのメソッドで呼ばれる)、クラス、メソッド単位で付与することが可能です。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// フィルターの呼び出し順序はOrderで設定可能
+await Host.CreateDefaultBuilder()
+    .RunConsoleAppFrameworkAsync(args, options: new ConsoleAppOptions
+    {
+        GlobalFilters = new ConsoleAppFilter[] { new MyFilter2 { Order = -1 }, new MyFilter() }
+    });
+
+[ConsoleAppFilter(typeof(MyFilter3))]
+public class MyBatch : ConsoleAppBase
+{
+    [ConsoleAppFilter(typeof(MyFilter4), Order = -9999)]
+    [ConsoleAppFilter(typeof(MyFilter5), Order = 9999)]
+    public void Do()
+    {
+    }
+}
+</code></pre>
+<h2>まとめ</h2>
+<p>シンプルさと機能性のバランスがうまくとれてるんじゃないでしょうか。すごく細かい調整ができるわけではないので、そこはどうしても割り切りという感じになってしまうのですが、それでもほとんどのユースケースは満たせているんじゃないかと思います。</p>
+<p>自動コマンド定義は大量にバッチを量産する場合に便利、でもあるのですが、それと同時にC#のプロジェクト一つで大量のバッチを管理できるようになる、というのも利点です。ファイル単位で管理するとわけわからん、ということになりがちですが、これなら綺麗に整理されますし、ロジックのメソッド化などで共通化もできます。また、フィルターを活用することによっても前処理や後処理などの共通化をより推し進められるでしょう。</p>
+<p>大きなプロジェクトの一部としてのバッチアプリの場合、ASP.NET Coreなどのコンフィグに定義されているDBのパスなどが、同じジェネリックホストなのでそのまま読み込めるのも楽になれるポイントです。ロガーのパフォーマンスが必要な場合は、 <a href="https://github.com/Cysharp/ZLogger/">Cysharp/ZLogger</a>を使うと良いでしょう、ZLoggerも Microsoft.Extensions.Logging の上に構築されているので、ジェネリックホストが基盤になっているConsoleAppFrameworkではスムーズに使えます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">await Host.CreateDefaultBuilder()
+    .ConfigureLogging(x =&gt;
+    {
+        x.ClearProviders();
+        x.SetMinimumLevel(LogLevel.Trace);
+        x.AddZLoggerConsole();
+        x.AddZLoggerFile(&quot;fileName.log&quot;);
+    })
+    .RunConsoleAppFrameworkAsync(args);
+</code></pre>
+<p>と、いうわけでより強力になったConsoleAppFramework、是非使ってみてください。</p>
+</div>
+<h1 data-pagefind-sort="date:2020-08-20" data-pagefind-meta="published:2020-08-20"><a href="https://neue.cc/2020/08/20_594.html">async decoratorパターンによるUnityWebRequestの拡張とUniTaskによる応用的設計例</a></h1>
 <ul class="date"><li>2020-08-20</li></ul>
 <div class="entry_body"><p><a href="https://github.com/Cysharp/UniTask/">UniTask v2</a>も2.0.30まで到達し、いい加減そろそろ安定したと言える頃合いです（ほんと！）。GitHub Star数も1000を超えて、準スタンダードとして安心して使ってもらえるレベルまで到達したと思うので、基盤部分から入れ込んで設計するとこんなことができますよ、という一例を出してみます。</p>
 <p>UnityWebRequestはかなりプリミティブな代物で、そのまま使うよりかはある程度はアプリケーションに沿ったラッパーを被せることがほとんどなのではないかと思います。しかし、ライブラリ単体でアプリケーションの要求を全て満たそうとするとヘヴィになりすぎたり、というかそもそもアプリケーション固有の要求には絶対に答えられない。というわけで、理想的なラッパーというのは、それ自身が極力軽量で、拡張性を持たせたプラガブルな仕組みが用意されているものということになります。プラガブルな拡張性がないと、例えば基盤ライブラリ側で用意されたラッパーをアプリケーションで使う場合にうまく要件をあわせられなくて、Forkして直接改造しちゃう、という不毛な自体になったりします。</p>
@@ -1454,21 +1646,6 @@ async ValueTask Demo()
 <p>引き続き主戦場はC#とUnityです。今はちょうど時代の変わり目で、多くの会社で、旧来のフレームワークから新しいフレームワークに移し替えるという話をよく聞きます。そこで.NET Coreですよ？と差し込める最後のチャンス（テクノロジースタックが固定されたら、また次の5年は入れ替えないですからねえ）、というぐらいに思ってるので(黙ってるとGoになっちゃいますしね！)、C#, .NET Core, それとUnityが価値あるものですよ、というところを多くの人に実感してもらえるように、やっていきます。そして困ったことがあればCysharpのお問い合わせフォームに投げてもらえればチャリンチャリンでウィンウィン。</p>
 <p>MVPもメンツがだいぶ入れ替わってる感じで、それは非常に良いと思ってます。新陳代謝大事。そんな中で、私は古い方の人間に入るわけなので、居座ってる勢はただ単なる昔の成果の惰性で受賞続いているとかではなく、常に新しい成果でねじ伏せれるべきなんじゃあないでしょーか。私はしっかりやってると思ってましてよ。</p>
 <p>そんなわけで引き続き、今年もよろしくお願いします。</p>
-</div>
-<h1 data-pagefind-sort="date:2019-06-28" data-pagefind-meta="published:2019-06-28"><a href="https://neue.cc/2019/06/28_580.html">C#のOpenTelemetry事情とCollectorをMagicOnionに実装した話</a></h1>
-<ul class="date"><li>2019-06-28</li></ul>
-<div class="entry_body"><p>を、してきました。昨日。<a href="https://opencensus.connpass.com/event/132588/">OpenCensus/OpenTelemetry meetup vol.2</a>にて。</p>
-<iframe src="//www.slideshare.net/slideshow/embed_code/key/hteXIJfIHC3Ikt" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/implements-opentelemetry-collector-in-dotnet" title="Implements OpenTelemetry Collector in DotNet" target="_blank">Implements OpenTelemetry Collector in DotNet</a> </strong> from <strong><a href="https://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
-<p>もともとトレースとかメトリクスの標準化として、OpenCensus(Google)陣営とOpenTracing(CNCF)陣営がいて、正直どっちも流行ってる気配を感じなかったのですが、合流して<a href="https://opentelemetry.io/">OpenTelemetry</a>が爆誕！これは本当に今年の頭に発表されたばかりで、仕様策定が完了するのが今年9月(予定)といった感じで、まだ練ってる最中というところです。ただ全体的にはOpenCensusベースでSDKが組まれているので、OpenCensusの時点で完成度がある程度高かったSDKは、割とそのままでも使えそうな雰囲気はあります。</p>
-<p>個人的な意義とかはスライドにも書きましたが、まあ、流行って欲しいですね。概念はめっちゃ良いと思うので、きっちり浸透して使われるようになって欲しい。ぎっはぶスターだけが尺度ではないとはいえ、リファレンス実装のJava版の125が最大スター数とか、ワールドワイドで注目度弱すぎないか！？みたいな気は、あります。大丈夫かな。大丈夫ですよね……。一応、参画企業は名だたるところも多いし仕様分裂してるわけでもないので、乗っかる価値はあるんじゃないかと、思います。</p>
-<h2>.NET SDKの事情</h2>
-<p><a href="https://github.com/open-telemetry/opentelemetry-dotnet">opentelemetry-dotnet</a>で、メインに開発してるのはMicrosoftの人間が一人やってますね。<a href="https://github.com/SergeyKanzhelev">GitHubの草で見ても</a>毎日張り付いてopentelemetry系のなにかでなにかやってるので、仕事として専任で頑張ってるんじゃないでしょうか、多分。クオリティ的には高くもなく低くもなくというところで、過度に期待しなきゃあそんなもんでしょーということで受け入れられそうです。もともとJavaがリファレンス実装になってて、他の言語は、まず基本的なAPIはそれを踏襲すること、というところもあるので、あまりブーブー言ってもしょうがないかもしれません。</p>
-<p>Collectorの実装がちょっと面白くて、<a href="https://github.com/open-telemetry/opentelemetry-dotnet/tree/master/src/OpenTelemetry.Collector.AspNetCore">AspNetCoreのCollector</a>や<a href="https://github.com/open-telemetry/opentelemetry-dotnet/tree/master/src/OpenTelemetry.Collector.Dependencies">HttpClientのCollector</a>は、
-<a href="https://github.com/dotnet/corefx/blob/master/src/System.Diagnostics.DiagnosticSource/src/DiagnosticSourceUsersGuide.md">DiagnosticSource</a>という比較的新しい仕組みから情報を取るようになっています。これによって、プロファイラAPIによるAuto Instrumentによるパフォーマンス低下などもなく、しかし特にユーザーはなにもせずに、メトリクスが取得できるようになっています。</p>
-<p>ADO.NETのCollectorがないのでDB系が取れないんですが、多分まだADO.NETがDiagnosticSourceに対応していないので、それが対応するまではやらないみたいなつもりなんだと思います。さすがにADO.NETのCollectorがないと話にならないでしょー。</p>
-<h2>まとめ</h2>
-<p>MagicOnionの事情としては<a href="https://github.com/Cysharp/MagicOnion/pull/161">実装のPR</a>は用意してますが、まだMergeしてません。ただまぁ、スライドに書いたのですが、結構これらを入れるだけで、撮って出しでもいい感じのダッシュボードが作れるんじゃないかと思います。このへんは前職でリリースしたゲームのダッシュボードを作り込んだ経験が生きてるかな、ってのはありますね。いやほんと。</p>
-<p>ともあれというわけで、私はOpenTelemetryにベットするんで、みんなも是非やっていきましょう！ね！流行らせないと未来はない！</p>
 </div>
 <a href="https://neue.cc/3">Prev |</a>
 <a href="https://neue.cc/5">| Next</a>

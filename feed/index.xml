@@ -5,7 +5,136 @@
     <link>http://neue.cc/</link>
     <description>C# Technical Blog</description>
     <language>ja</language>
-    <lastBuildDate>Tue, 03 Dec 2024 08:49:52 +0900</lastBuildDate>
+    <lastBuildDate>Fri, 06 Dec 2024 17:15:57 +0900</lastBuildDate>
+    <item>
+      <guid isPermaLink="true">https://neue.cc/2024/12/06_MessagePack_v3.html</guid>
+      <link>https://neue.cc/2024/12/06_MessagePack_v3.html</link>
+      <title>SourceGenerator対応のMessagePack for C# v3リリースと今後について</title>
+      <description>&lt;h1 data-pagefind-sort="date:2024-12-06" data-pagefind-meta="published:2024-12-06"&gt;&lt;a href="https://neue.cc/2024/12/06_MessagePack_v3.html"&gt;SourceGenerator対応のMessagePack for C# v3リリースと今後について&lt;/a&gt;&lt;/h1&gt;
+&lt;ul class="date"&gt;&lt;li&gt;2024-12-06&lt;/li&gt;&lt;/ul&gt;
+&lt;div class="entry_body"&gt;&lt;p&gt;先月&lt;a href="https://github.com/MessagePack-CSharp/MessagePack-CSharp"&gt;MessagePack for C#プロジェクト&lt;/a&gt;は &lt;a href="https://dotnetfoundation.org/"&gt;.NET Foundation&lt;/a&gt;に参加しました！より安定した視点で利用していただけるという一助になればいいと思っています。&lt;/p&gt;
+&lt;p&gt;そして、長く開発を続けていたメジャーバージョンアップ、v3がリリースされました。コア部分はv2とはほぼ変わらずですが、Source Generatorを全面的に導入しています。引き続きIL動的生成も存在するため、IL動的生成とSource Generatorのハイブリッドなシリアライザーとなります。v3にはSource GeneratorとAnalyzerがビルトインで同梱されていて、今までのコードはv3でコンパイルするだけで自動的にSource Generator化されます。v2 -&amp;gt; v3アップデートでSource Generator対応するために追加でユーザーがコードを記述する必要はありません！&lt;/p&gt;
+&lt;p&gt;挙動を詳しく見ていきましょう。例えば、&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;[MessagePackObject]
+public class MyTestClass
+{
+    [Key(0)]
+    public int MyProperty { get; set; }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;というコードを書くと、自動的に以下のコードがSource Generatorによって内部的に生成されます。&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;partial class GeneratedMessagePackResolver
+{
+    internal sealed class MyTestClassFormatter : IMessagePackFormatter&amp;lt;MyTestClass&amp;gt;
+    {
+        public void Serialize(ref MessagePackWriter writer, MyTestClass value, MessagePackSerializerOptions options)
+        {
+            if (value == null)
+            {
+                writer.WriteNil();
+                return;
+            }
+
+            writer.WriteArrayHeader(1);
+            writer.Write(value.MyProperty);
+        }
+
+        public MyTestClass Deserialize(ref MessagePackReader reader, MessagePackSerializerOptions options)
+        {
+            if (reader.TryReadNil())
+            {
+                return null;
+            }
+
+            options.Security.DepthStep(ref reader);
+            var length = reader.ReadArrayHeader();
+            var ____result = new MyTestClass();
+
+            for (int i = 0; i &amp;lt; length; i++)
+            {
+                switch (i)
+                {
+                    case 0:
+                        ____result.MyProperty = reader.ReadInt32();
+                        break;
+                    default:
+                        reader.Skip();
+                        break;
+                }
+            }
+
+            reader.Depth--;
+            return ____result;
+        }
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;また、このGeneratedMessagePackResolverはデフォルトのオプション(StandardResolverなど)に最初から登録されているため、&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;public static readonly IFormatterResolver[] DefaultResolvers = [
+    BuiltinResolver.Instance,
+    AttributeFormatterResolver.Instance,
+    SourceGeneratedFormatterResolver.Instance, // here
+    ImmutableCollection.ImmutableCollectionResolver.Instance,
+    CompositeResolver.Create(ExpandoObjectFormatter.Instance),
+    DynamicGenericResolver.Instance, // only enable for RuntimeFeature.IsDynamicCodeSupported
+    DynamicUnionResolver.Instance];
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;ユーザーコードのアセンブリに含まれているシリアライズ対象クラスは、Source Generatorによって生成されたコードが優先的に使われることになります。GeneratedMessagePackResolverは既定の名前空間や名前を変えたり、生成フォーマッターをmapベースに変更するなど、幾つかのカスタマイズポイントも用意されています。より詳しくは新しいドキュメントを見てください。また、v2 -&amp;gt; v3の変更箇所の詳細を知りたい人は&lt;a href="https://github.com/MessagePack-CSharp/MessagePack-CSharp/blob/develop/doc/migrating_v2-v3.md"&gt;Migration Guide v2 -&amp;gt; v3&lt;/a&gt;をチェックしてください。&lt;/p&gt;
+&lt;p&gt;Unityにおいては導入方法が大きく変わりました。コアライブラリは .NET 版と共通になりNuGetからのインストールが必要となります。そのうえでUPMでUnity用の追加コードをダウンロードする必要があります。詳しくは&lt;a href="https://github.com/MessagePack-CSharp/MessagePack-CSharp/#unity-support"&gt;MessagePack-CSharp#unity-support&lt;/a&gt;のセクションを確認してください。&lt;/p&gt;
+&lt;p&gt;.unitypackageの提供は廃止されています。また、IL2CPP対応のために要求していたmpcはなくなりました。完全にSource Generatorに移行されます。そのため、Unityのサポートバージョンは &lt;code&gt;2022.3.12f1&lt;/code&gt; からとなります。Source Generatorに関してはNuGetForUnityでのコアライブラリインストール時に自動的に有効化されるため、追加の作業は必要ありません。&lt;/p&gt;
+&lt;h2&gt;History and Next&lt;/h2&gt;
+&lt;p&gt;MessagePack for C#のオリジナル(v1)は私(Yoshifumi Kawai/@neuecc)によって、2017年にリリースしました。当時開発していたゲームのパフォーマンス問題を解決するために、2016年時点で存在していた(バイナリ)シリアライザーでは需要を満たせなかったため、パフォーマンスを最重要視したバイナリシリアライザーとして作成しました。合わせて、同じくネットワークシステムとして作成したgRPCベースのRPCフレームワーク&lt;a href="https://github.com/Cysharp/MagicOnion"&gt;MagicOnion&lt;/a&gt;もリリースしています。&lt;/p&gt;
+&lt;p&gt;v1リリース当時は&lt;code&gt;byte[]&lt;/code&gt;のみを対象としていましたが、&lt;code&gt;Span&amp;lt;T&amp;gt;&lt;/code&gt;や&lt;code&gt;IBufferWriter&amp;lt;T&amp;gt;&lt;/code&gt;など、.NETには次々と新しいI/O系のAPIが追加されていったため、v2ではそれらに焦点を当てた新しいデザインが導入されました。この実装はMicrosoftのEngineerである&lt;a href="https://github.com/AArnott"&gt;Andrew Arnott / @AArnott&lt;/a&gt;氏によって主導され、リリースしています。&lt;/p&gt;
+&lt;p&gt;以降、共同のメンテナンス体制として、そして私の個人リポジトリ(neuecc/MessagePack-CSharp)からオーガナイゼーション(MessagePack-CSharp/MessagePack-CSharp)して今に至ります。Visual Studio内部での利用や&lt;a href="https://learn.microsoft.com/en-us/aspnet/core/signalr/messagepackhubprotocol"&gt;SignalRのバイナリープロトコル&lt;/a&gt;、Blazor Serverのプロトコルなど大きなMicrosoftのプロダクトでも使用され、GitHubでのスター数は.NETのバイナリーシリアライザーとしては最も大きなスターを集めています。&lt;a href="https://learn.microsoft.com/en-us/dotnet/standard/serialization/binaryformatter-migration-guide/"&gt;.NET 9で廃止されたBinaryFormatter&lt;/a&gt;の移行先の一つとしても推奨されています。&lt;/p&gt;
+&lt;p&gt;v3ではSource Generatorに対応することで、より高いパフォーマンスと柔軟性、AOT対応への第一段階に踏み出すことができました。&lt;/p&gt;
+&lt;p&gt;MessagePack for C#プロジェクトは大きな成功を収めたと考えていますが、しかし現在、AArnott氏は個人の新しいMessagePackプロジェクトの開発を開始しています。私もその間、&lt;a href="https://github.com/Cysharp/MemoryPack"&gt;MemoryPack&lt;/a&gt;という異なるフォーマットのシリアライザーをリリースしています。そのため、MessagePack for C#の今後と、その特性について、ある程度説明する必要があると思います。&lt;/p&gt;
+&lt;p&gt;引き続きメンテナンス体制は2人だと考えていますが、アクティブな活動に関しては、再び私が担うことになるかもしれません。私はMessagePackとMemoryPackとでは異なる性質を持ったフォーマットであるため、どちらも重要であるという認識で動いています。オリジナルの実装であるMessagePack for C#も気に入ってますし、現在においても決して引けを取ることのないものだと思っています。&lt;/p&gt;
+&lt;p&gt;AArnott氏の別のMessagePackシリアライザーとは根本的な哲学が若干異なります。その点で、私はそれはより良く改善されたシリアライザーではなく、別の個性のシリアライザーだと認識しています。そこで、違いについて説明させてください。&lt;/p&gt;
+&lt;h2&gt;Binary spec, default settings and performance&lt;/h2&gt;
+&lt;p&gt;シリアライザーのパフォーマンスに重要なのは、「仕様と実装」の両方です。例えばテキストフォーマットのJSONよりもバイナリフォーマットのほうが一般的には速いでしょう。しかし、よくできたJSONシリアライザーは、中途半端な実装のバイナリシリアライザーよりも高速です（私はそれを&lt;a href="https://github.com/neuecc/Utf8Json"&gt;Utf8Json&lt;/a&gt;というシリアライザーを作成することで実証したことがあります）。なので、仕様も大事だし、実装も大事です。どちらも兼ねることができれば、それがベストなパフォーマンスのシリアライザーとなります。&lt;/p&gt;
+&lt;p&gt;&lt;a href="https://msgpack.org/"&gt;MessagePackのバイナリ仕様&lt;/a&gt;は &amp;quot;It's like JSON. but fast and small.&amp;quot; を標語にしている通り、JSONのバイナリ化としてあらわされています。ところが、MemoryPack for C#のデフォルトは必ずしもJSON likeを狙っているわけではありません。&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;[MessagePackObject]
+public class MsgPackSchema
+{
+    [Key(0)]
+    public bool Compact { get; set; }
+    [Key(1)]
+    public int Schema { get; set; }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;このクラスをシリアライズした場合は、JSONで表現すると&lt;code&gt;[true, 0]&lt;/code&gt;のようになります。これはオブジェクトをarrayベースでシリアライズしているからで、mapベースでシリアライズすると&lt;code&gt;{&amp;quot;Compact&amp;quot;:true,&amp;quot;Schema&amp;quot;:0}&lt;/code&gt;のような表現になります。&lt;/p&gt;
+&lt;p&gt;arrayベースの利点は見た通りに、バイナリ容量として、よりコンパクトになります。容量がコンパクトなことは処理量が少なくなるためシリアライズの速度にも良い影響を与えます。また、デシリアライズにおいては、文字列を比較してデシリアライズするプロパティを探索する必要がなくなるため、より高速なデシリアライズ速度が期待できます。&lt;/p&gt;
+&lt;p&gt;なお、arrayベースのシリアライズはMessagePackの仕様策定者である Sadayuki Furuhashi 氏によるリファレンス実装であるmsgpack-javaなどでも採用されているため、決して異端のやり方というわけではありません。&lt;/p&gt;
+&lt;p&gt;MessagePack-CSharpではJSONライクなmapベースでシリアライズしたい場合は&lt;code&gt;[MessagePackObject(true)]&lt;/code&gt;と記述することができます。また、Source Generatorの場合はResolver単位でオーバーライドして強制的にmapベースにすることも可能です。&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;[MessagePackObject(keyAsPropertyName: true)]
+public class MsgPackSchema
+{
+    public bool Compact { get; set; }
+    public int Schema { get; set; }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;mapの利点は、柔軟なスキーマエボリューションの実現と、他言語との疎通する際にコミュニケーションが取りやすいこと、バイナリそのものの自己記述性が高いことです。デメリットは容量とパフォーマンスへの悪影響、特にオブジェクトの配列においては一要素毎にプロパティ名が含まれることになってしまい、かなりの無駄となります。&lt;/p&gt;
+&lt;p&gt;デフォルトをarrayにしているのは、コンパクトさとパフォーマンスの追求のためです。私はMessagePackをJSON likeの前に、高いパフォーマンスを実現可能なバイナリ仕様として考えました。もちろん、mapも重要なので、その上で比較的簡単にmapモードを実現するために属性に&lt;code&gt;(true)&lt;/code&gt;を追加するだけで可能にしました。&lt;/p&gt;
+&lt;p&gt;arrayモードの場合はKey属性を全てのプロパティに付与する必要があります。これは、例えばProtocol Buffersなどでも数値タグを必要とするように、プロパティ名そのものをキーとするわけではなければ、必須だと考えています。もちろん、連番で自動採番させることも可能ですが、バイナリフォーマットのキーを暗黙的に処理するのはリスクが大きすぎる(順番を弄ったりするだけでバイナリ互換性が壊れることになる)と判断しています。つまり、明示的がデフォルト、ということです。大きなプロジェクト開発ではシニアメンバーからジュニアメンバーまでコードを触ることになるでしょう、全てを理解している人だけがコードを触るわけではありません。なので、暗黙的な挙動は避けるべきで、明示的にすべきだという強い意志で、この設計を選んでいます。&lt;/p&gt;
+&lt;p&gt;ただしKeyを全てのプロパティに付与する作業はとても苦痛です(私はMessagePack-CSharp開発以前には、DataContractやprotobuf-netで辛い思いをしました)。そこで、Analyzer + Code Fixによって、自動的に付与する機能を用意しました。これにより明示的であることの苦痛は和らげられ、良いとこどりができているのだと考えています。&lt;/p&gt;
+&lt;p&gt;別のMessagePackシリアライザーのデフォルトはmapのようです。これは&lt;a href="https://github.com/eiriktsarpalis/PolyType"&gt;PolyType&lt;/a&gt;というSource Generatorベースのライブラリ作成のための抽象化ライブラリがベースとしているためでもあり、また、そちらのほうを好んでいるという明示的な判断でもあるようです。&lt;/p&gt;
+&lt;p&gt;「デフォルト」はライブラリで一つしか選べません。どちらのモードで処理することができたとしても、「デフォルト」はただ一つです。改めて言うと、私はバイナリフォーマットとしての「コンパクトとパフォーマンス」を好み、優先しています。&lt;/p&gt;
+&lt;p&gt;皆さんはPolyTypeについて初めて知ったかもしれません。私はPolyTypeはあまり好意的には考えていません。ちょっとしたものを作るには非常に便利だとは思いますが、ベストなパフォーマンスを狙ったり、ベストなアイディアを表現するには、抽象層であることの制限が大きすぎると考えています。なので、MessagePack for C#で採用することはありませんし、他の何かを作る際にも採用することはないでしょう。&lt;/p&gt;
+&lt;h2&gt;Unity(multiplatform) Support&lt;/h2&gt;
+&lt;p&gt;MessagePack for C#ではv1の時代からゲームエンジンUnityの1st classのサポートを実行してきました。これは私が&lt;a href="https://en.wikipedia.org/wiki/Cygames"&gt;Cygames&lt;/a&gt;という日本のゲーム会社の関連会社(&lt;a href="https://cysharp.com/"&gt;Cysharp&lt;/a&gt;)のCEOを務めていて、ビデオゲームインダストリーと関係性が深いという都合もあります。自分たちで実際にUnityで動くものを作り、使ってきました。もちろん、サーバーサイドやデスクトップアプリケーションでも使っています。&lt;/p&gt;
+&lt;p&gt;UnityにはIL2CPPという独自のAOTシステムがあり、特にiOSなどモバイルプラットフォームでのリリースには必須なのですが、それもSource Generatorが存在しなかった時代から、mpcというRoslynを使ったコードジェネレートツールを作り、提供してきました。数百のモバイルゲームでMessagePackが使われているのは、これら私の熱心なサポートのお陰といっても過言ではないでしょう。v3ではついにSource Generatorベースになったことにより、ワークフローが大きく簡易化されることとなります！&lt;/p&gt;
+&lt;p&gt;一般的に、.NETコミュニティにおいてはUnityサポートはかなり軽視されていました。また、外から見ているとMicrosoftやMicrosoftの従業員もそのようで、自社のプラットフォーム以外への関心は薄そうです。こうした態度は、あまり好ましいとは思っていませんし、せっかくの .NET の可能性を狭めていることにもなっています。Xamarinがうまく成長軌道に乗らなかったのも、そのようなMicrosoft自体の冷たい視線のせいだとも思っています。&lt;/p&gt;
+&lt;p&gt;私は、私の作るライブラリはなるべくUnityにもしっかり対応できるように気を付けて作っています（最新は新しいReactive Extensionsライブラリーである&lt;a href="https://github.com/Cysharp/R3"&gt;Cysharp/R3&lt;/a&gt;）。別のMessagePackシリアライザーに関しては、あまりしっかりした対応はされなさそうですが……。&lt;/p&gt;
+&lt;h2&gt;Beyond v3&lt;/h2&gt;
+&lt;p&gt;v3のNative AOT Supportは完全ではありません。Source Generatorにするだけでは完全なNative AOT対応とはならないのは難しいところです。これはUnityのAOTであるIL2CPPでは完璧に動作しているだけに、正直不可解なことでもあり、また、Microsoftのよくない癖が出ているな、とも思っています。つまり、完璧な対応をするために、複雑なものを提供している。それが現在のNative AOTです。複雑怪奇な属性やフローは、理解できるところもありますが、もう少し簡略化すべきだったと思います。まぁ、もう修正されることもないのでしょうが……。&lt;/p&gt;
+&lt;p&gt;パフォーマンス面でもv1からv2で退化してしまった点もあるので、最新の知見を元に、実装面での改善を施す必要があります。特にReadOnlySequenceの利用幅が大きいことは、かなりの制約を生み出していて、不満があります。&lt;/p&gt;
+&lt;p&gt;.NET 9でPipeReader/PipeWriterが標準化されたことによる、より良い非同期APIや、パフォーマンスを両立したストリーミング対応というのも、大きなトピックとなるかもしれません。&lt;/p&gt;
+&lt;p&gt;MessagePack for C#は広く使われているが故に、破壊的変更はしづらいし、互換性の維持は最重要トピックスです。しかし、世の中が変わっていく以上、進化しないことを選んだら、それは滅びる道でしかありません。やれることはまだまだあると思っていますので、.NETにおける最先端の、最高のバイナリシリアライザーであり続けたいと思っています（&lt;a href="https://github.com/Cysharp/MemoryPack"&gt;MemoryPack&lt;/a&gt;もね……！)&lt;/p&gt;
+&lt;p&gt;まずは、v3のSource Generatorをぜひ試してみてください。皆の力でより良いものを作っていけるというのも、OSSの良さだと思っています。&lt;/p&gt;
+&lt;/div&gt;</description>
+      <pubDate>Fri, 06 Dec 2024 00:00:00 +0900</pubDate>
+      <a10:updated>2024-12-06T00:00:00+09:00</a10:updated>
+    </item>
     <item>
       <guid isPermaLink="true">https://neue.cc/2024/12/03_SharpFuzz.html</guid>
       <link>https://neue.cc/2024/12/03_SharpFuzz.html</link>
@@ -2306,101 +2435,6 @@ public static class UnityProviderInitializer
 &lt;/div&gt;</description>
       <pubDate>Tue, 27 Feb 2024 00:00:00 +0900</pubDate>
       <a10:updated>2024-02-27T00:00:00+09:00</a10:updated>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://neue.cc/2024/01/15_shareprojectinunity.html</guid>
-      <link>https://neue.cc/2024/01/15_shareprojectinunity.html</link>
-      <title>.NETプロジェクトとUnityプロジェクトのソースコード共有最新手法</title>
-      <description>&lt;h1 data-pagefind-sort="date:2024-01-15" data-pagefind-meta="published:2024-01-15"&gt;&lt;a href="https://neue.cc/2024/01/15_shareprojectinunity.html"&gt;.NETプロジェクトとUnityプロジェクトのソースコード共有最新手法&lt;/a&gt;&lt;/h1&gt;
-&lt;ul class="date"&gt;&lt;li&gt;2024-01-15&lt;/li&gt;&lt;/ul&gt;
-&lt;div class="entry_body"&gt;&lt;p&gt;&lt;a href="https://github.com/Cysharp/MagicOnion/"&gt;MagicOnionのv6&lt;/a&gt;が先日リリースされました。&lt;/p&gt;
-&lt;p&gt;メジャーバージョンアップとして大きな違いは、&lt;a href="https://github.com/Cysharp/YetAnotherHttpHandler"&gt;Cysharp/YetAnotherHttpHandler&lt;/a&gt;を正式リリースし、これを通信層の標準ライブラリ化しました。インストール手順も複雑で、サポートも切れていたgRPC C-Coreとはさようならです。正式リリースにあたってプレビューに存在していたクラッシュ問題などが解消されています。&lt;/p&gt;
-&lt;p&gt;もう一つはクライアント生成においてコマンドラインツールが削除され、Source Generatorベースになりました。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;[MagicOnionClientGeneration(typeof(MyApp.Shared.Services.IGreeterService))]
-partial class MagicOnionGeneratedClientInitializer {}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;これだけでコンパイル時にジェネレートされます。コマンドラインツールには、インストールしている.NETのバージョンによって動作したりしなかったりや、生成ファイルの管理をどうするかや、ビルドプロセスの複雑化など、問題が多くありましたがSource Generator化によって全て解決しました。&lt;/p&gt;
-&lt;p&gt;残念ながらまだMessagePack for C#がコマンドラインツールを必要としているため、完全なコマンドラインツール不要化には至っていませんが、そちらの改善も着手中のため、近いうちにはアプリケーション全体の完全なSource Generator化が果たせるのではないかと思います。それに合わせて&lt;a href="https://github.com/Cysharp/MasterMemory/"&gt;Cysharp/MasterMemory&lt;/a&gt;のSource Generator化も行いたいと思っています。&lt;/p&gt;
-&lt;h2&gt;.NETプロジェクトとUnityプロジェクト間でのコード共有&lt;/h2&gt;
-&lt;p&gt;MagicOnionに限らずですが、.NETとUnityとの間でソースコードをどのように共有すればいいのか問題があります。昔のやり方では、Unity側で実態を持っていて.NET側で参照を拾ってくるとか、.NET側のビルド時にUnity側にコピーをばらまく、シンボリックリンクで参照する、などといった方法を提案していたのですが、すべて正直イマイチでした。&lt;/p&gt;
-&lt;p&gt;というわけで令和最新版の方法を紹介します。先に結論をいうと、.NET側に普通の共有用クラスライブラリプロジェクトを作って、Unity側ではUPMのローカルパッケージ参照でソースコードを引っ張ってくるのが現状のベストだと考えています。ただしそのままやると幾つか面倒なことが発生するので、しっかりした手順をここに書いておきます。&lt;/p&gt;
-&lt;p&gt;まずは.NET側のプロジェクトとして、.NET Standard 2.0/2.1, LangVersion 9のクラスライブラリプロジェクトを作ります。&lt;/p&gt;
-&lt;p&gt;&lt;img src="https://github.com/Cysharp/MagicOnion/assets/46207/0019a2b0-ec2c-4786-9d1d-0078e8dc0295" alt="image" /&gt;&lt;/p&gt;
-&lt;p&gt;そして&lt;code&gt;Directory.Build.props&lt;/code&gt;を配置します。これは複数のcsprojにまたがって共有した設定が行えるやつなのですが、今回は単独のcsprojに適用する場合にも使います。そんな&lt;code&gt;Directory.Build.props&lt;/code&gt;の中身はこれです。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-xml"&gt;&amp;lt;?xml version=&amp;quot;1.0&amp;quot; encoding=&amp;quot;utf-8&amp;quot;?&amp;gt;
-&amp;lt;Project ToolsVersion=&amp;quot;15.0&amp;quot; xmlns=&amp;quot;http://schemas.microsoft.com/developer/msbuild/2003&amp;quot;&amp;gt;
-  &amp;lt;PropertyGroup&amp;gt;
-    &amp;lt;!-- Unity ignores . prefix folder --&amp;gt;
-    &amp;lt;ArtifactsPath&amp;gt;$(MSBuildThisFileDirectory).artifacts&amp;lt;/ArtifactsPath&amp;gt;
-  &amp;lt;/PropertyGroup&amp;gt;
-&amp;lt;/Project&amp;gt;
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;最新手法と銘打った理由として.NET 8(以降に同梱されてるコンパイラ)は&lt;a href="https://learn.microsoft.com/en-us/dotnet/core/sdk/artifacts-output"&gt;成果物の出力レイアウトを変更する&lt;/a&gt;ことができるようになりました。なぜこれが必要かというと、通常、ビルドするとbin, objがcsprojのディレクトリに吐かれるわけですが、Unityでパッケージ参照するとそのbin, objまで取り込んでしまって大問題なんですね。ArtifactsPathを設定することでbin, objの出力場所を変更できます、そして&lt;a href="https://docs.unity3d.com/Manual/SpecialFolders.html"&gt;Unityのアセットインポートにおける命名規則&lt;/a&gt;のうち&lt;code&gt;.&lt;/code&gt;か&lt;code&gt;~&lt;/code&gt;で始まってるファイルまたはフォルダは無視されます。というわけで、bin, objの出力場所を&lt;code&gt;.artifacts&lt;/code&gt;に変えることで、Unityから参照しても問題ない構成になりました。&lt;/p&gt;
-&lt;p&gt;もう少し作業が必要で、次にcsprojを開いて、以下の行を追加しておきます。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;&amp;lt;ItemGroup&amp;gt;
-  &amp;lt;None Remove=&amp;quot;**\package.json&amp;quot; /&amp;gt;
-  &amp;lt;None Remove=&amp;quot;**\*.asmdef&amp;quot; /&amp;gt;
-  &amp;lt;None Remove=&amp;quot;**\*.meta&amp;quot; /&amp;gt;
-&amp;lt;/ItemGroup&amp;gt;
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;これは、Unityからパッケージ参照すると.metaが大量にばらまかれてウザいので、少なくともcsprojの見た目からは消しておきます。package.jsonとasmdefも同様に.NETプロジェクトとしては不要なので管理外へ。&lt;/p&gt;
-&lt;p&gt;というわけで最後に、package.jsonとasmdefをこのディレクトリに置いておきましょう。これがないとUnity側から正しく参照できないので。&lt;/p&gt;
-&lt;p&gt;&lt;img src="https://github.com/Cysharp/MagicOnion/assets/46207/54c9564d-c6f2-44ec-b86c-bec19ecfb040" alt="image" /&gt;&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-json"&gt;{
-  &amp;quot;name&amp;quot;: &amp;quot;com.cysharp.magiconion.samples.chatapp.shared.unity&amp;quot;,
-  &amp;quot;version&amp;quot;: &amp;quot;1.0.0&amp;quot;,
-  &amp;quot;displayName&amp;quot;: &amp;quot;ChatApp.Shared.Unity&amp;quot;,
-  &amp;quot;description&amp;quot;: &amp;quot;ChatApp.Shared.Unity&amp;quot;,
-  &amp;quot;unity&amp;quot;: &amp;quot;2019.1&amp;quot;
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-json"&gt;{
-    &amp;quot;name&amp;quot;: &amp;quot;ChatApp.Shared.Unity&amp;quot;,
-    &amp;quot;references&amp;quot;: [
-        &amp;quot;MessagePack&amp;quot;,
-        &amp;quot;MagicOnion.Abstractions&amp;quot;
-    ],
-    &amp;quot;optionalUnityReferences&amp;quot;: [],
-    &amp;quot;includePlatforms&amp;quot;: [],
-    &amp;quot;excludePlatforms&amp;quot;: [],
-    &amp;quot;allowUnsafeCode&amp;quot;: false,
-    &amp;quot;overrideReferences&amp;quot;: false,
-    &amp;quot;precompiledReferences&amp;quot;: [],
-    &amp;quot;autoReferenced&amp;quot;: true,
-    &amp;quot;defineConstraints&amp;quot;: []
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;referencesとかはお好きな感じで。&lt;/p&gt;
-&lt;p&gt;これでほぼ準備は完了です！とはもうUnity側ではPackage Managerを開いてAdd package from diskで先ほどの共有プロジェクトのディレクトリを指定すればOK。&lt;/p&gt;
-&lt;p&gt;&lt;img src="https://github.com/Cysharp/MagicOnion/assets/46207/a46813ab-72fb-44b3-ac8e-241451f9128f" alt="image" /&gt;&lt;/p&gt;
-&lt;p&gt;ただし、これで参照すると絶対パスが書かれているので、&lt;code&gt;manifest.json&lt;/code&gt;を開いて相対パスに手動で書き換えましょう。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-json"&gt;{
-  &amp;quot;dependencies&amp;quot;: {
-    &amp;quot;com.cysharp.magiconion.samples.chatapp.shared.unity&amp;quot;: &amp;quot;file:../../ChatApp.Shared&amp;quot;,
-  }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;これでいい具合に取り扱うことができました！&lt;/p&gt;
-&lt;p&gt;&lt;img src="https://github.com/Cysharp/R3/assets/46207/ed8c1d20-fd8a-4e6c-afe5-2350d3fa2860" alt="image" /&gt;&lt;/p&gt;
-&lt;p&gt;さらに一歩進んで、サーバー側のslnでUnity側のcsprojも一緒に管理したいんだよなあ、とかやりたい場合は&lt;a href="https://github.com/Cysharp/SlnMerge/"&gt;Cysharp/SlnMerge&lt;/a&gt;を使うとよいでしょう。&lt;/p&gt;
-&lt;p&gt;&lt;img src="https://github.com/Cysharp/SlnMerge/assets/46207/6b70bfda-5f80-42c0-9acc-ca3922f22c52" alt="image" /&gt;&lt;/p&gt;
-&lt;p&gt;単一slnで管理すると、Unity側での作業時に共有プロジェクトのコードを弄りやすくなりますし、サーバー/クライアントを超えたデバッグのステップ実行ができるようになるなど、かなり作りやすくなるので、あわせて是非設定しておくことをお薦めします。&lt;/p&gt;
-&lt;h2&gt;Unity用ライブラリのNuGet配布のための開発時環境設定&lt;/h2&gt;
-&lt;p&gt;先日&lt;a href="https://github.com/Cysharp/R3/"&gt;R3&lt;/a&gt;というUniRxの進化版みたいなのをリリースしましたが、これはコアライブラリはNuGetで配布するようにしました。ちょっと前まで私はNuGet配布に関して否定的で、Unity向けにはソースコードをちゃんと配らないと、みたいに思ってたんですが、今はNuGet配布にたいして超ポジティブです。というか、逆にNuGet配布じゃないとマズいような状況もあるので、今後のものは全てNuGet配布にするほか、既存のものも随時NuGet配布に切り替えると思います。まずはMessagePack for C#が近いうちにそうなります……！&lt;/p&gt;
-&lt;p&gt;それはいいんですが、Unity用に開発している際に.NETライブラリとして作られているコードを参照したい、んですよね、というか参照できないとUnity向け拡張(R3.Unity)が作れないし。&lt;/p&gt;
-&lt;p&gt;で、じゃあ上のやり方みたいローカルパッケージ参照でソースコードを持ってきてやろう、と思ったんですが、ダメでした。というのもR3の本体はC# 12で書かれていたのだ……！DLLとして配布するので別に言語バージョンは問題ない(コンパイルしてIL化すると.NETのバージョンは関係ありますが言語バージョンは関係なくなる)ので、Unityで使うことが前提ながら普通にC# 12で書いていたので、ソースコードとしての参照はできない。&lt;/p&gt;
-&lt;p&gt;ビルド時の成果物をUnity側にコピーするようにしても、まぁいいっちゃあいいんですが、作業中のちょっと書き換える度にコミットされるのでリポジトリが無駄に膨らむから嫌だなー、と。&lt;/p&gt;
-&lt;p&gt;で、そこで、やはりローカルパッケージ参照です。ただし今回は&lt;code&gt;package.json&lt;/code&gt;のみで、asmdefは配りません。そして&lt;code&gt;bin/Debug/netstandard2.0&lt;/code&gt;(2.1でもいい)にpackage.jsonを置いて、package.jsonとpackage.json.metaのみgitの管理下に置きます。&lt;/p&gt;
-&lt;p&gt;実際のリポジトリ: &lt;a href="https://github.com/Cysharp/R3/tree/main/src/R3/bin/Debug/netstandard2.0"&gt;https://github.com/Cysharp/R3/tree/main/src/R3/bin/Debug/netstandard2.0&lt;/a&gt;&lt;/p&gt;
-&lt;p&gt;手元のフォルダの状況:&lt;br /&gt;
-&lt;img src="https://github.com/Cysharp/MagicOnion/assets/46207/2c8f7cb4-08ea-459c-abcc-6a251a063cb2" alt="image" /&gt;&lt;/p&gt;
-&lt;p&gt;これを同じようにローカルパッケージ参照すると、開発用のdllだけをUnityに引っ張ってくることができました。別にパッケージの中にソースコードがなくてもいいわけですね……！&lt;/p&gt;
-&lt;p&gt;なお、普通のゲーム開発でもC# 12で書きたいんだよー、という人は、ソースコード参照じゃなくてこっちのやり方を使っても成立はします。全然、アリです。ただし、.NET側でビルドしないと反映されないとか、デバッグビルドとリリースビルドどっち参照させます？とかいうところを考えなきゃいけないので、まぁお好みで、というところでしょうか。&lt;/p&gt;
-&lt;h2&gt;まとめ&lt;/h2&gt;
-&lt;p&gt;というわけで、2024年になってようやく満足いく共有手法にたどり着けました。これはC#大統一理論元年……！&lt;/p&gt;
-&lt;/div&gt;</description>
-      <pubDate>Mon, 15 Jan 2024 00:00:00 +0900</pubDate>
-      <a10:updated>2024-01-15T00:00:00+09:00</a10:updated>
     </item>
   </channel>
 </rss>
