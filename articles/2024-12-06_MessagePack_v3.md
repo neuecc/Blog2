@@ -104,7 +104,7 @@ Binary spec, default settings and performance
 ---
 シリアライザーのパフォーマンスに重要なのは、「仕様と実装」の両方です。例えばテキストフォーマットのJSONよりもバイナリフォーマットのほうが一般的には速いでしょう。しかし、よくできたJSONシリアライザーは、中途半端な実装のバイナリシリアライザーよりも高速です（私はそれを[Utf8Json](https://github.com/neuecc/Utf8Json)というシリアライザーを作成することで実証したことがあります）。なので、仕様も大事だし、実装も大事です。どちらも兼ねることができれば、それがベストなパフォーマンスのシリアライザーとなります。
 
-[MessagePackのバイナリ仕様](https://msgpack.org/)は "It's like JSON. but fast and small." を標語にしている通り、JSONのバイナリ化としてあらわされています。ところが、MemoryPack for C#のデフォルトは必ずしもJSON likeを狙っているわけではありません。
+[MessagePackのバイナリ仕様](https://msgpack.org/)は "It's like JSON. but fast and small." を標語にしている通り、JSONのバイナリ化としてあらわされています。ところが、MessagePack for C#のデフォルトは必ずしもJSON likeを狙っているわけではありません。
 
 ```csharp
 [MessagePackObject]
