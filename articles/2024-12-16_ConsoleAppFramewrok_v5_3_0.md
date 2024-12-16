@@ -186,7 +186,7 @@ public class Bar
 
 これらは自動で追加されています。
 
-```
+```csharp
 var app = ConsoleApp.Create();
 
 // Commands:
