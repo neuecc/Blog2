@@ -74,7 +74,169 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2013-07-30" data-pagefind-meta="published:2013-07-30"><a href="https://neue.cc/2013/07/30_420.html">Http, SQL, Redisのロギングと分析・可視化について</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2013-08-06" data-pagefind-meta="published:2013-08-06"><a href="https://neue.cc/2013/08/06_423.html">MySQL + Dapperによる高負荷時のバグで死んだ話</a></h1>
+<ul class="date"><li>2013-08-06</li></ul>
+<div class="entry_body"><p>今回はMySQLと<a href="https://code.google.com/p/dapper-dot-net/">Dapper</a>を組み合わせると死ぬ、という超極少数にしか該当しない話ですよ！というわけで、まぁ読み物としてどーぞ。ちなみに割とクリティカルなので、その組み合わせで何かやろうという人は気をつけたほうがいいです。</p>
+<h2>観測</h2>
+<p>何が起こるかの観測からはじめましょう。まず、NuGetからMySQL.DataとDapperをインストールして、以下の簡単なコードを走らせ、ません。コード書いて待機で。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">using Dapper;
+using MySql.Data.MySqlClient;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        // スレッドプールを先に伸びるように
+        ThreadPool.SetMinThreads(200, 200);
+        var count = 0;
+
+        // とりあえず200並列で実行する
+        Parallel.For(0, 10000, new ParallelOptions { MaxDegreeOfParallelism = 200 }, () =&gt;
+        {
+            var conn = new MySqlConnection(&quot;せつぞくもじれーつ,Max Pool Size=1000&quot;);
+            conn.Open();
+            return conn;
+        }, (x, state, conn) =&gt;
+        {
+            System.Console.WriteLine(Interlocked.Increment(ref count));
+
+            // ↑や↓にグチャグチャありますが、実態はこの一行だけです
+            conn.Query&lt;long&gt;(&quot;select 1&quot;, buffered: false).First();
+
+            return conn;
+        }, conn =&gt;
+        {
+            conn.Dispose();
+        });
+    }
+}
+</code></pre>
+<p>Parallelなのは高負荷じゃないとイマイチ分からないので、そのシミュレートね。これも別にそこまで高負荷ってわけでもないですが、まぁこんなんでいいのです（原因分かってて逆算して書いてるので）。接続文字列は、とりあえず200並列に耐えられるようにMaxPoolSizeだけ大きめに設定しておきます。さて、そしてPowerShellを立ち上げ、とりあえず以下のスクリプトを走らせておきます。</p>
+<pre data-pagefind-ignore="all"><code class="language-text"> while ($true) {Get-NetTCPConnection | group state -NoElement; sleep 1}
+</code></pre>
+<p>で、上のC#コードを実行。すると、実行は、遅いです。Parallelなので速いのか遅いのかわからないかもですが、まあぶっちけ凄く遅いです。正常状態ならサクッと終わるのですが、↑のはかなりもたついてます。で、運が良ければ以下の例外にも遭遇するでしょう。時には完走するかもしれませんが。</p>
+<pre data-pagefind-ignore="all"><code class="language-text">ハンドルされていない例外: System.AggregateException: 1 つ以上のエラーが発生しました。
+---&gt; MySql.Data.MySqlClient.MySqlException: Unable to connect to any of the specified MySQL hosts.
+---&gt; System.Net.Sockets.SocketException: そのようなホストは不明です。
+</code></pre>
+<p>よくわからないけどSocketExceptionで死にますね！！！さて、PowerShellのほうはどうなっていたか、というと、</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/08/pshell_timewait.jpg' />
+</p>
+<p>ぎゃー、TIME_WAIT祭だー。って、Parallelだからそうなったんじゃないかって？いえいえ、所詮200並列ですし、ある程度はOpen/Close繰り返されるとはいえ、4000個もコネクション作ったりなんてしないです。ていうかそもそもコネクションプールあるんだから、そんなに繋ぐわけないでしょーが。</p>
+<p>つまり、どういうことだってばよ？シンプルな例にしましょうか。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">using (var conn = new MySqlConnection(&quot;せつぞくもじれーつ&quot;))
+{
+    conn.Open();
+    for (int i = 0; i &lt; 100; i++)
+    {
+        conn.Query&lt;long&gt;(&quot;select 1&quot;, buffered: false).First();
+    }
+}
+</code></pre>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/2013/08/timewait_2.jpg' />
+</p>
+<p>はい。100のループで100のTIME_WAITが発生しています。つまり、1クエリにつき1TIME_WAITです。ほへ……？ということは、低負荷時はそれでも生きてられるかもですが、高負荷時は、最初の例で見たように、山のようなTIME_WAITに見舞われます。そしてsocketは枯渇する。そして死ぬ。</p>
+<h2>何故こうなるのか</h2>
+<p>何故、の前にどの組み合わせでなるか、というと、現時点での最新のDapper(1.13)で、Queryをbuffered:falseで、FirstなどReaderの列挙を完了させないもの(ToListとかなら大丈夫)で確定させると詰みます。じゃあまあ、原因にDeepDive。</p>
+<p>キーになるコードは、Dapperのこのメソッドです。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">private static IEnumerable&lt;T&gt; QueryInternal&lt;T&gt;(this IDbConnection cnn, string sql, object param, IDbTransaction transaction, int? commandTimeout, CommandType? commandType)
+{
+    var identity = new Identity(sql, commandType, cnn, typeof(T), param == null ? null : param.GetType(), null);
+    var info = GetCacheInfo(identity);
+
+    IDbCommand cmd = null;
+    IDataReader reader = null;
+
+    bool wasClosed = cnn.State == ConnectionState.Closed;
+    try
+    {
+        cmd = SetupCommand(cnn, transaction, sql, info.ParamReader, param, commandTimeout, commandType);
+
+        if (wasClosed) cnn.Open();
+        reader = cmd.ExecuteReader(wasClosed ? CommandBehavior.CloseConnection : CommandBehavior.Default);
+        wasClosed = false; // *if* the connection was closed and we got this far, then we now have a reader
+        // with the CloseConnection flag, so the reader will deal with the connection; we
+        // still need something in the &quot;finally&quot; to ensure that broken SQL still results
+        // in the connection closing itself
+        var tuple = info.Deserializer;
+        int hash = GetColumnHash(reader);
+        if (tuple.Func == null || tuple.Hash != hash)
+        {
+            tuple = info.Deserializer = new DeserializerState(hash, GetDeserializer(typeof(T), reader, 0, -1, false));
+            SetQueryCache(identity, info);
+        }
+
+        var func = tuple.Func;
+
+        while (reader.Read())
+        {
+            yield return (T)func(reader);
+        }
+        // happy path; close the reader cleanly - no
+        // need for &quot;Cancel&quot; etc
+        reader.Dispose();
+        reader = null;
+    }
+    finally
+    {
+        if (reader != null)
+        {
+            if (!reader.IsClosed) try { cmd.Cancel(); }
+                catch { /* don't spoil the existing exception */ }
+            reader.Dispose();
+        }
+        if (wasClosed) cnn.Close();
+        if (cmd != null) cmd.Dispose();
+    }
+}
+</code></pre>
+<p>色々ありますが、while(reader.Read())以下の部分だけを見ればOKです。ToListなら大丈夫でFirstだとダメな理由もここにあります。ToListの場合、Readerが全て読むので、コード上にコメントでhappy pathと書いてある、reader.Disposeが呼ばれます、そしてfinallyでは何もしない。逆にFirstの場合は、最初のyield returnで打ち切られてfinallyへ向かうので、cmd.Cancel()が呼ばれた後に、reader.Disposeが呼ばれます。</p>
+<p>そう、ここです。reader.Disposeの前にcmd.Cancelが呼ばれる、というのが、非常にマズい。少なくともMySQL Connectorにおいては。MySQL ConnectorのCommmand.Cancelの実装を見てみましょう。あ、MySQL Connectorのソースコードはちゃんと公開されています、<a href="http://dev.mysql.com/downloads/connector/net/">Download Connector/Net</a>のSelect PlatformでSource Codeを選べば落とせます。zipで。リポジトリは、多分公開されてない、残念ながら……。</p>
+<p>さて、Command.Cancelは以下のメソッドを呼び出します。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public void CancelQuery(int timeout)
+{
+    MySqlConnectionStringBuilder cb = new MySqlConnectionStringBuilder(Settings.ConnectionString);
+    cb.Pooling = false;
+    cb.AutoEnlist = false;
+    cb.ConnectionTimeout = (uint)timeout;
+
+    using (MySqlConnection c = new MySqlConnection(cb.ConnectionString))
+    {
+        c.isKillQueryConnection = true;
+        c.Open();
+        string commandText = &quot;KILL QUERY &quot; + ServerThread;
+        MySqlCommand cmd = new MySqlCommand(commandText, c);
+        cmd.CommandTimeout = timeout;
+        cmd.ExecuteNonQuery();
+    }
+}
+</code></pre>
+<p>どういうことか。「新しいコネクションをコネクションプーリングなしで新規生成して」「KILL QUERY実行して」「コネクションを閉じる」。KILL QUERYはどうでもいいんですが、新しいコネクションをプーリングなしで作って閉じるということがどういう結果をもたらすか。一回のクエリ毎に↑のが実行されるとどうなるか。まず、遅くなる。そりゃ遅いわな、1クエリ毎に1接続＆切断してるんだもの。そして、1クエリ = 1TIME_WAIT。完全にコードは書かれたとおりに動いて書かれるとおりの結果しか出てこない。素晴らしい。泣ける。</p>
+<h2>どうすればいいのか</h2>
+<p>これ、1.12 ~ 1.13の間に加えられた変更が原因です。具体的には<a href="https://code.google.com/p/dapper-dot-net/issues/detail?id=106">Issue 106</a>で、SQL ServerだとTimeoutException出るから、reader閉じる前にcommandのCancel呼んで欲しいんだよねー、というパッチが受け入れられたのでした。その結果、MySQLだと死ぬことに。</p>
+<p>なので、1.12を使えば問題は起こりません。もしくは1.13だったら、手動でソースコードに修正を加えればいいでしょう。もともとDapperはソースコードが1ファイルなので、NuGet経由ではなく、最新のコードをファイルで持ってくれば、編集は楽です。</p>
+<p>ちなみに、この件はDapperのForumでは報告済みです。一ヶ月前に。そして返事はありません。みょーん。まあ、あと究極的にはSQL ServerをとるかMySQLをとるか、になるので、どうなんでしょうね、あんま期待は持たないほうがいい気もします。</p>
+<h2>おまけ、MySQL Connectorのコネクションプールについて</h2>
+<p>MySQL Connectorのコードは結構素朴なので、読みやすいです(MSのSqlServerのに比べると遥かに！)。というわけで、つらつら読んでみるといいんじゃないでしょーか。参考になったりゲッソリしたり色々です。</p>
+<p>というわけでコネクションプールとかがどうなってるかの説明しませう。そしてそれぞれが接続文字列のオプションでどう弄れるのかについて。接続文字列でのオプションの設定は結構重要ですからね、失敗してると死にますから。何度か死にましたから……。接続文字列のリファレンスはこちら<a href="http://dev.mysql.com/doc/refman/5.7/en/connector-net-connection-options.html">Connector/Net Connection String Options Reference</a>。古いもの（日本語訳されてる！）だけを参照すると時々痛い目に会うので適度に注意。</p>
+<p>さて、まず、MySqlConnectionをnewすること自体は全然軽くて（ただの入れ物なので）じゅーよーなメソッドはOpenとCloseです。OpenするとコネクションプールからDriver（これが本当の実態でプールするもの）を取り出します。CloseするとコネクションプールにDriverを戻します。これが基本的なこと。ちなみにプールはQueueです、なのでDriverは先入れ先出しで循環してます。</p>
+<p>プールということは、一度生成したコネクションはいつ消えるの？というと、Closeする時です。Close時にExpireしているかチェックし、してれば消滅、してなければプールへ。基準時間は 「接続が最初に作られた時」です。そのExpireの時間はどこで設定するの？というと接続文字列のConnection Lifetime。ちなみにデフォルトは0で、Close時には消滅しません。
+なお、コネクションの最大プール数も接続文字列で指定できて、そのMax Pool Sizeのデフォは100です。</p>
+<p>実際のところ、Close時以外にもコネクションが消える時があります。3分に一回、アイドル状態の接続がチェックされて(Timerで別スレッドで常に巡回されてる)、その時に、3分以上、プールに溜まったままのコネクションはお掃除されます。基準時間は「接続がプールに戻された時」です。Connection Lifetimeと基準が違うんですね。</p>
+<p>Open/Closeを繰り返すことのロスは、上記のようにプールから取り出したり戻したり程度なので、かなり小さいです（一応、取り出したりする際にプールをlockしますが、全然小さいので無視できるでしょう）。あと、一応Open時にサーバーが生きてるかPingを飛ばします(この動作はビミョーだと思うんですけどねえ)。プールのlockよりも、コスト的にはこっちのほうが大きいかもですね。</p>
+<p>あと他に接続文字列だと、Connection TimeoutとDefaultCommandTimeoutを弄っておくと幸せになれるでしょふ。</p>
+<p>DefaultCommandTimeoutで設定できるコマンドタイムアウトはExecuteNonQueryやExecuteReaderで最初のレスポンスが戻ってくるまでの時間ではかられます。だから、ExecuteReaderでも、例えば数億件のデータがあって凄く時間がかかるものでも、反応はかえって来てるのでそこでのTimeout判定は入りません。レコード数よりも、純粋なSQLの内容(馬鹿でかいデータにlikeで検索とかは引っかかりますよね)のためのものです。</p>
+<p>Connection Timeoutは、実はコネクションをOpenにする時、だけに関連してるわけじゃあなかったりします。streamからReadする際の時間でもConnectionStringsのConnect Timeoutで判定があります。この値を流用されるのイマイチ納得いかない気がしなくもないですが、まあそんなもんですかねえ。なので結果セットを読み込んでる最中でもネットワークの調子が悪くて止まると、タイムアウト判定が来ます。Raedの単位はデータセット全て、ではなく1行分とか、そういう特定バイト数ごとになるので、巨大データを読み取るのに時間がかかるので死ぬ、とかにはなりません。一応参考までにってとこですかね。</p>
+<h2>まとめ</h2>
+<p>このDapperで死ぬ問題、プロダクション環境化で発覚したんですよね！！！分かってみると割と単純なのですが、しかし条件が変則的で突き止めるのに手間取って泣きたかった……。低負荷だと割と動いちゃうというか、そこそこの負荷でも割と耐え切れちゃう(IIS偉い)ので、全然気づかず。なんか分からないけど超高負荷の時に落ちる！とか、ね。ワケワカラナカッタ。まず疑うのは自分のコードのほうだしねえ。</p>
+<p>まぁ、解決してほんと良かったです、はい。解決しなかったら首吊るしかなかったですもの、思い出すだけでハイパーお通夜。冗談抜きに今までの人生で一番精神的に苦しかった……。そんな感じで若干トラブルもありましたが、それを除けばDapperはパワフルでかなり満足しています。少々、上モノを被せているので、その辺のものはそのうち紹介しましょうかしらん。</p>
+</div>
+<h1 data-pagefind-sort="date:2013-07-30" data-pagefind-meta="published:2013-07-30"><a href="https://neue.cc/2013/07/30_420.html">Http, SQL, Redisのロギングと分析・可視化について</a></h1>
 <ul class="date"><li>2013-07-30</li></ul>
 <div class="entry_body"><p>改善は計測から。何がどれだけの回数通信されているか、どれだけ時間がかかっているのか、というのは言うまでもなく重要な情報です。障害対策でも大事ですしね。が、じゃあどうやって取るの、というとパッとでてくるでしょうか？そして、それ、実際に取っていますか？存外、困った話なのですねー。TraceをONにすると内部情報が沢山出てきますが、それはそれで情報過多すぎるし、欲しいのはそれじゃないんだよ、みたいな。</p>
 <p><a href="http://grani.jp/">Grani</a>←「謎社」で検索一位取ったので、ちょっと英語表記の検索ランキングをあげようとしている――では自前で中間を乗っ取ってやる形で統一していて、使用している通信周り、Http, RDBMS, Redisは全てログ取りして分析可能な状態にしています。</p>
@@ -1788,226 +1950,6 @@ new RedisSettings(&quot;127.0.0.1&quot;, converter: new ProtoBufRedisValueConver
 </blockquote>
 <p>と言いました。今年はそれを実現するため、<a href="http://grani.jp/">謎社（もう謎ではない）</a>のCTOとして、人の憧れるような、日本を代表するC#の企業にします。C#による圧倒的な成果、C#だからこその強さ、というのを現実に示していく。幸い、私は今、それができる場所にいると思っています。</p>
 <p>そんなわけで、今年もよろしくお願いします。</p>
-</div>
-<h1 data-pagefind-sort="date:2013-03-27" data-pagefind-meta="published:2013-03-27"><a href="https://neue.cc/2013/03/27_401.html">C#のラムダ式でyieldっぽい何かをawaitで代用する方法</a></h1>
-<ul class="date"><li>2013-03-27</li></ul>
-<div class="entry_body"><p>C#がインラインでyield書けないならawait使えばいいじゃない。と、偉い人は言いました。というわけで、こそこそっと開発がされているIxに、面白い機能が入りました（開発リポジトリ上だけなのでNuGetからダウンロードしても、まだ入ってません）。こんなのです。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">var hoge = &quot;あいうえお&quot;;
-
-var seq = EnumerableEx.Create&lt;int&gt;(async Yield =&gt;
-{
-    await Yield.Return(10);
-    await Yield.Return(100);
-
-    hoge = &quot;ふがふが&quot;; // インラインで書けるのでお外への副作用が可能
-
-    await Yield.Return(1000);
-});
-
-
-foreach (var item in seq)
-{
-    Console.WriteLine(item); // 10, 100, 1000
-}
-Console.WriteLine(hoge); // ふがふが
-</code></pre>
-<p>そう、yield return(っぽい何か)がラムダ式で、メソッド外部に出すことなく書けてしまうのです！これは素敵ですね？い、いや、なんか何やってるのか分からなすぎて黒魔術怖いって雰囲気も漂ってますね！しかし面白いものは面白いので、実装見ましょう。</p>
-<p><a href="http://rx.codeplex.com/SourceControl/changeset/8f1e73bca96e">add types iyielder, iawaitable, and iawait; add support for creating ienumerable from action<iyielder>.</a>ということで、まあ、ローカルで動かしたいんでコピペってきましょう。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public static class EnumerableEx
-{
-    public static IEnumerable&lt;T&gt; Create&lt;T&gt;(Action&lt;IYielder&lt;T&gt;&gt; create)
-    {
-        if (create == null) throw new ArgumentNullException(&quot;create&quot;);
-
-        foreach (var x in new Yielder&lt;T&gt;(create))
-        {
-            yield return x;
-        }
-    }
-}
-
-public interface IYielder&lt;in T&gt;
-{
-    IAwaitable Return(T value);
-    IAwaitable Break();
-}
-
-public interface IAwaitable
-{
-    IAwaiter GetAwaiter();
-}
-
-public interface IAwaiter : ICriticalNotifyCompletion
-{
-    bool IsCompleted { get; }
-    void GetResult();
-}
-
-public class Yielder&lt;T&gt; : IYielder&lt;T&gt;, IAwaitable, IAwaiter, ICriticalNotifyCompletion
-{
-    private readonly Action&lt;Yielder&lt;T&gt;&gt; _create;
-    private bool _running;
-    private bool _hasValue;
-    private T _value;
-    private bool _stopped;
-    private Action _continuation;
-
-    public Yielder(Action&lt;Yielder&lt;T&gt;&gt; create)
-    {
-        _create = create;
-    }
-
-    public IAwaitable Return(T value)
-    {
-        _hasValue = true;
-        _value = value;
-        return this;
-    }
-
-    public IAwaitable Break()
-    {
-        _stopped = true;
-        return this;
-    }
-
-    public Yielder&lt;T&gt; GetEnumerator()
-    {
-        return this;
-    }
-
-    public bool MoveNext()
-    {
-        if (!_running)
-        {
-            _running = true;
-            _create(this);
-        }
-        else
-        {
-            _hasValue = false;
-            _continuation();
-        }
-
-        return !_stopped &amp;&amp; _hasValue;
-    }
-
-    public T Current
-    {
-        get
-        {
-            return _value;
-        }
-    }
-
-    public IAwaiter GetAwaiter()
-    {
-        return this;
-    }
-
-    public bool IsCompleted
-    {
-        get { return false; }
-    }
-
-    public void GetResult() { }
-
-
-    public void OnCompleted(Action continuation)
-    {
-        _continuation = continuation;
-    }
-
-    public void UnsafeOnCompleted(Action continuation)
-    {
-        _continuation = continuation;
-    }
-}
-</code></pre>
-<p>ほぅ、わけわからん？若干トリッキーなので、順を追っていきますか。asyncについて考える前に、まず、基本的なforeachのルール。実はIEnumerableを実装している必要はなくて、GetEnumeratorという名前のメソッドがあればいい。同様にMoveNextとCurrentというメソッドがあればIEnumerator扱いされる。なので、foreach (var x in new Yielder<T>(create)) されているYielderはIEnumerableじゃないし、GetEnumeratorでreturn thisされていますが、YielderはIEnumeratorでもない。でも、foreachでグルグル回せている、というわけです。挙動は通常のforeachと同じで、MoveNext→Current、といった形です。</p>
-<p>あと、インターフェイスが、IAwaitableとかいっぱい再定義されてて、ワケワカランのですけれど、そこまで意味あるわけじゃないです。これはラムダ式にYielderを渡すわけですが、そこで内部の諸々が呼べちゃうのはイクナイので隠ぺいする、程度の意味合いでしかないので、これを実装するのにインターフェイスの再定義が必要！というわけは全然ないです。</p>
-<p>で、コアになるのはMoveNext。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public bool MoveNext()
-{
-    if (!_running)
-    {
-        _running = true;
-        _create(this);
-    }
-    else
-    {
-        _hasValue = false;
-        _continuation();
-    }
-
-    return !_stopped &amp;&amp; _hasValue;
-}
-</code></pre>
-<p>そもそもyield returnで生成されたメソッドが最初に実行されるのは、GetEnumeratorのタイミングではなく、GetEnumeratorされて最初のMoveNextが走った時、なので、ここが本体になっているのはセマンティクス的に問題なし。</p>
-<p>!_runnningは初回実行時の意味で、ここで_create(this)、によってラムダ式で書いた本体が走ります。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">var seq = EnumerableEx.Create&lt;int&gt;(async Yield =&gt;
-{
-    await Yield.Return(10);
-    // ↑のとこがまず実行され始める
-    await Yield.Return(100);
-    await Yield.Return(1000);
-});
-
-public IAwaitable Return(T value)
-{
-    _hasValue = true;
-    _value = value;
-    return this;
-}
-</code></pre>
-<p>まずはメソッド実行なのでReturn。これは値をセットして回っているだけ。そしてIAwaitableを返し、await。ここで流れは別のところに行きます。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public bool IsCompleted
-{
-    get { return false; }
-}
-
-public void GetResult() { }
-
-
-public void OnCompleted(Action continuation)
-{
-    _continuation = continuation;
-}
-
-public void UnsafeOnCompleted(Action continuation)
-{
-    _continuation = continuation;
-}
-</code></pre>
-<p>まず完了しているかどうかの確認(IsCompleted)が走りますが、この場合は常にfalseで(そうしないと終了ということになってラムダ式のほうに戻ってこなくなっちゃう)。これによってUnsafeOnCompleted(ICriticalNotifyCompletionが実装されている場合はこっちが走る)でcontinuation(メソッド本体)が走る。で、「次回用」に変数保存して、MoveNext(create(this)したとこの位置)に戻ってくる。あとはMoveNextがtrueを返すのでCurrentで値取得して、それがyield returnされる。</p>
-<p>二度目のMoveNextでは</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public bool MoveNext()
-{
-    if (!_running)
-    {
-        _running = true;
-        _create(this);
-    }
-    else
-    {
-        _hasValue = false;
-        _continuation(); // ここが呼び出されて
-    }
-
-    return !_stopped &amp;&amp; _hasValue;
-}
-
-var seq = EnumerableEx.Create&lt;int&gt;(async Yield =&gt;
-{
-    await Yield.Return(10);
-    // ここから再度走り出す
-    await Yield.Return(100);
-    await Yield.Return(1000);
-});
-</code></pre>
-<p>といった感じになって、以下繰り返し。良く出来てますね！ていうか、asyncなのに非同期全く関係ないのが素敵。そう、asyncは別に非同期関係なく使えちゃうわけです。ここ大事なので繰り返しましょう。asyncは別に非同期関係なく使うことができます。</p>
-<h2>まとめ</h2>
-<p>async、フツーに使うのもそろそろ飽きてき頃だと思うので、弄って遊ぶのは大正義。実際に投下しだすかどうかは判断次第。あと、↑のはまだ大事な要素ができていないので絶対使いませんけれど。大事な要素はIDisposableであること。foreachで大事だと思ってるのはDisposeしてくれるとこ！だとも思っているので、それが実現できてないのはナイナー、と。</p>
-<p>そういえばAsyncについてですが、3/30の土曜に<a href="http://metrostyledev.net/index.php/event/20130330/">Room metro #15</a>でHttpClient(非同期の塊！)について話すので、まだ残席ありますので良ければお越しくだしあー。</p>
 </div>
 <a href="https://neue.cc/11">Prev |</a>
 <a href="https://neue.cc/13">| Next</a>

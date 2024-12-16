@@ -74,7 +74,178 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2024-12-06" data-pagefind-meta="published:2024-12-06"><a href="https://neue.cc/2024/12/06_MessagePack_v3.html">SourceGenerator対応のMessagePack for C# v3リリースと今後について</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2024-12-16" data-pagefind-meta="published:2024-12-16"><a href="https://neue.cc/2024/12/16_ConsoleAppFramewrok_v5_3_0.html">ConsoleAppFramework v5.3.0 - NuGet参照状況からのメソッド自動生成によるDI統合の強化、など</a></h1>
+<ul class="date"><li>2024-12-16</li></ul>
+<div class="entry_body"><p><a href="https://github.com/Cysharp/ConsoleAppFramework">ConsoleAppFramework</a> v5の比較的アップデートをしました！v5自体の詳細は以前に書いた<a href="https://neue.cc/2024/06/13_ConsoleAppFramework_v5.html">ConsoleAppFramework v5 - ゼロオーバーヘッド・Native AOT対応のC#用CLIフレームワーク</a>を参照ください。v5はかなり面白いコンセプトになっていて、そして支持されたと思っているのですが、幾つか使い勝手を犠牲にした点があったので、今回それらをケアしました。というわけで使い勝手がかなり上がった、と思います……！</p>
+<h2>名前の自動変換を無効にする</h2>
+<p>コマンドネームとオプションネームは、デフォルトでは自動的にkebab-caseに変換されます。これはコマンドラインツールの標準的な命名規則に従うものですが、内部アプリケーションで使うバッチファイルの作成に使ったりする場合などには、変換されるほうが煩わしく感じるかもしれません。そこで、アセンブリ単位でオフにする機能を今回追加しました。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">using ConsoleAppFramework;
+
+[assembly: ConsoleAppFrameworkGeneratorOptions(DisableNamingConversion = true)]
+
+var app = ConsoleApp.Create();
+app.Add&lt;MyProjectCommand&gt;();
+app.Run(args);
+
+public class MyProjectCommand
+{
+    public void Execute(string fooBarBaz)
+    {
+        Console.WriteLine(fooBarBaz);
+    }
+}
+</code></pre>
+<p><code>[assembly: ConsoleAppFrameworkGeneratorOptions(DisableNamingConversion = true)]</code>によって自動変換が無効になります。この例では <code>ExecuteCommand --fooBarBaz</code> がコマンドとなります。</p>
+<p>実装面でいうと、Source Generatorにコンフィグを与えるのはAdditionalFilesにjsonや独自書式のファイル(例えばBannedApiAnalyzersのBannedSymbols.txt)を置くパターンが多いですが、ファイルを使うのは結構手間が多くて面倒なんですよね。boolの1つや2つを設定するぐらいなら、アセンブリ属性を使うのが一番楽だと思います。</p>
+<p>実装手法としては<code>CompilationProvider</code>から<code>Assembly.GetAttributes</code>で引っ張ってこれます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var generatorOptions = context.CompilationProvider.Select((compilation, token) =&gt;
+{
+    foreach (var attr in compilation.Assembly.GetAttributes())
+    {
+        if (attr.AttributeClass?.Name == &quot;ConsoleAppFrameworkGeneratorOptionsAttribute&quot;)
+        {
+            var args = attr.NamedArguments;
+            var disableNamingConversion = args.FirstOrDefault(x =&gt; x.Key == &quot;DisableNamingConversion&quot;).Value.Value as bool? ?? false;
+            return new ConsoleAppFrameworkGeneratorOptions(disableNamingConversion);
+        }
+    }
+
+    return new ConsoleAppFrameworkGeneratorOptions(DisableNamingConversion: false);
+});
+</code></pre>
+<p>これを他のSyntaxProviderからのSourceとCombineしてやれば、生成時に属性の値を参照できるようになります。</p>
+<h2>ConfigureServices/ConfigureLogging/ConfigureConfiguration</h2>
+<p>DIとの統合時に自分でServiceProviderをビルドしなければならないなの、利用には一手間必要でした。そこで、<code>Microsoft.Extensions.DependencyInjection.Abstractions</code>が参照されていると、<code>ConfigureServices</code>メソッドが<code>ConsoleAppBuilder</code>から使えるようになりました。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var app = ConsoleApp.Create()
+    .ConfigureServices(service =&gt;
+    {
+        service.AddTransient&lt;MyService&gt;();
+    });
+
+app.Add(&quot;&quot;, ([FromServices] MyService service, int x, int y) =&gt; Console.WriteLine(x + y));
+
+app.Run(args);
+</code></pre>
+<p>NuGetの参照状況によってメソッドが増える！という新しいマジカル体験を提供します。これは<code>MetadataReferencesProvider</code>から引っ張ってきて生成処理に回しています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var hasDependencyInjection = context.MetadataReferencesProvider
+    .Collect()
+    .Select((xs, _) =&gt;
+    {
+        var hasDependencyInjection = false;
+
+        foreach (var x in xs)
+        {
+            var name = x.Display;
+            if (name == null) continue;
+
+            if (!hasDependencyInjection &amp;&amp; name.EndsWith(&quot;Microsoft.Extensions.DependencyInjection.Abstractions.dll&quot;))
+            {
+                hasDependencyInjection = true;
+                continue;
+            }
+
+            // etc...
+        }
+
+        return new DllReference(hasDependencyInjection, hasLogging, hasConfiguration, hasJsonConfiguration, hasHostAbstraction, hasHost);
+    });
+
+context.RegisterSourceOutput(hasDependencyInjection, EmitConsoleAppConfigure);
+</code></pre>
+<p><code>Microsoft.Extensions.Logging.Abstractions</code>が参照されていれば<code>ConfigureLogging</code>が使えるようになります。なので<a href="https://github.com/Cysharp/ZLogger">ZLogger</a>と組み合わせれば</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// Package Import: ZLogger
+var app = ConsoleApp.Create()
+    .ConfigureLogging(x =&gt;
+    {
+        x.ClearProviders();
+        x.SetMinimumLevel(LogLevel.Trace);
+        x.AddZLoggerConsole();
+        x.AddZLoggerFile(&quot;log.txt&quot;);
+    });
+
+app.Add&lt;MyCommand&gt;();
+app.Run(args);
+
+// inject logger to constructor
+public class MyCommand(ILogger&lt;MyCommand&gt; logger)
+{
+    public void Echo(string msg)
+    {
+        logger.ZLogInformation($&quot;Message is {msg}&quot;);
+    }
+}
+</code></pre>
+<p>といったように、比較的すっきりと設定が統合できます。</p>
+<p><code>appsettings.json</code>から設定ファイルを引っ張ってくるというのも最近では定番パターンですが、これも<code>Microsoft.Extensions.Configuration.Json</code>を参照していると<code>ConfigureDefaultConfiguration</code>が使えるようになり、これは<code>SetBasePath(System.IO.Directory.GetCurrentDirectory())</code>と<code>AddJsonFile(&quot;appsettings.json&quot;, optional: true)</code>を自動的に行います（追加でActionでconfigureすることも可能、また、ConfigureEmptyConfigurationもあります）。</p>
+<p>なのでコンフィグを読み込んでクラスにバインドしてコマンドにDIで渡す、などといった処理もシンプルに書けるようになりました。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// Package Import: Microsoft.Extensions.Configuration.Json
+var app = ConsoleApp.Create()
+    .ConfigureDefaultConfiguration()
+    .ConfigureServices((configuration, services) =&gt;
+    {
+        // Package Import: Microsoft.Extensions.Options.ConfigurationExtensions
+        services.Configure&lt;PositionOptions&gt;(configuration.GetSection(&quot;Position&quot;));
+    });
+
+app.Add&lt;MyCommand&gt;();
+app.Run(args);
+
+// inject options
+public class MyCommand(IOptions&lt;PositionOptions&gt; options)
+{
+    public void Echo(string msg)
+    {
+        ConsoleApp.Log($&quot;Binded Option: {options.Value.Title} {options.Value.Name}&quot;);
+    }
+}
+</code></pre>
+<p><code>Microsoft.Extensions.Hosting</code>でビルドしたい場合は、<code>ToConsoleAppBuilder</code>が、これも<code>Microsoft.Externsions.Hosting</code>を参照すると追加されるようになっています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// Package Import: Microsoft.Extensions.Hosting
+var app = Host.CreateApplicationBuilder()
+    .ToConsoleAppBuilder();
+</code></pre>
+<p>また、今回から設定されている<code>IServiceProvider</code>は<code>Run</code>または<code>RunAsync</code>終了後に自動的にDisposeするようになりました。</p>
+<h2>RegisterCommands from Attribute</h2>
+<p>コマンドの追加は<code>Add</code>または<code>Add&lt;T&gt;</code>が必要でしたが、クラスに属性を付与することで自動的に追加される機能をいれました。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[RegisterCommands]
+public class Foo
+{
+    public void Baz(int x)
+    {
+        Console.Write(x);
+    }
+}
+
+[RegisterCommands(&quot;bar&quot;)]
+public class Bar
+{
+    public void Baz(int x)
+    {
+        Console.Write(x);
+    }
+}
+</code></pre>
+<p>これらは自動で追加されています。</p>
+<pre data-pagefind-ignore="all"><code>var app = ConsoleApp.Create();
+
+// Commands:
+//   baz
+//   bar baz
+app.Run(args);
+</code></pre>
+<p>これらとは別に追加で<code>Add</code>, <code>Add&lt;T&gt;</code>することも可能です。</p>
+<p>なお、実装の当初予定では任意の属性を使えるようにする予定だったのですが、<code>IncrementalGenerator</code>のAPIの都合上難しくて、固定の<code>RegisterCommands</code>属性のみを対象としています。また、継承することもできません……。なので独自の処理用属性がある場合は、組み合わせてもらう必要があります。例えば以下のように。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[RegisterCommands, Batch(&quot;0 10 * * *&quot;)]
+public class MyCommands
+{
+}
+</code></pre>
+<p>この辺は<a href="https://qiita.com/omt_teruki/items/dae315c7e86722fe05e6">ConsoleAppFrameworkとAWS CDKで爆速バッチ開発</a>を読んで、うーん、v5を使ってもらいたい！なんとかしたい！と思って色々考えたのですが、この辺が現状の限界でした……。名前変換オフりたいのもわかるー、とか今回の更新内容はこの記事での利用例を参考にさせていただきました、ありがとうございます！</p>
+<h2>まとめ</h2>
+<p>v5のリリース以降もフィルターを外部アセンブリに定義できるようになったり、Incremental Generatorの実装を見直して高速化するなど、Improvmentは続いています！非常に良いフレームワークに仕上がってきました！</p>
+<p>ところで<a href="https://github.com/dotnet/command-line-api/">System.CommandLine</a>、現状うまくいってないから<a href="https://github.com/dotnet/command-line-api/issues/2338">Resettting System.CommandLine</a>だ！と言ったのが今年の3月。例によって想像通り進捗は無です。知ってた。そうなると思ってた。何も期待しないほうがいいし、普通にConsoleAppFramework使っていくで良いでしょう。</p>
+</div>
+<h1 data-pagefind-sort="date:2024-12-06" data-pagefind-meta="published:2024-12-06"><a href="https://neue.cc/2024/12/06_MessagePack_v3.html">SourceGenerator対応のMessagePack for C# v3リリースと今後について</a></h1>
 <ul class="date"><li>2024-12-06</li></ul>
 <div class="entry_body"><p>先月<a href="https://github.com/MessagePack-CSharp/MessagePack-CSharp">MessagePack for C#プロジェクト</a>は <a href="https://dotnetfoundation.org/">.NET Foundation</a>に参加しました！より安定した視点で利用していただけるという一助になればいいと思っています。</p>
 <p>そして、長く開発を続けていたメジャーバージョンアップ、v3がリリースされました。コア部分はv2とはほぼ変わらずですが、Source Generatorを全面的に導入しています。引き続きIL動的生成も存在するため、IL動的生成とSource Generatorのハイブリッドなシリアライザーとなります。v3にはSource GeneratorとAnalyzerがビルトインで同梱されていて、今までのコードはv3でコンパイルするだけで自動的にSource Generator化されます。v2 -&gt; v3アップデートでSource Generator対応するために追加でユーザーがコードを記述する必要はありません！</p>

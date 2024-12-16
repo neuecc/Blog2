@@ -74,7 +74,183 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2023-09-21" data-pagefind-meta="published:2023-09-21"><a href="https://neue.cc/2023/09/21_privateproxy.html">.NET 8 UnsafeAccessor を活用したライブラリ PrivateProxy を公開しました</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2023-10-13" data-pagefind-meta="published:2023-10-13"><a href="https://neue.cc/2023/10/13_Utf8StringInterpolation.html">UTF8文字列生成を最適化するライブラリ Utf8StringInterpolation を公開しました</a></h1>
+<ul class="date"><li>2023-10-13</li></ul>
+<div class="entry_body"><p>Utf8StringInterpolationという新しいライブラリを公開しました！UTF8文字列の生成と書き込みに特化していて、動作をカスタマイズした文字列補間式によるC#コンパイラの機能を活用した生成と、StringBuilder的な連続的な書き込みの両方をサポートします。</p>
+<ul>
+<li><a href="https://github.com/Cysharp/Utf8StringInterpolation">Cysharp/Utf8StringInterpolation</a></li>
+</ul>
+<p>基本的な流れはこんな感じで、Stringを生成するのと同じように、UTF8を生成/書き込みできます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">using Utf8StringInterpolation;
+
+// Create UTF8 encoded string directly(without encoding).
+byte[] utf8 = Utf8String.Format($&quot;Hello, {name}, Your id is {id}!&quot;);
+
+// write to IBufferWriter&lt;byte&gt;(for example ASP.NET HttpResponse.BodyWriter)
+Utf8String.Format(bufferWriter, $&quot;Today is {DateTime.Now:yyyy-MM-dd}&quot;); // support format
+
+// like a StringBuilder
+var writer = Utf8String.CreateWriter(bufferWriter);
+writer.Append(&quot;My Name...&quot;);
+writer.AppendFormat($&quot;is...? {name}&quot;);
+writer.AppendLine();
+writer.Flush();
+
+// Join, Concat methods
+var seq = Enumerable.Range(1, 10);
+byte[] utf8seq = Utf8String.Join(&quot;, &quot;, seq);
+</code></pre>
+<p>Cysharpから公開している <a href="https://github.com/Cysharp/ZString/">ZString</a> と非常に近いのですが、ZStringがString(UTF16), UTF8をサポートしていたのに対して、UTF8側のみを取り出して強化したようなイメージになります。何が強化なのかというと、C# 10.0から<a href="https://github.com/dotnet/csharplang/blob/main/proposals/csharp-10.0/improved-interpolated-strings.md">Improved Interpolated Strings</a>として、文字列補間式($&quot;foo{bar}baz&quot;)のパフォーマンスが大きく向上しました。具体的には、コンパイラが文字列補間式の構造を分解して、値が埋め込まれている箇所はGenericsのまま渡すようになりボクシングが消滅しました。つまりZStringでやっていたことではあるのですが、ZStringはC# 10.0以前のものですからね……！逆に言えば、これによってZStringは半分は不要となったわけです。</p>
+<p>もう半分、UTF8側に関しては依然として標準のサポートは薄い、というかほぼない状態です。しかし、Improved Interpolated Strings は文字列補間式での挙動を自由にカスタマイズできるという性質も追加されています。というわけで、文字列補間式を利用してUTF8を組み立てられるようにすればいいのではないか、というのがUtf8StringInterpolationのコンセプトであり、正しくZLoggerの後継として位置づけていることでもあります。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// こういう文字列補間式を渡すと:
+// Utf8String.Format(ref Utf8StringWriter format)
+Utf8String.Format($&quot;Hello, {name}, Your id is {id}!&quot;);
+</code></pre>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// コンパイラが「コンパイル時」にこのような形に展開します。
+var writer = new Utf8StringWriter(literalLength: 20, formattedCount: 2);
+writer.AppendLiteral(&quot;Hello, &quot;);
+writer.AppendFormatted&lt;string&gt;(name);
+writer.AppendLiteral(&quot;, You id is &quot;);
+writer.AppendFormatted&lt;int&gt;(id);
+writer.AppendLiteral(&quot;!&quot;);
+</code></pre>
+<p>コンパイル時に展開してくれるというのは性能上非常に重要で、つまり<code>String.Format</code>のように実行時に文字列式のパースをしないで済む、わけです。また、ボクシングなしに全ての値を書き込みに呼んでくれます。</p>
+<p><code>[InterpolatedStringHandler]</code>を付与している<code>ref Utf8StringWriter</code> に <code>$&quot;{}&quot;</code>を渡すと、自動的に展開してくれるという仕様になっています。そのUtf8StringWriterは以下のような実装になっています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// internal struct writer write value to utf8 directly without boxing.
+[InterpolatedStringHandler]
+public ref struct Utf8StringWriter&lt;TBufferWriter&gt; where TBufferWriter : IBufferWriter&lt;byte&gt;
+{
+    TBufferWriter bufferWriter; // when buffer is full, advance and get more buffer
+    Span&lt;byte&gt; buffer;          // current write buffer
+
+    public void AppendLiteral(string value)
+    {
+        // encode string literal to Utf8 buffer directly
+        var bytesWritten = Encoding.UTF8.GetBytes(value, buffer);
+        buffer = buffer.Slice(bytesWritten);
+    }
+
+    public void AppendFormatted&lt;T&gt;(T value, int alignment = 0, string? format = null)
+        where T : IUtf8SpanFormattable
+    {
+        // write value to Utf8 buffer directly
+        while (!value.TryFormat(buffer, out bytesWritten, format))
+        {
+            Grow();
+        }
+        buffer = buffer.Slice(bytesWritten);
+    }
+}
+</code></pre>
+<p>.NET 8 の場合は、値が <a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.iutf8spanformattable?view=net-8.0">IUtf8SpanFormattable</a> という.NET 8から追加されたインターフェイスを実装している場合(intなど標準のプリミティブはほぼ実装されています）、直接TryFormatによりUTF8としてSpanに書き込みます。</p>
+<p>さすがに .NET 8 にしか対応していません！というのはエクストリームすぎるので、 .NET Standard 2.1, .NET 6(.NET 7)では <a href="https://learn.microsoft.com/en-us/dotnet/api/system.buffers.text.utf8formatter.tryformat?view=net-7.0">Utf8Formatter.TryFormat</a> を使うことで、同様の性能を担保しています。</p>
+<h2>Builder vs Writer</h2>
+<p>ZStringのときはStringBuilderに引っ張られすぎていて、Builderとして内部でバッファを抱えるようにしていたのですが、ちょっとUTF8的な利用ではイマイチだということが徐々に分かってきました。今の .NET の基本は <code>IBufferWriter&lt;byte&gt;</code> である。というのはついこないだのCEDEC 2023での発表 <a href="https://speakerdeck.com/neuecc/cedec-2023-modanhaipahuomansuc-number-2023-edition">モダンハイパフォーマンスC# 2023 Edition</a> でかなり語らせていただいたのですが</p>
+<iframe class="speakerdeck-iframe" frameborder="0" src="https://speakerdeck.com/player/055c0df858f44aafb4b017bb9c03c2e6" title="CEDEC 2023 モダンハイパフォーマンスC# 2023 Edition" allowfullscreen="true" style="border: 0px; background: padding-box padding-box rgba(0, 0, 0, 0.1); margin: 0px; padding: 0px; border-radius: 6px; box-shadow: rgba(0, 0, 0, 0.2) 0px 5px 40px; width: 100%; height: auto; aspect-ratio: 560 / 315;" data-ratio="1.7777777777777777"></iframe>
+<p>BuilderというよりもWriterとして構築すべきだな、ということに至りました。そこで <code>Utf8StringWriter</code> は基本的に<code>IBufferWriter&lt;byte&gt;</code>を受け取ってそれに書き込むという仕様となりました。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public ref partial struct Utf8StringWriter&lt;TBufferWriter&gt;
+    where TBufferWriter : IBufferWriter&lt;byte&gt;
+{
+    Span&lt;byte&gt; destination;
+    TBufferWriter bufferWriter;
+    int currentWritten;
+
+    public Utf8StringWriter(TBufferWriter bufferWriter)
+    {
+        this.bufferWriter = bufferWriter;
+        this.destination = bufferWriter.GetSpan();
+    }
+
+    public void Flush()
+    {
+        if (currentWritten != 0)
+        {
+            bufferWriter.Advance(currentWritten);
+            currentWritten = 0;
+        }
+    }
+</code></pre>
+<p>バッファが足りなくなったときは拡大するのではなくて、Advanceして新たにGetSpanを呼んで新しいバッファを確保しにいくという形を取りました。StringBuilderと違ってFlushの概念が必要になってしまいましたが、パフォーマンス的には大きな向上を果たしています。</p>
+<p>Flushが必要ということを除けば、StringBuilderのように扱うことができます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var writer = Utf8String.CreateWriter(bufferWriter);
+
+// call each append methods.
+writer.Append(&quot;foo&quot;);
+writer.AppendFormat($&quot;bar {Guid.NewGuid()}&quot;);
+writer.AppendLine();
+
+// finally call Flush(or Dispose)
+writer.Flush();
+</code></pre>
+<p>また、ちょっとStringBuilder的に使いたいだけの時に <code>IBufferWriter&lt;byte&gt;</code> を用意するのは面倒くさい！という場合のために、内部でプーリングを行っているバッファを使えるオーバーロードも用意しています。戻り値がバッファのコントローラーになっていて、ToArrayや他の<code>IBufferWriter&lt;byte&gt;</code>にコピーしたり<code>ReadOnlySpan&lt;byte&gt;</code>の取得ができます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// buffer must Dispose after used(recommend to use using)
+using var buffer = Utf8String.CreateWriter(out var writer);
+
+// call each append methods.
+writer.Append(&quot;foo&quot;);
+writer.AppendFormat($&quot;bar {Guid.NewGuid()}&quot;);
+writer.AppendLine();
+
+// finally call Flush(no need to call Dispose for writer)
+writer.Flush();
+
+// copy to written byte[]
+var bytes = buffer.ToArray();
+
+// or copy to other IBufferWriter&lt;byte&gt;, get ReadOnlySpan&lt;byte&gt;
+buffer.CopyTo(otherBufferWriter);
+var writtenData = buffer.WrittenSpan;
+</code></pre>
+<p>その他、<code>Format</code>, <code>Join</code>, <code>Concat</code> メソッドなども <code>IBufferWriter&lt;byte&gt;</code> を受け取るオーバーロードと <code>byte[]</code>を返すオーバーロードの2種を用意しています。</p>
+<h2>.NET 8 と StandardFormat</h2>
+<p>値のフォーマット書式は、特にDateTimeでよく使うと思いますが、数値型などでも多くの書式が用意されています。<a href="https://learn.microsoft.com/ja-jp/dotnet/standard/base-types/formatting-types">.NET の数値、日付、列挙、その他の型の書式を設定する方法</a> や各種カスタム書式指定文字列は非常に便利です。</p>
+<p>しかし、UTF8に値を直接書き込む手段として従来用意されていた<a href="https://learn.microsoft.com/en-us/dotnet/api/system.buffers.text.utf8formatter.tryformat">Utf8Formatter.TryFormat</a>では、その標準的な書式指定文字列は使えませんでした！代わりに用意されたのが<a href="https://learn.microsoft.com/en-us/dotnet/api/system.buffers.standardformat">StandardFormat</a>なのですが、恐ろしく限定的なことしかできず(例えば'G', 'D', or 'X'のような一文字charの指定しかできない)、使い物にならないといっても過言ではないぐらいでした。</p>
+<p>ところが .NET 8 から追加された IUtf8SpanFormattable.TryFormat では、通常の書式指定文字列が帰ってきました！</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// Utf8Formatter.TryFormat
+static bool TryFormat (int value, Span&lt;byte&gt; destination, out int bytesWritten, System.Buffers.StandardFormat format = default);
+
+// .NET 8 IUtf8SpanFormattable.TryFormat
+bool TryFormat (Span&lt;byte&gt; utf8Destination, out int bytesWritten, ReadOnlySpan&lt;char&gt; format, IFormatProvider? provider);
+</code></pre>
+<p>パラメーターは非常に似ていますが、formatを文字列で受け取るようになっています。実際に比較してみるとこんな感じです。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">Span&lt;byte&gt; dest = stackalloc byte[16];
+int written = 0;
+
+// ParseできなくてExceptionがthrowされるので表現できない
+Utf8Formatter.TryFormat(123.456789, dest, out written, StandardFormat.Parse(&quot;.###&quot;));
+
+// 123.456
+123.456123.TryFormat(dest, out written, &quot;.###&quot;);
+
+
+// カスタム書式文字列は指定できないので例外！サポートしてるのは `G`, `R`, `l`, `O` だけ！
+Utf8Formatter.TryFormat(DateTime.Now, dest, out written, StandardFormat.Parse(&quot;yyyy-MM-dd&quot;));
+
+// もちろんちゃんと動作する
+DateTime.Now.TryFormat(dest, out written, &quot;yyyy-MM-dd&quot;);
+
+Console.WriteLine(Encoding.UTF8.GetString(dest.Slice(0, written)));
+</code></pre>
+<p>良かった、やと普通の世界が到達した……！これは ZString や、それを内部に使っていた <a href="https://github.com/Cysharp/ZLogger">ZLogger</a>で最もフラストレーションを感じていた点です。</p>
+<p>Utf8StringInterpolationは .NET 8 では全て IUtf8SpanFormattable で変換するようにしています。しかし、 .NET Standard 2.1, .NET 6, .NET 7では残念ながらUtf8Formatter利用となっているので、書式指定に関しては制限があります。数値に関してはターゲットプラットフォームによって動作したりしなかったりが発生します。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// .NET 8 supports all numeric custom format string but .NET Standard 2.1, .NET 6(.NET 7) does not.
+Utf8String.Format($&quot;Double value is {123.456789:.###}&quot;);
+</code></pre>
+<p>ただし、 <code>DateTime</code>, <code>DateTimeOffset</code>, <code>TimeSpan</code> に関しては <code>Utf8Formatter</code> を使わない処理をしているため、全てのターゲットプラットフォームでカスタム書式指定が利用可能です！</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// DateTime, DateTimeOffset, TimeSpan support custom format string on all target plaftorms.
+// https://learn.microsoft.com/en-us/dotnet/standard/base-types/custom-date-and-time-format-strings
+Utf8String.Format($&quot;Today is {DateTime.Now:yyyy-MM-dd}&quot;);
+</code></pre>
+<p>とにかくDateTimeの書式指定がまともに出来ないのはZString/ZLoggerで一番辛かったところなので、それを改善できてとても良かった……。ただしこの対応により、DateTimeの変換性能が落ちているため、性能が最大限引き出せるのは .NET 8 となります。</p>
+<h2>Unity</h2>
+<p>Unity対応はありません！いや、可能な限り私は .NET と Unityの両対応のライブラリを作りたいと思っていて、実際今までもそうしてきているわけですが、今回ばかりはどうにもならないのです。そもそもImproved Interpolated Stringsが C# 10.0 からで、Unityの現在のC#のバージョンは C# 9.0……！さすがにそれはどうにもならない。</p>
+<p>C# 9.0で止まってから結構長いんですよね。別にランタイムのバージョンは上げなくてもいいから、コンパイラのバージョンだけ上げて欲しいと切実に思いますが、まぁC# 10.0にしたらDefaultInterpolatedStringHandlerがなくて動作しないじゃんとかなるだろうから、結局はランタイムのバージョンアップもセットでやらなければならない……。</p>
+<p>Unityが C# 10.0 に対応したらすぐに対応させるつもりではあります！待ってます！</p>
+<h2>Next</h2>
+<p>さて、とはいえ、UTF8文字列を直接扱わなければならないケースというのは、別にそんなに多くはないでしょう。実際、私も本命は<a href="https://github.com/Cysharp/ZLogger">ZLogger</a>の大型バージョンアップでの利用を考えています。ZLoggerは今まではZStringベースでしたが、根本からデザインをやり直した新しいものを開発中です。その中の文字列化にUtf8StringInterpolationを使っています。</p>
+<p>といったように、アプリケーションの基盤レイヤーに差し込んであげると有効に機能するシチュエーションは色々あると思います。もちろん、直接使ってもらってもいいのですが……！？</p>
+</div>
+<h1 data-pagefind-sort="date:2023-09-21" data-pagefind-meta="published:2023-09-21"><a href="https://neue.cc/2023/09/21_privateproxy.html">.NET 8 UnsafeAccessor を活用したライブラリ PrivateProxy を公開しました</a></h1>
 <ul class="date"><li>2023-09-21</li></ul>
 <div class="entry_body"><p>PrivateProxyというライブラリを公開しました。つまるところ、privateフィールド/プロパティ/メソッドにアクセスするライブラリなのですが、.NET 8 のUnsafeAccessorという新機能を活用することでNo Reflection、ハイパフォーマンス、AOTセーフになっています。</p>
 <ul>
@@ -2583,294 +2759,6 @@ catch (OperationCanceledException ex) when (ex.CancellationToken == token)
 <p>ということで、かなり面白い感じの内容になるのではないでしょうか、期待……！</p>
 <p>C#がエンタープライズ業界（とは）で強いというのは重々承知だしAzureもシェア高くめっちゃ使われてるんだよ、という話は分かりはするのですが、to Cやスタートアップ企業で積極的に使われる言語になって欲しい、というのがずーっとの願いで、私自身もそうした業界に身をおいて、実績で示し続けて来たと思いますし、これからも引き続き道を示せるようにしていきたいです。</p>
 <p>もちろん、ハイパフォーマンスなC#によって最前線での実力を見せていく、ということも変わらずに……！</p>
-</div>
-<h1 data-pagefind-sort="date:2022-05-11" data-pagefind-meta="published:2022-05-11"><a href="https://neue.cc/2022/05/11_AlterNats.html">AlterNats - ハイパフォーマンスな.NET PubSubクライアントと、その実装に見る.NET 6時代のSocketプログラミング最適化のTips、或いはMagicOnionを絡めたメタバース構築のアーキテクチャについて</a></h1>
-<ul class="date"><li>2022-05-11</li></ul>
-<div class="entry_body"><p>タイトルはここぞとばかりに全盛りにしてみました！今回NATSの.NETクライアント実装としてAlterNatsというライブラリを新しく作成し、公開しました。</p>
-<ul>
-<li><a href="https://github.com/Cysharp/AlterNats">github - Cysharp/AlterNats</a></li>
-</ul>
-<p>公式の既存クライアントの3倍以上、StackExchange.RedisのPubSubと比較して5倍以上高速であり、通常のPubSubメソッドは全てゼロアロケーションです。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/164392256-46d09111-ec70-4cf3-b33d-38dc5d258455.png" alt="image" /></p>
-<p>そもそも<a href="https://nats.io/">NATS</a>とはなんぞやか、というと、クラウドネイティブなPubSubのミドルウェアです。<a href="https://www.cncf.io/">Cloud Native Computing Foundation</a>のincubating projectなので、それなりの知名度と実績はあります。</p>
-<p>PubSubというと、特にC#だと<a href="https://redis.io/">Redis</a>のPubSub機能で行うのが、<a href="https://github.com/StackExchange/StackExchange.Redis">StackExchange.Redis</a>という実績あるライブラリもあるし、AWSやAzure、GCPがマネージドサービスも用意しているしで、お手軽でいいのですが、盲目的にそれを使うのが良いのか少し疑問に思っていました。</p>
-<p>RedisはKVS的な使い方がメインであり、PubSubはどちらかというとオマケ機能であるため</p>
-<ul>
-<li>PubSub専用のモニタリングの欠如</li>
-<li>PubSub用のクラスタリング対応</li>
-<li>マネージドサービスでの価格体系のバランスの悪さ（PubSub特化ならメモリはあまりいらない）</li>
-<li>そもそものパフォーマンス</li>
-</ul>
-<p>といった点が具体的な懸念です。そして、NATSはPubSub専用に特化されているため、そのためのシステムが豊富に組まれているし、性能も申し分なさそうに思えました。しいて欠点を言えばマネージドサービスが存在しないのがネックですが、純粋なPubSubとしての利用ならば永続化処理について考える必要がないので、ミドルウェアとしては運用しやすい部類にはいるのではないかと思っています。（NATS自体はNATS JetStreamという機能によってAt-least / exactly onceの保証のあるメッセージングの対応も可能ですが、そこに対応させるにはストレージが必要になる場合もあります）</p>
-<p>しかし調べていくうちに懸念となったのが公式クライアントである<a href="https://github.com/nats-io/nats.net">nats.net</a>で、あまり使いやすくないのですね。async/awaitにも対応していないし、古くさく、それどころかそもそも.NET的に奇妙に見えるAPIであり、そうなるとパフォーマンスに関しても疑問に思えてくる。</p>
-<p>何故そうなっているかの理由はReadMeにも明記されていて、メンテナンス性のためにGoクライアント(ちなみにNATS Server自体はGoで書かれている)と同じようなコードベースになっている、と。そのためC#的ではない部分が多々あるし、GoとC#ではパフォーマンスを出すための書き方が全く異なるので、あまり良い状況ではなさそう。</p>
-<p>それならば完全にC#に特化して独自に作ってしまうほうがいいだろうということで、作りました。公式クライアントと比べると全ての機能をサポートしているわけではない（JetStreamにも対応していないしLeaf Nodes運用で必須になるであろうTLSにも対応していません）のですが、PubSubのNATS Coreに特化して、まずは最高速を叩き出せるようにしました。PubSub利用する分には機能面での不足はないはずです。</p>
-<p>AlterNatsは公式じゃないAlternativeなNATSクライアントという意味です。まんまですね。割と語感が良いので命名的には結構気に入ってます。</p>
-<h2>Getting Started</h2>
-<p>APIは、<code>nats.net</code>があまりにもC#っぽくなくややこしい、ということを踏まえて、シンプルに、簡単に、C#っぽく書けるように調整しました。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// create connection(default, connect to nats://localhost:4222)
-await using var conn = new NatsConnection();
-
-// for subscriber. await register to NATS server(not means await complete)
-var subscription = await conn.SubscribeAsync&lt;Person&gt;(&quot;foo&quot;, x =&gt;
-{
-    Console.WriteLine($&quot;Received {x}&quot;);
-});
-
-// for publisher.
-await conn.PublishAsync(&quot;foo&quot;, new Person(30, &quot;bar&quot;));
-
-// unsubscribe
-subscription.Dipose();
-
-// ---
-
-public record Person(int Age, string Name);
-</code></pre>
-<p>Subscribeでhandlerを登録し、Publishでメッセージを飛ばす。データは全て自動でシリアライズされます（デフォルトではSystem.Text.Json、MessagePack for C#を用いたハイパフォーマンスなシリアライズも可能な拡張オプションも標準で用意してあります）</p>
-<p>別のURLへの接続や、認証のための設定などを行うNatsOptions/ConnectOptionsはイミュータブルです。そのため、with式で構築するやり方を取っています。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// Options can configure `with` operator
-var options = NatsOptions.Default with
-{
-    Url = &quot;nats://127.0.0.1:9999&quot;,
-    LoggerFactory = new MinimumConsoleLoggerFactory(LogLevel.Information),
-    Serializer = new MessagePackNatsSerializer(),
-    ConnectOptions = ConnectOptions.Default with
-    {
-        Echo = true,
-        Username = &quot;foo&quot;,
-        Password = &quot;bar&quot;,
-    }
-};
-
-await using var conn = new NatsConnection(options);
-</code></pre>
-<p>NATSには標準で結果を受け取るプロトコルも用意されています。サーバー間の簡易的なRPCとして使うと便利なところもあるのではないかと思います。これも<code>SubscribeRequestAsync</code>/<code>RequestAsync</code>という形で簡単に直感的に書けるようにしました（Request側は戻り値の型を指定する必要があるため、型指定が少しだけ冗長になります）</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// Server
-await conn.SubscribeRequestAsync(&quot;foobar&quot;, (int x) =&gt; $&quot;Hello {x}&quot;);
-
-// Client(response: &quot;Hello 100&quot;)
-var response = await conn.RequestAsync&lt;int, string&gt;(&quot;foobar&quot;, 100);
-</code></pre>
-<p>例では <code>await using</code>ですぐに破棄してしまっていますが、基本的にはConnectionはシングルトンによる保持を推奨しています。staticな変数に詰めてもいいし、DIでシングルトンとして登録してしまってもいいでしょう。接続は明示的にConnectAsyncすることもできますが、接続されていない場合は自動で接続を開くようにもなっています。</p>
-<p>コネクションはスレッドセーフで、物理的にも一つのコネクションには一つの接続として繋がり、全てのコマンドは自動的に多重化されます。これにより裏側で自動的にバッチ化された高効率な通信を実現していますが、負荷状況に応じて複数のコネクションを貼った場合が良いケースもあります。AlterNatsではNatsConnectionPoolという複数コネクションを内包したコネクションも用意しています。また、クライアント側で水平シャーディングを行うためのNatsShardingConnectionもあるため、必要に応じて使い分けることが可能です。</p>
-<p>内部のロギングはMicrosoft.Extensions.Loggingで管理されています。<code>AlterNats.Hosting</code>パッケージを使うと、Generic Hostと統合された形で適切なILoggerFactoryの設定と、シングルトンのサービス登録を行ってくれます。</p>
-<p>DIでの取り出しは直接NatsConnectionを使わずに、INatsCommandを渡すことで余計な操作（コネクションの切断など）が出来ないようになります。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">using AlterNats;
-
-var builder = WebApplication.CreateBuilder(args);
-
-// Register NatsConnectionPool, NatsConnection, INatsCommand to ServiceCollection
-builder.Services.AddNats();
-
-var app = builder.Build();
-
-app.MapGet(&quot;/subscribe&quot;, (INatsCommand command) =&gt; command.SubscribeAsync(&quot;foo&quot;, (int x) =&gt; Console.WriteLine($&quot;received {x}&quot;)));
-app.MapGet(&quot;/publish&quot;, (INatsCommand command) =&gt; command.PublishAsync(&quot;foo&quot;, 99));
-
-app.Run();
-</code></pre>
-<h2>メタバースアーキテクチャ</h2>
-<p>Cysharpでは<a href="https://github.com/Cysharp/MagicOnion">MagicOnion</a>という .NET/Unity で使えるネットワークフレームワークを作っているわけですが、AlterNatsはこれと絡めることで、構成の幅を広げることができると考えています、というかむしろそのために作りました。</p>
-<p>クライアントにUnity、サーバーにMagicOnionがいるとして、サーバーが一台構成なら、平和です、繋げるだけですもの。開発の最初とかローカルでは楽なのでこの状態でもいいですね。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/164406771-58318153-c6a7-49c0-b3af-2b8389e2c9c1.png" alt="image" /></p>
-<p>しかし現実的にはサーバーは複数台になるので、そうなると色々なパターンが出てきます。よくあるのが、ロードバランサーを立ててそれぞれが別々のサーバーに繋がっているものを、更に後ろのPubSubサーバーを通して全サーバーに分配するパターン。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/164409016-b6e99f36-bdf7-47a9-80a6-558010963a36.png" alt="image" /></p>
-<p>これはNode.jsのリアルタイムフレームワークである<a href="https://socket.io/">Socket.IO</a>のRedisアダプター、それの.NET版である<a href="https://docs.microsoft.com/ja-jp/aspnet/signalr/overview/getting-started/introduction-to-signalr">SignalR</a>のRedisバックプレーン、もちろんMagicOnionにもあるのですが、このパターンはフレームワークでサポートされている場合も多いです。RedisのPubSubでできることはNATSでもできる、ということで、NATSでもできます。</p>
-<p>これは各サーバーをステートレスにできるのと、スケールしやすいので、Chatなどの実装にはやりやすい。欠点はステートを持ちにくいので、クライアントにステートがあり、データのやり取りをするタイプしか実装できません。サーバー側にステートを持ったゲームロジックは持たせずらいでしょう（ステートそのものは各サーバーで共有できないため）。また、PubSubを通すことによるオーバーヘッドも気になるところかもしれません。</p>
-<p>ロードバランサーを立てる場合、ロードバランサーのスティッキーセッションを活用して一台のサーバーに集約させるというパターンもあります（あるいは独自プロトコルでもリバースプロキシーを全面に立てて、カスタムなロジックで後ろの台を決定することもほぼ同様の話です）。ただし、色々なユーザーを同一サーバーに集約させたいようなケースでは、そのクッキーの発行誰がやるの、みたいなところは変わらずありますね。そこまで決めれるならIPアドレスを返して直繋ぎさせてしまってもいいんじゃないの？というのも真です。</p>
-<p>そうした外側に対象のIPアドレスを教えてくれるサービスがいて、先にそれに問い合わせてから、対象のサーバーへ繋ぎに行くパターンは、古典的ですが安定です。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/164417937-7d1adedb-36ee-453b-9ca6-9d41aded50af.png" alt="image" /></p>
-<p>この場合は同一サーバーに繋ぎにいくためにサーバー内にインメモリでフルにステートを持たせることが出来ますし、いわゆるゲームループを中で動かして処理するようなこともできます。また、画面のないヘッドレスUnityなどをホストして、クライアントそのものをサーバー上で動かすこともできますね。</p>
-<p>しかし、このパターンは素直なようでいて、実際VMだとやりやすいのですが、Kubernetesでやるのは難しかったりします。というのも、Kubernetesの場合は外部にIPが露出していないため、クラスター内の一台の特定サーバーに繋ぎにいくというのが難しい……！</p>
-<p>このような場合に最近よく活用されているのが<a href="https://agones.dev/site/">Agones</a>というGoogleが主導して作っているKubernetesの拡張で、まさにゲーム向きにKubernetesを使えるようにするためのシステムです。</p>
-<p>ただし、これはこれで難点があって、Agonesが想定しているゲームサーバーは1プロセス1ゲームセッション(まさにヘッドレスUnityのような)のホスティングであるため、1つのプロセスに多数のゲームセッションをホストさせるような使い方はそのままだと出来ません。コンテナなので、仮想的なプロセスを複数立ち上げればいいでしょ、というのが思想なのはわからなくもないのですが、現実的には軽量なゲームサーバー（それこそMagicOnionで組んだりする場合）なら、1プロセスに多数のゲームセッションを詰め込めれるし、これをコンテナで分けて立ち上げてしまうとコスト面では大きな差が出てしまいます。</p>
-<p>さて、Cysharpではステートフルな、特にゲームに向いたC#サーバーを構築するための補助ライブラリとして<a href="https://github.com/Cysharp/LogicLooper">LogicLooper</a>というゲームループを公開しています。このライブラリはこないだリリースした<a href="https://neue.cc/2022/04/08_priconne-grandmasters.html">プリコネ！グランドマスターズ</a>でも使用していますが、従来MagicOnionと同居して使っていたLogicLooperを、剥がしたアーキテクチャはどうだろうか、という提案があります。（実際のプリコネ！グランドマスターズのアーキテクチャはMagicOnionと同居し、リバースプロキシーを使った方式を採用しているので（↑の画像のものに近い）、この案とは異なります）</p>
-<p><img src="https://user-images.githubusercontent.com/46207/164417734-f2ec80e7-f12f-4a84-8252-ce28f9b53f05.png" alt="image" /></p>
-<p>パーツが増えて複雑になったように見えて、この構成には大きな利点があります。まず、同居しているものがなくなったので複雑になったようで実はシンプルになっています。それぞれがそれぞれの役割にフルに集中できるようになるため、パフォーマンスも良くなり、かつ、性能予測もしやすくなります。特にロジックをフルに回転させるLogicLooperがクライアントや接続数の影響を受けずに独立できているのは大きな利点です。</p>
-<p>ゲーム全体のステートはLogicLooper自体が管理するため、クライアントとの接続を直接受けているMagicOnion自体はステートレスな状態です。そのため、インフラ的にもロードバランサーの下にMagicOnionを並べるだけで済みますし、サーバー間の接続に伴う面倒事は全てNATSに押し付けられるため、インフラ管理自体はかなりシンプルな構成が取れます。</p>
-<p>また、MagicOnion自体はステートを持てるシステムであり、各ユーザーそれぞれのステートを持つのは容易です（サーバーを越えなければいい）。そこで、LogicLooperから届いたデータのうち、繋がってるユーザーに届ける必要がないデータは、MagicOnionの持つユーザーのステートを使ってカリング処理をして、そもそも転送しなかったり間引いたりして通信量を削減することで、ユーザーの体験が良くなります。</p>
-<p>各ユーザーから届くデータを使ったステート更新/データ送信に関しては、LogicLooperがゲームループ状になっているので、ループの間に溜まったデータをもとにしてバッチ処理を行えばいいでしょう。バッチ化というと、通信「回数」の削減のためのコマンドを単純にまとめあげて一斉送信するものと、内容を見て処理内容を縮小するパターンが考えられますが、LogicLooperを使ったアプローチでは後者を効率的に行なえます。前者のコマンドの一斉送信に関しては、AlterNatsが裏側で自動パイプライニング化としてまとめているので（後で詳しく説明します）、そこに関しても効率化されています。</p>
-<p>このアーキテクチャで気になるのがPubSub通信のオーバーヘッドですが、それに関しての解決策がAlterNatsで、究極的に高速なクライアントがあれば（さすがにインメモリには到底及ばないとはいえ）、そもそものクライアントとサーバーの間にもネットワークがいるわけで、経路のトータルで見れば実用的な範囲に収められる。という想定で作りました。</p>
-<p>ところで、そして究極的な利点は、全てC#で組めるということです。どういうことかというと、MagicOnionもLogicLooperも汎用的なC#フレームワークです。特別なプラグインを差し込んで処理するというわけではなくて、ふつーのC#コードをふつーに書くことで、それぞれの箇所に、アプリケーション固有のコードを仕込んでいくことができる。これが、本当の大きな利点です。専用のC++ミドルウェアを作って挟んで最適化できるぞ！などといったシステムは、素晴らしいことですが、専門性が高く再現性が低い。MagicOnionとLogicLooper、そしてAlterNatsを活用したこの構成なら、C#エンジニアなら誰でも（容易に）できる構成です。<a href="https://cysharp.co.jp/">Cysharp</a>のメッセージは「C#の可能性を切り開いていく」ですが、誰もが実現できる世界を作っていくというのが目標でもあります。</p>
-<p>なお、ワーカーとしてのLogicLooperを作るに<a href="https://docs.microsoft.com/ja-jp/dotnet/core/extensions/workers">Worker Service</a>という.NET 6からのプロジェクトタイプが適切です。</p>
-<h2>ハイパフォーマンスSocketプログラミング</h2>
-<ul>
-<li>Socket API</li>
-</ul>
-<p>C#で最も低レベルにネットワーク処理を扱えるクラスは<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.net.sockets.socket">Socket</a>です。そして、非同期でハイパフォーマンスな処理を求めるなら<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.net.sockets.socketasynceventargs">SocketAsyncEventArgs</a>をうまく再利用しながらコールバックを仕込む必要があります。</p>
-<p>これは非常に厄介で些か難易度も高いのですが、現在はasync/awaitの時代、ちゃんとawaitできる***Asyncメソッド郡が用意されています。しかし、使ってはいけないAPI、使ってはいけないオーバーロードも並んでいるので、その選別が必要です。SocketのAPIは歴史的事情もあり混沌としてしまっているのです……。</p>
-<p>使うべきAPIを分かりやすく見分ける手段があります。それは戻り値が <code>ValueTask</code> のものを選ぶことです。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public ValueTask ConnectAsync(string host, int port, CancellationToken cancellationToken)
-public ValueTask&lt;int&gt; ReceiveAsync(Memory&lt;byte&gt; buffer, SocketFlags socketFlags, CancellationToken cancellationToken)
-public ValueTask&lt;int&gt; SendAsync(ReadOnlyMemory&lt;byte&gt; buffer, SocketFlags socketFlags, CancellationToken cancellationToken))
-</code></pre>
-<p>オーバーロードにはTask返しのものもあるので、気をつけてください。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// これらのAPIは使ってはいけない
-public Task ConnectAsync(string host, int port)
-public Task&lt;int&gt; ReceiveAsync(ArraySegment&lt;byte&gt; buffer, SocketFlags socketFlags)
-public Task&lt;int&gt; SendAsync(ArraySegment&lt;byte&gt; buffer, SocketFlags socketFlags)
-</code></pre>
-<p>ValueTask返しのAPIは内部的には <code>AwaitableSocketAsyncEventArgs</code> というものがValueTaskの中身になるようになっていて、これがいい感じに使いまわされる(awaitされると内部に戻るようになっている）ことで、Taskのアロケーションもなく効率的な非同期処理を実現しています。<code>SocketAsyncEventArgs</code>の使いにくさとは雲泥の差なので、これは非常にお薦めできます。</p>
-<p>また、同期APIはSpanを受け取れるのですが、非同期APIは（ステートをヒープに置く都合上）Memoryしか受け取れないことには注意してください。これはSocketプログラミングに限らず非同期系APIにおける一般的な話で、全体的に上手く組んでおかないと、Spanが使えないことが障壁になることがあります。必ず、Memoryで取り回せるようにしておきましょう。</p>
-<ul>
-<li>テキストプロトコルのバイナリコード判定</li>
-</ul>
-<p><a href="https://docs.nats.io/reference/reference-protocols/nats-protocol">NATSのプロトコル</a>はテキストプロトコルになっていて、文字列処理で簡単に切り出すことができます。実際これはStreamReaderを使うことで簡単にプロトコルの実装ができます。ReadLineするだけですから。しかし、ネットワークに流れるのは(UTF8)バイナリデータであり、文字列化は無駄なオーバーヘッドとなるため、パフォーマンスを求めるなら、バイナリデータのまま処理する必要があります。</p>
-<p>NATSでは先頭の文字列(<code>INFO</code>, <code>MSG</code>, <code>PING</code>, <code>+OK</code>, <code>-ERR</code>など)によって流れてくるメッセージの種類が判定できます。文字列処理で空白でSplitして if (msg == &quot;INFO&quot;) などとすればめちゃくちゃ簡単ですが、先にも言った通り文字列変換は意地でも通しません。INFOは[73, 78, 70, 79]なので、Slice(0, 4).SequenceEqual で判定するのは悪くないでしょう。<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.memoryextensions.sequenceequal"><code>ReadOnlySpan&lt;byte&gt;</code>のSequenceEqual</a>はめちゃくちゃ最適化されていて、長いものであれば必要であればSIMDとかも使って高速に同値判定します。LINQのSequenceEqualとは別物です！</p>
-<p>しかし、もっと欲張って見てみましょう、プロトコルの識別子はサーバーから送られてくるものは全て4文字以内に収まっています。つまり、これはIntに変換しやすい状態です！というわけで、AlterNatsのメッセージ種判定コードはこうなっています。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// msg = ReadOnlySpan&lt;byte&gt;
-if(Unsafe.ReadUnaligned&lt;int&gt;(ref MemoryMarshal.GetReference&lt;byte&gt;(msg)) == 1330007625) // INFO
-{
-}
-</code></pre>
-<p>これ以上速い判定はできないと思うので、理論上最速ということでいいでしょう。3文字の命令も、直後に必ずスペースや改行が来るので、それを含めた以下のような定数を使って判定に回しています。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">internal static class ServerOpCodes
-{
-    public const int Info = 1330007625;  // Encoding.ASCII.GetBytes(&quot;INFO&quot;) |&gt; MemoryMarshal.Read&lt;int&gt;
-    public const int Msg = 541545293;    // Encoding.ASCII.GetBytes(&quot;MSG &quot;) |&gt; MemoryMarshal.Read&lt;int&gt;
-    public const int Ping = 1196312912;  // Encoding.ASCII.GetBytes(&quot;PING&quot;) |&gt; MemoryMarshal.Read&lt;int&gt;
-    public const int Pong = 1196314448;  // Encoding.ASCII.GetBytes(&quot;PONG&quot;) |&gt; MemoryMarshal.Read&lt;int&gt;
-    public const int Ok = 223039275;     // Encoding.ASCII.GetBytes(&quot;+OK\r&quot;) |&gt; MemoryMarshal.Read&lt;int&gt;
-    public const int Error = 1381123373; // Encoding.ASCII.GetBytes(&quot;-ERR&quot;) |&gt; MemoryMarshal.Read&lt;int&gt;
-}
-</code></pre>
-<p>バイナリプロトコルなら特に何のひねりも必要なく実装できるので、バイナリプロトコルのほうが実装者に優しくて好きです……。</p>
-<ul>
-<li>自動パイプライニング</li>
-</ul>
-<p>NATSプロトコルの書き込み、読み込みは全てパイプライン（バッチ）化されています。これは<a href="https://redis.io/docs/manual/pipelining/">RedisのPipelining</a>の解説が分かりやすいですが、例えばメッセージを3つ送るのに、一つずつ送って、都度応答を待っていると、送受信における多数の往復がボトルネックになります。</p>
-<p>メッセージの送信において、AlterNatsは自動でパイプライン化しています。<a href="https://devblogs.microsoft.com/dotnet/an-introduction-to-system-threading-channels/">System.Threading.Channels</a>を用いてメッセージは一度キューに詰め込まれ、書き込み用のループが一斉に取り出してバッチ化します。ネットワーク送信が完了したら、再び送信処理待ち中に溜め込まれたメッセージを一括処理していく、という書き込みループのアプローチを取ることで、最高速の書き込み処理を実現しました。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/167585601-5634057e-812d-4b60-ab5b-61d9c8c37063.png" alt="image" /></p>
-<p>ラウンドトリップタイムの話だけではなく（そもそもNATSの場合はPublish側とSubscribe側が独立しているので応答待ちというのもないのですが）、システムコールの連続した呼び出し回数を削減できるという点でも効果が高いです。</p>
-<p>なお、.NET最高速ロガーである<a href="https://github.com/Cysharp/ZLogger/">ZLogger</a>でも同じアプローチを取っています。</p>
-<ul>
-<li>一つのオブジェクトに機能を盛る</li>
-</ul>
-<p>Channelに詰め込む都合上、データを書き込みメッセージオブジェクトに入れてヒープに保持しておく必要があります。また、書き込み完了まで待つ非同期メソッドのためのPromiseも必要です。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">await connection.PublishAsync(value);
-</code></pre>
-<p>こうしたAPIを効率よく実装するために、どうしても確保する必要のある一つのメッセージオブジェクト（内部的にはCommandと命名されている）に、あらゆる機能を同居して詰め込みましょう。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">class AsyncPublishCommand&lt;T&gt; : ICommand, IValueTaskSource, IThreadPoolWorkItem, IObjectPoolNode&lt;AsyncPublishCommand&lt;T&gt;&gt;
-
-internal interface ICommand
-{
-    void Write(ProtocolWriter writer);
-}
-
-internal interface IObjectPoolNode&lt;T&gt;
-{
-    ref T? NextNode { get; }
-}
-</code></pre>
-<p>このオブジェクト(<code>AsyncPublishCommand&lt;T&gt;</code>)自体は、T dataを保持して、Socketにバイナリデータとして書き込むための役割(<code>ICommand</code>)をまずは持っています。</p>
-<p>それに加えて<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.threading.tasks.sources.ivaluetasksource">IValueTaskSource</a>であることにより、このオブジェクト自身がValueTaskになります。</p>
-<p>そしてawait時のコールバックとして、書き込みループを阻害しないためにThreadPoolに流す必要があります。そこで従来の<code>ThreadPool.QueueUserWorkItem(callback)</code>を使うと、内部的には <code>ThreadPoolWorkItem</code> を生成してキューに詰め込むため、余計なアロケーションがあります。 .NET Core 3.0から<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.threading.ithreadpoolworkitem">IThreadPoolWorkItem</a>を実装することで、内部の<code>ThreadPoolWorkItem</code>の生成をなくすことができます。</p>
-<p>最後に、同居させることで必要なオブジェクトが1つになりましたが、その1つをプーリングしてゼロアロケーション化します。オブジェクトプールは<code>ConcurrentQueue&lt;T&gt;</code>などを使うと簡単に実装できますが、自分自身をStackのNodeにすることで、配列を確保しないで済むようにしています。また、Nodeの出し入れに関しては、今回のキャッシュの実装では正確に取り出せる必要性はないため、lockは使わず、マルチスレッドで競合が発生した場合はキャッシュミス扱いにして新規生成するようにしています。これはオブジェクトプーリングにおける性能バランスとしては、良いチョイスだと考えています。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">internal sealed class ObjectPool&lt;T&gt;
-    where T : class, IObjectPoolNode&lt;T&gt;
-{
-    int gate;
-    int size;
-    T? root;
-    readonly int limit;
-
-    public ObjectPool(int limit)
-    {
-        this.limit = limit;
-    }
-
-    public int Size =&gt; size;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool TryPop([NotNullWhen(true)] out T? result)
-    {
-        // Instead of lock, use CompareExchange gate.
-        // In a worst case, missed cached object(create new one) but it's not a big deal.
-        if (Interlocked.CompareExchange(ref gate, 1, 0) == 0)
-        {
-            var v = root;
-            if (!(v is null))
-            {
-                ref var nextNode = ref v.NextNode;
-                root = nextNode;
-                nextNode = null;
-                size--;
-                result = v;
-                Volatile.Write(ref gate, 0);
-                return true;
-            }
-
-            Volatile.Write(ref gate, 0);
-        }
-        result = default;
-        return false;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool TryPush(T item)
-    {
-        if (Interlocked.CompareExchange(ref gate, 1, 0) == 0)
-        {
-            if (size &lt; limit)
-            {
-                item.NextNode = root;
-                root = item;
-                size++;
-                Volatile.Write(ref gate, 0);
-                return true;
-            }
-            else
-            {
-                Volatile.Write(ref gate, 0);
-            }
-        }
-        return false;
-    }
-}
-</code></pre>
-<ul>
-<li>Zero-copy Architecture</li>
-</ul>
-<p>Publish/Subscribeするデータは通常、C#の型をJSONやMessagePackなどにシリアライズしたものを流します。この場合、どうしてもbyte[]でやり取りすることが多くなります、例えばStackExchange.Redisの<code>RedisValue</code>の中身は実質byte[]で、送信にせよ受信にせよ、byte[]を生成して保持することになります。</p>
-<p>これを避けるために、ArrayPoolから出し入れしてごまかしてゼロアロケーションにする、みたいなのはありがちではありますが、それでもコピーのコストが発生していることには代わりありません。ゼロアロケーションは当然目指すところですが、ゼロコピーに向けても頑張りましょう！</p>
-<p>AlterNatsのシリアライザーはWriteに<code>IBufferWriter&lt;byte&gt;</code>, Readに<code>ReadOnlySequence&lt;byte&gt;</code>を要求します。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public interface INatsSerializer
-{
-    int Serialize&lt;T&gt;(ICountableBufferWriter bufferWriter, T? value);
-    T? Deserialize&lt;T&gt;(in ReadOnlySequence&lt;byte&gt; buffer);
-}
-
-public interface ICountableBufferWriter : IBufferWriter&lt;byte&gt;
-{
-    int WrittenCount { get; }
-}
-</code></pre>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// 例えばMessagePack for C#を使う場合の実装
-public class MessagePackNatsSerializer : INatsSerializer
-{
-    public int Serialize&lt;T&gt;(ICountableBufferWriter bufferWriter, T? value)
-    {
-        var before = bufferWriter.WrittenCount;
-        MessagePackSerializer.Serialize(bufferWriter, value);
-        return bufferWriter.WrittenCount - before;
-    }
-
-    public T? Deserialize&lt;T&gt;(in ReadOnlySequence&lt;byte&gt; buffer)
-    {
-        return MessagePackSerializer.Deserialize&lt;T&gt;(buffer);
-    }
-}
-</code></pre>
-<p>System.Text.JsonやMessagePack for C#のSerializeメソッドには<code>IBufferWriter&lt;byte&gt;</code>を受け取るオーバーロードが用意されています。<code>IBufferWriter&lt;byte&gt;</code>経由でSocketに書き込むために用意しているバッファーにシリアライザが直接アクセスし、書き込みすることで、Socketとシリアライザ間でのbyte[]のコピーをなくします。</p>
-<p><img src="https://user-images.githubusercontent.com/46207/167587816-c50b0af3-edaa-4a2a-b536-67aed0a5f908.png" alt="image" /></p>
-<p>Read側では、<a href="https://docs.microsoft.com/ja-jp/dotnet/api/system.buffers.readonlysequence-1"><code>ReadOnlySequence&lt;byte&gt;</code></a>を要求します。Socketからのデータの受信は断片的な場合も多く、それをバッファのコピーと拡大ではなく、連続した複数のバッファを一塊として扱うことでゼロコピーで処理するために用意されたクラスが<code>ReadOnlySequence&lt;T&gt;</code>です。</p>
-<p>「ハイパフォーマンスの I/O をより簡単に行えるように設計されたライブラリ」である<a href="https://docs.microsoft.com/ja-jp/dotnet/standard/io/pipelines">System.IO.Pipelines</a>の<code>PipeReader</code>で読み取ったものを扱うのが、よくあるパターンとなります。ただし、AlterNatsではPipelinesは使わずに独自の読み取り機構と<code>ReadOnlySequence&lt;byte&gt;</code>を使用しました。</p>
-<p>System.Text.JsonやMessagePack for C#のSerializeメソッドには<code>IBufferWriter&lt;byte&gt;</code>を受け取るオーバーロードが用意されているため、それを直接渡すことができます。つまり、現代的なシリアライザは<code>IBufferWriter&lt;byte&gt;</code>と<code>ReadOnlySequence&lt;byte&gt;</code>のサポートは必須です。これらをサポートしていないシリアライザはそれだけで失格です。</p>
-<h2>まとめ</h2>
-<p>プロトコルが単純で少ないのでちゃちゃっと作れると思いきや、まあ確かに雑にTcpClientとStreamReader/Writerでやれば秒殺だったのですが、プロトコルって量産部分でしかないので、そこがどんだけ量少なかろうと、基盤の作り込みは相応に必要で、普通に割と時間かかってしまった、のですが結構良い感じに作れたと思います。コード的にも例によって色々な工夫が盛り込まれていますので、是非ソースコードも読んでみてください。</p>
-<p>クライアント側の実装によってパフォーマンスが大きく違うというのはシリアライザでもよくあり経験したことですが、NATSのパフォーマンスを論じるにあたって、その言語のクライアントは大丈夫ですか？というところがあり、そして、C#は大丈夫ですよ、と言えるものになっていると思います。</p>
-<p>NATSの活用に関してはこれからやっていくので実例あるんですか？とか言われると知らんがな、というところですが（ところでMagicOnionはこないだの<a href="https://neue.cc/2022/04/08_priconne-grandmasters.html">プリコネ！グランドマスターズ</a>だけではなく最近特によくあるので、実例めっちゃあります）、これから色々使っていこうかなと思っているので、まぁ是非AlterNatsと共に試してみてください。</p>
 </div>
 <a href="https://neue.cc">Prev |</a>
 <a href="https://neue.cc/3">| Next</a>

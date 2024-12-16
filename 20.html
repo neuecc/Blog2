@@ -74,7 +74,102 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2010-12-31" data-pagefind-meta="published:2010-12-31"><a href="https://neue.cc/2010/12/31_294.html">2010年を振り返る</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2011-01-13" data-pagefind-meta="published:2011-01-13"><a href="https://neue.cc/2011/01/13_295.html">LINQの仕組みと遅延評価の基礎知識</a></h1>
+<ul class="date"><li>2011-01-13</li></ul>
+<div class="entry_body"><p>新年明けましておめでとうございます。その第一弾の記事は<a href="http://www.amazon.co.jp/gp/product/4774145165?ie=UTF8&tag=ilsgeometrati-22&linkCode=as2&camp=247&creative=7399&creativeASIN=4774145165">実践 F# 関数型プログラミング入門</a><img src="http://www.assoc-amazon.jp/e/ir?t=ilsgeometrati-22&l=as2&o=9&a=4774145165" width="1" height="1" border="0" alt="" style="border:none !important; margin:0px !important;" />の書評にしようと思っていたのですが、もう少し時間がかかりそうなので、せっかくの年始は基礎から考えようということで、LINQと遅延評価について最初から解説します。まあ、何をもって最初だとか基礎だとか言うのも難しいので私的な適当な基準で。つまり役に立たな（ry。なお、ここではLinq to Objects、IEnumerable&lt;T&gt;の連鎖についてのみ扱いますので、IQueryableについてはまた後日というか実のところ私はQueryableは全然分かってなくてやるやる詐欺が今も続いているといううがががが。</p>
+<h2>メソッドチェーン != return this</h2>
+<p>例によって単純なコードで。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var query = Enumerable.Range(1, 10).Select(i =&gt; i * i).Take(5);
+foreach (var item in query)
+{
+    Console.WriteLine(item); // 1, 4, 9, 16, 25
+}
+</code></pre>
+<p>1から10を二乗したうちの先頭5つを出力という、それだけのコードです。foreachする場合のinの右側が長くなるのは個人的に好きじゃないので、わざわざ変数に置いたりするのをよくやるのですが、これは好みですかねえ。なのでリスト内包表記とかあんま好きじゃなかったりはする、記法的に。</p>
+<p>それはともかく、ドットで繋げていると実体が隠れてしまいがちなので、分解します。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var rangeEnumerable = Enumerable.Range(1, 10);
+var selectEnumerable = rangeEnumerable.Select(i =&gt; i * i);
+var takeEnumerable = selectEnumerable.Take(5);
+foreach (var item in takeEnumerable)
+{
+    Console.WriteLine(item);
+}
+</code></pre>
+<p>変数だらけでゴチャゴチャして余計に分からない。良く分からないものは、とりま図で。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linq_illustrate_whole.jpg">
+</p>
+<p>こうなってます。中に、一つ前のものを内包している新しいオブジェクトを返しています。メソッドチェーンというと所謂ビルダー的な、もしくはjQueryなんかを想像してしまってチェーン毎に内部の状態が変化して return this するか、もしくは完全に新しいものを生成して返す（array.filter.mapしたら.filterで完全に新しい配列が生成され返って、.mapでも、的な。DeepCopyも同じようなものですか）みたいなのを想像してしまう感もあるのですが、そのどちらでもない。中に仕舞い込んで新しい包を返す。実に副作用レスでピュアい。</p>
+<p>このことはデバッガで確認出来ます。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linq_debugger_whole.jpg">
+</p>
+<p>面白いのはSelectの戻り値の型で、WhereSelectEnumerableIteratorとなっていて、名前のとおりWhereとSelectが統合されていたりします。これは、Where-&gt;Selectが頻出パターンのためパフォーマンス向上のためでしょうねえ。面白いですがユーザー的にはあまり気にすることではないので深追いしないで次へ。</p>
+<p>Takeの戻り値であるTakeIteratorはsourceとして中にSelectの戻り値であるWhereSelectEnumerableIteratorを抱えていて、Selectの戻り値はRangeの戻り値であるRangeIteratorを、中に抱えています。という連鎖が成り立っていることがしっかり確認できました。Visual Studioのデバッガは大変見やすくてよろしい。</p>
+<h2>遅延評価と実行</h2>
+<p>hogeEnumerableに包まれている状態では、まだ何も実行は開始されていません。そう、遅延評価！このままWhereやSkipを繋いでも、新たなhogeEnumerableで包んで返されるだけで実行はされません。ではいつ実行されるかといえば、IEnumerable&lt;T&gt;以外の、何らかの結果を要求した時です。それはToArrayであったり、Maxであったり、foreachであったり。</p>
+<p>foreachを実行した時の動きを、図（但し致命的に分かりづらい）で見ると……</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/linq_pull_cycle.jpg">
+</p>
+<p>まず最初は最外周のtakeEnumerableに対しGetEnumeratorを実行し、IEnumerator&lt;T&gt;を取り出します。そして取り出したIEnumerator&lt;T&gt;に対しMoveNextの実行をすると、その先ではまた中に抱えたIEnumerable&lt;T&gt;に対しGetEnumeratorでIEnumerator&lt;T&gt;を取り出し、の連鎖が大元(この場合はrangeEnumerable)に届くまで続きます。</p>
+<p>大元まで届いたら、いよいよMoveNextの結果が返されます。trueか、falseか。trueの場合は、通常は即座に現在値(Current)の取得も行うので、Currentが根本から下まで降りていくイメージとなります。あとは、どこかのMoveNextがfalseを返してくるまで、その繰り返し。今回はRangeが10個出力、Takeが5個出力なので、Rangeが5回分余りますがTakeで列挙は途中打ち切り。falseを流して終了させます。SumやCountなど値を返すものは、falseが届いたら結果を返しますが今回はforeachなのでvoid、何もなしで終了。</p>
+<h2>イテレータの実装</h2>
+<p>ついでなので、動作の実態であるイテレータも実装します。単純な、0から10までを返すだけのものを例として。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class ZeroToTenIterator : IEnumerator&lt;int&gt;
+{
+    private int current = -1;
+
+    public int Current
+    {
+        get { return current; }
+    }
+
+    public bool MoveNext()
+    {
+        return ++current &lt;= 10;
+    }
+
+    // 必要でなければ空でもいいや、という感じ
+    public void Dispose() { }
+
+    // TじゃないほうはTのほうを返すようにするだけでおk
+    object System.Collections.IEnumerator.Current { get { return Current; } }
+
+    // Resetは産廃なのでスルー、実装しなくていいです、Interfaceからも削られて欲しいぐらい
+    public void Reset() { throw new NotImplementedException(); }
+}
+
+// 使うときはこんな感じでしょーか
+// IEnumerator&lt;T&gt;利用時はusingも忘れないように……
+using (var e = new ZeroToTenIterator())
+{
+    while (e.MoveNext())
+    {
+        Console.WriteLine(e.Current);
+    }
+}
+</code></pre>
+<p>IEnumerator&lt;T&gt;ですが、見てきたとおり、中核となるのはMoveNextとCurrentです、といってもCurrentはキャッシュした値を中継するだけなので、実質実装しなければならないのはMoveNextだけ(場合によりDisposeも)。</p>
+<p>見たとおりに一行の超単純な、10超えるまでインクリメントでtrue、超えたらfalse。なんかとってもいい加減な感じで、falseだろうとMoveNext()を呼んだらCurrentの値がどんどん増加していっちゃって大丈夫か？というと、全然問題ない。と、いうのも、そういうのは利用側の問題であって実装側が気にする必要はないから。</p>
+<p>MoveNextする前のCurrentの値は保証されていないので使うな、であり、MoveNextがfalseを返した後のCurrentの値は保証されてないので使うな、です。大事なお約束です。お約束を守れない人は生イテレータを使うべからず。Linqのクエリ演算子やforeachは、そんな他所事を考えないで済むようになっているので、それらを使いましょう。生イテレータを取得したら負けです(拡張メソッド定義時は除く、つまりライブラリ的な局面以外では避けましょう)</p>
+<p>ちなみにStringのイテレータは列挙前/列挙後のCurrentへのアクセスで例外が飛び、List&lt;T&gt;は列挙前は0、列挙後も0にリセットされ、Enumerable.Rangeでは列挙後は最後の値が返る、といったように、実際に挙動はバラバラです。</p>
+<p>実装側が守らなければならないルールは、MoveNextが一度falseを返したら、以後はずっとfalseを返し続けること。で、その観点で、このZeroToTenIteratorを見ると、実のところ全然ダメです。MoveNextがint.MaxValue回呼び出されるとcurrentがオーバーフローしてint.MinValueになって、つまりはMoveNextの結果もfalseからtrueに変わってしまいます。腐ってますね。殺害されるべき。誰がそんなに呼ぶんだよ、という感じに普段はあんま気にしないゆとりな私ですが、いえいえ、こういう時ぐらいは気にしたりします。</p>
+<p>オーバーフローはうっかりで見落としがちなので、ヘラヘラゆとりゆとりと笑ってないで、普段から注意すべきだと自戒するこの頃。</p>
+<p>まあ、今時はイテレータの手実装なんてする必要ないのですがね！シンプルなものならばLinqの組み合わせで実現出来ますし、そうでないものはyield returnを使えばいいので。手実装じゃなきゃダメなシチュエーションってなにかある、かなあ？</p>
+<h2>まとめ</h2>
+<p>「return thisじゃなくて新しいオブジェクトを返してる」「配列的なイメージで扱えるけれど実体はストリームのほうが近い」「デバッガ素晴らしすぎる」「生禁止」の以上四点でした。</p>
+<p>Linq to ObjectsのJavaScript移植である<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js</a>も同じ仕組みでやっているので、そちらのコードのほうがブラックボックスでなく、また、素直に書いているので分かりやすくお薦め、かどうかは、微妙なところですんがー。ブラックボックスになっている部分(yield returnなど)を表に出しているので(というか出さないと実装出来ない)余計分かりにくい感も。</p>
+<p>で、基礎からのLinqといえば紹介したいシリーズが一つ。</p>
+<p>LondonのGooglerでMicrosoft MVPでC# in Depthの著者でStack Overflowで凄まじい解答量を誇るJon Skeet氏が、Blogで<a href="http://msmvps.com/blogs/jon_skeet/archive/tags/Edulinq/default.aspx">Reimplementing LINQ to Objects</a>と称して、これまた凄まじい勢いで再実装&amp;超詳細な解説をやっているので必見です。</p>
+<p>詳細、どころの話じゃなく詳細で大変ヤバ素晴らしすぎる。単純なサンプルコードと結果を貼ってメソッド紹介、などという記事とは一線を画しすぎるクオリティ。私もこういう記事を書いていきたいものです。こんな量とスピードの両立は超人すぎて無理ですが、今年は記事のクオリティは上げたいですね。</p>
+<iframe src="https://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=1935182471" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<iframe src="https://rcm-jp.amazon.co.jp/e/cm?lt1=_blank&bc1=000000&IS2=1&bg1=FFFFFF&fc1=000000&lc1=0000FF&t=ilsgeometrati-22&o=9&p=8&l=as1&m=amazon&f=ifr&md=1X69VDGQCMF7Z30FM082&asins=0672330792" style="width:120px;height:240px;" scrolling="no" marginwidth="0" marginheight="0" frameborder="0"></iframe>
+<p>C# in Depth 2nd Editionはつい二ヶ月前に出たばかりで、内容も良さそうですね、読んでみたい本です。しかし私の手元には積み本がいっぱいで、とほほ。で、本といえばもう一つ、C# 4.0 Unleashedがもうすぐ(2011/1/14、明日だね)出ます。これは著者がBart De Smet氏なので大注目です。<a href="http://community.bartdesmet.net/blogs/bart/Default.aspx" title="B# .NET Blog">B# .NET Blog</a>でキレキレのLinqコード、だけじゃなくILからSQLからあらゆる領域にエキスパートな凄さを見せているので超楽しみです。こちらは予約してあるので、届くのが本当に楽しみで（洋書なので届くのは月末予定のよう、F#本が読み終えた頃になる予定なのでちょうどいいー）。</p>
+<p>Bart氏は大学時代はベルギーのMicrosoft MVP for Visual C#、その後MicrosoftのWPFチームに入り、現在はCloud Programmability Team、つまりRxを開発しているチームに入ってます。氏が入ってからIQbservableとかヘンテコなのが次々と上がってきて、ますます目が離せない状態に。PDC10では<a href="http://player.microsoftpdc.com/Session/bfa72307-6534-41ad-bcf7-0f4fb9280515">LINQ, Take Two - Realizing the LINQ to Everything Dream</a>というセッションを行ってましたが、これは本当に必見。Linqの過去、そして未来を見る素晴らしいセッションでした。感動しすぎて3回ぐらい見直した。</p>
+<p>LINQは今後「ますます」重要になるので、しっかり土台を固めて、未来へ向かおう！</p>
+</div>
+<h1 data-pagefind-sort="date:2010-12-31" data-pagefind-meta="published:2010-12-31"><a href="https://neue.cc/2010/12/31_294.html">2010年を振り返る</a></h1>
 <ul class="date"><li>2010-12-31</li></ul>
 <div class="entry_body"><p>今年もありがとうございました。無事、更新を続けられました。一応毎年、31日は一年間を振り返っていたようなので、今年も振り返ることにします。</p>
 <p>まず言えるのはもはやゲーマーじゃねえ、ということのようで、悲しいことに。ゲサイトじゃなくなったのはしょうがないとしても、プレイすらしなくなっていました……。今年は過去最高潮にゲームしてません。積みまくりです。こんな自分になるとは想像もつかなかったなあ。とか言いながらもこっそりGeometry Wars 2のEvolvedモードで日本3位ぐらい世界50位ぐらいなスコアに更新していたりはしました。全体的にゲームやらなかったぶん、ジオメトリだけはしっかりやったということで、ヨシとしますか。来年はもっとゲーマーでいたいですね。</p>
@@ -1809,117 +1904,6 @@ static void Main()
 }
 </code></pre>
 <p>つまり、LinqのIEqualityComparerのオーバーロードうぜえ、何がインターフェースだよクソが、Linqならラムダ式だろ、インターフェースとかJava臭いんだよ。無名クラス（別に欲しくはないけど）がないから作るの面倒なんだよ。ということです。あるとそれなりに便利です。</p>
-</div>
-<h1 data-pagefind-sort="date:2010-10-14" data-pagefind-meta="published:2010-10-14"><a href="https://neue.cc/2010/10/14_280.html">Windows Phone 7で同期APIを実現するたった つの冴えないやり方</a></h1>
-<ul class="date"><li>2010-10-14</li></ul>
-<div class="entry_body"><p>Windows Phone 7が発表されました。中々に素晴らしい仕上がりに見えます。米国では来月発売と非常に順調そうですが、日本では…… ローカライズが非常に難しそうに見えました。発売されること自体は全然疑っていませんが、問題は、米国で達成出来ているクオリティをどこまで落とさず持ってこれるか。日本語フォントや日本語入力、今一つなBing Map、但し日本は除くなZune Pass。本体だけではなく、周辺サービスも持ってきて初めてWindows Phone 7の世界が完成する。ということを考えると、大変難しそう。</p>
-<p>その辺はMicrosoft株式会社に頑張ってもらうとして、一開発者的には淡々とアプリ作るだけでする。というわけで、標題のお話。WP7というかSilverlightと、そして例によっていつもの通り、Rxの話です。</p>
-<p>問題です。以下のコードの出力結果(Debug.WriteLineの順序)はどうなるでしょうか。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// 何も変哲もないボタンをクリックしたとする
-void Button_Click(object sender, RoutedEventArgs e)
-{
-    Debug.WriteLine(&quot;start&quot;);
-
-    // 10秒以内にレスポンスが来るとする
-    var req = WebRequest.Create(&quot;http://bing.com/&quot;);
-    req.BeginGetResponse(ar =&gt; Debug.WriteLine(&quot;async&quot;), null);
-
-    Thread.Sleep(10000); // 10秒待機
-    Debug.WriteLine(&quot;end&quot;);
-}
-</code></pre>
-<p>答えは後で。</p>
-<h2>Dispatcher.BeginInvokeとPriority</h2>
-<p>Dispatcherとは何ぞやか。について説明するには余白が狭すぎる。ので軽くスルーしてコードを。Dispatcher.BeginInvokeは通常は別スレッドから単発呼び出しが多いですが、UIスレッド上でDispatcher.BeginInvokeを呼ぶとどうなるでしょう？</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// (WPF)何も変哲もないボタンをクリックしたとする
-void Button_Click(object sender, RoutedEventArgs e)
-{
-    Debug.WriteLine(&quot;start&quot;);
-
-    Dispatcher.BeginInvoke(new Action(() =&gt; Debug.WriteLine(&quot;normal1&quot;)), DispatcherPriority.Normal);
-    Dispatcher.BeginInvoke(new Action(() =&gt; Debug.WriteLine(&quot;background&quot;)), DispatcherPriority.Background);
-    Dispatcher.BeginInvoke(new Action(() =&gt; Debug.WriteLine(&quot;normal2&quot;)), DispatcherPriority.Normal);
-            
-    Debug.WriteLine(&quot;end&quot;);
-}
-</code></pre>
-<p>結果は、start-&gt;end-&gt;normal1-&gt;normal2-&gt;backgroundです。なおDispatcherPriorityはWPFでは設定可能ですが、Silverlightでは設定不可で、内部的には全てBackgroundになります。挙動は以下の図のようになっています。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/dispatcherpriority.jpg">
-</p>
-<p>一番上のブロックが現在実行中メソッド。下のがDispatcher。BeginInvokeで実行キューに優先度付きで突っ込まれて、現在実行中のメソッドが終了したら、キューの中のメソッドが順次、優先度順に実行されます。といったイメージ。</p>
-<h2>問題の答え</h2>
-<p>冒頭の問題の答えは、WPFではstart-&gt;async-&gt;endの順。Silverlight(WP7も含む)ではstart-&gt;end-&gt;asyncの順になります。ええ。WPFとSilverlightで挙動が違うのです！今更何をっていう識者も多そうですが(Silverlightももう4だしねえ)私ははぢめて知りました。はまった。BeginGetResponseはWPFでは(というか普通の.NET環境では)そのまま別スレッド送りで実行されますが、Silverlightでは一旦Dispatcherに突っ込まれた後に実行されるのですねー、といったような雰囲気(なので一つ前でDispatcher.BeginInvokeがどうのという話を挟みました)。</p>
-<p>Silverlightでは、BeginGetResponseはすぐには実行されない。それを踏まえて次へ。</p>
-<h2>非同期 to 同期</h2>
-<p>非同期を同期に変換してみましょう。<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Reactive Extensions for .NET (Rx)</a>で。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">void Button_Click(object sender, RoutedEventArgs e)
-{
-    // 非同期を同期に変換！
-    var req = WebRequest.Create(&quot;http://bing.com/&quot;);
-    var response = Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse).Invoke()
-        .First();
-    Debug.WriteLine(response.ResponseUri);
-}
-</code></pre>
-<p>Rxで非同期を包むと長さ1のReactiveシーケンスとなるので、Firstを使うと同期的に値を取り出せる、という話を前回の記事 <a href="http://neue.cc/2010/10/09_278.html" title="neue cc - Rxを使って非同期プログラミングを簡単に">Rxを使って非同期プログラミングを簡単に</a> でしました。そして実際、上のコードはWPFでは上手く動きます。きっちりブロックして値を取り出せる。勿論、それならGetResponseを使えよという話ではありますが。</p>
-<p>では、Silverlight(勿論WP7でも)では、というと…… 永久フリーズします。理由は、BeginGetResponseはDispatcherに積まれた状態なので、現在実行中のメソッドを抜けない限りは動き出さない。Firstは非同期実行が完了するまでは現在実行中のメソッドで待機し続けるので、結果として、待機しているので実行が始まらない＝実行完了は来ない→永遠に待機。になります。</p>
-<p>結論としては、UIスレッド上で同期的に待つことは不可能です。代替案としてはThreadPoolで丸々包んでしまうということもなくはない。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">void Button_Click(object sender, RoutedEventArgs e)
-{
-    ThreadPool.QueueUserWorkItem(_ =&gt;
-    {
-        var req = WebRequest.Create(&quot;http://bing.com/&quot;);
-        var response = Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)
-            .Invoke()
-            .First();
-        Debug.WriteLine(response.ResponseUri);
-    });
-}
-</code></pre>
-<p>こうすれば、BeginGetResponseが発動するので問題なく待機して値を取り出せます。でも、これじゃあ全然嬉しくもない話で全く意味がない。Rxで包んでいる状態ならば、.Subscribeでいいぢゃん。ということだし。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// 非同期を同期に、そんなことは幻想なのでこう書くのがベストプラクティス
-void Button_Click(object sender, RoutedEventArgs e)
-{
-    var req = WebRequest.Create(&quot;http://bing.com/&quot;);
-    Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)
-        .Invoke()
-        .Subscribe(res =&gt; Debug.WriteLine(res.ResponseUri));
-}
-</code></pre>
-<p>素直に、普通にReactive Extensionsを使うのが、一番簡単に書けます。息を吸うように、ごく自然にそこにあるものとしてRxを使おう。</p>
-<h2>Delegate.BeginInvokeのこと</h2>
-<p>相違点はまだあります。普通の.NET環境ではDelegateのBeginInvokeで非同期実行できますが、Silverlightにはありません。やってみるとNotSupportedExceptionが出ます。じゃあFuncにラップしてみるとどうだろう？</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">void Button_Click(object sender, RoutedEventArgs e)
-{
-    Debug.WriteLine(&quot;start&quot;);
-
-    Action action = () =&gt; Debug.WriteLine(&quot;action&quot;);
-    Func&lt;AsyncCallback, object, IAsyncResult&gt; wrappedBeginInvoke = action.BeginInvoke;
-    wrappedBeginInvoke.Invoke(ar =&gt; Debug.WriteLine(&quot;async&quot;), null);
-
-    Debug.WriteLine(&quot;end&quot;);
-}
-</code></pre>
-<p>WPFではstart-&gt;end-&gt;action-&gt;async。Silverlightではstart-&gt;NotSupportedExceptionの例外。ここまではいいんです。Windows Phone 7でこのコードを試すと、例外出ません。何故か実行出来ます。SilverlightではBeginInvokeは出来ないはずなのに！そして、その実行結果はstart-&gt;action-&gt;end。つまり、非同期じゃない。BeginInvokeじゃない。Invokeとして実行されてる。意味がさっぱりわかりません。</p>
-<p>不思議！不思議すぎたので、MSDNのWindows Phone 7 Forumで聞いてみましたが、良い返答は貰えず。とりあえず、怪しい挙動をしているのは間違いないので、これはやらないほうが無難です。勿論、通常こんなこと書きはしないと思うのですが、RxのFromAsyncPatternをDelegateに対して使おうとするとこうなりますので注意。Delegateの非同期実行したい場合はFromAsyncPetternじゃなくてToAsyncを使いましょう。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">void Button_Click(object sender, RoutedEventArgs e)
-{
-    Debug.WriteLine(&quot;start&quot;);
-
-    // Observable.ToAsync(()=&gt;{})でもいいし、すぐにInvokeするならObservable.Start(()=&gt;{})も有用
-    Action action = () =&gt; Debug.WriteLine(&quot;action&quot;);
-    action.ToAsync().Invoke().Subscribe(_ =&gt; Debug.WriteLine(&quot;async&quot;));
-
-    Debug.WriteLine(&quot;end&quot;);
-}
-</code></pre>
-<p>こうすることで、Rxは内部でBeginInvokeではなくThreadPoolを使うので、問題は起こらずWPFと同じ結果が得られます。</p>
-<h2>まとめ</h2>
-<p>同期的に書くほうが分かりやすいには違いないし、また、非同期が苦痛なのもその通り。でも、非同期を同期に、なんて考えない方がいい。AutoResetEventなどを駆使して擬似的に再現出来たとしても、やっぱ無理ありますし、非同期のメリットを犠牲にしてまでやるものではない。確かに非同期をそのまま扱うのは苦痛だけれど、Rxを使えば緩和される。むしろ慣れれば同期的に書くよりも利点が見えてくるぐらい。無理に同期に変換しようとしないでRxを覚えよう。が、結論です。</p>
-<p>でもドキュメント全然ないし日本語の話なんて皆無で難しいって？ そうですねえ、そうかもですねえ……。このブログも全然順序立ってなくて、思い立ったところから書いてるだけで分かりづらいことこの上ないし。うむむ……。でも、Rxの機能のうち非同期周りの解説に関してはほとんど出せているはずなので、読みにくい文章ですが、目を通してもらえればと思います。</p>
-<p>もしつまづくところがあれば、Twitterで「Reactive Extensions」を投稿文に含めてくれれば、Twitter検索経由で見つけて反応します。(「Rx」だと検索結果が膨大になるので反応出来ません……)。検索を見てるワードとしては、他に「Linq」なども高確率で反応しにいきます←逆に怖いって？すみませんすみません。</p>
-<p>「C#」が検索キーワードに使えたらいいんですけどねえ。「Scala」とか「JavaScript」は常時見てるんですが、かなり活況に流れているんですよ。そういうの見てると、Twitter上のC#な話も漏らさず見たい・参加したいと思ってしまうわけで。</p>
 </div>
 <a href="https://neue.cc/19">Prev |</a>
 <a href="https://neue.cc/21">| Next</a>

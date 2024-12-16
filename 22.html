@@ -74,7 +74,287 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2010-06-29" data-pagefind-meta="published:2010-06-29"><a href="https://neue.cc/2010/06/29_264.html">linq.js ver.2.2.0.0 - 配列最適化, QUnitテスト, RxJSバインディング</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2010-07-05" data-pagefind-meta="published:2010-07-05"><a href="https://neue.cc/2010/07/05_265.html">Rx(Reactive Extensions)を自前簡易再実装する</a></h1>
+<ul class="date"><li>2010-07-05</li></ul>
+<div class="entry_body"><p>という表題でUstreamやりました。<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx">Reactive Extensions for .NET (Rx)</a>のSelect, Where, ToObservable, FromEventを実装することで、挙動を知ろうという企画。結果？酷いものです！</p>
+<p class="noindent">
+<object classid="clsid:d27cdb6e-ae6d-11cf-96b8-444553540000" width="640" height="514" id="utv853786" name="utv_n_38025"><param name="flashvars" value="autoplay=false&locale=ja_JP" /><param name="allowfullscreen" value="true" /><param name="allowscriptaccess" value="always" /><param name="src" value="http://www.ustream.tv/flash/video/8028536" /><embed flashvars="autoplay=false&locale=ja_JP" width="640" height="514" allowfullscreen="true" allowscriptaccess="always" id="utv853786" name="utv_n_38025" src="http://www.ustream.tv/flash/video/8028536" type="application/x-shockwave-flash" /></object>
+</p>
+<p>Shift+Alt+F10はお友達。それにしたってぐだぐだ。想像以上に頭が真っ白。セッションやライブコーディングしてる人は凄いね、と実感する。プレゼンどころか人と話すのも苦手です、な私には敷居が高かった。とにかく説明ができない。デバッガで動かせば分かりやすいよねー、なんてやる前は思ってたんですが、人がデバッガ動かしてるの見ててもさっぱり分かりやすくないよ！ということに途中で気づいて青ざめる。</p>
+<p>まあ、こういうのも経験積まないとダメよね、と考えると、リスクゼロ(見てくれた人には申し訳ないですが)で練習出来るので、これからもネタがあればやっていきたいとは思います。反省は活かして。ネタはあまりないのでリクエストあればお願いします。Ustreamの高画質配信については、去年に書いた<a href="http://neue.cc/2009/06/21_169.html">高画質配信するためのまとめ</a>記事が自分で役に立ったぜ、経験が活きたな、的な。私自身の環境はちょっと、というかかなり変わったのですが、配信の基本的部分に関しては今も昔も(といっても1年前か)変わってなかったね。</p>
+<p>さて、そんなUstreamはともかくとして、Rxの基本的な拡張メソッド「Select, Where」と、基本的な生成メソッド「ToObservable, FromEvent」を自前で実装してみる/デバッガで追ってみましょう。自分の手で動かして追うと理解しやすくなります。なので、以下に出すソースはコピペでもいいので、実際にVisualStudio上で動かしてもらえればと思います。</p>
+<h2>IEnumerableで考える</h2>
+<p>IObservableの拡張メソッド実装、の前に復習を兼ねてIEnumerableの拡張メソッドを実装してみましょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static IEnumerable&lt;TR&gt; Select&lt;T, TR&gt;(IEnumerable&lt;T&gt; source, Func&lt;T, TR&gt; selector)
+{
+    foreach (var item in source)
+    {
+        yield return selector(item);
+    }
+}
+</code></pre>
+<p>恐ろしく簡単です。こんなにも簡単に書けるのは、yield returnのお陰。裏では、コンパイラが自動で対応するIEnumerable, IEnumeratorを生成してくれます。もしこれを教科書通りに自前で書くとしたら</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static IEnumerable&lt;TR&gt; Select&lt;T, TR&gt;(IEnumerable&lt;T&gt; source, Func&lt;T, TR&gt; selector)
+{
+    return new SelectEnumerable&lt;TR&gt;(); // 本当は引数も必要ですが省略
+}
+
+class SelectEnumerable&lt;T&gt; : IEnumerable&lt;T&gt;
+{
+    public IEnumerator&lt;T&gt; GetEnumerator()
+    {
+        return new SelectEnumerator&lt;T&gt;();
+    }
+    // 以下略
+    // IEnumerator IEnumerable.GetEnumerator()
+}
+
+class SelectEnumerator&lt;T&gt; : IEnumerator&lt;T&gt;
+{
+    // Current, Dispose, MoveNextが必要ですが略
+}
+</code></pre>
+<p>ああ、長い。やってられない。こんなものがオブジェクト指向だなどと言うならば、クソったれだと唾を吐きたくなる。そこで、AnonymousHogeパターンを用いれば……</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static IEnumerable&lt;TR&gt; Select&lt;T, TR&gt;(this IEnumerable&lt;T&gt; source, Func&lt;T, TR&gt; selector)
+{
+    return new AnonymousEnumerable&lt;TR&gt;(() =&gt;
+    {
+        var enumerator = source.GetEnumerator();
+        return new AnonymousEnumerator&lt;TR&gt;(
+            () =&gt; enumerator.MoveNext(),
+            () =&gt; selector(enumerator.Current),
+            () =&gt; enumerator.Dispose()
+        );
+    });
+}
+</code></pre>
+<p>驚くほどスッキリ。デザインパターンの本はC#でラムダ式全開でやり直すと、考え方はともかく、コードは全然違った内容になるんじゃないかなあ、とか思いつつ。この突然出てきたAnonymousEnumerableに関しては<a href="http://neue.cc/2009/09/07_198.html">.NET Reactive Framework メソッド探訪第二回:AnonymousEnumerable</a>を参照にどうぞ。去年の9月ですか……。AnonymousObservableも紹介する、といって10ヶ月後にようやく果たせている辺りが、やるやる詐欺すぎて本当にごめんなさい。</p>
+<p>簡単に説明すれば、コンストラクタにラムダ式で各メソッドの本体を与えてあげることで、その場でクラスを作ることが出来るという代物です。クロージャによる変数キャプチャにより、引数を渡し回す必要もないため非常にすっきり書く事ができます。</p>
+<p>これってようするにJavaの無名クラスでしょ？と言うと、その通り。おお、Java、大勝利。なんてこたぁーない。大は小を兼ねない、むしろこれは、小は大を兼ねる事の証明。</p>
+<h2>AnonymousObservable</h2>
+<p>IObservableはIEnumerableのようなコンパイラサポートはないので、自前で書かなければなりません。が、普通に書くと面倒なので、AnonymousObservableを使って書くことにしましょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class AnonymousObservable&lt;T&gt; : IObservable&lt;T&gt;
+{
+    Func&lt;IObserver&lt;T&gt;, IDisposable&gt; subscribe;
+
+    public AnonymousObservable(Func&lt;IObserver&lt;T&gt;, IDisposable&gt; subscribe)
+    {
+        this.subscribe = subscribe;
+    }
+
+    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
+    {
+        return subscribe(observer);
+    }
+}
+
+public class AnonymousObserver&lt;T&gt; : IObserver&lt;T&gt;
+{
+    Action&lt;T&gt; onNext;
+    Action&lt;Exception&gt; onError;
+    Action onCompleted;
+
+    public AnonymousObserver(Action&lt;T&gt; onNext, Action&lt;Exception&gt; onError, Action onCompleted)
+    {
+        this.onNext = onNext;
+        this.onError = onError;
+        this.onCompleted = onCompleted;
+    }
+
+    public void OnCompleted()
+    {
+        onCompleted();
+    }
+
+    public void OnError(Exception error)
+    {
+        onError(error);
+    }
+
+    public void OnNext(T value)
+    {
+        onNext(value);
+    }
+}
+
+public class AnonymousDisposable : IDisposable
+{
+    Action dispose;
+    bool isDisposed = false;
+
+    public AnonymousDisposable(Action dispose)
+    {
+        this.dispose = dispose;
+    }
+
+    public void Dispose()
+    {
+        if (!isDisposed)
+        {
+            isDisposed = true;
+            dispose();
+        }
+    }
+}
+</code></pre>
+<p>そのまま書き出すだけなので、難しいことは何一つありませんが、面倒くさい……。なお、今回はRx抜きでの実装のためこうして自前で定義していますが、RxにはObservable.Create/CreateWithDisposable、Observer.Create、Disposable.Createというメソッドが用意されていて、それらは今回定義したAnonymousHogeと同一です。new ではなくCreateメソッドで生成するため型推論が効くのが嬉しい。</p>
+<h2>Observable.Select/Where</h2>
+<p>下準備が済んだので実装していきましょう。まずはSelect。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static IObservable&lt;R&gt; Select&lt;T, TR&gt;(this IObservable&lt;T&gt; source, Func&lt;T, TR&gt; selector)
+{
+    return new AnonymousObservable&lt;TR&gt;(observer =&gt; source.Subscribe(
+        new AnonymousObserver&lt;T&gt;(
+            t =&gt; observer.OnNext(selector(t)),
+            observer.OnError,
+            observer.OnCompleted)));
+}
+</code></pre>
+<p>Enumerableと似ているようで非常に分かりにくい。AnonymousObservableの引数のラムダ式は、Subscribeされた時に実行されるもの。というわけで、突然出てきているかのような引数のobserverは、Subscribeによって一つ後ろのメソッドチェーンから渡されるものとなります。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">Observable.Range(1, 10) // これがsource
+    .Select(i =&gt; i * i)
+    .Subscribe(i =&gt; Console.WriteLine(i)); // これがobserver
+</code></pre>
+<p>こんな前後関係の図式になっています。ドットの一つ前のメソッドがsource、一つ後ろのメソッドがobserver。
+最終的な目的としては元ソースからOnNext-&gt;OnNext-&gt;OnNextと値を伝搬させる必要があるわけですが、元ソースは末端どころか次に渡す先すら知りません。そのため、まず最初(Subscribeされた時)にsource.Subscribeの連鎖で元ソースまで遡ってやる必要がある、というわけです。非常に説明しづらいのでデバッガで追ってみてください。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static IObservable&lt;T&gt; Where&lt;T&gt;(this IObservable&lt;T&gt; source, Func&lt;T, bool&gt; predicate)
+{
+    return new AnonymousObservable&lt;T&gt;(observer =&gt; source.Subscribe(
+        new AnonymousObserver&lt;T&gt;(
+            t =&gt; { if (predicate(t)) observer.OnNext(t); },
+            observer.OnError,
+            observer.OnCompleted)));
+}
+</code></pre>
+<p>WhereはSelectのOnNext部分が違うだけのもの。コピペ量産体制。</p>
+<h2>ToObservable</h2>
+<p>Selectなどと同じくreturn new AnonymousObservableですが、もうSubscribeはしません(そもそもIObservable sourceがないので出来ないですが)。ここからは、末端から伝達されてきたobserverに対して値をPushしてやります。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static IObservable&lt;T&gt; ToObservable&lt;T&gt;(this IEnumerable&lt;T&gt; source)
+{
+    return new AnonymousObservable&lt;T&gt;(observer =&gt;
+    {
+        var isErrorOccured = false;
+        try
+        {
+            foreach (var item in source)
+            {
+                observer.OnNext(item);
+            }
+        }
+        catch (Exception e)
+        {
+            isErrorOccured = true;
+            observer.OnError(e);
+        }
+        if (!isErrorOccured) observer.OnCompleted();
+
+        return new AnonymousDisposable(() =&gt; { });
+    });
+}
+</code></pre>
+<p>Subscribeされると即座にforeachが回ってOnNext呼びまくる。ToObservableはHot or ColdのうちColdで、Subscribeされるとすぐに値が列挙されるわけです。Coldってのは、なんてことはなく、ようはすぐforeachされるからってだけの話でした。</p>
+<p>戻り値のIDisposableは、FromEventではイベントのデタッチなどの処理がありますが、ToObservableでは何もする必要がないので何も無し。</p>
+<h2>FromEvent徹底解剖</h2>
+<p>Coldだけでは、別にEnumerbaleと全然変わらなくて全く面白くないので、Hot Observableも見てみます。Hotの代表格はFromEvent。そんなFromEventには4つのオーバーロードがあります。せっかくなので、細かく徹底的に見てみましょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class EventSample
+{
+    public event EventHandler BlankEH;
+    public event EventHandler&lt;SampleEventArgs&gt; GenericEH;
+    public event SampleEventHandler SampleEH;
+}
+
+public class SampleEventArgs : EventArgs { }
+public delegate void SampleEventHandler(object sender, SampleEventArgs e);
+
+static void Main(string[] args)
+{
+    var sample = new EventSample();
+    // 1. EventHandlerに対応するもの
+    Observable.FromEvent(
+        h =&gt; sample.BlankEH += h, h =&gt; sample.BlankEH -= h);
+    // 2. EventHandler&lt;EventArgs&gt;に対応するもの
+    Observable.FromEvent&lt;SampleEventArgs&gt;(
+        h =&gt; sample.GenericEH += h, h =&gt; sample.GenericEH -= h);
+    // 3. 独自EventHandlerに対応するもの
+    Observable.FromEvent&lt;SampleEventHandler, SampleEventArgs&gt;(
+        h =&gt; new SampleEventHandler(h),
+        h =&gt; sample.SampleEH += h, h =&gt; sample.SampleEH -= h);
+    // 4. リフレクション
+    Observable.FromEvent&lt;SampleEventArgs&gt;(sample, &quot;GenericEH&quot;);
+    Observable.FromEvent&lt;SampleEventArgs&gt;(sample, &quot;SampleEH&quot;);
+}
+</code></pre>
+<p>FromEventと言ったら文字列で渡して―― という感じだったりですが、むしろそれのほうが例外的なショートカットで、基本はeventをadd/removeする関数を渡します。3つもありますが、基本的には三番目、conversionが必要なものが最も多く出番があるでしょうか。ただのEventHandlerなんて普通は使わないし、ジェネリクスのEventHandlerもほとんど見かけないしで、どうせみんな独自のEventHandlerなんでしょ、みたいな。もしEventHandler&lt;T&gt;で統一されていれば、こんな面倒くさいconversionなんて必要なかったのに！もしくは、みんなAction&lt;object, TEventArgs&gt;で良かった。名前付きデリゲートの氾濫の弊害がこんなところにも……。</p>
+<p>実際のとこ文字列渡しで良いよねー、と思います。リフレクションのコストはどうせ最初の一回だけだし。リファクタリング効かないといっても、別にイベントの名前なんて変更しないっしょっていうか、フレームワークに用意されてるイベントは固定だし、って話ですし。</p>
+<h2>FromEventの作成</h2>
+<p>そんなわけで、今回は3引数のFromEventを作ります。FromEventの戻り値はIEventなので、IEventの定義も一緒に。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public interface IEvent&lt;TEventArgs&gt; where TEventArgs : EventArgs
+{
+    object Sender { get; }
+    TEventArgs EventArgs { get; }
+}
+
+public class AnonymousEvent&lt;TEventArgs&gt; : IEvent&lt;TEventArgs&gt; where TEventArgs : EventArgs
+{
+    readonly object sender;
+    readonly TEventArgs eventArgs;
+
+    public AnonymousEvent(object sender, TEventArgs eventArgs)
+    {
+        this.sender = sender;
+        this.eventArgs = eventArgs;
+    }
+
+    public object Sender
+    {
+        get { return sender; }
+    }
+
+    public TEventArgs EventArgs
+    {
+        get { return eventArgs; }
+    }
+}
+
+public static IObservable&lt;IEvent&lt;TEventArgs&gt;&gt; FromEvent&lt;TDelegate, TEventArgs&gt;(
+    Func&lt;EventHandler&lt;TEventArgs&gt;, TDelegate&gt; conversion,
+    Action&lt;TDelegate&gt; addHandler,
+    Action&lt;TDelegate&gt; removeHandler) where TEventArgs : EventArgs
+{
+    return new AnonymousObservable&lt;IEvent&lt;TEventArgs&gt;&gt;(observer =&gt;
+    {
+        var handler = conversion((sender, e) =&gt;
+        {
+            observer.OnNext(new AnonymousEvent&lt;TEventArgs&gt;(sender, e));
+        });
+        addHandler(handler);
+        return new AnonymousDisposable(() =&gt; removeHandler(handler));
+    });
+}
+</code></pre>
+<p>感覚的にはToObservableの時と一緒。Subscribeされたら実行される関数を書く。Subscribe時に実際に実行されるのはaddHandlerだけ。つまりイベント登録。そしてイベントが発火した場合は、conversionのところのラムダ式に書いたものが呼び出される、つまり次のobserverに対してOnNextでIEventを送る。そして、DisposeされたらremoveHandlerの実行。</p>
+<p>これが、Hotなわけですね。つまりSubscribeだけではOnNextが呼ばれず、もう一段階、奥から実行される。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// 実行例としてObservableCollectionなどを用意。
+var collection = new ObservableCollection&lt;int&gt;();
+
+var collectionChanged = Observable.FromEvent&lt;NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs&gt;(
+            h =&gt; new NotifyCollectionChangedEventHandler(h),
+            h =&gt; collection.CollectionChanged += h,
+            h =&gt; collection.CollectionChanged -= h)
+        .Select(e =&gt; (int)e.EventArgs.NewItems[0]);
+
+// attach
+collectionChanged.Subscribe(new AnonymousObserver&lt;int&gt;(i =&gt; Console.WriteLine(i), e =&gt; { }, () =&gt; { }));
+collectionChanged.Subscribe(new AnonymousObserver&lt;int&gt;(i =&gt; Console.WriteLine(i * i), e =&gt; { }, () =&gt; { }));
+
+collection.Add(100); // 100, 10000
+collection.Add(200); // 200, 40000
+</code></pre>
+<p>利用時は大体こんな感じになります。いたって普通。</p>
+<h2>まとめ</h2>
+<p>というわけで実装を見ていきましたが、意外と簡単です。リフレクタでToObservable見たけどこんな簡単じゃなかったぞ！と言われると、そうですね、実際のRxはScheduler(カレントスレッドで実行するかスレッドプールで実行するか、などなどが選べる)が絡むので実装はもう少し、というかもうかなり複雑です。だからこそ惑わされてしまうというわけで、基本的な骨格部分にのみ絞ってみれば十二分にシンプル、というのを掴むのが肝要じゃないかと思います。</p>
+<p>次回は前回予告の通りに、後回しにしちゃってるけれど結合周りを紹介できればいいなあ。あと、FromAsyncか、Timer周辺か、Schedulerか……。RxJSもちゃんと例を出したいし、例を出したいといえば、そう、メソッド紹介だけじゃなく実例も出していきたいなあ、だし。うーん。まあ、ボチボチとやっていきます。最近ほんとRxの知名度・注目度が高まってるような気がしてます。ぐぐる検索で私のへっぽこ記事が上位に出てしまうという現状なので、申し訳ない、じゃなくて、それ相応の責任を果たすという方向で頑張りたいと思います。つまりは記事をちゃんと充実させよう。</p>
+</div>
+<h1 data-pagefind-sort="date:2010-06-29" data-pagefind-meta="published:2010-06-29"><a href="https://neue.cc/2010/06/29_264.html">linq.js ver.2.2.0.0 - 配列最適化, QUnitテスト, RxJSバインディング</a></h1>
 <ul class="date"><li>2010-06-29</li></ul>
 <div class="entry_body"><p><a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">CodePlex - linq.js - LINQ for JavaScript</a></p>
 <p>linq.jsをver 2.2に更新しました。変更事項は、メソッドの追加、配列ラッピング時の動作最適化、ユニットテストのQUnitへの移行、RxJSバインディング追加の4つです(あと、若干のバグフィックスと、RxJS用vsdoc生成プログラムの同梱)。まずは、追加した二つのメソッドについて。</p>
@@ -1903,169 +2183,6 @@ public static class StringExtensions
 <p>out付きの汎用Funcはデフォルトでは定義されていません。なので、自前で定義する必要があります。この辺の話は<a href="http://twitter.com/takeshik" title="Takeshi K. Jiro (残4) (takeshik) on Twitter">@takeshik</a>さんのスライド<a href="http://www.slideshare.net/takeshik/38-lt-funclt-ref-out" title="わんくま東京#38 LT 「Func&amp;lt;&gt; と ref / out 小咄」">わんくま東京#38 LT 「Func&lt;&gt; と ref / out 小咄」</a>が詳しいのでどうぞ。こんなデリゲートは単体では使うことは滅多にないでしょうから、static classの中に閉じ込めておくことで名前空間を汚しません(笑)</p>
 <p>引数にT defaultValueを要求することで、型推論が働いてTryParseを渡す際に明示的な型付けが不要になります。C#の型推論(と言っていいのかな？)がScalaやF#に比べて弱いのは事実なので、ここは、C#でも自然な形で扱えるような誘導、設計が大事です。型を書いたら負けだと思っている、みたいな。まあ、どんなに頑張っても負けるときは負けるので、その時は潔く書くことにします。</p>
 <p>ちなみに、ParseOrDefaultは最初は<a href="http://ideone.com/xJuBC" title="Ideone.com | xJuBC">こんな形</a>でした。酷過ぎる。私は骨の髄まで関数型言語脳ならぬLinq脳なので、とにかくまず無理矢理にでもLinqで処理する方法を考えて、出来上がってふと冷静に眺めると、普通に書けよ馬鹿、ということに気付いて普通に書き直すというサイクルを取ってます。馬鹿すぎる。<a href="http://neue.cc/2010/04/07_250.html" title="neue cc - DbExecutor - Linqで操作しやすいSQL実行ライブラリ">DbExecutor</a>で紹介したyield returnで一個のみの列挙を返すというのを、やたら使って見ちゃったりするところが麻疹。Repeat(value,1) と Repeat(value,int.MaxValue)があればLinqは何でも記述出来るんです病。</p>
-</div>
-<h1 data-pagefind-sort="date:2010-04-07" data-pagefind-meta="published:2010-04-07"><a href="https://neue.cc/2010/04/07_250.html">DbExecutor - Linqで操作しやすいSQL実行ライブラリ</a></h1>
-<ul class="date"><li>2010-04-07</li></ul>
-<div class="entry_body"><ul>
-<li><a href="http://dbexecutor.codeplex.com/" title="DbExecutor - linq based database executor">CodePlex : DbExecutor - linq based database executor</a></li>
-</ul>
-<p><a href="http://neue.cc/2010/04/05_249.html" title="neue cc - C#で原始的にSQLを扱うお話">前回の記事</a>を書いたところ、ついったで素敵な突っ込みを頂けたので、それを元にもう少し練り直してライブラリ化し、CodePlexに公開しました。ライブラリといっても<a href="http://linqcomparer.codeplex.com/" title="AnonymousComparer - lambda compare selector for Linq">AnonymousComparer</a>と同じく単純なものですので、ソースコード一本のみ。ご自由にお使いください。例によってCodePlexでの英語がヤバい（小学生レベル、とりあえず何でもforつけておけばいいだろ、的な）ですね、世の中厳しい。</p>
-<p>Linq to Sqlと名乗りたいところなのですが、本物がありますから名乗れないー。以前はIQueryableじゃないものをLinq to Hogeって言うのはどうよ、なんて思っていたのですが、考えてみるとLinq to XmlもXMLをIEnumerableベースに処理しやすいような構造を持たせたクラス群にすぎず、別にIQueryableは関係ない。Rxもそうで、あれはIEnumerableでもIQueryableでもなく完全に独立している、けれど、Linq to Events。ようするにLinq的な操作が出来ればLinqなわけです。というわけで、これはSqlをIEnumerableベースで処理出来るようにしたLinq to DB。でも本当に超絶薄いラッパーにすぎないのであんまカッコつけた名前付けるのも恥ずかしくDbExecutorという極々普通の名前に落ち着きました。「Linqで操作しやすい」とかいう釣りタイトルをつけてますが、ただたんにIEnumerable返すというだけです。SQL周りは真剣に追いかけると無限泥沼になる気がする(Entity Framework、そして更にその次へと……？)。追いかけてみたいですが、まあ、まずは、一歩目から。</p>
-<p>何で作ったかと言うと、SQLを扱っていて嫌なusing地獄を殺したかったから。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">using (var conn = new SqlConnection(&quot;connectionString&quot;))
-using (var cmd = conn.CreateCommand())
-{
-    conn.Open();
-    cmd.CommandText = &quot;select ....&quot;;
-    using (var reader = cmd.ExecuteReader())
-    {
-        foreach (IDataRecord item in reader)
-        {
-</code></pre>
-<p>ちょっとクエリ呼びたいだけなのに、普通にこの量、このネスト。こんなんだからLLの人に馬鹿にされてしまうんだよ。で、ふと思ったのは、この図式ってもしかしてWebRequestと同じですか？</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">string html;
-var req = (HttpWebRequest)WebRequest.Create(&quot;http://google.co.jp&quot;);
-using (var res = req.GetResponse())
-using (var stream = res.GetResponseStream())
-using (var sr = new StreamReader(stream))
-{
-    html = sr.ReadToEnd();
-}
-</code></pre>
-<p>ちょっとWebからデータを取得したいだけなのに狂ったようにusingを重ねなければならない！そしてもう一つ嫌なのが、変数に渡す際に、usingのスコープが絡むので場合によっては外で定義しなければならないこと。string html;だってさ。嫌だ嫌だ。別にvarが使えないから嫌だと言っているわけじゃなくて(半分はそうなのですが)、代入位置と宣言が離れるのは可読性が落ちます。あとは、単純に不恰好ですしね。そんなWebRequestですが、WebClientという簡単に使えるものが用意されているので、普段はこっちを使うわけです。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">var html = new WebClient().DownloadString(&quot;http://google.co.jp&quot;);
-</code></pre>
-<p>素晴らしい！ 私はWebClientが好きです。簡単なのは良いこと、を体現していますから。ネット上のサンプルがやたらとWebRequestを使うものばかりなことを嘆きます。<a href="http://neue.cc/2009/12/17_230.html">WebRequestとWebClientでCookie認証をする方法</a>とかいう記事を書いたりと、必死に普及に励んだりしていますが中々どうして焼け石に水、ていうか確かに少し凝ったことをやろうとすると面倒くさいのは否めませんね……。</p>
-<p>というわけかで、偉大なるWebClientを見習って、SqlConnectionの一連の流れを抹殺するラッパーを作ってみました。プリミティブなAPIなんて触りたくないっす。プリミティブなものは魅力どころか穢れたものに見えてしまうので、可能な限り隠蔽してやりたいのです。本当は生のSQLだって触りたくないんですけどね……。さて、目標は、簡単に使えることと、usingが極力表に出ないようにすること。とりあえず利用例から。PersonTableというAgeとFirstNameとLastNameが格納されてるテーブルからデータを引っ張ってきます。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// ただの入れ物
-public class Person
-{
-    public string Name { get; set; }
-    public int Age { get; set; }
-}
-
-static class Program
-{
-    static void Main(string[] args)
-    {
-        // 実行→即Closeの場合静的メソッドを用いる(Regexと同じ感覚で)
-        var maxAge = DbExecutor.ExecuteScalar&lt;int&gt;(new SqlConnection(&quot;ConnectionString&quot;),
-            @&quot;select max(Age) from PersonTable&quot;);
-
-        // 接続を維持して複数回実行する場合はインスタンス生成で
-        using (var executor = new DbExecutor(new SqlConnection(&quot;ConnectionString&quot;)))
-        {
-            // 列名とプロパティ名を対比させてマッピング
-            // パラメータはstring.Format的に@p0, @p1などに対して適用される
-            var persons = executor.ExecuteQuery&lt;Person&gt;(@&quot;
-select
-    FirstName + ' ' + LastName as Name,
-    Age
-from PersonTable
-where Age &lt; @p0 and FirstName = @p1&quot;
-                , 20, &quot;Osakana&quot;).ToList(); // 遅延評価なのでusingを抜ける前にリスト化などどうぞ
-
-            // ExecuteReadはIEnumerable&lt;IDataRecord&gt;で一行ずつ取得できる
-            var persons2 = executor.ExecuteRead(@&quot;select * from PersonTable&quot;)
-                .Select(dr =&gt; new
-                {
-                    Age = dr.GetInt32(0),
-                    FirstName = dr.GetString(1),
-                    LastName = dr.GetString(2)
-                });
-        }
-    }
-}
-</code></pre>
-<p>といった感じに、処理用のラッパーにDB接続を渡して実行します。メソッドはExecuteScalar, ExecuteNonQuery, ExecuteRead, ExecuteQueryの4つ。ScalarとNonQueryは普通のと同じ、Readは一行毎に列挙、Queryはオブジェクトへのマッピングが出来ます。4つのメソッドの引数は全て同じで、string query, params object[] parametersになります。パラメータは@p0, @p1, といったように「@p順番」に対して適用されます。</p>
-<p>実行して即座にコネクションを閉じたい場合は静的メソッドを、接続を維持したまま複数実行した場合はインスタンスを生成してください。DbExecutor自体がIDisposableで、Dispose時に中のコネクションに対しDisposeを呼びます。なお、トランザクション関連のメソッドはありませんが、それはTransactionScopeを使ってくださいな。</p>
-<h2>スコープと遅延評価</h2>
-<p>同じ処理はメソッドに括り出す！Don't Repeat Yourself！コピペ禁止！ではあるものの、スコープが絡むと結構難しい。usingは難敵です。以下、実装の一部。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// 実装(一部抜粋)
-public class DbExecutor : IDisposable
-{
-    // usingを共通化させたいんだけど、普通に値返すとスコープ抜けちゃう
-    // →IEnumerableで包んでしまえばいいぢゃない！
-    private IEnumerable&lt;DbCommand&gt; UsingCommand(string query, object[] parameters)
-    {
-        using (var cmd = dbConnection.CreateCommand())
-        {
-            if (dbConnection.State != ConnectionState.Open) dbConnection.Open();
-            cmd.CommandText = query;
-            foreach (var p in parameters.Select((v, i) =&gt; CreateParameter(cmd, &quot;@p&quot; + i, v)))
-            {
-                cmd.Parameters.Add(p);
-            }
-            yield return cmd;
-        }
-    }
-
-    // UsingCommand().First().ExecuteScalar()だとusingを抜けてから実行になるのでダメなのですよー
-    public T ExecuteScalar&lt;T&gt;(string query, params object[] parameters)
-    {
-        return UsingCommand(query, parameters).Select(c =&gt; (T)c.ExecuteScalar()).First();
-    }
-
-    public IEnumerable&lt;IDataRecord&gt; ExecuteRead(string query, params object[] parameters)
-    {
-        return UsingCommand(query, parameters).SelectMany(c =&gt; c.EnumerateAll());
-    }
-}
-
-public static class IDbCommandExtensions
-{
-    public static IEnumerable&lt;IDataRecord&gt; EnumerateAll(this IDbCommand command)
-    {
-        using (var reader = command.ExecuteReader())
-        {
-            while (reader.Read()) yield return reader;
-        }
-    }
-}
-</code></pre>
-<p>UsingCommandメソッドが苦心の跡です。ExecuteScalarとExecuteReadの処理(DbCommand取ってパラメータ足す)を共通化したかったのですが、usingが難敵で。ExecuteScalarはTを返すから即時実行、これをusingで一部括り出すのは簡単なのですが、問題はExecuteRead。IEnumerableを返すから遅延実行で、これに対してusing(cmd){return cmd}なんて関数を使ってしまうと、実行時に即座にusingのスコープを抜けてしまってusingが無効になってしまう(どころかDispose済みになってしまうので実効時エラー)。</p>
-<p>じゃあどうすればいいか、というと、usingに括り出した部分も遅延評価してしまえばいい。そこで要素一つのみでyield returnする。そして、即時評価のものはSelect-&gt;First、遅延評価のものはSelectManyを使うことで、無事Usingを共通化出来ました。おお、Linqは何と素晴らしいのでしょうか！何かと言うと、つまりは、Linq to Objectsの用途はリスト処理だけじゃないんですね。IEnumerableはインフラ。そして、Reactive Extensionsに入っているEnumerableEx.Return(これはEnumerable.Repeat(elem,1)に等しい)の意味合いがジワジワくる。Returnは明らかにHaskell由来の命名で、モナドが(以下略、もしくはナンダッテー)</p>
-<p>で、まあ、利用時は結局データベースとの接続やトランザクションとの兼ね合いもあるので、接続の状態自体は割と意識してないとダメですね。適当なところでToListとでもしておいてください。この辺も含有した上での解決策は課題ですね、今はうまいやり方が全然思いつかない。</p>
-<h2>SQLiteで使う</h2>
-<p>勿論、SqlServer以外でも使えます。<a href="http://sqlite.phxsoftware.com/">System.Data.SQLite</a>で試しましたが、問題なく動きました。というわけで、Hello, SQLite。SQLiteをインストールしたら参照設定にSystem.Data.SQLiteを加えて</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">var builder = new SQLiteConnectionStringBuilder { DataSource = &quot;test.db&quot; };
-
-using (var executor = new DbExecutor(new SQLiteConnection(builder.ConnectionString)))
-{
-    var existsTable = executor.ExecuteRead(@&quot;select * from sqlite_master where type='table' and name = @p0&quot;, &quot;test&quot;)
-        .Any();
-    if (!existsTable)
-    {
-        executor.ExecuteNonQuery(@&quot;create table test (Age, Name)&quot;);
-        executor.ExecuteNonQuery(@&quot;insert into test values(10,'hoge')&quot;);
-        executor.ExecuteNonQuery(@&quot;insert into test values(20,'tako')&quot;);
-        executor.ExecuteNonQuery(@&quot;insert into test values(30,'ika')&quot;);
-    }
-
-    executor.ExecuteRead(@&quot;select * from test where Age &gt;= @p0&quot;, 20)
-        .Select(dr =&gt; new { Age = dr.GetInt32(0), Name = dr.GetString(1) })
-        .ToList()
-        .ForEach(a =&gt; Console.WriteLine(a.Name + &quot;:&quot; + a.Age));
-}
-</code></pre>
-<p>existsTableのクエリはテーブルがあるかないかを調べるもので、一行帰ってくるならテーブルが存在する、何も帰ってこない時はテーブルが存在しない。というわけで、それAny()で、ですね。IEnumerableベースで扱えると、こういうことが非常に楽です。</p>
-<p>それにしてもSystem.Data.SQLiteいいですね、初めて使ったんですが拍子抜けするぐらいに簡単に試せました。インストールしたら参照設定に加えるだけ、DataSourceに直にファイル名指定すれば、あれば読み込み、なければ生成してくれる。データベースは設定が面倒っちいですからねー、こう簡単に出来るのは嬉しいです。</p>
-<h2>おまけ</h2>
-<p>で、まあ、VS2008ならLinq to SQL/Entities使わないのー？って話であり、まあ、ねえ、確かに、ねえ。なので、ひっそりとVS2005バージョンも作ってみました(zipに同梱してあります)。内部的にも(当然)Linq未使用なので
-、VS2008で対象フレームワークが.NET 2.0の場合でも、こちらなら使えます。内部でSelectとかSelectManyを再定義して、拡張メソッドの呼出じゃなくて普通の呼び出しに書き換えただけです。あまりの型推論の効かなさにイライラしました。もうC#2.0に戻るとか無理すぎるだろ常識的に考えて。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">List&lt;Person&gt; persons = executor.ExecuteRead&lt;Person&gt;(@&quot;select * from PersonTable&quot;, null,
-    delegate(IDataRecord dr)
-    {
-        Person p = new Person();
-        p.Age = dr.GetInt32(0);
-        p.Name = dr.GetString(1) + &quot; &quot; + dr.GetString(2);
-        return p;
-    });
-</code></pre>
-<p>ExecuteReadとExecuteQueryは、IEnumerableを返されても困ると思うので、Listを返すようにしています。ExecuteReadはSelectがないので、第三引数でConverterデリゲートを受けるようにして、Selectの代わりにしました。
-使う分には、VS2008のものとさして変わらないと思います。</p>
-<h2>追記</h2>
-<p>初回リリース時の名前はDbExecuterだったんですが、DbExecutorに変更しました。stableとか言っておきながら4時間で撤回とか、殺されていいですね、ほんとすみませんすみません。あまりの恥ずかしさに穴掘って埋まりたいです……。まあ、executerでもよくね？と思わなくもなくもないのですが、実際問題ぐぐる先生の検索結果で大きな差があるので、むしろ変えるなら、たった4時間の今のうちしかない、と思ったので変更しちゃいました。しかし、ああ……。スペルは結構気をつけてるほうだと思ったんだけどなあー。</p>
 </div>
 <a href="https://neue.cc/21">Prev |</a>
 <a href="https://neue.cc/23">| Next</a>

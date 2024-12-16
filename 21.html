@@ -74,7 +74,118 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2010-10-14" data-pagefind-meta="published:2010-10-14"><a href="https://neue.cc/2010/10/14_279.html">XboxInfoTwit - ver.2.2.0.4</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2010-10-14" data-pagefind-meta="published:2010-10-14"><a href="https://neue.cc/2010/10/14_280.html">Windows Phone 7で同期APIを実現するたった つの冴えないやり方</a></h1>
+<ul class="date"><li>2010-10-14</li></ul>
+<div class="entry_body"><p>Windows Phone 7が発表されました。中々に素晴らしい仕上がりに見えます。米国では来月発売と非常に順調そうですが、日本では…… ローカライズが非常に難しそうに見えました。発売されること自体は全然疑っていませんが、問題は、米国で達成出来ているクオリティをどこまで落とさず持ってこれるか。日本語フォントや日本語入力、今一つなBing Map、但し日本は除くなZune Pass。本体だけではなく、周辺サービスも持ってきて初めてWindows Phone 7の世界が完成する。ということを考えると、大変難しそう。</p>
+<p>その辺はMicrosoft株式会社に頑張ってもらうとして、一開発者的には淡々とアプリ作るだけでする。というわけで、標題のお話。WP7というかSilverlightと、そして例によっていつもの通り、Rxの話です。</p>
+<p>問題です。以下のコードの出力結果(Debug.WriteLineの順序)はどうなるでしょうか。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// 何も変哲もないボタンをクリックしたとする
+void Button_Click(object sender, RoutedEventArgs e)
+{
+    Debug.WriteLine(&quot;start&quot;);
+
+    // 10秒以内にレスポンスが来るとする
+    var req = WebRequest.Create(&quot;http://bing.com/&quot;);
+    req.BeginGetResponse(ar =&gt; Debug.WriteLine(&quot;async&quot;), null);
+
+    Thread.Sleep(10000); // 10秒待機
+    Debug.WriteLine(&quot;end&quot;);
+}
+</code></pre>
+<p>答えは後で。</p>
+<h2>Dispatcher.BeginInvokeとPriority</h2>
+<p>Dispatcherとは何ぞやか。について説明するには余白が狭すぎる。ので軽くスルーしてコードを。Dispatcher.BeginInvokeは通常は別スレッドから単発呼び出しが多いですが、UIスレッド上でDispatcher.BeginInvokeを呼ぶとどうなるでしょう？</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// (WPF)何も変哲もないボタンをクリックしたとする
+void Button_Click(object sender, RoutedEventArgs e)
+{
+    Debug.WriteLine(&quot;start&quot;);
+
+    Dispatcher.BeginInvoke(new Action(() =&gt; Debug.WriteLine(&quot;normal1&quot;)), DispatcherPriority.Normal);
+    Dispatcher.BeginInvoke(new Action(() =&gt; Debug.WriteLine(&quot;background&quot;)), DispatcherPriority.Background);
+    Dispatcher.BeginInvoke(new Action(() =&gt; Debug.WriteLine(&quot;normal2&quot;)), DispatcherPriority.Normal);
+            
+    Debug.WriteLine(&quot;end&quot;);
+}
+</code></pre>
+<p>結果は、start-&gt;end-&gt;normal1-&gt;normal2-&gt;backgroundです。なおDispatcherPriorityはWPFでは設定可能ですが、Silverlightでは設定不可で、内部的には全てBackgroundになります。挙動は以下の図のようになっています。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/dispatcherpriority.jpg">
+</p>
+<p>一番上のブロックが現在実行中メソッド。下のがDispatcher。BeginInvokeで実行キューに優先度付きで突っ込まれて、現在実行中のメソッドが終了したら、キューの中のメソッドが順次、優先度順に実行されます。といったイメージ。</p>
+<h2>問題の答え</h2>
+<p>冒頭の問題の答えは、WPFではstart-&gt;async-&gt;endの順。Silverlight(WP7も含む)ではstart-&gt;end-&gt;asyncの順になります。ええ。WPFとSilverlightで挙動が違うのです！今更何をっていう識者も多そうですが(Silverlightももう4だしねえ)私ははぢめて知りました。はまった。BeginGetResponseはWPFでは(というか普通の.NET環境では)そのまま別スレッド送りで実行されますが、Silverlightでは一旦Dispatcherに突っ込まれた後に実行されるのですねー、といったような雰囲気(なので一つ前でDispatcher.BeginInvokeがどうのという話を挟みました)。</p>
+<p>Silverlightでは、BeginGetResponseはすぐには実行されない。それを踏まえて次へ。</p>
+<h2>非同期 to 同期</h2>
+<p>非同期を同期に変換してみましょう。<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx" title="Reactive Extensions for .NET (Rx)">Reactive Extensions for .NET (Rx)</a>で。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">void Button_Click(object sender, RoutedEventArgs e)
+{
+    // 非同期を同期に変換！
+    var req = WebRequest.Create(&quot;http://bing.com/&quot;);
+    var response = Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse).Invoke()
+        .First();
+    Debug.WriteLine(response.ResponseUri);
+}
+</code></pre>
+<p>Rxで非同期を包むと長さ1のReactiveシーケンスとなるので、Firstを使うと同期的に値を取り出せる、という話を前回の記事 <a href="http://neue.cc/2010/10/09_278.html" title="neue cc - Rxを使って非同期プログラミングを簡単に">Rxを使って非同期プログラミングを簡単に</a> でしました。そして実際、上のコードはWPFでは上手く動きます。きっちりブロックして値を取り出せる。勿論、それならGetResponseを使えよという話ではありますが。</p>
+<p>では、Silverlight(勿論WP7でも)では、というと…… 永久フリーズします。理由は、BeginGetResponseはDispatcherに積まれた状態なので、現在実行中のメソッドを抜けない限りは動き出さない。Firstは非同期実行が完了するまでは現在実行中のメソッドで待機し続けるので、結果として、待機しているので実行が始まらない＝実行完了は来ない→永遠に待機。になります。</p>
+<p>結論としては、UIスレッド上で同期的に待つことは不可能です。代替案としてはThreadPoolで丸々包んでしまうということもなくはない。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">void Button_Click(object sender, RoutedEventArgs e)
+{
+    ThreadPool.QueueUserWorkItem(_ =&gt;
+    {
+        var req = WebRequest.Create(&quot;http://bing.com/&quot;);
+        var response = Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)
+            .Invoke()
+            .First();
+        Debug.WriteLine(response.ResponseUri);
+    });
+}
+</code></pre>
+<p>こうすれば、BeginGetResponseが発動するので問題なく待機して値を取り出せます。でも、これじゃあ全然嬉しくもない話で全く意味がない。Rxで包んでいる状態ならば、.Subscribeでいいぢゃん。ということだし。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// 非同期を同期に、そんなことは幻想なのでこう書くのがベストプラクティス
+void Button_Click(object sender, RoutedEventArgs e)
+{
+    var req = WebRequest.Create(&quot;http://bing.com/&quot;);
+    Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)
+        .Invoke()
+        .Subscribe(res =&gt; Debug.WriteLine(res.ResponseUri));
+}
+</code></pre>
+<p>素直に、普通にReactive Extensionsを使うのが、一番簡単に書けます。息を吸うように、ごく自然にそこにあるものとしてRxを使おう。</p>
+<h2>Delegate.BeginInvokeのこと</h2>
+<p>相違点はまだあります。普通の.NET環境ではDelegateのBeginInvokeで非同期実行できますが、Silverlightにはありません。やってみるとNotSupportedExceptionが出ます。じゃあFuncにラップしてみるとどうだろう？</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">void Button_Click(object sender, RoutedEventArgs e)
+{
+    Debug.WriteLine(&quot;start&quot;);
+
+    Action action = () =&gt; Debug.WriteLine(&quot;action&quot;);
+    Func&lt;AsyncCallback, object, IAsyncResult&gt; wrappedBeginInvoke = action.BeginInvoke;
+    wrappedBeginInvoke.Invoke(ar =&gt; Debug.WriteLine(&quot;async&quot;), null);
+
+    Debug.WriteLine(&quot;end&quot;);
+}
+</code></pre>
+<p>WPFではstart-&gt;end-&gt;action-&gt;async。Silverlightではstart-&gt;NotSupportedExceptionの例外。ここまではいいんです。Windows Phone 7でこのコードを試すと、例外出ません。何故か実行出来ます。SilverlightではBeginInvokeは出来ないはずなのに！そして、その実行結果はstart-&gt;action-&gt;end。つまり、非同期じゃない。BeginInvokeじゃない。Invokeとして実行されてる。意味がさっぱりわかりません。</p>
+<p>不思議！不思議すぎたので、MSDNのWindows Phone 7 Forumで聞いてみましたが、良い返答は貰えず。とりあえず、怪しい挙動をしているのは間違いないので、これはやらないほうが無難です。勿論、通常こんなこと書きはしないと思うのですが、RxのFromAsyncPatternをDelegateに対して使おうとするとこうなりますので注意。Delegateの非同期実行したい場合はFromAsyncPetternじゃなくてToAsyncを使いましょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">void Button_Click(object sender, RoutedEventArgs e)
+{
+    Debug.WriteLine(&quot;start&quot;);
+
+    // Observable.ToAsync(()=&gt;{})でもいいし、すぐにInvokeするならObservable.Start(()=&gt;{})も有用
+    Action action = () =&gt; Debug.WriteLine(&quot;action&quot;);
+    action.ToAsync().Invoke().Subscribe(_ =&gt; Debug.WriteLine(&quot;async&quot;));
+
+    Debug.WriteLine(&quot;end&quot;);
+}
+</code></pre>
+<p>こうすることで、Rxは内部でBeginInvokeではなくThreadPoolを使うので、問題は起こらずWPFと同じ結果が得られます。</p>
+<h2>まとめ</h2>
+<p>同期的に書くほうが分かりやすいには違いないし、また、非同期が苦痛なのもその通り。でも、非同期を同期に、なんて考えない方がいい。AutoResetEventなどを駆使して擬似的に再現出来たとしても、やっぱ無理ありますし、非同期のメリットを犠牲にしてまでやるものではない。確かに非同期をそのまま扱うのは苦痛だけれど、Rxを使えば緩和される。むしろ慣れれば同期的に書くよりも利点が見えてくるぐらい。無理に同期に変換しようとしないでRxを覚えよう。が、結論です。</p>
+<p>でもドキュメント全然ないし日本語の話なんて皆無で難しいって？ そうですねえ、そうかもですねえ……。このブログも全然順序立ってなくて、思い立ったところから書いてるだけで分かりづらいことこの上ないし。うむむ……。でも、Rxの機能のうち非同期周りの解説に関してはほとんど出せているはずなので、読みにくい文章ですが、目を通してもらえればと思います。</p>
+<p>もしつまづくところがあれば、Twitterで「Reactive Extensions」を投稿文に含めてくれれば、Twitter検索経由で見つけて反応します。(「Rx」だと検索結果が膨大になるので反応出来ません……)。検索を見てるワードとしては、他に「Linq」なども高確率で反応しにいきます←逆に怖いって？すみませんすみません。</p>
+<p>「C#」が検索キーワードに使えたらいいんですけどねえ。「Scala」とか「JavaScript」は常時見てるんですが、かなり活況に流れているんですよ。そういうの見てると、Twitter上のC#な話も漏らさず見たい・参加したいと思ってしまうわけで。</p>
+</div>
+<h1 data-pagefind-sort="date:2010-10-14" data-pagefind-meta="published:2010-10-14"><a href="https://neue.cc/2010/10/14_279.html">XboxInfoTwit - ver.2.2.0.4</a></h1>
 <ul class="date"><li>2010-10-14</li></ul>
 <div class="entry_body"><ul>
 <li><a href="http://neue.cc/software/xboxinfotwit" title="neue cc - XboxInfoTwit">neue cc - XboxInfoTwit</a></li>
@@ -2237,286 +2348,6 @@ foreach (var methodInfo in typeof(Enumerable).GetMethods().Where(mi =&gt; Attrib
 <h2>T4 Template</h2>
 <p>T4 Templateはかなり良いですね。VisualStudioと密接に動作して、生成出来ないようならエラーですぐ知らせてくれるのが嬉しい。これ大事。超大事。それがないと書けません。C#もそうだけれど、とりあえず書く→コンパイラエラー→直す、をリアルタイムで繰り返せるのは素晴らしい。現代のプログラミング環境はこうでないと、な良さに溢れてます。アドインを入れれば入力補完やシンタックスハイライトも付いてくるので非常に快適。</p>
 <p>T4 Templateは標準搭載の機能だし実に強力なので、積極的に使っていきたいものです。MSDNだと<a href="http://msdn.microsoft.com/ja-jp/library/bb126445.aspx" title="コード生成とテキスト テンプレート">コード生成とテキスト テンプレート</a>辺りかな。例によって、読んでもさっぱり意味がわかりません(笑) 今のところオフィシャルだとこんなドキュメントしかないのかなあ、少し厳しめ。いやまあ、T4自体は構文がシンプルなので、ただ書くだけならサンプル改変で何とかなる、というか、私もサンプル改変以上の機能は知らないのですががが。</p>
-</div>
-<h1 data-pagefind-sort="date:2010-07-05" data-pagefind-meta="published:2010-07-05"><a href="https://neue.cc/2010/07/05_265.html">Rx(Reactive Extensions)を自前簡易再実装する</a></h1>
-<ul class="date"><li>2010-07-05</li></ul>
-<div class="entry_body"><p>という表題でUstreamやりました。<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx">Reactive Extensions for .NET (Rx)</a>のSelect, Where, ToObservable, FromEventを実装することで、挙動を知ろうという企画。結果？酷いものです！</p>
-<p class="noindent">
-<object classid="clsid:d27cdb6e-ae6d-11cf-96b8-444553540000" width="640" height="514" id="utv853786" name="utv_n_38025"><param name="flashvars" value="autoplay=false&locale=ja_JP" /><param name="allowfullscreen" value="true" /><param name="allowscriptaccess" value="always" /><param name="src" value="http://www.ustream.tv/flash/video/8028536" /><embed flashvars="autoplay=false&locale=ja_JP" width="640" height="514" allowfullscreen="true" allowscriptaccess="always" id="utv853786" name="utv_n_38025" src="http://www.ustream.tv/flash/video/8028536" type="application/x-shockwave-flash" /></object>
-</p>
-<p>Shift+Alt+F10はお友達。それにしたってぐだぐだ。想像以上に頭が真っ白。セッションやライブコーディングしてる人は凄いね、と実感する。プレゼンどころか人と話すのも苦手です、な私には敷居が高かった。とにかく説明ができない。デバッガで動かせば分かりやすいよねー、なんてやる前は思ってたんですが、人がデバッガ動かしてるの見ててもさっぱり分かりやすくないよ！ということに途中で気づいて青ざめる。</p>
-<p>まあ、こういうのも経験積まないとダメよね、と考えると、リスクゼロ(見てくれた人には申し訳ないですが)で練習出来るので、これからもネタがあればやっていきたいとは思います。反省は活かして。ネタはあまりないのでリクエストあればお願いします。Ustreamの高画質配信については、去年に書いた<a href="http://neue.cc/2009/06/21_169.html">高画質配信するためのまとめ</a>記事が自分で役に立ったぜ、経験が活きたな、的な。私自身の環境はちょっと、というかかなり変わったのですが、配信の基本的部分に関しては今も昔も(といっても1年前か)変わってなかったね。</p>
-<p>さて、そんなUstreamはともかくとして、Rxの基本的な拡張メソッド「Select, Where」と、基本的な生成メソッド「ToObservable, FromEvent」を自前で実装してみる/デバッガで追ってみましょう。自分の手で動かして追うと理解しやすくなります。なので、以下に出すソースはコピペでもいいので、実際にVisualStudio上で動かしてもらえればと思います。</p>
-<h2>IEnumerableで考える</h2>
-<p>IObservableの拡張メソッド実装、の前に復習を兼ねてIEnumerableの拡張メソッドを実装してみましょう。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public static IEnumerable&lt;TR&gt; Select&lt;T, TR&gt;(IEnumerable&lt;T&gt; source, Func&lt;T, TR&gt; selector)
-{
-    foreach (var item in source)
-    {
-        yield return selector(item);
-    }
-}
-</code></pre>
-<p>恐ろしく簡単です。こんなにも簡単に書けるのは、yield returnのお陰。裏では、コンパイラが自動で対応するIEnumerable, IEnumeratorを生成してくれます。もしこれを教科書通りに自前で書くとしたら</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public static IEnumerable&lt;TR&gt; Select&lt;T, TR&gt;(IEnumerable&lt;T&gt; source, Func&lt;T, TR&gt; selector)
-{
-    return new SelectEnumerable&lt;TR&gt;(); // 本当は引数も必要ですが省略
-}
-
-class SelectEnumerable&lt;T&gt; : IEnumerable&lt;T&gt;
-{
-    public IEnumerator&lt;T&gt; GetEnumerator()
-    {
-        return new SelectEnumerator&lt;T&gt;();
-    }
-    // 以下略
-    // IEnumerator IEnumerable.GetEnumerator()
-}
-
-class SelectEnumerator&lt;T&gt; : IEnumerator&lt;T&gt;
-{
-    // Current, Dispose, MoveNextが必要ですが略
-}
-</code></pre>
-<p>ああ、長い。やってられない。こんなものがオブジェクト指向だなどと言うならば、クソったれだと唾を吐きたくなる。そこで、AnonymousHogeパターンを用いれば……</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public static IEnumerable&lt;TR&gt; Select&lt;T, TR&gt;(this IEnumerable&lt;T&gt; source, Func&lt;T, TR&gt; selector)
-{
-    return new AnonymousEnumerable&lt;TR&gt;(() =&gt;
-    {
-        var enumerator = source.GetEnumerator();
-        return new AnonymousEnumerator&lt;TR&gt;(
-            () =&gt; enumerator.MoveNext(),
-            () =&gt; selector(enumerator.Current),
-            () =&gt; enumerator.Dispose()
-        );
-    });
-}
-</code></pre>
-<p>驚くほどスッキリ。デザインパターンの本はC#でラムダ式全開でやり直すと、考え方はともかく、コードは全然違った内容になるんじゃないかなあ、とか思いつつ。この突然出てきたAnonymousEnumerableに関しては<a href="http://neue.cc/2009/09/07_198.html">.NET Reactive Framework メソッド探訪第二回:AnonymousEnumerable</a>を参照にどうぞ。去年の9月ですか……。AnonymousObservableも紹介する、といって10ヶ月後にようやく果たせている辺りが、やるやる詐欺すぎて本当にごめんなさい。</p>
-<p>簡単に説明すれば、コンストラクタにラムダ式で各メソッドの本体を与えてあげることで、その場でクラスを作ることが出来るという代物です。クロージャによる変数キャプチャにより、引数を渡し回す必要もないため非常にすっきり書く事ができます。</p>
-<p>これってようするにJavaの無名クラスでしょ？と言うと、その通り。おお、Java、大勝利。なんてこたぁーない。大は小を兼ねない、むしろこれは、小は大を兼ねる事の証明。</p>
-<h2>AnonymousObservable</h2>
-<p>IObservableはIEnumerableのようなコンパイラサポートはないので、自前で書かなければなりません。が、普通に書くと面倒なので、AnonymousObservableを使って書くことにしましょう。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public class AnonymousObservable&lt;T&gt; : IObservable&lt;T&gt;
-{
-    Func&lt;IObserver&lt;T&gt;, IDisposable&gt; subscribe;
-
-    public AnonymousObservable(Func&lt;IObserver&lt;T&gt;, IDisposable&gt; subscribe)
-    {
-        this.subscribe = subscribe;
-    }
-
-    public IDisposable Subscribe(IObserver&lt;T&gt; observer)
-    {
-        return subscribe(observer);
-    }
-}
-
-public class AnonymousObserver&lt;T&gt; : IObserver&lt;T&gt;
-{
-    Action&lt;T&gt; onNext;
-    Action&lt;Exception&gt; onError;
-    Action onCompleted;
-
-    public AnonymousObserver(Action&lt;T&gt; onNext, Action&lt;Exception&gt; onError, Action onCompleted)
-    {
-        this.onNext = onNext;
-        this.onError = onError;
-        this.onCompleted = onCompleted;
-    }
-
-    public void OnCompleted()
-    {
-        onCompleted();
-    }
-
-    public void OnError(Exception error)
-    {
-        onError(error);
-    }
-
-    public void OnNext(T value)
-    {
-        onNext(value);
-    }
-}
-
-public class AnonymousDisposable : IDisposable
-{
-    Action dispose;
-    bool isDisposed = false;
-
-    public AnonymousDisposable(Action dispose)
-    {
-        this.dispose = dispose;
-    }
-
-    public void Dispose()
-    {
-        if (!isDisposed)
-        {
-            isDisposed = true;
-            dispose();
-        }
-    }
-}
-</code></pre>
-<p>そのまま書き出すだけなので、難しいことは何一つありませんが、面倒くさい……。なお、今回はRx抜きでの実装のためこうして自前で定義していますが、RxにはObservable.Create/CreateWithDisposable、Observer.Create、Disposable.Createというメソッドが用意されていて、それらは今回定義したAnonymousHogeと同一です。new ではなくCreateメソッドで生成するため型推論が効くのが嬉しい。</p>
-<h2>Observable.Select/Where</h2>
-<p>下準備が済んだので実装していきましょう。まずはSelect。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public static IObservable&lt;R&gt; Select&lt;T, TR&gt;(this IObservable&lt;T&gt; source, Func&lt;T, TR&gt; selector)
-{
-    return new AnonymousObservable&lt;TR&gt;(observer =&gt; source.Subscribe(
-        new AnonymousObserver&lt;T&gt;(
-            t =&gt; observer.OnNext(selector(t)),
-            observer.OnError,
-            observer.OnCompleted)));
-}
-</code></pre>
-<p>Enumerableと似ているようで非常に分かりにくい。AnonymousObservableの引数のラムダ式は、Subscribeされた時に実行されるもの。というわけで、突然出てきているかのような引数のobserverは、Subscribeによって一つ後ろのメソッドチェーンから渡されるものとなります。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">Observable.Range(1, 10) // これがsource
-    .Select(i =&gt; i * i)
-    .Subscribe(i =&gt; Console.WriteLine(i)); // これがobserver
-</code></pre>
-<p>こんな前後関係の図式になっています。ドットの一つ前のメソッドがsource、一つ後ろのメソッドがobserver。
-最終的な目的としては元ソースからOnNext-&gt;OnNext-&gt;OnNextと値を伝搬させる必要があるわけですが、元ソースは末端どころか次に渡す先すら知りません。そのため、まず最初(Subscribeされた時)にsource.Subscribeの連鎖で元ソースまで遡ってやる必要がある、というわけです。非常に説明しづらいのでデバッガで追ってみてください。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public static IObservable&lt;T&gt; Where&lt;T&gt;(this IObservable&lt;T&gt; source, Func&lt;T, bool&gt; predicate)
-{
-    return new AnonymousObservable&lt;T&gt;(observer =&gt; source.Subscribe(
-        new AnonymousObserver&lt;T&gt;(
-            t =&gt; { if (predicate(t)) observer.OnNext(t); },
-            observer.OnError,
-            observer.OnCompleted)));
-}
-</code></pre>
-<p>WhereはSelectのOnNext部分が違うだけのもの。コピペ量産体制。</p>
-<h2>ToObservable</h2>
-<p>Selectなどと同じくreturn new AnonymousObservableですが、もうSubscribeはしません(そもそもIObservable sourceがないので出来ないですが)。ここからは、末端から伝達されてきたobserverに対して値をPushしてやります。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public static IObservable&lt;T&gt; ToObservable&lt;T&gt;(this IEnumerable&lt;T&gt; source)
-{
-    return new AnonymousObservable&lt;T&gt;(observer =&gt;
-    {
-        var isErrorOccured = false;
-        try
-        {
-            foreach (var item in source)
-            {
-                observer.OnNext(item);
-            }
-        }
-        catch (Exception e)
-        {
-            isErrorOccured = true;
-            observer.OnError(e);
-        }
-        if (!isErrorOccured) observer.OnCompleted();
-
-        return new AnonymousDisposable(() =&gt; { });
-    });
-}
-</code></pre>
-<p>Subscribeされると即座にforeachが回ってOnNext呼びまくる。ToObservableはHot or ColdのうちColdで、Subscribeされるとすぐに値が列挙されるわけです。Coldってのは、なんてことはなく、ようはすぐforeachされるからってだけの話でした。</p>
-<p>戻り値のIDisposableは、FromEventではイベントのデタッチなどの処理がありますが、ToObservableでは何もする必要がないので何も無し。</p>
-<h2>FromEvent徹底解剖</h2>
-<p>Coldだけでは、別にEnumerbaleと全然変わらなくて全く面白くないので、Hot Observableも見てみます。Hotの代表格はFromEvent。そんなFromEventには4つのオーバーロードがあります。せっかくなので、細かく徹底的に見てみましょう。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public class EventSample
-{
-    public event EventHandler BlankEH;
-    public event EventHandler&lt;SampleEventArgs&gt; GenericEH;
-    public event SampleEventHandler SampleEH;
-}
-
-public class SampleEventArgs : EventArgs { }
-public delegate void SampleEventHandler(object sender, SampleEventArgs e);
-
-static void Main(string[] args)
-{
-    var sample = new EventSample();
-    // 1. EventHandlerに対応するもの
-    Observable.FromEvent(
-        h =&gt; sample.BlankEH += h, h =&gt; sample.BlankEH -= h);
-    // 2. EventHandler&lt;EventArgs&gt;に対応するもの
-    Observable.FromEvent&lt;SampleEventArgs&gt;(
-        h =&gt; sample.GenericEH += h, h =&gt; sample.GenericEH -= h);
-    // 3. 独自EventHandlerに対応するもの
-    Observable.FromEvent&lt;SampleEventHandler, SampleEventArgs&gt;(
-        h =&gt; new SampleEventHandler(h),
-        h =&gt; sample.SampleEH += h, h =&gt; sample.SampleEH -= h);
-    // 4. リフレクション
-    Observable.FromEvent&lt;SampleEventArgs&gt;(sample, &quot;GenericEH&quot;);
-    Observable.FromEvent&lt;SampleEventArgs&gt;(sample, &quot;SampleEH&quot;);
-}
-</code></pre>
-<p>FromEventと言ったら文字列で渡して―― という感じだったりですが、むしろそれのほうが例外的なショートカットで、基本はeventをadd/removeする関数を渡します。3つもありますが、基本的には三番目、conversionが必要なものが最も多く出番があるでしょうか。ただのEventHandlerなんて普通は使わないし、ジェネリクスのEventHandlerもほとんど見かけないしで、どうせみんな独自のEventHandlerなんでしょ、みたいな。もしEventHandler&lt;T&gt;で統一されていれば、こんな面倒くさいconversionなんて必要なかったのに！もしくは、みんなAction&lt;object, TEventArgs&gt;で良かった。名前付きデリゲートの氾濫の弊害がこんなところにも……。</p>
-<p>実際のとこ文字列渡しで良いよねー、と思います。リフレクションのコストはどうせ最初の一回だけだし。リファクタリング効かないといっても、別にイベントの名前なんて変更しないっしょっていうか、フレームワークに用意されてるイベントは固定だし、って話ですし。</p>
-<h2>FromEventの作成</h2>
-<p>そんなわけで、今回は3引数のFromEventを作ります。FromEventの戻り値はIEventなので、IEventの定義も一緒に。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public interface IEvent&lt;TEventArgs&gt; where TEventArgs : EventArgs
-{
-    object Sender { get; }
-    TEventArgs EventArgs { get; }
-}
-
-public class AnonymousEvent&lt;TEventArgs&gt; : IEvent&lt;TEventArgs&gt; where TEventArgs : EventArgs
-{
-    readonly object sender;
-    readonly TEventArgs eventArgs;
-
-    public AnonymousEvent(object sender, TEventArgs eventArgs)
-    {
-        this.sender = sender;
-        this.eventArgs = eventArgs;
-    }
-
-    public object Sender
-    {
-        get { return sender; }
-    }
-
-    public TEventArgs EventArgs
-    {
-        get { return eventArgs; }
-    }
-}
-
-public static IObservable&lt;IEvent&lt;TEventArgs&gt;&gt; FromEvent&lt;TDelegate, TEventArgs&gt;(
-    Func&lt;EventHandler&lt;TEventArgs&gt;, TDelegate&gt; conversion,
-    Action&lt;TDelegate&gt; addHandler,
-    Action&lt;TDelegate&gt; removeHandler) where TEventArgs : EventArgs
-{
-    return new AnonymousObservable&lt;IEvent&lt;TEventArgs&gt;&gt;(observer =&gt;
-    {
-        var handler = conversion((sender, e) =&gt;
-        {
-            observer.OnNext(new AnonymousEvent&lt;TEventArgs&gt;(sender, e));
-        });
-        addHandler(handler);
-        return new AnonymousDisposable(() =&gt; removeHandler(handler));
-    });
-}
-</code></pre>
-<p>感覚的にはToObservableの時と一緒。Subscribeされたら実行される関数を書く。Subscribe時に実際に実行されるのはaddHandlerだけ。つまりイベント登録。そしてイベントが発火した場合は、conversionのところのラムダ式に書いたものが呼び出される、つまり次のobserverに対してOnNextでIEventを送る。そして、DisposeされたらremoveHandlerの実行。</p>
-<p>これが、Hotなわけですね。つまりSubscribeだけではOnNextが呼ばれず、もう一段階、奥から実行される。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// 実行例としてObservableCollectionなどを用意。
-var collection = new ObservableCollection&lt;int&gt;();
-
-var collectionChanged = Observable.FromEvent&lt;NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs&gt;(
-            h =&gt; new NotifyCollectionChangedEventHandler(h),
-            h =&gt; collection.CollectionChanged += h,
-            h =&gt; collection.CollectionChanged -= h)
-        .Select(e =&gt; (int)e.EventArgs.NewItems[0]);
-
-// attach
-collectionChanged.Subscribe(new AnonymousObserver&lt;int&gt;(i =&gt; Console.WriteLine(i), e =&gt; { }, () =&gt; { }));
-collectionChanged.Subscribe(new AnonymousObserver&lt;int&gt;(i =&gt; Console.WriteLine(i * i), e =&gt; { }, () =&gt; { }));
-
-collection.Add(100); // 100, 10000
-collection.Add(200); // 200, 40000
-</code></pre>
-<p>利用時は大体こんな感じになります。いたって普通。</p>
-<h2>まとめ</h2>
-<p>というわけで実装を見ていきましたが、意外と簡単です。リフレクタでToObservable見たけどこんな簡単じゃなかったぞ！と言われると、そうですね、実際のRxはScheduler(カレントスレッドで実行するかスレッドプールで実行するか、などなどが選べる)が絡むので実装はもう少し、というかもうかなり複雑です。だからこそ惑わされてしまうというわけで、基本的な骨格部分にのみ絞ってみれば十二分にシンプル、というのを掴むのが肝要じゃないかと思います。</p>
-<p>次回は前回予告の通りに、後回しにしちゃってるけれど結合周りを紹介できればいいなあ。あと、FromAsyncか、Timer周辺か、Schedulerか……。RxJSもちゃんと例を出したいし、例を出したいといえば、そう、メソッド紹介だけじゃなく実例も出していきたいなあ、だし。うーん。まあ、ボチボチとやっていきます。最近ほんとRxの知名度・注目度が高まってるような気がしてます。ぐぐる検索で私のへっぽこ記事が上位に出てしまうという現状なので、申し訳ない、じゃなくて、それ相応の責任を果たすという方向で頑張りたいと思います。つまりは記事をちゃんと充実させよう。</p>
 </div>
 <a href="https://neue.cc/20">Prev |</a>
 <a href="https://neue.cc/22">| Next</a>
