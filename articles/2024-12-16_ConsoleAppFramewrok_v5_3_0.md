@@ -51,7 +51,7 @@ var generatorOptions = context.CompilationProvider.Select((compilation, token) =
 
 ConfigureServices/ConfigureLogging/ConfigureConfiguration
 ---
-ゼロディペンデンシーを掲げている都合上、特定のライブラリに依存したコードを生成することができないという制約がConsoleAppFramework v5にはありました。そのため、DIとの統合時に自分でServiceProviderをビルドしなければならないなの、利用には一手間必要でした。そこで、NuGetでのDLLの参照状況を解析し、`Microsoft.Extensions.DependencyInjection.Abstractions`が参照されていると、`ConfigureServices`メソッドが`ConsoleAppBuilder`から使えるという実装を追加しました。
+ゼロディペンデンシーを掲げている都合上、特定のライブラリに依存したコードを生成することができないという制約がConsoleAppFramework v5にはありました。そのため、DIとの統合時に自分でServiceProviderをビルドしなければならないなの、利用には一手間必要でした。そこで、NuGetでのDLLの参照状況を解析し、`Microsoft.Extensions.DependencyInjection`が参照されていると、`ConfigureServices`メソッドが`ConsoleAppBuilder`から使えるという実装を追加しました。
 
 ```csharp
 var app = ConsoleApp.Create()
@@ -79,7 +79,7 @@ var hasDependencyInjection = context.MetadataReferencesProvider
             var name = x.Display;
             if (name == null) continue;
 
-            if (!hasDependencyInjection && name.EndsWith("Microsoft.Extensions.DependencyInjection.Abstractions.dll"))
+            if (!hasDependencyInjection && name.EndsWith("Microsoft.Extensions.DependencyInjection.dll"))
             {
                 hasDependencyInjection = true;
                 continue;
@@ -88,13 +88,13 @@ var hasDependencyInjection = context.MetadataReferencesProvider
             // etc...
         }
 
-        return new DllReference(hasDependencyInjection, hasLogging, hasConfiguration, hasJsonConfiguration, hasHostAbstraction, hasHost);
+        return new DllReference(hasDependencyInjection, hasLogging, hasConfiguration, hasJsonConfiguration, hasHost);
     });
 
 context.RegisterSourceOutput(hasDependencyInjection, EmitConsoleAppConfigure);
 ```
 
-参照の解析は複数のものに対して行っていて、他にも`Microsoft.Extensions.Logging.Abstractions`が参照されていれば`ConfigureLogging`が使えるようになります。なので[ZLogger](https://github.com/Cysharp/ZLogger)と組み合わせれば
+参照の解析は複数のものに対して行っていて、他にも`Microsoft.Extensions.Logging`が参照されていれば`ConfigureLogging`が使えるようになります。なので[ZLogger](https://github.com/Cysharp/ZLogger)と組み合わせれば
 
 
 ```csharp
