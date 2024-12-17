@@ -51,7 +51,7 @@ var generatorOptions = context.CompilationProvider.Select((compilation, token) =
 
 ConfigureServices/ConfigureLogging/ConfigureConfiguration
 ---
-DIとの統合時に自分でServiceProviderをビルドしなければならないなの、利用には一手間必要でした。そこで、`Microsoft.Extensions.DependencyInjection.Abstractions`が参照されていると、`ConfigureServices`メソッドが`ConsoleAppBuilder`から使えるようになりました。
+ゼロディペンデンシーを掲げている都合上、特定のライブラリに依存したコードを生成することができないという制約がConsoleAppFramework v5にはありました。そのため、DIとの統合時に自分でServiceProviderをビルドしなければならないなの、利用には一手間必要でした。そこで、NuGetでのDLLの参照状況を解析し、`Microsoft.Extensions.DependencyInjection.Abstractions`が参照されていると、`ConfigureServices`メソッドが`ConsoleAppBuilder`から使えるという実装を追加しました。
 
 ```csharp
 var app = ConsoleApp.Create()
@@ -65,7 +65,7 @@ app.Add("", ([FromServices] MyService service, int x, int y) => Console.WriteLin
 app.Run(args);
 ```
 
-NuGetの参照状況によってメソッドが増える！という新しいマジカル体験を提供します。これは`MetadataReferencesProvider`から引っ張ってきて生成処理に回しています。
+これによりフレームワークそのものはゼロディペンデンシーでありながら、ライブラリ依存のコードも生成することができるという、新しい体験を提供します。これは`MetadataReferencesProvider`から引っ張ってきて生成処理に回すことで実現しました。
 
 ```csharp
 var hasDependencyInjection = context.MetadataReferencesProvider
@@ -94,7 +94,7 @@ var hasDependencyInjection = context.MetadataReferencesProvider
 context.RegisterSourceOutput(hasDependencyInjection, EmitConsoleAppConfigure);
 ```
 
-`Microsoft.Extensions.Logging.Abstractions`が参照されていれば`ConfigureLogging`が使えるようになります。なので[ZLogger](https://github.com/Cysharp/ZLogger)と組み合わせれば
+参照の解析は複数のものに対して行っていて、他にも`Microsoft.Extensions.Logging.Abstractions`が参照されていれば`ConfigureLogging`が使えるようになります。なので[ZLogger](https://github.com/Cysharp/ZLogger)と組み合わせれば
 
 
 ```csharp
