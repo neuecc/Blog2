@@ -1,5 +1,5 @@
-MasterMemory v3 - Source Generator化したC#用の高速な読み込み専用インメモリデータベース
----
+# MasterMemory v3 - Source Generator化したC#用の高速な読み込み専用インメモリデータベース
+
 [MasterMemory](https://github.com/Cysharp/MasterMemory) v3出しました！ついにSource Generator化されました！
 
 ![image](https://github.com/user-attachments/assets/e804fa52-f6a5-4972-a510-0b3b17a31230)
@@ -41,4 +41,10 @@ C#コードとして生成されるので、クエリが全て入力補完も効
 
 Next
 ---
-[MemoryPack](https://github.com/Cysharp/MermoyPack)対応や、そもそものAPIの更なるモダン化（現状はnetstandard2.0なので古い）、全体的に改修したいところ(ImmutableBuilderなど生成コードの差し替え部分)、などなどやれること自体はめっちゃありますので、折を見て手を入れていけるといいかなあ、と思っています。
+MasterMemory、実は結構使われています。ゲームでも採用されているものを割と見かけるようになりました。なので、外部ツール由来のコード生成の面倒さにはだいぶ心を痛めていたので、ようやく解消できて本当に嬉しい！
+
+v2からv3へのマイグレーションもそんなに大変ではない、はずです。あえて生成コードの品質や、コアの関数、メソッドシグネチャなどには一切手を加えていないので、今までコマンドラインツールを叩いていた部分を削除するだけで、そのまま動き出すぐらいの代物になっています。
+
+そのうえでrecord対応（今までしてなかった！）や#nullable enable対応（今までしてなかった！）を追加しているので、生成部分以外の使い勝手も上がっているはずです。
+
+今後は[MemoryPack](https://github.com/Cysharp/MermoyPack)対応や、そもそものAPIの更なるモダン化（現状はnetstandard2.0なので古い）、全体的に改修したいところ(ImmutableBuilderなど生成コードの差し替え部分)、などなどやれること自体はめっちゃありますので、折を見て手を入れていけるといいかなあ、と思っています。
