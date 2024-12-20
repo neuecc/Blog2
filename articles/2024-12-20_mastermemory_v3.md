@@ -47,4 +47,4 @@ v2からv3へのマイグレーションもそんなに大変ではない、は�
 
 そのうえでrecord対応（今までしてなかった！）や#nullable enable対応（今までしてなかった！）を追加しているので、生成部分以外の使い勝手も上がっているはずです。
 
-今後は[MemoryPack](https://github.com/Cysharp/MermoyPack)対応や、そもそものAPIの更なるモダン化（現状はnetstandard2.0なので古い）、全体的に改修したいところ(ImmutableBuilderなど生成コードの差し替え部分)、などなどやれること自体はめっちゃありますので、折を見て手を入れていけるといいかなあ、と思っています。
+今後は[MemoryPack](https://github.com/Cysharp/MemoryPack)対応や、そもそものAPIの更なるモダン化（現状はnetstandard2.0なので古い）、全体的に改修したいところ(ImmutableBuilderなど生成コードの差し替え部分)、などなどやれること自体はめっちゃありますので、折を見て手を入れていけるといいかなあ、と思っています。
