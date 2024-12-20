@@ -74,7 +74,96 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2011-01-13" data-pagefind-meta="published:2011-01-13"><a href="https://neue.cc/2011/01/13_295.html">LINQの仕組みと遅延評価の基礎知識</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2011-01-17" data-pagefind-meta="published:2011-01-17"><a href="https://neue.cc/2011/01/17_296.html">l2o.js 世界最速分解解説</a></h1>
+<ul class="date"><li>2011-01-17</li></ul>
+<div class="entry_body"><p>l2o.js、でググっても何も出てきませんね！じゃあl2o.jsって何？って話なのですが、その前に、<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896" title="Reactive Extensions for .NET (Rx)">Reactive Extensions</a>が12/24にChristmas Releaseと称してリリースされたわけで、RxJSにも若干更新が入っていました。</p>
+<pre data-pagefind-ignore="all"><code class="language-text">· Fix for scheduling in the Concat, Catch, and OnError operators.
+· If operator can now be used without supplying an “else” case.
+</code></pre>
+<p>特に大したこともないわけでしたが。しかし、インストールディレクトリである Microsoft Cloud Programmability\Reactive Extensions\v1.0.2838.0\RX_JS を見ると、l2o.jsという見慣れないものが……？</p>
+<p>l2o.js、つまり、Linq 2 Objects.js。ええ、ええ……。linq.jsとモロにガチにかちあいそうな匂いがします。RxJS全然更新しないなあ、やる気あんのかよお、JVGoghも辞めちゃったしー、とか思っていたのですが、その裏でこっそりとんでもないものを仕込んでいたようです。いざ出てみると、むしろやらなかったのが不思議なぐらいな。</p>
+<p>では、使ってみましょう。ついでに<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js</a>と比較しましょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-javascript">var array = [12, 21, 4, 5, 36, 3, 10];
+
+// l2o.js
+L2O.Enumerable.FromArray(array)
+    .Where(function (x) { return x % 2 == 0 })
+    .Select(function (x) { return x * x })
+    .ForEach(function (x) { alert(x) }); // 144, 16, 1296, 100
+
+// linq.js
+Enumerable.From(array)
+    .Where(function (x) { return x % 2 == 0 })
+    .Select(function (x) { return x * x })
+    .ForEach(function (x) { alert(x) }); // 144, 16, 1296, 100
+</code></pre>
+<p>名前空間はL2Oから。そこにRange, Repeat, FromArrayなどなどの生成子があり、あとはメソッドチェーンでクエリ演算子があり。linq.jsと完全に一致。……これはlinq.jsｵﾜﾀ。</p>
+<p>いや待て。私がlinq.jsを作ったときには既に3つぐらいLinq to Objectsライブラリはあったけれど、それのどれにも不満があったから、自分で作ったわけで、同じように書けるからといって内部のクオリティが保証されているわけではない。Rxチームが作ってるからといって生半可なものだったら許さんぞ、と、いうわけで中身を覗いてみました。</p>
+<p>Minifyされてますが、改行/インデント整形を施すだけで十分読めます。変数難読化が入っても、構造がシンプルなので全然読める。と、いうか、そうして普通に読めるのは、linq.jsと構造がまるっきり一緒だからですが。……。一緒ですが。一緒ですねこれ。そりゃC#の忠実移植を目指して作ったlinq.jsなわけなので、l2o.jsも同じ目標に向かってるだろうから一緒になるのは当然なのですが当然すぎてlinq.jsの存在意義ががが。</p>
+<p>中身をチラッと見てみましょう。Selectを、Minifyされていたので変数名は私の方で付け直しました。</p>
+<pre data-pagefind-ignore="all"><code class="language-javascript">// l2o.js
+L2O.Enumerable.prototype.Select = function (selector)
+{
+    var source = this;
+
+    return L2O.Enumerable.Create(function ()
+    {
+        var current, count = 0, enumerator;
+
+        return L2O.Enumerator.Create(
+            function () // MoveNext
+            {
+                if (enumerator === void 0) // initialize
+                {
+                    enumerator = source.GetEnumerator()
+                }
+                if (!enumerator.MoveNext())
+                {
+                    return false
+                }
+                current = selector(enumerator.GetCurrent(), count++);
+                return true
+            },
+            function () { return current }, // GetCurrent
+            function () { enumerator.Dispose() }) // Dispose
+    })
+}
+
+// linq.js
+Enumerable.prototype.Select = function (selector)
+{
+    var source = this;
+    selector = Utils.CreateLambda(selector);
+
+    return new Enumerable(function ()
+    {
+        var enumerator;
+        var index = 0;
+
+        return new IEnumerator(
+            function () { enumerator = source.GetEnumerator(); }, // Initialize
+            function () // MoveNext &amp; Current
+            {
+                return (enumerator.MoveNext())
+                    ? this.Yield(selector(enumerator.Current(), index++))
+                    : false;
+            },
+            function () { Utils.Dispose(enumerator); }) // Dispose
+    });
+}
+</code></pre>
+<p>完全に一致。linq.jsのほうでは、MoveNextのほうに定型句のようにif(enumerator === undefined){初期化処理}を書くのが嫌だったので、そもそも別関数として隔離、Currentはどうせキャッシュを返すだけなのだから省略してMoveNextと統合させてしまえ(this.Yieldというメソッドがその辺を受け持ってる、yield returnっぽく)とか、細々としたのを入れていますが、実質的には一緒です。</p>
+<p>なお、この辺の<a href="http://neue.cc/2011/01/13_295.html" title="neue cc - LINQの仕組みと遅延評価の基礎知識">Linq to Objectsの仕組み</a>は、先日紹介しましたが、JSでも一緒です。Selectなど拡張メソッは、以前の物(this = source)を内包したうえで、新しいオブジェクト(new Enumerable)を返し、GetEnumeratorによりEnumeratorを生成し、最初のMoveNextが呼ばれた時に初めて動作が始まる。</p>
+<h2>アルファ</h2>
+<p>現在l2o.jsはアルファ版というか、それ以前の状態と思われるので、今実践に投げ込むのはダメです。メソッド全然足りないしバグいっぱいあるし。具体的に挙げると、Rangeはこれだとオーバーフローしない？とかReverseが即時評価ですよー、とかDisposeが不徹底で機能してない場合がある、とか、いっぱい。</p>
+<p>メソッドは基本的なのしかありません。OrderByや、それと集合系がごっそり抜けているので、普通に使う分にも困るぐらいなので。まあ、集合系は(Dictionaryがないので)ちょっと実装が面倒ではある……。そのために私はDictionaryを導入しています。<a href="http://neue.cc/2010/05/18_258.html">neue cc - linq.js ver 2.1.0.0 - ToDictionary, Share, Let, MemoizeAll</a> というのはver2.1と、つい最近からで、それまではDictionary導入してないが故にバグ持ちだったんですよね、恐ろしや……。</p>
+<p>まあ、Script#からの生成だろうから、Dictionaryを持ってくるぐらいはお茶の子さいさいかもしれません。</p>
+<h2>まとめ</h2>
+<p>l2o.jsは、今はまだこんな風にやるよ、という骨組みを見せているだけに過ぎませんが、すぐに標準クエリ演算子は実装されるでしょう。勿論、歓迎すべきことです！私の心中が穏やかでないのもしょうがない話です！linq.jsはJSでのLinqライブラリでは最後発ですが、現在CodePlex調べでは、同種のライブラリで月々のDL数が最も多いところまで行きました。地道に続けていれば良いものはいつか認められる、という甘い幻想を少しだけ見させてもらったのですが（3/dayとか微々たるものな世界なのですけどね、そう考えるとLinqでJSというものは、今は需要が……。でも、ASP.NET MVCの普及と共に.NETerにJSでのでのLINQは、まだまだ需要が発生する余地はありますな)、公式で十分なクオリティのものが出てしまった以上は、ただある俺々ライブラリの一つとなる。</p>
+<p>とはいっても、公式では出来ないこと、出来ない付加価値は、まだまだ幾らでも足せるはずです！現時点でも無名関数の文字列ショートカット、WSH対応、vsdoc、大量の拡張メソッド、jQueryプラグイン化とやってきたし、これらは公式では出せないはず。で、まだネタはあります。今思っているのはClosure CompilerのAdvanced Optimizations対応、任意で配列のprototype拡張の追加、ですねえ。特に後者は、ちょっとしたことには大分便利になるはずだと思っています。</p>
+<p>あとは、もしかしたらlinq.jsがRxJSやl2o.jsに影響を与えたのではないか？と考えると、嬉しい話ですかねー。ふむふむ。ま、その辺も含めて今年のRx周りは激しく加速しそうですね。</p>
+</div>
+<h1 data-pagefind-sort="date:2011-01-13" data-pagefind-meta="published:2011-01-13"><a href="https://neue.cc/2011/01/13_295.html">LINQの仕組みと遅延評価の基礎知識</a></h1>
 <ul class="date"><li>2011-01-13</li></ul>
 <div class="entry_body"><p>新年明けましておめでとうございます。その第一弾の記事は<a href="http://www.amazon.co.jp/gp/product/4774145165?ie=UTF8&tag=ilsgeometrati-22&linkCode=as2&camp=247&creative=7399&creativeASIN=4774145165">実践 F# 関数型プログラミング入門</a><img src="http://www.assoc-amazon.jp/e/ir?t=ilsgeometrati-22&l=as2&o=9&a=4774145165" width="1" height="1" border="0" alt="" style="border:none !important; margin:0px !important;" />の書評にしようと思っていたのですが、もう少し時間がかかりそうなので、せっかくの年始は基礎から考えようということで、LINQと遅延評価について最初から解説します。まあ、何をもって最初だとか基礎だとか言うのも難しいので私的な適当な基準で。つまり役に立たな（ry。なお、ここではLinq to Objects、IEnumerable&lt;T&gt;の連鎖についてのみ扱いますので、IQueryableについてはまた後日というか実のところ私はQueryableは全然分かってなくてやるやる詐欺が今も続いているといううがががが。</p>
 <h2>メソッドチェーン != return this</h2>
@@ -1857,53 +1946,6 @@ req.BeginGetResponse(ar =&gt;
 </ul>
 <p>Xbox.comがリニューアルされました！というわけで新Xbox.comに対応しました。それだけです！そして、Xbox.comの構造が変わったお陰で取得が軽量化されました（情報取得のための巡回ページ数が大幅削減されたため）。ヨカッタヨカッタ。あまり良い評判を聞かない新Xbox.comですが、こういうところで良くなってますよー、と。地味な変化としては、今回からフレンドが0な場合でも取得/投稿できるようになりました。たまにフレンドいないから使えない！という嘆きを見かけるので、ちゃんと使えるようになってヨカッタヨカッタ。</p>
 <p>例によってテストが非常に不十分なため、ゲームタイトルによっては投稿できなかったりするかもしれません。もし怪しいところがあったら、Twitterで投稿文に「XboxInfoTwit」を含めてポスト、例えば「GoW2がXboxInfoTwitで動かないんだけど何これ」とか言ってもらえれば、検索経由で発見しますので気楽に文句書いてください。（GoW2は動きますけど）</p>
-</div>
-<h1 data-pagefind-sort="date:2010-10-18" data-pagefind-meta="published:2010-10-18"><a href="https://neue.cc/2010/10/18_281.html">AnonymousComparer - ver.1.3.0.0</a></h1>
-<ul class="date"><li>2010-10-18</li></ul>
-<div class="entry_body"><ul>
-<li><a href="http://linqcomparer.codeplex.com/">AnonymousComparer - lambda compare selector for Linq</a></li>
-</ul>
-<p>ver 1.3というか、バグフィックスです。ToDictionaryとかだと拡張メソッドが本来あるのとオーバーロードが被ってて使おうとするとコンパイル通らなかったのです。気づいてたんだけど放置してました、すみませんすみません。というわけで幾つかのものを削りました。これでコンフリクトなし。</p>
-<p>どんなものかというと、こんなものです。最初投稿した時のの流用で（こらこら）</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">class MyClass
-{
-    public int MyProperty { get; set; }
-}
-
-static void Main()
-{
-    // 例として、こんな配列があったとします
-    var mc1 = new MyClass { MyProperty = 3 };
-    var mc2 = new MyClass { MyProperty = 3 };
-    var array = new[] { mc1, mc2 };
-    // Distinctは重複を取り除く。でも結果として、これは、2です。
-    var result = array.Distinct().Count();
-    // 参照の比較なので当然です。では、MyPropertyの値で比較したかったら？
-    // DistinctにはIEqualityComparerインスタンスを受け付けるオーバーロードもあります
-    // しかしIEqualityComparerはわざわざ実装したクラスを作らないと使えない
-
-    // そこで、キー比較のための匿名Comparerを作りました。
-    // ラムダ式を渡すことで、その場だけで使うキー比較のIEqualityComparerが作れます。
-    array.Distinct(AnonymousComparer.Create((MyClass mc) =&gt; mc.MyProperty));
-
-    // でも、長いし、型推論が効かないから型を書く必要がある
-    // Linqに流れているものが匿名型だったりしたら対応できないよ！
-    // というわけで、本来のLinqメソッドのオーバーロードとして、記述出来るようにしました
-    // ちゃんと全てのIEqualityComparerを実装しているLinq標準演算子に定義してあります
-    array.Distinct(mc =&gt; mc.MyProperty);
-
-    // 短いし、型推論もちゃんと効くしで素晴らしいー。
-    // 匿名型でもいけます(VBの匿名型はC#(全ての値が一致)と違ってKey指定らしいですね)
-    var anonymous = new[] 
-    {
-        new { Foo = &quot;A&quot;, Key = 10 },
-        new { Foo = &quot;B&quot;, Key = 15 }
-    };
-    // true
-    anonymous.Contains(new { Foo = &quot;dummy&quot;, Key = 10 }, a =&gt; a.Key);
-}
-</code></pre>
-<p>つまり、LinqのIEqualityComparerのオーバーロードうぜえ、何がインターフェースだよクソが、Linqならラムダ式だろ、インターフェースとかJava臭いんだよ。無名クラス（別に欲しくはないけど）がないから作るの面倒なんだよ。ということです。あるとそれなりに便利です。</p>
 </div>
 <a href="https://neue.cc/19">Prev |</a>
 <a href="https://neue.cc/21">| Next</a>

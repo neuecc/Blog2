@@ -74,7 +74,290 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2015-11-03" data-pagefind-meta="published:2015-11-03"><a href="https://neue.cc/2015/11/03_520.html">EtwStream - ETW/EventSourceのRx化 + ビューアーとしてのLINQPad統合</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2015-12-03" data-pagefind-meta="published:2015-12-03"><a href="https://neue.cc/2015/12/03_521.html">Unity 5.3のMulti Scene EditingをUniRxによるシーンナビゲーションで統合する</a></h1>
+<ul class="date"><li>2015-12-03</li></ul>
+<div class="entry_body"><p>今回は<a href="http://qiita.com/advent-calendar/2015/unity">Unity Advent Calendar 2015</a>のための記事になります。昨日はtsubaki_t1さんによる<a href="http://tsubakit1.hateblo.jp/entry/2015/12/02/212958">Unity初心者を脱するためのデバッグ入門…的なやつ</a>でした。私はとりあえずVisual Studioでアタッチしてステップ実行、でしょうか……。最近はiOSのIL2CPPのスタックトレースが行番号出してくれなくて禿げそうというのが<a href="http://grani.jp/">社内</a>のホットトピックスらすぃ。</p>
+<p>去年もUnity Advent Calendarには参加していて、その時は<a href="http://neue.cc/2014/12/18_499.html">Unityのコルーチンの分解、或いはUniRxのMainThreadDispatcherについて</a>という内容でした。今回も引き続き、私の作成している<a href="https://github.com/neuecc/UniRx">UniRx - Reactive Extensions for Unity</a>のお話ということでお願いします。とはいえ、中身的にはMulti Scene Editingや、シーン間での引数渡しをやるのにどうすればいいのか、みたいなところなので、Rxのメソッドは特に説明なくバンバン出てきますが、Rxワカラナイ人はそのへんは雰囲気で流し読みしてもらって、シーン遷移についてのお話を読み取ってもらえれば嬉しいですねん。</p>
+<h2>Multi Scene Editing</h2>
+<p>Multi Scene Editingは初出が<a href="http://blogs.unity3d.com/jp/2014/08/04/multi-scene-editing/">2014/8/4のUnity Blogの記事</a>でしょうか、1年経ってやっと正式リリース、までまもなく！ですね、5.3から搭載されることになりました。実際どういうことになるかというと、ヒエラルキーウィンドウがこんな感じに。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/11536347/744ba910-995b-11e5-8c55-fe18368d3c69.png" alt="image" /></p>
+<p>シーン加算で読み込んだシーンがヒエラルキー上でもきっちり分けられます。DontDestroyOnLoadがついたものは専用のところに隔離される。シーンを削除する場合も、そのまま指定してサクッと消したり、マージできたりと、随分とシーン管理がやりやすくなりました。Unity 5.3からはいよいよシーン加算で管理する時代が到来する！</p>
+<p>コード的にはUnityEngine.SceneManagement.SceneManagerに全部のAPIがつまってます。基本的にはLoadScene/Asyncか、UnloadSceneぐらいで事足りるのではないでせうか。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// SceneA -&gt; SceneBへボタン押したら加算
+// 別にRx使う必要性はないけど無駄に使うエディション
+button.OnClickAsObservable()
+  .SelectMany(_ =&gt; SceneManager.LoadSceneAsync(&quot;SceneB&quot;, LoadSceneMode.Additive).AsObservable())
+  .Subscribe(_ =&gt; { /* 完了時の処理何かあれば */ });
+</code></pre>
+<p>この程度だとRx使う必要性はゼロですが、一応、LoadSceneAsyncの戻り値であるAsyncOperationはAsObservableで直接サクッとRx的に変換可能です。</p>
+<h2>シーン間に引数を渡す</h2>
+<p>どういうこっちゃって話ですが、新しいシーンに遷移なり加算したいってことは、引数を渡したくて然りだと思うのです。そのシーンを表示する際の初期引数が。例えばアイテム一覧画面から、アイテムの詳細画面を出すなら、アイテムのIDを渡したいよね、とかね。別にAndroidやiOSアプリでも、ウェブのURLのクエリストリングなりなんなりでも、そんなのは普通によくある話です。さて、SceneManagerはその辺りのことは、別になにも面倒みてくれません。じゃあグローバル変数を経由してやりとりするのかというと果てしなくビミョウというかスパゲティ化まったなし。せっかく画面画面がシーンで独立しているなら、値の依存関係もシーン内に抑えてやりたい。</p>
+<p>というわけで、遷移/加算時に引数を渡せるシーン遷移機構を作りましょう。</p>
+<p>材料として使うのはUniRxの<a href="https://github.com/neuecc/UniRx#presenterbase">PresenterBase</a>です。これは何かというと、子要素の初期化の順序をコントロールするのと、値の受け渡しができる仕組みです。ご存知のとおりUnityのGameObjectの初期化順序は不定(Execution Orderでおおまかに指定できるけど、細かいコントロールのために使うものではない)ですが、PresenterBaseの管理下におくことで、Startフェーズにて決められた順序で起動するようにコード上で設定できます。</p>
+<p>この性質は、シーンに引数が渡される、つまり全てのルートになるという条件にぴったりです！というわけで、引数を受け取るための基底クラス、SceneBaseをPresenterBaseを継承して作りましょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public abstract class SceneBase : PresenterBase
+{
+    // これがシーン遷移時にセットされる引数を表す
+    public object Argument { get; set; }
+
+    // 受け渡されたかどうかを管理するフラグ
+    public bool IsLoaded { get; set; }
+
+    protected override void OnAwake()
+    {
+        // 初期化が完了した際はロード済みと強制的にマークするおまじない
+        this.InitializeAsObservable().Subscribe(_ =&gt; IsLoaded = true);
+    }
+}
+</code></pre>
+<p>こんなもので、割とあっさりめに。実際のシーンのクラスは</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// このどうでもいいクラスを引数として渡していくということにする
+public class Nanika
+{
+    public int HogeHoge { get; set; }
+    public string Hugahuga { get; set; }
+}
+
+// 遷移元クラス、適当なボタン押したらSceneBに遷移する
+public class SceneA : SceneBase
+{
+    public Button button;
+
+    protected override IPresenter[] Children
+    {
+        get { return EmptyChildren; }
+    }
+
+    protected override void BeforeInitialize()
+    {
+    }
+
+    protected override void Initialize()
+    {
+        button.OnClickAsObservable().Subscribe(_ =&gt;
+        {
+            // 直接SceneManager.LoadSceneAsyncを呼ぶのではなく、
+            // 独自に作成したNavigationService.NavigateAsync経由で引数を渡して遷移/加算する
+            var arg = new Nanika { HogeHoge = 100, Hugahuga = &quot;Tako&quot; };
+            NavigationService.NavigateAsync(&quot;SceneB&quot;, arg, LoadSceneMode.Additive).Subscribe();
+        });
+    }
+}
+
+// 遷移先クラス、Argumentに引数が渡されてきてる
+public class SceneB : SceneBase
+{
+    protected override IPresenter[] Children
+    {
+        get { return EmptyChildren; }
+    }
+
+    protected override void BeforeInitialize()
+    {
+    }
+
+    protected override void Initialize()
+    {
+        // 前のシーンから渡された引数が取れる
+        var arg = Argument as Nanika;
+        Debug.Log(&quot;HogeHoge:&quot; + arg.HogeHoge + &quot; HugaHuga:&quot; + arg.Hugahuga);
+    }
+}
+</code></pre>
+<p>ちょっと長いですが、言いたいのは遷移元ではNavigationService.NavigateAsyncを使って引数を渡して遷移先を指定する。遷移先ではArgumentに渡されたものをキャストして取り出す。といった感じです。</p>
+<p>作る上での制約としては、必ず各シーンに単一のSceneBaseがヒエラルキーの頂上にある必要があります。こんな感じに。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/11538085/95c4fdfa-9963-11e5-95f4-9b4c1024bfc6.png" alt="image" /></p>
+<p>うーん、随分と大きな制約であり不格好ですね……、この手の制約は実際のトコ、ないほうが望ましいです。別に、この手のヘンテコな制約をつけるのがアーキテクチャ、ではないです。自由なほうがよほど良いのです。とはいえしかし、どうにもならなかったので、そこは受け入れるしかなかったということで。この辺が今のところの手札でできる精一杯の形かなぁ。</p>
+<h2>NavigationService</h2>
+<p>では、肝心要のNavigationServiceの実装を見ましょう！</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static class NavigationService
+{
+    public static IObservable&lt;Unit&gt; NavigateAsync(string sceneName, object argument, LoadSceneMode mode = LoadSceneMode.Single)
+    {        
+        return Observable.FromCoroutine&lt;Unit&gt;(observer =&gt; HyperOptimizedFastAsyncOperationLoad(SceneManager.LoadSceneAsync(sceneName, mode), observer))
+            .Do(_ =&gt;
+            {
+                // 型ベースでたぐり寄せる。Find系は避けたいとはいえ、シーン遷移時に一発だけなのでコスト的には許容できるでしょう。
+                var scenes = GameObject.FindObjectsOfType&lt;SceneBase&gt;(); 
+                var loadedScene = scenes.Single(x =&gt; !x.IsLoaded); // 一個だけになってるはず #雑
+    
+                loadedScene.IsLoaded = true;
+                loadedScene.Argument = argument; // PresenterBase.BeforeInitializeが走る前にセットする
+            });
+    }
+    
+    static IEnumerator HyperOptimizedFastAsyncOperationLoad(AsyncOperation operation, IObserver&lt;Unit&gt; observer)
+    {
+        if (!operation.isDone) yield return operation;
+    
+        observer.OnNext(Unit.Default);
+        observer.OnCompleted();
+    }
+}
+</code></pre>
+<p>なんてことはなく、LoadSceneAsyncが完了した時点でヒエラルキーに新しいシーンがぶちまけられているので、それのBeforeInitializeが走る前にArgumentにセットしておいてやる、というだけの割と単純なものです。ポイントは、BeforeInitializeの走るタイミングはStartということです。順序的に、LaodSceneAsyncが完了した時点で、新しいシーンのGameObjectのAwakeは走っています。なので、Awakeの前にArgumentを渡すのは何をどうやっても不可能です。しかし、Startの前に割り込むことは可能です。そこでルールとして遷移先のシーンでの初期化はStart以降に限定し(PresenterBaseがその辺を抽象化しているので実装者が意識する必要はない)、NavigateAsyncでは可能な限り最速のタイミングでArgumentをセットしにいきます。その秘訣がHyperOptimizedFastAsyncOperationLoadというフザケタ名前のコルーチンです。</p>
+<h2>yield return null vs yield return AsyncOperation</h2>
+<p>別にHyperOptimizedFastAsyncOperationLoadの中身は、見たまんまの超絶単純な yield return AsyncOperation です。そして、それこそが秘訣なのです。何を言ってるかというと……</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">IEnumerator WaitLoadAsyncA(AsyncOperation operation)
+{
+    while (!operation.isDone)
+    {
+        yield return null;
+        Debug.Log(operation.progress); // 読み込み状態のプログレス通知
+    }
+}
+
+IEnumerator WaitLoadAsyncB(AsyncOperation operation)
+{
+    yield return operation;
+}
+</code></pre>
+<p>両者の違い、分かるでしょうか？ WaitLoadAsyncA のほうはプログレスを受け取るためにyield return nullでisDoneを監視するスタイル。WaitLoadAsyncBは直接待つスタイル。結果的に、どちらも待つことができます。プログレス通知は大事なので、WaitLoadAsyncAのようなスタイルを多用するほうが多いのではないかなー、と思います。WWWとか。が、しかし、両者には非常に大きな違いがあります。それは、完了時のタイミング。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/11539070/9843e5a0-9968-11e5-82e7-58964692f6b2.png" alt="image" /></p>
+<p>わざわざ無駄に画像を作ってまで声を大にして言いたいんですが、直接AsyncOperationをyieldすれば、AwakeとStartの間に割り込めます。yield return nullでは普通に1フレ後になるのでStartまで完了しちゃってます。これは超絶デカい違いです、この微妙なコントロールが死ぬほど大事です。きっと役に立ちます。どこかで。ちなみに一番最初に説明したAsyncOperation.AsObservableという神メソッドはyield return nullで待ってます。クソですね。カスですね。ゴミですね。すみません……（これは次のUniRxのリリースではプログレス通知を使わない場合は直接yieldするように変更します、それまでの間は手動コルーチン作成で対応してください）</p>
+<p>もう一つ、コルーチンの駆動を各SceneのStartCoroutineで行うと、LoadSceneMode.Single（遷移）の場合、遷移元シーンが破壊された瞬間に紐付いてるコルーチンも強制的に止まる（そしてDestroyは遷移先シーンのAwakeの前）ため、Argumentを渡すという行為は不可能です。が、UniRxのFromCoroutineで駆動させると、中立であるMainThreadDispatcherによるコルーチン駆動となるため、元のシーンが壊れるとかそういうのとは無関係にコルーチンが動き続けるため、その手の制限と付き合わなくても済みます。この辺は実際UniRx強い。</p>
+<h2>シーン表示を遅らせる</h2>
+<p>実は、今のとこ別にRx使う必要性はあんまありません、なくても全然出来るレベルです（まぁコルーチンが破壊される件は回避しにくいですが）。それではあんまりなので、もう一歩次のレベルに行きましょう。例えばシーン遷移時に、引数を元にネットワークからデータを読み取って、その間はNow Loadingで待つ。ダウンロードが完了したら表示する。こうした、なんとなく良くありそうな気がする話を、NavigationServiceで対応させてみましょう。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/11540034/cba474f0-996d-11e5-9089-1e1d63c1611d.gif" alt="animation" /></p>
+<p>この、あんまり良くわからない例、SceneAボタンを押すとヒエラルキーにSceneBが表示されているけれど画面上には表示されていない、実際にはネットワークからデータをダウンロードしていて、それが完了したら、その結果と共にSceneBが表示される。というものです。なるほど……？</p>
+<p>まず、SceneBaseにPrepareAsyncメソッドを追加します。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public abstract class SceneBase : PresenterBase
+{
+    public object Argument { get; set; }
+    public bool IsLoaded { get; set; }
+
+    // このPrepareAsyncメソッドを新設する
+    public virtual IObservable&lt;Unit&gt; PrepareAsync()
+    {
+        return Observable.Return(Unit.Default);
+    }
+
+    protected override void OnAwake()
+    {
+        this.InitializeAsObservable().Subscribe(_ =&gt; IsLoaded = true);
+    }
+}
+</code></pre>
+<p>PrepareAsyncが完了するまで表示を待機する、といった感じで、それをIObservableによって表明しています。これで遷移先のSceneBクラスを書き換えると</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class SceneB : SceneBase
+{
+    public WwwStringPresenter display; // インスペクターから貼り付けてUnityEngineによるデシリアライズ時にセットされる(Awake前)
+
+    string wwwString = null;
+
+    protected override IPresenter[] Children
+    {
+        get { return new[] { display }; } // Sceneにぶら下がってる子をここで指定する（コードで！原始的！）
+    }
+
+    // 呼ばれる順番はPrepareAsync -&gt; BeforeInitialize -&gt; Initialize
+
+    public override IObservable&lt;Unit&gt; PrepareAsync()
+    {
+        var url = Argument as string; // 前のシーンからURL、例えば http://unity3d.com/ が送られて来るとする
+
+        // ネットワーク通信が完了するまでこのシーンの表示を待機できる
+        // (もし自分で試して効果が分かりにくかったら Observable.Timer(TimeSpan.FromSeconds(5)) とかに差し替えてください、それで5秒後表示になります）
+        return ObservableWWW.Get(url)
+            .Select(x =&gt; // 本当はForEachAsyncを使いたいのですがまだ未リリース。
+            {
+                wwwString = x; // 副作用さいこー
+                return Unit.Default;
+            });
+    }
+
+    protected override void BeforeInitialize()
+    {
+        // この時点で通信が完了してるので、小階層に渡す。
+        display.PropagateArgument(wwwString); // PresenterBase.PropagateArgumentで伝搬するルール
+    }
+
+    protected override void Initialize()
+    {
+    }
+}
+</code></pre>
+<p>変えたところは、PrepareAsyncでWWW通信を挟んでいるところ。これが完了するまではシーン全体の表示が始まらない(BeforeInitializeが呼ばれない)です。表示に関しては、この程度の超絶単純な例では直接SceneBにTextをぶら下げたほうがいいんですが、無駄に複雑にするために、ではなくてPropagateArgumentの例として、もう一個、下にUI要素をぶら下げてます。それがWwwStringPresenterで、</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class WwwStringPresenter : PresenterBase&lt;string&gt;
+{
+    public Text displayView;
+
+    protected override IPresenter[] Children
+    {
+        get { return EmptyChildren; }
+    }
+
+    protected override void BeforeInitialize(string argument)
+    {
+    }
+
+    // 親からPropagteArugmentで渡されてくる
+    protected override void Initialize(string argument)
+    {
+        displayView.text = argument;
+    }
+}
+</code></pre>
+<p>こんな感じに、親(この場合だとSceneB)から値が伝搬されます、適切な順序で（ふつーにやってるとGameObjectの生成順序は不定なので、値の伝搬というのは単純なようで深く、やりようが色々あるテーマだったり）。さて、一見複雑というか実際、色々ゴテゴテしてきてアレな気配を醸しだしてきましたが、実際どんな状態なのかというと、こんな感じ。</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/11540561/c1077148-9970-11e5-9d7b-dd94350d8979.png" alt="image" /></p>
+<p>この分かったような分からないような図で言いたいことは、値の流れです。シーン間はNavigateAsyncによりArgumentが引き渡され、シーン内ではPresenterBaseによって構築されたチェーンがPropagateArgumentにより、ヒエラルキーの上流から下流へ流れていきます。これにより、グローバルでの変数保持が不要になり、値の影響範囲が局所化されます。スコープが狭いというのは基本的にいいことです、見通しの良さに繋がりますから。分かっちゃいても実現は中々むつかしい、に対する小道具を色々揃えておくと動きやすい。</p>
+<h2>NavigateAsync最終形</h2>
+<p>おお、そうだ、PrepareAsyncに対応したNavigateAsyncのコードを出し忘れている！こんな形になりました。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static class NavigationService
+{
+    public static IObservable&lt;Unit&gt; NavigateAsync(string sceneName, object argument, LoadSceneMode mode = LoadSceneMode.Single)
+    {
+        return Observable.FromCoroutine&lt;Unit&gt;(observer =&gt; HyperOptimizedFastAsyncOperationLoad(SceneManager.LoadSceneAsync(sceneName, mode), observer))
+            .SelectMany(_ =&gt;
+            {
+                var scenes = GameObject.FindObjectsOfType&lt;SceneBase&gt;();
+                var loadedScene = scenes.Single(x =&gt; !x.IsLoaded);
+
+                loadedScene.IsLoaded = true;
+                loadedScene.Argument = argument;
+
+                loadedScene.gameObject.SetActive(false); // 一旦非Activeにして止める
+
+                return loadedScene.PrepareAsync() // PrepareAsyncが完了するまで待つ
+                    .Do(__ =&gt;
+                    {
+                        loadedScene.gameObject.SetActive(true); // Activeにして動かしはぢめる
+                    });
+            });
+    }
+
+    static IEnumerator HyperOptimizedFastAsyncOperationLoad(AsyncOperation operation, IObserver&lt;Unit&gt; observer)
+    {
+        if (!operation.isDone) yield return operation;
+
+        observer.OnNext(Unit.Default);
+        observer.OnCompleted();
+    }
+}
+</code></pre>
+<p>足したコードは、Argumentをセットしたら即座にSetActive(false)ですね。これで画面に非表示になるのは勿論、Startも抑制されます。そうしてStartが止まっている間にPrepareAsyncを呼んでやって、終わったら再度 SetActive(true) にする、ことによりStartが発生しだして、PresenterBaseの初期化機構が自動で上流→下流への起動を開始します。</p>
+<h2>まとめ</h2>
+<p>実際にはPrepareAsyncだけでは足りなくて、シーンから出る時、シーンから戻ってきた時、機能としてシーンをキャッシュしてやろうとか、遷移でパラメータ渡ってくる前提だと開発時にパラメータが足りなくてダルいので任意で差し込めるようにする/開発用デフォルト用意するとか、色々やれることはあります、し、やったほうがいいでしょふ。それらも全てUniRx上で、IObservableになっていることにより、表現がある程度は容易になるのではないかと思います。非同期を表現する入れ物、が必要だというのは至極当然の答えになるのですけれど、そこにUniRxが一定の答え、定番を提供できているんじゃないかなー、と思いますね！些か長い記事となってしまいましたが、これに限らず応用例の発想に繋がってくれれば何よりです。</p>
+<p>Advent Calendarの次は、<a href="http://qiita.com/Miyatin">@Miyatin</a>さんです！</p>
+<h2>UniRx vNext</h2>
+<p>ところで実はいまものすごい勢いで作り変えています！性能もかなり上が（って）るんですが、割と分かりやすく大きいのは、スタックトレースが物凄く見やすくなります。意味不明度が極まった複雑なスタックトレースはRx名物でデバッガビリティが最低最悪だったのですが、相当まともになってます。例えば、以下の様なふつーのチェーンのDebug.Logで表示されるスタックトレースは</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var rxProp = new ReactiveProperty&lt;int&gt;();
+rxProp
+    .Where(x =&gt; x % 2 == 0)
+    .Select(x =&gt; x)
+    .Take(50)
+    .Subscribe(x =&gt; Debug.Log(x));
+
+rxProp.Value = 100;
+</code></pre>
+<p>Before</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/11541721/187fc69a-9977-11e5-86f3-b0c2f1938a4a.png" alt="image" /></p>
+<p>After</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/11541619/7d07daea-9976-11e5-8c5b-9e0a7414b57c.png" alt="image" /></p>
+<p>劇的！Unityのスタックトレースの表示形式に100%フォーカスして、読みやすさ第一にハックしたので、圧倒的な読みやすさだと思います。スタックトレース芸極めた。普通にWhere.Select.Take.Subscribeがそのまま表示されてますからね。勿論、メソッドコール数が減っているのは単純に性能にも寄与しています。ここまでやれば文句もないでせう。</p>
+<p>そんなvNextの完成時期ですが、今までやるやる詐欺すぎたのですが、そろそろ実際本当に出します。来週ぐらいには本当に出します。これは意地でも仕上げます（想像通りだけれど作業量は多いわコーナーケースの想定が複雑すぎて頭が爆発しそうになるしで辛い……）。というわけでもうちょっとだけ待っててください。</p>
+</div>
+<h1 data-pagefind-sort="date:2015-11-03" data-pagefind-meta="published:2015-11-03"><a href="https://neue.cc/2015/11/03_520.html">EtwStream - ETW/EventSourceのRx化 + ビューアーとしてのLINQPad統合</a></h1>
 <ul class="date"><li>2015-11-03</li></ul>
 <div class="entry_body"><p><a href="https://github.com/neuecc/EtwStream">EtwStream</a>というのをリリースしました。<a href="https://msdn.microsoft.com/en-us/library/windows/desktop/bb968803.aspx">ETW(Event Tracing for Windows)</a> + <a href="https://msdn.microsoft.com/en-us/library/system.diagnostics.tracing.eventsource.aspx">EventSource</a>が.NETで構造化ログをやる際の決定版というか、ETWの最強度が高すぎてそれ以外考えられないレベルなんですが、しかし、がETWは最強な反面ビューアーがありませんでした。ETWというブラックホールにログを投げ込むのはいいんですが、それが自分自身ですら容易に見れないのは不便すぎる！PerfViewとか骨董品みたいなゴミUIを操ってなんとかして見るのは、無理ゲーなわけで、カジュアルにDumpしたいだけなんだよ！テキストのようなログビューアーが欲しいだけなんだよ！に対する答えです。いや、ほんと自分自身が死ぬほど欲しかったのが、これ。</p>
 <p><img src="https://cloud.githubusercontent.com/assets/46207/10905625/cae5a122-825e-11e5-8def-d53feedb879d.gif" alt="etwstreamgif" /></p>
@@ -1697,41 +1980,6 @@ await list.LeftPush(10, expiry: DateTime.Now.AddDays(1));
 <p>そんなわけで凄く良くなったんで、かなりお薦めデス。ネーミングが直球なものしか付けないことの多い私にしては、CloudStructuresってライブラリ名はかなりカッコイイという点でもお薦めですね！</p>
 <p>問題は旧CloudStructuresとの互換性が、かなり無いので既に使ってる場合は移行が大変ってことデスネ。うちはどうしたんだって？移行してないよ！どーしようかなぁ、うーん、そこはちょっとかなり悩ましい……。</p>
 <p>まぁCloudStructuresを使うかどうかはともかくとして、RedisはC#界隈でももっとばんばん使われて欲すぃですねー、そして使うならStringGet/Setだけじゃもったいない。</p>
-</div>
-<h1 data-pagefind-sort="date:2015-01-14" data-pagefind-meta="published:2015-01-14"><a href="https://neue.cc/2015/01/14_503.html">Open on GitHub - Visual StudioからGitHubのページを開くVS拡張</a></h1>
-<ul class="date"><li>2015-01-14</li></ul>
-<div class="entry_body"><p>を、作りました。</p>
-<img src='http://neue.cc/wp-content/uploads/2015/01/wp_openongithub.jpg' alt='' />
-<p>機能は見たまんま？です。ソースコード上で右クリックすると「Open on GitHub」メニューが出るので、そこからmasterかbranchかrevisionを選ぶと、該当のGitHubのブロブページが開きます。便利。</p>
-<ul>
-<li><a href="https://visualstudiogallery.msdn.microsoft.com/79bf2ea3-9e78-4212-b22f-cdcdd75e791d">Visual Studio Gallery - Open on GitHub</a></li>
-<li><a href="https://github.com/neuecc/Open-on-GitHub">GitHub - Open-on-GitHub</a></li>
-</ul>
-<p>インストールはVisual Studio Galleryからどうぞ。例によってソースコードはGitHubで公開しています。</p>
-<h2>How to make VSIX</h2>
-<p>VS拡張はドキュメントがあるんだかないんだか、一応あるんですけど、どうも取っ付きが悪いのが難点。今回は<a href="http://msdn.microsoft.com/en-us/library/vstudio/bb165739.aspx">Walkthrough: Adding a Submenu to a Menu</a>をベースに弄ってます。といってもやることは簡単なので、そんな大したことはないですが。</p>
-<p>まず、メニュー系は全部vsctというクソ書きづらいXMLを弄って作っていきます。テンプレートは「Visual Studio Package」でウィザードで「Menu Command」を選んどくといいでしょふ、というかそれ以外だと詰む。で、vsctのうち</p>
-<pre data-pagefind-ignore="all"><code class="language-xml">&lt;Group guid=&quot;guidOpenOnGitHubCmdSet&quot; id=&quot;ContextMenuGroup&quot; priority=&quot;0x0600&quot;&gt;
-    &lt;Parent guid=&quot;guidSHLMainMenu&quot; id=&quot;IDM_VS_CTXT_CODEWIN&quot; /&gt;
-&lt;/Group&gt;
-</code></pre>
-<p>Parentを「guidSHLMainMenu, IDM_VS_CTXT_CODEWIN」にするとエディタのコンテキストメニューに出てきます。あとはまぁ、適当にどうぞ。<a href="https://github.com/neuecc/Open-on-GitHub/blob/master/OpenOnGitHub/OpenOnGitHub.vsct">OpenOnGitHub.vsct</a>と<a href="https://github.com/neuecc/Open-on-GitHub/blob/master/OpenOnGitHub/OpenOnGitHubPackage.cs">OpenOnGitHubPackage.cs</a>が全て。分かれば難しくない、分かるまでがダルい。</p>
-<p>と、ここまでが普通の感じなんですが<a href="http://msdn.microsoft.com/en-us/library/bb164699.aspx">VSCT(Visual Studio Command Table)</a>は闇が深くて、IDM_VS_CTXT_CODEWINだとcshtmlとかjsonとかcssでは出てきません！これは別のParentを設定する必要があります。しかも、そのGUIDとかはノーヒント……。既存の拡張を観て研究してもいいんですが、本質的には<a href="http://blogs.msdn.com/b/dr._ex/archive/2007/04/17/using-enablevsiplogging-to-identify-menus-and-commands-with-vs-2005-sp1.aspx">Using EnableVSIPLogging to identify menus and commands with VS 2005 + SP1</a>の記事にある、レジストリ弄ってEnableVSIPLoggingをオンにして、直接対象ウィンドウのGUIDとCmdIdを取得するほうがいいかと思われます。取得したIDとかの使い方はOpenOnGitHub.vsctに載ってるので興味ある人は見てくださいな。</p>
-<p>あと、Gitの解析に<a href="https://libgit2.github.com/">libgit2</a>を使っているんですが、VSIXでネイティブバイナリを同梱するためにcsprojに</p>
-<pre data-pagefind-ignore="all"><code class="language-xml">&lt;Content Include=&quot;NativeBinaries\amd64\git2-91fa31f.dll&quot;&gt;
-  &lt;CopyToOutputDirectory&gt;PreserveNewest&lt;/CopyToOutputDirectory&gt;
-  &lt;IncludeInVSIX&gt;true&lt;/IncludeInVSIX&gt;
-&lt;/Content&gt;
-</code></pre>
-<p>といったようにIncludeInVSIXをつけなきゃいけないとか、VSIX自体の署名を切らないといけない（テンプレートから作ると入ってるのでカットする）とか、細かいのをこなしていけば出来上がり！</p>
-<h2>最近のWindowsでGit</h2>
-<p><a href="http://www.sourcetreeapp.com/">SourceTree</a>がゴミクズすぎて困る。ので、最近はVSのGit使ってたりします。割といいです。</p>
-<p class="noindent">
-<img src='http://neue.cc/wp-content/uploads/2015/01/wp_vsgit.jpg' alt='' />
-</p>
-<p>コミットウィンドウが切り離せることに気付いてから、切り離して使ってます。そうするとまぁまぁコミットしやすい。Commit and Syncはなんのかんのいってベンリだし、SourceTreeよりもPushPullも気持ち早い。DiffとかがVS上で行えるのはサイキョーなので、あとはツリー表示さえあれば完璧だなぁ。ともあれ、VSのGit、いいです。見直しましょう。とにかくSourceTreeは使っててストレスで禿げるのでメインVS、サブSourceTreeぐらいの感じが今のとこ一番いい。</p>
-<h2>まとめ</h2>
-<p>ともあれOpen on GitHubはマジベンリ。うちの会社はGitHubでリポジトリ管理してるんですが、いっつも社内チャットに貼り付けるURLとか探してくるのひぢょーにダルくて、ずっと欲しかったのよね。やっと重い腰を上げて作りました。ほんとベンリ。もっと早くに作っておけば良かった。</p>
 </div>
 <a href="https://neue.cc/8">Prev |</a>
 <a href="https://neue.cc/10">| Next</a>
