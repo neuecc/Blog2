@@ -74,7 +74,207 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2020-12-30" data-pagefind-meta="published:2020-12-30"><a href="https://neue.cc/2020/12/30_598.html">2020年を振り返る</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2021-02-26" data-pagefind-meta="published:2021-02-26"><a href="https://neue.cc/2021/02/26_599.html">C#のasync/await再考, タイムアウト処理のベストプラクティス, UniTask v2.2.0</a></h1>
+<ul class="date"><li>2021-02-26</li></ul>
+<div class="entry_body"><p>お題を3つ並べましたが、記事は逆順で書いていきます！というわけで、<a href="https://github.com/Cysharp/UniTask">UniTask v2.2.0</a>を出しました。改めてUniTask v2とは<a href="https://tech.cygames.co.jp/archives/3417/">Unityのためのゼロアロケーションasync/awaitと非同期LINQ</a>を実現するライブラリで、とv2リリース時の解説記事を貼っつけましたが、ちょいちょい細かい改善を続けてまして、今回v2.2.0になります。</p>
+<h2>PlayerLoopへのループ挿入のカスタマイズ対応</h2>
+<p>現状のUnityはPlayerLoop上で動いていて、<a href="https://gist.github.com/neuecc/bc3a1cfd4d74501ad057e49efcd7bdae">Unity 2020.1のリストをここに置いておきました</a>が、デフォルトでは120個ぐらいのループがエンジンから駆動されています。Updateループだけでも<code>ScriptRunBehaviourUpdate</code>, <code>ScriptRunDelayedDynamicFrameRate</code>, <code>ScriptRunDelayedTasks</code>, <code>DirectorUpdate</code>と色々あります。UniTaskも基本的にはPlayerLoop上で動かしているのですが、自由に任意の実行箇所を選べるように、28個のループを挿入しています。これにより <code>UniTask.Yield(PlayerLoopTiming.PreLateUpdate)</code> などといったような指定を可能にしているわけですが、28個ってちょっと多いんじゃないか？という。デフォで120個あるうちのプラス28個、多いっちゃあ多いけど、ループの中身も空っぽに近いし、空UpdateのMonoBehaviourを10000個並べるみたいなのとは比較にならないほど小さい話だから許容範囲内ぢゃん、と思ってはいるんですが、例えばAndroidでDeep Profilingなんかすると、ちょとプロファイラのデータに出てきちゃったりなんかは指摘されたことがあります（Deep Profilingの影響があるので、実際のビルドではそうでもないんですが）。</p>
+<p>何れにせよ、99.99%はUpdateしか使わねえよ、みたいなのはあると思います。というわけで、UniTaskのPlayerLoopの挿入量を任意に調整できるようにしました。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterAssembliesLoaded)]
+public static void InitUniTaskLoop()
+{
+    var loop = PlayerLoop.GetCurrentPlayerLoop();
+    PlayerLoopHelper.Initialize(ref loop, InjectPlayerLoopTimings.Minimum);
+}
+</code></pre>
+<p>これで、<code>Update | FixedUpdate | LastPostLateUpdate</code> の3つしか挿入されなくなります。<code>InjectPlayerLoopTimings</code>は任意のLoopTimingの選択、例えば <code>InjectPlayerLoopTimings.Update | InjectPlayerLoopTimings.FixedUpdate | InjectPlayerLoopTimings.PreLateUpdate</code> のような指定と、3つのプリセット、 <code>All</code>(デフォルトです), <code>Standard</code>(Lastを抜いたもの、挿入量が半分になる(ただし一番最後のLastPostLateUpdateは挿入する))、<code>Minimum</code>(Update, FixedUpate, LastPostLateUpdate)が選べます。正直なところ9割の人はMinimumで十分だと思ってますが、まぁ状況に応じて任意に足したり引いたりしてもらえればいいんじゃないかと。</p>
+<p>ところで、そうすると、挿入していないループタイミングを指定するとどうなるんですか？というと、実行時例外です。えー、それじゃー困るよーと思うので、そこで使えるのが<a href="https://github.com/dotnet/roslyn-analyzers/blob/master/src/Microsoft.CodeAnalysis.BannedApiAnalyzers/BannedApiAnalyzers.Help.md">Microsoft.CodeAnalysis.BannedApiAnalyzers</a>というやつで、(<a href="https://docs.unity3d.com/2020.2/Documentation/Manual/roslyn-analyzers.html">Unity 2020.2からAnalyzerが何のハックもなくそのまま使えるようになった</a>のでAnalyzerは普通に使えますよ！)、例えばInjectPlayerLoopTimings.Minimum用に、このBannedApiAnalyzersの設定、BannedSymbols.txtを書くとこうなります。</p>
+<pre data-pagefind-ignore="all"><code class="language-txt">F:Cysharp.Threading.Tasks.PlayerLoopTiming.Initialization; Isn't injected this PlayerLoop in this project.
+F:Cysharp.Threading.Tasks.PlayerLoopTiming.LastInitialization; Isn't injected this PlayerLoop in this project.
+F:Cysharp.Threading.Tasks.PlayerLoopTiming.EarlyUpdate; Isn't injected this PlayerLoop in this project.
+F:Cysharp.Threading.Tasks.PlayerLoopTiming.LastEarlyUpdate; Isn't injected this PlayerLoop in this project.d
+F:Cysharp.Threading.Tasks.PlayerLoopTiming.LastFixedUpdate; Isn't injected this PlayerLoop in this project.
+F:Cysharp.Threading.Tasks.PlayerLoopTiming.PreUpdate; Isn't injected this PlayerLoop in this project.
+F:Cysharp.Threading.Tasks.PlayerLoopTiming.LastPreUpdate; Isn't injected this PlayerLoop in this project.
+F:Cysharp.Threading.Tasks.PlayerLoopTiming.LastUpdate; Isn't injected this PlayerLoop in this project.
+F:Cysharp.Threading.Tasks.PlayerLoopTiming.PreLateUpdate; Isn't injected this PlayerLoop in this project.
+F:Cysharp.Threading.Tasks.PlayerLoopTiming.LastPreLateUpdate; Isn't injected this PlayerLoop in this project.
+F:Cysharp.Threading.Tasks.PlayerLoopTiming.PostLateUpdate; Isn't injected this PlayerLoop in this project.
+F:Cysharp.Threading.Tasks.PlayerLoopTiming.TimeUpdate; Isn't injected this PlayerLoop in this project.
+F:Cysharp.Threading.Tasks.PlayerLoopTiming.LastTimeUpdate; Isn't injected this PlayerLoop in this project.
+</code></pre>
+<p>こうすると、例えば PlayerLoopTiming.LastUpdate をコード上に書くと RS0030 のWarningとなります。WarningじゃなくてErrorでいいので、そこはUnityのドキュメントの通りにwarn-&gt;errorに設定を入れてやれば、以下の画像のようになります。</p>
+<img src="https://user-images.githubusercontent.com/46207/109150837-bb933880-77ac-11eb-85ba-4fd15819dbd0.png" width=600 />
+<p>このぐらい出来ていれば、十分でしょう。ところでBannedApiAnalyzersはめっちゃ使えるやつなので、これの対応以外にも普通に入れておくと捗ります。どうしてもこのメソッドはプロジェクトでは使用禁止！といったようなものはあると思います、それを規約じゃなくてコンパイルエラー（警告）に変換できるわけです。例えばGameObject.Find(&quot;name&quot;) 絶対殺すマンとかがさくっと設定できるわけです。</p>
+<p>（と思ったのですが、現状のUnity 2020.2のAnalyzer標準対応はかなりヘッポコのようで、そのままだとBannedApiAnalyzersはうまく使えなさそうです(BannedSymbols.txtの適用ができないとか、その他色々。csproj生成をフックして差し込むことはできるので、それによって差し込んでIDE側で利用する、ぐらいが妥協点になりそう)</p>
+<h2>タイムアウト処理について</h2>
+<p>タイムアウトはキャンセルのバリエーションと見なせます。つまり、CancellationTokenを渡すところに、時限発火のCancellationTokenを渡せばいいのです。そうすれば、タイムアウトの時間が来るとキャンセルが発動する。それがタイムアウト処理です。UniTaskでは <code>CancellationTokenSouce.CancelAfterSlim(TimeSpan)</code> というのがあるので、それを使います。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var cts = new CancellationTokenSource();
+cts.CancelAfterSlim(TimeSpan.FromSeconds(5)); // 5sec timeout.
+
+try
+{
+    await UnityWebRequest.Get(&quot;http://foo&quot;).SendWebRequest().WithCancellation(cts.Token);
+}
+catch (OperationCanceledException ex)
+{
+    if (ex.CancellationToken == cts.Token) // Tokenの比較をすることで厳密に発火元を調べることができますが、この場合100%タイムアウトなので比較しなくてもそれはそれでいい
+    {
+        UnityEngine.Debug.Log(&quot;Timeout&quot;);
+    }
+}
+</code></pre>
+<blockquote>
+<p>CancellationTokenSource は.NET標準のクラスであり、CancelAfterというメソッドが標準にありますが、これは（例によって）使わないでください。標準で備え付けられているものは当然のようにスレッドタイマーを用いますが、これはUnityにおいては不都合な場合が多いでしょう。CancelAfterSlimはUniTaskが用意している拡張メソッドで、PlayerLoopベースでタイマー処理を行います。パフォーマンス上でも軽量です。</p>
+</blockquote>
+<p>タイムアウトによるキャンセル処理と、別のキャンセル処理を組み合わせたい場合も少なくないでしょう。その場合は <code>CancellationTokenSource.CreateLinkedTokenSource</code> を使ってCancellationTokenを合成します。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var cancelToken = new CancellationTokenSource();
+cancelButton.onClick.AddListener(()=&gt;
+{
+    cancelToken.Cancel(); // cancel from button click.
+});
+
+var timeoutToken = new CancellationTokenSource();
+timeoutToken.CancelAfterSlim(TimeSpan.FromSeconds(5)); // 5sec timeout.
+
+try
+{
+    // combine token
+    var linkedTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancelToken.Token, timeoutToken.Token);
+
+    await UnityWebRequest.Get(&quot;http://foo&quot;).SendWebRequest().WithCancellation(linkedTokenSource.Token);
+}
+catch (OperationCanceledException ex)
+{
+    if (timeoutToken.IsCancellationRequested)
+    {
+        UnityEngine.Debug.Log(&quot;Timeout.&quot;);
+    }
+    else if (cancelToken.IsCancellationRequested)
+    {
+        UnityEngine.Debug.Log(&quot;Cancel clicked.&quot;);
+    }
+}
+</code></pre>
+<p>これによってキャンセルボタンのクリックによるキャンセル発火と、タイムアウトによるキャンセル発火を合成することが出来ました。</p>
+<h2>TimeoutController</h2>
+<p>ここまでが王道パターンのキャンセル処理だったのですが、今回UniTask v2.2.0では新しくTimeoutControllerというクラスを追加しました。これはタイムアウトが発火しない場合はアロケーションがなく再利用可能なCancellationTokenSourceです。タイムアウトは例外的状況なはずなので、これによってほとんどの状況で、タイムアウト処理のためのアロケーションをゼロにすることができます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">TimeoutController timeoutController = new TimeoutController(); // setup to field for reuse.
+
+async UniTask FooAsync()
+{
+    try
+    {
+        // you can pass timeoutController.Timeout(TimeSpan) to cancellationToken.
+        await UnityWebRequest.Get(&quot;http://foo&quot;).SendWebRequest()
+            .WithCancellation(timeoutController.Timeout(TimeSpan.FromSeconds(5)));
+        timeoutController.Reset(); // call Reset(Stop timeout timer and ready for reuse) when succeed.
+    }
+    catch (OperationCanceledException ex)
+    {
+        if (timeoutController.IsTimeout())
+        {
+            UnityEngine.Debug.Log(&quot;timeout&quot;);
+        }
+    }
+}
+</code></pre>
+<p>再利用（と、内部のタイマーの停止）のために、awaitが正常終了したらResetを手動で呼んでください、という一点だけ気をつけてください。</p>
+<p>CreateLinkedTokenSource的な使い方をする場合は、コンストラクタの引数に別のCancellationTokenを渡せます。これによってTimeout(TimeSpan)で得られるCancellationTokenがリンクされたものとなります。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">TimeoutController timeoutController;
+CancellationTokenSource clickCancelSource;
+
+void Start()
+{
+    this.clickCancelSource = new CancellationTokenSource();
+    this.timeoutController = new TimeoutController(clickCancelSource);
+}
+</code></pre>
+<p>ところでここで告知が幾つか有りまして、まず、UniTaskには標準で <code>.Timeout</code>, <code>.TimeoutWithoutException</code> というメソッドが生えているのですが、これらは可能であれば使わないでください。というのも、 <code>.Timeout</code>は外部からタイムアウト処理を行うもので、その場合に動いているタスク本体を停止することができないのです。タイムアウトが発火してもTask自体は動いていて、やってることは結果を無視するということです（世の中、AbortできないAPIも少なくなくて、そういうもののキャンセル処理ってこういうことなので、別にこれ自体は悪いわけではない）。かたやCancellationTokenをメソッドに渡す場合は、内部からのタイムアウト処理となるので、その場合TaskがAbort可能なものであれば、正しく処理がAbortされます。まとめると、CancellationTokenを渡すことができないメソッドに対して外付けでタイムアウト処理を行いたいときだけ、<code>.Timeout</code>を使いましょう、ということになります。正直名前ももう少し、あんま使わないで感を醸し出す名前に変更したいぐらいなのですが、まぁとりあえずは、ということで……。</p>
+<p>もう一つ、UniTaskには <code>AsyncOperation.WithCancellation</code> とは別に <code>UniTask.WithCancellation</code> というメソッドが生えていたのですが、<code>UniTask.WithCancellation</code>のほうの名前を<code>AttachExternalCancellation</code>に変更しました。これもTimeoutの話と同じで、 <code>AsyncOperation.WithCancellation</code> が内部からのキャンセル処理で、 <code>UniTask.WithCancellation</code> は外部からのキャンセル処理となっていて、挙動は似ていても内部動作が全く違うからです。内部キャンセルのほうが望ましいんですが、コードを見ただけだと内部キャンセルなのか外部キャンセルなのか分からないのは非常に良くない。つーかマズい。ダメ。ので変えました。名前的にも、使いたくない雰囲気を漂わせてる名前であるとおり、あんま使わないでねという意図が込められています。</p>
+<p>最後に微妙に細かいところなのですが、<code>AsyncOperation.WithCancellation</code>の挙動を<code>.ToUniTask(cancellationToken)</code>のただのショートカットにしました。Timeout処理で使うのに微妙に都合が悪かったからです。挙動はあんま変わらないんですが、細かく厳密なことを言うと少し違うんですが、まぁ、そういうことということで。</p>
+<p>この手の初期のデザインミスの修正は、あんま破壊的変更祭り死ね、とはならない程度に、ちょいちょいやらなきゃなあとは思ってるので、すみませんが宜しくおねがいします。</p>
+<h2>async/awaitは何故無限に分からないのか</h2>
+<p>async/await自体は非同期処理を容易にするための仕組みであり、雰囲気としては誰でも同期処理と同じように書けることをゴールにしています。そして、実際のところそれは、達成できてます。同期と同じことしかしなければ。asyncと宣言してawaitと書けば、同期処理と同じです。それは全く嘘偽りなく正しい。別にラムダ式も出てこないし特殊なコールバックも実行順序もない。ちゃんとループも書けるしtry-catchもできる。そういうように作られてる。</p>
+<p>じゃあなぜ難しいのかというと、同期処理よりも出来ることが増えているからです。</p>
+<ul>
+<li>直列にすべきか並行にすべきか</li>
+<li>キャンセルにどう対応すべきか</li>
+<li>伝搬の終点をどう扱うべきか</li>
+<li>Task(UniTask)が伝搬するのをよしとすべきか</li>
+<li>投げっぱなし処理にすべきか</li>
+</ul>
+<p>で、これらってそもそも同期処理だと出来ないことなんですよね、キャンセルって同期だと原則できないわけで。だからキャンセルなんて考えず黙ってawait、以上。とすればいいのです。別に並行(WhenAll)なんてしなくても直列で回してもいいのです、だって同期だったら黙って直列でやってた話じゃないですか。以上。</p>
+<p>が、まぁ人間出来るとなると欲が出るし、そもそも実際そういうわけにはいかないので、同期処理と比べて、よりベターな処理にするために、考えることが増える。やるべきことが増える。そこが難しさのポイントです。でも出来ることが多いってのは良いアプリケーション作りのためには悪いことではない。ブロッキング処理がなくなればUIの体験は非常に良くなるし、並行処理で高速に読み込まれれば嬉しいし、きちんとキャンセル処理されたほうがいいに決まってる。だから、非同期は重要なのです。</p>
+<p>というわけで、とりあえず一個一個考えていきましょうか。</p>
+<h2>直列にすべきか並行にすべきか</h2>
+<p>これ、JavaScriptの記事とかで、 Promise.all 使わないのは素人、バーカバーカ。みたいな記事がめちゃくちゃ良くありますが、んなこたーなくて使うかどうかはものによる。もちろん簡単に並行に束ねられるのは素晴らしいことなので、それはいいです。大いにやるべきだ。じゃあ直列処理は間違ってるかというと、別に間違っちゃあいないし、そうすべき局面だってそれなりにある。あと、allを使う必要があるからasync/awaitよりPromiseだ、みたいなのは意味不明なので無視していい。そもそも、そういう人たちってロクにコード書いたことないからなのか、thenとallぐらいしか用例を知らない説すらある。awaitはただのthenの糖衣構文「ではない」し、thenだけだと無理があるみたいなパターンもいっぱいあります。例えば非同期のミドルウェアパターンを<a href="http://neue.cc/2020/08/20_594.html">async decoratorパターンによるUnityWebRequestの拡張とUniTaskによる応用的設計例</a>で紹介しましたが、これなんかはasync/awaitだからこそ成立させられる、そして非常に強力な用例です。</p>
+<p>と、脱線しましたが、とはいえこうした並行処理を簡単に書けるようになったのがasync/await（つまりはPromise/Future/Task/UniTask）のいいところです。同期処理の場合では書けないのは勿論、コールバックベースでも難しくて無理がある、のでやらないものだったのが、async/awaitの登場によって頻繁に出てくるパターン、そして誰でも比較的安全に処理できるパターンとなりました。ちなみにこれ、Promiseだけでも誰でも使えるパターンとはなり得なくて、async/awaitがあるからこそ、Promiseのコード上での出現頻度が上がり、それによって適用可能になるシチュエーションが増えるという側面があると思っています。</p>
+<h2>Task(UniTask)が伝搬するのをよしとすべきか</h2>
+<p>前の話から続けると、asyncのための型(Promise/Task/UniTask)が頻出するのは、いいことだと思ってます。そのお陰で、効果的に適用できるシチュエーションが増えるんですから。とはいえ面倒くせーしグチャグチャするし嫌だ、という気持ちは大いにわかる。はい。</p>
+<p>と、ここで最新型のasync/await実装であるSwift 6から幾つか例を見てみましょう。日本語でわかりやすくまとまってる <a href="https://zenn.dev/koher/articles/swift6-concurrency">Swift 6で来たる並行処理の大型アップデート近況</a> と <a href="https://speakerdeck.com/koher/await">先取り！ Swift 6 の async/await</a> から引かせてもらいますが、まずメソッドの宣言。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">func download(from url: URL) async -&gt; Data
+</code></pre>
+<p>Dataが戻り値なわけですが UniTask[Data] みたいになっていない、Promiseが出てこないやったー、かというと、別にそんなこたぁないかなあ、と思います。Swiftの場合、asyncで宣言したメソッドにはawaitが必須であり、awaitを使うにはasyncである必要がある、と、伝搬していっているわけなので、 <code>async -&gt; Data</code> の一塊で見れば、制約や機能は UniTask[Data] のようなものと大きな違いはありません（型として明示されない分だけ、より強い制約がかかってるのですが、そのへんは後述）。</p>
+<p>そういうわけでasyncが伝搬している（悪いような言い方をすればコードを汚染している）わけですが、それに関してはどうでしょう。Swiftがいい対称性を持っているのは<a href="https://qiita.com/koher/items/e4c1d88981291c35d571">Swiftの検査例外</a>と似たような雰囲気で捉えられるところで、エラーの発生しうるメソッド(throws)の呼び出しにはawaitのようにtryが必要で、tryにはthrowかcatchが必要、と。</p>
+<p>なので、最下層でエラーなしメソッドからエラーありメソッドに変えたら、呼び出し側はどんどんさかのぼってエラー処理を書く必要がある。別にこれはGoも一緒ですよね、戻り値が(value)から(value, error)に変わり、対応していく必要がある。そういう対応が面倒くさいので、そうしたエラーに関しては検査しない勢もいる（C#や非検査例外のJavaなんかはそうですよね、どちらかというとむしろそのほうが多数派）わけで、良し悪し、とは言いませんが、現代的にエラー処理を強制的に伝搬させることは絶対に忌避するもの、というほどの価値観ではなくなってるのではないかと思います。</p>
+<p>で、async/awaitの話しに戻りますが、非同期もまた同様に最下層で同期から非同期に処理を変更したら伝搬していく。で、エラー処理をやったほうがいいのと同じように、同期から非同期へと性質が異なるものになったので、そしてそのことが型で明示されるのは当然いいことなので、伝搬していくのは当たり前じゃないですか？性質が変化したことを型(UniTask)なり宣言(async)なりで示し、上層側に性質が変化したことにより増えた出来ることの選択(並行処理/キャンセル/etc...)を与える。悪いことじゃないので受け入れるべきだし、async汚染とか言って喜んでるのはやめるべきですね。</p>
+<p>全部非同期というか、そういうことを全く意識させないような言語としてデザインする、というアイディアも当然あって、Goは実際それに近くて、しかも圧倒的に少数派で独特なデザインなのに大成功を収めているのが凄い。まぁじゃあそれが理想的で全ての言語がそうなっていくべきかというとそうではないとは思います（例えばキャンセルやタイムアウト処理などは結局意識させなきゃいけないので、Contextを伝搬させる必要があるため、完全に透過的にできているかというとそうではない。また全体のシンプル化の結果WaitGroupのような他ではあまり出てこないプリミティブな処理や、Channelが頻出する、もちろんそれはトレードオフなのでデザインとしてナシではないですが）。みんな違ってみんないい、とは思いませんが、目の前のプロダクトのために現在の現実の時間で何を選ぶべきか、という話ですね。</p>
+<p>伝搬はしょーがないとしても、書き味を良くするやり方はありますよね。Swiftの場合は、非同期で宣言している関数に同期関数を突っ込める。雑多なところでいうと、Task.FromResult()書いて回らなくていい、的な良さがありますね。ただまあ呼び出し側のawait, asyncの伝搬のほうが面倒くさ度というか、書くことはずっと多いので、あったほうがいいけど、なくても許容できるぐらいの感じかしら。</p>
+<p>それと async -&gt; Data には UniTask[Data] のようなTask型が出てこない。これも一々ジェネリクスで書くの面倒くさいので、asyncって言ってるんだからイチイチ、そっちの型でまで書きたくない、と。めっちゃいいですね。はい、いいです。また、文法とタイトにくっついてるのでUniTaskのawait二度漬け禁止とか、フィールドには持たないで欲しいなぁみたいなのが文法レベルで制限かけられる。これもいいところです。</p>
+<p>じゃあそれと比べたC#の良いところというか現状こうなってるという点では、asyncで宣言した戻り値の型によって実行する非同期ランタイム(AsyncMethodBuilder)が切り替えられます。asyncで宣言したメソッドを非同期ステートマシンに変換するのはコンパイラの仕事ですが、そのステートマシンの各ポイントでどう処理するかの実行機は型に紐付いています。Taskで宣言しているメソッドはTaskの非同期ランタイム、ValueTaskで宣言してるメソッドはValueTaskの非同期ランタイム、そしてUniTaskで宣言してるメソッドはUniTaskの非同期ランタイムで動きます。UniTaskがやっているように、この非同期ランタイムはユーザーがC#で実装できます。</p>
+<p>世の中の99%は別に既定の非同期ランタイムで不自由しない、と思いきや、そうではなくて、完全にデフォルトの実装を無視して100%実行環境(Unity)に特化して最適化することの効果、意味みたいなことを実証したのがUniTaskで、ちゃんと成功しています。非同期実行ランタイムを切り替えられる言語は他にもありますが(Rustもそうですね)、C#のそれは私が自分で書いてそこそこうまく普及させたというのもありますが、現状よくできた仕組みになっているんじゃないかとは思います。</p>
+<h2>伝搬の終点</h2>
+<p>asyncは伝搬していきますが、一番根っこで何か処理しなきゃいけないのはC#もそうですし、別にSwiftも同様です。Swift 6の仕様を見る限り@asyncHandlerでマークされたメソッドは伝搬を打ち切った根っこのメソッドになるようですが、つまりようするにこれってC#でいうところの <code>async void</code> です。</p>
+<p>伝搬をどういう風に打ち切ればいいのかというのは、実際初心者殺しなところがありますが、フレームワークがasync/await前提で作られている場合は意識させないことが可能です。例えばMVCウェブフレームワークのControllerで言ったら</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class FooController : Controller
+{
+    // Foo/Helloでアクセスできる
+    public async Task Hello()
+    {
+        // Usercode...
+    }
+}
+</code></pre>
+<p>というようにすると、ユーザーのコード記述のエントリポイントは async Task Hello であり、非同期伝搬の最上位の処理(async void)はMVCフレームワークの中で隠蔽されています。</p>
+<p>コンソールアプリケーションのMainもそうです</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">static async Task Main()
+{
+    // Usercode...
+}
+</code></pre>
+<p>最上位がMainなので、伝搬の終点なんて考えなくていい。</p>
+<p>じゃあUnityは、とかWinFormsやWPFは？というと、async/awaitなんて存在しない時代からのフレームワークであり、別にそれを前提としていないので、最上位を自分で作る必要があります。これが悩ましさを増させてしまうんですね。まぁ大抵はユーザーの入力が起点なので、Buttonのイベントハンドラーに対して UniTaskVoid(async void) を突っ込む、みたいな運用になってきますが……。あとはStartCoroutineと同じような雰囲気で、MonoBehaviourのどこかでFireAndForgetですね。何れにせよ、自分で最上位となるポイントを判断しなきゃいけないというのが、ひと手間感じるところで、難しいと言われてもしょうがない話です。async voidは使うんじゃねえ（正しくはある）、みたいな話もあるから余計分からなくなるという。使っても良いんですよ、最上位では……。</p>
+<p>UniTaskの場合はUniTaskVoidという存在がまた面倒くささを増量しているのですが、上の方でC#は戻り値の型で非同期ランタイムを切り替えられると書きましたが、つまりvoidに対するC#既定のランタイムがあり、voidで宣言する以上、それは変えられないのです。そのためasync UniTaskVoid と書かせるのですが、voidは特殊な存在でありUniTaskVoidは普通の戻り値の型なので、C#コンパイラの都合上、最上位として使うためにはなんらかのハンドリング(空の警告を抑制するためだけの.Forget()呼び出し)が強いられるという……。</p>
+<p>C# 10.0 だから C# 11.0 だかに向けての提案に<a href="https://github.com/dotnet/csharplang/blob/master/proposals/async-method-builders.md">AsyncMethodBuilder override</a>という仕様があって、メソッド単位で非同期ランタイムを選択できるようになる、可能性があります。そうしたら</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[AsyncMethodBuilderOverride(typeof(UniTaskVoidMethodBuilder))]
+async void FooAsync() { }
+</code></pre>
+<p>みたいに書けるようになるかもしれません。うーん、でも別にこれ全然書き味悪いですねぇ。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[UniTaskVoid]
+async void FooAsync() { }
+</code></pre>
+<p>ぐらいまで縮められるようになって欲しい、まぁまだProposalなので今後に期待、あとどっか適当なタイミングで提案しておこう（そもそも C# で現実的に稼働してる 非同期ランタイム を実装してるのはMicrosoftのTask/ValueTask実装者(Stephen Toub)と私ぐらいしかいないのだ）</p>
+<h2>キャンセルにどう対応すべきか</h2>
+<p>C#において、asyncメソッドは引数の最後にCancellationTokenを受け入れるべきだというふんわりした規約があります。これが、ダセーしウゼーし面倒くせーと大不評で。なるほどね、そうだね！私もそう思う！</p>
+<p>なんでこうなってるかというと、asyncに使うTask型って別にasyncで宣言したメソッドからしか作れないわけじゃなくて、手動で作れるんですよね。new Taskみたいな。Task.FromResultみたいな。それどころか別にawaitできる型もGetAwaiterという決め打ちな名前のメソッドを後付けで（拡張メソッドで）実装すればawaitできるようになりますからね。ゆるふわー。</p>
+<p>それはそれで非常に拡張性があって、そもそもasync/awaitに全然対応していないもの(Unity)に対してもユーザー側(UniTask)が対応させることが出来たりして、とても良かったのです、が、awaitする型全体を通してコンパイラがChildTask的な、便利Contextを裏側で自動で伝搬してあげるみたいな仕組みを作りづらいわけです。</p>
+<p>Swiftの場合は言語とタイトにくっついたasyncが用意されているので、<code>let handle = Task.runDetached { await ...}  handle.cancel()</code> みたいに書ける、つまりObservableをSubscribeしたのをDisposeすればCancelでこれがUniRxで良かったのにUniTaskは面倒くせえなおい、みたいなことが出来てハッピーっぽそうです。独立したCancellationTokenを持っているのは、それはそれで柔軟な取り回しができて悪くない場合もあるんですが、まぁ99.99%の状況で上位から伝搬するCancellationTokenだけで済むのは間違いないでしょう。</p>
+<p>ともあれ現状のC#的にはどうにもなんないししょーがないかなぁ、と思ってます。（GoだってContext手動で取り回すわけだし、ね）。はい。実際にはExecutionContextというスロットをawaitの伝搬で共有していて、SynchronizationContext.Currentはそれ経由で格納されてるので、そこにCancellationToken.Currentみたいなものを仕込むこと自体はランタイム的には出来るんですけどね。でも、ExecutionContextのスロットを使うというオーバーヘッドも避けれるなら避けたほうがいいというのもあります（などもあって、Taskで自動的に行われているExecutionContextの伝搬をUniTaskでは切っています）。</p>
+<p>一応、文化として「引数の最後にCancellationTokenを受け入れる」というルールが普及していること自体は良かったと思います。JavaScriptだとAbortControllerがCancellationTokenのような機能を果たしますが、これを使っていくのが一般的という雰囲気でもないので、キャンセルに対する統一的なやり方が作れてない感じがあるので。</p>
+<h2>CPU資源の有効活用とスケジューラー</h2>
+<p>まず、非同期とCPU使って並列処理だー、みたいなのは被るけど被らないんですね。そして、CPUをぶん回さない非同期に価値はないかというと、んなわきゃぁないんですね。まずI/Oの非同期について考えるのが大事で、JavaScriptがシングルスレッドだから全然使えないかと言ったらんなわきゃあねえだろ、であり(Node.jsで見事実証されてます)、Redisがアーキテクチャとしてシングルスレッドを選択しても価値ある性能を出せることを証明してます。</p>
+<p>その上で使える資源は色々使えたほうがいいよーということであり、C#のasync/awaitの場合はTaskが、というかawaitからawaitの間が実行単位になってきます。Unityの場合はawaitの最中にゲームエンジン(C++)に処理を渡して、エンジンが処理結果をメインスレッドに戻してきたのをC#がawaitで受け取る流れになってます。エンジン側に処理をぶん投げまくってC#側のメインスレッドを空けるのが現状のUnityにおける非同期というかasync/awaitというわけですね（この辺はJavaScriptに非常に似ています）。</p>
+<p>.NET の場合はasyncメソッドは最終的にどこかの非同期I/Oに叩き込まれて、awaitで戻ってくるときにスレッドプールを使います。async/awaitが言語に実装されて以降、C#はスレッドプールをめちゃくちゃ使うようになりました、というかawaitするとスレッドプールに行くので、本質的にもはやプログラムは全てスレッドプール上で動いているといっても過言ではない。のです。全てがGoルーチンみたいな世界観と同じです（言い過ぎ）。というわけで、スレッドプールのスケジューラーへの改善の投資は続いて、もちろんワークスティーリングもしますし、ただのスレッドのプール、ではない賢い動作をする、.NETの非同期処理の心臓部となっています。</p>
+<p>.NET 6ではこのスレッドプールはPure C#実装になります。というのもC#が動くランタイムも複数あって（.NET Coreであったりmonoであったり）、それぞれが個別のネイティブ実装だと、一つのランタイムがアルゴリズム改善しても、他のランタイムに反映されなくなってしまうなどなど。.NET Core以降、C#上で低レベルなコードが書けるようになったこととランタイムの実行速度の改善が続いていることもあり、.NET 6においてはネイティブ実装→Pure C#実装への切り替えはパフォーマンス的な向上にも繋がったそうです。</p>
+<h2>まとめ</h2>
+<p>C#のasync/awaitが登場したのは2012年、preview辺りの頃から考えるともう10年前！実用言語での大規模投入は間違いなく初めてで、最初の実装(C# 5.0)が現在から見て良かったかというと、まずかった部分も少なからずあります。しかしまぁ、6.0, 7.0, 8.0と改良を進めて来た現在のC#のasync/awaitは別に他と比べて劣っているとは思えません。8.0 のasync streamsやAsync LINQは<a href="https://github.com/apple/swift-evolution/blob/main/proposals/0298-asyncsequence.md">Swiftのasync seqeunceのproposal(つまりまだ先)</a>みたいなところもありますし。</p>
+<p>Unity上でUniTaskみたいな独自非同期ランタイムを作るのも、別にC#で無理してやってるというわけでもなく、自分の中では自然なことです。現実にモバイルゲームを開発していこうというところで、まず動かせない要素を決める、つまりUnityというのは不動な要素。そしてそこに乗ってるC#も外れない言語。その中で、現在可能な技術(C# 8.0)の範囲で、最高の結果を引き出すための手法を選んで、手を動かす。</p>
+<p>こないだ私の会社で出してるOSSの紹介をしたのですが、非現実的な理想ではなくて、今表現できる最高のものを生み出していく。というのをモットーにしてます。エンジニアなら評論家にならず手を動かして結果で示せ、ということですね。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/key/abifk9UuCO8pDc" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/neuecc/a-quick-tour-of-the-cysharp-oss" title="A quick tour of the Cysharp OSS" target="_blank">A quick tour of the Cysharp OSS</a> </strong> from <strong><a href="https://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>というわけでまぁUniTask v2.2.0もいい感じになっていると思うので、ぜひぜひ使っていただければです！</p>
+</div>
+<h1 data-pagefind-sort="date:2020-12-30" data-pagefind-meta="published:2020-12-30"><a href="https://neue.cc/2020/12/30_598.html">2020年を振り返る</a></h1>
 <ul class="date"><li>2020-12-30</li></ul>
 <div class="entry_body"><p>今年は前半が絶好調で、<a href="http://neue.cc/2020/01/09_588.html">ConsoleAppFramework</a>、<a href="http://neue.cc/2020/01/30_590.html">ProcessX</a>、<a href="https://tech.cygames.co.jp/archives/3383/">ZString</a>、<a href="https://tech.cygames.co.jp/archives/3401/">ZLogger</a>、そして<a href="https://tech.cygames.co.jp/archives/3417/">UniTask v2</a>と、凄い勢いでプログラミング的なクリエイティビティを発揮できていました。なので今年トータルとしてみれば良かったと言えます。</p>
 <p>が、後半が絶不調で無。とにかく無。なんでこんな無になったのか分からないほどに無。コロナか、コロナが悪いんか。それも実際あるんですが、いや、というかそれが全てかなー。リモートワーク向いてないんすよー、みたいな。リモート前半で魂の貯金を使い切った。無が加速してからヤバいと思って自主リモート返納（自分だけオフィスワーク）に戻したんですが、それでもなんか違うんですよねえ。まぁ、言い訳なんですけどね！新環境に適応できない旧世代民には死あるのみ、って感じなので、来年は脳みそ入れ替えてやってきたいと思います。</p>
@@ -1954,17 +2154,6 @@ namespace ConsoleApp14
 <p>というわけで、どうでしょう。MicroBatchFrameworkとも合わせて、C#のこの辺の環境は割といいほうだと思ってます。コード生成覚えるとやれることも広がるので、ぜひぜひ、コード生成生活を楽しんでください！</p>
 <p>また、Unityでも普通に便利に使えると思います。Editor拡張でソースコード生成するものを用意するパターンは多いと思いますが（なにかリソースを読み込んで生成したり、あるいはそのままAssembly.GetExecutingAssembly().GetTypes()して型から生成したり)、その時のテンプレートとして、普通にstringの連結で作ってるケースも少なくなさそうですが、「デザイン時コード生成」も「実行時テキスト生成」も、どっちも全然いけます。「T4にできないこと」セクションに書いたとおり、よくも悪くも外部ツールで実行環境への依存がないので。</p>
 </div>
-<h1 data-pagefind-sort="date:2019-09-30" data-pagefind-meta="published:2019-09-30"><a href="https://neue.cc/2019/09/30_584.html">Unite Tokyo 2019でC# Structの進化の話をしてきました</a></h1>
-<ul class="date"><li>2019-09-30</li></ul>
-<div class="entry_body"><p><a href="https://events.unity3d.jp/unitetokyo/">Unite Tokyo 2019</a>にて、「Understanding C# Struct All Things」と題して登壇してきました！動画は後日<a href="https://learning.unity3d.jp/3305/">Unity Learning Materials</a>に公開される予定です。</p>
-<iframe src="//www.slideshare.net/slideshow/embed_code/key/h7l40rS3W9o3dI" width="595" height="485" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/UnityTechnologiesJapan002/unite-tokyo-2019understanding-c-struct-all-things" title="【Unite Tokyo 2019】Understanding C# Struct All Things" target="_blank">【Unite Tokyo 2019】Understanding C# Struct All Things</a> </strong> from <strong><a href="https://www.slideshare.net/UnityTechnologiesJapan002" target="_blank">UnityTechnologiesJapan002</a></strong> </div>
-<p>C#成分強めなので、Unityに馴染みのない人でも読んで楽しめる内容になっていると思います。とはいえ勿論、Uniteでのセッションであるということに納得してもらえるようUnity成分もきちんと取り入れています。というわけで、どちらの属性の人にも楽しんでいただければ！</p>
-<p>structに関する機能強化、実際めっちゃ多いんですが、それをカタログ的に延々と紹介してもつまらないので、そうしたカタログ紹介っぽさが出ないように気を配ってます。あと、あんましそういうのでは脳みそに入ってこないというのもあるので。</p>
-<p>応用例的なところのものは、ないとつまらないよねーということで色々持ってきたのですが、もう少し説明厚くしても良かったかなー感はありました。セッション内でも雰囲気で流した感じありますしね。とはいえ尺とか尺とか。まぁ雰囲気を分かってもらえれば（structは色々遊べるよ、という）いい、と割り切った面もあるにはあります。詳しくは資料を熟読してください！</p>
-<p>Span/NativeArrayの説明も厚くしたくはあったんですが、structそのものの本題からは若干外れるので見送り。あと尺とか尺とか。</p>
-<p>今年のUnite、もの凄くいいイベントでした。神運営とはこのことか……。そしてDOTSが熱い。めっちゃやるやる詐欺なので、いい加減本当にそろそろDOTSに手を出して楽しみたいですます！</p>
-<p>あと、MessagePack-CSharp v2はいい加減そろそろ出るはず予定です、ちなみにSystem.Memoryとかにめっちゃ依存しているので、MessagePack-CSharpを入れるとSpanとかSystem.Runtime.CompilerServices.Unsafeとかが解禁されます（依存ライブラリとして同梱する予定なので）。いいのかわるいのか。まあ、いいでしょふ。未来未来。</p>
-</div>
 <a href="https://neue.cc/3">Prev |</a>
 <a href="https://neue.cc/5">| Next</a>
 </div>
@@ -1988,6 +2177,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2025/05/">2025-05</a>
 <li><a href="https://neue.cc/2024/12/">2024-12</a>
 <li><a href="https://neue.cc/2024/11/">2024-11</a>
 <li><a href="https://neue.cc/2024/08/">2024-08</a>

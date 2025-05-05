@@ -79,7 +79,426 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2024-12-30" data-pagefind-meta="published:2024-12-30"><a href="https://neue.cc/2024/12/30_year.html">2024年を振り返る</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2025-05-05" data-pagefind-meta="published:2025-05-05"><a href="https://neue.cc/2025/05/05_ZLinq.html">ゼロアロケーションLINQライブラリ「ZLinq」のリリースとアーキテクチャ解説</a></h1>
+<ul class="date"><li>2025-05-05</li></ul>
+<div class="entry_body"><p><a href="https://github.com/Cysharp/ZLinq">ZLinq</a> v1を先月リリースしました！structとgenericsベースで構築することによりゼロアロケーションを達成しています。またLINQ to Span, LINQ to SIMD, LINQ to Tree(FileSystem, JSON, GameObject, etc.)といった拡張要素と、任意の型のDrop-in replacement Source Generator。そして.NET Standard 2.0, Unity, Godotなどの多くのプラットフォームサポートまで含めた大型のライブラリとなっています！現在GitHub Starsも2000を超えました。</p>
+<p>https://github.com/Cysharp/ZLinq</p>
+<p>structベースのLINQそのものは珍しいものではなく、昔から多くの実装が挑戦してきました。しかし、真に実用的と言えるものはこれまでありませんでした。極度なアセンブリサイズの肥大化、オペレーターの網羅の不足、最適化不足で性能が劣るなど、実験的な代物を抜け切れていないものばかりでした。ZLinqでは実用的に使えるものを目指し、.NET 10(Shuffle, RightJoin, LeftJoinなど新しいものも含む)に含まれる全てのメソッドとオーバーロードの100%のカバーと、99%の挙動の互換性の確保、そしてアロケーションだけではなく、SIMD化も含めて、多くのケースにおける性能面で勝てるように実装しました。</p>
+<p>それが出来るのは、そもそも私のLINQ実装の経験はものすごく長くて、2009年4月に<a href="https://github.com/neuecc/linq.js/">linq.js</a>というJavaScript用のLINQ to Objectsライブラリを公開しています(linq.jsは現在もForkした人が今もメンテナンスされているようです、素晴らしい！)。他にもUnityで広く使われているReactive Extensionsライブラリ<a href="https://github.com/neuecc/UniRx">UniRx</a>を実装し、直近ではそれの進化版である<a href="https://github.com/Cysharp/R3">R3</a>を公開したばかりです。バリエーションとしても<a href="https://assetstore.unity.com/packages/tools/integration/linq-to-gameobject-24256">LINQ to GameObject</a>、<a href="https://github.com/neuecc/LINQ-to-BigQuery">LINQ to BigQuery</a>、<a href="https://github.com/Cysharp/SimdLinq/">SimdLinq</a>といったものを作っていました。これらに、ゼロアロケーション関連ライブラリ(<a href="https://github.com/Cysharp/ZString">ZString</a>, <a href="https://github.com/Cysharp/ZLogger">ZLogger</a>)やハイパフォーマンスシリアライザー(<a href="https://github.com/MessagePack-CSharp/MessagePack-CSharp/">MessagePack-CSharp</a>, <a href="https://github.com/Cysharp/MemoryPack">MemoryPack</a>)の知見を掛け合わせることで、標準ライブラリの上位互換という野心的目標を達成できました。</p>
+<p><img src="https://github.com/Cysharp/ZLinq/raw/main/img/benchmarkhead.jpg" alt="" /></p>
+<p>これはシンプルなベンチマークで、Where, Where.Take, Where.Take.Selectとメソッドチェーンを重ねれば重ねるほど、通常はアロケーションが増えていきますがZLinqはずっとゼロです。</p>
+<p>性能は元のソース、個数、値の型、そしてメソッドの繋げ方によって変わってきます。多くのケースで性能面で有利なことを確認するために、ZLinqでは様々なケースのベンチマークを用意し、GitHub Actions上で走らせています。<a href="https://github.com/Cysharp/ZLinq/actions/workflows/benchmark.yml">ZLinq/actions/Benchmark</a>。構造上どうしても負けてしまうケースも存在はするのですが、現実的なケースではほとんど勝っています。</p>
+<p>ベンチマーク上極端に差が出るものでいえば、シンプルにSelectを複数回繰り返したものは、SystemLinqもZLinqも特殊な最適化が入っていないケースになりますが、大きな性能差が出ています。</p>
+<p>| Method       | Mean       | Allocated |
+|------------- |-----------:|----------:|
+| LinqSelect1  | 1,114.4 μs |      49 B |
+| LinqSelect2  | 1,831.7 μs |     193 B |
+| LinqSelect3  | 5,639.8 μs |     342 B |
+| LinqSelect4  | 8,896.9 μs |     492 B |
+|              |            |           |
+| ZLinqSelect1 |   624.4 μs |       1 B |
+| ZLinqSelect2 |   780.4 μs |       1 B |
+| ZLinqSelect3 | 1,247.6 μs |       1 B |
+| ZLinqSelect4 | 1,248.8 μs |       1 B |</p>
+<p>シンプルなケースでは、DistinctやOrderByなど中間バッファを必要とするものは、積極的なプーリングによりアロケーションを大きく抑えているため、差が大きくなります(ZLinqは原則<code>ref strcut</code>であり短寿命が期待できるため、プーリング利用はややアグレッシブにしています)。例えばこのベンチマークはDistinctです。</p>
+<p>| Method      | Mean     | Gen0   | Gen1   | Allocated |
+|------------ |---------:|-------:|-------:|----------:|
+| SystemLinq  | 67.52 μs | 3.4180 | 0.3662 |   58656 B |
+|             |          |        |        |           |
+| ZLinq       | 33.02 μs |      - |      - |      56 B |</p>
+<p>LINQはメソッド呼び出しのパターンにより特殊な最適化がかかるなど、アロケーションを抑えるだけでは性能面で常に勝てるわけではありません。そうしてオペレーターの繋がりによる最適化に関しても、これは.NET 9で最適化されたパターンとして<a href="https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-9/">Performance Improvements in .NET 9</a>で紹介されている例ですが、ZLinqではそれらの最適化を全て実装し、より高いパフォーマンスを引き出しています。</p>
+<p>| Method                                   | Mean         | Gen0   | Allocated |
+|----------------------------------------- |-------------:|-------:|----------:|
+| DistinctFirst_SystemLinq                 |    22.638 ns | 0.0038 |      64 B |
+| AppendSelectLast_SystemLinq              |    33.865 ns | 0.0067 |     112 B |
+| RangeReverseCount_SystemLinq             |    22.420 ns | 0.0029 |      48 B |
+| DefaultIfEmptySelectElementAt_SystemLinq |    19.283 ns | 0.0029 |      48 B |
+| ListSkipTakeElementAt_SystemLinq         |    38.704 ns | 0.0057 |      96 B |
+| RangeUnionFirst_SystemLinq               |    38.567 ns | 0.0067 |     112 B |
+| SelectWhereSelectSum_SystemLinq          | 3,605.709 ns | 0.0076 |     168 B |
+|                                          |              |        |           |
+| DistinctFirst_ZLinq                      |    23.085 ns |      - |         - |
+| AppendSelectLast_ZLinq                   |    21.665 ns |      - |         - |
+| RangeReverseCount_ZLinq                  |     7.429 ns |      - |         - |
+| DefaultIfEmptySelectElementAt_ZLinq      |    19.056 ns |      - |         - |
+| ListSkipTakeElementAt_ZLinq              |    29.341 ns |      - |         - |
+| RangeUnionFirst_ZLinq                    |    31.048 ns |      - |         - |
+| SelectWhereSelectSum_ZLinq               | 1,260.455 ns |      - |         - |</p>
+<p>ZLinqの良いところとして、これらLINQの進化による最適化の恩恵を、最新の.NETだけではなく、全ての世代の.NET(.NET Frameworkも含む)が得られることでもあります。</p>
+<p>利用法はシンプルに、<code>AsValueEnumerable()</code>呼び出しを追加するだけです。オペレーターに関しては100%網羅しているので、既存コードからの置き換えも全て問題なくコンパイルが通り、動作します。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">using ZLinq;
+
+var seq = source
+    .AsValueEnumerable() // only add this line
+    .Where(x =&gt; x % 2 == 0)
+    .Select(x =&gt; x * 3);
+
+foreach (var item in seq) { }
+</code></pre>
+<p>ZLinqでは挙動の互換性を保証するために、dotnet/runtimeのSystem.Linq.Testsを移植して <a href="https://github.com/Cysharp/ZLinq/tree/main/tests/System.Linq.Tests">ZLinq/System.Linq.Tests</a> 常に走らせています。</p>
+<p><img src="https://github.com/Cysharp/ZLinq/blob/main/img/testrun.png" alt="" /></p>
+<p>9000件のテストケースのカバーにより、動作を保証しています（Skipしているケースはref structであるため、同一テストコードを動かせない場合によるものなど）</p>
+<p>また、 <code>AsValueEnumerable()</code> すら省略したDrop-In Replacementを任意で有効化するSource Generatorも提供しています。</p>
+<pre data-pagefind-ignore="all"><code>[assembly: ZLinq.ZLinqDropInAttribute(&quot;&quot;, ZLinq.DropInGenerateTypes.Everything)]
+</code></pre>
+<p><img src="https://github.com/Cysharp/ZLinq/blob/main/img/dropin.jpg" alt="" /></p>
+<p>この仕組みにより、Drop-In Replacementの範囲を自由にコントロールすることができます。<code>ZLinq/System.Linq.Tests</code>自体がDrop-In Replacementにより、既存テストコードを変えずにZLinqで動作するようになっています。</p>
+<h2>ValueEnumerableのアーキテクチャと最適化</h2>
+<p>使い方などはReadMeを参照してもらえればいいので、ここでは最適化の話を深堀します。ただたんなるシーケンスを遅延実行するだけ、ではないところが、アーキテクチャ上の特色であり、他の言語のコレクション処理ライブラリと比べても、多くの工夫が詰まっています。</p>
+<p>連鎖のベースとなる<code>ValueEnumerable&lt;T&gt;</code>の定義はこうなっています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public readonly ref struct ValueEnumerable&lt;TEnumerator, T&gt;(TEnumerator enumerator)
+    where TEnumerator : struct, IValueEnumerator&lt;T&gt;, allows ref struct // allows ref structは.NET 9以上の場合のみ
+{
+    public readonly TEnumerator Enumerator = enumerator;
+}
+
+public interface IValueEnumerator&lt;T&gt; : IDisposable
+{
+    bool TryGetNext(out T current); // as MoveNext + Current
+
+    // Optimization helper
+    bool TryGetNonEnumeratedCount(out int count);
+    bool TryGetSpan(out ReadOnlySpan&lt;T&gt; span);
+    bool TryCopyTo(scoped Span&lt;T&gt; destination, Index offset);
+}
+</code></pre>
+<p>これを基にして、例えばWhereなどのオペレーターはこうした連鎖が続きます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static ValueEnumerable&lt;Where&lt;TEnumerator, TSource&gt;, TSource&gt; Where&lt;TEnumerator, TSource&gt;(this ValueEnumerable&lt;TEnumerator, TSource&gt; source, Func&lt;TSource, Boolean&gt; predicate)
+    where TEnumerator : struct, IValueEnumerator&lt;TSource&gt;, allows ref struct
+</code></pre>
+<p><code>IValueEnumerable&lt;T&gt;</code>ではなくてこのようなアプローチを取ったのは、<code>(this TEnumerable source) where TEnumerable : struct, IValueEnumerable&lt;TSource&gt;</code>のような定義にすると、<code>TSource</code>への型推論が効かなくなります。これはC#が型引数の制約からは型推論をしないという言語仕様上の制限(<a href="https://github.com/dotnet/csharplang/discussions/6930">dotnet/csharplang#6930</a>)があるためで、もしそのような定義のまま実装をすると、インスタンスメソッドとして大量の組み合わせを定義することになります。それをやったのが<a href="https://github.com/kevin-montrose/LinqAF">LinqA</a>であり、その結果<a href="https://kevinmontrose.com/2018/01/17/linqaf-replacing-linq-and-not-allocating/">100,000+ methods and massive assembly sizes</a>ということで、あまり良い結果をもたらしていません。</p>
+<p>LINQにおいては実装は全て<code>IValueEnumerator&lt;T&gt;</code>側にあり、また、全てのEnumeratorはstructのため、<code>GetEnumerator()</code>ではなくて、共通で<code>Enumerator</code>のコピー渡しするだけで、それぞれのEnumeratorが独立したステートで処理できることに気付いたので、<code>IValueEnumerator&lt;T&gt;</code>を<code>ValueEnumerable&lt;TEnumerator, T&gt;</code>でラップするだけ、という構成に最終的になりました。これにより型が制約側ではなくて型宣言側に現れるので、型推論での問題もありません。</p>
+<h3>TryGetNext</h3>
+<p>次にイテレートの本体であるMoveNextについて詳しく見ていきましょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// Traditional interface
+public interface IEnumerator&lt;out T&gt; : IDisposable
+{
+    bool MoveNext();
+    T Current { get; }
+}
+
+// iterate example
+while (e.MoveNext())
+{
+    var item = e.Current; // invoke get_Current()
+}
+
+// ZLinq interface
+public interface IValueEnumerator&lt;T&gt; : IDisposable
+{
+    bool TryGetNext(out T current);
+}
+
+// iterate example
+while (e.TryGetNext(out var item))
+{
+}
+</code></pre>
+<p>C#の <code>foreach</code> は <code>MoveNext() + Current</code> に展開されるわけですが、問題が二点あります。一つはメソッド呼び出し回数で、イテレート毎にMoveNextとget_Currentの2回必要です。もう一つはCurrentのために、変数を保持する必要があること。そこで、それらを<code>bool TryGetNext(out T current)</code>にまとめました。これによりメソッド呼び出し回数が一度で済みパフォーマンス上有利です。</p>
+<p>なお、この <code>bool TryGetNext(out T current)</code> 方式は、例えば<a href="https://doc.rust-lang.org/std/iter/trait.Iterator.html">Rustのイテレーター</a>で採用されています。</p>
+<pre data-pagefind-ignore="all"><code class="language-Rust">pub trait Iterator {
+    type Item;
+    // Required method
+    fn next(&amp;mut self) -&gt; Option&lt;Self::Item&gt;;
+}
+</code></pre>
+<p>変数の保持に関してはピンとこないと思うので、例としてSelectの実装を見てください。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public sealed class LinqSelect&lt;TSource, TResult&gt;(IEnumerator&lt;TSource&gt; source, Func&lt;TSource, TResult&gt; selector) : IEnumerator&lt;TResult&gt;
+{
+    // フィールドが3つ
+    IEnumerator&lt;TSource&gt; source = source;
+    Func&lt;TSource, TResult&gt; selector = selector;
+    TResult current = default!;
+
+    public TResult Current =&gt; current;
+
+    public bool MoveNext()
+    {
+        if (source.MoveNext())
+        {
+            current = selector(source.Current);
+            return true;
+        }
+
+        return false;
+    }
+}
+
+public ref struct ZLinqSelect&lt;TEnumerator, TSource, TResult&gt;(TEnumerator source, Func&lt;TSource, TResult&gt; selector) : IValueEnumerator&lt;TResult&gt;
+    where TEnumerator : struct, IValueEnumerator&lt;TSource&gt;, allows ref struct
+{
+    // フィールドが2つ
+    TEnumerator source = source;
+    Func&lt;TSource, TResult&gt; selector = selector;
+
+    public bool TryGetNext(out TResult current)
+    {
+        if (source.TryGetNext(out var value))
+        {
+            current = selector(value);
+            return true;
+        }
+
+        current = default!;
+        return false;
+    }
+}
+</code></pre>
+<p><code>IEnumerator&lt;T&gt;</code>は<code>MoveNext()</code>で進めて<code>Current</code>で返す、という都合上、<code>Current</code>のフィールドが必要です。ところがZLinqでは進めると同時に値を返すため、フィールドに保持する必要がありません。これは、全体が<code>struct</code>ベースで構築されているZLinqではかなり大きな違いがあります。ZLinqではメソッドチェーンの度に、以前のstructを丸ごと抱える(<code>TEnumerator</code>がstruct)構造になるため、メソッドチェーンを重ねる度に構造体のサイズが肥大化していきます。常識的な範囲内でメソッドチェーンを重ねる限りは、パフォーマンス上も問題にはなっていなかったのですが、それでも小さければ小さいほどコピーコストが小さくなり性能面で有利にはなります。1バイトでも構造体を小さくする、ためにも<code>TryGetNext</code>の採用は必然でした。</p>
+<p>TryGetNextの欠点は、共変・反変をサポートできないことです。ただし私は、そもそもイテレーターや配列から共変・反変のサポートは撤廃すべきだと思っています。<code>Span&lt;T&gt;</code>との相性が悪いため、メリット・デメリットを天秤にかけると、時代遅れの概念だと言えます。具体例を出すと、配列のSpan化は失敗する可能性があり、それはコンパイル時には検出できず実行時エラーとなります。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// ジェネリクスの変性によりDerived[]をBase[]で受け取る。
+Base[] array = new Derived[] { new Derived(), new Derived() };
+
+// その場合、Span&lt;T&gt;へのキャストやAsSpan()は実行時エラーになる！
+// System.ArrayTypeMismatchException: Attempted to access an element as a type incompatible with the array.
+Span&lt;Base&gt; foo = array;
+
+class Base;
+class Derived : Base;
+</code></pre>
+<p><code>Span&lt;T&gt;</code>以前に追加された機能のため、もうどうにもならないとは思いますが、現代の.NETはあらゆるところでSpanが活用されるようになっているので、それが実行時エラーになる可能性をはらんでいる時点で、使い物にならないと考えてもいいはずです。</p>
+<h3>TryGetNonEnumeratedCount / TryGetSpan / TryCopyTo</h3>
+<p>全てを愚直に列挙するだけだと、パフォーマンスは最大化されません。例えばToArrayするときに、もしサイズの変動がないなら(<code>array.Select().ToArray()</code>)、<code>new T[count]</code>のように固定長配列を作ることができます。SystemLinqでも、そうした最適化を実現するために、内部的には<code>Iterator&lt;T&gt;</code>型が使われているのですが、引数は<code>IEnumerable&lt;T&gt;</code>のため、必ず <code>if (source is Iterator&lt;TSource&gt; iterator)</code> のようなコードが必要になっています。</p>
+<p>ZLinqでは最初からLINQのための定義を前提にできるため、すべて織り込み済みで用意しています。ただし、むやみやたらに増やすのはアセンブリサイズの肥大化を招くため、必要最小限の定義で、最大限の効果を生み出すように調整したのが、この3つのメソッドとなっています。</p>
+<p><code>TryGetNonEnumeratedCount(out int count)</code>は、元のソースが有限の個数であり、途中にフィルタリング系メソッド(WhereやDistinctなど。TakeやSkipは算出可能なため含まない)が挟まらない場合は成功します。ToArrayなどのほか、OrderByやShuffleなど中間バッファが必要な時に効果が出るケースもあります。</p>
+<p><code>TryGetSpan(out ReadOnlySpan&lt;T&gt; span)</code>は、元ソースが連続的なメモリとして取得できる場合には、オペレーターによってはSIMDが適用されて劇的なパフォーマンス向上に繋がったり、Spanによるループ処理によって集計パフォーマンスが高まるなど、性能面で大きな違いをもたらす可能性があります。</p>
+<p><code>TryCopyTo(scoped Span&lt;T&gt; destination, Index offset)</code>は内部イテレーターによってパフォーマンスを向上させる仕組みです。外部イテレーターと内部イテレーターについて説明すると、例えば<code>List&lt;T&gt;</code>は<code>foreach</code>と<code>ForEach</code>の両方が選べます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// external iterator
+foreach (var item in list) { Do(item); }
+
+// internal iterator
+list.ForEach(Do);
+</code></pre>
+<p>見た目は似ていますが、性能面で違いがあります。foreachは素直な構文で書けている。ForEachはデリゲート渡し。処理の実体まで分解すると</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// external iterator
+List&lt;T&gt;.Enumerator e = list.GetEnumerator();
+while (e.MoveNext())
+{
+    var item = e.Current;
+    Do(item);
+}
+
+// internal iterator
+for (int i = 0; i &lt; _size; i++)
+{
+    action(_items[i]);
+}
+</code></pre>
+<p>これはデリゲート呼び出し(+デリゲート生成アロケーション)のオーバーヘッド vs イテレーターのMoveNext + Current呼び出しの対決になっていて、イテレート速度自体は内部イテレーターのほうが速い。この場合デリゲート呼び出しのほうが軽量な場合があり、ベンチマーク的に内部イテレーターのほうが有利な可能性があります。</p>
+<p>もちろん、ケースバイケースであることと、ラムダ式にキャプチャが発生したり、普通の制御構文が使えない(continueなど)ことから、私としては<code>ForEach</code>は使うべきではないし、拡張メソッドで<code>ForEach</code>のようなものを独自定義すべきではない、とも思っていますが、原理的にはこのような違いが存在します。</p>
+<p><code>TryCopyTo(scoped Span&lt;T&gt; destination, Index offset)</code>は、デリゲートではなく<code>Span</code>を受け取ることで限定的に内部イテレーター化しました。</p>
+<p>これもSelectを例に出すと、ToArrayの場合にCountが取れているとSpanを渡して内部イテレーターで処理します。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public ref struct Select
+{
+    public bool TryCopyTo(Span&lt;TResult&gt; destination, Index offset)
+    {
+        if (source.TryGetSpan(out var span))
+        {
+            if (EnumeratorHelper.TryGetSlice(span, offset, destination.Length, out var slice))
+            {
+                // loop inlining
+                for (var i = 0; i &lt; slice.Length; i++)
+                {
+                    destination[i] = selector(slice[i]);
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
+// ToArray
+if (enumerator.TryGetNonEnumeratedCount(out var count))
+{
+    var array = GC.AllocateUninitializedArray&lt;TSource&gt;(count);
+
+    // try internal iterator
+    if (enumerator.TryCopyTo(array.AsSpan(), 0))
+    {
+        return array;
+    }
+
+    // otherwise, use external iterator
+    var i = 0;
+    while (enumerator.TryGetNext(out var item))
+    {
+        array[i] = item;
+        i++;
+    }
+
+    return array;
+}
+</code></pre>
+<p>のように、SelectはSpanは作れませんが、元ソースがSpanを作れるなら、内部イテレーターとして処理することでループ処理を高速化することが可能です。</p>
+<p><code>TryCopyTo</code>の定義は普通の<code>CopyTo</code>と違って、<code>Index offset</code>を持っています。また、destinationはソースサイズよりも小さいことを許しています（通常の.NETのCopyToはdestinationが小さいと失敗する)。これによって、destinationのサイズが1の場合、IndexによってElementAtが表現できます。そして0ならFirstだし^1の場合はLastになります。<code>IValueEnumerator&lt;T&gt;</code>自体に<code>First</code>, <code>Last</code>, <code>ElementAt</code>を持たせると、クラス定義として無駄が多くなってしまいますが（アセンブリサイズにも影響が出る）、小さいdestinationとIndexを持たせることにより、一つのメソッドでより多くの最適化ケースをカバーできるようになりました。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static TSource ElementAt&lt;TEnumerator, TSource&gt;(this ValueEnumerable&lt;TEnumerator, TSource&gt; source, Index index)
+    where TEnumerator : struct, IValueEnumerator&lt;TSource&gt;, allows ref struct
+{
+    using var enumerator = source.Enumerator;
+    var value = default(TSource)!;
+    var span = new Span&lt;T&gt;(ref value); // create single span
+    if (enumerator.TryCopyTo(span, index))
+    {
+        return value;
+    }
+    // else...
+}
+</code></pre>
+<p>ところで、このTryGetNextや内部イテレーターに関しては、2007年の時点で <a href="https://nyaruru.hatenablog.com/entry/20070818/p1">https://nyaruru.hatenablog.com/entry/20070818/p1</a> で紹介されていました。この記事はずっと頭に残っていて、ようやくこうして20年経って理屈通りの実現ができました。という点でも少し感慨深いです。2008年前後はLINQ登場前後ということで、このあたりの話がアツかった時代なんですよねー。</p>
+<h2>LINQ to Span</h2>
+<p>ZLinqは .NET 9 以上であれば、<code>Span&lt;T&gt;</code>や<code>ReadOnlySpan&lt;T&gt;</code>に対しても、全てのLINQオペレーターを繋げることができます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">using ZLinq;
+
+// Can also be applied to Span (only in .NET 9/C# 13 environments that support allows ref struct)
+Span&lt;int&gt; span = stackalloc int[5] { 1, 2, 3, 4, 5 };
+var seq1 = span.AsValueEnumerable().Select(x =&gt; x * x);
+
+// If enables Drop-in replacement, you can call LINQ operator directly.
+var seq2 = span.Select(x =&gt; x);
+</code></pre>
+<p>Span対応のLINQを謳ったライブラリも、世の中には多少ありますが、それらは<code>Span&lt;T&gt;</code>にだけ拡張メソッドを定義する、といったようなものであり、汎用的な仕組みではありませんでした。網羅されるオペレーターも制約があり、一部のものに限られていました。それは言語的にも<code>Span&lt;T&gt;</code>をジェネリクス引数として受け取ることができなかったためで、汎用的に処理できるようになったのは .NET 9で<code>allows ref struct</code>が登場してくれたおかげです。</p>
+<p>ZLinqでは<code>IEnumerable&lt;T&gt;</code>と<code>Span&lt;T&gt;</code>に何の区別もありません、全て平等に取り扱われます。</p>
+<p>ただし、<code>allows ref struct</code>の言語/ランタイムサポートが必要なため、<code>ZLinq自体は</code>.NET Standard 2.0以上の全ての.NETをサポートしていますが、<code>Span&lt;T&gt;</code>対応に関してのみ.NET 9以上限定の機能となっています。また、これにより.NET 9以上の場合は、全てのオペレーターが<code>ref struct</code>になっている、という違いがあります。</p>
+<h2>LINQ to SIMD</h2>
+<p>System.Linqでは、一部の集計メソッドがSIMDによって高速化されています。例えば一部のプリミティブ型の配列に直接SumやMaxを呼び出すと高速化されています。これらの呼び出しはforで処理するよりも遥かに高速化されます。とはいえ、<code>IEnumerbale&lt;T&gt;</code>がベースであるため、適用可能な型が限定的であるなどの欠点を感じています。ZLinqでは<code>IValueEnumeartor.TryGetSpan</code>によって<code>Span&lt;T&gt;</code>が取得できる場合が対象となるコレクションとなるため、より汎用的になっています（もちろん<code>Span&lt;T&gt;</code>に適用することもできます)。</p>
+<p>対応するメソッドは以下のようなものになっています。</p>
+<ul>
+<li><strong>Range</strong> to ToArray/ToList/CopyTo/etc...</li>
+<li><strong>Repeat</strong> for <code>unmanaged struct</code> and <code>size is power of 2</code> to ToArray/ToList/CopyTo/etc...</li>
+<li><strong>Sum</strong> for <code>sbyte</code>, <code>short</code>, <code>int</code>, <code>long</code>, <code>byte</code>, <code>ushort</code>, <code>uint</code>, <code>ulong</code>, <code>double</code></li>
+<li><strong>SumUnchecked</strong> for <code>sbyte</code>, <code>short</code>, <code>int</code>, <code>long</code>, <code>byte</code>, <code>ushort</code>, <code>uint</code>, <code>ulong</code>, <code>double</code></li>
+<li><strong>Average</strong> for <code>sbyte</code>, <code>short</code>, <code>int</code>, <code>long</code>, <code>byte</code>, <code>ushort</code>, <code>uint</code>, <code>ulong</code>, <code>double</code></li>
+<li><strong>Max</strong> for <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>nint</code>, <code>nuint</code>, <code>Int128</code>, <code>UInt128</code></li>
+<li><strong>Min</strong> for <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>nint</code>, <code>nuint</code>, <code>Int128</code>, <code>UInt128</code></li>
+<li><strong>Contains</strong> for <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>bool</code>, <code>char</code>, <code>nint</code>, <code>nuint</code></li>
+<li><strong>SequenceEqual</strong> for <code>byte</code>, <code>sbyte</code>, <code>short</code>, <code>ushort</code>, <code>int</code>, <code>uint</code>, <code>long</code>, <code>ulong</code>, <code>bool</code>, <code>char</code>, <code>nint</code>, <code>nuint</code></li>
+</ul>
+<p><code>Sum</code>はオーバーフローをチェックします。これは処理においてオーバーヘッドとなっているため、独自に<code>SumUnchecked</code>というメソッドも追加しています。性能差は以下のようになり、Uncheckedのほうがより高速です。</p>
+<p>| Method            | N     | Mean          | Allocated |
+|------------------ |------ |--------------:|----------:|
+| ForLoop           | 16384 | 25,198.556 ns |         - |
+| SystemLinqSum     | 16384 |  1,402.259 ns |         - |
+| ZLinqSum          | 16384 |  1,351.449 ns |         - |
+| ZLinqSumUnchecked | 16384 |    721.832 ns |         - |</p>
+<p>これらメソッドは条件がマッチした場合に暗黙的に適用されるということであり、SIMDを狙って適用させるには内部パイプラインへの理解が必要とされています。そこで<code>T[]</code> or <code>Span&lt;T&gt;</code> or <code>ReadOnlySpan&lt;T&gt;</code>には<code>.AsVectorizable()</code>というメソッドを用意しました。SIMD適用可能な<code>Sum</code>, <code>SumUnchecked</code>, <code>Average</code>, <code>Max</code>, <code>Min</code>, <code>Contains</code>, and <code>SequenceEqual</code>を明示的に呼び出すことができます（ただし<code>Vector.IsHardwareAccelerated &amp;&amp; Vector&lt;T&gt;.IsSupported</code>ではない場合は通常の処理にフォールバックされるため、必ずしもSIMDが適用されることを保証するわけではありません）。</p>
+<p><code>int[]</code> or <code>Span&lt;int&gt;</code>には<code>VectorizedFillRange</code>というメソッドが追加されます。これは<code>ValueEunmerable.Range().CopyTo()</code>と同じ処理で、連番で埋める処理がSIMDで高速化されます。連番が必要になる局面で、forで埋めるよりも遥かに高速なので、覚えておくといいかもしれません。</p>
+<p>| Method | Mean       | Allocated |
+|------- |-----------:|----------:|
+| For    | 6,228.9 ns |         - |
+| Range  |   540.0 ns |         - |</p>
+<h3>Vectorizable Methods</h3>
+<p>SIMDによるループ処理を手書きするのは、慣れが必要で少し手間がいります。そこでFuncを引数に与えることでカジュアルに使えるヘルパーをいくつか用意しました。デリゲートを経由するオーバーヘッドが発生するためインラインで書くよりもパフォーマンスは劣りますが、カジュアルにSIMD処理できるという点では便利かもしれません。これらは引数に<code>Func&lt;Vector&lt;T&gt;, Vector&lt;T&gt;&gt; vectorFunc</code>と<code>Func&lt;T, T&gt; func</code>を受け取り、ループの埋められるところまで<code>Vector&lt;T&gt;</code>で処理し、残りを<code>Func&lt;T&gt;</code>で処理します。</p>
+<p><code>T[]</code>, <code>Span&lt;T&gt;</code>には<code>VectorizedUpdate</code>というメソッドが用意されています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">using ZLinq.Simd; // needs using
+
+int[] source = Enumerable.Range(0, 10000).ToArray();
+
+[Benchmark]
+public void For()
+{
+    for (int i = 0; i &lt; source.Length; i++)
+    {
+        source[i] = source[i] * 10;
+    }
+}
+
+[Benchmark]
+public void VectorizedUpdate()
+{
+    // arg1: Vector&lt;int&gt; =&gt; Vector&lt;int&gt;
+    // arg2: int =&gt; int
+    source.VectorizedUpdate(static x =&gt; x * 10, static x =&gt; x * 10);
+}
+</code></pre>
+<p>| Method           | N     | Mean       | Error    | StdDev  | Allocated |
+|----------------- |------ |-----------:|---------:|--------:|----------:|
+| For              | 10000 | 4,560.5 ns | 67.24 ns | 3.69 ns |         - |
+| VectorizedUpdate | 10000 |   558.9 ns |  6.42 ns | 0.35 ns |         - |</p>
+<p>forよりも高速、ですが、パフォーマンスはマシン環境やサイズによって変わるので、盲目的に使うのではなくて、都度検証することをお薦めします。</p>
+<p><code>AsVectorizable()</code>には<code>Aggregate</code>, <code>All</code>, <code>Any</code>, <code>Count</code>, <code>Select</code>, and <code>Zip</code>が用意されています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">source.AsVectorizable().Aggregate((x, y) =&gt; Vector.Min(x, y), (x, y) =&gt; Math.Min(x, y))
+source.AsVectorizable().All(x =&gt; Vector.GreaterThanAll(x, new(5000)), x =&gt; x &gt; 5000);
+source.AsVectorizable().Any(x =&gt; Vector.LessThanAll(x, new(5000)), x =&gt; x &lt; 5000);
+source.AsVectorizable().Count(x =&gt; Vector.GreaterThan(x, new(5000)), x =&gt; x &gt; 5000);
+</code></pre>
+<p>パフォーマンスは、データ次第ではありますが一例としてはCountで、このぐらいの差が出ることもあります。</p>
+<p>| Method            | Mean        | Error    | StdDev  | Allocated |
+|------------------ |------------:|---------:|--------:|----------:|
+| LinqCount         | 10,909.3 ns | 54.79 ns | 3.00 ns |         - |
+| VectorizableCount |  1,048.4 ns | 39.39 ns | 2.16 ns |         - |</p>
+<p><code>Select</code>, <code>Zip</code>に関しては、後続に<code>ToArray</code>か<code>CopyTo</code>を選びます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// Select
+source.AsVectorizable().Select(x =&gt; x * 3, x =&gt; x * 3).ToArray();
+source.AsVectorizable().Select(x =&gt; x * 3, x =&gt; x * 3).CopyTo(destination);
+
+// Zip2
+array1.AsVectorizable().Zip(array2, (x, y) =&gt; x + y, (x, y) =&gt; x + y).CopyTo(destination);
+array1.AsVectorizable().Zip(array2, (x, y) =&gt; x + y, (x, y) =&gt; x + y).ToArray();
+
+// Zip3
+array1.AsVectorizable().Zip(array2, array3, (x, y, z) =&gt; x + y + z, (x, y, z) =&gt; x + y + z).CopyTo(destination);
+array1.AsVectorizable().Zip(array2, array3, (x, y, z) =&gt; x + y + z, (x, y, z) =&gt; x + y + z).ToArray();
+</code></pre>
+<p>Zipなんかは結構面白い＆ちゃんと高速なので、使いどころあるかもしれません(2つのVec3のマージとか)。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">| Method                      | Mean      |
+|---------------------------- |----------:|
+| ZLinqZipCopyTo              | 329.43 μs |
+| ZLinqZip3CopyTo             | 584.69 μs |
+| ZLinqVectorizableZipCopyTo  |  24.17 μs |
+| ZLinqVectorizableZip3CopyTo |  29.26 μs |
+</code></pre>
+<h2>LINQ to Tree</h2>
+<p>皆さんLINQ to XMLを使ったことはありますか? LINQの登場した2008年は、まだまだXML全盛期で、LINQ to XMLのあまりにも使いやすいAPIには衝撃を受けました。しかし、すっかり時代はJSONでありLINQ to XMLを使うことはすっかりなくなりました。</p>
+<p>しかし、LINQ to XMLの良さというのは、ツリー構造に対するLINQ的操作のリファレンスデザインだと捉えることができます。ツリー構造がLINQになる、そのガイドライン。LINQ to Objectsと非常に相性の良い探索の抽象化。その代表例がRoslynのSyntaxTreeに対する操作で、AnalyzerやSource Generatorを書くのにDescendantsなどのメソッドを日常的に利用しています。</p>
+<p>そこでZLinqはそのコンセプトを拡張し、ツリー構造に対して汎用的に <code>Ancestors</code>, <code>Children</code>, <code>Descendants</code>, <code>BeforeSelf</code>, and <code>AfterSelf</code> が適用できるインターフェイスを定義しました。</p>
+<p><img src="https://github.com/Cysharp/ZLinq/blob/main/img/axis.jpg" alt="" /></p>
+<p>これはUnityのGameObjectへの走査の図ですが、標準でFileSystem(DirectoryTreeはツリー構造)やJSON(System.Text.JsonのJsonNodeに対してLINQ to XML的な操作を可能にする)を用意しています。もちろん、任意にインターフェイスを実装することで追加することもできます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public interface ITraverser&lt;TTraverser, T&gt; : IDisposable
+    where TTraverser : struct, ITraverser&lt;TTraverser, T&gt; // self
+{
+    T Origin { get; }
+    TTraverser ConvertToTraverser(T next); // for Descendants
+    bool TryGetHasChild(out bool hasChild); // optional: optimize use for Descendants
+    bool TryGetChildCount(out int count);   // optional: optimize use for Children
+    bool TryGetParent(out T parent); // for Ancestors
+    bool TryGetNextChild(out T child); // for Children | Descendants
+    bool TryGetNextSibling(out T next); // for AfterSelf
+    bool TryGetPreviousSibling(out T previous); // BeforeSelf
+}
+</code></pre>
+<p>例えばJSONに対しては</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var json = JsonNode.Parse(&quot;&quot;&quot;
+// snip...
+&quot;&quot;&quot;);
+
+// JsonNode
+var origin = json![&quot;nesting&quot;]![&quot;level1&quot;]![&quot;level2&quot;]!;
+
+// JsonNode axis, Children, Descendants, Anestors, BeforeSelf, AfterSelf and ***Self.
+foreach (var item in origin.Descendants().Select(x =&gt; x.Node).OfType&lt;JsonArray&gt;())
+{
+    // [true, false, true], [&quot;fast&quot;, &quot;accurate&quot;, &quot;balanced&quot;], [1, 1, 2, 3, 5, 8, 13]
+    Console.WriteLine(item.ToJsonString(JsonSerializerOptions.Web));
+}
+</code></pre>
+<p>といったように書くことができます。</p>
+<p>Unityには<code>GameObject</code>や<code>Transform</code>、Godotには<code>Node</code>へのLINQ to Treeを標準で用意しました。アロケーションや走査のパフォーマンスにかなり気を使って書かれているので、手動でループを回すよりも、もしかしたら高速かもしれません。</p>
+<h2>OSSと私</h2>
+<p>ここ数ヶ月で.NET関連のOSSには幾つか事件がありました。名のしれたOSSの商業ライセンス化、など……。私は、<a href="https://github.com/Cysharp">github/Cysharp</a>で出しているOSSの数は40を超え、個人やMessagePack organizationなどのものも含めると、総スター数では50000を超えるなど.NET周りのサードパーティーとしては最大規模でのOSS提供者なのではないかと思います。</p>
+<p>商業化、に関しては予定はありません、が、メンテナンスに関しては規模が大きくなってきたため、追いつかなくなっている面が多々あります。OSSが批判を覚悟で商業化を試みるの要因として、メンテナーに対する精神的な負荷というのが大きい（時間に対しての報酬が全く見合っていない）のですが、私も、まぁ、大変です！</p>
+<p>金銭面は置いておいて、お願い事としては、メンテナンスが滞ることがあることは多少受け入れて欲しい！今回のZLinqのような大きなライブラリを仕込んでいる最中は、集中する時間が必要なため、他のライブラリのIssueやPRへの応答が数ヶ月音信不通になります。意識的に全く見ないようにしています、タイトルすら見てません（ダッシュボードや通知のメールなども一切目にしないようにしています）。そうした不義理を働くことで創造的なライブラリを生み出すことができるのだ、これは必要な犠牲なのです……！</p>
+<p>また、そうじゃなくても、面倒見てるライブラリの数が多すぎるのでローテートでも数ヶ月の遅延が発生することは、あります。もうこれは絶対的なマンパワーが不足しているため、しょうがないじゃないですかー、というわけで、そのしょうがないを受け入れて、ちょっと返事が遅れるだけでthis library is dead的なこと言わないで欲しいなあ、というのが正直なところです！言われると辛い！なるべく努力はしたいんですが、特に新しいライブラリの創造は時間をめちゃくちゃ取られて大量の遅延が発生して、その遅延が更に遅延を呼んで泥沼になって精神を削っていくのですよー。</p>
+<p>あとはMicrosoft関連でイラッとさせられてモチベーションを削られるとか、この辺はC#関連のOSSあるあるが発生したりしたりしながらも、なるべく末永く続けていきたいとは思っています。</p>
+<h2>まとめ</h2>
+<p>ZLinqの構造は最初のプレビュー版公開後のフィードバックで結構変わっていて、<a href="https://github.com/Akeit0">@Akeit0</a>さんにはコアとなる<code>ValueEnumerable&lt;TEnumerator, T&gt;</code>という定義や<code>TryCopyTo</code>への<code>Index</code>の追加など、パフォーマンスに重要なコア部分の提案を多く頂きました！また、<a href="https://github.com/filzrev">@filzrev</a>さんからは多大なテスト・ベンチマークのインフラストラクチャーを提供してもらいました。互換性確保やパフォーマンス向上は、この貢献がなければ成しえませんでした。お二人には深く感謝します。</p>
+<p>改めて、ゼロアロケーションLINQライブラリというコンセプト自体はそこまで珍しいものでもなく、今までもライブラリが死屍累々と転がっていたわけですが、ZLinqは徹底度合いが違う。経験と知識があるうえで、精神論で気合で、全メソッド実装、テストケースも全部流して完全互換、最適化類もSIMD含めて全部実装する、をやり切ったのが立派なところなのではないかな、と。いや、ほんとこれめっちゃ大変だったのです……。</p>
+<p>タイミングとしても.NET 9/C# 13が、フルセットでやりたいことが全部やれる言語機能となったことは、やる気を後押ししてくれました。と、同時に、Unityや.NET Standard 2.0対応も大事にできたのもいいことです。</p>
+<p>ただのゼロアロケーションLINQというだけではなく、LINQ to Treeはお気に入りの機能なので是非使ってみて欲しいですね……！そもそもに元々は、10年前に作っていたLINQ to GameObjectをモダン化しよう、というのが出発点でした。昔のコードだったのでかなりベタ書きだったのですが、もうちょっと抽象化したほうがいいかな、と弄っているうちに、だったらゼロアロケーションLINQとしての抽象化まで進化させてしまったほうがいいのでは、という思いつきに至ったのでした。</p>
+<p>ところで、LINQのパフォーマンスのネックの一つとしてはデリゲートがあり、一部のライブラリはstructでFuncのようなものを模写するValueDelegateというアプローチがあるのですが、それはあえて採用していません。というのも、それらの定義はかなり手間なので、現実的にはやってられないはずです。そこまでやるなら普通にインラインで書いたほうがマシなので、LINQでValueDelegate構造を使う意味はありません。そんなベンチマークハックのためだけに内部構造の複雑化とアセンブリサイズの肥大化を招くのは無駄なので、System.Linqと互換のFuncのみを受け入れるスタイルにしています。</p>
+<p><a href="https://github.com/Cysharp/R3">R3</a>が.NET標準のSystem.Reactiveを置き換えるものという野心的ライブラリでしたが、System.Linqの置き換えはそれよりも遥かに大きな、あるいは大袈裟すぎる代物なので、採用に抵抗感はあるんじゃないかなー、と思います。ですが、置き換えるだけのメリットは掲示できていると思うので、是非とも試してみてくれると嬉しいです！</p>
+</div>
+<h1 data-pagefind-sort="date:2024-12-30" data-pagefind-meta="published:2024-12-30"><a href="https://neue.cc/2024/12/30_year.html">2024年を振り返る</a></h1>
 <ul class="date"><li>2024-12-30</li></ul>
 <div class="entry_body"><p>今年も<a href="https://cysharp.co.jp/">Cysharp</a>はちゃんと生存していて良きかな、というわけでサイトが相変わらずペライチなのでそろそろリニューアルしたいと思って幾星霜。</p>
 <p>そんなわけで今年もC#をやりこみ（？）していました……！</p>
@@ -2779,39 +3198,6 @@ partial class MagicOnionGeneratedClientInitializer {}
 <h2>まとめ</h2>
 <p>というわけで、2024年になってようやく満足いく共有手法にたどり着けました。これはC#大統一理論元年……！</p>
 </div>
-<h1 data-pagefind-sort="date:2023-12-30" data-pagefind-meta="published:2023-12-30"><a href="https://neue.cc/2023/12/30_year.html">2023年を振り返る</a></h1>
-<ul class="date"><li>2023-12-30</li></ul>
-<div class="entry_body"><p>今年も相変わらずC#関連で色々やっていきました……！というわけなんですが、一番大きかったのはcsbindgenでしょうか。</p>
-<ul>
-<li><a href="https://neue.cc/2023/03/09-csbindgen.html">csbindgen - C#のためのネイティブコード呼び出し自動生成、或いはC#からのネイティブコード呼び出しの現代的手法について</a></li>
-</ul>
-<p>私のスタンスとして、今までとにかくPure C#でなんとかする！という姿勢ではあったんですが、より柔軟にネイティブコードを取り入れていくという変化になりました。そのほうが、より「C#の可能性を切り開いていく」という<a href="https://cysharp.co.jp/">Cysharp</a>のミッションにも近づけているわけで、かなり良い変化をもたらせたと思っています。発展して</p>
-<ul>
-<li><a href="https://neue.cc/2023/07/28_yetanotherhttphandler.html">Unity用のHTTP/2(gRPC) Client、YetAnotherHttpHandlerを公開しました</a></li>
-</ul>
-<p>といったような有意義なライブラリを生み出せるキッカケにもなれましたし。とはいえ改めてネイティブはネイティブで大変なのは変わらないので、C#最高、みたいな思いも強くなりましたが……！</p>
-<p>私個人のスキルとしても、Rustを取り入れられるようになったのはかなり良かったことですね。Rustから学ぶことも多く、より良いC#のコードを書くことにも役立ちます。</p>
-<p>OSSの後半戦ではZLogger v2は傑作だと思っています……！</p>
-<ul>
-<li><a href="https://neue.cc/2023/12/19_zlogger2.html">ZLogger v2 による .NET 8活用事例 と Unity C# 11対応の紹介</a></li>
-</ul>
-<p>思っているので、ちょっと普及活動頑張りたいと思っています、NLog、Serilogと同列に並んで検討対象になってくれると嬉しいのですけれどねー。まぁ、まずはReadMeから、ですが。なんとまだ工事中！よくない！</p>
-<p>その他小粒の新規OSS郡もありました。</p>
-<ul>
-<li><a href="https://neue.cc/2023/01/30-SimdLinq.html">SimdLinq - LINQをそのままSIMD対応して超高速化するライブラリ</a></li>
-<li><a href="https://neue.cc/2023/01/27_StructureOfArraysGenerator.html">StructureOfArraysGenerator - C#でSoAを簡単に利用するためのSource Generator</a></li>
-<li><a href="https://neue.cc/2023/07/04_MagicPhysX.html">MagicPhysX - .NET用のクロスプラットフォーム物理エンジン</a></li>
-<li><a href="https://neue.cc/2023/10/13_Utf8StringInterpolation.html">UTF8文字列生成を最適化するライブラリ Utf8StringInterpolation を公開しました</a></li>
-</ul>
-<p>こう見ると、今年もなんだかんだで色々やってはいましたね！</p>
-<p>そして久々にCEDECでの発表もしてきました。</p>
-<ul>
-<li><a href="https://speakerdeck.com/neuecc/cedec-2023-modanhaipahuomansuc-number-2023-edition">CEDEC 2023 モダンハイパフォーマンスC# 2023 Edition</a></li>
-</ul>
-<p>近年の総決算のつもりであったのですが、ちょっとシリアライザ的なもの(Stream)に偏りすぎではあった、かな？また5年後ぐらいには別の切り口で話せるといいかなーとは思ってます。</p>
-<p>さて、ここ数年は「自称革命的なサービス（？）を来年こそはリリースする」と言い続けていたのですが、それは頓挫しました！革命的なサービスは出ない！しょーがない。csbindgenとかはそれの副産物なので、成果は無、というわけではないんですが、頓挫はやはり悲しくはあります。。。</p>
-<p>そんなわけで、来年は別のネタを探しつつも、一つだけ、来年初頭というか1月の頭というか、あともう一週間ないぐらいに、大型のOSSを(プレビュー)リリースしたいと思って、ここ一ヶ月ぐらいは延々と集中してコード書いてます。かなり本気でやっているので、それは是非楽しみにしてください……！</p>
-</div>
 <a href="https://neue.cc/2">| Next</a>
 </div>
         <div id="side" data-pagefind-ignore="all">
@@ -2834,6 +3220,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2025/05/">2025-05</a>
 <li><a href="https://neue.cc/2024/12/">2024-12</a>
 <li><a href="https://neue.cc/2024/11/">2024-11</a>
 <li><a href="https://neue.cc/2024/08/">2024-08</a>

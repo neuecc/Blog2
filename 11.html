@@ -74,7 +74,231 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2014-07-01" data-pagefind-meta="published:2014-07-01"><a href="https://neue.cc/2014/07/01_474.html">Unity + iOSのAOTでの例外の発生パターンと対処法</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2014-07-22" data-pagefind-meta="published:2014-07-22"><a href="https://neue.cc/2014/07/22_475.html">Amazon Kinesis + Reactive Extensionsによる簡易CEP</a></h1>
+<ul class="date"><li>2014-07-22</li></ul>
+<div class="entry_body"><p>AWSの<a href="http://aws.amazon.com/jp/kinesis/">Amazon Kinesis</a>！大規模なストリーミングデータをリアルタイムで処理する完全マネージド型サービス。うーん、いかにもわくわくしそうなキーワードが並んでいます。そしてついに先日、東京リージョンでも利用可能になったということでAWS Summitの最中もｗｋｔｋして、どうやって利用したもんかと考えてました。だって、リアルタイムにイベントデータが流れてくる→オブザーバブルシーケンス→<a href="https://rx.codeplex.com/">Reactive Extensions(Rx)</a>、という連想になるのは自然なことですよね？</p>
+<h2>Kinesisとは</h2>
+<p>Rx、の前にKinesisとは。<a href="http://aws.typepad.com/aws_japan/2013/11/amazon-kinesis-real-time-processing-of-streamed-data.html">【AWS発表】 Amazon Kinesis – ストリームデータのリアルタイム処理</a>を見れば事足りますが、表現するなら土管、ですかね。イベントデータの。以下ぽんち絵</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/image/amazonkinesis.jpg' />
+</p>
+<p>Streamの中はShardという単位で分かれていて、データを放り込む時はPartitionKeyを元に、どのShardに突っ込まれるか決まる。読み書き性能自体は完全にShardの数で決まっていて、1シャード毎にWriteは1MB/sec - 1000Req/sec, Readは2MB/sec - 5Req/secとなってます。事前に負荷状況を予測していくのと、随時、Split(Shardの分割)とMerge(Shardの統合)してスケーリングしていく、って感じですかねえ。API自体は単純で、あんま数もないので簡単に理解できるかと。</p>
+<p>APIが単純なのはやれることが少ないから。土管。情報を左から右に流すだけのパイプ。その代わり入力は限りなく無限にスケールしていく(Shardを増やしまくれば)。では出力は？というと、Kinesis Applicationとよばれる、といっても実体は、別にAPIをほぼほぼポーリングで叩いてデータ取り出して何か処理するものをそう呼んでるだけ。で、取り出すのはAPI叩いて保存されたデータを読むだけ。</p>
+<p>そう、ポーリング。Kinesis自体は一時保管所であって、本当のリアルタイムでPubSub配信するわけじゃあない（用途としては問題ないレベルで低遅延にはなるけれど）。保存時間は24時間で、その間はStream中のどこから（最初からでも最新からでも任意の位置から）でも取り出すことができる。一時保管所がわりにS3を使ったりすると、ゴミは貯まるしどこまで取ったかとか煩わしくなるけれど、Kinesisの場合はStreamの形状になっているのでとてもやりやすい。ただしKinesisは制限として1レコード辺り50KBまで。更にHTTPで投げる際にBase64になってブヨっと膨らむ。</p>
+<h2>ObservableKinesisClient</h2>
+<p>C#でKinesisを使うには、<a href="http://aws.amazon.com/jp/sdkfornet/">AWS SDK for .NET</a>を使えばAmazonKinesisClient入ってます。ソースコードも公開されてるしNuGetでも入れられるし、APIはとりあえずAsyncに対応してるし、APIデザインもちょっと奇妙なところもあるけれど、一応全て統一されたモデルでデザインされてるので、割と結構良いと思ってます。</p>
+<p>Kinesis、データの登録はPutRecordでバイナリ投げるだけなので単純なのですが、取り出しの方はいささか面倒で、DescribeStreamによるStream内のShard情報の取得、GetShardIteratorによるShardIterator(どの位置から取得開始するか、の情報)の取得、それを元にGetRecord、そして延々とポーリングのためのループ。と、繰り返す必要があります。</p>
+<p>というわけかで、まずは利用例の方を。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// とりあえずAWSのキーと、ストリーム名で生成する感じ
+var client = new ObservableKinesisClient(&quot;awsAccessId&quot;, &quot;awsSecretAccessKey&quot;, RegionEndpoint.APNortheast1, streamName: &quot;KinesisTest&quot;);
+
+// データの登録。オブジェクトを投げ込むとJSONシリアライズしたのを叩き込む。
+await client.PutRecordAsync(new { Date = DateTime.Now, Value = &quot;ほげほげほげほげ&quot; });
+
+// ObserveRecordDynamicでJSONのストリームとして購読できる
+client.ObserveRecordDynamic()
+    .Where(x =&gt; x.Value != &quot;ほげ&quot;) // xはdynamicなのでどんなSchemaのJSONも自由に辿れる
+    .Select(x =&gt; x.Date + &quot;:&quot; + x.Value)
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>はい。ObserveRecordDynamicで、リアルタイムに流れてくるデータを簡単に購読できます。IObservableなので、Rxによって自由にクエリを書くことが可能。また、何のデータが流れてくるか分からないストリームのために、JSONはdynamicの形でデシリアライズされています。(IntelliSenseの補助は効きませんが)スキーマレスに、あらゆるデータをRxで処理できます。もちろん、型付けされたものが欲しければObserverRecord&lt;T&gt;を、今は実装してないですが、まあ簡単につくれます:)</p>
+<p>以下ObservableKinesisClient本体。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// JSON.NET, AWSSDK, Rx-Mainの参照が必要
+public class ObservableKinesisClient
+{
+    readonly UTF8Encoding encoding = new UTF8Encoding(false);
+    readonly JsonSerializer serializer = new JsonSerializer() { Formatting = Newtonsoft.Json.Formatting.None }; // ThreadSafeだよ
+    readonly string streamName;
+    readonly AmazonKinesisClient kinesis; // ThreadSafeなのかは知らない（ぉぃ
+
+    // コンストラクタはもっとまぢめにやりましょう
+    public ObservableKinesisClient(string awsAccessId, string awsSecretAccessKey, RegionEndpoint endPoint, string streamName)
+    {
+        this.kinesis = new AmazonKinesisClient(awsAccessId, awsSecretAccessKey, endPoint);
+        this.streamName = streamName;
+    }
+
+    // ようするにObjectを1レコードずつJSONで突っ込むもの
+    public async Task&lt;PutRecordResponse&gt; PutRecordAsync(object value)
+    {
+        using (var ms = new MemoryStream())
+        using (var sw = new StreamWriter(ms, encoding))
+        using (var jw = new JsonTextWriter(sw) { Formatting = Formatting.None })
+        {
+            serializer.Serialize(jw, value);
+            jw.Flush();
+            ms.Position = 0;
+
+            var request = new PutRecordRequest
+            {
+                StreamName = streamName,
+                Data = ms,
+                PartitionKey = Guid.NewGuid().ToString() // PartitionKeyは適当にランダム
+            };
+
+            // つまり1レコード1HTTP POSTということになる。
+            // 大量に投げる際は素朴すぎてアレゲ感があるので、実際にやるときはまとめてから放り込んで
+            // 取り出す側も↑の構造を前提にして取り出すよーな感じにしたほうがいーかもデスネー
+            return await kinesis.PutRecordAsync(request).ConfigureAwait(false);
+        }
+    }
+
+    // Dynamicが嫌な場合はSerialize&lt;T&gt;でおｋ。とりあえずこの例ではdynamicでやります。
+    // Client内部で分配しちゃったほうがきっと自然にやさしい(Publish().RefCount())
+    public IObservable&lt;dynamic&gt; ObserveRecordDynamic()
+    {
+        return Observable.Create&lt;dynamic&gt;(async (observer, cancellationToken) =&gt;
+        {
+            var isRunningNextPipeline = false;
+            try
+            {
+                // まずShard一覧を取得する
+                // TODO:これを使いまわしちゃうとShardsの増減には対応してないよ！
+                // 毎回DescribeStream読むのもアレだしたまに問い合わせとかがいいの？
+                var describeStreamResponse = await kinesis.DescribeStreamAsync(new DescribeStreamRequest { StreamName = streamName }).ConfigureAwait(false);
+                var shards = describeStreamResponse.StreamDescription.Shards;
+
+                var nextIterators = new List&lt;string&gt;();
+                foreach (var shard in shards)
+                {
+                    if (cancellationToken.IsCancellationRequested) return; // CancellationTokenの監視だいぢだいぢ
+
+                    // ShardIteratorTypeは実際は取り出した位置を記録しておいてAFTER_SEQUENCE_NUMBERでやるか、LATESTでやるかがいーんじゃないでしょーか？
+                    var shardIterator = await kinesis.GetShardIteratorAsync(new GetShardIteratorRequest
+                    {
+                        StreamName = streamName,
+                        ShardId = shard.ShardId,
+                        ShardIteratorType = ShardIteratorType.TRIM_HORIZON, // TRIM_HORIZON = 最初から, LATEST = 最新, AT_SEQUENCE_NUMBER = そこから, AFTER_SEQUENCE_NUMBER = 次から
+                    }).ConfigureAwait(false);
+
+                    var record = await kinesis.GetRecordsAsync(new GetRecordsRequest { ShardIterator = shardIterator.ShardIterator }).ConfigureAwait(false);
+
+                    // Shardの順番で回してるので、このPushの順番は必ずしも「時系列ではない」ことにチューイ！
+                    foreach (var item in record.Records)
+                    {
+                        PushRecord(item, observer, ref isRunningNextPipeline); // ObserverでPush!Push!Push!
+                    }
+
+                    nextIterators.Add(record.NextShardIterator);
+                }
+
+                // NextShardIteratorがある状態で無限ぐるぐる
+                do
+                {
+                    if (cancellationToken.IsCancellationRequested) return; // ところどころCancellationTokenの監視 Part2
+
+                    for (int i = 0; i &lt; nextIterators.Count; i++)
+                    {
+                        if (cancellationToken.IsCancellationRequested) return; // ところどころCancellationTokenの監視 Part3
+
+                        var shardIterator = nextIterators[i];
+
+                        var record = await kinesis.GetRecordsAsync(new GetRecordsRequest { ShardIterator = shardIterator }).ConfigureAwait(false);
+
+                        // こちらでも、やはりShardの順番で回してるので、状況によって必ずしも時系列にはならないことにチューイ！
+                        foreach (var item in record.Records)
+                        {
+                            PushRecord(item, observer, ref isRunningNextPipeline); // ObserverでPush!Push!Push!
+                        }
+
+                        nextIterators[i] = record.NextShardIterator;
+                    }
+
+                    await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false); // 実質ポーリングなのでなんとなくDelayをちょっと入れてみる
+
+                    nextIterators = nextIterators.Where(x =&gt; x != null).ToList(); // 明らかに非効率なこの実装はテキトーなんで真面目にやるなら真面目に書いてください:)
+                } while (nextIterators.Any());
+            }
+            catch (Exception ex)
+            {
+                if (isRunningNextPipeline)
+                {
+                    throw;
+                }
+                else
+                {
+                    observer.OnError(ex);
+                }
+
+                return;
+            }
+
+            observer.OnCompleted();
+        });
+    }
+
+    void PushRecord(Record record, IObserver&lt;dynamic&gt; observer, ref bool isRunningNextPipeline)
+    {
+        using (var sr = new StreamReader(record.Data, encoding)) // item.DataにMemoryStreamの形で1レコードが受け取れる
+        using (var jr = new JsonTextReader(sr))
+        {
+            var obj = serializer.Deserialize(jr);
+            isRunningNextPipeline = true;
+            observer.OnNext(obj); // 1レコードをPush
+            isRunningNextPipeline = false;
+        }
+    }
+}
+</code></pre>
+<p>PutRecordAsyncはまんま、JSONにシリアライズしたデータを投げ込んでるだけです。ObserverRecordDynamicのほうはちょっと複雑っぽいですが、やってることは順に、DescribeStreamAsyncでShard一覧を取得→それぞれのShardでGetShardIteratorAsyncで始点の取得・GetRecordsAsyncで最初のデータを取得しobserverに配信→取得できたNextShardIteratorを元にデータ取得と配信の無限ループ。です。</p>
+<p>コメントで色々書いてありますが、Shard単位で処理していくのでレコードのSequenceNumberの順にPushされているわけではないことと、ShardがSplitやMergeで変動することへの対応は必要よね、とか考えることは色々ありますね。あと、Readの制限が5Req/secとかなり少ないので、複数処理する必要があるなら、できればリクエストは分配してやりたいところ。RxならPublishで分配、ついでにRefCountでSubscriberが0になったら購読解除というのが自然に書けるので、その辺も入れてやるといいかなー、なんて思います。とはいえ、基本的にはデータ取ってOnNextで垂れ流すという、それだけに収まってはいます（ほんとだよ！）。</p>
+<p>従来はこの手のコードはyield returnで処理するはずですが、それがOnNextに変わっているという事実が面白い！勿論、同期API + yield returnにすることも可能ですが、AWS SDKの同期APIは非同期のものを.Resultで取ってるだけで非同期のほうがネイティブになるので、同期API使うのはお薦めしません。<a href="http://neue.cc/2013/12/04_435.html">非同期時代のLINQ</a>、非同期時代のイテレータ。中々面白くありません？<a href="https://github.com/neuecc/UniRx#how-to-use-for-ienumeratoras-coroutine">UniRx - Reactive Extensions for UnityのFromCoroutine</a>でも、IObserverをyielderとして渡して、非同期のイテレータを作れる（コンバートできる）ようにしています。こういうのも一つのデザイン。</p>
+<h2>like CEP(with LINQPad)</h2>
+<p><a href="http://en.wikipedia.org/wiki/Complex_event_processing">CEP(Complex Event Processing)</a>は最近良く聞くようになりましたねー、Microsoftにも<a href="http://technet.microsoft.com/en-us/library/ee362541.aspx">StreamInsight</a>というかなり立派なプロダクトがあるのですが、あんまり話を聞かないし将来性もビミョーそうなので見なかったことにしましょう。ちなみにStreamInsightは2.1からRxと統合されたりして、この手のイベントストリームとRxとが相性良いこと自体は証明済みです。</p>
+<p>そんなわけでMicrosoft周辺では全然聞きませんが、日本だと<a href="http://www.atmarkit.co.jp/ait/articles/1404/30/news024.html">LINEでのEsper CEPの活用例</a>とか<a href="http://norikra.github.io/">Norikra:Schema-less Stream Processing with SQL</a>で盛んに聞いて、まーたMicrosoft周辺によくある、一歩先を行ったと思ったら周回遅れ現象か！とか思ったり思わなかったり。</p>
+<p>というわけで、<a href="http://www.slideshare.net/tagomoris/fluentpluginnorikra-fluentdcasual">Norikraの紹介スライド</a>のクエリ5つをRxで書いてみましょう。また、動作確認は<a href="http://www.linqpad.net/">LINQPad</a>のDumpでリアルタイムに表示が可能です(asynchronousにクエリが走ってる最中はResultsのところにリアルタイムにグリッドが追加されていく！）</p>
+<p class="noindent">
+<img src='http://neue.cc/wp-content/uploads/image/kinesislinqpad.jpg' />
+</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// Queries:(1)
+client.ObserveRecordDynamic()
+    .Select(x =&gt; new{ x.Name, x.Age })
+    .Dump();
+
+// Queries:(2)
+client.ObserveRecordDynamic()
+    .Where(x =&gt; x.Current == &quot;Shibuya&quot;)
+    .Select(x =&gt; new{ x.Name, x.Age })
+    .Dump();
+
+// Queries:(3)
+client.ObserveRecordDynamic()
+    .Buffer(TimeSpan.FromMinutes(5))
+    .Select(xs =&gt; xs.GroupBy(x =&gt; x.Age).Select(x =&gt; new { Age = x.Key, Count = x.Count() }))
+    .Dump();
+
+// Queries:(4)
+client.ObserveRecordDynamic()
+    .Buffer(TimeSpan.FromMinutes(5))
+    .Select(xs =&gt; xs.Max(x =&gt; x.Age))
+    .Dump();
+
+// Queries:(5)
+client.ObserveRecordDynamic()
+    .Where(x =&gt; x.Current == &quot;Kyoto&quot; &amp;&amp; x.Attend[0] &amp;&amp; x.Attend[1])
+    .Buffer(TimeSpan.FromMinutes(5))
+    .Select(xs =&gt; xs.GroupBy(x =&gt; x.User.Age).Select(x =&gt; new { Age = x.Key, Count = x.Count() }))
+    .Dump();
+</code></pre>
+<p>5分間だったらBufferもしくはWindowが使えます（量が少なそうならBufferのほうが、後続クエリにLINQ to Objectsが使えて分かりやすい、量が多いならWindowで、同様にRxで集計クエリが書ける）。他に何ができるかは<a href="https://github.com/Netflix/RxJava/wiki">RxJavaのWikiのOperator一覧</a>でもどうぞ。めちゃくちゃ何でもできます。</p>
+<h2>SQL vs Rx</h2>
+<p>SQLである必要は、あるようで、ない。テキストベースのDSLを作るならSQLが共通知識として期待できるので、SQLに寄せる必要性はかなり高い。けれど、Rxならば、LINQとしての共通知識と、C#そのものであるというコンパイルセーフな点と何でもできること、メソッドチェーン(+IntelliSense)による書きやすさ。SQLライクなものを使いたい理由は全くない。</p>
+<p>（とはいえ勿論いちだいのRxがぶんさんごりごりのに勝てるとは思ってないんで、そこはまぁかじゅあるなはなしです）</p>
+<h2>TODO</h2>
+<p>というわけで見てきたわけですが、まあ所詮まだ単純なコードによるコンセプトレベルの話ですね！本格的にこれからやるとしたら</p>
+<ul>
+<li>ObservableKinesisClientをもっとしっかりしたものに</li>
+<li>Kinesis ApplicationをホストするためのServiceとプラグイン機構</li>
+<li>ログ転送側としてSLABのKinesis用Sink</li>
+</ul>
+<p>ですかねえ。まぁ、これらはJavaですでに用意されている<a href="https://github.com/awslabs/amazon-kinesis-client">amazon-kinesis-client</a>や<a href="https://github.com/awslabs/amazon-kinesis-connectors">amazon-kinesis-connectors</a>を.NET環境で代替するために必要だ、といったところですね。素直にJava書けば？っていうのは一理あるけれど、どーなんですかね、C#でやりたいんですよ（笑）</p>
+<p><a href="https://slab.codeplex.com/">Semantic Logging Application Block(SLAB)</a>というのは構造化ロガー（正確にはロガーは含まれないけれど）と収集サービスがセットになったライブラリです。面白いのはOut-Of-Processでの動作が選べて、その場合はWindowsネイティブの<a href="http://msdn.microsoft.com/en-us/library/windows/desktop/aa363668.aspx">Event Tracing for Windows (ETW)</a>経由でログが運ばれるので、非常に高速に動作する、というところ。Sinkというのは出力用プラグインみたいなものです。なので、アプリケーション→<a href="http://msdn.microsoft.com/ja-jp/library/system.diagnostics.tracing.eventsource.aspx">EventSource</a>ロガー→SLAB Service(+ KinesisSink)→Kinesis という構造を作ることで、データをリアルタイムに投下するところまでは行ける。あとはRedShiftに送って解析(amazon-kinesis-connectorsには既にありますね)するなり、他のKinesis Application作るなりよしなに出来るかなぁ、できればいいかなぁ、と。<a href="http://lambda-architecture.net/">ラムダアーキテクチャ</a>、というホドデハ・モチロンナイ。</p>
+<h2>AWS + Windows(C#)</h2>
+<p>先週の木・金に開催された<a href="http://www.awssummittokyo.com/">AWS Summit Tokyo 2014</a>にて、AWS + Windows(C#)で構築する.NET最先端技術によるハイパフォーマンスウェブアプリケーション開発実践と題して、セッションを行いました。</p>
+<iframe src="//www.slideshare.net/slideshow/embed_code/37121424" width="597" height="486" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px 1px 0; margin-bottom:5px; max-width: 100%;" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="https://www.slideshare.net/neuecc/aws-windowscnet" title="AWS + Windows(C#)で構築する.NET最先端技術によるハイパフォーマンスウェブアプリケーション開発実践" target="_blank">AWS + Windows(C#)で構築する.NET最先端技術によるハイパフォーマンスウェブアプリケーション開発実践</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
+<p>まとめで書きましたが、C#+AWSは現実解、だと思ってます。そしてAWSだからといって特別なこともなく、そしてC#だからといって特別なこともない。Kinesisもちゃんと使えるわけだし、結構面白いことがまだまだ出来るんじゃないかな、って思ってます。なんでAzure使わないんですか？というのには、よく聞かれるのでお茶を濁して答えないとして（！）、AzureにもKinesisのような<a href="http://azure.microsoft.com/ja-jp/services/event-hubs/">Azure Event Hubs</a>というものが先週プレビューリリースされました。C#からの活用という点では、こちらにも注目していきたいところです。<a href="http://msdn.microsoft.com/en-us/library/dn789972.aspx">Event Hubs Developer Guide</a>なんか見ると普通に色々参考になるし、機能的にはHTTP以外にAMQP使えたり、ちょっと強そうではある。</p>
+</div>
+<h1 data-pagefind-sort="date:2014-07-01" data-pagefind-meta="published:2014-07-01"><a href="https://neue.cc/2014/07/01_474.html">Unity + iOSのAOTでの例外の発生パターンと対処法</a></h1>
 <ul class="date"><li>2014-07-01</li></ul>
 <div class="entry_body"><p><a href="http://japan.unity3d.com/">Unity</a>、はUnity3Dのほうの話ですが、それで開発していてiOS実機にデプロイして確認すると、以下の様なエラーに悩まされると思います！</p>
 <pre data-pagefind-ignore="all"><code class="language-text">System.ExecutionEngineException: Attempting to JIT compile method
@@ -1860,168 +2084,6 @@ await Task.WhenAll(ids.Select(async x =&gt;
 <p>ソフトウェア側も良さそうならどんどんバシバシ変えてます。Glimpseも最初は導入されてませんでしたが、後から入れていますしね。ASP.NET MVCも早速5へ。この辺の姿勢は初期の文化が大事だと思っているので、絶対緩めないのを信条にしています。</p>
 <p>なお、Glimpseの導入や独自タブの作成、ならびにGlimpse.CloudStructures.Redisの作成は、私がやったわけではありません！私がやったのはSQL Explainタブの作成とICommandTracerの改変、Glimpse.CloudStructures.Redisを社外に出せるよう依存部分の除去しただけでして。そんなわけで皆で一岩となって改革してるんですよー、とっても刺激的でいい職場です。私にとっても。←ﾔｯﾊﾟﾘ求人広告記事ﾀﾞｯﾀﾉｶｰ、ｲﾔｿﾝﾅｺﾄﾅｲﾃﾞｽﾖ。</p>
 </div>
-<h1 data-pagefind-sort="date:2013-10-31" data-pagefind-meta="published:2013-10-31"><a href="https://neue.cc/2013/10/31_430.html">.NETのコレクション概要とImmutable Collectionsについて</a></h1>
-<ul class="date"><li>2013-10-31</li></ul>
-<div class="entry_body"><p>先週の土曜日に、<a href="http://atnd.org/event/E0019986">「プログラミング .NET Framework 第4版 」座談会</a>でOverview of the .NET Collection Framework and Immutable Collectionsとして、コレクションフレームワークと<a href="http://www.nuget.org/packages/Microsoft.Bcl.Immutable/">Immutable Collections</a>について話してきました。</p>
-<iframe src="https://www.slideshare.net/slideshow/embed_code/27589446" width="597" height="400" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC;border-width:1px 1px 0;margin-bottom:5px" allowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="https://www.slideshare.net/neuecc/overview-of-the-net-collection-framework-and-immutable-collections" title="Overview of the .Net Collection Framework and Immutable Collections" target="_blank">Overview of the .Net Collection Framework and Immutable Collections</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
-<p>案外コレクションについてまとまった話って、ない(or .NET 4.5からReadOnly系が入ってきて、話が更新されているもの)ので、資料として役に立つのではないかと思います。</p>
-<h2>Collection Framework</h2>
-<p>前半部分ですが、これのジューヨーなところはILinqable&lt;T&gt;、じゃなくて(スライド資料では出てないのでナンノコッチャですが)、ReadOnly系の取り扱いですね。MutableとReadOnlyが枝分かれしている理由とか対処方法とか、が伝えたかった点です。いやあ、コレクション作る時は両方実装しよう！とかしょうもないですねえ、shoganaiのですねぇ……。</p>
-<p>IEnumerable&lt;T&gt;とIReadOnlyCollection&lt;T&gt;の差異は実体化されていない「可能性がある」かどうか。で、なのでメソッドの引数などで内部で実体化されてるのを前提にほげもげしたい場合は、IReadOnlyCollection&lt;T&gt;を受け取るほうが望ましいといえば望ましいのですが、汎用的にIEnumerableのままで……という場合は、以下のようなメソッドを用意しとくといいでしょう。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">/// &lt;summary&gt;
-/// sourceが遅延状態の場合、実体化して返し、既に実体化されている場合は何もせずそれ自身を返します。
-/// &lt;/summary&gt;
-/// &lt;param name=&quot;source&quot;&gt;対象のシーケンス。&lt;/param&gt;
-/// &lt;param name=&quot;nullToEmpty&quot;&gt;trueの場合、sourceがnull時は空シーケンスを返します。falseの場合はArgumentNullExceptionを吐きます。&lt;/param&gt;
-public static IEnumerable&lt;T&gt; Materialize&lt;T&gt;(this IEnumerable&lt;T&gt; source, bool nullToEmpty = true)
-{
-    if (nullToEmpty &amp;&amp; source == null)
-    {
-        return Enumerable.Empty&lt;T&gt;();
-    }
-    else
-    {
-        if (source == null) throw new ArgumentNullException(&quot;sourceがnullです&quot;);
-    }
-
-    if (source is ICollection&lt;T&gt;)
-    {
-        return source;
-    }
-    if (source is IReadOnlyCollection&lt;T&gt;)
-    {
-        return source;
-    }
-
-    return source.ToArray();
-}
-</code></pre>
-<p>こんなのを作って、冒頭で呼べば、二度読みなどもOKに。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public static void Hoge&lt;T&gt;(IEnumerable&lt;T&gt; source)
-{
-    source = source.Materialize(); // ここで実体化する
-
-    // あとは好きに書けばいいのではないでせうか
-}
-</code></pre>
-<p>どうでしょ。また、二度読みなら列挙したらキャッシュして、再度読む時はそっから読んでくれればいいのに！というリクエストあるかと思います。それは一般的には<a href="http://ja.wikipedia.org/wiki/%E3%83%A1%E3%83%A2%E5%8C%96">メモ化(Memoization)</a>といいます。というわけで、シーケンスに実装してみましょう。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public static IEnumerable&lt;T&gt; Memoize&lt;T&gt;(this IEnumerable&lt;T&gt; source)
-{
-    if (source == null) throw new ArgumentNullException(&quot;sourceがnull&quot;);
-    return new MemoizedEnumerable&lt;T&gt;(source);
-}
-
-class MemoizedEnumerable&lt;T&gt; : IEnumerable&lt;T&gt;, IDisposable
-{
-    readonly IEnumerable&lt;T&gt; source;
-    readonly List&lt;T&gt; cache = new List&lt;T&gt;();
-    bool cacheComplete = false;
-    IEnumerator&lt;T&gt; enumerator;
-
-    public MemoizedEnumerable(IEnumerable&lt;T&gt; source)
-    {
-        this.source = source;
-    }
-
-    public IEnumerator&lt;T&gt; GetEnumerator()
-    {
-        if (enumerator == null) enumerator = source.GetEnumerator();
-        return new Enumerator(this);
-    }
-
-    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
-    {
-        return GetEnumerator();
-    }
-
-    public void Dispose()
-    {
-        if (enumerator != null) enumerator.Dispose();
-    }
-
-    class Enumerator : IEnumerator&lt;T&gt;
-    {
-        readonly MemoizedEnumerable&lt;T&gt; enumerable;
-        int index = 0;
-
-        public Enumerator(MemoizedEnumerable&lt;T&gt; enumerable)
-        {
-            this.enumerable = enumerable;
-        }
-
-        public T Current { get; private set; }
-
-        public void Dispose()
-        {
-
-        }
-
-        object System.Collections.IEnumerator.Current
-        {
-            get { return Current; }
-        }
-
-        public bool MoveNext()
-        {
-            if (index &lt; enumerable.cache.Count)
-            {
-                Current = enumerable.cache[index];
-                index++;
-                return true;
-            }
-
-            if (enumerable.cacheComplete) return false;
-
-            if (enumerable.enumerator.MoveNext())
-            {
-                Current = enumerable.enumerator.Current;
-                enumerable.cache.Add(Current);
-                index++;
-                return true;
-            }
-
-            enumerable.cacheComplete = true;
-            enumerable.enumerator.Dispose();
-            return false;
-        }
-
-        public void Reset()
-        {
-            throw new NotSupportedException(&quot;Resetは産廃&quot;);
-        }
-    }
-}
-</code></pre>
-<p>こうしておけば、</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// hoge:xが出力されるのは1回だけ
-var seq = Enumerable.Range(1, 5)
-    .Select(x =&gt;
-    {
-        Console.WriteLine(&quot;hoge:&quot; + x);
-        return x;
-    })
-    .Memoize();
-
-// なんど
-foreach (var item in seq.Zip(seq, (x, y) =&gt; new { x, y }).Take(4))
-{
-    Console.WriteLine(item);
-}
-
-// ぐるぐるしても一度だけ
-foreach (var item in seq.Zip(seq, (x, y) =&gt; new { x, y }))
-{
-    Console.WriteLine(item);
-}
-</code></pre>
-<p>といった感じ。Materializeより合理的といえば合理的だし、そうでないといえばそうでない感じです。私はMaterializeのほうが好み。というのもMemoizeは完了していないEnumeratorを保持しなければいけない関係上、Disposeの扱いがビミョーなんですよ、そこが結構引っかかるので。</p>
-<p>あと、IEnumerable&lt;T&gt;ですが、スレッドセーフではない。そう、IEnumerable&lt;T&gt;にはスレッドセーフの保証は実はない。というのを逆手に取ってる（まぁ、それはあんまりなので気になる人はlockかけたりしましょう）。ちなみにReadOnlyCollectionだってラップ元のシーケンスが変更されたらスレッドセーフじゃない。そして、スレッドセーフ性が完璧に保証されているのがImmutable Collections。という話につながったりつながらなかったり。</p>
-<h2>Immutable Collections</h2>
-<p>Immutable Collectionsは実装状況が.NET Framework Blogで随時触れられていて、リリース時の<a href="http://blogs.msdn.com/b/dotnet/archive/2013/09/25/immutable-collections-ready-for-prime-time.aspx">Immutable collections ready for prime time</a>を読めば、なんなのかっては分かるのではかと。その上で私が今回で割と酸っぱく言いたかったのは、ReadOnly「ではない」ってことです。そして結論はアリキタリに使い分けよう、という話でした。</p>
-<p>セッション後の話とかTwitterで、バージョニングされたコレクションって捉えるといいんじゃないの？と意見頂いたのですが、なるほどしっくりきそうです。</p>
-<h2>スピーカー予定</h2>
-<p>今後ですが、大阪です！12/14、<a href="http://vshtc.doorkeeper.jp/events/6781">第3回 LINQ勉強会</a>で発表する予定なので、関西圏の人は是非是非どうぞ。セッションタイトルは「An Internal of LINQ to Objects」を予定しています。これを聞けばLINQ to ObjectsのDeep Diveの部分は全部OK、といった内容にするつもりです。もう初心者向けってこともないので、完全に上級者がターゲットで。</p>
-</div>
 <a href="https://neue.cc/10">Prev |</a>
 <a href="https://neue.cc/12">| Next</a>
 </div>
@@ -2045,6 +2107,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2025/05/">2025-05</a>
 <li><a href="https://neue.cc/2024/12/">2024-12</a>
 <li><a href="https://neue.cc/2024/11/">2024-11</a>
 <li><a href="https://neue.cc/2024/08/">2024-08</a>

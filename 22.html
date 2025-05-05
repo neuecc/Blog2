@@ -74,7 +74,217 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2010-07-16" data-pagefind-meta="published:2010-07-16"><a href="https://neue.cc/2010/07/16_267.html">XStreamingReader - Linq to Xml形式でのストリーミングXml読み込み</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2010-07-19" data-pagefind-meta="published:2010-07-19"><a href="https://neue.cc/2010/07/19_268.html">Windows Phone 7 + Reactive ExtensionsによるXml取得</a></h1>
+<ul class="date"><li>2010-07-19</li></ul>
+<div class="entry_body"><p>Windows Phone 7にはReactive Extensionsが標準搭載されていたりするのだよ！なんだってー！と、いうわけで、Real World Rx。じゃないですけれど、Rxを使って非同期処理をゴニョゴニョとしてみましょう。ネットワークからデータ取って何とかする、というと一昔前はRSSリーダーがサンプルの主役でしたが、最近だとTwitterリーダーなのでしょうね。というわけで、Twitterリーダーにします。といっても、ぶっちゃけただたんにデータ取ってリストボックスにバインドするだけです。そしてGUI部分は<a href="http://www.atmarkit.co.jp/fdotnet/scottgublog/20100324phone7app/phone7app.html" title="Silverlightを使用してWindows Phone 7でTwitterアプリケーションを構築 － ＠IT">Silverlightを使用してWindows Phone 7でTwitterアプリケーションを構築 － ＠IT</a>のものを丸ごと使います。手抜き！というわけで、差分としてはRxを使うか否かといったところしかありません。</p>
+<p>なお、別に全然Windows Phone 7ならでは！なことはやらないので、WPFでもSilverlightでも同じように書けます。ちょっとしたRxのサンプルとしてどうぞ。今回は出たばかりの<a href="http://developer.windowsphone.com/" title="Windows Phone for Developers | Windows Phone: Developer Home">Windows Phone Developer Tools Beta</a>を使います。Windows Phone用のBlendがついていたりと盛り沢山。</p>
+<h2>Xmlを読み込む</h2>
+<p>とりあえずLinq to XmlなのでXElement.Load(string uri)ですね。違います。そのオーバーロードはSilverlightでは使えないのであった。えー。なんでー。とはまあ、つまり、同期系APIの搭載はほとんどなくて、全部非同期系で操作するよう強要されているわけです。XElement.Loadは同期でネットワークからXMLを引っ張ってくる→ダウンロード時間中はUI固まる→許すまじ！ということのようで。みんな大好きBackgroundWorkerたん使えばいいぢゃない、みたいなのは通用しないそうだ。</p>
+<p>MSDNにお聞きすれば<a href="http://msdn.microsoft.com/ja-jp/library/cc645034(VS.95).aspx" title="方法 : LINQ to XML で任意の URI の場所から XML ファイルを読み込む">方法 : LINQ to XML で任意の URI の場所から XML ファイルを読み込む</a>とあります。ネットワークからデータを取ってくるときはWebClient/HttpWebRequest使えというお話。</p>
+<p>では、とりあえず、MainPage.xamlにペタペタと書いて、MessageBox.Showで確認していくという原始人な手段を取っていきましょう。XElementの利用にはSystem.Xml.Linqの参照が別途必要です。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public MainPage()
+{
+    InitializeComponent();
+    
+    var wc = new WebClient();
+    wc.OpenReadCompleted += (sender, e) =&gt;
+    {
+        var elem = XElement.Load(e.Result); // e.ResultにStreamが入ってる
+        MessageBox.Show(elem.ToString()); // 確認
+    };
+    wc.OpenReadAsync(new Uri(&quot;http://twitter.com/statuses/public_timeline.xml&quot;)); // 非同期読み込み呼び出し開始
+}
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/winphone7_emulator.jpg">
+</p>
+<p>別に難しいこともなくすんなりと表示されました。簡単なことが簡単に書けるって素晴らしい。で、WebClientのプロパティをマジマジと見ていると<a href="http://msdn.microsoft.com/ja-jp/library/system.net.webclient.allowreadstreambuffering(v=VS.95).aspx" title="WebClient.AllowReadStreamBuffering プロパティ (System.Net)">AllowReadStreamBuffering</a>なんてものが。trueの場合はメモリにバッファリングされる。うーん、せっかくなので完全ストリーミングでやりたいなあ。これfalseならバッファリングなしってことですよね？じゃあ、バッファリング無しにしてみますか。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var wc = new WebClient();
+wc.AllowReadStreamBuffering = false; // デフォはtrueでバッファリングあり、今回はfalseに変更
+wc.OpenReadCompleted += (sender, e) =&gt;
+{
+    try
+    {
+        var elem = XElement.Load(e.Result); // ここで例外出るよ！
+    }
+    catch (Exception ex)
+    {
+        // Read is not supporeted on the main thread when buffering is disabled.
+        MessageBox.Show(ex.ToString());
+    }
+};
+</code></pre>
+<p>例外で死にました。徹底して同期的にネットワーク絡みの処理が入るのは許しません、というわけですね、なるほど。じゃあ別スレッドでやるよ、ということでとりあえずThreadPoolに突っ込んでみた。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">wc.OpenReadCompleted += (sender, e) =&gt;
+{
+    ThreadPool.QueueUserWorkItem(_ =&gt;
+    {
+        try
+        {
+            var elem = XElement.Load(e.Result);
+            MessageBox.Show(elem.ToString()); // 今度はここで例外！
+        }
+        catch(Exception ex)
+        {
+            // Invalid cross-thread access.
+            Debug.WriteLine(ex.ToString());
+        }
+    });
+};
+</code></pre>
+<p>読み込みは出来たけど、今度はMessageBox.Showのところで、Invalid Cross Thread Accessで死んだ。そっか、MessageBoxもUIスレッドなのか。うーむ、世の中難しいね！というわけで、とりあえずDispatcher.BeginInvokeしますか。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">wc.OpenReadCompleted += (sender, e) =&gt;
+{
+    ThreadPool.QueueUserWorkItem(_ =&gt;
+    {
+        var elem = XElement.Load(e.Result);
+        Dispatcher.BeginInvoke(() =&gt; MessageBox.Show(elem.ToString()));
+    });
+};
+</code></pre>
+<p>これで完全なストリームで非同期呼び出しでのXmlロードが出来たわけですね。これは面倒くさいし、Invoke系の入れ子が酷いことになってますよ、うわぁぁ。</p>
+<h2>Rxを使う</h2>
+<p>というわけで、非Rxでやると大変なのがよく分かりました。そこでRxの出番です。標準搭載されているので、参照設定を開きMicrosoft.Phone.ReactiveとSystem.Observableを加えるだけで準備完了。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/winphone7_reactive_ref.jpg">
+</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var wc = new WebClient { AllowReadStreamBuffering = false };
+
+Observable.FromEvent&lt;OpenReadCompletedEventArgs&gt;(wc, &quot;OpenReadCompleted&quot;)
+    .ObserveOn(Scheduler.ThreadPool) // ThreadPoolで動かすようにする
+    .Select(e =&gt; XElement.Load(e.EventArgs.Result))
+    .ObserveOnDispatcher() // UIスレッドに戻す
+    .Subscribe(x =&gt; MessageBox.Show(x.ToString()));
+
+wc.OpenReadAsync(new Uri(&quot;http://twitter.com/statuses/public_timeline.xml&quot;));
+</code></pre>
+<p>非常にすっきり。Rxについて説明は、必要か否か若干悩むところですが説明しますと、イベントをLinq化します。今回はOpenReadCompletedイベントをLinqにしました。Linq化すると何が嬉しいって、ネストがなくなることです。非常に見やすい。更にRxの豊富なメソッド群を使えば普通ではやりにくいことがいとも簡単に出来ます。今回はObserveOnを使って、どのスレッドで実行するかを設定しました。驚くほど簡単に、分かりやすく。メソッドの流れそのままです。</p>
+<h2>FromAsyncPattern</h2>
+<p>WebClientだけじゃなく、ついでなのでHttpWebRequestでもやってみましょう。(HttpWebRequest)WebRequest.Create()死ね、といつも言ってる私ですが、SilverlightにはWebRequest.CreateHttpでHttpWebRequestが作れるじゃありませんか。何ともホッコリとします。微妙にこの辺、破綻した気がしますがむしろ見なかったことにしよう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var req = WebRequest.CreateHttp(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
+req.AllowReadStreamBuffering = false;
+req.BeginGetResponse(ar =&gt;
+{
+    using (var res = req.EndGetResponse(ar))
+    using (var stream = res.GetResponseStream())
+    {
+        var x = XElement.Load(res.GetResponseStream());
+        Dispatcher.BeginInvoke(() =&gt; MessageBox.Show(x.ToString()));
+    }
+}, null);
+</code></pre>
+<p>非同期しかないのでBeginXxx-EndXxxを使うのですが、まあ、結構面倒くさい。そこで、ここでもまたRxの出番。BeginXxx-EndXxx、つまりAPM(Asynchronus Programming Model:非同期プログラミングモデル)の形式の非同期メソッドをラップするFromAsyncPatternが使えます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var req = HttpWebRequest.CreateHttp(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
+req.AllowReadStreamBuffering = false;
+
+Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)
+    .Invoke() // 非同期実行開始(Invoke()じゃなくて()でもOKです、ただのDelegateなので)
+    .Select(res =&gt; XElement.Load(res.GetResponseStream()))
+    .ObserveOnDispatcher()
+    .Subscribe(x =&gt; MessageBox.Show(x.ToString()));
+</code></pre>
+<p>ラップは簡単で型として戻り値を指定してBeginXxxとEndXxxを渡すだけ。あとはそのまま流れるように書けてしまいます。普通だと面倒くさいはずのHttpWebRequestのほうがWebClientよりも素直に書けてしまう不思議！FromAsyncPatter、恐ろしい子。WebClient+FromEventは先にイベントを設定してURLで発動でしたが、こちらはURLを指定してから実行開始という、より「同期的」と同じように書ける感じがあって好き。WebClient使うのやめて、みんなHttpWebRequest使おうぜ！（ふつーのアプリのほうでは逆のこと言ってるのですががが）</p>
+<p>ところで、非同期処理の実行開始タイミングはInvokeした瞬間であって、Subscribeした時ではありません。どーなってるかというと、ぶっちゃけRxは実行結果をキャッシュしてます。細かい話はまた後日ちゃんと紹介するときにでも。</p>
+<h2>バインドする</h2>
+<p>GUIはScottGu氏のサンプルを丸々頂いてしまいます。リロードボタンを押したらPublicTLを呼ぶだけ、みたいなのに簡略化してしまいました。</p>
+<pre data-pagefind-ignore="all"><code class="language-xml">&lt;Grid x:Name=&quot;LayoutRoot&quot; Background=&quot;Transparent&quot;&gt;
+    &lt;Grid.RowDefinitions&gt;
+        &lt;RowDefinition Height=&quot;Auto&quot;/&gt;
+        &lt;RowDefinition Height=&quot;*&quot;/&gt;
+    &lt;/Grid.RowDefinitions&gt;
+
+    &lt;Button Grid.Row=&quot;0&quot; Height=&quot;72&quot; Width=&quot;200&quot; Content=&quot;Reload&quot; Name=&quot;Reload&quot;&gt;&lt;/Button&gt;
+    &lt;ListBox Grid.Row=&quot;1&quot; Name=&quot;TweetList&quot; DataContext=&quot;{Binding}&quot;&gt;
+        &lt;ListBox.ItemTemplate&gt;
+            &lt;DataTemplate&gt;
+                &lt;StackPanel Orientation=&quot;Horizontal&quot;&gt;
+                    &lt;Image Source=&quot;{Binding Image}&quot; Height=&quot;73&quot; Width=&quot;73&quot; VerticalAlignment=&quot;Top&quot; /&gt;
+                    &lt;StackPanel Width=&quot;350&quot;&gt;
+                        &lt;TextBlock Text=&quot;{Binding Name}&quot; Foreground=&quot;Red&quot; /&gt;
+                        &lt;TextBlock Text=&quot;{Binding Text}&quot; TextWrapping=&quot;Wrap&quot; /&gt;
+                    &lt;/StackPanel&gt;
+                &lt;/StackPanel&gt;
+            &lt;/DataTemplate&gt;
+        &lt;/ListBox.ItemTemplate&gt;
+    &lt;/ListBox&gt;
+&lt;/Grid&gt;
+</code></pre>
+<p>あとは、ボタンへのイベント設定と、Twitterのクラスを作る必要があります。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class TwitterStatus
+{
+    public long Id { get; set; }
+    public string Text { get; set; }
+    public string Name { get; set; }
+    public string Image { get; set; }
+
+    public TwitterStatus(XElement element)
+    {
+        Id = (long)element.Element(&quot;id&quot;);
+        Text = (string)element.Element(&quot;text&quot;);
+        Name = (string)element.Element(&quot;user&quot;).Element(&quot;screen_name&quot;);
+        Image = (string)element.Element(&quot;user&quot;).Element(&quot;profile_image_url&quot;);
+    }
+}
+
+public partial class MainPage : PhoneApplicationPage
+{
+    public MainPage()
+    {
+        InitializeComponent();
+        Reload.Click += new RoutedEventHandler(Reload_Click); // XAMLに書いてもいいんですけど。
+    }
+
+    void Reload_Click(object sender, RoutedEventArgs e)
+    {
+        var req = HttpWebRequest.CreateHttp(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
+        req.AllowReadStreamBuffering = false;
+
+        Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)
+            .Invoke()
+            .Select(res =&gt; XElement.Load(res.GetResponseStream()))
+            .Select(x =&gt; x.Descendants(&quot;status&quot;).Select(xe =&gt; new TwitterStatus(xe)))
+            .ObserveOnDispatcher()
+            .Subscribe(ts =&gt; TweetList.ItemsSource = ts);
+    }
+}
+</code></pre>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/winphone7_tweet.jpg">
+</p>
+<p>実行するとこんな具合に表示されます。簡単ですねー。ただ、これだとリロードで20件しか表示されないので、リロードしたら継ぎ足されるように変更しましょう。</p>
+<h2>イベントを合成する</h2>
+<p>継ぎ足しの改善、のついでに、一定時間毎に更新も加えよう。基本は一定時間毎に更新だけど、リロードボタンしたら任意のタイミングでリロード。きっとよくあるパターン。Reload.Click+=でハンドラ足すのはやめて、その部分もFromEventでObservable化してしまいましょう。そして一定時間毎のイベント発動はObservable.Timerで。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// 30秒毎もしくはリロードボタンクリックでPublicTimeLineを更新
+Observable.Merge(
+        Observable.Timer(TimeSpan.Zero, TimeSpan.FromSeconds(30), Scheduler.NewThread).Select(_ =&gt; (object)_),
+        Observable.FromEvent&lt;RoutedEventArgs&gt;(Reload, &quot;Click&quot;).Select(_ =&gt; (object)_))
+    .SelectMany(_ =&gt;
+    {
+        var req = HttpWebRequest.CreateHttp(&quot;http://twitter.com/statuses/public_timeline.xml&quot;);
+        req.AllowReadStreamBuffering = false;
+        return Observable.FromAsyncPattern&lt;WebResponse&gt;(req.BeginGetResponse, req.EndGetResponse)();
+    })
+    .Select(res =&gt; XStreamingReader.Load(res.GetResponseStream()))
+    .SelectMany(x =&gt; x
+        .Descendants(&quot;status&quot;)
+        .Select(xe =&gt; new TwitterStatus(xe))
+        .Reverse()) // 古い順にする
+    .Scan((before, current) =&gt; before.Id &gt; current.Id ? before : current) // 最後に通した記事よりも古ければ通さない(で、同じ記事を返す)
+    .DistinctUntilChanged(t =&gt; t.Id) // 同じ記事が連続して来た場合は何もしないでreturn
+    .ObserveOnDispatcher()
+    .Subscribe(t =&gt; TweetList.Items.Insert(0, t)); // Insertだって...
+</code></pre>
+<p>流れるようにメソッド足しまくるの楽しい！楽しすぎて色々足しすぎて悪ノリしている感が否めません、とほほ。解説しますと、まず一行目のMerge。これは複数本のイベントを一本に統一します。統一するためには型が同じでなければならないのですが、今回はTimer(long)と、Click(RoutedEventArgs)なのでそのままでは合成出来ません。どちらも発火タイミングが必要なだけでlongもRoutedEventArgsも不必要なため、Objectにキャストしてやって合流させました。</p>
+<p>こういう場合、Linq to Objectsなら.Cast&lt;object&gt;()なんですよね。Castないんですか？というと、一応あるにはあるんですが、実質無いようなもので。というわけで、今のところキャストしたければ.Select(<em>=&gt;(object)</em>)を使うしかありません。多分。もっとマシなやり方がある場合は教えてください。</p>
+<p>続いてSelectMany。TimerもしくはClickは発火のタイミングだけで、後ろに流すのはFromAsyncPatternのデータ。こういった、最初のイベントは発火タイミングにだけ使って、実際に流すものは他のイベントに摩り替える（例えばマウスクリックで発動させて、あとはマウスムーブを使うとか）というのは定型文に近い感じでよく使うことになるんじゃないかと思います。SelectMany大事。</p>
+<p>XMLの読み込み部は、せっかくなので、こないだ作ったバッファに貯めこむことなくXmlを読み込める<a href="http://neue.cc/2010/07/16_267.html" title="neue cc - XStreamingReader - Linq to Xml形式でのストリーミングXml読み込み">XStreamingReader</a>を使います。こんな風に、XMLを読み取ってクラスに変換する程度ならXElement.Loadで丸々全体のツリーを作るのも勿体無い。XStreamingReaderなら完全ストリーミングでクラスに変換出来ますよー。という実例。</p>
+<p>その下は更にもう一個SelectMany。こっちはLinq to Objectsのものと同じ意味で、IEnumerableを平たくしています。で、ScanしたDistinctUntilChangedして（解説が面倒になってきた）先頭にInsert（ちょっとダサい）。これで古いものから上に足される = 新しい順番に表示される、という形になりました。XAML側のListBoxを直に触ってInsertとか、明らかにダサい感じなのですが、まあ今回はただのサンプルなので見逃してください。</p>
+<p>RxのMergeに関しては、後日他のイベント合流系メソッド(CombineLatest, Zip, And/Then/Plan/Join)と一緒に紹介したいと思っています。合流系大事。</p>
+<h2>まとめ</h2>
+<p>驚くほどSilverlightで開発簡単。っぽいような印象。C#書ける人ならすぐにとっかかれますねー。素晴らしい開発環境だと思います。そして私は同時に、Silverlight全然分かってないや、という現実を改めて突きつけられて参ってます。XAMLあんま書けない。Blend使えない。MVVM分からない。モバイル開発云々の前に、基本的な技量が全然欠けているということが良く分かったし、それはそれで良い収穫でした。この秋なのか冬なのかの発売までには、ある程度は技術を身につけておきたいところです。</p>
+<p>そしてそれよりなにより開発機欲すぃです。エミュレータの起動も速いし悪くないのですが、やっぱ実機ですよ、実機！配ってくれぇー。</p>
+</div>
+<h1 data-pagefind-sort="date:2010-07-16" data-pagefind-meta="published:2010-07-16"><a href="https://neue.cc/2010/07/16_267.html">XStreamingReader - Linq to Xml形式でのストリーミングXml読み込み</a></h1>
 <ul class="date"><li>2010-07-16</li></ul>
 <div class="entry_body"><p><a href="http://xstreamingreader.codeplex.com/" title="XStreamingReader - Streaming for Linq to Xml">CodePlex : XStreamingReader - Streaming for Linq to Xml</a></p>
 <p>1クラスライブラリシリーズ。もしくはストリーミングをIEnumerableに変換していこうシリーズ。またはシンプルだけど小粒でピリッと隙間にぴったりはまるシリーズ(を、目指したい)。といったわけで、100行程度ではあるのですが、表題の機能を持つコードをCodePlexに公開しました。それとおまけとして、XMLファイルからC#クラス自動生成T4 Templateも同梱。</p>
@@ -2058,55 +2268,6 @@ with (document.Selection)
 <p>ちなみに、ちっとも気にしてないパフォーマンスは悪化しました。ver.1.xがそれでもまだシンプルな構造だったのに比べ、今回は一回の呼び出し階層がかなり深くなった影響があります。列挙終了後にRepeatWithFinalizeとFinallyでしか使ってないDisposeのために階層駆け上がるし(これほんと入れようか悩んだんですけど、WSHだけでなく、将来的にはJavaScriptでもきっちりリソース管理でCloseって機会も増えそうなので入れました)。しかし遅いといっても、ベンチ取るとChromeなら爆速で誤差範囲に収まってしまうのですよ！Google Chrome、恐ろしい子。Firefoxだと？聞くな。いえいえ、JSINQよりは速かったですよ？←何だこの対抗心は</p>
 <p>jQueryのおともに。WSHのおともに。エディタマクロのおともに。調度良い感じの隙間にピタリはまるようになっております。JavaScriptにおいてコレクションライブラリはニッチ需要だし、WSH用ライブラリなんて完全隙間産業なわけですが、むしろだからこそ、幾分か価値があるかな？合計83メソッドと、大充実なので、きっと要求に答えられると思います。</p>
 </div>
-<h1 data-pagefind-sort="date:2010-04-15" data-pagefind-meta="published:2010-04-15"><a href="https://neue.cc/2010/04/15_253.html">linq.jsをjQueryと一緒に使う</a></h1>
-<ul class="date"><li>2010-04-15</li></ul>
-<div class="entry_body"><p><a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript Library">linq.js</a>とjQueryを一緒に使うとするとどうなるのかな、という今まで微妙に避けてきた話。実用的なことを考えるなら避けて通れないのですが、実用的なことなんて考えたこともなかった！今まで！すみません。というわけで、少し考えてみます。あ、Linq to Xml(linq.xml.js)はボツの方向で行きます。RxJSを見習って、jQueryと仲良くやる方向で考えるつもりです。割とイイ線行ってたかなあ、とは思うんですが、クロスブラウザ対応の面倒くささが半端なくて実装しきる気力が持ちそうにないのと、やっぱセレクタ操作が冗長になりすぎてダメだったかなあ、なんて思ってます。</p>
-<blockquote>
-```javascript
-var p_arr = from p_ele in $("p")
-            where "hoge" in p_ele.classes
-            select p_ele
-<p>for(var p in p_arr){
-p.toggleClass(&quot;hilight&quot;);
-}</p>
-<pre data-pagefind-ignore="all"><code>
-こんな風なことができるのかと思ったがそんなわけはなく。&lt;br /&gt;
-&lt;a href=&quot;http://d.hatena.ne.jp/beta_magnus/20100412/1271070326&quot;&gt;Linq.js - 人生がベータ版&lt;/a&gt;
-&lt;/blockquote&gt;
-
-お試しありがとうございます。この例は、出来るといえば出来るし、出来ないといえば出来ないです。まず、クエリ構文では書けなくて、というのはともかくメソッド構文で実際にlinq.jsで組んでみるとこうなります。
-
-```javascript
-E.From($(&quot;p&quot;)) // 内包するDOM要素を列挙
- .Select(&quot;jQuery($)&quot;) // 単一要素のjQueryオブジェクトにラップ
- .Where(function (q) { return q.attr(&quot;class&quot;) == &quot;hoge&quot; })
- .ForEach(function (q) { q.toggleClass(&quot;hilight&quot;) });
-
-// jQueryで同じような形にするならこうでしょうか
-$(&quot;p.hoge&quot;).each(function () {
-    var q = $(this);
-    q.toggleClass(&quot;hilight&quot;);
-});
-</code></pre>
-<p>FromでjQueryの選択された要素を列挙に変換します。jQueryの列挙はjQueryオブジェクトではなく、DOM要素をそのまま返すので(これは.eachで回した時も一緒ですね)、jQueryのメソッドを使いたい時は再度ラップしてあげます。ただまあ、単純なフィルタリングなら、jQueryのセレクタで書いたほうが当然すっきり仕上がりますね。更にまあ、そもそもeachする必要はなく、</p>
-<pre data-pagefind-ignore="all"><code class="language-javascript">// jQuery自体が集合を扱うので一行で書けるんですよね……
-$(&quot;p.hoge&quot;).toggleClass(&quot;hilight&quot;);
-</code></pre>
-<p>となってしまうわけで、DOMから選択してDOMに作用を加える、という一連のjQueryチェーンで綺麗に成り立っている場合に、linq.jsを挟む余地はありません。jQuery自体が集合を含有しているので、ｊQueryだけで綺麗に完結しちゃうんですね。そしてlinq.jsは、それ自体はクロスブラウザ対応だったりのDOM操作は一切持っていないので、その辺はjQueryにお任せします。そうなると、どうしても出番が限られてくるという。</p>
-<p>じゃあ無価値なのかといえば勿論そんなことはなくて、DOMをDOMのまま扱って抽出して作用を加えるのではなく、そこからテキストだったり数値を抽出する、というシーンでは生き生きとします。DOMの選択、フィルタリングまではjQueryのセレクタで行ったらlinq.jsに渡す。数値だったら集計系のメソッドが使えるし、他にもテーブル内の文字をキーにして複数テーブルの結合(join)、なんかも簡単に出来ます。</p>
-<p>ところで、 E.From($(&quot;selector&quot;)).Select(&quot;jQuery($)&quot;) というのは定型文になるので、jQuery自体に拡張してしまいます。こんなんでもプラグインって呼んでいいですか？(プラグインとしての部分は一行でも、繋がってる先はある意味ヘビー級なので)</p>
-<pre data-pagefind-ignore="all"><code class="language-javascript">// これでjQueryオブジェクトからtoEnumerable()を呼ぶとlinqが使える
-jQuery.fn.toEnumerable = function () {
-    return E.From(this).Select(&quot;jQuery($)&quot;);
-}
-
-// 例えば、input要素の数値を合計する、とか
-var sum = $(&quot;input&quot;).toEnumerable()
-    .Select(&quot;parseInt($.val())&quot;)
-    .Sum();
-</code></pre>
-<p>割と便利。かな？具体例に乏しくて非常に説得力に欠ける感じですが、良ければ使ってやってください。</p>
-</div>
 <a href="https://neue.cc/21">Prev |</a>
 <a href="https://neue.cc/23">| Next</a>
 </div>
@@ -2130,6 +2291,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2025/05/">2025-05</a>
 <li><a href="https://neue.cc/2024/12/">2024-12</a>
 <li><a href="https://neue.cc/2024/11/">2024-11</a>
 <li><a href="https://neue.cc/2024/08/">2024-08</a>
