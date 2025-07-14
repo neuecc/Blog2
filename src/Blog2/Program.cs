@@ -167,7 +167,7 @@ CEO/CTO<br />
 Microsoft MVP for Developer Technologies(.NET)<br />
 April 2011<br />
 |<br />
-July 2025<br />
+July 2026<br />
 <br />
 X:<a href=""https://x.com/neuecc/"">@neuecc</a>
 GitHub:<a href=""https://github.com/neuecc/"">neuecc</a>
