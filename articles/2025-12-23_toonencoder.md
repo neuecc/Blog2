@@ -6,7 +6,7 @@
 
 もちろん、競合と比べてもパフォーマンスやメモリ効率は圧倒的に良いです。
 
-![](img/toon.png)
+![](../img/toon.png)
 
 この辺はとにかく私がシリアライザーの設計に慣れすぎていて([MessagePack-CSharp](https://github.com/MessagePack-CSharp/MessagePack-CSharp), [MemoryPack](https://github.com/Cysharp/MemoryPack), [Utf8Json](https://github.com/neuecc/Utf8Json), etc...)実績もノウハウもありまくりなので……！ジャンルがジャンルなのでAIでとりあえず動くものにしましたっぽいライブラリも多い感じですが、全然勝負になりません。なんせこちらは温かみのある手作りコードですから……！ハイパーハンドメイドクラフトコーディング。現状のAI生成のコードレベルは、トップレベルからは、ほど遠いと実際思ってます。動くものはできるし、それは凄いんですけど、ね。
 
