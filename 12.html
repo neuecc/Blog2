@@ -74,7 +74,311 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2013-11-15" data-pagefind-meta="published:2013-11-15"><a href="https://neue.cc/2013/11/15_434.html">GlimpseによるRedis入出力の可視化とタイムライン表示</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2013-12-04" data-pagefind-meta="published:2013-12-04"><a href="https://neue.cc/2013/12/04_435.html">非同期時代のLINQ</a></h1>
+<ul class="date"><li>2013-12-04</li></ul>
+<div class="entry_body"><p>この記事は<a href="http://www.adventar.org/calendars/119">C# Advent Calendar 2013</a>の4日目となります。2012年は<a href="http://neue.cc/2012/12/03_389.html">MemcachedTranscoder - C#のMemcached用シリアライザライブラリ</a>というクソニッチな記事で誰得でした（しかもその後、私自身もMemcached使ってないし）。その前、2011年は<a href="http://neue.cc/2011/12/16_359.html">Modern C# Programming Style Guide</a>、うーん、もう2年前ですかぁ、Modernじゃないですねえ。2011年の時点ではC# 5.0はCTPでしたが、もう2013年、当然のようにC# 5.0 async/awaitを使いまくる時代です。変化は非常に大きくプログラミングスタイルも大きく変わりますが、特にコレクションの、LINQの取り扱いに癖があります。今回は、非同期時代においてLINQをどう使いこなしていくかを見ていきましょう。</p>
+<h2>Selectは非同期時代のForEach</h2>
+<p>これ超大事。これさえ掴んでもらえれば十二分です。さて、まず単純に、Selectで値を取り出す場合。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// こんな同期版と非同期版のメソッドがあるとする
+static string GetName(int id)
+{
+    return &quot;HogeHoge:&quot; + id;
+}
+
+static async Task&lt;string&gt; GetNameAsync(int id)
+{
+    await Task.Delay(TimeSpan.FromMilliseconds(100)); // 適当に待機
+    return &quot;HogeHoge:&quot; + id;
+}
+
+// 以後idsと出てきたらこれのこと指してるとします
+var ids = Enumerable.Range(1, 10);
+
+// 同期バージョン
+var names1 = ids.Select(x =&gt; new { Id = x, Name = GetName(x) }).ToArray();
+
+// 非同期バージョン
+var names2 = await Task.WhenAll(ids.Select(async x =&gt; new { Id = x, Name = await GetNameAsync(x) }));
+</code></pre>
+<p>ラムダ内でasyncを書き、結果はIEnumerable&lt;Task&lt;T&gt;&gt;となるので、配列に戻してやるためにTask.WhenAllとセットで使っていくのが基本となります。Task.WhenAllで包むのはあまりにも頻出なので、以下の様な拡張メソッドを定義するといいでしょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// こういう拡張メソッドを定義しておけば
+public static class TaskEnumerableExtensions
+{
+    public static Task WhenAll(this IEnumerable&lt;Task&gt; tasks)
+    {
+        return Task.WhenAll(tasks);
+    }
+
+    public static Task&lt;T[]&gt; WhenAll&lt;T&gt;(this IEnumerable&lt;Task&lt;T&gt;&gt; tasks)
+    {
+        return Task.WhenAll(tasks);
+    }
+}
+
+// スッキリ書ける
+var names2 = await ids.Select(async x =&gt; new { Id = x, Name = await GetNameAsync(x) }).WhenAll();
+</code></pre>
+<p>では、foreachは？</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// 同期
+foreach (var id in ids)
+{
+    Console.WriteLine(GetName(id));
+}
+
+// 非同期
+foreach (var id in ids)
+{
+    Console.WriteLine(await GetNameAsync(id));
+}
+</code></pre>
+<p>そりゃそーだ。……。おっと、しかしせっかく非同期なのに毎回待機してループしてたらMottaiなくない？GetNameAsyncは一回100ミリ秒かかっているから、100*10で1秒もかかってしまうんだ！ではどうするか、そこでSelectです。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// 同期(idsがList&lt;int&gt;だとする)
+ids.ForEach(id =&gt;
+{
+    Console.WriteLine(GetName(id));
+});
+
+// 非同期
+await ids.Select(async id =&gt;
+{
+    Console.WriteLine(await GetNameAsync(id));
+})
+.WhenAll();
+</code></pre>
+<p>ForEachの位置にSelect。ラムダ式中では戻り値を返していませんが、asyncなので、Taskを返していることになります(Task&lt;T&gt;ではなく)。同期ではvoidとなりLINQで扱えませんが、非同期におけるvoidのTaskは、Selectを通ります。あとはWhenAllで待機してやれば出来上がり。これは全て同時に走るので100msで完了します。10倍の高速化！</p>
+<p>ただし、この場合処理順序は保証されません、同時に走っているので。例えばとある時はこうなりました。</p>
+<pre data-pagefind-ignore="all"><code class="language-txt">HogeHoge:1
+HogeHoge:10
+HogeHoge:8
+HogeHoge:7
+HogeHoge:4
+HogeHoge:2
+HogeHoge:6
+HogeHoge:3
+HogeHoge:9
+HogeHoge:5
+</code></pre>
+<p>処理順序を保証したいなら？WhenAll後に処理ループを回せばいいぢゃない。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// こうすれば全て並列でデータを取得したあと、取得順のままループを回せる
+var data = await ids.Select(async id =&gt; new { Id = id, Name = await GetNameAsync(id) }).WhenAll();
+foreach (var item in data)
+{
+    Console.WriteLine(item.Name);
+}
+</code></pre>
+<p>一旦、一気に詰めた(100ms)後に、再度回す(0ms)。これはアリです。そんなわけで、非同期時代のデータの処理方法は三択です。逐次await, ForEach代わりのSelect, 一気に配列に詰める。どれがイイということはないです、場合によって選べばいいでしょう。</p>
+<p>ただ言えるのは、超大事なのは、Selectがキーであるということ、ForEachのような役割を担うこと。しっかり覚えてください。</p>
+<h2>非同期とLINQ、そしてプリロードについて</h2>
+<p>さて、SelectだけではただのForEachでLINQじゃない。LINQといったらWhereしてGroupByして、ほげ、もげ……。そんなわけでWhereしてみましょう？</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// 非同期の ラムダ式 をデリゲート型 'System.Func&lt;int,int,bool&gt;' に変換できません。
+// 非同期の ラムダ式 は void、Task、または Task&lt;T&gt; を返しますが、
+// いずれも 'System.Func&lt;int,int,bool&gt;' に変換することができません。
+ids.Where(async x =&gt;
+{
+    var name = await GetNameAsync(x);
+    return name.StartsWith(&quot;Hoge&quot;);
+});
+</code></pre>
+<p>おお、コンパイルエラー！無慈悲なんでなんで？というのも、asyncを使うと何をどうやってもTask&lt;bool&gt;しか返せなくて、つまりFunc&lt;T,Task&lt;bool&gt;&gt;となってしまい、Whereの求めるFunc&lt;T,bool&gt;に合致させることは、できま、せん。</p>
+<p>Whereだけじゃありません。ラムダ式を求めるものは、みんな詰みます。また、Selectで一度Task&lt;T&gt;が流れると、以降のパイプラインは全てasyncが強いられ、結果として……</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// asyncでSelect後はTask&lt;T&gt;になるので以降ラムダ式は全てasyncが強いられる
+// これはコンパイル通ってしまいますがkeySelectorにTaskを渡していることになるので
+// 実行時エラーで死にます
+ids.Select(async id =&gt; new { Id = id, Name = await GetNameAsync(id) })
+   .OrderBy(async x =&gt; (await x).Id)
+   .ToArray();
+</code></pre>
+<p>Selectがパイプラインにならず、むしろ出口(ForEach)になっている。自由はない。</p>
+<p>ではどうするか。ここは、一度、配列に詰めましょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// とある非同期メソッドのあるClassがあるとして
+var models = Enumerable.Range(1, 10).Select(x =&gt; new ToaruClass());
+
+// 以降の処理で使う非同期系のメソッドなり何かを、全てawaitで実体化して匿名型に詰める
+var preload = await models
+    .Select(async model =&gt; new
+    {
+        model,
+        a = await model.GetAsyncA(),
+        b = await model.GetAsyncB(),
+        c = await model.GetAsyncC()
+    })
+    .WhenAll();
+
+// そうして読み取ったもので処理して、（必要なら）最後に戻す
+preload.Where(x =&gt; x.a == 100 &amp;&amp; x.b == 20).Select(x =&gt; x.model);
+</code></pre>
+<p>概念的にはプリロード。というのが近いと思います。最初に非同期なデータを全て取得しまえば、扱えるし、ちゃんと並列でデータ取ってこれる。LINQの美徳である無限リストが取り扱えるような遅延実行の性質は消えてしまいますが、それはshoganai。それに、LINQにも完全な遅延実行と、非ストリーミングな遅延実行の二種類があります。非ストリーミングとは、例えばOrderBy。これは並び替えのために、実行された瞬間に全要素を一度蓄えます。例えばGroupBy。これもグルーピングのために、実行された瞬間に全要素を舐めます。非同期LINQもまた、それらと同種だと思えば、少しは納得いきませんか？現実的な妥協としては、このラインはアリだと私は思っています。分かりやすいしパフォーマンスもいい。</p>
+<h2>AsyncEnumerableの幻想、或いはRxとの邂逅</h2>
+<p>それでも妥協したくないならば、次へ行きましょう。まだ手はあります、良いかどうかは別としてね。注：ここから先は上級トピックなので適当に読み飛ばしていいです</p>
+<p>そう、例えばWhereAsyncのようにして、Func&lt;T,bool&gt;じゃなくFunc&lt;T,Task&lt;bool&gt;&gt;を受け入れてくれるオーバーロードがあれば、いいんじゃない？って思ってみたり。こんな風な？</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static class AsyncEnumerable
+{
+    // エラー：asyncとyield returnは併用できないよ
+    public static async IEnumerable&lt;T&gt; WhereAsync&lt;T&gt;(this IEnumerable&lt;T&gt; source, Func&lt;T, Task&lt;bool&gt;&gt; predicate)
+    {
+        using (var e = source.GetEnumerator())
+        {
+            while (e.MoveNext())
+            {
+                if (await predicate(e.Current))
+                {
+                    yield return e.Current;
+                }
+            }
+        }
+    }
+}
+</code></pre>
+<p>ただ、問題の本質はそんなことじゃあない。別にyield returnが使えなければ手書きで作ればいいわけで。そして作ってみれば、本質的な問題がどこにあるのか気づくことができます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">class WhereAsyncEnumerable&lt;T&gt; : IEnumerable&lt;T&gt;, IEnumerator&lt;T&gt;
+{
+    IEnumerable&lt;T&gt; source;
+    Func&lt;T, Task&lt;bool&gt;&gt; predicate;
+    T current = default(T);
+    IEnumerator&lt;T&gt; enumerator;
+
+    public WhereAsyncEnumerable(IEnumerable&lt;T&gt; source, Func&lt;T, Task&lt;bool&gt;&gt; predicate)
+    {
+        this.source = source;
+        this.predicate = predicate;
+    }
+
+    public IEnumerator&lt;T&gt; GetEnumerator()
+    {
+        return this;
+    }
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+    {
+        return GetEnumerator();
+    }
+
+    public T Current
+    {
+        get { return current; }
+    }
+
+    object System.Collections.IEnumerator.Current
+    {
+        get { return Current; }
+    }
+
+    public void Reset()
+    {
+        throw new NotSupportedException();
+    }
+
+    public void Dispose()
+    {
+
+    }
+
+    // ↑まではdoudemoii
+    // MoveNextが本題
+
+    public bool MoveNext()
+    {
+        if (enumerator == null) enumerator = source.GetEnumerator();
+
+        while (enumerator.MoveNext())
+        {
+            // MoveNextはasyncじゃないのでawaitできないからコンパイルエラー
+            if (await predicate(enumerator.Current))
+            {
+                current = enumerator.Current;
+                return true;
+            }
+        }
+        return false;
+    }
+}
+</code></pre>
+<p>MoveNextだけ見てもらえればいいのですが、predicateを使うのはMoveNextなわけです。ここがasyncじゃないと、AsyncなLINQは成立しません。さて、もしMoveNextがasyncだと？</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public async Task&lt;bool&gt; MoveNext()
+{
+    // ここで取得するenumeratorのMoveNextも
+    // 全て同一のインターフェイスであることが前提条件なのでTask&lt;bool&gt;とする
+    if (enumerator == null) enumerator = source.GetEnumerator();
+
+    while (await enumerator.MoveNext())
+    {
+        if (await predicate(enumerator.Current))
+        {
+            current = enumerator.Current;
+            return true;
+        }
+    }
+    return false;
+}
+</code></pre>
+<p>これは機能します。MoveNextをasyncにするということは連鎖的に全てのMoveNextがasync。それが上から下まで統一されれば、このLINQは機能します。ただ、それってつまり、IEnumerator&lt;T&gt;を捨てるということ。MoveNextがasyncなのは、似て非なるものにすぎない。当然LINQっぽい何かもまた、全て、このasyncなMoveNextを前提にしたものが別途用意されなければならない。そして、それが、<a href="http://www.nuget.org/packages/Ix-Async/">Ix-Async</a>。</p>
+<p>Ix-Asyncのインターフェイスは、上で出したasyncなMoveNextを持ちます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public interface IAsyncEnumerable&lt;out T&gt;
+{
+    IAsyncEnumerator&lt;T&gt; GetEnumerator();
+}
+
+public interface IAsyncEnumerator&lt;out T&gt; : IDisposable
+{
+    T Current { get; }
+    Task&lt;bool&gt; MoveNext(CancellationToken cancellationToken);
+}
+</code></pre>
+<p>そして当然、各演算子はIAsyncEnumerableを求めます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static IAsyncEnumerable&lt;TSource&gt; Where&lt;TSource&gt;(this IAsyncEnumerable&lt;TSource&gt; source, Func&lt;TSource, bool&gt; predicate);
+</code></pre>
+<p>これの何が便利？IEnumerable&lt;T&gt;からIAsyncEnumerable&lt;T&gt;へはToAsyncEnumerableで変換できはするけれど……、求めているのはIEnumerable&lt;Task&lt;T&gt;&gt;の取り扱いであったりpredicateにTaskを投げ込めたりすることであり、何だかどうにもなく、これじゃない感が否めない。</p>
+<p>そもそも、LINQ to Objectsから完全に逸脱した新しいものなら、既にあるじゃない？非同期をLINQで扱うなら、<a href="http://www.atmarkit.co.jp/fdotnet/introrx/introrx_01/introrx_01_01.html">Reactive Extensions</a>が。</p>
+<h2>Reactive Extensionsと非同期LINQ</h2>
+<p>ではRxで扱ってみましょう。の前に、まず、predicateにTaskは投げ込めません。なのでその前処理でロードするのは変わりません。ただ、そのまま続けてLINQ的に処理可能なのが違うところです。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">await ids.ToObservable()
+    .SelectMany(async x =&gt; new
+    {
+        Id = x,
+        Name = await GetNameAsync(x)
+    })
+    .Where(x =&gt; x.Name.StartsWith(&quot;Hoge&quot;))
+    .ForEachAsync(x =&gt;
+    {
+        Console.WriteLine(x);
+    });
+</code></pre>
+<p>おお、LINQだ？勿論、Where以外にも何でもアリです。RxならLINQ to Objects以上の山のようなメソッドを繋げまわることが可能です。ところで、ここで出てきているのはSelectMany。LINQ to ObjectsでのSelectの役割を、Rxの場合はSelectManyが担っています。asyncにおいてForEachはSelectでRxでSelectはSelectMany……。混乱してきました？</p>
+<p>なお、これの結果は順不同です。もしシーケンスの順序どおりにしたい場合はSelect + Concatを代わりに使います。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">await ids.ToObservable()
+    .Select(async x =&gt; new
+    {
+        Id = x,
+        Name = await GetNameAsync(x)
+    })
+    .Concat()
+    .Where(x =&gt; x.Name.StartsWith(&quot;Hoge&quot;))
+    .ForEachAsync(x =&gt;
+    {
+        Console.WriteLine(x);
+    });
+</code></pre>
+<p>ソーナンダー？ちなみにSelectManyはSelect + Mergeに等しい。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">await ids.ToObservable()
+    .Select(async x =&gt; new
+    {
+        Id = x,
+        Name = await GetNameAsync(x)
+    })
+    .Merge()
+    .Where(x =&gt; x.Name.StartsWith(&quot;Hoge&quot;))
+    .ForEachAsync(x =&gt;
+    {
+        Console.WriteLine(x);
+    });
+</code></pre>
+<p>この辺のことがしっくりくればRxマスター。つまり、やっぱRxムズカシイデスネ。とはいえ、見たとおり、Rx(2.0)からは、asyncとかなり統合されて、シームレスに取り扱うことが可能になっています。対立じゃなくて協調。自然に共存できます。ただし、単品でもわけわからないものが合わさって更なるカオス！強烈強力！</p>
+<h2>まとめ</h2>
+<p>後半のAsyncEnumerableだのIx-AsyncだのRxだのは、割とdoudemoii話です、覚えなくていいです。特にIx-Asyncはただの思考実験なだけで実用性ゼロなので本気でdoudemoiiです。Rxは便利なので覚えてくれてもいいのですが……。</p>
+<p>大事なのは、async + Selectです。SelectはForEachなんだー、というのがティンとくれば、勝ったも同然。そして、プリロード的な使い方。そこさえ覚えれば非同期でシーケンス処理も大丈夫。</p>
+<p>asyncって新しいので、今まで出来たことが意外と出来なくてはまったりします。でも、それも、どういう障壁があって、どう対処すればいいのか分かっていればなんてことはない話です。乗り越えた先には、間違いなく素晴らしい未来が待っているので、是非C# 5.0の非同期、使いこなしてください。</p>
+</div>
+<h1 data-pagefind-sort="date:2013-11-15" data-pagefind-meta="published:2013-11-15"><a href="https://neue.cc/2013/11/15_434.html">GlimpseによるRedis入出力の可視化とタイムライン表示</a></h1>
 <ul class="date"><li>2013-11-15</li></ul>
 <div class="entry_body"><p>空前の<a href="http://getglimpse.com/">Glimpse</a>ブーム！Glimpse最高！これ入れてないASP.NET開発はレガシー！というわけで、<a href="http://grani.jp/">グラニ a.k.a. 謎社</a>でも激しく使用を開始しています。さて、ではGlimpseとは何ぞやか、という話は今回は、しません（！）。それは誰かがしてくれます(ﾁﾗｯ。今回は本題のRedis周りのGlimpse拡張について。</p>
 <h2>CloudStructures 0.6</h2>
@@ -1989,49 +2293,6 @@ declare var Enumerable: linqjs.Enumerable;
 <p>言語も色々なトレードオフで成り立つわけですが、その中でもC#は、バランス良くて好きだなーというのが私の個人的なところです。Visual Studio良いよねー、でもいいですしLINQ良いよねー、もいいですし、IntelliSenseがないと生きていけないですし。うん、そう、IntelliSense指向言語が好きなわけです。</p>
 <p>ほとんどVisual Studioの話じゃねーか、というのは、まぁそうなのですけれど、大事なのはVisual Studioを前提においた言語構造になってるってとこです。強力すぎる型推論は、100%の入力補完を実現できなかったりする。強力すぎる動的さは100%の入力補完を実現できなかったりする。C#がVisual Studioとともに使って快適なのは、そういう言語設計になっているからです。コンパイルの速さも重要で。C#は他のコンパイル型言語に比べて速い部類に入ります。だから快適だし、エラー通知とかもリアルタイム。目に見えないところ、使ってみないと評価しにくい、ただの○×表だけの性能比較にはない部分、結構多いものです。</p>
 </div>
-<h1 data-pagefind-sort="date:2013-06-10" data-pagefind-meta="published:2013-06-10"><a href="https://neue.cc/2013/06/10_406.html">.NET最先端技術によるハイパフォーマンスウェブアプリケーション FAQ</a></h1>
-<ul class="date"><li>2013-06-10</li></ul>
-<div class="entry_body"><p>Build Insider Offlineにて、「.NET最先端技術によるハイパフォーマンスウェブアプリケーション」と題して、グラニのC#によるウェブアプリケーション作成の仕組みについて話してきました。</p>
-<iframe src="https://www.slideshare.net/slideshow/embed_code/22662425" width="597" height="400" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC;border-width:1px 1px 0;margin-bottom:5px" allowfullscreen webkitallowfullscreen mozallowfullscreen> </iframe> <div style="margin-bottom:5px"> <strong> <a href="http://www.slideshare.net/neuecc/net-22662425" title=".NET最先端技術によるハイパフォーマンスウェブアプリケーション" target="_blank">.NET最先端技術によるハイパフォーマンスウェブアプリケーション</a> </strong> from <strong><a href="http://www.slideshare.net/neuecc" target="_blank">Yoshifumi Kawai</a></strong> </div>
-<p>一日でViewsが1万、はてブが250と、ドトネト系にしては珍しく多くの人に見てもらえたようでなにより。</p>
-<p>今までのC#関連って、MS純正ライブラリを使ったどうのこうの、というのはありましたが、外部ライブラリを組み合わせて、実践的にどうしているかっていうような話ってほとんどなかったんですよね。やってるところがない、ことはないのですが、しかし表にない、見えないものはないに等しいです。</p>
-<p>別にC#だって自分達の手でライブラリを選び、作り、組み上げていく。それがこれからの時代のスタンダードです。遅れていたのかもしれません。しかし、遅すぎるなんてことはない。素材は良いし、.NETは死んだのでなく、むしろ風が吹いてきている。リアルなモデルケースとして、引っ張っていけたらと思っています。</p>
-<h2>FAQ</h2>
-<ul>
-<li>今時Windowsサーバー？</li>
-</ul>
-<p>AWSやAzureなどで簡単にWindowsインスタンスの立ち上げが可能なので、今時というか普通に選択肢に入ってくれるといいですねえ、これからは。ウェブ＝LAMPとか誰が決めたの？という話で。コスト面ではそんなに高くなるわけでもないし、それで開発効率が上がったり、サーバー台数が削減されるなら、むしろプラスです。開発効率に関しては人員次第ですが、うちのメンバーの習熟度で言ったら間違いなく上がります、圧倒的に。</p>
-<ul>
-<li>サーバーサイドでトラフィック以外がくってるのおかしい</li>
-</ul>
-<p>そうそう、一般的にウェブではネックなのは通信部分だけ、と思っていたことも有りました。でもまぁ、クックパッドの<a href="http://techlife.cookpad.com/2013/06/07/rubykaigi-high-performance-rails/">Rails アプリケーションのパフォーマンスについて RubyKaigi 2013 で発表しました</a>のスライドのResponse time breakdownのところ。SQLが20%がRubyが80%とあるんですね。うちのグラフと一緒？CakePHPはとにかくアレなわけですが、重量級フレームワークは割とそうなるもんなのかしらねえ、と少しだけホッとしたような絶望したような。</p>
-<p>先入観じゃなくちゃんとモニタリングしてくのが大事、と当たり前の話ですけれど。スライドでも推しましたが<a href="http://newrelic.com/">New Relic</a>は本当に最高なので、よほどの事情がない限りは入れるべきかなぁ、と。PHP, Ruby, Java, .NET, Python, Node.js、多くの言語に対応しています。確実にパワーは喰いますが、それでも全然お釣りくる。</p>
-<ul>
-<li>アプリケーションサーバー:DBマスター:DBスレーブの比率がおかしい</li>
-</ul>
-<p>ええと、これ、実質的にはSlaveは0です。色々な経緯があって、アプリ本体からは参照も全てMasterにし
-か振ってません。Slaveの用途は管理画面からの参照用とか、その程度です（スタンバイという点でも、RDSのMulti-AZを利用しているので意味は無い）。となると比率はますますオカシクなるわけですが、うーん、まあ、今時のDBってなんだかんだで頑丈ですからねえ、そう増えないかなあ。しかしそれにしてもアプリケーションサーバーの台数が多すぎなのは、まぁもう本当にすみませんすみませんって感じなわけなのですが。みんなCakePHP触ってみるといいですよ、XHProfにかけると絶望しますから。</p>
-<p>勿論チューニングの余地はあります。ありますし、最後にはCakePHPを捨てるというところになることも見えるし、PHPにこだわる理由がどこにもありません。それならC#移行に、といったところですね。とはいえ実際のとこ増え続けることによる歪みが色々発生してるので、ヒィヒィ言いながら適宜対処してます。あと、最低限というか割とそれなりにはCakePHP本体に手を入れたりもしてはいるんですけど、それでも中々どうにも。</p>
-<ul>
-<li>PHPのLINQあるよ</li>
-</ul>
-<p>ないよ。幾つかのPHP-LINQライブラリを、コードも読んで評価しましたが、ゴミという結論に達しました。私は<a href="http://linqjs.codeplex.com/">JavaScriptにLINQ移植</a>したりとかしているので、LINQにはこだわりがありひじょーにうるさいのです。あとCakePHPに含まれてるコレクション系のメソッドもゴミですね。かわりに自作したLINQっぽいコレクション処理用の何かを使っています。PHP 5.4を使っているので、ラムダとかもがしがし使えはするので、メソッドチェーンでフィルターやグルーピング、複数キーのソートとか一通りできるように作りました。これ作ってなかったら死んでたわ……。ただ、簡易的な実装なので遅延実行ではありません。最近発表された<a href="http://akanehara.info/phpcon/ginq/#/">Ginq</a>は非常に良いですね！もっと前にあったら、採用していたかもしれません。</p>
-<ul>
-<li>「何でもハッシュに詰めるしかない」</li>
-</ul>
-<p>ここ説明が足りなくてアレでしたね、申し訳ないです。文脈としてはIntelliSenseが効くか効かないか、の話しかするつもりなかったのと、ハッシュだろうとオブジェクトだろうとDBからの戻り値の場合はどうせ効かないのでどうでもいい、といった感だったので不正確でした、すみません。</p>
-<p>あ、DBから以外の部分で、Modelとして作りこむところでは普通にclass立てたり、TypeHinting使ったりPhpDoc書いたりして、補完がなるべく効きやすいように作ってはいますよ。IDE信奉者なので、<a href="http://www.jetbrains.com/phpstorm/">PhpStorm</a>を会社で購入して使っていますので。とはいえ、タイプヒンティングやPHPDocでも、PHP自体がゆるふわなので効きめはイマイチなんですよ。じゃあ、PHP自体がのゆるふわさを捨てて完全にガチガチに書くか？といったら、それはそれでイマイチになるので、まぁ、半分諦めるのがいいかな、とは。</p>
-<p>一応誤解なきように弁解すると、無知のC#モノがイヤイヤPHP使ってるだけでPHPについて何も分かっちゃいない、というほどに分かってないわけではないです。一応はPHPの最新言語仕様についてはちゃんと追っかけて差分取っているぐらいには使っています。さすがに仕事の商売道具ですから、嫌いだから何も勉強しない！わけでもないです。traitなども効果的だと思ったところには使ってますし、まぁtrait使うと更にPhpStormの補完が死ぬわけですが。</p>
-<ul>
-<li>なんで水平分割いやがるの</li>
-</ul>
-<p>一応スライド中にも書きましたが、メンドーごとが増えるので。特に嫌なのは、<a href="http://www.heidisql.com/">HeidiSQL</a>とか、GUIツール郡の使い勝手が低下して、かわりに自社製のツールセット（コマンドか、しょぼいWebUI）になるか、とかですよねえ、それが一番避けたくて。他社の話を聞いていて驚くのは、phpMyAdminとかコマンド叩いてるとかいうんですよ、DB見たりするのに。私的には、ありえない。みんなもっとちゃんとGUIツールも使いましょう。必要とあらばウェブツールだけじゃなくてGUIツールも自作しましょう(C#なら簡単です！)。</p>
-<p>まあ、どうしてもダメになったら水平にします。でもFusion-IOはもとより、AWSでも10万IOPSのインスタンスが出たりとか、ハードウェア性能はどんどん進化しているので、何とかなってくれるんじゃないかなあ、と楽観視はしています。良い時代になったな、と思います。</p>
-<h2>なぜ移行するの？C#のどこがいいの？</h2>
-<p>ということを、<a href="http://t.co/mxY8JFk7j2">6/11 第90回codeseek＆第30回日本C#ユーザー会 勉強会 「やっぱり.NETだよね」</a>でお話しますので、明日ですが、当日まで申し込みは受け付けてる的なノリがいつもの感じだとあるので、時間あるかたは是非お越しください。そんなにDisってよりは割とSoftな感じです、私の分はいちおー。</p>
-<p>珍しく既にスライドは完成していまして、「Static vs Dynamic」「Type for IntelliSense」「Type for Refactoring」「Debugger is Power」「LINQ vs array_xxx」「Razor:Template Engine Revolution」といったようなタイトルが並んでますので、気になった方はどーぞ。</p>
-<p>ああ、そう、あとA vs Bにおいて、全てにおけてAのほうがいい、なんてことは絶対にないんですね。どこかしらかはBのほうがよかったり、BならXxxなのに、とかいうようなことも出てくるでしょう。何がどれだけ自分に、自分達に良いのかの選択をしてくのが肝要なので、その選択を考えるための道具になればいいかと思ってます。</p>
-</div>
 <a href="https://neue.cc/11">Prev |</a>
 <a href="https://neue.cc/13">| Next</a>
 </div>
@@ -2055,6 +2316,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2025/12/">2025-12</a>
 <li><a href="https://neue.cc/2025/07/">2025-07</a>
 <li><a href="https://neue.cc/2025/05/">2025-05</a>
 <li><a href="https://neue.cc/2024/12/">2024-12</a>
