@@ -56,11 +56,11 @@ context:
   task: Our favorite hikes together
   location: Boulder
   season: spring_2025
-friends[3]: ana,luis,sam
-hikes[3]{id,name,distanceKm,elevationGain,companion,wasSunny}:
-  1,Blue Lake Trail,7.5,320,ana,true
-  2,Ridge Overlook,9.2,540,luis,false
-  3,Wildflower Loop,5.1,180,sam,true
+  friends[3]: ana,luis,sam
+  hikes[3]{id,name,distanceKm,elevationGain,companion,wasSunny}:
+    1,Blue Lake Trail,7.5,320,ana,true
+    2,Ridge Overlook,9.2,540,luis,false
+    3,Wildflower Loop,5.1,180,sam,true
 ```
 
 JSONというよりかは、YAMLとCSVのハイブリッドのようなもので、特に、テーブルとして(CSVとして)表現できる、プリミティブ要素のみを含むオブジェクトの配列が、CSV的に出力されるのでデータが大きく縮みます。この縮み幅がLLMにおけるトークンの節約に繋がるということでちょっとだけ脚光を浴びました。ならよくわからんフォーマットじゃなくてCSVでいいじゃん、というと、CSVだけだとテーブルのみで付随情報がつけられなくて実用には厳しいので、こちらのほうが使い勝手は良い印象です。また、JSONと相互互換のある仕様にしていることで、JSONからのDrop-in replacementが可能というのもセールスポイントにはなっています。
