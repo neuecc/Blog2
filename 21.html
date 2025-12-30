@@ -74,7 +74,449 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2010-11-13" data-pagefind-meta="published:2010-11-13"><a href="https://neue.cc/2010/11/13_285.html">C#のEnumを(Javaのように)別の値を持たせるなど拡張する</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2010-11-26" data-pagefind-meta="published:2010-11-26"><a href="https://neue.cc/2010/11/26_286.html">Reactive Extensions用のWebRequest拡張メソッド</a></h1>
+<ul class="date"><li>2010-11-26</li></ul>
+<div class="entry_body"><p>WebClientは楽ちんです。WebRequestはシンドイです。そのシンドさといったら、FromAsyncPatternでラップした程度じゃあまり意味がなかったりなわけです。いえ、単純なダウンロード程度ならいいのです。でも、アップロードとか！プログレスとか！そんなのに対応しようとすると、やっぱどうしょうもなく面倒臭い。とはいえ、面倒くさいのも一度書いてしまえば済むわけなので、一通り使いそうなものを書いてみました。<a href="http://msdn.microsoft.com/en-us/devlabs/ee794896.aspx">Reactive  Extensions</a>が動く環境(.NET 4 Client Profile, Silverlight4)と、Windows Phone 7環境では標準搭載のMicrosoft.Phone.Reactiveで確認取ってあります。</p>
+<p>ソースコード、の前に利用例のほうを。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// DownloadStringAsyncメソッドで非同期読み込みも楽チン
+var req1 = WebRequest.Create(&quot;http://www.twitter.com/statuses/public_timeline.json&quot;);
+req1.DownloadStringAsync().Subscribe(Console.WriteLine);
+ 
+// UploadValuesAsyncで非同期POSTも楽チン
+// この例はgoo.gl短縮URLにPOSTして結果のJSONを取得するというもの
+var req2 = WebRequest.Create(&quot;http://goo.gl/api/shorten&quot;);
+req2.Method = &quot;POST&quot;;
+req2.ContentType = &quot;application/x-www-form-urlencoded&quot;;
+ 
+req2.UploadValuesAsync(new Dictionary&lt;string, string&gt;
+    {
+        {&quot;url&quot;, &quot;http://google.co.jp/&quot;},
+        {&quot;security_token&quot;, &quot;null&quot; }
+    })
+    .SelectMany(res =&gt; res.DownloadStringAsync())
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>実に簡単に、「WebClientの同期のように」WebRequestで非同期が扱えます。WebClientと同じ感覚で扱える、というのを大事にするためにも、メソッド名は同じにしてあります(但しUpload系の戻り値はWebResponseとしました、それが最もRx的に制御しやすいと感じたので)。名前末尾にAsyncを付けていますが、この命名規則はAsyncCTPから。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/rxasynchronous1.jpg">
+</p>
+<p>WebRequestでポストする方法のおさらい。GetRequestStreamでRequestStreamを取り出し、それにPOST内容を書きこんでStreamを閉じたら、今度はGetResponseでWebResponseを取得、そのResponseから GetResponseStreamでResponseStreamを取り出し、結果を読み込む。つまりは request.BeginGetRequestStream -&gt; stream.BeginWrite -&gt; request.BeginGetResponse -&gt; stream.BeginRead。ふつーに書いたら人間の扱えるネスト量ではありませんね！</p>
+<p>というわけで、streamへのWrite/Readは隠蔽し、単純にアップロードしたら長さ1のReactiveシーケンスが、ダウンロードしたら長さ1のReactiveシーケンスが戻ってくる。という形で簡単に扱えるようにしました。非同期が難しいとか面倒くさいとか、過去の話でしたね！</p>
+<h2>プログレス表示</h2>
+<p>プログレス(進捗表示)は大事です。WebClientにもProgressChangedイベントがあるし、せっかく非同期でやってるのだからプログレスも扱いたい。というわけで、それ関連のメソッドも作りました。プログレスは***WithProgressというメソッドを使うと、戻り値が IObservable&lt;Progress&lt;T&gt;&gt;になっていて、このProgressクラスにはValue:値, CurrentLength:現在の長さ, TotalLength:全体の長さ, Percentage:パーセント、の読み取り専用プロパティが入ってます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// DownloadDataAsyncWithProgressメソッドで進捗を出しながら非同期に画像をダウンロード(して最後に保存する)
+var req1 = WebRequest.Create(&quot;http://www.microsoft.com/taiwan/silverlight/images/1920X1080_i.jpg&quot;)
+    .DownloadDataAsyncWithProgress(10000) // 引数は分割サイズ指定、無指定時は64K
+    .Do(p =&gt; Console.WriteLine(&quot;{0}/{1} - {2}%&quot;, p.CurrentLength, p.TotalLength, p.Percentage)) // 進捗表示
+    .Aggregate(new List&lt;byte&gt;(), (list, p) =&gt; { list.AddRange(p.Value); return list; }) // 分割されて届くbyte[]を一つにまとめる
+    .Select(l =&gt; (Image)new ImageConverter().ConvertFrom(l.ToArray())) // バイト配列をImageに変換
+    .Subscribe(img =&gt; img.Save(&quot;C:\\test.jpg&quot;)); // 画像保存
+ 
+// UploadValuesAsyncWithProgressで非同期アップロードの進捗表示もスムーズに
+var req2 = WebRequest.Create(&quot;http://goo.gl/api/shorten&quot;);
+req2.Method = &quot;POST&quot;;
+req2.ContentType = &quot;application/x-www-form-urlencoded&quot;;
+ 
+req2.UploadValuesAsyncWithProgress(new Dictionary&lt;string, string&gt; 
+    {
+        {&quot;url&quot;, &quot;http://google.co.jp/&quot;},
+        {&quot;security_token&quot;, &quot;null&quot; }
+    }, 10) // 分割サイズ、あまりに小さいのは良くない、本当は画像とか大きなファイルでやるべきなのですが適当なPOST先が見つからなくて...
+    .Do(p =&gt; Console.WriteLine(&quot;Up: {0}/{1} - {2}%&quot;, p.CurrentLength, p.TotalLength, p.Percentage)) // アップロード進捗表示
+    .TakeLast(1) // アップロード完了(＝最後の1個が通過)までスルー
+    .SelectMany(_ =&gt; req2.DownloadDataAsyncWithProgress(10)) // 戻り値がProgress&lt;Unit&gt;なので、WebRequestからレスポンス取得
+    .Do(p =&gt; Console.WriteLine(&quot;Down: {0}/{1} - {2}%&quot;, p.CurrentLength, p.TotalLength, p.Percentage)) // ダウンロード進捗表示
+    .Aggregate(new List&lt;byte&gt;(), (l, p) =&gt; { l.AddRange(p.Value); return l; }) // 分割されて届くbyte[]を一つにまとめる
+    .Select(l =&gt; Encoding.UTF8.GetString(l.ToArray())) // 応答を文字列(JSON)に変換
+    .Subscribe(Console.WriteLine);
+</code></pre>
+<p>基本的には非プログレスと同じなのですが、長さ1ではなくて進捗状況に応じた分だけ値が流れてくるという違いがあります。また、書き込み時はUnit、読み込み時はbyte[]が来るので、それを一本にまとめる必要があります。というわけで、若干の手間とクセがあるのですが、まあそれなりに平易に扱えるのではと思います。UploadProgressとDownloadProgressを連結する辺りには、Rxの合成のパワーが見えるのではないでしょうかどうでしょうか。パワーが見えるのはいいとして意味が伝わるかは微妙なところなので、以下図解。</p>
+<p class="noindent">
+	<img src="http://neue.cc/wp-content/uploads/image/rxasynchronous2.jpg">
+</p>
+<p>まずはResponseStreamに細切れにWriteし、進捗状況を垂れ流します。Writeなので戻り値はない。ので、Unit(voidみたいなものだと思ってくだしあ)。そしてSelectManyでWriteからReadへ。そう、RxにおいてのSelectManyは、1対多とかフラットにするとかというよりも、イメージとしては「摩り替える」だと思っています。マウスダウンしたと思っていたらマウスムーブに摩り替わっていた、何を (ry。といったように。今回のコードだと、Writeしていたと思ったらいつのまにかReadになっていた、何を言っているのか以下略。</p>
+<p>Writeの戻り値にそのままSelectManyを繋げてはいけません。Readを始めるのはWriteが「終わってから」でなければならない。そこで出番なのがTakeLast(1)。意味はそのまんまで、最後の1個を通すというもの。対としてTake(1) - 最初の1個だけ通す、もよく使いますね。</p>
+<p>Readもまた細切れにbyte[]で値が読み込まれ送られてきますが、文字列に変換するにせよ何にせよ、 IObservable&lt;byte[]&gt;からbyte[]にしたい。ここでIEnumerable&lt;byte[]&gt;だったら SelectMany.ToArray って感じですが、Observableではそうもいかないので、ここはAggregateを使ってリストに値を詰めてみました。</p>
+<p>最後は文字列に変換して、煮るなり焼くなり好きにどうぞ。ブロックはいっぱいありますが、Subscribeに届くのは最後の、集計が全て終わった一つだけというわけでした。なお、進捗はDoメソッドで随時、その箇所に値が流れるたびに画面に出力しています。一見メソッドチェーンだらけで複雑そうですが、順を追ってみてみれば、メソッド全てが、メソッド名通りの意味を明確に持った挙動を取るのと、それぞれのメソッド自体はお馴染みのLinqの挙動そのものなので、Rxの導入までの学習コストというのは存外低いかもしれません(導入を超えた後の敷居に関してはノーコメント)。</p>
+<p>あと、このようにブロックが細切れになっているわけですが、これによりキャンセルが容易になるという性質を持っています。キャンセルは Subscribeの戻り値(IDisposable)のDisposeを呼ぶだけで済むのですが、図のとおりに分割されているため、簡単にブロック間に割って入って処理を止めることが可能です。この、処理単位がIObservableとして分割されていることによるキャンセルの容易さは、わざわざ CancellationTokenをチェックしたり(Task)、CancellationPendingをチェックしたり (BackgroundWorker)を処理の途中に挟みこむ必要がないという、Rxの大きな利点となっています。この辺の比較などは次回にでも。</p>
+<p>なお、プログレスや細かい単位でのキャンセルが必要なければ、冒頭の例のようにWithProgerss抜きの方のメソッドを使えば、通常の非同期と同じく長さ1のReactiveシーケンスとして、Aggregateとかの処理も拡張メソッド側で全部やってくれますのでお手軽に使えます。</p>
+<h2>ソースコード</h2>
+<p>以下ソースコード。ご利用はご自由にのパブリックライセンスで。.NET 4 Client Profile, Silverlight4, Windows Phone 7環境下で動くのを確認してます。名前空間としてusing AsynchronousExtensions することで、拡張メソッド群が使えるようになります。そんなわけでお薦めのファイル名はAsynchronousExtensions.cs。ソースコード一つというわけで、気に入らない箇所がありましたら、勿論当然直接書き換えてしまえばOKです。バグがあれば教えてください。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Text;
+#if WINDOWS_PHONE
+using Microsoft.Phone.Reactive;
+#else
+using System.Reactive;
+using System.Reactive.Linq;
+using System.Reactive.Concurrency;
+using System.Reactive.Disposables;
+#endif
+
+namespace AsynchronousExtensions
+{
+    internal static class Progress
+    {
+        public static Progress&lt;T&gt; Create&lt;T&gt;(T value, double currentLength, double totalLength)
+        {
+            return new Progress&lt;T&gt;(value, currentLength, totalLength);
+        }
+    }
+
+    internal class Progress&lt;T&gt;
+    {
+        public T Value { get; private set; }
+        public double TotalLength { get; private set; }
+        public double CurrentLength { get; private set; }
+        public int Percentage
+        {
+            get
+            {
+                return (TotalLength &lt;= 0 || CurrentLength &lt;= 0)
+                    ? 0
+                    : (int)((CurrentLength / TotalLength) * 100);
+            }
+        }
+
+        public Progress(T value, double currentLength, double totalLength)
+        {
+            Value = value;
+            TotalLength = totalLength;
+            CurrentLength = currentLength;
+        }
+    }
+
+    internal static class WebRequestExtensions
+    {
+        public static IObservable&lt;WebResponse&gt; GetResponseAsObservable(this WebRequest request)
+        {
+            return ObservableForCompatible.Create&lt;WebResponse&gt;(observer =&gt;
+            {
+                var disposable = new BooleanDisposable();
+
+                Observable.FromAsyncPattern&lt;WebResponse&gt;(request.BeginGetResponse, ar =&gt;
+                {
+                    var res = request.EndGetResponse(ar);
+                    if (disposable.IsDisposed) res.Close();
+                    return res;
+                })().Subscribe(observer);
+
+                return disposable;
+            });
+        }
+
+        public static IObservable&lt;Stream&gt; GetRequestStreamAsObservable(this WebRequest request)
+        {
+            return ObservableForCompatible.Create&lt;Stream&gt;(observer =&gt;
+            {
+                var disposable = new BooleanDisposable();
+
+                Observable.FromAsyncPattern&lt;Stream&gt;(request.BeginGetRequestStream, ar =&gt;
+                {
+                    var res = request.EndGetRequestStream(ar);
+                    if (disposable.IsDisposed) res.Close();
+                    return res;
+                })().Subscribe(observer);
+
+                return disposable;
+            });
+        }
+
+        public static IObservable&lt;byte[]&gt; DownloadDataAsync(this WebRequest request)
+        {
+            return Observable.Defer(() =&gt; request.GetResponseAsObservable()).SelectMany(r =&gt; r.DownloadDataAsync());
+        }
+
+        public static IObservable&lt;Progress&lt;byte[]&gt;&gt; DownloadDataAsyncWithProgress(this WebRequest request, int chunkSize = 65536)
+        {
+            return Observable.Defer(() =&gt; request.GetResponseAsObservable()).SelectMany(r =&gt; r.DownloadDataAsyncWithProgress(chunkSize));
+        }
+
+        public static IObservable&lt;string&gt; DownloadStringAsync(this WebRequest request)
+        {
+            return DownloadStringAsync(request, Encoding.UTF8);
+        }
+
+        public static IObservable&lt;string&gt; DownloadStringAsync(this WebRequest request, Encoding encoding)
+        {
+            return Observable.Defer(() =&gt; request.GetResponseAsObservable()).SelectMany(r =&gt; r.DownloadStringAsync(encoding));
+        }
+
+        public static IObservable&lt;string&gt; DownloadStringLineAsync(this WebRequest request)
+        {
+            return DownloadStringLineAsync(request, Encoding.UTF8);
+        }
+
+        public static IObservable&lt;string&gt; DownloadStringLineAsync(this WebRequest request, Encoding encoding)
+        {
+            return Observable.Defer(() =&gt; request.GetResponseAsObservable()).SelectMany(r =&gt; r.DownloadStringLineAsync(encoding));
+        }
+
+        public static IObservable&lt;WebResponse&gt; UploadStringAsync(this WebRequest request, string data)
+        {
+            var bytes = Encoding.UTF8.GetBytes(data);
+            return request.UploadDataAsync(bytes);
+        }
+
+        public static IObservable&lt;Progress&lt;Unit&gt;&gt; UploadStringAsyncWithProgress(this WebRequest request, string data, int chunkSize = 65536)
+        {
+            var bytes = Encoding.UTF8.GetBytes(data);
+            return request.UploadDataAsyncWithProgress(bytes, chunkSize);
+        }
+
+        public static IObservable&lt;WebResponse&gt; UploadValuesAsync(this WebRequest request, IDictionary&lt;string, string&gt; parameters)
+        {
+            var parameter = string.Join(&quot;&amp;&quot;, parameters
+                .Select(kvp =&gt; Uri.EscapeDataString(kvp.Key) + &quot;=&quot; + Uri.EscapeDataString(kvp.Value)).ToArray());
+            var bytes = Encoding.UTF8.GetBytes(parameter);
+
+            return request.UploadDataAsync(bytes);
+        }
+
+        public static IObservable&lt;Progress&lt;Unit&gt;&gt; UploadValuesAsyncWithProgress(this WebRequest request, IDictionary&lt;string, string&gt; parameters, int chunkSize = 65536)
+        {
+            var parameter = string.Join(&quot;&amp;&quot;, parameters
+                .Select(kvp =&gt; Uri.EscapeDataString(kvp.Key) + &quot;=&quot; + Uri.EscapeDataString(kvp.Value)).ToArray());
+            var bytes = Encoding.UTF8.GetBytes(parameter);
+
+            return request.UploadDataAsyncWithProgress(bytes, chunkSize);
+        }
+
+        public static IObservable&lt;WebResponse&gt; UploadDataAsync(this WebRequest request, byte[] data)
+        {
+            return Observable.Defer(() =&gt; request.GetRequestStreamAsObservable())
+                .SelectMany(stream =&gt; stream.WriteAsObservable(data, 0, data.Length).Finally(() =&gt; stream.Close()))
+                .TakeLast(1)
+                .SelectMany(_ =&gt; request.GetResponseAsObservable());
+        }
+
+        public static IObservable&lt;Progress&lt;Unit&gt;&gt; UploadDataAsyncWithProgress(this WebRequest request, byte[] data, int chunkSize = 65536)
+        {
+            return Observable.Defer(() =&gt; request.GetRequestStreamAsObservable())
+                .SelectMany(stream =&gt; stream.WriteAsync(data, chunkSize))
+                .Scan(0, (i, _) =&gt; i + 1)
+                .Select(i =&gt;
+                {
+                    var currentLength = i * chunkSize;
+                    if (currentLength &gt; data.Length) currentLength = data.Length;
+                    return Progress.Create(new Unit(), currentLength, data.Length);
+                });
+        }
+    }
+
+    internal static class WebResponseExtensions
+    {
+        public static IObservable&lt;byte[]&gt; DownloadDataAsync(this WebResponse response)
+        {
+            return Observable.Defer(() =&gt; response.GetResponseStream().ReadAsync())
+                .Finally(() =&gt; response.Close())
+                .Aggregate(new List&lt;byte&gt;(), (list, bytes) =&gt; { list.AddRange(bytes); return list; })
+                .Select(x =&gt; x.ToArray());
+        }
+
+        public static IObservable&lt;Progress&lt;byte[]&gt;&gt; DownloadDataAsyncWithProgress(this WebResponse response, int chunkSize = 65536)
+        {
+            return Observable.Defer(() =&gt; response.GetResponseStream().ReadAsync(chunkSize))
+                .Finally(() =&gt; response.Close())
+                .Scan(Progress.Create(new byte[0], 0, 0),
+                    (p, bytes) =&gt; Progress.Create(bytes, p.CurrentLength + bytes.Length, response.ContentLength));
+        }
+
+        public static IObservable&lt;string&gt; DownloadStringAsync(this WebResponse response)
+        {
+            return DownloadStringAsync(response, Encoding.UTF8);
+        }
+
+        public static IObservable&lt;string&gt; DownloadStringAsync(this WebResponse response, Encoding encoding)
+        {
+            return response.DownloadDataAsync().Select(x =&gt; encoding.GetString(x, 0, x.Length));
+        }
+
+        public static IObservable&lt;string&gt; DownloadStringLineAsync(this WebResponse response)
+        {
+            return DownloadStringLineAsync(response, Encoding.UTF8);
+        }
+
+        public static IObservable&lt;string&gt; DownloadStringLineAsync(this WebResponse response, Encoding encoding)
+        {
+            return Observable.Defer(() =&gt; response.GetResponseStream().ReadLineAsync(encoding))
+                .Finally(() =&gt; response.Close());
+        }
+    }
+
+    internal static class StreamExtensions
+    {
+        public static IObservable&lt;Unit&gt; WriteAsObservable(this Stream stream, byte[] buffer, int offset, int count)
+        {
+            return Observable.FromAsyncPattern((ac, o) =&gt; stream.BeginWrite(buffer, offset, count, ac, o), stream.EndWrite)();
+        }
+
+        public static IObservable&lt;int&gt; ReadAsObservable(this Stream stream, byte[] buffer, int offset, int count)
+        {
+            return Observable.FromAsyncPattern&lt;int&gt;((ac, o) =&gt; stream.BeginRead(buffer, offset, count, ac, o), stream.EndRead)();
+        }
+
+        public static IObservable&lt;Unit&gt; WriteAsync(this Stream stream, string data)
+        {
+            return WriteAsync(stream, data, Encoding.UTF8);
+        }
+
+        public static IObservable&lt;Unit&gt; WriteAsync(this Stream stream, string data, Encoding encoding)
+        {
+            return WriteAsync(stream, encoding.GetBytes(data));
+        }
+
+        public static IObservable&lt;Unit&gt; WriteAsync(this Stream stream, IEnumerable&lt;byte&gt; data, int chunkSize = 65536)
+        {
+            return WriteAsync(stream, data.ToObservable(), chunkSize);
+        }
+
+        public static IObservable&lt;Unit&gt; WriteAsync(this Stream stream, IObservable&lt;byte&gt; data, int chunkSize = 65536)
+        {
+            return Observable.Defer(() =&gt; data)
+                .Buffer(chunkSize)
+                .SelectMany(l =&gt; stream.WriteAsObservable(l.ToArray(), 0, l.Count))
+                .Finally(() =&gt; stream.Close());
+        }
+
+        public static IObservable&lt;Unit&gt; WriteLineAsync(this Stream stream, string data)
+        {
+            return WriteLineAsync(stream, data, Encoding.UTF8);
+        }
+
+        public static IObservable&lt;Unit&gt; WriteLineAsync(this Stream stream, string data, Encoding encoding)
+        {
+            return WriteAsync(stream, data + Environment.NewLine, encoding);
+        }
+
+        public static IObservable&lt;Unit&gt; WriteLineAsync(this Stream stream, IEnumerable&lt;string&gt; data)
+        {
+            return WriteLineAsync(stream, data, Encoding.UTF8);
+        }
+
+        public static IObservable&lt;Unit&gt; WriteLineAsync(this Stream stream, IObservable&lt;string&gt; data)
+        {
+            return WriteLineAsync(stream, data, Encoding.UTF8);
+        }
+
+        public static IObservable&lt;Unit&gt; WriteLineAsync(this Stream stream, IEnumerable&lt;string&gt; data, Encoding encoding)
+        {
+            return WriteLineAsync(stream, data.ToObservable(), encoding);
+        }
+
+        public static IObservable&lt;Unit&gt; WriteLineAsync(this Stream stream, IObservable&lt;string&gt; data, Encoding encoding)
+        {
+            return WriteAsync(stream, data.SelectMany(s =&gt; encoding.GetBytes(s + Environment.NewLine)));
+        }
+
+        public static IObservable&lt;byte[]&gt; ReadAsync(this Stream stream, int chunkSize = 65536)
+        {
+            return Observable.Defer(() =&gt; Observable.Return(new byte[chunkSize], Scheduler.CurrentThread))
+                .SelectMany(buffer =&gt; stream.ReadAsObservable(buffer, 0, chunkSize),
+                    (buffer, readCount) =&gt; new { buffer, readCount })
+                .Repeat()
+                .TakeWhile(a =&gt; a.readCount != 0)
+                .Select(a =&gt;
+                {
+                    if (a.readCount == chunkSize) return a.buffer;
+
+                    var newBuffer = new byte[a.readCount];
+                    Array.Copy(a.buffer, newBuffer, a.readCount);
+                    return newBuffer;
+                })
+                .Finally(() =&gt; stream.Close());
+        }
+
+        public static IObservable&lt;string&gt; ReadLineAsync(this Stream stream, int chunkSize = 65536)
+        {
+            return ReadLineAsync(stream, Encoding.UTF8, chunkSize);
+        }
+
+        public static IObservable&lt;string&gt; ReadLineAsync(this Stream stream, Encoding encoding, int chunkSize = 65536)
+        {
+            return ObservableForCompatible.Create&lt;string&gt;(observer =&gt;
+            {
+                var decoder = encoding.GetDecoder();
+                var bom = encoding.GetChars(encoding.GetPreamble()).FirstOrDefault();
+                var sb = new StringBuilder();
+                var prev = default(char);
+
+                return stream.ReadAsync(chunkSize)
+                    .SelectMany(bytes =&gt;
+                    {
+                        var charBuffer = new char[encoding.GetMaxCharCount(bytes.Length)];
+                        var count = decoder.GetChars(bytes, 0, bytes.Length, charBuffer, 0);
+                        return charBuffer.Take(count);
+                    })
+                    .Subscribe(
+                        c =&gt;
+                        {
+                            if (c == bom) { } // skip bom
+                            else if (prev == '\r' &amp;&amp; c == '\n') { } // when \r\n do nothing
+                            else if (c == '\r' || c == '\n')   // reach at EndOfLine
+                            {
+                                var str = sb.ToString();
+                                sb.Length = 0;
+                                observer.OnNext(str);
+                            }
+                            else sb.Append(c); // normally char
+
+                            prev = c;
+                        },
+                        observer.OnError,
+                        () =&gt;
+                        {
+                            var str = sb.ToString();
+                            if (str != &quot;&quot;) observer.OnNext(str);
+                            observer.OnCompleted();
+                        });
+            });
+        }
+    }
+
+    internal static class ObservableForCompatible
+    {
+#if WINDOWS_PHONE
+        public static IObservable&lt;IList&lt;T&gt;&gt; Buffer&lt;T&gt;(this IObservable&lt;T&gt; source, int count)
+        {
+            return source.BufferWithCount(count);
+        }
+#endif
+
+        public static IObservable&lt;TSource&gt; Create&lt;TSource&gt;(Func&lt;IObserver&lt;TSource&gt;, IDisposable&gt; subscribe)
+        {
+#if WINDOWS_PHONE
+            return Observable.CreateWithDisposable(subscribe);
+#else
+            return Observable.Create(subscribe);
+#endif
+        }
+    }
+}
+</code></pre>
+<p>Progress用のクラスと、WebRequest, WebResponse, Streamに対する拡張メソッドです。各メソッドは大体数行でローカル変数もほとんどないコンパクトなものですが(Rxの強力さに全力で乗っかってるだけ)、コード自体はあまり追いやすくはないかもです。まあ、面倒くさい部分は拡張メソッド側で隠蔽してやれるならそれで良いと思ってます。利用側はWebClientを同期で使うように、簡単にWebRequestが非同期で扱えるんじゃないかなー、と思いますがどうでしょう。そしてついでなので多めに作ってしまった……。</p>
+<p>StreamのReadAsync、WriteAsyncですが、それぞれ一度の読み込み/書き込みサイズ指定(デフォルトは64K)で、ストリーミングで読み書きをするようになっています。特にWriteAsyncで要求するbyteはIEunmerable/IObservableですから。つまり、「ストリーミングで読みながら」「ストリーミングで書きこむ」ことが出来るという、メモリに非常に優しいプログラミングが可能になっています。(まあ、読み込みが速くて書き込みが遅い場合は、読み込みだけどんどん進んで、どこかで溜め込まれてしまうわけですけどー、WriteされたらReadが始まる、みたいな仕組み作れないかなー、とは思いつつ方法分からない)</p>
+<p>ところでしかし、Rxも素のままではなく、拡張補助ライブラリ的なのを用意するといいのかもねえ。<a href="http://d.hatena.ne.jp/NyaRuRu/20080115/p1">Achiral</a>のように。T4によるFromEventの自動生成などと一緒にまとめて、Rx Supplemental Library。うーん。Rx利用の俺々MVVMライブラリ(を、いつか作りたい、今はまだMVVM自体がヨクワカッテナイのですが)と一緒に、そのうちにでも。</p>
+<h2>まとめ</h2>
+<p>WPF, SL, WP7で全く同じコードが動くって素敵。Rx素晴らしい。んで、もしかしてRxって面倒くさいの……？ と思ったとしたら、いえ、違います。面倒くさいのはWebRequestでプログレスやアップロード処理を作るのが面倒くさいだけです。上のコードがゲップでそうな感じであるとしたら、Rxが面倒なせいではなくて、WebRequestが面倒なせいなだけです。これRx抜きに同期で書いても面倒臭いです。それどころか、一層大変なことになっていました。むしろRxの上に乗っかっているからこそ、色々な演算子が使えて、コンパクトに書けたのではないかと思われます。また、プログレスや柔軟なキャンセルなど、「クライアントアプリならスレッド余ってるし同期的に書いてThreadPoolに突っ込んでも問題ないし楽っしょー」といった次元を超えた価値をReactive Extensionsは提供できているのではないでしょうか。</p>
+<p>プログレスは大事。何が大事って、最近Windows Phone 7を輸入して電波法違反、じゃなくて、ええと、まあ、b-mobile回線で使っているのですけど、死ぬほど遅い。b-mobile遅い。MAX 300kbpsと謳っていて、それも遅いわけだけど実測だと100kbpsで大変遅い。なので、TwitterのXML引っ張ってくる程度であっても(モバイル回線は貧弱なのでXMLじゃなくてJSONがいいですねえ)、何%といった表示は欲しかったりなのです。さすがにそれはやり過ぎだとしても、Twitpicなどにカメラ画像を上げる時などではもう必須と言ってもいいぐらい。</p>
+<p>でも、WebRequest使うとプログレスはご覧のように面倒臭いので、どうしてもサポート出来なかったりなのですよね。WebClient使えよってのは正論なのですが、諸事情あったりでWebRequest使いたいって場合もあるでしょう(OAuthとかあるしね)。もうひとつは、Reactive Extensionsに載せるならイベントベースになっているWebClientよりもWebRequestのほうが使いよいということもあり。</p>
+<p>そんなジレンマの日々も今日でサヨナラです。Rx + WebRequestでConsoleでも、WPFでも、Silverlightでも、Windows Phone 7でも、幸せな非同期生活を送りましょう。ところで今回のプログレスの話はasync/awaitやBackgroundWorkerと絡めてお話したかったのですが、長くなるので断念。これは次回に(いや、次々回かもしれませんが)必ず書きます！もう既に半分ぐらいサンプルコードとかも書いてはあるので、絶対に近いうちには。</p>
+<p>なお、今回の記事はRxTeamのJeffery Van Goghのブログシリーズ<a href="http://blogs.msdn.com/b/jeffva/">Rx on the server</a>が下敷きになってます。そして、Rx on the serverで紹介されているコードは、最新のRxのリリースに含まれているSystem.Reactive.ClientProfileに収録されています。が、このPart2で紹介されているAsyncReadLines(非同期でのStreamから一行毎にString取り出し)は簡易的すぎて使い物になりません。2バイト圏無視してるし、1バイトであっても挙動は怪しい。サンプルレベルなら良いと思うし記事は素晴らしく参考になったのですが、本体に収録/配布はやめて欲しかったなあ、少しがっかり。</p>
+<p>でもAsyncReadLines自体は欲しいですねえ。今のところ一行毎に取り出すにはStreamReaderしかないのだけれど、非同期APIがないので。非同期読み込み可能なStreamReaderは、何故かSystem.DiagnosticsにAsyncStreamReaderとしてあったりするのですが、internalクラスなので外からでは使えません。というわけで、非同期で一行毎読み込みをやるには、自前実装しか無いようで。うーん、やだなー。私はゆとりゆるふわプログラマなので、バイトとかエンコーディングとかが絡むのはやりたくないなー。というか絶対ミスするでする。</p>
+<p>※追記@12/03, やっぱり欲しいと思ったのでReadLineAsyncとして実装しました。↑ソースコードにも反映させてあります。</p>
+<p>※追記@2011/8/29, .NET版とWP7同梱版との互換性をもたせました。また、リソースの扱いを正確にしました。</p>
+<p>※追記@2011/10/15, <a href="http://neue.cc/2011/10/07_346.html">ReactiveProperty : WPF/SL/WP7のためのRxとMVVMを繋ぐ拡張ライブラリ</a>の一部として、より機能向上させライブラリとしてまとめあげたものを公開しました。↑ソースコードをそのまま使うより、ReactivePropertyを参照するほうをお薦めします。</p>
+<h2>余談：Windows Phone 7</h2>
+<p>そういえば、WP7ですか？中々良いですよ、日本語さえまともならば。それを抜きにしても、正直なところ想像以上に自由の効かないガチガチ縛りなので、Androiderな方々は絶対気に入らないと思っています。まあでも、私は好きですねえ。初版なのでダメなところが目立つのはしょうがないし、徐々に改善される(といいなあ！)でしょう。良いところに目を向ければ、大変可能性を感じるOSに仕上がってると思います。</p>
+<p>ちなみにWP7の開発環境に望むのはJSONサポート何とかしる！ってことですかね。標準だとシリアライザしか入ってないんですよ、ふざけんな死ね。System.Json入れるかJsonReaderWriterFactory入れるかしろって話ですよ本当に。あとdynamicのサポートが入ってくれれば<a href="http://dynamicjson.codeplex.com/">DynamicJson</a>を対応させるんだけどなあ。</p>
+<p>今のところ実機にアプリケーションを転送できません。WP7は認証が必要なので(有料)。で、認証のための証明書の発行手続きはしたのですが、その発行を請け負っているGeoTrustという会社があまりにも仕事しないせいでうばばばば。しょうがないので、今やれることは基盤をがっつし固めることぐらいですはい。</p>
+</div>
+<h1 data-pagefind-sort="date:2010-11-13" data-pagefind-meta="published:2010-11-13"><a href="https://neue.cc/2010/11/13_285.html">C#のEnumを(Javaのように)別の値を持たせるなど拡張する</a></h1>
 <ul class="date"><li>2010-11-13</li></ul>
 <div class="entry_body"><p>Enumに文字列を与えたいというのは少なくなくよくあると思います。例えばFruits.Appleには.ToString()したら「リンゴ」と出て欲しいなー、とか。それならFruits.リンゴと、日本語名つければ？というのはごもっとも。でも、同時に「林檎」とも付けたいなー、とかも思ってしまったりするわけです。しません？Java→C#な人が一番不満に思うのはEnumのようですし（JavaのEnumは高機能！）。</p>
 <p>例えばこんな風にかけたらいいな、って。</p>
@@ -1921,35 +2363,6 @@ namespace System.ComponentModel
 <p>といっても、F#も全然まだ表面ぐらいしか見えてないし、突っつけば突っつくほど応えてくれる奥の深い言語な感じなので、今の程度の知識で比較してどうこうってのはないです。Java7のクロージャにたいし、Javaにそんなものはいらない、とか頑な態度を取っている人を見るとみっともないな、と思うわけですが、いつか私もC#に拘泥してC#にそんなものはいらない、的なことを言い出すようだと嫌だなー、とかってのは思ってます。進化を受け入れられなくなったら、終わり。</p>
 <p>マルチパラダイム言語の勝利→C++/CLI大勝利ですか？→いやそれは多分違う。的なこともあるので何もかもを受け入れろ、ひたすら取り込んで鈍重な恐竜になれ(最後に絶滅する)、とは言いません。この辺のバランス感覚が、きっと言語設計にとって難しいことであり、そして今のC#は外から見れば恐竜のようにラムダ式だのdynamicだのを取り入れてるように見えるでしょうが、決してそうではなく、素晴らしいバランスに立っています。機能の追加が恐竜への道になっていない。むしろ追加によって過去の機能を互換性を保ちつつ捨てているんですよね、例えば、もうdelegateというキーワードは書くどころか目にすることもほとんどない←なのでC#を学習する場合、C#1.0-&gt;2.0-&gt;3.0-&gt;4.0という順番を辿るのは良くなくて、最新のものから降りていったほうがいい。</p>
 <p>何が言いたいかっていったらC#愛してるってことですな。うはは。5.0にも当然期待していますし、Anders Hejlsbergの手腕には絶対的に信頼を寄せています。4.0は言語的な飛躍はあまりなかっただけに、5.0は凄いことになるに違いない。</p>
-</div>
-<h1 data-pagefind-sort="date:2010-08-11" data-pagefind-meta="published:2010-08-11"><a href="https://neue.cc/2010/08/11_271.html">linq.jsやRxJSのベンチマーク</a></h1>
-<ul class="date"><li>2010-08-11</li></ul>
-<div class="entry_body"><p>どうも、定期的<a href="http://linqjs.codeplex.com/" title="linq.js - LINQ for JavaScript">linq.js - LINQ for JavaScript</a>宣伝の会がやってまいりました。最近はページビューも絶好調、なのだけどDL数はそこまで伸びない（でも同種のライブラリよりもDL数多かったりするので需要が限界値と思われる）などなどな近況ですがこんばんわ。乱立するLinqのJavaScript実装……。などと言うほどに乱立はしてないし、そもそも2009/04に最後発で私が出したのが最後で、それ以降の新顔は見かけないのですが(しいて言えばRxJS)、ちょうどjLinqを実装した人が、<a href="http://somewebguy.wordpress.com/2010/08/08/jlinq-reloaded/">ベンチ結果がボロボロだった、作り直してる</a>という記事を出したので、ほぅほぅとそのベンチマークを見て、ちょっと改良して色々なLinq実装で比較してみました。</p>
-<p class="noindent">
-	<img src="http://neue.cc/wp-content/uploads/image/jorderbench.jpg">
-</p>
-<blockquote>
-<p><a href="http://act.neue.cc/bench/" title="jOrder benchmark page">jOrderのベンチに色々足したもの</a></p>
-</blockquote>
-<p>左のがIE8、重ねて後ろ側のがChrome。この画像は77件のJSONをGroupIDが107か185のもののみをフィルタして配列を返すという処理を1000回試行したもの。毎度思いますが、V8恐ろしく速い。そりゃnode.jsとか普通に現実的な話ですよね、大変素晴らしい。</p>
-<h2>jOrderについて</h2>
-<p>このベンチマークは、もとは<a href="http://wiki.github.com/danstocker/jorder/" title="Home - jorder - GitHub">jOrder</a>という、Linq……ではなくてSQL風のもので(SQLっぽいのは結構いっぱいあります)、巨大なJSONを効率よく抽出するために、先にインデックス的なのを作ってそれから処理すれば速くなるよ！というライブラリが先々月ぐらいに出来たばっからしいのですが、それがjLinqと比較してこれだけ速いぜ！とやっていたようです。結果見る限りはjLinqクソ遅くてjOrderクソ速くて凄ー、となったのですが、なんかどーにも胡散臭さが拭えないわけですよ、ベンチ詐欺に片足突っ込んでいるというか。</p>
-<p>jOrderは初回にインデックスっぽいものを作成するので、二回目以降の抽出は爆速、というのがウリ（っぽい）ようで、ベンチは確かに速い。で、その初回のインデックス生成は何時やってるんでしょうか？このベンチのソースを見ると、ボタンを押してからじゃなくて、ページのロード時にやってますね……。あの、それも立派なコストなのですが、無視ですか？無視ですか？そりゃあ試行回数を1000でベンチ取るならば無視出来るほどに小さいかもですね？でも、Test Cycles 1とか用意しているわけですが、どうなんでしょうね、インデックス作成時間を無視するのは、ちょっと卑怯すぎやしませんか？そもそも対象にひぢょーに遅いjLinq「だけ」を選んでいるというところがやらしい。</p>
-<p>というわけで、オリジナルのベンチにはないのですがwith create indexというボタン押してからインデックスを作成する項目を足しました。1000回の試行では、コンセプトに乗っ取るなら1回のインデックス作成にすべきなんでしょうが、普通に1000回インデックス作成に走るのでクソ遅いです。あ、いや、別にアンチキャンペーン張ろうってわけじゃあないんですが、単純に面倒なので……。インデックス作成コストは試行回数1にすれば分かる。</p>
-<p>ベンチ結果を見ると、まず、インデックス的なものの作成には非常にコストがかかってる。そして、わざわざコストをかけて生成したところで、Small table(77件のJSON)では、フィルタリングに関してはjQueryの$.grep、つまりは何も手をかけてないシンプルなフィルタリングと同じ速度でしかなくて、あまり意味が無い。Large table（1000件のJSON）ではそれなりな効果が出ているようですが、インデックス作成コストをペイするまでの試行回数を考えると、やはりあまり意味がなさそうな……。コンセプトは面白いんですが、それ止まりかなあ。機能的には、このインデックス生成一点勝負なところがあるので、他のLinq系ライブラリのような多機能なクエリ手段があるわけでもないし。</p>
-<h2>その他のライブラリについて</h2>
-<p>どれも似たり寄ったりで同じことが出来ますが、処理内容は全然違います。linq.jsは遅延評価であることと、列挙終了時にDisposeすることを中心に据えているので、シンプルにフィルタするだけのもの(jQueryの$.grepとか)よりも遥かに遅くなっています。JSINQも同じく遅延評価で、実装も大体似てます。なので、計測結果もほぼ同じですが、linq.jsのほうが遅い。これは、jsinqはDisposeがないため、その分の速度差が出ています（それ以外にも、単純にlinq.jsのほうが色々処理挟んでて遅め）。</p>
-<p>LINQ to JavaScript(JSLINQ)はLINQの名を冠していますが、即時評価で、中身はただの配列のラッパーです。その分だけ単純な実装になっているので、単純なことをこなすには速い。jQueryの$.grepも同じく、普通に配列をグルッとループ回してifで弾いて、新しい配列にpushして、新しい配列を返すもの。というわけで、両者はほとんど同じ速度です。ただ、若干jQueryのほうが速いようで。これは、JSLINQはthis.itemsという形で対象の配列にアクセスしていて、それが速度差になってる模様。var items = this.itemsと列挙の前に置いてやれば、jQueryとほぼ同じ速度になる。1000回の試行だと20msecぐらいの差にはなるようですね。これが気にするほどかは、どうでしょう……。私は全く気にしません。</p>
-<p>残念なことにめっちゃ遅いjLinqは、うーん、中はevalだらけだそうで、それが響いたそうです。と、作者が言ってるのでそうなのでしょう（適当）。RxJSも割と遅いんですが、これはしょうがないね！C#でもToObservableで変換かけたものの速度は割と遅くなるし。構造的に中間にいっぱい処理が入るので、そういうものだということで。</p>
-<h2>速度ねえ……</h2>
-<p>jLinqはさすがにアレゲなのですが、それ以外は別に普通に使う範囲ではそんな致命的に低速ってわけでもないんで、あまり気にしなくても良くね？と、かなり思ってます。linq.jsは速度を犠牲にして遅延評価だのDisposeだの入れてるわけですが、勿論、犠牲にしたなりのメリットはある（表現できる幅がとっても広がる）し。その辺はトレードオフ。配列をSelectしてToArrayするだけ、とかWhereしてToArrayするだけならば、、どうせjQueryも一緒に使うでしょ？的に考えて、jQueryの$.map, $.grepを使えば精神衛生上良いかもしれません。これは、C#で言うところのArray.ConvertAllは化石メソッドだけど、SelectしてToArrayならばConvertAllのほうが高効率なんだぜ(内心はどうでもいーんだけど)、といったようなノリで補えば良いでしょう。</p>
-<p>それにしても、何でjQueryは$.eachの引数がmapやgrepと逆(eachだけindexが第一引数で値が第二引数)なんですかね。これ、統一してたほうが良いし、だいたいがして値が第一引数のほうが使いやすいのに。もう今更変えられない、ということなのかしらん。</p>
-<p>そういえばで、せっかくなので「表現できる幅」の例として、ベンチには第一ソートキーにCurrency、それが重複してた場合の第二ソートキーにTotalを指定してみた例(OrderBy.ThenBy)とか（linq.js無しで書くとちょびっと面倒だよ！）、GroupIDでグルーピングした後にTotal値を合計といった集計演算（これもlinq.js無しだと面倒だよ！）とかを入れておいたので、良ければ見といてください。はい。まあ、別にこの辺はeager evaluationでも出来るというかソートもグルーピングも一度バッファに貯めちゃってるんですけどね！</p>
-<h2>まとめ</h2>
-<p>JSINQは良く出来てると思うのよ。ほんと（私はただのLinqマニアなので、基本的に他の実装は割と読んでますですよ）。ベンチ的にもlinq.jsより速いし(Disposeないからね、でもDispose使うシーンがそもそもあんまないという)、文字列クエリ式も(使わないけど)使えるし。じゃあ、JSINQじゃなくてlinq.jsがイイ！というような押しは、そこまであるかないか、どうなんでしょうね。1.メソッドの数が全然違う 2.ラムダ式的な文字列セレクターが使える 3.Dispose対応 4.RxJSにも対応 5.jQueryにも対応 6.WSHにも対応 7.VS用IntelliSense完備。ふむ、結構ありますね。というわけでlinq.jsお薦め。冒頭でも言いましたが最近のCodePlex上でのページビュー/ダウンロード数を見ると、競合のlinq移植ライブラリの中でもトップなんですよ、えへへ。まあ、4DL/dayとかいうショボい戦いなのですが。</p>
-<p>jLinqの人が、パフォーマンス改善のついでにLinqという名前をやめてブランディングやり直すって言ってますが、きっと正しいと思う。「Linq」という名前がつく限りは「.NETの～」という印象が避けられないし、そのせいで敬遠されるというのは、間違いなくある。jLinqは、中身全然Linqじゃない独特な感じのなので、名前変えるのは、きっと良い選択。</p>
-<p>linq.jsは100% Linqなので名前がどうこうってのはないですが、しかし、RxJSもそうなのだけど、.NET以外の人にも使って欲しいなって気持ちはとてもあります。やれる限りは頑張ってるつもりなんですが、中々どうして。<a href="http://neue.cc/2010/05/24_260.html">JavaScriptエディタとしてのVisual Studioの使い方入門</a>は100ブクマまであとちょい！な感じで、そういうとこに混ぜて宣伝とかいうセコい策を取ってはいるものの(いや、別にそういうつもりでやったわけでもないですが)色々と難すぃー。海外へも少しは知名度伸ばせたようなのだけど、そこでも基本的には.NET圏のみって雰囲気で、どうしたものかしらん。</p>
-<p>つまるところ、そろそろ御託はどうでもいいから、RealWorldな実例出せよって話ですね！</p>
 </div>
 <a href="https://neue.cc/20">Prev |</a>
 <a href="https://neue.cc/22">| Next</a>

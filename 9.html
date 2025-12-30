@@ -74,7 +74,107 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2016-01-06" data-pagefind-meta="published:2016-01-06"><a href="https://neue.cc/2016/01/06_525.html">Unityでのボクシングの殺し方、或いはラムダ式における見えないnewの見極め方</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2016-03-21" data-pagefind-meta="published:2016-03-21"><a href="https://neue.cc/2016/03/21_526.html">SerializableDictionary - Unityで高速に辞書復元するためのライブラリ</a></h1>
+<ul class="date"><li>2016-03-21</li></ul>
+<div class="entry_body"><p>という、ScriptableObjectとかJsonUtilityとか、そもそもSerializeFieldとかでシリアライズできるDictionaryを作りました。</p>
+<ul>
+<li><a href="https://github.com/neuecc/SerializableDictionary">GitHub - neuecc/SerializableDictionary</a></li>
+</ul>
+<p>もともとDictionaryはシリアライズできないのですが、ISerializationCallbackReceiverを用いてシリアライズ/デシリアライズのタイミングでKeyの配列、Valueの配列に戻してやるなどで保存すること自体は全然可能でした。のですが、速度的には問題あるな、というのに直面しました。</p>
+<p>その前に、JSONから復元するのがまず遅かった。じゃあMsgPackやProtobufに変更したら速いかといえば、別にそこまでそうではなかった。これはつまり、C#のレイヤーで大量の何かを舐めて何かを作るという行為そのものが遅い。ではScriptableObject化すればどうだろう、確かにデシリアライズのプロセスがUnityネイティブ（実体は不明）と化して、確かに速い。が、そこからDictionaryに変換してやるのをC#で書いたらやっぱりそこが遅い。</p>
+<p>遅い、というとアレで、量次第ですけどね。今回、量がやたら多かったので結構かなり相当引っ張られてた。初期化のタイミングなどで大量のDictionaryを捌くような場合に、無視できない程度に結構引っかかる遅さを醸し出してる。結局、配列からであっても、C#のレイヤーで大量の何かを舐めて何かを作るという行為そのものが遅い。という悲しい現実をつきつけられるのであった。</p>
+<p>というわけで、SerializableDictionaryはDictionaryの内部構造をシリアライズすることで、ネイティブプロセスのみで完結して爆速で復元します。</p>
+<p>SerializableDictionaryではSerializableDictionary, SerializableLookup(MultiDictinary), SerializableTupleの3つを提供します。今のとこアセットストアに公開するつもりはそんなないので、使いたい場合はソースコードをZipでダウンロードするなりGitで落とすなりしてプロジェクトに投げ込んでください。</p>
+<h2>SerializableDictionary</h2>
+<p>例えばキーがint、値がstringの辞書を保存したい場合は、まず、継承したクラスを作ります。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[Serializable]
+public class IntStringSerializableDictionary : SerializableDictionary&lt;int, string&gt;
+{
+
+}
+</code></pre>
+<p>わざわざ継承しなきゃいけない理由は、ジェネリックな型はシリアライズできないからです！しょうがないね。別にゆうてそんなに大量の型があるわけでもないでしょうし、素直にそれぐらいは作りましょう。あとは、普通に使えば普通にシリアライズ可能になってます。メデタシメデタシ。</p>
+<p>インスペクタに表示するためのPropertyDrawerも用意してあります（こちらも定義しないとインスペクタに何も表示されなくて不安になる）。使う場合は、SerializableDictionaryPropertyDrawerを継承した型を一つ作って、そこに属性でひたすらぶら下げます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">#if UNITY_EDITOR
+
+[UnityEditor.CustomPropertyDrawer(typeof(IntStringSerializableDictionary))]
+[UnityEditor.CustomPropertyDrawer(typeof(IntDoubleSerializableDictionary))]
+[UnityEditor.CustomPropertyDrawer(typeof(IntIntStringSerializableDictionary))]
+public class ExtendedSerializableDictionaryPropertyDrawer : SerializableDictionaryPropertyDrawer
+{
+
+}
+
+#endif
+</code></pre>
+<p>これを定義すれば、インスペクタ上では</p>
+<p><img src="https://cloud.githubusercontent.com/assets/46207/13866974/da6f9fac-ec77-11e5-93a7-a8eb43c08680.png" alt="image" /></p>
+<p>なんとKeyとValueの確認しか用意されてなくて、エディット不能！ただのDump！うーん、気が向いたらエディット可能にします。そのうち（多分やらない）。</p>
+<h2>複数キーの辞書</h2>
+<p>Int + Intの組み合わせでキーにしたいとか、辞書にはよくあるケースです。そして、そういったよくあるケースではKeyにTupleを使うことが多いです。が、UnityにはTupleはありません。<a href="https://github.com/neuecc/UniRx">UniRx</a>にTupleがあります、が、それはシリアライズ可能ではありません(Genericだからねー、structなので継承もできない)。と、いうわけで、辞書のキーにしたいよね専用にSerializableTupleを用意しておきました。使う場合はもちろんまずは継承してジェネリックを消すとこからはじめます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[Serializable]
+public class IntIntTuple : SerializableTuple&lt;int, int&gt;
+{
+    public IntIntTuple()
+    {
+
+    }
+
+    public IntIntTuple(int item1, int item2)
+        : base(item1, item2)
+    {
+
+    }
+}
+
+[Serializable]
+public class IntIntStringSerializableDictionary : SerializableDictionary&lt;IntIntTuple, string&gt;
+{
+
+}
+</code></pre>
+<p>あとは普通にキーに使ってもらえれば、普通に使えます。ちょっと手間ですが、そこまで多いわけでもないでしょうし我慢できる範囲内。だといいかな。</p>
+<h2>SerializableLookup</h2>
+<p>ILookupは、Keyに対してValue側が複数になっている辞書です。Dictionary[Key, Value[]] みたいなイメージ。通常のILookupはLINQのToLookup経由でしか作成できない、Readonlyなシロモノです。これ、非常に便利な型でして、よく使います。ToLookupしらない人は覚えましょう。ただ、勿論シリアライズできないのでAddを加えたSerializableLookupを用意しました（Removeはありません！つまりBuilderのほうがイメージ近いかもしれません。Removeがない理由は実装しててバグッたからとりあえず消してるだけなのでそのうち入れるかもしれないかもしれない）</p>
+<p>使い方はDictionaryと同様。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[Serializable]
+public class IntIntSerializableLookup : SerializableLookup&lt;int, int&gt;
+{
+}
+
+#if UNITY_EDITOR
+
+[UnityEditor.CustomPropertyDrawer(typeof(IntIntSerializableLookup))]
+public class ExtendedSerializableLookupPropertyDrawer : SerializableLookupPropertyDrawer
+{
+
+}
+
+#endif
+</code></pre>
+<p>ちなみに中身は面倒くさいんでSerializableDictionaryの一部を改変して辻褄合わせてるだけなので、実効速度的な意味ではToLookupで生成したものに比べるとやや劣るかなー、といったところ。まぁハッシュキーの衝突具合とかにもよるので、いうほどそこまでではないと思います。実装の雑さは気にしてるのでそのうち直したい（絶対やらない）</p>
+<h2>TrimExcess</h2>
+<p>ListにせよDictionaryにせよ、任意個数をAdd可能なものは、内部である程度余分なバッファを持っています。しかし、ScriptableObjectなどにしてAssetBundleに載せたい場合は、その後の追加なども特になく個数は固定である可能性も少なくないはずです。と、いうわけで、TrimExcessメソッドを呼ぶことで余分なバッファを切り落とすことができます。もし個数が固定であることが見えているなら、事前にSerialize前に呼んであげておくことで、メモリ節約につながります。</p>
+<h2>Unityでシリアライズ可能なもの</h2>
+<p>内部構造の話なのですが、その前にUnityでシリアライズ可能なものの制限についておさらい。</p>
+<ul>
+<li>[Serializable]のついた非ジェネリックな具象型</li>
+<li>UnityEngine.Objectを継承した型</li>
+<li>public、または[SerializeField]のついたインスタンスフィールド</li>
+<li>int, float, double, bool, stringなどのプリミティブなデータ型</li>
+<li>配列、もしくはList[T]</li>
+</ul>
+<p>Dictionaryに非対応なのは勿論ですが、Nullable[T]に非対応が割と痛かったりするかな！また、トップレベル以外でnullをサポートしていなかったりして、ちょっと複雑な型を作った場合、nullを入れたと思ったら全部0が入った謎データに置き換わっていた、とかが生じます。それらの制限の回避策としては、SerializableDictionaryと同じようにSerializableNullableのようなそれっぽい似非な型を自前で作ってあげればなんとかなります。nullのほうも同様にNullableClass（なんじゃそりゃ）を作ってあげることにより、nullかそうでないかの区別を可能にできます。面倒くさくはあるんですが、どうしても必要な場合はそうして回避できなくもないよ、ということで。</p>
+<p>SerializableDictionaryは、Dictionaryの内部構造を、Unityでシリアライズ可能な範囲（ようするにひたすら単純な配列まみれにする）に修正することで実現しています。オリジナルのDictionary自体は<a href="https://github.com/dotnet/corefx">dotonet/corefx</a>のものです。</p>
+<h2>ハッシュコードを永続化することの安全性</h2>
+<p>ハッシュコードを永続化することは、推奨されないことが明言されています。というのも、そのオブジェクトに対するハッシュコードが一意であるかが、どのスコープまで保たれるかというのは、全くもって不明瞭だからです。参照型などはアプリケーション起動毎に異なってなにの役にも立たなくなる、では数字は？文字列は？保証はないんですねー。</p>
+<p>実用的な意味では、問題ないと判断しても構わないと思っています。しかし、まず、monoと.NET Frameworkのような環境が違うもので生成したもの同士の互換性はないと考えたほうがいいでしょう（実際ない）。また、.NET Framework内だけでも、バージョンが異なれば、違うハッシュアルゴリズムが使われることにより異なるハッシュコードが使われる可能性は全然あります。今後も、Unityのバージョンアップ＋（もしあるのなら）monoのバージョンアップが発生した際などは、互換性が崩れる可能性があります。最悪そうなった場合は、任意のComparerを挟み込めるようになっているので、そこで互換性を保ったハッシュコードを返してやることにより、一応大丈夫とはいえます。一応。</p>
+<p>とはいえまあ、実用的な意味では大丈夫でしょう。タブンネ。まぁしかし、この辺グレーゾーンなきらいもあるから、Unity公式でサポートってのは難しいんじゃないかなあ、というのはしょうがないかなー。</p>
+<h2>まとめ</h2>
+<p>Unityって結局どこで動いているものなのよ、ってのを改めて突きつけられた感じがしました。C++のエンジンがあくまでも主だな、と。また、シリアライズを通して考えると、一見不思議なMonoBehaviourやpublic fieldなども納得がいくように見えてきて、ようするにネイティブとの境界線を接続している場所なんですね。COMとdynamicでやり取りするように、ネイティブレイヤーとフィールドでやり取りする。そう思えば、何もかも腑に落ちてきた気がします（悟り！）。</p>
+<p>C#のレイヤーでいかに仕事をさせないかがキモで、そのためにC#を書く。ってのも、まぁ悪くない話だし、Unityアプリケーションとしての整合感やパフォーマンスが最も求めるべきことなのだ。というのは認識しておきたいな、なんて改めて思わさせられました。</p>
+</div>
+<h1 data-pagefind-sort="date:2016-01-06" data-pagefind-meta="published:2016-01-06"><a href="https://neue.cc/2016/01/06_525.html">Unityでのボクシングの殺し方、或いはラムダ式における見えないnewの見極め方</a></h1>
 <ul class="date"><li>2016-01-06</li></ul>
 <div class="entry_body"><p>Happy boxing! UniRxの<a href="http://neue.cc/2015/12/21_523.html">前回リリース(UniRx 5.0.0)</a>でパフォーマンス向上を果たしたと書きましたが、まだやり残したことがありました。それが<a href="https://msdn.microsoft.com/ja-jp/library/yz2be5wk.aspx">ボックス化</a>(boxing)の殺害です。ボックス化は単純に言うと、せっかくの値型が箱に入っちゃってGCゴミが発生してGCがーーー、というもの。避けれるなら避けるべし。あ、ちなみに今回の内容は特に別にUnityに限らないふつーのC#の話です。</p>
 <p>それと、というわけかで<a href="https://github.com/neuecc/UniRx">UniRx</a> 5.1.0リリースしました、アセットストアから落とせます。基本的な内容は以下に解説するボックス化を徹底的に殺害したことによるパフォーマンス向上です。</p>
@@ -1665,294 +1765,6 @@ app.Map(&quot;/swagger&quot;, builder =&gt;
 <p>当然、index以外でもハンドリングできます。</p>
 <h2>まとめ</h2>
 <p>GlimpseとSwaggerがあわさって最強に見える！あとはもともとあるクライアント自動生成もあるので、三種の神器コンプリート。実際、これでAPI開発の苦痛に思えるところがかなり取り除かれたのではないかなー、って思ってます。これを全部自分で用意するのはそれはそれは大変なので、Owinで良かったし、組み合わせに関しても、.NETでOSSを使うってこういうことですよね？という例になればよいかな。</p>
-</div>
-<h1 data-pagefind-sort="date:2015-04-13" data-pagefind-meta="published:2015-04-13"><a href="https://neue.cc/2015/04/13_510.html">UniRx 4.8 - 軽量イベントフックとuGUI連携によるデータバインディング</a></h1>
-<ul class="date"><li>2015-04-13</li></ul>
-<div class="entry_body"><p><a href="https://github.com/neuecc/UniRx">UniRx(Reactive Extensions for Unity)</a>のVer 4.8が昨日、AssetStoreにリリースされました。UniRxとはなにか、というと、巷で流行りのReactive Programming、の.NET実装のReactive Extensions、のUnity実装で、私が去年ぐらいからチマチマと作っています。実際のところ細かいリリースは何度も行っているんで（差分は<a href="https://github.com/neuecc/UniRx/releases">GitHubのReleases</a>に書いてあります)、開発/アップデートはかなりアクティブな状態でした。その間に、Google PlayやiOSのAppStoreでもチラホラと使用しているタイトルがあったりと（ありがとうございます！！！）、案外存外しっかりRealWorldしていました。GitHubのStarも順調に伸びていて、まぁまぁメジャーになってきた気はします。</p>
-<p>その間に、いくつか素晴らしいプレゼン資料も作っていただきました！<a href="https://twitter.com/torisoup">@torisoup</a>さんの<a href="http://www.slideshare.net/torisoup/unity-unirx">未来のプログラミング技術をUnityで -UniRx-</a>は、分かりやすく魅力を感じさせてくれる内容になっていて、とても素晴らしいです。読むべし読むべし。<a href="http://qiita.com/toRisouP">toRisouPさんはQiita</a>でも多くの記事を書いてくださっていて、（私がｇｄｇｄ書くよりも）はるかに分かりやすくていいですね！</p>
-<p>また、<a href="https://twitter.com/Grabacr07">@Grabacr07</a>さんの<a href="https://speakerdeck.com/grabacr07/unirx-toka-reactive-property-toka">UniRx とか ReactiveProperty とか</a>は、今回紹介するuGUI連携についての話が、分かりやすく綺麗に紹介されているので、こちらも必読です。必読。</p>
-<p>UniRxの最初の発表は2014/04/19の<a href="http://www.slideshare.net/neuecc/unityrx-reactive-extensions-for-unity">UniRx - Reactive Extensions for Unity</a>というところで、発端は非同期処理の解消、という一面からスタートしていたのですが、すぐにUnityの発する色々なイベント処理をRxで行おうという、本来の、でありつつも応用的なところが盛んに試されるようになったのは素晴らしいことだなぁ、と思っています。これはゲームプログラミングの持つ複雑さが、Reactive Programmingの使い道を無数に産むという、相性の良さがあるのかしらん。非同期だけじゃない、データバインドだけじゃないRealなReactive Programmingがここにあり、プログラミングを、C#の可能性を、パラダイムシフトを大いに楽しめる環境です。是非楽しんでください。もちろん、実用性もありますしね！</p>
-<ul>
-<li><a href="https://github.com/neuecc/UniRx">GitHub - UniRx</a></li>
-<li><a href="http://u3d.as/7tT">UnityAssetStore - UniRx</a></li>
-</ul>
-<p>当然（？）フリーです。</p>
-<h2>ObservableTriggers</h2>
-<p>UniRx 4.8から、MonoBehaviourのイベントハンドリング手法をObservableTriggersという概念に全面移行しました。どういうことかというと、まず、ObservableMonoBehaviourは廃止です:) Obsoleteはつけていないし、動作はしますが、非推奨になりました。その代わりとなるのがObservableTriggersです。まず利用例を。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">using UniRx;
-using UniRx.Triggers; // この名前空間以下にTriggerは入ってるのでusingしときましょう
-
-public class MyComponent : MonoBehaviour
-{
-    void Start()
-    {
-        // AddComponentでTriggerを付与する
-        var trigger = this.gameObject.AddComponent&lt;ObservableUpdateTrigger&gt;();
-
-        // すると*Event*AsObservableが使えるようになる
-        trigger.UpdateAsObservable()
-            .SampleFrame(30)
-            .Subscribe(x =&gt; Debug.Log(x), () =&gt; Debug.Log(&quot;destroy&quot;));
-
-        // 3秒後に自殺:)
-        GameObject.Destroy(this, 3f);
-    }
-}
-</code></pre>
-<p>Triggerは対象GameObjectがDestroyされると、OnCompletedを流してイベント発火を終了します。</p>
-<p>ObservableMonoBehaviourを継承するのではなく、AddComponentで必要なイベントのためのTriggerを与えてください。そうすれば、そのイベントがRxで取り扱えるようになります。標準では ObservableAnimatorTrigger, ObservableCollision2DTrigger, ObservableCollisionTrigger, ObservableDestroyTrigger, ObservableEnableTrigger, ObservableFixedUpdateTrigger, ObservableUpdateTrigger, ObservableLastUpdateTrigger, ObservableMouseTrigger, ObservableTrigger2DTrigger, ObservableTriggerTrigger, ObservableVisibleTrigger, ObservableTransformChangedTrigger, ObservableRectTransformTrigger, ObservableCanvasGroupChangedTrigger, ObservableStateMachineTrigger, ObservableEventTrigger を用意してあります。「ほぼ」全部です。4.6から追加された新しいイベント(OnTransformChildrenChangedとか)も網羅しています。（とはいえ全部ではないので、足りなくて必要なものがあったら自分で追加するか、私にリクエストください、単純にあまり需要なさそうだと勝手に判断したものはオミットしちゃっているので……）</p>
-<p>また、AddComponentが面倒くさい！ので、GameObject/Componentに対して、UniRx.Triggersをusingしている場合は、XxxAsObservableメソッドを直接拡張メソッドから呼べて、するとTriggerが自動付与されるようになっています。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">using UniRx;
-using UniRx.Triggers; // 必ずこのusingが必要です
-
-public class DragAndDropOnce : MonoBehaviour
-{
-    void Start()
-    {
-        // OnMouseDownAsObservableが生えてる
-        this.OnMouseDownAsObservable()
-            .SelectMany(_ =&gt; this.UpdateAsObservable()) // UpdateAsObservableが生えてる
-            .TakeUntil(this.OnMouseUpAsObservable()) // OnMouseUpAsObservableが生えてる
-            .Select(_ =&gt; Input.mousePosition)
-            .Subscribe(x =&gt; Debug.Log(x));
-    }
-}
-</code></pre>
-<p>なので、通常使う場合は、Triggerに関しては意識する必要はありません。(ObservableEventTrigger(uGUI用)とObservableStateMachineTrigger(Animation用)だけは自動付与がないので、これらの場合だけ自分で意識的に付与する必要があります)</p>
-<p>ObservableMonoBehaviourは継承が必要だったり（基底クラスが強制される！）、baseメソッドの呼び出しが必須だったり、空イベントの呼び出しが必ず含まれるパフォーマンス低下などなど、決して使い勝手の良いものではありませんでした。というか使い勝手は最悪でした。なんで当初からObservableTriggerのようなやり方じゃなかったか、というと……、まぁ、単純に私のUnityへの理解不足です、すびばせん。ObservableTriggerは、Unityのコンポーネント指向を活かしつつ、Rxによってイベントを自然に外側で取り出せるようになっているので、圧倒的に便利な形になったのではないかなと思います。</p>
-<h2>uGUI</h2>
-<p>uGUIのイベントがUniRxでパーフェクトにハンドリングできます！この辺の話は前述のスライド<a href="https://speakerdeck.com/grabacr07/unirx-toka-reactive-property-toka">UniRx とか ReactiveProperty とか</a>に綺麗にまとまっているのですが、例えばボタンとかが</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// インスペクタから貼っつけるとか
-public Button MyButton;
-
-// こんな感じで取る(onClick.AsObservable もしくは OnClickAsObservable)
-MyButton.onClick.AsObservable().Subscribe(_ =&gt; Debug.Log(&quot;clicked&quot;));
-</code></pre>
-<p>ほぅ……。普通だ。どうでも良さそうだ。と、いう具合にuGUIのEvent + AsObservableでイベントハンドリングができるようになっています。もう少し例を出すと</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// ビューからのコントロールはインスペクタでペタペタ貼り付ける
-public Toggle MyToggle;
-public InputField MyInput;
-public Text MyText;
-public Slider MySlider;
-
-// Startとかで宣言的にUIを記述していきましょう
-void Start()
-{
-    // チェックボックスのオン/オフでボタンの有効/非有効が切り替わるようにします
-    // OnValueChangedAsObservableは.onValueChanged.AsObservableのヘルパーで、単純に省略が楽という他に、
-    // 初期値(最初のisOnの値)がSubscribe時に流れていきます
-    // また、SubscribeToInteractableはUniRxのヘルパーで、 x =&gt; .interactable = x を省略できます
-    MyToggle.OnValueChangedAsObservable().SubscribeToInteractable(MyButton);
-
-    // 入力文字は1秒後にテキストラベルに反映されます
-    MyInput.OnValueChangeAsObservable()
-        .Where(x =&gt; x != null)
-        .Delay(TimeSpan.FromSeconds(1))
-        .SubscribeToText(MyText); // SubscribeToTextを使うと簡単に紐付けできます
-
-    // SubscribeToTextの人間の読める形に変換したい場合用ヘルパ
-    MySlider.OnValueChangedAsObservable()
-        .SubscribeToText(MyText, x =&gt; Math.Round(x, 2).ToString());
-}
-</code></pre>
-<p>こんな風になります。uGUIの標準コントロールに関しては直接EventAsObservableできるように拡張されてます。ともあれ、uGUIのイベントハンドリングはスクリプトで行いましょう。uGUI標準のAddHandlerなどはやりづらいですが、UniRxはそれを簡単に行える仕組みが用意してあります。uGUIのチュートリアルや解説本では、インスペクタのイベントの部分をクリックしてメソッドと紐付けてー、などとやるかもしれませんが、あのやり方は最低最悪なので忘れましょう。スクリプトレスでイベント設定できるとか幻想なんで、少なくともRxを使おうとしているようなプログラマなら、一切見なかったことにしましょう。100億パーセントどうでもいい次元の話なので無視しておきましょう。やりづらいだけです。</p>
-<p>unityEvent.AsObservableのかわりに、全てのUnityコントロールにはUnityEventAsObservableが定義されています。ButtonのonClickの場合は違いはないのですが、一部の値が流れるものに関しては違いがあって、コントロールに直接生えているものは初期値が流れるようになっています。この初期値が流れる、という性質は非常に重要です。と、いうのも、今回のようにUIを宣言的に記述した場合、初期値が流れないと、初期値を設定して回らなければならなくて全体の構築が狂ってしまうからです。と、いうわけで、基本的にはコントロールに生えているAsObservableを使いましょう。</p>
-<h2>ReactiveProperty</h2>
-<p>UniRx 4.8からReactivePropertyという特別な型が用意されています（あとReactiveCollectionとReactiveDictionary）。これは何かというと、通知可能なプロパティ。なんのこっちゃ。うーん、イベントと値がセットになった型。うーん、なんのこっちゃ……。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// 変更通知付きなモデル
-public class Enemy
-{
-    // HPは変更あったら通知して他のところでなんか変化を起こすよね？
-    public ReactiveProperty&lt;long&gt; CurrentHp { get; private set; }
-
-    // 死んだら通知起こすよね？
-    public ReadOnlyReactiveProperty&lt;bool&gt; IsDead { get; private set; }
-
-    public Enemy(int initialHp)
-    {
-        // 宣言的に記述していく。
-        // ReactivePropertyはそれ自体がIObservable&lt;T&gt;なので、Rxでチェーン可能で、更にそれをReactivePropertyに変換も可能
-        // 死んだかどうかというのはHPが0以下になったら、で表現できる         
-        CurrentHp = new ReactiveProperty&lt;long&gt;(initialHp);
-        IsDead = CurrentHp.Select(x =&gt; x &lt;= 0).ToReadOnlyReactiveProperty();
-    }
-}
-
-// こんなふうにして使う
-// ボタンクリックしたらHPが99減ってくとする（実際はなんかCollision受けたら減るとか色々）
-// ReactivePropertyの値は.Valueで取り出せる)
-MyButton.OnClickAsObservable().Subscribe(_ =&gt; enemy.CurrentHp.Value -= 99);
-
-// その変更を受けてUIに変更を戻す
-enemy.CurrentHp.SubscribeToText(MyText); // とりあえず現在HPをTextに表示
-
-// もし死んだらボタンクリックできないようにする
-enemy.IsDead.Select(isDead =&gt; !isDead).SubscribeToInteractable(MyButton);
-</code></pre>
-<p>今まではイベント＋普通の値で表現していたものが、プロパティ一個で表現できるようになります。また、イベント自体の取り扱いもRxなので合成可能になっていて、取り回しが向上します。というわけで、めちゃくちゃ便利。実際便利。通知が必要な値は片っ端からReactivePropertyにしましょう、それで幸せになれます！</p>
-<p>更にReactivePropertyはInspectorで利便性が向上しています。</p>
-<p><img src="https://raw.githubusercontent.com/neuecc/UniRx/master/StoreDocument/RxPropInspector.png" alt="" /></p>
-<p>IntRxPropのところ、インスペクタに値を表示しているのですが、これの値をインスペクタで変更すると、紐付けていたイベント(.Subscribeしているもの)への通知も飛んでいきます。地味に捗る神機能。注意点としては、ジェネリックの型はインスペクタに表示できないという制限を引き継いでいるので、インスペクタに表示したいReactiveProeprtyは、専用のReactivePropertyを使いましょう。例えばIntReactivePropertyやBoolReactiveProperty、Vector2ReactivePropertyなどが標準では用意されています。EnumをReactiveProeprtyとして表示したい、というシチュエーションも多いと思います。その場合はSpecializedなReactivePropertyを定義していきましょう。例えば</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// こんなEnumがあるとして
-public enum Fruit
-{
-    Apple, Grape
-}
-
-// こういう特化したReactiveProeprtyを作ればOK
-[Serializable]
-public class FruitReactiveProperty : ReactiveProperty&lt;Fruit&gt;
-{
-    public FruitReactiveProperty()
-    {
-    }
-
-    public FruitReactiveProperty(Fruit initialValue)
-        :base(initialValue)
-    {
-    }
-}
-
-// また、InspectorDisplayDrawerにたいしてCustomPropertyDrawerを指定するとインスペクタでの表示が向上/イベント通知が可能になるので
-// 特化ReactiveProeprtyの作成とワンセットで行いましょう
-// ExtendInspectorDisplayDrawer自体は一個あればそれで大丈夫です
-[UnityEditor.CustomPropertyDrawer(typeof(FruitReactiveProperty))]
-[UnityEditor.CustomPropertyDrawer(typeof(YourSpecializedReactiveProperty2))] // 他、沢山ここにtypeofを追加していく
-public class ExtendInspectorDisplayDrawer : InspectorDisplayDrawer
-{
-}
-</code></pre>
-<p>といった感じに拡張することで、より便利になっていきます。</p>
-<h2>MV(R)P</h2>
-<p>これらのUIの作り方を指して、Model-View-(Reactive)Presenterパターンというものを提唱します。</p>
-<p><img src="https://raw.githubusercontent.com/neuecc/UniRx/master/StoreDocument/MVP_Pattern.png" alt="" /></p>
-<p>なぜMVPか、なんでMVVMではないか。まず、Unityはバインディングエンジンを持っていません。一般的にMVVMはViewとViewModelの間をバインディングエンジンが受け持ちます。なので、素の状態ではそもそもMVVMはできません。じゃあバインディングエンジンを作るか、となると、そんなレイヤーを挟むのは複雑になるしパフォーマンスも低下するし、デメリットがメリットを上回るバインディングエンジンを作るのは難しい。バインディングは誰かが動的レイヤーを引き受けなければならなくて（例えばName直書きなINotifyPropertyChangedであったり)、ピュアC#の世界とは相性が悪い。それをWPFではXAMLに押し付けているが、動的コード生成高速化の手段が取れないUnityでは、無理して実現する価値はない。</p>
-<p>そんなわけで、MVVMはやらない。やらないとなると、バインディング機構が存在しない都合上、どこかで、だれかが、Vを知る必要がある(じゃなきゃViewのUpdateがかけれない)。というわけでVMは存在できず、Presenterを立てる。Model自体はPresenterにも依存しないし、Viewは知らない。ただしViewまで伝搬するため通知は可能でなければならない。それらをRxが繋ぎます。従来のMVPはステートの複雑化や伝搬に困難があったが、Observableはバインディングのようにシンプルに通知を行うことができるし、Viewへの適用もバインディングであるかのように綺麗に見せることができる。Rxを介すことによって、アプリケーションを作る上での問題が解消する。しかもレイヤー的にはないに等しく薄いので、一切のデメリットはない。</p>
-<p>再度、コードと当てはめてみましょう。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// Presenter(Canvasのルートだったり、Prefabやパーツ分割単位のルート)
-public class ReactivePresenter : MonoBehaviour
-{
-    // PresenterはViewのコンポーネントを知っている（さわれる）
-    public Button MyButton;
-    public Toggle MyToggle;
-    
-    // ModelからのState-Change-EventsはReactivePropertyによって伝搬される
-    // Modelの変更は基本的に自身が上層に通知可能であり、それはReactiveProeprtyで表現される
-    Enemy enemy = new Enemy(1000);
-
-    void Start()
-    {
-        // Viewからのuser eventsはRxによって伝搬され、Modelにまでリアクティブに浸透していく
-        MyButton.OnClickAsObservable().Subscribe(_ =&gt; enemy.CurrentHp.Value -= 99);
-        MyToggle.OnValueChangedAsObservable().SubscribeToInteractable(MyButton);
-
-        // Modelからの伝搬もまた、Presenterを介してRxによってViewのUpdateをかける
-        enemy.CurrentHp.SubscribeToText(MyText);
-        enemy.IsDead.Where(isDead =&gt; isDead == true)
-            .Subscribe(_ =&gt;
-            {
-                MyToggle.interactable = MyButton.interactable = false;
-            });
-    }
-}
-</code></pre>
-<p>この場合、ViewとPresenterの紐付けはUnityのインスペクタでやります、ぴっ、ぴっ、ぴっってドラッグアンドドロップですねん。ふつーの（？）MVPだと、このViewをIViewとしてモックと差し替え可能にしたりもしたりしなかったりですが、そこまでやってもメリットゼロなんでそんなことはやらないでダイレクトにViewの実体とひもづける形でOK。</p>
-<p><img src="https://raw.githubusercontent.com/neuecc/UniRx/master/StoreDocument/MVRP_Loop.png" alt="" /></p>
-<p>それぞれの伝搬ポイントにUniRxのメソッドやクラスが用意されているので、全てをシームレスに、Reactiveにつなぎ合わせることが可能です。UniRxならね。これの何が嬉しいかというと、見通しが良く、コード量が減ります。それがもう単純に嬉しい。また、イベントの関連付けはスクリプト側に寄っているので、インスペクタがカオティックにならずに済みます。かなりUnity(+Rx)の現実に沿った作り方なのではないかなー、と思うのですがどうでしょう？この辺は意見大募集中といったところです。</p>
-<h2>カスタムトリガーを作ろう</h2>
-<p>そんな風にアプリケーションを作っていくと、イベントはRx的に発動させるのが都合が良い、ということがわかってきます。実際そう。で、SubjectやReactivePropertyなどを駆使することによりModelをRx的に作っていくのは可能なのですが、ViewからのイベントをRx的に流すためにはどうすればいいのか。標準ではTriggerが用意されてますが、それだけじゃ足りない、例えばロングタップ作りたいとかジェスチャー作りたいとか……。という場合はTriggerを自作します。作り方は、ObservableTriggerBaseを継承して……</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public class ObservableLongPointerDownTrigger : ObservableTriggerBase, IPointerDownHandler, IPointerUpHandler
-{
-    public float IntervalSecond = 1f;
-
-    Subject&lt;Unit&gt; onLongPointerDown;
-
-    float? raiseTime;
-
-    void Update()
-    {
-        if (raiseTime != null &amp;&amp; raiseTime &lt;= Time.realtimeSinceStartup)
-        {
-            if (onLongPointerDown != null) onLongPointerDown.OnNext(Unit.Default);
-            raiseTime = null;
-        }
-    }
-
-    void IPointerDownHandler.OnPointerDown(PointerEventData eventData)
-    {
-        raiseTime = Time.realtimeSinceStartup + IntervalSecond;
-    }
-
-    void IPointerUpHandler.OnPointerUp(PointerEventData eventData)
-    {
-        raiseTime = null;
-    }
-
-    public IObservable&lt;Unit&gt; OnLongPointerDownAsObservable()
-    {
-        return onLongPointerDown ?? (onLongPointerDown = new Subject&lt;Unit&gt;());
-    }
-
-    protected override void RaiseOnCompletedOnDestroy()
-    {
-        if (onLongPointerDown != null)
-        {
-            onLongPointerDown.OnCompleted();
-        }
-    }
-}
-</code></pre>
-<p>こんな感じ、これで他のTriggerと同じノリ、OnPointerDownAsObservableでタップを拾えるように、OnLongPointerDownAsObservableでロングタップを拾えるようになります。Subjectでイベント通知することと、RaiseOnCompletedOnDestroyのところでOnCompletedを発行するのが原則です。こういう形でイベントを拡張すると、よりスムーズにRxで全てが繋がっていきます！</p>
-<h2>ライフサイクル管理</h2>
-<p>で、全部がRxになると、イベントをSubscribeしたのをどこで解除すればいーんですかー、って話になってきたりこなかったりする。基本的にTrigger系は自身が死んだ時に終了するからいいんですが、それ意外のもの、例えばObservable.TimerやObservable.EveryUpdateは自動的に止まらないので、自分で登録解除する必要があります。そのためのヘルパーとして、IDisposable.AddToがUniRxには用意されています。また、CompositeDisposableがSubscriptionの管理に使えます。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// CompositeDisposableはList&lt;IDisposable&gt;のようなもので、複数のIDisposableが管理できます
-CompositeDisposable disposables = new CompositeDisposable(); // これをfieldにおいておいて
-
-void Start()
-{
-    Observable.EveryUpdate().Subscribe(x =&gt; Debug.Log(x)).AddTo(disposables); // AddToで詰める
-}
-
-void OnTriggerEnter(Collider other)
-{
-    // .Clear() =&gt; 中の全てのdisposableのDisposeが呼ばれて、Listが空になります
-    // .Dispose() =&gt; 中の全てのdisposableのDisposeが呼ばれて、以降はAddされたら即対象をDisposeするようになります
-    disposables.Clear();
-}
-</code></pre>
-<p>よくあるシチュエーションとして、Destroyした瞬間に解除したい、というのがあると思います。その場合AddTo(gameObject/component)が使えます。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">void Start()
-{
-    // 自分が消滅したらDispose
-    Observable.IntervalFrame(30).Subscribe(x =&gt; Debug.Log(x)).AddTo(this);
-}
-</code></pre>
-<p>DisposeじゃなくてOnCompletedを出して欲しい、という場合にはTakeWhile, TakeUntil, TakeUntilDestroy, TakeUntilDisable辺りが使えます。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">Observable.IntervalFrame(30).TakeUntilDisable(this)
-    .Subscribe(x =&gt; Debug.Log(x), () =&gt; Debug.Log(&quot;completed!&quot;));
-</code></pre>
-<p>イベントを「繰り返す」場合に、Repeatが通常使われますが、実は危険です。源流がOnCompletedを発行すると無限ループ化するからです。ObservableTriggersが終了するとOnCompletedを発行するため、安易なRepeatの使用は無限ループ行きとなります。それを避けるには、RepeatUntilDestroy(gameObject/component), RepeatUntilDisable(gameObject/component), RepeatSafeが使えます。RepeatUntilDestroyとかは文字通りなんですが、RepeatSafeは連続してOnCompltedが発行された場合はRepeatを取りやめるという、無限ループ禁止機構のついたRepeatです。ベンリ。</p>
-<p>最後に、ObserveEveryValueChangedを紹介します。これは、ラムダ式で指定した値を変更のあった時にだけ通知するという、つまり変更通知のない値を変更通知付きに変換するという魔法のような（実際ベンリ！）機能です（実際は毎フレーム監視してるんで、ポーリングによる擬似的なPull→Push変換）</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// watch position change
-this.transform.ObserveEveryValueChanged(x =&gt; x.position).Subscribe(x =&gt; Debug.Log(x));
-</code></pre>
-<p>これは監視対象がGameObjectの場合はDestroy時にOnCompletedを発行して監視を止めます。通常のC#クラス（POCO）の場合は、GCされた時に、同様にOnCompletedを発行して監視を止めるようになっています（内部的にはWeakReferenceを用いて実装されています）。ただのポーリングなので多用すぎるとアレですが、お手軽でベンリには違いないので適宜どうぞ。</p>
-<h2>パフォーマンス</h2>
-<p>パフォーマンスの話は一口で言うには結構難しいところです。まずいうと、RxとLINQを関連付けてLINQだからパフォーマンスがー、というのは微妙にあてはまりません。RxはPush型、最初のタイミングでパイプラインを構築し、それを（大抵の場合）かなり長い期間（最長でObjectが消滅するまで）購読する形になります。つまり、ライフサイクルが非常に長い。だから、パイプライン構築のためのオブジェクト（のGC）のコストというのは、そんなでもないと思ってもらっていいでしょふ。Updateの度に頻繁に数千構築/解体を繰り返すようなものではない、ということですねん。パイプラインに流れる値に関しては、その頻度と書きよう次第ですけれど。また、Rxのメソッドも軽いメソッドと重いメソッドがあるので、それ次第という面もあります。とはいえそこまで気にするほどではないかなー、と。</p>
-<p>全体的にRxを適用すると、アプリケーションはPushベースで構築されることになるので、頻繁な問い合わせ処理(Pullベース)が消え、つまり更新駆動の最小限の差分処理だけが走るので、逆にパフォーマンスは上がる、という見方もできなくもないですが、まぁさすがにそれは都合の良すぎる捉え方でしょう:) ともあれ、そういったアプリケーション構築手法の変革もあるので、そこのところも含めて評価しなければなりません。</p>
-<p>単純なコルーチンの代替、非同期通信処理の代替レベルでなら、実質ない、と言っても過言ではないところなので、それぐらいならばもうまるっきり気にせず、ですね。また、今まではObservableMonoBehaviourが不要な場合にも空イベントを回していて、それが若干の消費があったのですが、今回からは軽量なTriggerベースで必要なものにしかイベントを付与しないスタイルになったので、全体的にはかなり取り回しよくなってきたんじゃないかなー、と思います。</p>
-<p>まだまだ全然パフォーマンスチューニングできる領域は沢山あるので、都度行っていくつもりです（分かりやすく効果の出るところでいえばWhere.Where.Whereチェーンは1個のWhereにできたり、かなり多用されるWhere.Selectチェーンも1個のWhereSelectチェーンにまとめあげられたり、などなど）</p>
-<h2>LINQ to GameObject</h2>
-<p>あと、これはUniRxとは関係ないのですがLINQ to GameObjectもアップデートしてます。</p>
-<ul>
-<li><a href="https://github.com/neuecc/LINQ-to-GameObject-for-Unity">GitHub - LINQ to GameObject</a></li>
-<li><a href="http://u3d.as/content/neuecc/linq-to-game-object">UnityAssetStore - LINQ to GameObject</a></li>
-</ul>
-<p><img src="https://raw.githubusercontent.com/neuecc/LINQ-to-GameObject-for-Unity/master/Images/axis.jpg" alt="" /></p>
-<p>メインはLINQ風メソッドでtransformを自在に辿れるってところで、それは<a href="http://neue.cc/2014/11/11_482.html">LINQ to GameObjectによるUnityでのLINQの活用</a>を読んでいたたきたいのですが、もう一つの機能に、階層上の任意の位置にGameObjectをAddしたりMoveしたりするメソッドもあります。今回のアップデートで、これがuGUIのRectTransformに対応しました！uGUIはヒエラルキーの位置を表示情報としてかなり大事に扱うため、それのコントロールが容易になるLINQ to GameObjectは役立つはずです。</p>
-<h2>まとめ</h2>
-<p>今回のObservableTrigger、uGUI連携、そしてLifetime管理といった機能によって、より様々なところに導入しやすくなった、より使いやすくなったのではないでしょうか！</p>
-<p>直近では4/16 18:30~の<a href="http://kbkz.connpass.com/event/12597/">歌舞伎座.tech#7「Reactive Extensions」</a>で「Observable Everywhere - UniRxによるUnityでのReactive Programming」と題して発表を行います。こちらはニコ生での放送もあるようなので、見るといいんじゃないかなー、ということで！</p>
 </div>
 <a href="https://neue.cc/8">Prev |</a>
 <a href="https://neue.cc/10">| Next</a>

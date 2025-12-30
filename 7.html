@@ -74,7 +74,130 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2017-07-11" data-pagefind-meta="published:2017-07-11"><a href="https://neue.cc/2017/07/11_555.html">C#におけるTypeをキーにした非ジェネリック関数の最適化法</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2017-08-07" data-pagefind-meta="published:2017-08-07"><a href="https://neue.cc/2017/08/07_556.html">C#の高速なMySQLのドライバを書こうかという話、或いはパフォーマンス向上のためのアプローチについて</a></h1>
+<ul class="date"><li>2017-08-07</li></ul>
+<div class="entry_body"><p>割とずっと公式のC# MySQL Driverは性能的にビミョいのではと思っていて、それがSQL Serverと比較してもパフォーマンス面で足を引っ張るなー、と思っていたんですが、いよいよもって最近はシリアライザも延々と書いてたりで、その手の処理に自信もあるし、いっちょやったるかと思い至ったのであった。つまり、データベースドライバをシリアライゼーションの問題として捉えたわけです。あと会社のプログラム(<a href="https://kuro-kishi.jp/">黒騎士と白の魔王</a>)のサーバー側の性能的にもう少し飛躍させたくて、ボトルネックはいっぱいあるんですが、根本から変えれればそれなりにコスパもいいのでは、みたいな。</p>
+<p><img src="https://user-images.githubusercontent.com/46207/29028002-dcf3caa6-7bbd-11e7-86f8-e4d89276be75.png" alt="image" /></p>
+<p>中間結果としては、コスパがいいというには微妙な感じというか、Mean下がってなくてダメじゃんという形になって、割と想定と外れてしまってアチャー感が相当否めなくて困ったのですが（ほんとにね！）、まぁそこはおいおいなんとかするとして（します）、メモリ確保だけは確実にめちゃくちゃ減らしました。1/70も減ってるのだから相当中々だと思いたい、ということで、スタート地点としては上等じゃないでしょふか。</p>
+<p>↑のベンチマークはBenchmarkDotNetで出していまして、使い方はこないだ別ブログに書いた <a href="http://engineering.grani.jp/entry/2017/07/28/145035">C#でTypeをキーにしたDictionaryのパフォーマンス比較と最速コードの実装</a> ので、そちらを参照のことこと。</p>
+<p>まだふいんき程度ですが、コードも公開しています。</p>
+<ul>
+<li><a href="https://github.com/neuecc/MySqlSharp">github - neuecc/MySqlSharp</a></li>
+</ul>
+<p>まだα版とすらいえない状態なので、そこはおいおい。</p>
+<h2>性能向上のためのアプローチ</h2>
+<p>競合として、<a href="https://github.com/mysql/mysql-connector-net">公式のMySQL Connector</a>と非公式の<a href="https://github.com/mysql-net/MySqlConnector">Async MySQL Connector</a>というのがあります。非公式のは、名前空間どころか名前まで被せてきて紛らわしさ超絶大なので、この非公式のやつのやり方は好きじゃありません。</p>
+<p>それはさておき、まず非同期の扱いについてなんですが、別に非同期にしたからFastなわけでもありません。だいたいどうせASP.NETの時点でスレッドいっぱいぶちまけてるんちゃうんちゃうん？みたいなところもあるし。むしろ同期に比べてオーバーヘッドが多くなりがち（実装を頑張る必要大！）なので、素朴にやるとむしろ性能低下に繋がります。</p>
+<p>さて、で、パフォーマンスを意識したうえで、どう実装していけば良いのか、ですが、MySqlSharpでは以下のものを方針としています。</p>
+<ul>
+<li>同期と非同期は別物でどちらかがどちらかのラッパーだと遅い。両方、個別の実装を提供し、最適化する必要がある</li>
+<li>禁忌のMutableなStructをReaderとして用意することでGCメモリ確保を低減する</li>
+<li>テキストプロトコルにおいて数値変換に文字列変換＋パースのコストを直接変換処理を書くことでなくす</li>
+<li>ADO.NET抽象を避けて、プリミティブなMySQL APIを提供する。ADO.NETをはそのラッパーとする</li>
+<li>特化したDapper的なMicro ORMを用意する、それは上記プリミティブMySQL APIを叩く</li>
+<li><a href="http://www.roji.org/prepared-statements-in-npgsql-3-2">Npgsql 3.2</a>のようなプリペアドステートメントの活用を目指す</li>
+</ul>
+<p>といったメニューになっていまして、実装したものもあれば妄想の段階のものもあります。</p>
+<h2>Mutable Struct Reader</h2>
+<p>structはMutableにしちゃいけない、というのが世間の常識で実際そうなのですが、最近のC#はstruct絡みが延々と強化され続けていて（まだ続いてます - <a href="https://github.com/dotnet/csharplang/blob/master/meetings/2017/LDM-2017-07-05.md">C# Language Design Notes for Jul 5, 2017</a>によるとC# 7.2でrefなんとかが大量投下される）、structについて真剣に考え、活用しなければならない時が来ています。</p>
+<p>ところでMySQLのプロトコルはバイナリストリームは、更にPacketという単位で切り分けられて届くようになっています。これを素朴に実装すると</p>
+<p><img src="https://user-images.githubusercontent.com/46207/29018333-a8902444-7b95-11e7-8215-d4e0000e0fac.png" alt="image" /></p>
+<p>Packet単位にクラスを作っちゃって、無駄一時オブジェクトがボコボコできちゃうんですね。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// ふつーのパターンだとこういう風にネストしていくようにする
+using (var packetReader = new PacketReader())
+using (var protocolReader = new ProtocolReader(packetReader))
+{
+    var set = protocolReader.ReadTextResultSet();
+}
+</code></pre>
+<p>かといって、Packet単位で区切って扱えるようにしないと実装できなかったりなので、悩ましいところです。そこで解決策として Mutable Struct Reader を投下しました。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// MySqlSharpはこういうパターンを作った
+var reader = new PacketReader(); // struct but mutable, has reading(offset) state
+var set = ProtocolReader.ReadTextResultSet(ref reader); // (ref PacketReader)
+</code></pre>
+<p>PacketReaderはstructでbyte[]とoffsetを抱えていて、Readするとoffsetが進んでいく。というよくあるXxxReader。しかしstruct。それを触って実際にオブジェクトを組み立てる高レベルなリーダーはstaticメソッド、そしてrefで渡して回る（structなのでうかつに変数に入れたりするとコピーされて内部のoffsetが進まない！)。</p>
+<p>奇妙なようでいて、実際見かけないやり方で些か奇妙ではあるのですが、この組み合わせは、意外と良かったですね、APIの触り心地もそこまで悪くないですし。もちろんノーアロケーションですし。というわけで、いつになくrefだらけになっています。時代はref。</p>
+<h2>数値変換を文字列変換を介さず直接行う</h2>
+<p>クエリ結果の行データは、MySQLは通常テキストプロトコルで行われています（サーバーサイドプリペアドステートメント時のみバイナリプロトコル）。どういうことかというと、1999は &quot;1999&quot; という形で受け取ります。実際にはbyte[]の&quot;1999&quot; ですね。これをintに変換する場合、素朴に書くとこうなります（実際、MySQL Connectorはこう実装されてます）</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// 一度、文字列に変換してからint.Parse
+int.Parse(Encoding.UTF8.GetString(binary));
+</code></pre>
+<p>これにより一時文字列を作るというゴミ製造が発生します、ついでにint.Parseだって文字列を解析するのでタダな操作じゃない。んで、UTF8で、文字数の長さもわかっている状態で、中身が数字なのが確定しているのだから、直接変換できるんじゃないか、というのがMySqlSharpで導入した<a href="https://github.com/neuecc/MySqlSharp/blob/master/src/MySqlSharp/Internal/NumberConverter.cs">NumberConverter</a>です。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">const byte Minus = 45;
+
+public static Int32 ToInt32(byte[] bytes, int offset, int count)
+{
+    // Min: -2147483648
+    // Max: 2147483647
+    // Digits: 10
+
+    if (bytes[offset] != Minus)
+    {
+        switch (count)
+        {
+            case 1:
+                return (System.Int32)(((Int32)(bytes[offset] - Zero)));
+            case 2:
+                return (System.Int32)(((Int32)(bytes[offset] - Zero) * 10) + ((Int32)(bytes[offset + 1] - Zero)));
+            case 3:
+                return (System.Int32)(((Int32)(bytes[offset] - Zero) * 100) + ((Int32)(bytes[offset + 1] - Zero) * 10) + ((Int32)(bytes[offset + 2] - Zero)));
+            // snip case 4..9
+            case 10:
+                return (System.Int32)(((Int32)(bytes[offset] - Zero) * 1000000000) + ((Int32)(bytes[offset + 1] - Zero) * 100000000) + ((Int32)(bytes[offset + 2] - Zero) * 10000000) + ((Int32)(bytes[offset + 3] - Zero) * 1000000) + ((Int32)(bytes[offset + 4] - Zero) * 100000) + ((Int32)(bytes[offset + 5] - Zero) * 10000) + ((Int32)(bytes[offset + 6] - Zero) * 1000) + ((Int32)(bytes[offset + 7] - Zero) * 100) + ((Int32)(bytes[offset + 8] - Zero) * 10) + ((Int32)(bytes[offset + 9] - Zero)));
+            default:
+                throw new ArgumentException(&quot;Int32 out of range count&quot;);
+        }
+    }
+    else
+    {
+        // snip... * -1
+    }
+}
+</code></pre>
+<p>ASCIIコードでベタにやってくるので、じゃあベタに45引けば数字作れますよね、という。UTF-8以外のエンコーディングのときどーすんねん？というと</p>
+<ul>
+<li>対応しない</li>
+<li>そん時は int.Parse(Encoding.UTF8.GetString(binary)) を使う</li>
+</ul>
+<p>のどっちかでいいかな、と。今のところ面倒なので対応しない、が有力。</p>
+<h2>Primitive API for MySQL</h2>
+<p><a href="http://imysql.com/mysql-internal-manual/text-protocol.html">MySQL Protocol</a>には本来、もっと色々なコマンドがあります。<code>COM_QUIT</code>, <code>COM_QUERY</code>, <code>COM_PING</code>, などなど。まぁ、そうじゃなくても、COM_QUERYを流すのにADO.NET抽象を被せる必要はなくダイレクトに投下できればいいんじゃない？とは思わなくもない？</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// Driver Direct
+var driver = new MySqlDriver(option);
+driver.Open();
+
+var reader = driver.Query(&quot;selct 1&quot;); // COM_QUERY
+while (reader.Read())
+{
+    var v = reader.GetInt32(0);
+}
+
+// you can use other native APIs
+driver.Ping(); // COM_PING
+driver.Statistics(); // COM_STATISTICS
+</code></pre>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// ADO.NET Wrapper
+var conn = new MySqlConnection(&quot;connStr&quot;);
+conn.Open();
+
+var cmd = conn.CreateCommand();
+cmd.CommandText = &quot;select 1&quot;;
+
+var reader = cmd.ExecuteReader();
+while (reader.Read())
+{
+    var v = reader.GetInt32(0);
+}
+</code></pre>
+<p>APIはADO.NETに似せるようにしてはいますが、余計な中間オブジェクトも一切なく直接叩けるのでオーバーヘッドがなくなります。もちろん、実用的にはADO.NETを挟まないと色々な周辺ツールが使えなくなるので、殆どの場合はADO.NET抽象経由になるとは思いますが。</p>
+<p>とはいえ、DapperのようなORMをMySqlSharp専用で作ることにより、直接MySqlSharpのPrimitive APIを叩いて更なるパフォーマンスのブーストが可能です。理屈上は。まだ未実装なので知らんけど。恐らくいけてる想定です、脳内では。</p>
+<h2>まとめ</h2>
+<p>実装は、むしろMySQL公式からドキュメントが消滅している - <a href="https://dev.mysql.com/doc/internals/en/client-server-protocol.html">Chapter 14 MySQL Client/Server Protocol</a>せいで、Web Archivesから拾ってきたり謎クローンから拾ってきたりMariaDBのから拾ってきたりと、とにかく参照が面倒で、それが一番捗らないところですね。もはやほんとどういうこっちゃ。</p>
+<p>MySQLには最近<a href="https://dev.mysql.com/doc/internals/en/x-protocol.html">X-Protocol</a>という新しいプロトコルが搭載されていて、こちらを通すと明らかに良好な気配が見えます。これはProtocol Buffersでやり取りするため、各言語のドライバのシリアライゼーションの出来不出来に、性能が左右されなくなるというのも良いところですね。</p>
+<p>が、Amazon AuroraではX-Protocolは使えないし、あまり使えるようになる気配も見えないので、あえて書く意味は、それなりにあるんじゃないかしらん。ちゃんと完成すればね……！それと.NET CoreなどLinux環境下などでも.NET使ってくぞー、みたいな流れだと、当然データベースはMySQL(やPostgreSQL)のほうが多くなるだろう、というのは自然なことですが、そこでDBなども含めたトータルなパフォーマンスでは.NET、遅いっすね！ってなるのはめっちゃ悔しいじゃないですか。でも実際そうなるでしょう。だから、高速なMySQLドライバーというのは、これからの時代に必要なもののはずなのです。</p>
+<p>公開しないほうがお蔵入りになる可能性が高いので、公開しました。あとは私の頑張りにご期待下さい。</p>
+</div>
+<h1 data-pagefind-sort="date:2017-07-11" data-pagefind-meta="published:2017-07-11"><a href="https://neue.cc/2017/07/11_555.html">C#におけるTypeをキーにした非ジェネリック関数の最適化法</a></h1>
 <ul class="date"><li>2017-07-11</li></ul>
 <div class="entry_body"><p><a href="https://github.com/neuecc/MicroResolver/">MicroResolver</a> 2.3.3！というわけで、例によってバージョンがデタラメになるんですが、アップデートしてました。MicroResolverとその解説については以前のブログ記事 <a href="http://neue.cc/2017/07/09_554.html">MicroResolver - C#最速のDIコンテナライブラリと、最速を支えるメタプログラミングテクニック</a> をどうぞ。そして、<a href="https://github.com/danielpalme/IocPerformance">オフィシャルな(?)ベンチマーク結果</a>でも、それなりに勝利を収めています。</p>
 <p>|<strong>Container</strong>|<strong>Singleton</strong>|<strong>Transient</strong>|<strong>Combined</strong>|<strong>Complex</strong>|<strong>Property</strong>|<strong>Generics</strong>|<strong>IEnumerable</strong>|
@@ -2090,82 +2213,6 @@ ZeroFormatter.Formatters.Formatter&lt;Guid&gt;.Register(new GuidFormatter());
 <p>元々はそうした無限大高速なデシリアライズと、ボトルネックにならない程度に普通に高速なシリアライズ、ぐらいに思っていたんですが、シリアライズの計測結果がかなり良かったので欲張って、いっそもうやるなら世界最速だろうとガッチガッチに実装し始めると性能は確かに伸びる。やればやるほど伸びる。が、実装時間も伸びる。やればやるほど。なるほど。とはいえ、実は告知してないだけでGitHub上ではpublicにしていたので、社外でも何人かの方には公開を伝えていて、ベータテスターじゃないけれど、様々なフィードバックなどなどを頂きました。それがなければ、全然もっと出来は悪かったと思うので、非常に感謝です。<a href="http://neue.cc/2016/10/02_540.html">過去に制作した30のライブラリから見るC#コーディングテクニックと個人OSSの原理原則</a>で偉そうに言いましたけれど、自分一人の限界を超えていけるのもいいことですね。外に出すってことで外圧も感じられるし:)<a href="http://www.slideshare.net/yusukefujiwara731/net-fringejp2016">MsgPack-Cliの藤原さんがセッションで言ってました気がしましたが</a>、シリアライザーなんて作るのは奇特で、確かにちょっともう次はやりたくない、しんどいー。ILも一生分書いた気がする。しかし、例によって様々な既存シリアライザーの仕様から、それぞれのC#版の実装のコードを大量に読んだので、シリアライザーに関しては更に相当詳しくなりました、ううむ。シリアライザーとは結構ブログでことあるごとに記事書いてたりと、なんか長い付き合いなんですよねえ、最終的にまさか自分で作ることになるとは……。</p>
 <p>と、そんなわけなので、是非是非使ってみてください。実用品なのかどうかで言ったら、会社で使う気満々というかそのための代物なので、その辺の耐久性はあります、まぁまだリリースされてないので（！）、耐久性はどんどん上がっていきます、ぐらいで。バグあればどんどん直すというのと、(UniRxで聞かれたことがあるのですが)社内用と社外用に分けてたりもないので、ちゃんとpublicなところでメンテナンスは続いていきます。</p>
 <p>現状どうしても通信用フォーマットとしてはC#オンリーなので、サーバー側で送り出せなくて使いにくい、ということも絶対あるとは思うんですが、そのための解決策としてクロスプラットフォーム(Unity, Windows, Mac, Linux)で使えるC#製の通信用フレームワークをリリースする、という計画も控えているので、その辺も含めて注視していただければですね。繰り返しますが、その辺のところは11/27開催の<a href="http://kbkz.connpass.com/event/40629/">歌舞伎座.tech#12「メッセージフォーマット/RPC勉強会」</a>でお話するつもりなので、是非来てくださいな。</p>
-</div>
-<h1 data-pagefind-sort="date:2016-10-05" data-pagefind-meta="published:2016-10-05"><a href="https://neue.cc/2016/10/05_541.html">UnityのMonoアップグレードによるasync/awaitを更にUniRxで対応させる</a></h1>
-<ul class="date"><li>2016-10-05</li></ul>
-<div class="entry_body"><p>ついに！.NET 4.6アップグレードが始まりました。Unityの。Unity 5.5でC#コンパイラをアップグレードしていましたが、今回はついにフレームワークも、です。また、Unity 5.5のものはC#のバージョンは4に制限されていましたが、今回はC# 6が使えます。<a href="https://forum.unity3d.com/threads/upgraded-mono-net-in-editor-on-5-5-0b4.433541/">現在はForumでアーリアクセスバージョン</a>が公開されていて、ついでにそこでリンクされているVisual Studio Tools for Unityも入れると、かなりふつーに.NET 4.6, C# 6対応で書ける感じです。</p>
-<p>さて、.NET 4.6, C# 6といったら非同期。async/await。もちろん、書けました。が、しかし。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">async Task ThraedingError()
-{
-    Debug.Log($&quot;Start ThreadId:{Thread.CurrentThread.ManagedThreadId}&quot;);
-
-    await Task.Delay(TimeSpan.FromMilliseconds(300));
-
-    Debug.Log($&quot;From another thread, can't touch transform position. ThreadId:{Thread.CurrentThread.ManagedThreadId}&quot;);
-    Debug.Log(this.transform.position); // exception
-}
-</code></pre>
-<p><img src="https://cdn-images-1.medium.com/max/800/1*5ymBUlQvVdGoMqGyQL74xQ.png" alt="" /></p>
-<p>これはtransformのとこで例外でます。なんでかっていうと、awaitによって別スレッドに行ってしまっているから。へー。この辺、async/awaitでは<a href="https://msdn.microsoft.com/magazine/gg598924.aspx">SynchronizationContext</a>という仕組みで制御するのですが、現在のUnity標準では特に何もされてないようです。</p>
-<p>それだけだとアレなので、そこで出てくるのが<a href="https://github.com/neuecc/UniRx">UniRx</a>。今日、アセットストアで最新バージョンのVer 5.5.0を公開したのですが、この5.5.0ではasync/await対応を試験的に入れています。それによって自動的にSynchronizationContextも生成/登録してくれます。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">async Task UseUniRxInBackground()
-{
-    Debug.Log($&quot;Start ThreadId:{ Thread.CurrentThread.ManagedThreadId}&quot;);
-    await Task.Delay(TimeSpan.FromMilliseconds(300));
-    Debug.Log($&quot;From same thread, because UniRx installs UniRxSynchronizationContext.ThreadId:{ Thread.CurrentThread.ManagedThreadId}&quot;);
-    Debug.Log(this.transform.position); // show transform
-}
-</code></pre>
-<p><img src="https://cdn-images-1.medium.com/max/800/1*MvfGABsKHNVALQxa3OKFDg.png" alt="" /></p>
-<p>というように、UniRxをインポート後では、前の例外を吐いたコードと全く同じでも、ちゃんとメインスレッドに戻してくれるようになります。</p>
-<h2>Coroutine is awaitable</h2>
-<p>UniRxを入れることで追加される機能はそれだけではなく、更に普通のコルーチンもawait可能な仕組みを裏側で仕込んでいます。これにより</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">async Task CoroutineBridge()
-{
-    Debug.Log(&quot;start www await&quot;);
-    var www = await new WWW(&quot;https://unity3d.com&quot;);
-    Debug.Log(www.text);
-    await CustomCoroutine();
-    Debug.Log(&quot;await after 3 seconds&quot;);
-}
-
-IEnumerator CustomCoroutine()
-{
-    Debug.Log(&quot;start wait 3 seconds&quot;);
-    yield return new WaitForSeconds(3);
-    Debug.Log(&quot;end 3 seconds&quot;);
-}
-</code></pre>
-<p><img src="https://cdn-images-1.medium.com/max/800/1*kAoZUrQoRQvI8J8dspN3-Q.png" alt="" /></p>
-<p>といったように、WWWとかIEnumeratorを直接awaitすることが可能になります。これはUniRx側で用意した仕組みによるものなので、普通では（現状は）できません。</p>
-<p>勿論（？）IObservableもawait可能になっています。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">async Task AwaitObservable()
-{
-    Debug.Log(&quot;start await observable&quot;);
-    await Observable.NextFrame();  // like yield return null
-    await Observable.TimerFrame(5); // await 5 frame
-    try
-    {
-        // ObservableWWW promote exception when await(difference in await WWW)
-        var result = await ObservableWWW.Get(&quot;https://404.com&quot;);
-        Debug.Log(result);
-    }
-    catch (WWWErrorException ex)
-    {
-        Debug.LogError(ex.ToString());
-    }
-    Debug.Log(&quot;end await observable&quot;);
-}
-</code></pre>
-<p><img src="https://cdn-images-1.medium.com/max/800/1*bYPypWXTd3IgxR9tpYxHSw.png" alt="" /></p>
-<p>ObservableWWWを使うと例外はちゃんとtry-catchのほうに投げてくれるようになって、より自然に、簡単に扱えるようになります。</p>
-<h2>まとめ</h2>
-<p>思ったよりも、普通に使えて、普通に統合できるな、という印象があります &lt; async/await。コルーチンで扱うよりも自然で、より強力なので、非同期を扱うのに適したシチュエーションではこっちのほうが良いのは間違いないはずです。Rxとの住み分けですが、基本的に非同期が対象ならばasync/awaitのほうが良いです。が、今回見ていただいたようにIObservableはawaitableなので、コードがRxになっているならば、現在のコードから自然にasync/awaitベースにソフトに移行することが可能でしょう。</p>
-<p>Unityが今後、標準でSynchronizationContextを入れてくるのか、コルーチン対応クラスをawait対応にさせてくるのか、などはちょっと分かりません。分かりませんが、UniRxならば、その対応がずっと後のことになるとしても、今すぐ問題なく使うことが出来ますし、その可能性を今すぐ感じ取ることが可能なので、ぜひとも試してみてください！</p>
-<h2>余談</h2>
-<p>UniRxがAssetStore STAFFPICKに選ばれましたー。</p>
-<img src="https://pbs.twimg.com/media/Ct57c5SVIAAzSAJ.jpg:large" width=620 />
-<p>うーん、嬉しい。</p>
 </div>
 <a href="https://neue.cc/6">Prev |</a>
 <a href="https://neue.cc/8">| Next</a>

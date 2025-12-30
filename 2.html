@@ -74,7 +74,698 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2024-02-27" data-pagefind-meta="published:2024-02-27"><a href="https://neue.cc/2024/02/27_R3.html">R3 - C#用のReactive Extensionsの新しい現代的再実装</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2024-03-18" data-pagefind-meta="published:2024-03-18"><a href="https://neue.cc/2024/03/18_Claudia.html">Claudia - Anthropic ClaudeのC# SDKと現代的なC#によるウェブAPIクライアントの作り方</a></h1>
+<ul class="date"><li>2024-03-18</li></ul>
+<div class="entry_body"><p>AI関連、競合は現れども、性能的にやはりOpenAI一強なのかなぁというところに現れた<a href="https://www.anthropic.com/">Anthropic Claude 3</a>は、確かに明らかに性能がいい、GPT-4を凌駕している……！というわけで大いに気に入った（ついでに最近のOpenAIのムーブが気に入らない）ので、C#で使い倒していきたい！そこで、まずはSDKがないので非公式SDKを作りました。こないだまでプレビュー版を流していたのですが、今回v1.0.0として出します。ライブラリ名は、Claudeだから、Claudiaです！.NET全般で使えるのと、Unity(Runtime/Editor双方)でも動作確認をしているので、アイディア次第で色々活用できると思います。</p>
+<ul>
+<li><a href="https://github.com/Cysharp/Claudia">GitHub - Cysharp/Claudia</a></li>
+</ul>
+<p>今回のSDKを作るにあたっての設計指針の一番目は、公式の<a href="https://github.com/anthropics/anthropic-sdk-python">Python SDK</a>や<a href="https://github.com/anthropics/anthropic-sdk-typescript">TypeScript SDK</a>と限りなく似せること、です。というのもドキュメント類の解説はこれら公式SDKベースになるし、世の中的にもブログなどには公式SDKベースの記事が多く出回るでしょう。公式の充実した<a href="https://docs.anthropic.com/claude/prompt-library">プロンプトライブラリ</a>も、APIリクエストで叩き込みたくなるかもしれない。</p>
+<p>そんな時に、APIのスタイルが違うと、変換の認知負荷がかかります。些細なことですが、そういうところがすごく大事で引っ掛かってしまうので、徹底的に取り除きます。そのうえで、無理に動的な要素を入れず、C#らしさを崩さないというバランス取りが設計において重要です。</p>
+<p>C#クライアントの見た目はこうです。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// C#
+using Claudia;
+
+var anthropic = new Anthropic();
+
+var message = await anthropic.Messages.CreateAsync(new()
+{
+    Model = &quot;claude-3-opus-20240229&quot;,
+    MaxTokens = 1024,
+    Messages = [new() { Role = &quot;user&quot;, Content = &quot;Hello, Claude&quot; }]
+});
+
+Console.WriteLine(message);
+</code></pre>
+<p>比較してTypeScriptの見た目はこうなっています。</p>
+<pre data-pagefind-ignore="all"><code class="language-typescript">// TypeScript
+import Anthropic from '@anthropic-ai/sdk';
+
+const anthropic = new Anthropic();
+
+const message = await anthropic.messages.create({
+    model: 'claude-3-opus-20240229',
+    max_tokens: 1024,
+    messages: [{ role: 'user', content: 'Hello, Claude' }],
+});
+
+console.log(message.content);
+</code></pre>
+<p>かなり近い！でしょう。そのうえで、C#版は<code>dynamic</code>や<code>Dictionary&lt;string, object&gt;</code>などは使わず、全て型付けされたものが指定されます。上記の例で使用しているC# 9.0で追加された<a href="https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/proposals/csharp-9.0/target-typed-new">Target-typed new expressions</a>や、C# 12で追加された<a href="https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/proposals/csharp-12.0/collection-expressions">Collection expressions</a>の存在を前提として、うまくAPIを合わせています。</p>
+<p>もともと、動的型付け言語のAPIのほうが（見た目は）簡潔で使いやすそう、という印象を抱くことは多いので、それと同レベルの簡潔さで、しっかりと型付けが効いて書けるというのは、現代のC#の大きな強みです。（そもそもTypeScriptの公式SDKに合わせようと思ったのは、私から見ても公式SDKのAPIスタイルはよくできていると思ったからです、仮にあまりにも酷かった場合は合わせようとはしなかったでしょう）</p>
+<p>いかにも古典的なC#やJavaみたいな冗長な設計のAPIクライアントは、反省しましょう。現代のC#はここまでやれるのだから。</p>
+<h2>Streaming and Blazor</h2>
+<p>StreamingのAPIも用意されていて、Blazorと組み合わせれば簡単にリアルタイムに更新されるChat UIが作れます。コードは本当にたったのこれだけ、メソッド本体なんて10行ちょい！</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[Inject]
+public required Anthropic Anthropic { get; init; }
+
+double temperature = 1.0;
+string textInput = &quot;&quot;;
+string systemInput = SystemPrompts.Claude3;
+List&lt;Message&gt; chatMessages = new();
+
+async Task SendClick()
+{
+    chatMessages.Add(new() { Role = Roles.User, Content = textInput });
+
+    var stream = Anthropic.Messages.CreateStreamAsync(new()
+    {
+        Model = Models.Claude3Opus,
+        MaxTokens = 1024,
+        Temperature = temperature,
+        System = string.IsNullOrWhiteSpace(systemInput) ? null : systemInput,
+        Messages = chatMessages.ToArray()
+    });
+
+    var currentMessage = new Message { Role = Roles.Assistant, Content = &quot;&quot; };
+    chatMessages.Add(currentMessage);
+
+    textInput = &quot;&quot;;
+    StateHasChanged();
+
+    await foreach (var messageStreamEvent in stream)
+    {
+        if (messageStreamEvent is ContentBlockDelta content)
+        {
+            currentMessage.Content[0].Text += content.Delta.Text;
+            StateHasChanged();
+        }
+    }
+}
+</code></pre>
+<p><img src="https://github.com/Cysharp/Claudia/assets/46207/dfcad512-4cf1-4af0-ba03-901dc7ce36a6" alt="blazorclauderec" /></p>
+<p>全てのリクエスト/レスポンス型はSystem.Text.Json.JsonSerializerでシリアライズ可能なため、この<code>List&lt;Message&gt;</code>をそのままシリアライズすれば保存、デシリアライズすれば読み込みになります。</p>
+<h2>Function Calling</h2>
+<p>ClaudiaはただのREST APIを叩くだけのSDK、ではありません。Source Generatorを活用して、Function Callingを簡単に定義するための仕組みを用意しました。</p>
+<p>Function Callingができると何がいいか、というと、現状のLLMは単体だとできないことが幾つかあります。例えば計算は、それっぽい答えを返してくれる場合も多いし、Step-by-Stepで考えさせるなど、それっぽさの精度を上げることはできるけれど、正確な計算はできないという苦手分野だったりします（複雑な計算を投げると正しそうで間違ってる答えを出しやすい）。それなら計算が必要なら普通に計算機で計算して、その答えをもとに文章を作ればいいじゃん、と。あるいは現在日時を答えることもできません。ウェブページを指定して要約したり翻訳して欲しいとお願いしても、中身を見ることはできませんと言われます。それらを解決するのがFunction Callingです。</p>
+<p>まずは一例ということで、指定したURLのウェブページをClaudeに返す関数を定義してみましょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static partial class FunctionTools
+{
+    /// &lt;summary&gt;
+    /// Retrieves the HTML from the specified URL.
+    /// &lt;/summary&gt;
+    /// &lt;param name=&quot;url&quot;&gt;The URL to retrieve the HTML from.&lt;/param&gt;
+    [ClaudiaFunction]
+    static async Task&lt;string&gt; GetHtmlFromWeb(string url)
+    {
+        using var client = new HttpClient();
+        return await client.GetStringAsync(url);
+    }
+}
+</code></pre>
+<p><code>[ClaudiaFunction]</code>で定義した関数がSource Generatorによって色々生成されます。これを利用する場合、以下のようになります。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var input = new Message
+{
+    Role = Roles.User,
+    Content = &quot;&quot;&quot;
+        Could you summarize this page in three lines?
+        https://docs.anthropic.com/claude/docs/intro-to-claude
+&quot;&quot;&quot;
+};
+
+var message = await anthropic.Messages.CreateAsync(new()
+{
+    Model = Models.Claude3Haiku,
+    MaxTokens = 1024,
+    System = FunctionTools.SystemPrompt, // set generated prompt
+    StopSequences = [StopSequnces.CloseFunctionCalls], // set &lt;/function_calls&gt; as stop sequence
+    Messages = [input],
+});
+
+var partialAssistantMessage = await FunctionTools.InvokeAsync(message);
+
+var callResult = await anthropic.Messages.CreateAsync(new()
+{
+    Model = Models.Claude3Haiku,
+    MaxTokens = 1024,
+    System = FunctionTools.SystemPrompt,
+    Messages = [
+        input,
+        new() { Role = Roles.Assistant, Content = partialAssistantMessage! } // set as Assistant
+    ],
+});
+
+// The page can be summarized in three lines:
+// 1. Claude is a family of large language models developed by Anthropic designed to revolutionize the way you interact with AI.
+// 2. This documentation is designed to help you get the most out of Claude, with clear explanations, examples, best practices, and links to additional resources.
+// 3. Claude excels at a wide variety of tasks involving language, reasoning, analysis, coding, and more, and the documentation covers key capabilities, getting started with prompting, and using the API.
+Console.WriteLine(callResult);
+</code></pre>
+<p>Claudeへは二回のリクエストを行っています。まず、最初のClaudeへのリクエストでは、質問と共に利用可能な関数の一覧と説明を送り、関数を実行するのが最適だと判断されると、実行したい関数名とパラメーターが返されます。それを下に、手元で関数を実行し、結果をClaudeに渡すことで最終的に求める結果を得られます。</p>
+<p>ではSource Generatorは何をやっているのかというと、まずはClaudeのシステム文に渡している<code>FunctionTools.SystemPrompt</code>を生成しているわけですが、その中身はこれです（一部省略）。</p>
+<pre data-pagefind-ignore="all"><code class="language-xml">// ...前文は省略
+
+&lt;tools&gt;
+    &lt;tool_description&gt;
+        &lt;tool_name&gt;GetHtmlFromWeb&lt;/tool_name&gt;
+        &lt;description&gt;Retrieves the HTML from the specified URL.&lt;/description&gt;
+        &lt;parameters&gt;
+            &lt;parameter&gt;
+                &lt;name&gt;url&lt;/name&gt;
+                &lt;type&gt;string&lt;/type&gt;
+                &lt;description&gt;The URL to retrieve the HTML from.&lt;/description&gt;
+            &lt;/parameter&gt;
+        &lt;/parameters&gt;
+    &lt;/tool_description&gt;
+&lt;/tools&gt;
+</code></pre>
+<p>XMLです。Claudeは<a href="https://docs.anthropic.com/claude/docs/use-xml-tags">XMLタグを認識</a>するようになっていて、システム的に明確に情報を与えたい場合はXMLタグを活用することがベストプラクティスとなっています。そこで、C#の関数からClaudeに渡すためのXMLを自動生成しています。これを手書きは、したくないでしょう……？</p>
+<p>そしてClaudeはそのリクエストに対して、以下のような結果を返します。</p>
+<pre data-pagefind-ignore="all"><code class="language-xml">&lt;function_calls&gt;
+    &lt;invoke&gt;
+        &lt;tool_name&gt;GetHtmlFromWeb&lt;/tool_name&gt;
+        &lt;parameters&gt;
+            &lt;url&gt;https://docs.anthropic.com/claude/docs/intro-to-claude&lt;/url&gt;
+        &lt;/parameters&gt;
+    &lt;/invoke&gt;
+</code></pre>
+<p>やはりXMLです（閉じタグが欠けているのはStopSequencesで止めているため。関数を呼びたい場合はこれ以上の情報は不要なので打ち止めておく)。これをパースして、関数(GetHtmlFromWeb)を実行し、Claudeに渡すためのメソッド <code>FunctionTools.InvokeAsync</code> がSource Generatorによって生成されています。実際生成されているInvokeAsyncメソッドは以下のようなものです。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">#pragma warning disable CS1998
+    public static async ValueTask&lt;string?&gt; InvokeAsync(MessageResponse message)
+    {
+        var content = message.Content.FirstOrDefault(x =&gt; x.Text != null);
+        if (content == null) return null;
+
+        var text = content.Text;
+        var tagStart = text .IndexOf(&quot;&lt;function_calls&gt;&quot;);
+        if (tagStart == -1) return null;
+
+        var functionCalls = text.Substring(tagStart) + &quot;&lt;/function_calls&gt;&quot;;
+        var xmlResult = XElement.Parse(functionCalls);
+
+        var sb = new StringBuilder();
+        sb.AppendLine(functionCalls);
+        sb.AppendLine(&quot;&lt;function_results&gt;&quot;);
+
+        foreach (var item in xmlResult.Elements(&quot;invoke&quot;))
+        {
+            var name = (string)item.Element(&quot;tool_name&quot;)!;
+            switch (name)
+            {
+                case &quot;GetHtmlFromWeb&quot;:
+                    {
+                        var parameters = item.Element(&quot;parameters&quot;)!;
+
+                        var _0 = (string)parameters.Element(&quot;url&quot;)!;
+
+                        BuildResult(sb, &quot;GetHtmlFromWeb&quot;, await GetHtmlFromWeb(_0).ConfigureAwait(false));
+                        break;
+                    }
+
+                default:
+                    break;
+            }
+        }
+
+        sb.Append(&quot;&lt;/function_results&gt;&quot;); // final assistant content cannot end with trailing whitespace
+
+        return sb.ToString();
+
+        static void BuildResult&lt;T&gt;(StringBuilder sb, string toolName, T result)
+        {
+            sb.AppendLine(@$&quot;    &lt;result&gt;
+        &lt;tool_name&gt;{toolName}&lt;/tool_name&gt;
+        &lt;stdout&gt;{result}&lt;/stdout&gt;
+    &lt;/result&gt;&quot;);
+        }
+    }
+#pragma warning restore CS1998
+}
+</code></pre>
+<p>これを手書きは、あまりしたくはないでしょう。特に呼び出したい関数が増えれば増えるほど大変ですし。</p>
+<p>これで呼び出し＆生成したXMLを再度Claudeに、Assistantによる先頭の出力結果だと渡すことによって、望む答えを得ることができます。このテクニックは<a href="https://docs.anthropic.com/claude/docs/prefill-claudes-response">Prefill Claude's response</a>として公式でもベストプラクティスの一つとして案内されているもので、Claudeによる返答を望む方向に導くのに有益です。例えば<code>{</code>をprefill responseとして返すと、Claudeが結果をJSONとして出力する確率が飛躍的に上昇します。</p>
+<h2>API vs LangChain, SemanticKernel</h2>
+<p>大規模言語モデルを触るなら、生で使うよりも<a href="https://www.langchain.com/">LangChain</a>や、特にC#だと<a href="https://github.com/microsoft/semantic-kernel">Semantic Kernel</a>を使うというのを入り口にするのも定説ではありますが、やや疑問はあります。最近でも<a href="https://tech-blog.abeja.asia/entry/advent-2023-day13">LangChainを使わない</a>や<a href="https://tech-blog.abeja.asia/entry/advent-2023-day13">LangChain は LLM アプリケーションの開発に採用すべきではない</a>といった記事のようにLangChain不要論も出てきています。</p>
+<p>そもそも、まぁこの記事はエンジニア向けに書いてるわけですが、一部の機能はあきらかに過剰でいらないんじゃないかと、保存用のプラグインとか。Semantic Kernelの大量にあるコネクターパッケージとかぞっとする感じで、コード書けないデータサイエンティストが継ぎ接ぎでやるならともかく、エンジニアは保存ぐらい自前でやったほうが絶対いいでしょ。TimePluginだのHttpPluginだのFileIOPluginだのも、正直馬鹿らしい、という感じしかないのでは。</p>
+<p>どうせ最後に叩くのは生APIなら、真摯にAPIドキュメントを読め、と。<a href="https://docs.anthropic.com/claude/docs/intro-to-claude">ClaudeのAPIドキュメントのUser Guides</a>は分かりやすく素晴らしく、それもまたClaudeを支持したい理由の一つになります。しょうもない抽象化を通すぐらいならClaudeに特化して、特徴的なXMLによる指示の活かしかたを考えろ、と。</p>
+<p>特にC#の人はSemantic Kernel至上主義になってると思われるので、いったんまずそっから離れて考えていくといいんじゃないです？</p>
+<h2>モダンウェブAPIクライアントの作り方</h2>
+<p>ここからはClaudiaの設計から見る現代的なAPIクライアントの設計方法の話をします。</p>
+<p>まず、通信の基盤は<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.net.http.httpclient?view=net-8.0">HttpClient</a>を使います。一択です。異論を挟む余地はない。<a href="https://github.com/grpc/grpc-dotnet/tree/master/src/Grpc.Net.Client">Grpc.Net.Client</a>だってHTTP/2 gRPC通信にHttpClientを使っていますし、好むと好まざると全てのHTTP系の通信の基盤はHttpClientです。</p>
+<p>ここでは、外からHttpMessageHandlerを受け取れるようにしておくといいでしょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class Anthropic : IMessages, IDisposable
+{
+    readonly HttpClient httpClient;
+
+    // DefaultRequestHeadersやBaseAddressを変更させてあげるためにpublicで公開しておく
+    public HttpClient HttpClient =&gt; httpClient;
+
+    public Anthropic()
+        : this(new HttpClientHandler(), true)
+    {
+    }
+
+    public Anthropic(HttpMessageHandler handler)
+        : this(handler, true)
+    {
+    }
+
+    public Anthropic(HttpMessageHandler handler, bool disposeHandler)
+    {
+        this.httpClient = new HttpClient(handler, disposeHandler);
+    }
+
+    public void Dispose()
+    {
+        httpClient.Dispose();
+    }
+}
+</code></pre>
+<p>HttpClientというのは実はガワでしかなくて、実体はHttpMessageHandlerです。HttpMessageHandlerにはやれることが色々あって、<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.net.http.delegatinghandler?view=net-8.0">DelegatingHandler</a>を実装してリクエストの前後をフックするような機能を仕込んだりも出来るし、<a href="https://github.com/Cysharp/YetAnotherHttpHandler">Cysharp/YetAnotherHttpHandler</a>はHttpMessageHandlerの実装という形で通信処理を丸ごとRust実装に差し替えています。Unityでは.NETランタイムの通信実装じゃなくてUnityWebRequestを使いたいんだよなあ、といったような場合には<a href="https://gist.github.com/neuecc/854192b8d176170caf2c53fa7589dc90">UnityWebRequestHttpMessageHandler.cs</a>を使えば、やはり通信処理が全てUnityによるものに差し替わります。</p>
+<p>インターフェイスの切り方も工夫していきましょう。</p>
+<p><code>client.Messages.CreateAsync</code> のように、MVCでいったら<code>.Controller.Method</code>のように、2階層に整理された呼び出し方は直感的で使いやすい設計です。特に、入力補完に優しいのが嬉しい。そのためには、まずインターフェイスを切りますが、工夫として、それを<a href="https://learn.microsoft.com/ja-jp/dotnet/csharp/programming-guide/interfaces/explicit-interface-implementation">明示的なインターフェイスの実装</a>にして、インターフェイス自体は<code>return this;</code>で返してやりましょう。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public interface IMessages
+{
+    Task&lt;MessageResponse&gt; CreateAsync(MessageRequest request, RequestOptions? overrideOptions = null, CancellationToken cancellationToken = default);
+    IAsyncEnumerable&lt;IMessageStreamEvent&gt; CreateStreamAsync(MessageRequest request, RequestOptions? overrideOptions = null, CancellationToken cancellationToken = default);
+}
+
+public class Anthropic : IMessages, IDisposable
+{
+    public IMessages Messages =&gt; this;
+
+    async Task&lt;MessageResponse&gt; IMessages.CreateAsync(MessageRequest request, RequestOptions? overrideOptions, CancellationToken cancellationToken)
+    {
+        // ...
+    }
+
+    async IAsyncEnumerable&lt;IMessageStreamEvent&gt; IMessages.CreateStreamAsync(MessageRequest request, RequestOptions? overrideOptions, [EnumeratorCancellation] CancellationToken cancellationToken)    
+    {
+        // ...
+    }
+}
+</code></pre>
+<p>これによって一個階層を下がる際のアロケーションがない(thisを返すため)ですし、明示的な実装になっているのでトップ階層では入力補完には現れないので、使いやすさと性能、ついでにいえば実装のしやすさ（全てのクライアントのフィールドにそのままアクセスできるため）の全てが満たされます。</p>
+<h2>ユーザーフレンドリーなリクエスト型生成</h2>
+<p><a href="https://docs.anthropic.com/claude/reference/messages_post">Anthropicのリクエスト型</a>はかなり整理されて、型有り言語に優しい仕様になっているのですが、一部、<code>single string or an array of content blocks</code>というものがあります。どっちか、とかそういうの微妙に困るわけですが、しかし、じゃあ<code>Option&lt;Either&lt;List&lt;&gt;&gt;&gt;</code>かなー、とか、そういうことではありません。そんな定義にしたらAPIクライアントの手触りは最悪になるでしょう。よく考えてみると、Anthropic APIのこの場合のstringは、長さ1のstring contentと同一です。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// こうじゃなくて
+Content = [ new() { Type = &quot;text&quot;, Text = &quot;Hello, Claude&quot; }]
+
+// こう書きたい
+Content = &quot;Hello, Claude&quot;
+</code></pre>
+<p>これは、良い仕様だと思います。杓子定規に Type = &quot;text&quot;, Text = &quot;...&quot; と書かせるのはダルいでしょう。利用時の95%ぐらいはsingle string contentでしょうし(Typeはimageの場合もある、その場合はSourceにバイナリのbase64文字列を設定する。arrayなのは、画像とテキストを両方渡したりするため)。</p>
+<p>その仕様をC#で実現しましょう。今回の場合、正規化するようなイメージでいいので、暗黙的変換で実装しました。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public record class Message
+{
+    /// &lt;summary&gt;
+    /// user or assistant.
+    /// &lt;/summary&gt;
+    [JsonPropertyName(&quot;role&quot;)]
+    public required string Role { get; set; }
+
+    /// &lt;summary&gt;
+    /// single string or an array of content blocks.
+    /// &lt;/summary&gt;
+    [JsonPropertyName(&quot;content&quot;)]
+    public required Contents Content { get; set; }
+}
+
+public class Contents : Collection&lt;Content&gt;
+{
+    public static implicit operator Contents(string text)
+    {
+        var content = new Content
+        {
+            Type = ContentTypes.Text,
+            Text = text
+        };
+        return new Contents { content };
+    }
+}
+</code></pre>
+<p><code>Content[]</code>ではなくて独自のコレクションにして、それの文字列からの暗黙的変換でsingle string contentを生成する形にしました。別に最新のC#仕様でもなんでもなく昔からある手法ですし、闇雲な利用は厳禁ですが、こうしたところに利用するのはAPIクライアントの手触り向上に効果的です。</p>
+<h2>タイムアウト</h2>
+<p>タイムアウトは定番の処理なので、APIクライアントで簡単にユーザーが設定できるようにしておいたほうがいいでしょう。といっても、HttpClientがTimeoutプロパティを持っているので、通常はそれにセットしてあげるだけで十分です。しかし、Claudiaではあえて無効にしています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public class Anthropic : IMessages, IDisposable
+{
+    public TimeSpan Timeout { get; init; } = TimeSpan.FromMinutes(10);
+
+    public Anthropic(HttpMessageHandler handler, bool disposeHandler)
+    {
+        this.httpClient = new HttpClient(handler, disposeHandler);
+        this.httpClient.Timeout = System.Threading.Timeout.InfiniteTimeSpan;
+    }
+}
+</code></pre>
+<p>Anthropicの公式クライアントがメソッド呼び出し毎にTimeout設定をオーバーライドできるという仕様を持っているため、それにならってオーバーライド可能に必要があったためです。HttpClientやそれに準ずるもの呼び出しはスレッドセーフであるべき(実際APIクライアントはSingletonで登録されたりする場合がある)なので、SendAsyncでHttpCleintのプロパティの値を弄るのはよくない。ので、HttpClientが持つTimeoutは無効にして、手動で処理するようにしています。</p>
+<p>実装方法は、LinkedTokenSourceを生成し、CancelAfterによってタイムアウト時間後にキャンセルされるCancellationTokenを作り、HttpClient.SendAsyncに渡すだけです。なお、これはHttpClient.Timeoutがタイムアウト時間を持つ場合の内部実装と同じです。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// 実際のコードはリトライ処理と混ざっているため、若干異なります
+async Task&lt;TResult&gt; RequestWithAsync&lt;TResult&gt;(HttpRequestMessage message, CancellationToken cancellationToken, RequestOptions? overrideOptions)
+{
+    var timeout = overrideOptions?.Timeout ?? Timeout;
+    using (var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+    {
+        cts.CancelAfter(timeout);
+
+        try
+        {
+            var result = await httpClient.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(ConfigureAwait);
+            return result;
+        }
+        catch (OperationCanceledException ex) when (ex.CancellationToken == cts.Token)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                throw new OperationCanceledException(ex.Message, ex, cancellationToken);
+            }
+            else
+            {
+                throw new TimeoutException($&quot;The request was canceled due to the configured Timeout of {Timeout.TotalSeconds} seconds elapsing.&quot;, ex);
+            }
+
+            throw;
+        }
+    }
+}
+</code></pre>
+<p>実際にキャンセルされた場合(OperationCanceledExceptionが投げられる)のエラーハンドリングには注意しましょう。まず、LinkedTokenを剥がす必要があります。素通しだとOperationCanceledExceptionのTokenがLinkedTokenのままですが、これだと上流側でキャンセル原因の判定に使うことができません。キャンセル原因が渡されているCancellationTokenのキャンセルだった場合は、OperationCanceledExceptionを作り直してキャンセル理由のTokenを変更します。</p>
+<p>タイムアウトだった場合はOperationCanceledExceptionではなく、<code>TimeoutException</code>を投げてあげるのが良いでしょう。なお、HttpClientのタイムアウト実装を使った場合は歴史的事情で<code>TaskCanceledException</code>を投げてくるようになっています（互換性のため変更したくても、もう変更できない、とのこと。あまり良い設計ではないと言えるので、そこは見習わなくていいでしょう）</p>
+<h2>リトライ</h2>
+<p>リトライをAPIクライアント自身が持つべきかどうかに関しては、少し議論があるかもしれません。しかし、単純に例外が出たらcatchしてリトライかければいいというものではなく、リトライ可なものと不可のものの判別がまず必要です。例えば認証に失敗しているとか、リクエストに投げるJSONが腐ってるといった場合は何度リトライしても無駄なのでリトライすべきものではないのですが、そうした細かい条件は、APIクライアント自身しか知り得ないので、リトライ処理を内蔵してしまうのは良いと思います。</p>
+<p>Claudiaでは公式クライアントに準拠する形で、具体的には408 Request Timeout, 409 Conflict, 429 Rate Limit, and &gt;=500 Internal errorsをリトライ対象にしています。認証失敗のPermissionError(403)やリクエスト内容が不正(InvalidRequestError(400))はリトライされません。たまによくあるOverloadedError(過負荷状態なので結果返せまんでしたエラー)は529で、これは何度か叩き直せば解消されるやつなのでリトライして欲しい、といったものはリトライされます。</p>
+<p>リトライロジックも公式クライアントに準拠していて、レスポンスヘッダにretry-after-msやretry-afterがあればそれに従いつつ、ない場合(やretry-afterが規定よりも大きい場合)はジッター付きのExponential Backoffで間隔を制御しています。</p>
+<h2>キャンセル</h2>
+<p>クライアント側に<code>.Cancel()</code>メソッドなどは持たせません。というのも、HttpClientと準拠させるとクライアントそのものは、ほぼシングルトンで使えて、各呼び出しに対して共有されることになります（場合によってはDIでシングルトンでインジェクトするかもしれませんし)。なので、全てに影響を与える<code>.Cancel()</code>ではなくて、各呼び出しそれぞれにCancellationTokenを渡してね、という形を取ります。</p>
+<h2>Server Sent Eventsの超高速パース</h2>
+<p>Streamingでレスポンスを取得するAPIは、<a href="https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events">server-sent events</a>という仕様で、ストリーミングで送信されてきます。具体的には以下のようなテキストメッセージが届きます。</p>
+<pre data-pagefind-ignore="all"><code>event: message_start
+data: {&quot;type&quot;:&quot;message_start&quot;,&quot;message&quot;:...}
+
+event: content_block_start
+data: {&quot;type&quot;:&quot;content_block_start&quot;,&quot;index&quot;:...}
+</code></pre>
+<p>event: イベント名, data: JSON, ...。といったことの繰り返しです。さて、改行区切りのテキストメッセージといったら<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.io.streamreader">StreamReader</a>でReadLine、というのは正解、ではあるのですがモダンC#的には不正解です。</p>
+<p>ReadLineは文字列を生成します。イベント名の判定のために、あるいは最終的にdataのJSONはデシリアライズしてオブジェクトに変換するのですが、UTF8のデータから直接変換できるはずです。というわけで、ここは（ユーザーに渡すオブジェクトの生成以外は）ゼロアロケーションが狙えます。文字列を通しさえしなければ。というわけでStreamReaderの出番はありません。</p>
+<p>具体的なコードを見ていきましょう。前半部（下準備）と後半部（パース部分）で分けます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">internal class StreamMessageReader
+{
+    readonly PipeReader reader;
+    readonly bool configureAwait;
+    MessageStreamEventKind currentEvent;
+
+    public StreamMessageReader(Stream stream, bool configureAwait)
+    {
+        this.reader = PipeReader.Create(stream);
+        this.configureAwait = configureAwait;
+    }
+
+    public async IAsyncEnumerable&lt;IMessageStreamEvent&gt; ReadMessagesAsync([EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+    READ_AGAIN:
+        var readResult = await reader.ReadAsync(cancellationToken).ConfigureAwait(configureAwait);
+
+        if (!(readResult.IsCompleted | readResult.IsCanceled))
+        {
+            var buffer = readResult.Buffer;
+
+            while (TryReadData(ref buffer, out var streamEvent))
+            {
+                yield return streamEvent;
+                if (streamEvent.TypeKind == MessageStreamEventKind.MessageStop)
+                {
+                    yield break;
+                }
+            }
+
+            reader.AdvanceTo(buffer.Start, buffer.End);
+            goto READ_AGAIN;
+        }
+    }
+</code></pre>
+<p>まず、Streamは、<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.io.pipelines.pipereader">System.IO.Pipelines.PipeReader</a>に渡しておきます。今回のStreamはネットワークからサーバー側がストリーミングで返してくる不安定なStreamなので、バッファ管理が大変です。PipeReader/PipeWriterは、若干癖がありますが、その辺の管理をよしなにやってくれるもので、現代のC#ではかなり重要なライブラリです。</p>
+<p>基本の流れはバッファを読み込み(ReadAsync)、そのバッファでパース可能(行の末尾までないとパースできないので、改行コードが含まれているかどうか)な状態なら、1行毎にパース(TryReadData)してyield returnでオブジェクトを返す。バッファが足りなかったらAdvanceToで読み取った部分までマークしてから、再度ReadAsync、といった流れになります。</p>
+<p>利用側はBlazorのサンプルで出していたのですが、await foreachで列挙するのが基本になります。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">await foreach (var messageStreamEvent in Anthropic.Messages.CreateStreamAsync())
+{
+}
+</code></pre>
+<p>こういったネットワークの絡む処理のストリーミング処理にはIAsyncEnumerableが非常に向いていますし、データソース側も、非同期シーケンスをyield returnで返せるというのは、とても楽になりました。これがない時代には、もう戻るのは無理でしょう……。</p>
+<p>次に後半部、PipeReaderによって分解されたバッファからパースする処理になります。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[SkipLocalsInit]
+bool TryReadData(ref ReadOnlySequence&lt;byte&gt; buffer, [NotNullWhen(true)] out IMessageStreamEvent? streamEvent)
+{
+    var reader = new SequenceReader&lt;byte&gt;(buffer);
+    Span&lt;byte&gt; tempBytes = stackalloc byte[64]; // alloc temp
+    
+    while (reader.TryReadTo(out ReadOnlySequence&lt;byte&gt; line, (byte)'\n', advancePastDelimiter: true))
+    {
+        if (line.Length == 0)
+        {
+            continue; // next.
+        }
+        else if (line.FirstSpan[0] == 'e') // event
+        {
+            // Parse Event.
+            if (!line.IsSingleSegment)
+            {
+                line.CopyTo(tempBytes);
+            }
+            var span = line.IsSingleSegment ? line.FirstSpan : tempBytes.Slice(0, (int)line.Length);
+
+            var first = span[7]; // &quot;event: [c|m|p|e]&quot;
+
+            if (first == 'c') // content_block_start/delta/stop
+            {
+                switch (span[23]) // event: content_block_..[]
+                {
+                    case (byte)'a': // st[a]rt
+                        currentEvent = MessageStreamEventKind.ContentBlockStart;
+                        break;
+                    case (byte)'o': // st[o]p
+                        currentEvent = MessageStreamEventKind.ContentBlockStop;
+                        break;
+                    case (byte)'l': // de[l]ta
+                        currentEvent = MessageStreamEventKind.ContentBlockDelta;
+                        break;
+                    default:
+                        break;
+                }
+            }
+            else if (first == 'm') // message_start/delta/stop
+            {
+                switch (span[17]) // event: message_..[]
+                {
+                    case (byte)'a': // st[a]rt
+                        currentEvent = MessageStreamEventKind.MessageStart;
+                        break;
+                    case (byte)'o': // st[o]p
+                        currentEvent = MessageStreamEventKind.MessageStop;
+                        break;
+                    case (byte)'l': // de[l]ta
+                        currentEvent = MessageStreamEventKind.MessageDelta;
+                        break;
+                    default:
+                        break;
+                }
+            }
+            else if (first == 'p')
+            {
+                currentEvent = MessageStreamEventKind.Ping;
+            }
+            else if (first == 'e')
+            {
+                currentEvent = (MessageStreamEventKind)(-1);
+            }
+            else
+            {
+                // Unknown Event, Skip.
+                // throw new InvalidOperationException(&quot;Unknown Event. Line:&quot; + Encoding.UTF8.GetString(line.ToArray()));
+                currentEvent = (MessageStreamEventKind)(-2);
+            }
+
+            continue;
+        }
+        else if (line.FirstSpan[0] == 'd') // data
+        {
+            // Parse Data.
+            Utf8JsonReader jsonReader;
+            if (line.IsSingleSegment)
+            {
+                jsonReader = new Utf8JsonReader(line.FirstSpan.Slice(6)); // skip data: 
+            }
+            else
+            {
+                jsonReader = new Utf8JsonReader(line.Slice(6)); // ReadOnlySequence.Slice is slightly slow
+            }
+
+            switch (currentEvent)
+            {
+                case MessageStreamEventKind.Ping:
+                    streamEvent = JsonSerializer.Deserialize&lt;Ping&gt;(ref jsonReader, AnthropicJsonSerialzierContext.Default.Options)!;
+                    break;
+                case MessageStreamEventKind.MessageStart:
+                    streamEvent = JsonSerializer.Deserialize&lt;MessageStart&gt;(ref jsonReader, AnthropicJsonSerialzierContext.Default.Options)!;
+                    break;
+                // 中略(MessageDela, MessageStop, ContentBlockStart, ContentBlockDelta, ContentBlockStop, errorに対して同じようなDeserialize&lt;T&gt;
+                default:
+                    // unknown event, skip
+                    goto END;
+            }
+
+            buffer = buffer.Slice(reader.Consumed);
+            return true;
+        }
+    }
+END:
+    streamEvent = default;
+    buffer = buffer.Slice(reader.Consumed);
+    return false;
+}
+</code></pre>
+<p>event, dataの二行から、dataのJSONをデシリアライズしてオブジェクトを返したい。というのが処理のやりたいことです。bufferには必ずしも都合よくevent, dataの二行が入っているわけでもなくeventだけかもしれない、dataだけかもしれない、あるいはdataも途中で切れてる（そのままだと不完全なJSON）かもしれない。といったことを考慮して、中断・再開できる構造にしておく必要があります。</p>
+<p>といっても、基本的には改行コードが存在してれば一行分のバッファは十分あるだろうということで、 <code>while (reader.TryReadTo(out ReadOnlySequence&lt;byte&gt; line, (byte)'\n', advancePastDelimiter: true))</code> といったループを回して、これをStreamReader.ReadLineの代わりにしています。このreaderは<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.buffers.sequencereader-1?view=net-8.0">SequenceReader</a>というReadOnlySequenceからの読み取りをサポートするユーティリティで、ref structのため、それ自体のアロケーションはありません。ReadOnlySequenceは性能良く正しく使うには、かなり落とし穴の多いクラスなので、こうしたユーティリティベースに実装したほうがお手軽かつ安全です。</p>
+<p>まずeventのパースで、ここからdataがどの種類化を読み取っています。正攻法でやると <code>if (span.SequenceEqual(&quot;content_block_start&quot;))</code> といったように判定していくことになります。<code>Span&lt;byte&gt;</code>へのSequenceEqualは高速な実装になっているので、まぁ悪くないといえば悪くないのですが、とはいえifの連打は如何なものか……。そこで、Claudiaでは実際には以下のような判定に簡略化しています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var first = span[7]; // &quot;event: [c|m|p|e]&quot;
+
+if (first == 'c') // content_block_start/delta/stop
+{
+    switch (span[23]) // event: content_block_..[]
+    {
+        case (byte)'a': // st[a]rt
+            currentEvent = MessageStreamEventKind.ContentBlockStart;
+            break;
+        case (byte)'o': // st[o]p
+            currentEvent = MessageStreamEventKind.ContentBlockStop;
+            break;
+        case (byte)'l': // de[l]ta
+            currentEvent = MessageStreamEventKind.ContentBlockDelta;
+            break;
+        default:
+            break;
+    }
+}
+else if (first == 'm') // message_start/delta/stop
+{
+    switch (span[17]) // event: message_..[]
+    {
+        case (byte)'a': // st[a]rt
+            currentEvent = MessageStreamEventKind.MessageStart;
+            break;
+        case (byte)'o': // st[o]p
+            currentEvent = MessageStreamEventKind.MessageStop;
+            break;
+        case (byte)'l': // de[l]ta
+            currentEvent = MessageStreamEventKind.MessageDelta;
+            break;
+        default:
+            break;
+    }
+}
+</code></pre>
+<p>メッセージの種類はcontent_block_start/delta/stop, message_start/delta/stop, ping, errorの8種類。まず、先頭1文字でcontent系かmessage系かその他か判定できる。start/delta/stopに関しては3文字目を見ると判定できる。というわけで、1byteのチェックを2回行うだけで分類可能です。明らかに高速！なお、今後のメッセージ種類の追加でチェックが壊れる可能性がゼロではない（例えばcontent_block_ffowardとかが来るとcontent_block_stopと誤判定される）、という問題があることは留意する必要があります。Claudiaではいうて大丈夫だろ、という楽観視してますが。</p>
+<p>なお、これは以前に発表したモダンハイパフォーマンスC# 2023でのコードのバリエーションと言えるでしょうか。</p>
+<iframe class="speakerdeck-iframe" frameborder="0" src="https://speakerdeck.com/player/055c0df858f44aafb4b017bb9c03c2e6?slide=62" title="CEDEC 2023 モダンハイパフォーマンスC# 2023 Edition" allowfullscreen="true" style="border: 0px; background: padding-box padding-box rgba(0, 0, 0, 0.1); margin: 0px; padding: 0px; border-radius: 6px; box-shadow: rgba(0, 0, 0, 0.2) 0px 5px 40px; width: 100%; height: auto; aspect-ratio: 560 / 315;" data-ratio="1.7777777777777777"></iframe>
+<p>テキストプロトコルを見るとなんとかして判定をちょろまかしたいという欲求に抗うのは難しい……。なお、もし厳密な判定をしつつもif連打を避けたい場合は、まず長さチェックをいれます。長さで大雑把な分岐をかけてからSequenceEqualで正確なチェックをします。ようするところ、C#のstringへのswtichの最適化（コンパイラがそういう処理に変換している！）と同じことをやろうという話なだけですが。分岐数が多い場合はハッシュコードを取って分岐かけるとか、ようするにインラインDictionaryのようなものを実装するのもアリでしょう。</p>
+<p>最後に、data行はJSON Deserializeです。<code>ReadOnlySpan&lt;byte&gt;</code>または<code>ReadOnlySequence&lt;byte&gt;</code>のままデシリアライズするには<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.text.json.utf8jsonreader?view=net-8.0">Utf8JsonReader</a>を通す必要があります。なお、<code>Utf8JsonReader</code>もref structなのでアロケーションには含めません。</p>
+<p>これで、Stringを一切通さない処理ができました！StreamReaderを使えば超単純になるのに！という気はしなくもないですが、文字列化したら負けだと思っている病に罹患しているのでしょーがない……。</p>
+<h2>Source Generator vs Reflection</h2>
+<p>Function Callingの実装に、ClaudiaではSource Generatorを採用しました。リフレクションベースで作成することも可能では有りましたが、今回に関してはSource Generatorのほうが望ましい結果が得られました。まず、仮にリフレクションで実装したらどんな関数定義を要求されるだろうか、というところを、Semantic Kernel実装の場合との比較で見てください。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static partial class FunctionTools
+{
+    // Claudia Source Generator
+
+    /// &lt;summary&gt;
+    /// Retrieve the current time of day in Hour-Minute-Second format for a specified time zone. Time zones should be written in standard formats such as UTC, US/Pacific, Europe/London.
+    /// &lt;/summary&gt;
+    /// &lt;param name=&quot;timeZone&quot;&gt;The time zone to get the current time for, such as UTC, US/Pacific, Europe/London.&lt;/param&gt;
+    [ClaudiaFunction]
+    public static string TimeOfDay(string timeZone)
+    {
+        var time = TimeZoneInfo.ConvertTimeBySystemTimeZoneId(DateTime.UtcNow, timeZone);
+        return time.ToString(&quot;HH:mm:ss&quot;);
+    }
+
+    // Semantic Kernel
+
+    [KernelFunction]
+    [Description(&quot;Retrieve the current time of day in Hour-Minute-Second format for a specified time zone. Time zones should be written in standard formats such as UTC, US/Pacific, Europe/London.&quot;)]
+    public static string TimeOfDay([Description(&quot;The time zone to get the current time for, such as UTC, US/Pacific, Europe/London.&quot;)]string timeZone)
+    {
+        var time = TimeZoneInfo.ConvertTimeBySystemTimeZoneId(DateTime.UtcNow, timeZone);
+        return time.ToString(&quot;HH:mm:ss&quot;);
+    }
+}
+</code></pre>
+<p>Function Callingでは、Claudeに関数の情報を与えなければならないので、メソッド・パラメーター共に説明が必須です。ClaudiaのSource Generator実装ではそれをドキュメントコメントから取得するようにしました。Semantic KernelではDescription属性から取ってきています。これはドキュメントコメントのほうが自然で書きやすいはずです。特にパラメーターへの属性は、書きやすさだけじゃなく、複数パラメーターがある場合にかなり読みづらくなります。</p>
+<p>また、Source Generatorではアナライザーとして不足がある際にはコンパイルエラーにできます。</p>
+<p><img src="https://github.com/Cysharp/Claudia/assets/46207/1cfb81d4-9105-423f-867b-408d63e88a59" alt="image" /></p>
+<p>全てのパラメーターにドキュメントコメントが書かれていなければならない・対応していない型を利用している、などのチェックが全てコンパイル時どころかエディット時にリアルタイムに分かります。</p>
+<p>難点は実装難易度がSource Generatorのほうが高いことと、ドキュメントコメントの利用にはかなり注意が必要です。</p>
+<p>Roslyn上でドキュメントコメントを取得するには、<code>ISymbol.GetDocumentationCommtentXml()</code>が最もお手軽なのですが、これが取得できるかどうかは<code>&lt;GenerateDocumentaionFile&gt;</code>に左右されます。<code>false</code>の場合は常にnullを返します。それだと使いにくすぎるので、ClaudiaではSyntaxNodeから取得しようとしたのですが、それも同じく<code>&lt;GenerateDocumentaionFile&gt;</code>の影響を受けていました。</p>
+<p>そこでしょうがなく、以下のような拡張メソッドを用意することで全ての状況でドキュメントコメントを取得することに成功しました(Triviaベースなので少し扱いづらいですが、取れないよりも遥かにマシ）</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public static DocumentationCommentTriviaSyntax? GetDocumentationCommentTriviaSyntax(this SyntaxNode node)
+{
+    if (node.SyntaxTree.Options.DocumentationMode == DocumentationMode.None)
+    {
+        var withDocumentationComment = node.SyntaxTree.Options.WithDocumentationMode(DocumentationMode.Parse);
+        var code = node.ToFullString();
+        var newTree = CSharpSyntaxTree.ParseText(code, (CSharpParseOptions)withDocumentationComment);
+        node = newTree.GetRoot();
+    }
+
+    foreach (var leadingTrivia in node.GetLeadingTrivia())
+    {
+        if (leadingTrivia.GetStructure() is DocumentationCommentTriviaSyntax structure)
+        {
+            return structure;
+        }
+    }
+
+    return null;
+}
+</code></pre>
+<p>DocumentationModeの状態によって<code>DocumentationCommentTriviaSyntax</code>が取れるかどうかが変わる(<code>GenerateDocumentaionFile=false</code>の場合はNoneになる)ので、Noneの場合は<code>DocumentationMode.Parse</code>をつけたうえでパースし直すことで取得できました。SyntaxNodeのままオプションを渡してCSharpSyntaxTreeを生成しても、パースし直してくれないのかDocumentationModeを変更しても無駄だったので、文字列化してからParseTextするようにしています。</p>
+<h2>JSON Serializer</h2>
+<p>リクエストもレスポンスもJSONです、今の世の中。そして、使うライブラリは<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.text.json.jsonserializer?view=net-8.0">System.Text.Json.JsonSerializer</a>一択です。異論を挟む余地は、ありますが、ない。好むと好まざると、もはや使わなければならないわけです。</p>
+<p>System.Text.Jsonの特徴としてはUTF8ベースで処理ができることなので、極力文字列を通さないようにしてあげると高い性能が見込めます。<code>ReadOnlySpan&lt;byte&gt;</code>または<code>ReadOnlySequence&lt;byte&gt;</code>をデシリアライズするには <a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.text.json.utf8jsonreader?view=net-8.0">Utf8JsonReader</a>を通す必要があります。これはref structだからアロケーションがないので、そのままnewして使っていきましょう。ではWriterは？というと、<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.text.json.utf8jsonwriter?view=net-8.0">Utf8JsonWriter</a>はclassです。どうして……？なので、Writerに関してはアプリケーションの作りによりますが、フィールドに持って使い回せるのならフィールドに持っての使いまわし(Resetがあります）、持てない場合は<code>[ThreadStatic]</code>から引っ張ってくるようにしましょう。</p>
+<p>ライブラリで用意する場合は、利用する型が全て決まっているので<a href="https://learn.microsoft.com/ja-jp/dotnet/standard/serialization/system-text-json/source-generation?pivots=dotnet-8-0">ソース生成</a>してあげると、パフォーマンスもよく、AOTセーフ度も上がるので望ましいはずです。Claudiaでも生成しています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[JsonSourceGenerationOptions(
+    GenerationMode = JsonSourceGenerationMode.Default,
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    WriteIndented = false)]
+[JsonSerializable(typeof(MessageRequest))]
+[JsonSerializable(typeof(Message))]
+[JsonSerializable(typeof(Contents))]
+[JsonSerializable(typeof(Content))]
+[JsonSerializable(typeof(Metadata))]
+[JsonSerializable(typeof(Source))]
+[JsonSerializable(typeof(MessageResponse))]
+[JsonSerializable(typeof(Usage))]
+[JsonSerializable(typeof(ErrorResponseShape))]
+[JsonSerializable(typeof(ErrorResponse))]
+[JsonSerializable(typeof(Ping))]
+[JsonSerializable(typeof(MessageStart))]
+[JsonSerializable(typeof(MessageDelta))]
+[JsonSerializable(typeof(MessageStop))]
+[JsonSerializable(typeof(ContentBlockStart))]
+[JsonSerializable(typeof(ContentBlockDelta))]
+[JsonSerializable(typeof(ContentBlockStop))]
+[JsonSerializable(typeof(MessageStartBody))]
+[JsonSerializable(typeof(MessageDeltaBody))]
+public partial class AnthropicJsonSerialzierContext : JsonSerializerContext
+{
+}
+</code></pre>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// 内部での利用時は全てこのJsonSerializerContextを指定している
+JsonSerializer.SerializeToUtf8Bytes(request, AnthropicJsonSerialzierContext.Default.Options)
+</code></pre>
+<p>一つ引っ掛かったのが、<code>JsonIgnoreCondition.WhenWritingNull</code>が、通常(リフレクションベース)だと<code>Nullable&lt;T&gt;</code>にも効いていたのですが、Source Generatorだと効かなくなってnullの時に無視してくれなくなったという挙動の差異がありました。しょうがないので、全ての対象の型の<code>Nullable&lt;T&gt;</code>プロパティに直接<code>[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]</code>を付与することで回避しました。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">public record class MessageRequest
+{
+    // ...
+
+    [JsonPropertyName(&quot;temperature&quot;)]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public double? Temperature { get; set; }
+}
+</code></pre>
+<p>正直Source Generator版の実装漏れの気がするんですが、まぁ回避できたので、とりあえずはいっか。。。</p>
+<h2>まとめ</h2>
+<p>OpenAI APIに対するAzure OpenAI Serviceのように、AWS環境の人は<a href="https://aws.amazon.com/jp/bedrock/">Amazon Bedrock</a>経由のほうが使いやすい、というのがあるかもしれません。というわけで本日の先ほどのリリース(v1.0.1)でBedrock対応もしました！より一層利用しやすくなったはずです。</p>
+<p>Anthorpic APIを使うにあたって、このClaudiaが、公式SDKや各言語の非公式SDKも含めて、最も使いやすいSDKになっているんじゃないかと自負します。ということは、C#が最もClaudeをAPI経由で使うのに捗る言語ということです！これはC#やるしかない！あるいはClaudeやるしかない！ということで、やっていきましょう……！</p>
+</div>
+<h1 data-pagefind-sort="date:2024-02-27" data-pagefind-meta="published:2024-02-27"><a href="https://neue.cc/2024/02/27_R3.html">R3 - C#用のReactive Extensionsの新しい現代的再実装</a></h1>
 <ul class="date"><li>2024-02-27</li></ul>
 <div class="entry_body"><p>先日、新しいC#用のReactive Extensionsの実装としてR3を正式公開しました！R3は<a href="https://github.com/dotnet/reactive">Rx for .NET</a>を第一世代、<a href="https://github.com/neuecc/UniRx">UniRx</a>を第二世代とした場合の、第三世代のRxという意味で命名しています。Rxとしてのコア部分(ほぼdotnet/reactiveと同様)は.NET共通のライブラリとして提供し、各プラットフォーム特化のカスタムスケジューラーやオペレーターは別ライブラリに分けるという形により、全ての.NETプラットフォーム向けのコアライブラリと、各種フレームワーク Unity, Godot, Avalonia, WPF, WinForms, WinUI3, Stride, LogicLooper, MAUI, MonoGame 向けの拡張ライブラリを提供しています。</p>
 <ul>
@@ -2349,24 +3040,6 @@ Console.WriteLine(sum); // 5050
 <h2>まとめ</h2>
 <p>反響全然ないだろうなあと想定していましたが、やはり反響全然ないです！まぁでも結構面白いライブラリになったと思うので、是非使ってください。それと、Incremental Source Generatorの作り方がMemoryPackの頃よりも習熟していて、コードがかなり洗練されたものになっているので、Source Generatorの作り方として参照するならMemoryPackのコードよりもこちらのコードのほうがお薦めです。</p>
 <p>というわけで、まだまだSource Generatorネタはいっぱいあるので、今年は大量に量産します！</p>
-</div>
-<h1 data-pagefind-sort="date:2022-12-30" data-pagefind-meta="published:2022-12-30"><a href="https://neue.cc/2022/12/30_year.html">2022年を振り返る</a></h1>
-<ul class="date"><li>2022-12-30</li></ul>
-<div class="entry_body"><p>今年はCysharpとしては、（控えめながら）露出があったので、何やってるかわからない、むしろ存在してるんですか？といったところから脱却したのではないでしょうか……？相変わらず<a href="https://cysharp.co.jp/">ホームページはペライチ</a>ですけれど。そろそろいい加減、更新したい。</p>
-<p>大きなところでは <a href="https://neue.cc/2022/04/">プリコネ！グランドマスターズのサーバー開発をCysharpが開発協力しました</a> というわけで、結構長くCygamesと一緒に作っていたゲームがリリースされました。超期間限定だったのでもうプレイできませんが……！技術的な詳細はCygamesのほうから <a href="https://cedil.cesa.or.jp/cedil_sessions/view/2637">C#によるクライアント/サーバーの開発言語統一がもたらす高効率な開発体制 ～プリコネ！グランドマスターズ開発事例～</a> という形でCEDECで講演していますが、2022年現在の開発体制としてはかなり先端を走っている、かつ、とてもいい感じに仕上がっています。</p>
-<p>MagicOnion採用タイトルも増えていて、特に今年リリースされたタイトルで一番大きなものは<a href="https://mememori-game.com/">メメントモリ</a>でしょうか、<a href="https://twitter.com/neuecc/status/1595729906528587781">MagicOnion, MessagePack for C#を採用していただいています</a>。</p>
-<p><a href="https://github.com/Cysharp/MagicOnion/">MagicOnion</a>は12/28にv5をリリースしたばかりです！内部アーキテクチャの変更によるパフォーマンス向上や拡張性の確保、そして<a href="https://github.com/Cysharp/MemoryPack">MemoryPack</a>への対応といった、次世代に向けて大きく基盤整理されました。今後もSource Generatorフル対応などが控えています。</p>
-<p>OSS関連も、振り返るとかなり充実していました。後半、既存OSSのメンテが滞り気味だったのは来年消化します……！</p>
-<ul>
-<li><a href="https://neue.cc/2022/02/28_DFrame.html">DFrame - C#でテストシナリオを書く分散負荷テストフレームワーク</a></li>
-<li><a href="https://neue.cc/2022/05/11_AlterNats.html">AlterNats - ハイパフォーマンスな.NET PubSubクライアントと、その実装に見る.NET 6時代のSocketプログラミング最適化のTips、或いはMagicOnionを絡めたメタバース構築のアーキテクチャについて</a></li>
-<li><a href="https://neue.cc/2022/11/04_memorypack.html">MemoryPackにみる .NET 7/C# 11世代のシリアライザー最適化技法</a></li>
-</ul>
-<p>今年も自分のプログラミング能力の成長を実感できています。技術的に腐り始めたら一瞬！みたいな危機感はあるので、こうして毎年の成長を、ちゃんと対外的にも示し続けられているのはいいことかな。自分はできてると思ってるけど外から見るとやべぇ、みたいなパターンは往々にありますからね、常に実証と共にありたいです。</p>
-<p>特にMemoryPackは次世代の基準を打ち立てられたのではないかと思います。GitHub Starも3ヶ月で1300到達、非常に良い感じです。作ってる最中は、私が今これをやりきらなきゃC#は10年遅れてしまうんだ、みたいな気持ちでヒィヒィいいながら書いてましたが、大言壮語な妄想ではなく実際いい感じのものを出せたのではないでしょうか。</p>
-<p>Source Generatorの解説を <a href="https://neue.cc/2022/12/16_IncrementalSourceGenerator.html">2022年のC# (Incremental) Source Generator開発手法</a> として書きましたが、改めてC#にとってSource Generatorはめちゃくちゃ重要なテクノロジーになると、今更ながらに理解しました。いや、2020年の終わりに <a href="https://neue.cc/2020/12/15_597.html">UnitGenerator</a> を作ってから（これは今も使ってます）、しかしそこまで突き詰めてこなかったんですよね、今の今まで。来年はSource Generator元年ということで、色々な分野で革命的なものを大量に投下したいと思ってます。今なんかアイディアが溢れてるんですよ……！</p>
-<p>というわけで来年はいっぱいやることがある！今年に悔いが残るとすれば、Cysharpとして現在、自称革命的なサービス（？）を作ってるんですが、それの進捗があまり良くなかったことですかねえ。原因としては私がOSS関連でフラフラしててプロジェクトマネージャー/プロダクトオーナーとして1ミリも機能いてなかったせいなのですが！反省。PM的な話は昔からずっと反省し続けてるので一向に進歩してないですね……。そこに脳みそ注ぎ込む余力がないのだと言い訳してますが……。</p>
-<p>そんなわけで、来年こそは革命的サービスもリリースするので期待していてください。OSS関連も革命的なものをどかどか投下する予定なので、引き続きCysharpは時代の最先端を全力疾走していきます。</p>
 </div>
 <a href="https://neue.cc">Prev |</a>
 <a href="https://neue.cc/3">| Next</a>

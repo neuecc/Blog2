@@ -74,7 +74,77 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2012-12-30" data-pagefind-meta="published:2012-12-30"><a href="https://neue.cc/2012/12/30_391.html">2012年を振り返る。</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2013-01-05" data-pagefind-meta="published:2013-01-05"><a href="https://neue.cc/2013/01/05_392.html">C#でローカル変数からDictionaryを生成する</a></h1>
+<ul class="date"><li>2013-01-05</li></ul>
+<div class="entry_body"><p>どうもPHPerです。あ、すぐC#のコード出しますので帰らないで！というわけで、PHPには<a href="http://php.net/manual/ja/function.compact.php">compact</a>というローカル変数からハッシュテーブルを作るという関数があります。割と多用します。その逆のextractという関数もありますが、そちらはカオスなのでスルー。</p>
+<pre data-pagefind-ignore="all"><code class="language-php">$name = &quot;hogehoge&quot;;
+$age = 35;
+
+// {&quot;name&quot;:&quot;hogehoge&quot;, &quot;age&quot;:35}
+$dict = compact(&quot;name&quot;, &quot;age&quot;);
+</code></pre>
+<p>へー。いいかもね。これをC#でやるには？もったいぶってもshoganaiので先に答えを出しますが、匿名型を使えばよいです。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var name = &quot;hogehoge&quot;;
+var age = 35;
+
+// Dictionary&lt;string, object&gt; : {&quot;name&quot;:&quot;hogehoge&quot;, &quot;age&quot;:35}
+var dict = Compact(new { name, age });
+</code></pre>
+<p>はい。別にPHPと見比べても面倒くさいことは全然ないです。C#はLLですから（嘘）</p>
+<p><a href="http://msdn.microsoft.com/ja-jp/library/bb397696.aspx">匿名型</a>は「メンバー名を指定しなかった場合、コンパイラによって、初期化に使用するプロパティと同じ名前が付けられます。」ので、それを利用すればローカル変数の名前をキャプチャできる、という至極単純な仕組み。</p>
+<h2>Reflection vs FastMember</h2>
+<p>Compactメソッドの中身ですが、リフレクションでプロパティなめてDictionaryに吐き出しているだけです。LINQを使えば瞬殺。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">static Dictionary&lt;string, object&gt; Compact(object obj)
+{
+    return obj.GetType().GetProperties()
+        .Where(x =&gt; x.CanRead)
+        .ToDictionary(pi =&gt; pi.Name, pi =&gt; pi.GetValue(obj));
+}
+</code></pre>
+<p>CanReadは、一応、匿名型以外を流し込む時のことも考慮しましょうか、的に。</p>
+<p>さて、リフレクションを使うと実行速度がー気になってーカジュアルにー使いたくないー、のが人情というものです。個人的にはそこまで遅くもないので、そう気にしなければカジュアルに使ってもいいと思ってたりしますが、まあ気になるならShoganaiし、気にするのはいいことです。</p>
+<p>そこで取り出すは<a href="http://code.google.com/p/fast-member/">FastMember</a>。超高速シリアライザで有名なprotobuf-netの作者が作った、シンプルなプロパティアクセス高速化ライブラリです。</p>
+<p>これを使って書くと</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">static Dictionary&lt;string, object&gt; Compact(object obj)
+{
+    var type = FastMember.TypeAccessor.Create(obj.GetType());
+    return type.GetMembers().ToDictionary(x =&gt; x.Name, x =&gt; type[obj, x.Name]);
+}
+</code></pre>
+<p>というように、書き方的にはそんなに違いはないですが、生成速度は数倍上昇します。TypeAccessor.Createして、GetMembersでプロパティ情報の列挙(TypeとNameがあるだけ)、PropertyInfoのGetValue的なのはインデクサを使います。FastMemberにはTypeAccessorの他にObjectAccessorがありますが、使い方は似たような感じなので略（インデクサの第一引数に対象オブジェクトを渡す必要がなくなる）。</p>
+<p>FastMemberの仕組みですが、初回実行時にはリフレクションでプロパティ舐めています。別に魔法が存在するわけではないので、プロパティ名を取りたければ、リフレクション以外の選択肢はありません。そして取得したデータを基にしてILの動的生成を行いキャッシュし、以降のアクセス時はキャッシュから取得したアクセサ経由となるため、素のリフレクションよりも高速となっています。</p>
+<p>よって、初回実行時に限れば、実行時間はむしろかなり遅くなります（IL生成は軽い処理ではない）。単純な平均で考えれば、1万アクセスぐらいないとペイしません（要素数による、多ければ多いほどFastMemberのほうが有利です）。という程度には、リフレクションもそんなに遅くはないです。ただまあ、初回に目をつむって以降の実行速度重視のほうがユーザー体験での満足度は高いケースがほとんどとは思われますので、個人的にはFastMember使って済ませるほうがいいな、とは思います。気分的にもスッキリしますしね。</p>
+<p>ちなみに.NETでリフレクションにはTypeDescriptorという手段も標準で用意されていますが、アレはクソがつくほど遅いので、アレだけはやめておきましょう。少なくとも素のリフレクションを避けてあっちを使う理由がない。</p>
+<h2>名前大事</h2>
+<p>Compactという名前はPHP臭が激しいしC#的にはイミフなので、ちゃんとした名前をつけたほうがいいでしょう、ToDictionaryとか、ね。</p>
+<h2>匿名型 as Dictionary</h2>
+<p>Compact、という例を出すから何だか新しい感じがしなくもない誤魔化しでして、実のところ、ようするに、ただの匿名型→Dictionaryです。ASP.NET MVCではそこら中に見かけるアレです。ソレです。コレです。</p>
+<p>その辺のアレコレは<a href="http://nyaruru.hatenablog.com/entry/20080706/p1">ややニッチな Anonymous Types の使い方をまとめてみる (C# 3.0) - NyaRuRuが地球にいたころ</a>にまとまっているので見ていただくとして、以上終了。</p>
+<p>実際問題、Dictionary&lt;string, object&gt;を要求するシチュエーションというのは少なくありません。パラメータ渡すところなんて、そうですよね。一々Dictionaryを使うのは、カッタルイってものです。なので、別にASP.NET MVCに限らず、↑のようなメソッドを作って、objectも受け入れられるようにしてあげるってのは、現代のC#的にはアリだと私は考えています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// Dictionaryの初期化は割と面倒くさい
+var hoge = ToaruMethod(new Dictionary&lt;string, object&gt;
+{
+    {&quot;screen_name&quot;, &quot;hogehoge&quot;},
+    {&quot;count&quot;, 10},
+    {&quot;since_id&quot;, 12345}
+});
+
+// 書きやすい！素敵！抱いて！
+var hoge = ToaruMethod(new
+{
+    screen_name = &quot;hogehoge&quot;,
+    count = 10,
+    since_id = 12345
+});
+</code></pre>
+<p>んね。</p>
+<p>そうなるとメソッドの引数にobjectというものが出てしまって、安全性がショボーンになってしまいますので、やたらめったら使うのもまたアレですけれど。</p>
+<p>匿名型がIAnonymousTypeとか、何らかのマーカーついてたらなあ、なんて思わなくもなかったりもしなかったりしましたが、こういう用途で使う時って、普通のクラスからも変換したかったりするので、匿名型に限定したほうが不便なんですね。幾ばくかの安全性は増しますが。ともあれともあれ、普通のクラスと匿名型に違いなんてない、と考えると、区別できないことは自然だから別にいいかなあ、なんて、ね、思ってます。where T : classと引数に制限つけるぐらいが丁度良いんではないでしょうか。</p>
+<h2>まとめ</h2>
+<p>PHPの良いところってどこなのか非常に悩ましい。その辺のほげもげに関してはいつか特に言いたいことはなくもないけどとくにない（去年の年末に勉強会というか技術交流会というかで、PHPの会社に行ってPHP vs C#なプレゼンはしてきましたが）。</p>
+<p>というわけで、C#はLightweightだという話でした。ん？</p>
+</div>
+<h1 data-pagefind-sort="date:2012-12-30" data-pagefind-meta="published:2012-12-30"><a href="https://neue.cc/2012/12/30_391.html">2012年を振り返る。</a></h1>
 <ul class="date"><li>2012-12-30</li></ul>
 <div class="entry_body"><p>12/30は私の誕生日でして(どうでもいい)、まだかろうじて20代です。 というわけで、今年を振り返りますかー。今年は1/1から動きがありましたから、というか転職でしたね、<a href="http://gloops.com/">gloops</a>に入社しました。入社するまでドッキドキでしたねえ、正月とかあんま落ち着かない感じで過ごしてたのを思い出しました。 <a href="http://neue.cc/2011/12/30_361.html">2011年の振り返り</a>では</p>
 <blockquote>
@@ -1854,281 +1924,6 @@ log
 <h2>今後</h2>
 <p>VS2012に対するIntelliSenseの充実化がまだ1/5ぐらいしか出来ていないので、それの充実が優先です。あと、リファレンスやサンプルが書けてないので追加。それらが出来たら、いったんver.3として正式公開します。<a href="http://atnd.org/events/30344">プログラミング生放送勉強会 第17回＠品川 #pronama : ATND</a>で話すつもりなので、その日、8/25までには正式公開を目指します！というわけで是非是非聞きに来てください。</p>
 <p>あ、あとnode.js用にnpm公開も、ですね。</p>
-</div>
-<h1 data-pagefind-sort="date:2012-07-11" data-pagefind-meta="published:2012-07-11"><a href="https://neue.cc/2012/07/11_377.html">Reactive Extensions + asyncによるC#5.0の非同期処理</a></h1>
-<ul class="date"><li>2012-07-11</li></ul>
-<div class="entry_body"><p><a href="http://msdn.microsoft.com/en-us/data/gg577609.aspx">Reactive Extensions(Rx)</a>の利点ってなんですかー、というと、合成可能なんです！ということです。合成可能って何？というと、LINQが使えるということなんです！です。じゃあ他には、ということで…… 詳しくはこの動画/スライド見るといいです。 <a href="http://channel9.msdn.com/Events/TechEd/Europe/2012/DEV413">Curing Your Event Processing Blues with Reactive Extensions (Rx) | TechEd Europe 2012 | Channel 9</a>。最初のほうの例が非常に分かりやすいので、とりあえずその部分だけ引っ張ってきますと</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// sender, argsの型がふわふわ
-exchange.StockTick += (sender, args) =&gt; // senderの型が消えてる
-{
-    if (args.Quote.Symbol == &quot;MSFT&quot;)
-    {
-        // 合成できないからイベントの中でベタ書きしかない
-    }
-};
-
-exchange.StockTick -= /* ラムダ式でイベント登録すると解除不能 */
-</code></pre>
-<p>これが通常のイベントの弱点です。Rxにすると</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// &lt;Quote&gt;という型が生きてる
-IObservable&lt;Quote&gt; stockQuotes = ...; // 変数に渡せる
-
-// LINQクエリ演算子が使える
-var msft = stockQuotes
-    .Where(quote =&gt; quote.Symbol == &quot;MSFT&quot;);
-
-var subscription = msft.Subscribe(quote =&gt; /* */);
-
-// イベント解除が容易
-subscription.Dispose();
-</code></pre>
-<p>といった感じで、実に素晴らしい！じゃあEventはもうObsoleteでいいぢゃん、というと、まあいいと思うのですがそれはそれとして、C#ネイティブだからこそデザイナがイベントが大前提で考慮されていたり、軽くて実行速度が良かったり、といったところは勿論あります。あとRxだとイベントのIObservable化が面倒だとかもね。この辺は最初から言語サポートの効いてるF#のほうが強いんですよねー。</p>
-<h2>非同期のリトライ</h2>
-<p><a href="http://www.microsoft.com/visualstudio/11/ja-jp">Visual Studio 2012</a>も、もうRCということで間近感が相当にあります。一方で<a href="http://blogs.msdn.com/b/rxteam/archive/2012/06/20/reactive-extensions-v2-0-release-candidate-available-now.aspx">Reactive Extensions v2.0 Release Candidate available now!</a>ということで、こちらも間近感があります。一度2.0使うと1.0には戻れないよ！(NuGetではRx-Main -Preで入れられます)</p>
-<p>じゃあRx 2.0の紹介でもしますかー、というと、しません！（ぉぃ）。その前に、asyncとRxの関係性にケリをつけておきましょう。</p>
-<p>で、asyncの非同期とRxの非同期はやっぱり使い分けフワフワッという感じ。複数の値が来るときはRxでー、とか言われても、そもそも複数っていうのがそんなにー、とか。あと、それ以外にないの？というと、Rxの合成の強さが非同期にも発揮してRetry処理とか柔軟でー、とか。確かにそれっぽい。けれど、どうもフワッとしてピンと来ないかもしれない。</p>
-<p>ので、例を出していきましょう。まず、リトライ処理。リトライ処理を素の非同期で書くと泣きたくなりますが、C# 5.0を使えばasync/awaitで何も悩むことなくスッキリと！</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">static async Task&lt;string&gt; DownloadStringAsyncWithRetry(string url, int retryCount)
-{
-    var count = 0;
-RETRY:
-    try
-    {
-        count++;
-        var req = WebRequest.CreateHttp(url);
-
-        using (var res = await req.GetResponseAsync())
-        using (var stream = res.GetResponseStream())
-        using (var sr = new StreamReader(stream))
-        {
-            return await sr.ReadToEndAsync();
-        }
-
-    }
-    catch
-    {
-        if (count &gt;= retryCount) throw;
-    }
-    goto RETRY;
-}
-
-static void Main(string[] args)
-{
-    var google = DownloadStringAsyncWithRetry(&quot;http://google.com/404&quot;, 3);
-    Console.WriteLine(google.Result);
-}
-</code></pre>
-<p>簡単です。さて、ではこれをRxで書くと……</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">static async Task&lt;string&gt; DownloadStringAsyncWithRetry(string url, int retryCount)
-{
-    var req = WebRequest.CreateHttp(url);
-
-    // retry処理は.Retryで済む
-    using (var res = await req.GetResponseAsync().ToObservable().Retry(retryCount))
-    using (var stream = res.GetResponseStream())
-    using (var sr = new StreamReader(stream))
-    {
-        return await sr.ReadToEndAsync();
-    }
-}
-</code></pre>
-<p>はい。別にRxとasyncは排他じゃありません。使って効果のあるところに差し込んで、Mixしてやれば、ただでさえ強力なasyncが更に強力になります。TaskとIObservableは変換可能なので、ToObservableして、あとはRetryメソッドを繋げるだけ。そしてIObservableはawait可能(LastAsyncと同じ効果で、最後の値を取る。非同期処理の場合は値が一つなので問題なし)なので、まんまawaitしてasyncと繋げてやればいい。素敵ですねー。</p>
-<p>が、上のコードはちょっと間違ってます。どこが間違っているか分かりますか？</p>
-<p>エラーの帰ってくるページ(google/404などは404エラーを返してくれるのでテストに楽←別に500にすれば500を返してくれるわけじゃなくて、ただたんに存在しないページだから404なだけで、別にどこでもいいです)を指定して<a href="http://fiddler2.com/fiddler2/">Fiddler</a>などで観察すれば分かりますが、一回しかリクエスト飛ばしません。Retry(3)としても一回しか飛んでいません。ちゃんとRetryは3回しているのに。</p>
-<p>どういうことかというと、GetResponseAsync()の時点でリクエストに失敗しているからです。失敗済みのリクエストに対しては、何回Retryしても失敗しか返しません。ここは本当にはまりやすくて注意所なので、よく気を付けてください！</p>
-<p>解決策は、Retryで生成を毎回やり直すこと。Deferで包めばいいです。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">static async Task&lt;string&gt; DownloadStringAsyncWithRetry(string url, int retryCount)
-{
-    // Retry時に毎回WebRequestを作り直す
-    var asyncQuery = Observable.Defer(() =&gt; WebRequest.CreateHttp(url).GetResponseAsync().ToObservable())
-        .Retry(retryCount);
-
-    // retry処理は.Retryで済む
-    using (var res = await asyncQuery)
-    using (var stream = res.GetResponseStream())
-    using (var sr = new StreamReader(stream))
-    {
-        return await sr.ReadToEndAsync();
-    }
-}
-</code></pre>
-<p>ちょっと罠があるしコードも増えてしまったけれど、それでも、まあ、まだ割といいかな、って感じでしょうか？</p>
-<p>さて、リトライは即時じゃなくて一定間隔置いた後にリトライして欲しいってことが多いと思います。同期処理だとThread.Sleepで待っちゃうところですが、それはちょっとスレッド勿体ない。C# 5.0からはawait Task.Delayを使いましょう。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">static async Task&lt;string&gt; DownloadStringAsyncWithRetry(string url, int retryCount, TimeSpan retryDelay)
-{
-    var count = 0;
-RETRY:
-    try
-    {
-        count++;
-        var req = WebRequest.CreateHttp(url);
-
-        using (var res = await req.GetResponseAsync())
-        using (var stream = res.GetResponseStream())
-        using (var sr = new StreamReader(stream))
-        {
-            return await sr.ReadToEndAsync();
-        }
-
-    }
-    catch
-    {
-        if (count &gt;= retryCount) throw;
-    }
-
-    if (retryDelay &gt; TimeSpan.Zero)
-    {
-        await Task.Delay(retryDelay); // これで待つ
-    }
-
-    goto RETRY;
-}
-</code></pre>
-<p>以前のものにTask.Delayを足しただけで簡単です。わーお、素晴らしい、なかなか強力強烈です。ではRxは、というと、同じように遅延する演算子を足すだけ。Delay、ではダメでDelaySubscription(Rx 2.0から追加)を使います。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">static async Task&lt;string&gt; DownloadStringAsyncWithRetry(string url, int retryCount, TimeSpan retryDelay)
-{
-    // DelaySubscriptionで遅延させる
-    var asyncQuery = Observable.Defer(() =&gt; WebRequest.CreateHttp(url).GetResponseAsync().ToObservable())
-        .DelaySubscription(retryDelay)
-        .Retry(retryCount);
-
-    using (var res = await asyncQuery)
-    using (var stream = res.GetResponseStream())
-    using (var sr = new StreamReader(stream))
-    {
-        return await sr.ReadToEndAsync();
-    }
-}
-</code></pre>
-<p>できました！できました？いや、これだと初回リクエスト時にも遅延されちゃってて、ちょっとイケてない。修正しましょう。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// 外部変数用意するのがダサい
-var count = 0;
-var asyncQuery = Observable.Defer(() =&gt; WebRequest.CreateHttp(url).GetResponseAsync().ToObservable())
-    .Let(xs =&gt; count++ == 0 ? xs : xs.DelaySubscription(retryDelay))
-    .Retry(retryCount);
-</code></pre>
-<p>はい、ダサいし、なんだか何やってるのかさっぱりになってきました、サイテー。LetもRx 1.0にはなくて(それ以前にはあったのですが削られた)2.0から復活になります。Letは、一時変数を置かなくて済むというチェーン病にかかった人がお世話になる処方薬です。んなもん読みにくくさせるだけじゃねーか、という感じですが、もしLetがないと変数を置いて var xs = ToObservable(); xs = () ? xs : xs.Delay..; xs = xs.Retry(); としなければならなくて、非常に面倒くさいのです。だから、使いどころを守って乱用しなければ、割とイケてます。結構大事。</p>
-<p>が、しかし、これも間違っています！（えー）。というかLetではなくて変数に展開してみるとオカシイとはっきり分かるのですが、Letの内部はRetryとか関係なく一回しか評価されないので、これだと必ずDelaySubscriptionなしのほうしか通りません。この路線で行くなら、更にやけくそでDeferを追加しましょうか。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// Deferだらけとかダサすぎるにも程がある
-var count = 0;
-var asyncQuery = Observable.Defer(() =&gt; WebRequest.CreateHttp(url).GetResponseAsync().ToObservable())
-    .Let(xs =&gt; Observable.Defer(() =&gt; count++ == 0 ? xs : xs.DelaySubscription(retryDelay)))
-    .Retry(retryCount);
-</code></pre>
-<p>ダサすぎて話にならない。Defer連打ダサい。Deferまみれになったら、ちょっと根本から方針を疑いましょうか。ついでに外部変数を使うというのがそもそもダサい。もう少し頑張りましょう！クエリ演算子をこねくり回して、と。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// DelayなしのDeferとDelayありのDeferを連結して、DelayありのみをRetryさせている
-var asyncQuery = Observable.Defer(() =&gt; WebRequest.CreateHttp(url).GetResponseAsync().ToObservable())
-    .Let(xs =&gt; xs.Catch(xs.DelaySubscription(retryDelay).Retry(retryCount - 1)));
-</code></pre>
-<p>どうでしょう。他にもやりようは色々とあるかもですが、正直ワケガワカラナイのでこの辺でよしておいたほうがマシです。実際のところ、以下のような拡張メソッドを作るのがベストだと思っています。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// 結局これが一番なのではかという結論に至る
-public static async Task&lt;string&gt; DownloadStringAsyncWithRetry(this WebClient client, string url, int retryCount, TimeSpan retryDelay)
-{
-    var count = 0;
-RETRY:
-    try
-    {
-        count++;
-        return await client.DownloadStringTaskAsync(url);
-
-    }
-    catch
-    {
-        if (count &gt;= retryCount) throw;
-    }
-
-    if (retryDelay &gt; TimeSpan.Zero)
-    {
-        await Task.Delay(retryDelay);
-    }
-
-    goto RETRY;
-}
-</code></pre>
-<p>new WebClient().DownloadStringAsyncWithRetry(&quot;hogehoge&quot;); だけですからねー。拡張メソッド万歳。Rx最終形のような短さとか魔術っぽさはゼロで面白くも何ともない、というか正直クソつまらないコードなわけですが、そこがC#のC#たる所以ですな、ということで。私はRxのようなクールさも勿論大好きなのですが、こういうイモさもまた、C#らしさであって、現実をより良くするための、目的を忘れない素敵な側面だと思っています。</p>
-<p>ちなみにWebRequestの場合はそれ自体の作り直しが必要なので(一度エラーを受けたら何度GetResponseを繰り返してもダメぽ)、拡張メソッドダメです。WebClientはイベントベースなのでTask系と相性がアレで今一つなわけですが、WebRequestはWebRequestで、これベースに拡張メソッドだけで整えるのは無理があるのですね……。</p>
-<p>.NET Framework 4.5からは<a href="http://msdn.microsoft.com/ja-jp/library/system.net.http.httpclient.aspx">HttpClient</a>というクラスが入るので、それを使うとちょっとだけモダンっぽい雰囲気。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// モダンなドトネト的にはHttpClientかしら
-public static async Task&lt;string&gt; GetStringAsyncWithRetry(this HttpClient client, string url, int retryCount, TimeSpan retryDelay)
-{
-    var count = 0;
-RETRY:
-    try
-    {
-        count++;
-        return await client.GetStringAsync(url);
-    }
-    catch
-    {
-        if (count &gt;= retryCount) throw;
-    }
-
-    if (retryDelay &gt; TimeSpan.Zero)
-    {
-        await Task.Delay(retryDelay);
-    }
-
-    goto RETRY;
-}
-</code></pre>
-<p>別途System.Net.Httpの参照が必要なのが面倒ですが。</p>
-<h2>非同期のタイムアウト</h2>
-<p>Rxが色々できるのは分かったけれど、結局そういう部分って拡張メソッドとかに隔離してアプリケーションコードからは離れるので、やっぱそんなでもないんじゃないの！？というと、あー、まあそうかもねえ、とか思いつつ、複雑になればなるほど効果は加速しますが、そうなるとRxでも（見た目はスッキリしたとしても）やっぱ複雑ですからね。さておき、このままだとアレなのでもう少しまともな例を、一番最初に挙げた<a href="http://channel9.msdn.com/Events/TechEd/Europe/2012/DEV413">Curing Your Event Processing Blues with Reactive Extensions (Rx) | TechEd Europe 2012</a>から引っ張って来ましょうか。</p>
-<p>タイムアウトを追加する例です。WebRequestだとTimeout設定すればいいぢゃーん、ではあるものの、そうではないシチュエーションも沢山ありますから、対策を知っていて損はないです。まず、asyncの例を。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">static async Task&lt;string&gt; GetHtmlAsync(Uri url)
-{
-    var client = new WebClient();
-
-    var download = client.DownloadStringTaskAsync(url);
-    var timeout = Task.Delay(TimeSpan.FromSeconds(30));
-
-    // これ結構トリッキーですよね
-    if (await Task.WhenAny(download, timeout) == timeout)
-    {
-        throw new TimeoutException();
-    }
-
-    var html = await download;
-    return html;
-}
-</code></pre>
-<p>WhenAnyが中々トリッキーですね。慣用句として覚えてしまえばどうってことないのですが……。asyncもただawaitするだけじゃなくて、ちょっと慣れてきたらTask.WaitAll/Any, Task.WhenAll/Anyを使いこなすと、性能的な意味でも表現力的な意味でもグッと広がりますので、探究するのがお薦め。</p>
-<p>さて、それをRxでやると……</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">static async Task&lt;string&gt; GetHtmlAsync(Uri url)
-{
-    var client = new WebClient();
-
-    var download = client.DownloadStringTaskAsync(url)
-        .ToObservable()
-        .Timeout(TimeSpan.FromSeconds(30));
-            
-    var html = await download;
-    return html;
-}
-</code></pre>
-<p>ToObservableして、Retryの時のようにTimeoutを足すだけ。非常に直観的で、楽ちん、分かりやすい。演算子が豊富なのはRxの強みです。だからRetryにTimeoutがつけられるオーバーロードが最初から用意されていれば、Letとかで複雑になってしまった例もスッキリ仕上がって、ﾄﾞﾔｧと言えたんですけどね（笑）</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">// こういうのを作っておけば！
-static IObservable&lt;T&gt; Retry&lt;T&gt;(this IObservable&lt;T&gt; source, int retryCount, TimeSpan retryDelay)
-{
-    return source.Catch(source.DelaySubscription(retryDelay).Retry(retryCount - 1));
-}
-
-// 神がかってシンプルに！Rx最強！
-public static async Task&lt;string&gt; GetStringAsyncWithRetry(this HttpClient client, string url, int retryCount, TimeSpan retryDelay)
-{
-    return await Observable.Defer(() =&gt; client.GetStringAsync(url).ToObservable()).Retry(retryCount, retryDelay);
-}
-</code></pre>
-<p>標準で足りない演算子は自分で作ればいいので、また、asyncが出来たことで、今まで自作が大変だった演算子も作るのが大分容易になりました！ので、ガンガン作ってしまうといいです。汎用的に使える演算子が集まれば集まるほど、Rxの合成可能という性質が価値を発揮します。</p>
-<h2>リトライやタイムアウトをC# 4.0でRxなしで書くと</h2>
-<p>死ぬほど面倒なので書きません。いや無理でしょ常識的に考えて。</p>
-<h2>まとめ</h2>
-<p>というわけで、Rxとasyncは手を取り合って仲良く高みを目指せばいいわけです。使いこなしが必要なのはどっちも変わらない！</p>
-<p>さて、@ITの連載、<a href="http://www.atmarkit.co.jp/fdotnet/introrx/index/index.html">Reactive Extensions（Rx）入門 － ＠IT</a>
-の次回は非同期のはずですが(聞こえなーい)、ええと、はい、すみません……。ええと、あと次はRx 2.0の強化事項を、ええと、まあそのうちいつか……。はい、すみません。</p>
-<p>諸事情あって今色々詰まってて本気でヤバいんですが、それはそれとして、現在全力で一年以上やるやる詐欺だったlinq.jsの改修を進めていまして、これは本当に本当に絶対近日中にベータを出すのでお楽しみに。相当にイイ出来で、割と革命的に凄い内容になってます。いやほんと。かなり自信ありますよ。</p>
-<p>他の積みタスクは、ReactiveOAuth(バグ修正のPull Requestを放置中というサイテーな有様、OAuth 2.0対応しないの？とか)、ReactiveProperty(WinRT対応まだー？)、Utakotoha(現在動いてない模様なので要改修)、DbExecutor(全面再構築まだー？DataSet殺すんでしょー？)とかでしょうか、って結構ありますね、うわぉぅ。というかReactive系は2.0対応とWinRT対応をやらなきゃならないので作業量的に面倒くさくて、ついつい手が遠ざかってしまいですね。はい、でも、やります。</p>
-<p>にゃー、という感じでブログも結構アレなWebFormsとDataSetディスもそろそろさようならして、通常営業に戻ってきませう。</p>
 </div>
 <a href="https://neue.cc/13">Prev |</a>
 <a href="https://neue.cc/15">| Next</a>
