@@ -49,6 +49,7 @@ static string BuildHtml(string title, string content, string side, string footer
     </script>
 
     <meta charset=""utf-8"" />
+    <meta name=""viewport"" content=""width=device-width, initial-scale=1"">
     <title>{title}</title>
     <link rel=""shortcut icon"" href=""https://neue.cc/favicon.ico"" />
     <link rel=""alternate"" type=""application/rss+xml"" href=""https://neue.cc/feed""/>
