@@ -86,7 +86,7 @@
 <p>Fable 5も出ましたし、<a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5">Anthrorpic公式のFable 5のプロンプトガイド</a>にもありますが、過剰な指示よりも簡潔に要点絞って方向性を合わせるほうがいいかなあ、と思います。で、これってプロンプトエンジニアリングやハーネス作りに血道をあげるよりは、ずっとイージー度合いが高まっているわけですよね。そして的確な指示を行うには的確な理解力が必要になる、それはプロダクトであれば深いドメイン知識であったりプラットフォームへの理解であったり、ライブラリであれば言語や環境への理解が大事なわけです。たとえAIのほうが知識があったとしても、方向性を示せなければ、真に求めるものを得るのはランダムなガチャを引いて当たりを手にすることを祈るようなものであり、実現は難しいのです。</p>
 <h2>最速のSum</h2>
 <p>まずはベンチマークの骨組みから、ということで簡単な指示を与えて作らせます。</p>
-<pre data-pagefind-ignore="all"><code>C#でbenchmarkdotnetを使って小さな関数を、なにが最速なのかを確認しながら、AIが結果を読み取って最適なコードを見つける仕組みを作りたい。実行速度だけじゃなくて、JIT結果の機械語のdisassembleとその解析も行ってください。
+<pre data-pagefind-ignore="all"><code class="language-txt">C#でbenchmarkdotnetを使って小さな関数を、なにが最速なのかを確認しながら、AIが結果を読み取って最適なコードを見つける仕組みを作りたい。実行速度だけじゃなくて、JIT結果の機械語のdisassembleとその解析も行ってください。
 </code></pre>
 <p>もう少し短くてもいいかなという感じですが、短くしすぎて外してやり取りの往復するのはダルいので、このぐらいで。手順や解析のポイントなんかはAIが自分で作り出して文章化して膨らませてくれるわけだから、秘伝のSkillはいらないかな、と思います。どちらかというと用途別のオーダーメイドなほうがいいとすら思っているので、あれこれ足してコンテキスト汚染するよりも、簡潔なところから、簡潔さを維持しながら育てていくべきではないかな、と。大きなアプリケーションであれば、最終的に固有情報がみっちりかかれた代物が出来上がるかもしれませんが、それはそれで、ようするにオーダーメイドの一点ものが出来上がったということで、とても良いことです。</p>
 <p>さて、とりあえずのサンプルとしてAIはSumのベンチマークを作ってきました。これはOpusでもFableでもそうだったし、わかりやすいので、いい例だとは思います。もし作ってこないようだったらSumのベンチマーク作って、とプロンプトに足しておけばいいでしょう。</p>
@@ -104,7 +104,7 @@ public int ForLoop()
 }
 </code></pre>
 <p>結果はこうです。</p>
-<p>| Method              |      Mean |
+<pre data-pagefind-ignore="all"><code class="language-md">| Method              |      Mean |
 | ------------------- | --------: |
 | ForLoop             | 211.31 ns |
 | ForEachLoop         | 211.44 ns |
@@ -113,15 +113,17 @@ public int ForLoop()
 | TensorPrimitivesSum |  13.54 ns |
 | VectorRef           |  32.44 ns |
 | Vector512Unrolled   |  22.05 ns |
-| Vector512Final      |  18.36 ns |</p>
+| Vector512Final      |  18.36 ns |
+</code></pre>
 <p>SIMDにして速くなりましたー、みたいなのは当然かな、と思うのですが、なんか色々やってくれてますね。これは、理屈としてはAIがasmを見ながら3 roundで最適化処理をかけていったという体になります。</p>
-<p>| Round | 実装                   | Mean      | asm から見つけた欠陥 → 次の一手                                        |
+<pre data-pagefind-ignore="all"><code class="language-md">| Round | 実装                   | Mean      | asm から見つけた欠陥 → 次の一手                                        |
 | ----- | -------------------- | --------- | ---------------------------------------------------------- |
 | 1     | ForLoop (baseline)   | 203 ns    | 未ベクトル化                                                     |
 | 1     | VectorSimd           | 33 ns     | Slice の範囲チェックが毎反復残存 → ref ベース化                             |
-| 2     | Vector512Unrolled    | 19 ns     | <code>movsxd</code> が毎ロード前に挿入、端数がスカラー → nuint 化+マスク端数                 |
-| 3     | <strong>Vector512Final</strong>   | <strong>18 ns</strong> | メインループが純粋な <code>vpaddd zmm</code>×4、端数も AVX-512 マスクレジスタ処理。手書きの理想形に到達 |
-| —     | TensorPrimitives.Sum | 13 ns     | 天井(64B アラインメント調整+8段アンロール)                                  |</p>
+| 2     | Vector512Unrolled    | 19 ns     | `movsxd` が毎ロード前に挿入、端数がスカラー → nuint 化+マスク端数                 |
+| 3     | **Vector512Final**   | **18 ns** | メインループが純粋な `vpaddd zmm`×4、端数も AVX-512 マスクレジスタ処理。手書きの理想形に到達 |
+| —     | TensorPrimitives.Sum | 13 ns     | 天井(64B アラインメント調整+8段アンロール)                                  |
+</code></pre>
 <p>この結果は究極で、これ以上言えることはなんもありません。ちなみにOpusではここまでたどり着かなかったので、やはりFableは強力だな、と思いました。</p>
 <p>さて、コードを見ていきましょう。SIMD化はシンプルな話で、通常だと手書きでもこのぐらいは書くし、このぐらいでいっか、で終わらせるところです。</p>
 <pre data-pagefind-ignore="all"><code class="language-csharp">[Benchmark]
@@ -458,28 +460,29 @@ Fail:
 </code></pre>
 <p>やっていることは単純で、if連打しているだけです。MessagePackのintの仕様としてはint(4バイト)を「1バイトの種類コード+値」として、1~5バイトの可変で保存します。-32~127は1バイト(positive fixint, negative fixint)、255までは2バイト(uint8tag + 値)、65535までは……、といったような分岐で書き込みます。</p>
 <p>さて、ベンチマークの結果はこうなっています。</p>
-<p>| Method          | Distribution |          Mean | BranchMispredictions/Op | BranchInstructions/Op | Code Size |
+<pre data-pagefind-ignore="all"><code class="language-md">| Method          | Distribution |          Mean | BranchMispredictions/Op | BranchInstructions/Op | Code Size |
 | --------------- | ------------ | ------------: | ----------------------: | --------------------: | --------: |
-| <strong>Cascade</strong>     | <strong>Large</strong>    | <strong>4.1720 ns</strong> |                   <strong>0</strong> |                 <strong>9</strong> | <strong>426 B</strong> |
+| **Cascade**     | **Large**    | **4.1720 ns** |                   **0** |                 **9** | **426 B** |
 | CascadeUnsafe   | Large        |     3.9454 ns |                       0 |                     8 |     331 B |
 | FixintFirst     | Large        |     5.3299 ns |                       0 |                    11 |     371 B |
 | BranchlessTable | Large        |     1.7388 ns |                       0 |                     4 |     459 B |
 | Branchless2     | Large        |     1.7022 ns |                       0 |                     3 |     442 B |
 | Hybrid          | Large        |     1.8189 ns |                       0 |                     4 |     471 B |
 |                 |              |               |                         |                       |           |
-| <strong>Cascade</strong>     | <strong>Mixed</strong>    | <strong>8.5328 ns</strong> |                   <strong>1</strong> |                 <strong>8</strong> | <strong>439 B</strong> |
+| **Cascade**     | **Mixed**    | **8.5328 ns** |                   **1** |                 **8** | **439 B** |
 | CascadeUnsafe   | Mixed        |     8.2713 ns |                       1 |                     8 |     336 B |
 | FixintFirst     | Mixed        |     9.2350 ns |                       1 |                    10 |     384 B |
 | BranchlessTable | Mixed        |     1.7210 ns |                       0 |                     4 |     459 B |
 | Branchless2     | Mixed        |     1.6376 ns |                       0 |                     3 |     442 B |
 | Hybrid          | Mixed        |     2.5156 ns |                       0 |                     4 |     474 B |
 |                 |              |               |                         |                       |           |
-| <strong>Cascade</strong>     | <strong>Small</strong>    | <strong>1.9931 ns</strong> |                   <strong>0</strong> |                 <strong>5</strong> | <strong>404 B</strong> |
+| **Cascade**     | **Small**    | **1.9931 ns** |                   **0** |                 **5** | **404 B** |
 | CascadeUnsafe   | Small        |     1.3937 ns |                       0 |                     5 |     309 B |
 | FixintFirst     | Small        |     0.6945 ns |                       0 |                     4 |     171 B |
 | BranchlessTable | Small        |     1.7197 ns |                       0 |                     4 |     459 B |
 | Branchless2     | Small        |     1.6388 ns |                       0 |                     3 |     442 B |
-| Hybrid          | Small        |     0.7017 ns |                       0 |                     4 |     450 B |</p>
+| Hybrid          | Small        |     0.7017 ns |                       0 |                     4 |     450 B |
+</code></pre>
 <p>というわけで、上のシンプルなコード(Cascade)よりも良い結果が出せています。</p>
 <p>で、まず、ベンチマーク結果をチェックする場合は、ベンチマークコードのチェックが必須です。ベンチマークは、与える値によって結果がかなり変わります。例えばJsonSerializerのパフォーマンステストをするときに、ASCIIだけのものと、日本語交じりのものとでは、性能が全然変わってきたりします(UTF8エンコーディングのfastpathへの入り方が違う)。というわけで、ちゃんと網羅しているかどうかを確認することは重要です。で、人間がベンチマークを書くとパラメータの網羅性が雑になったりすることが多々ある、少なくとも私は網羅どころか単一パラメータだけで済ませていることも多かったのですが、やはりここはAI時代なのでちゃんと網羅しているものを生成してもらいましょう。またはAIの性能が低いと網羅してくれてない場合もありうるので、ここは人間が、「何をテストしようとしているのか」の確認はすべきだと思っています。AI時代はコードなんて見ないとか言ってる場合じゃないんです。</p>
 <p>今回はintの値によってifの回数とかも変わってきて、それが性能差になるので、Small, Large, Mixedとしてパターンを作っています。</p>
@@ -533,15 +536,16 @@ public static bool TryWriteInt32FixintFirst(Span&lt;byte&gt; destination, int va
 </code></pre>
 <p>ちなみに↑の-32~127のレンジという処理が <code>if ((uint)(value + 32) &lt;= 159 &amp;&amp; destination.Length &gt;= 1)</code> というお洒落なif一発におさめているのは、地味に特筆すべき点だと思っています。こういうのシレッと含ませてくれると感心しちゃいますよね。</p>
 <p>さて、とりあえず重点を置きたいのはMixedの数値なので、それをRound別にチェックしてみます。</p>
-<p>| Round | 実装                 |        Mean | asm / カウンタから見つけた欠陥 → 次の一手                                                                                         |
+<pre data-pagefind-ignore="all"><code class="language-md">| Round | 実装                 |        Mean | asm / カウンタから見つけた欠陥 → 次の一手                                                                                         |
 | ----- | ------------------ | ----------: | ----------------------------------------------------------------------------------------------------------------- |
 | 1     | Cascade (baseline) |     8.53 ns | if-else 連鎖。分岐 8/op・ミス 1/op — ミスペナルティ(≈13サイクル)が支配 → 分岐自体を消すしかない                                                    |
 | 1     | CascadeUnsafe      |     8.27 ns | Slice・個別 store を ref + unaligned store に統合(コード 426→331B)。しかし分岐構造が同じでミスも 1/op のまま → 命令数削減では効かないと確定                 |
 | 1     | FixintFirst        |     9.24 ns | fixint を1比較で先行(Small なら 0.69 ns)。Mixed ではその先行分岐自体がミス源 → 分布依存が極端                                                   |
-| 1     | BranchlessTable    |     1.72 ns | lzcnt+66エントリ表で分岐レス達成・ミス 0。ただし asm に表の境界チェック(<code>cmp r11d,42; jae RNGCHKFAIL</code>)と <code>sign*33</code> の乗算相当が残存 → 64エントリ表+Unsafe 化 |
+| 1     | BranchlessTable    |     1.72 ns | lzcnt+66エントリ表で分岐レス達成・ミス 0。ただし asm に表の境界チェック(`cmp r11d,42; jae RNGCHKFAIL`)と `sign*33` の乗算相当が残存 → 64エントリ表+Unsafe 化 |
 | 計測修正  | (全実装)              |           — | Count=1000 では Mixed でも Mispredictions/Op=0 — Zen 5 予測器が固定配列の分岐パターンを丸ごと記憶していた → Count=100,000 に増量                  |
-| 2     | <strong>Branchless2</strong>    | <strong>1.64 ns</strong> | 境界チェック消滅、index 計算が <code>shr+and+or</code> に。ホットパス分岐 3/op(全て予測可能)。残るは lzcnt→表ロード→movbe の直列依存チェーンで可変長エンコーダに固有 → <strong>収束</strong>        |
-| 2     | Hybrid             |     2.52 ns | Branchless2 の前に fixint 1比較(Small 0.70 ns)。Mixed では先行分岐が ~0.4 ミス/op → 分布が小整数支配と分かっているときだけ選ぶ                        |</p>
+| 2     | **Branchless2**    | **1.64 ns** | 境界チェック消滅、index 計算が `shr+and+or` に。ホットパス分岐 3/op(全て予測可能)。残るは lzcnt→表ロード→movbe の直列依存チェーンで可変長エンコーダに固有 → **収束**        |
+| 2     | Hybrid             |     2.52 ns | Branchless2 の前に fixint 1比較(Small 0.70 ns)。Mixed では先行分岐が ~0.4 ミス/op → 分布が小整数支配と分かっているときだけ選ぶ                        |
+</code></pre>
 <p>まず感心するところは、ベンチマークのパラメータとして再そっはCount = 1000だったのですが、<code>Mispredictions/Op=0</code> という計測結果が出ていたので 「Zen 5 予測器が固定配列の分岐パターンを丸ごと記憶していた → Count=100,000 に増量」という対処をしたことです。</p>
 <pre data-pagefind-ignore="all"><code class="language-csharp">// large enough that the branch predictor cannot memorize the repeating sequence
 // (with 1000 values, Zen 5 learned the whole pattern: BranchMispredictions/Op was 0 even for Mixed)
