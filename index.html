@@ -80,7 +80,534 @@
                 font-size: 99px;
             }
         </style>
-        <div id="content"><h1 data-pagefind-sort="date:2026-06-24" data-pagefind-meta="published:2026-06-24"><a href="https://neue.cc/2026/06/24_superdotnetnew.html">C# Kaigi 2026基調講演します！と、.NET for AndroidとVibe Coding</a></h1>
+        <div id="content"><h1 data-pagefind-sort="date:2026-07-06" data-pagefind-meta="published:2026-07-06"><a href="https://neue.cc/2026/07/06_highperformancecode_with_ai.html">AI時代におけるC#でのBenchmarkDotNetを使った最速コードの書き方</a></h1>
+<ul class="date"><li>2026-07-06</li></ul>
+<div class="entry_body"><p><img src="/article_img/20260706_1.png" alt="" /></p>
+<p>AI時代においてテストが、AI Agentがループを回すための足腰として重要なように、プロファイラーも思考のための素材を与えるという点で重要です。従来は、基本的には <code>Mean</code> と <code>Allocated</code> を見るぐらいでしたが、どうせAIが読むんだったら、与えられる情報は多ければ多いほどいい、ということで <code>JIT Disassembler</code> や <code>BranchMispredictions/Op</code> も追加していきましょう、デフォルトで。というお話です。この記事では最後にMessagePack for C#の整数値のWriteを改善する例を紹介しますが、asmや分岐予測のデータを元にして、Fableは人間（私）を遥かに超えるコードを生成してくれました。</p>
+<p><img src="/article_img/20260706_2.png" alt="" /></p>
+<p>↑なんと4倍速の余地がある。</p>
+<p>なにせAIはこの手の解析は得意技ですから！得意技というのもあるのですが、「なぜそのコードが速くなったのか」を理解するためには、元コード, Mean, Allocatedだけでは証拠が足りないのです。証拠が足りないと、理由付けは推測でしかなくて、外れることがある。それでは改善ループは進まない、これは別に熟練した人間でも、AIであっても変わらない話であり、人間だけがやってきた今までは、なんとなくの理由付けで済ませて、それで終わらせていたことも多くありました。AIなら機械語を解析するコストはゼロなので、押し付けられるコンテキストは可能な限り押し付けてやりましょう。</p>
+<p>手法の説明をするにあたって、<code>Skill</code> だの <code>AGENTS.md</code>だのは、賞味期限も短いので特に書くことでもないと思っています。新しいモデルが来るたびにゲームチェンジでゲームエンドして手のひらクルクルしててどうするの？小手先のスキル・ハーネスも色々ありますが、やはり賞味期限が短く感じます。別にAI驚き屋が言うような、AIを今すぐ使いこなさなければ乗り遅れる、なんてこたぁないんですよね。明らかに去年よりも、いや、半年前よりも使いこなすのがイージーになってきているので、手のひらクルクルしてる時間を真剣に生きたほうがいいですよ絶対……！</p>
+<p>Fable 5も出ましたし、<a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5">Anthrorpic公式のFable 5のプロンプトガイド</a>にもありますが、過剰な指示よりも簡潔に要点絞って方向性を合わせるほうがいいかなあ、と思います。で、これってプロンプトエンジニアリングやハーネス作りに血道をあげるよりは、ずっとイージー度合いが高まっているわけですよね。そして的確な指示を行うには的確な理解力が必要になる、それはプロダクトであれば深いドメイン知識であったりプラットフォームへの理解であったり、ライブラリであれば言語や環境への理解が大事なわけです。たとえAIのほうが知識があったとしても、方向性を示せなければ、真に求めるものを得るのはランダムなガチャを引いて当たりを手にすることを祈るようなものであり、実現は難しいのです。</p>
+<h2>最速のSum</h2>
+<p>まずはベンチマークの骨組みから、ということで簡単な指示を与えて作らせます。</p>
+<pre data-pagefind-ignore="all"><code>C#でbenchmarkdotnetを使って小さな関数を、なにが最速なのかを確認しながら、AIが結果を読み取って最適なコードを見つける仕組みを作りたい。実行速度だけじゃなくて、JIT結果の機械語のdisassembleとその解析も行ってください。
+</code></pre>
+<p>もう少し短くてもいいかなという感じですが、短くしすぎて外してやり取りの往復するのはダルいので、このぐらいで。手順や解析のポイントなんかはAIが自分で作り出して文章化して膨らませてくれるわけだから、秘伝のSkillはいらないかな、と思います。どちらかというと用途別のオーダーメイドなほうがいいとすら思っているので、あれこれ足してコンテキスト汚染するよりも、簡潔なところから、簡潔さを維持しながら育てていくべきではないかな、と。大きなアプリケーションであれば、最終的に固有情報がみっちりかかれた代物が出来上がるかもしれませんが、それはそれで、ようするにオーダーメイドの一点ものが出来上がったということで、とても良いことです。</p>
+<p>さて、とりあえずのサンプルとしてAIはSumのベンチマークを作ってきました。これはOpusでもFableでもそうだったし、わかりやすいので、いい例だとは思います。もし作ってこないようだったらSumのベンチマーク作って、とプロンプトに足しておけばいいでしょう。</p>
+<p>Baselineのコードは、シンプルな配列のSumのfor loopです。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[Benchmark(Baseline = true)]
+public int ForLoop()
+{
+	var d = data;
+	int sum = 0;
+	for (int i = 0; i &lt; d.Length; i++)
+	{
+		sum += d[i];
+	}
+	return sum;
+}
+</code></pre>
+<p>結果はこうです。</p>
+<p>| Method              |      Mean |
+| ------------------- | --------: |
+| ForLoop             | 211.31 ns |
+| ForEachLoop         | 211.44 ns |
+| LinqSum             |  59.42 ns |
+| VectorSimd          |  36.42 ns |
+| TensorPrimitivesSum |  13.54 ns |
+| VectorRef           |  32.44 ns |
+| Vector512Unrolled   |  22.05 ns |
+| Vector512Final      |  18.36 ns |</p>
+<p>SIMDにして速くなりましたー、みたいなのは当然かな、と思うのですが、なんか色々やってくれてますね。これは、理屈としてはAIがasmを見ながら3 roundで最適化処理をかけていったという体になります。</p>
+<p>| Round | 実装                   | Mean      | asm から見つけた欠陥 → 次の一手                                        |
+| ----- | -------------------- | --------- | ---------------------------------------------------------- |
+| 1     | ForLoop (baseline)   | 203 ns    | 未ベクトル化                                                     |
+| 1     | VectorSimd           | 33 ns     | Slice の範囲チェックが毎反復残存 → ref ベース化                             |
+| 2     | Vector512Unrolled    | 19 ns     | <code>movsxd</code> が毎ロード前に挿入、端数がスカラー → nuint 化+マスク端数                 |
+| 3     | <strong>Vector512Final</strong>   | <strong>18 ns</strong> | メインループが純粋な <code>vpaddd zmm</code>×4、端数も AVX-512 マスクレジスタ処理。手書きの理想形に到達 |
+| —     | TensorPrimitives.Sum | 13 ns     | 天井(64B アラインメント調整+8段アンロール)                                  |</p>
+<p>この結果は究極で、これ以上言えることはなんもありません。ちなみにOpusではここまでたどり着かなかったので、やはりFableは強力だな、と思いました。</p>
+<p>さて、コードを見ていきましょう。SIMD化はシンプルな話で、通常だと手書きでもこのぐらいは書くし、このぐらいでいっか、で終わらせるところです。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[Benchmark]
+public int VectorSimd()
+{
+	var d = data.AsSpan();
+	var acc = Vector&lt;int&gt;.Zero;
+	int i = 0;
+	for (; i &lt;= d.Length - Vector&lt;int&gt;.Count; i += Vector&lt;int&gt;.Count)
+	{
+		acc += new Vector&lt;int&gt;(d.Slice(i));
+	}
+	int sum = Vector.Sum(acc);
+	for (; i &lt; d.Length; i++)
+	{
+		sum += d[i];
+	}
+	return sum;
+}
+</code></pre>
+<p>今回の試行ではその先へもグイグイ進んで、Round3の最終形は、アンロール頑張りました。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// Round 3: nuint indexing (kills movsxd) + masked vector tail (kills scalar remainder loop)
+[Benchmark]
+public int Vector512Final()
+{
+	ref int p = ref MemoryMarshal.GetArrayDataReference(data);
+	nuint length = (nuint)data.Length;
+	nuint vc = (nuint)Vector512&lt;int&gt;.Count;
+
+	if (!Vector512.IsHardwareAccelerated || length &lt; vc)
+	{
+		int s = 0;
+		for (nuint j = 0; j &lt; length; j++)
+		{
+			s += Unsafe.Add(ref p, j);
+		}
+		return s;
+	}
+
+	var acc0 = Vector512&lt;int&gt;.Zero;
+	var acc1 = Vector512&lt;int&gt;.Zero;
+	var acc2 = Vector512&lt;int&gt;.Zero;
+	var acc3 = Vector512&lt;int&gt;.Zero;
+	nuint i = 0;
+	if (length &gt;= vc * 4)
+	{
+		nuint lastBlock = length - vc * 4;
+		for (; i &lt;= lastBlock; i += vc * 4)
+		{
+			acc0 += Vector512.LoadUnsafe(ref p, i);
+			acc1 += Vector512.LoadUnsafe(ref p, i + vc);
+			acc2 += Vector512.LoadUnsafe(ref p, i + vc * 2);
+			acc3 += Vector512.LoadUnsafe(ref p, i + vc * 3);
+		}
+	}
+	for (nuint lastVector = length - vc; i &lt;= lastVector; i += vc)
+	{
+		acc0 += Vector512.LoadUnsafe(ref p, i);
+	}
+	if (i &lt; length)
+	{
+		// overlapping load of the final vector, masking out already-summed lanes
+		nuint offset = length - vc;
+		var lane = Vector512&lt;int&gt;.Indices + Vector512.Create((int)offset);
+		var mask = Vector512.GreaterThanOrEqual(lane, Vector512.Create((int)i));
+		acc1 += mask &amp; Vector512.LoadUnsafe(ref p, offset);
+	}
+	return Vector512.Sum((acc0 + acc1) + (acc2 + acc3));
+}
+</code></pre>
+<p>こうしたラウンドの進行に欠かせなかったのが BenchmarkDotNetの <code>DisassemblyDiagnoser</code> で、ベンチ実行結果のasmを取得してくれます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">var config = ManualConfig.Create(DefaultConfig.Instance)
+    .AddJob(Job.ShortRun) // 3 warmup + 3 iterations, fast feedback loop for AI iteration
+    .AddDiagnoser(MemoryDiagnoser.Default)
+    .AddDiagnoser(new DisassemblyDiagnoser(new DisassemblyDiagnoserConfig(
+        maxDepth: 3,
+        printSource: true,
+        exportGithubMarkdown: true,
+        exportCombinedDisassemblyReport: true)))
+    .AddExporter(JsonExporter.Full);
+</code></pre>
+<p>これによってシンプルなfor-loopの結果から</p>
+<pre data-pagefind-ignore="all"><code class="language-assembly">; SumBenchmark.ForLoop()
+;         var d = data;
+;         ^^^^^^^^^^^^^
+;         int sum = 0;
+;         ^^^^^^^^^^^^
+;         for (int i = 0; i &lt; d.Length; i++)
+;              ^^^^^^^^^
+;             sum += d[i];
+;             ^^^^^^^^^^^^
+;         return sum;
+;         ^^^^^^^^^^^
+       mov       rax,[rcx+8]
+       xor       ecx,ecx
+       mov       edx,[rax+8]
+       test      edx,edx
+       jle       short M00_L01
+       add       rax,10
+M00_L00:
+       add       ecx,[rax]
+       add       rax,4
+       dec       edx
+       jne       short M00_L00
+M00_L01:
+       mov       eax,ecx
+       ret
+; Total bytes of code 30
+</code></pre>
+<p>ここまで機械語の命令を見て自律的な改善を試行してくれます。</p>
+<pre data-pagefind-ignore="all"><code class="language-assembly">; SumBenchmark.Vector512Final()
+;         ref int p = ref MemoryMarshal.GetArrayDataReference(data);
+;         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;         nuint length = (nuint)data.Length;
+;         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;         nuint vc = (nuint)Vector512&lt;int&gt;.Count;
+;         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;         if (!Vector512.IsHardwareAccelerated || length &lt; vc)
+;         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;             int s = 0;
+;             ^^^^^^^^^^
+;             for (nuint j = 0; j &lt; length; j++)
+;                  ^^^^^^^^^^^
+;                 s += Unsafe.Add(ref p, j);
+;                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+;             return s;
+;             ^^^^^^^^^
+;         var acc0 = Vector512&lt;int&gt;.Zero;
+;         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;         var acc1 = Vector512&lt;int&gt;.Zero;
+;         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;         var acc2 = Vector512&lt;int&gt;.Zero;
+;         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;         var acc3 = Vector512&lt;int&gt;.Zero;
+;         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;         nuint i = 0;
+;         ^^^^^^^^^^^^
+;         if (length &gt;= vc * 4)
+;         ^^^^^^^^^^^^^^^^^^^^^
+;             nuint lastBlock = length - vc * 4;
+;             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;                 acc0 += Vector512.LoadUnsafe(ref p, i);
+;                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;                 acc1 += Vector512.LoadUnsafe(ref p, i + vc);
+;                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;                 acc2 += Vector512.LoadUnsafe(ref p, i + vc * 2);
+;                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;                 acc3 += Vector512.LoadUnsafe(ref p, i + vc * 3);
+;                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;             for (; i &lt;= lastBlock; i += vc * 4)
+;                                    ^^^^^^^^^^^
+;         for (nuint lastVector = length - vc; i &lt;= lastVector; i += vc)
+;              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;             acc0 += Vector512.LoadUnsafe(ref p, i);
+;             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;         if (i &lt; length)
+;         ^^^^^^^^^^^^^^^
+;             nuint offset = length - vc;
+;             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;             var lane = Vector512&lt;int&gt;.Indices + Vector512.Create((int)offset);
+;             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;             acc1 += mask &amp; Vector512.LoadUnsafe(ref p, offset);
+;             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;         return Vector512.Sum((acc0 + acc1) + (acc2 + acc3));
+;         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       mov       rax,[rcx+8]
+       mov       rcx,rax
+       cmp       [rcx],cl
+       add       rcx,10
+       mov       edx,[rax+8]
+       cmp       rdx,10
+       jb        near ptr M00_L05
+       vxorps    ymm0,ymm0,ymm0
+       vxorps    ymm1,ymm1,ymm1
+       vxorps    ymm2,ymm2,ymm2
+       vxorps    ymm3,ymm3,ymm3
+       xor       eax,eax
+       cmp       rdx,40
+       jb        short M00_L01
+       lea       r8,[rdx-40]
+M00_L00:
+       vpaddd    zmm0,zmm0,[rcx+rax*4]
+       vpaddd    zmm1,zmm1,[rcx+rax*4+40]
+       vpaddd    zmm2,zmm2,[rcx+rax*4+80]
+       vpaddd    zmm3,zmm3,[rcx+rax*4+0C0]
+       add       rax,40
+       cmp       rax,r8
+       jbe       short M00_L00
+M00_L01:
+       mov       r8,rdx
+       sub       r8,10
+       mov       r10,r8
+       cmp       rax,r10
+       ja        short M00_L03
+M00_L02:
+       vpaddd    zmm0,zmm0,[rcx+rax*4]
+       add       rax,10
+       cmp       rax,r10
+       jbe       short M00_L02
+M00_L03:
+       cmp       rax,rdx
+       jae       short M00_L04
+       vpbroadcastd zmm4,r8d
+       vpaddd    zmm4,zmm4,[7FFB6613A480]
+       vpbroadcastd zmm5,eax
+       vpcmpnltd k1,zmm4,zmm5
+       vpmovm2d  zmm4,k1
+       vpandd    zmm4,zmm4,[rcx+r8*4]
+       vpaddd    zmm1,zmm4,zmm1
+M00_L04:
+       vpaddd    zmm0,zmm0,zmm1
+       vpaddd    zmm1,zmm2,zmm3
+       vpaddd    zmm0,zmm1,zmm0
+       vmovaps   zmm1,zmm0
+       vextracti32x8 ymm0,zmm0,1
+       vpaddd    ymm0,ymm0,ymm1
+       vmovaps   ymm1,ymm0
+       vextracti128 xmm0,ymm0,1
+       vpaddd    xmm0,xmm0,xmm1
+       vpsrldq   xmm1,xmm0,8
+       vpaddd    xmm0,xmm1,xmm0
+       vpsrldq   xmm1,xmm0,4
+       vpaddd    xmm0,xmm1,xmm0
+       vmovd     eax,xmm0
+       vzeroupper
+       ret
+M00_L05:
+       xor       eax,eax
+       xor       r8d,r8d
+       inc       rdx
+       jmp       short M00_L07
+M00_L06:
+       add       eax,[rcx+r8]
+       add       r8,4
+M00_L07:
+       dec       rdx
+       jne       short M00_L06
+       vzeroupper
+       ret
+; Total bytes of code 280
+</code></pre>
+<p>人間がこれ見て解析進めようというのは骨が折れるし、あらゆるベンチマークで丁寧な解析を実行することは現実的ではないんですが、AIに与える分にはコストゼロで強力な武器となってくれます。マイクロベンチマーク実行時にDisassemblyを含めるのは新時代の常識といえるでしょう。</p>
+<p>なお、オチは .NET 11の<a href="https://learn.microsoft.com/en-us/dotnet/api/system.numerics.tensors.tensorprimitives.sum">TensorPrimitive.Sum</a>最強理論でした。たった一行で圧倒的最速！</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">[Benchmark]
+public int TensorPrimitivesSum() =&gt; TensorPrimitives.Sum&lt;int&gt;(data);
+</code></pre>
+<p>コードは<a href="https://github.com/dotnet/dotnet/blob/f7b4c5716faaee8fb8a289aed29118cad955c45f/src/runtime/src/libraries/System.Numerics.Tensors/src/System/Numerics/Tensors/netcore/Common/TensorPrimitives.IAggregationOperator.cs#L513-L693">TensorPrimitives.IAggregationOperator.Vectorized512</a>で見ることができますが、AIの書いたVector512Finalに近いです。しかし更に一層ゴリゴリのコードが書かれているということで、ある意味、AIの思考の正しさが証明されていることでもあります。もちろんFableがこの「答えを知っている」可能性も大いにあり得るので、こういった汎用的な問題だけで真の思考力、応用力を測ることは不可能ではありますが。</p>
+<h2>MessagePackのWrite性能を改善する</h2>
+<p>分岐予測の診断の例も入れたいので、MessagePackのWriteの例を出します。Readはより難しくて見応えがあるんですが、Writeのほうがシンプルなので例としてはいいかな、と。</p>
+<pre data-pagefind-ignore="all"><code class="language-txt">次のベンチマークとして、MessagePackのエンコーダーのパフォーマンス改善をしたい。`BinaryPrimitives.TryWriteInt32LittleEndian()`のように`TryWriteInt32()`の実装候補を出して性能改善していってください。
+
+public static class MessagePackPrimitives
+{
+    public static bool TryWriteInt32(Span&lt;byte&gt; destination, int value, out int bytesWritten)
+    {        
+    }
+}
+
+分岐予測に関しても正確な計測をしたいので  HardwareCounter.BranchMispredictions, HardwareCounter.BranchInstructions も診断情報に追加してください。Windowsで、管理者権限で起動しているので取得実行できるはずです。
+</code></pre>
+<p>今回、分岐があることを知っているので最初から指示に入れていますが、そうでなければコード見て確認して追加してもいいかもしれません。いずれにせよ相談（こちらからの明確な指示）がないと入れてくれることはない（と思う）ので、この辺も「AI時代の指示力」といったところでしょうか。</p>
+<p>なお、HardwareCounterの実行には管理者権限が必要になり、Cursorの場合は子プロセスに権限を引き継いでくれていたのですが、Claude Code のシェルは管理者権限を継承してくれませんでした。一応、Claude(Fable)が「UAC 経由で実行する(ユーザーに UAC 許可を依頼)」という形で解消してくれたので、全自動とはいかない（UAC許可を押す必要あり）のですが、問題なく解決はしてくれました。</p>
+<p>さて、ベースラインのコードはこれになります。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// Candidate 1 (baseline): straightforward if-else cascade, MessagePackWriter.WriteInt32 style
+[MethodImpl(MethodImplOptions.AggressiveInlining)]
+public static bool TryWriteInt32Cascade(Span&lt;byte&gt; destination, int value, out int bytesWritten)
+{
+	if (value &gt;= 0)
+	{
+		if (value &lt;= 127)
+		{
+			if (destination.Length &lt; 1) goto Fail;
+			destination[0] = (byte)value;
+			bytesWritten = 1;
+			return true;
+		}
+		if (value &lt;= 255)
+		{
+			if (destination.Length &lt; 2) goto Fail;
+			destination[0] = UInt8Code;
+			destination[1] = (byte)value;
+			bytesWritten = 2;
+			return true;
+		}
+		if (value &lt;= 65535)
+		{
+			if (destination.Length &lt; 3) goto Fail;
+			destination[0] = UInt16Code;
+			BinaryPrimitives.WriteUInt16BigEndian(destination.Slice(1), (ushort)value);
+			bytesWritten = 3;
+			return true;
+		}
+		if (destination.Length &lt; 5) goto Fail;
+		destination[0] = UInt32Code;
+		BinaryPrimitives.WriteUInt32BigEndian(destination.Slice(1), (uint)value);
+		bytesWritten = 5;
+		return true;
+	}
+	else
+	{
+		if (value &gt;= -32)
+		{
+			if (destination.Length &lt; 1) goto Fail;
+			destination[0] = unchecked((byte)value);
+			bytesWritten = 1;
+			return true;
+		}
+		if (value &gt;= sbyte.MinValue)
+		{
+			if (destination.Length &lt; 2) goto Fail;
+			destination[0] = Int8Code;
+			destination[1] = unchecked((byte)value);
+			bytesWritten = 2;
+			return true;
+		}
+		if (value &gt;= short.MinValue)
+		{
+			if (destination.Length &lt; 3) goto Fail;
+			destination[0] = Int16Code;
+			BinaryPrimitives.WriteInt16BigEndian(destination.Slice(1), (short)value);
+			bytesWritten = 3;
+			return true;
+		}
+		if (destination.Length &lt; 5) goto Fail;
+		destination[0] = Int32Code;
+		BinaryPrimitives.WriteInt32BigEndian(destination.Slice(1), value);
+		bytesWritten = 5;
+		return true;
+	}
+Fail:
+	bytesWritten = 0;
+	return false;
+}
+</code></pre>
+<p>やっていることは単純で、if連打しているだけです。MessagePackのintの仕様としてはint(4バイト)を「1バイトの種類コード+値」として、1~5バイトの可変で保存します。-32~127は1バイト(positive fixint, negative fixint)、255までは2バイト(uint8tag + 値)、65535までは……、といったような分岐で書き込みます。</p>
+<p>さて、ベンチマークの結果はこうなっています。</p>
+<p>| Method          | Distribution |          Mean | BranchMispredictions/Op | BranchInstructions/Op | Code Size |
+| --------------- | ------------ | ------------: | ----------------------: | --------------------: | --------: |
+| <strong>Cascade</strong>     | <strong>Large</strong>    | <strong>4.1720 ns</strong> |                   <strong>0</strong> |                 <strong>9</strong> | <strong>426 B</strong> |
+| CascadeUnsafe   | Large        |     3.9454 ns |                       0 |                     8 |     331 B |
+| FixintFirst     | Large        |     5.3299 ns |                       0 |                    11 |     371 B |
+| BranchlessTable | Large        |     1.7388 ns |                       0 |                     4 |     459 B |
+| Branchless2     | Large        |     1.7022 ns |                       0 |                     3 |     442 B |
+| Hybrid          | Large        |     1.8189 ns |                       0 |                     4 |     471 B |
+|                 |              |               |                         |                       |           |
+| <strong>Cascade</strong>     | <strong>Mixed</strong>    | <strong>8.5328 ns</strong> |                   <strong>1</strong> |                 <strong>8</strong> | <strong>439 B</strong> |
+| CascadeUnsafe   | Mixed        |     8.2713 ns |                       1 |                     8 |     336 B |
+| FixintFirst     | Mixed        |     9.2350 ns |                       1 |                    10 |     384 B |
+| BranchlessTable | Mixed        |     1.7210 ns |                       0 |                     4 |     459 B |
+| Branchless2     | Mixed        |     1.6376 ns |                       0 |                     3 |     442 B |
+| Hybrid          | Mixed        |     2.5156 ns |                       0 |                     4 |     474 B |
+|                 |              |               |                         |                       |           |
+| <strong>Cascade</strong>     | <strong>Small</strong>    | <strong>1.9931 ns</strong> |                   <strong>0</strong> |                 <strong>5</strong> | <strong>404 B</strong> |
+| CascadeUnsafe   | Small        |     1.3937 ns |                       0 |                     5 |     309 B |
+| FixintFirst     | Small        |     0.6945 ns |                       0 |                     4 |     171 B |
+| BranchlessTable | Small        |     1.7197 ns |                       0 |                     4 |     459 B |
+| Branchless2     | Small        |     1.6388 ns |                       0 |                     3 |     442 B |
+| Hybrid          | Small        |     0.7017 ns |                       0 |                     4 |     450 B |</p>
+<p>というわけで、上のシンプルなコード(Cascade)よりも良い結果が出せています。</p>
+<p>で、まず、ベンチマーク結果をチェックする場合は、ベンチマークコードのチェックが必須です。ベンチマークは、与える値によって結果がかなり変わります。例えばJsonSerializerのパフォーマンステストをするときに、ASCIIだけのものと、日本語交じりのものとでは、性能が全然変わってきたりします(UTF8エンコーディングのfastpathへの入り方が違う)。というわけで、ちゃんと網羅しているかどうかを確認することは重要です。で、人間がベンチマークを書くとパラメータの網羅性が雑になったりすることが多々ある、少なくとも私は網羅どころか単一パラメータだけで済ませていることも多かったのですが、やはりここはAI時代なのでちゃんと網羅しているものを生成してもらいましょう。またはAIの性能が低いと網羅してくれてない場合もありうるので、ここは人間が、「何をテストしようとしているのか」の確認はすべきだと思っています。AI時代はコードなんて見ないとか言ってる場合じゃないんです。</p>
+<p>今回はintの値によってifの回数とかも変わってきて、それが性能差になるので、Small, Large, Mixedとしてパターンを作っています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// Small: all fixint (perfectly predictable branch)
+// Mixed: format class chosen at random per element (worst case for branch prediction)
+// Large: all 5-byte int32/uint32
+[Params(&quot;Small&quot;, &quot;Mixed&quot;, &quot;Large&quot;)]
+public string Distribution = &quot;Mixed&quot;;
+
+[GlobalSetup]
+public void Setup()
+{
+    var rand = new Random(42);
+    values = new int[Count];
+    buffer = new byte[Count * 5];
+    for (int i = 0; i &lt; Count; i++)
+    {
+        values[i] = Distribution switch
+        {
+            &quot;Small&quot; =&gt; rand.Next(-32, 128),
+            &quot;Large&quot; =&gt; rand.Next(2) == 0 ? rand.Next(65536, int.MaxValue) : rand.Next(int.MinValue, -32768),
+            _ =&gt; rand.Next(8) switch
+            {
+                0 =&gt; rand.Next(0, 128),
+                1 =&gt; rand.Next(-32, 0),
+                2 =&gt; rand.Next(128, 256),
+                3 =&gt; rand.Next(-128, -32),
+                4 =&gt; rand.Next(256, 65536),
+                5 =&gt; rand.Next(-32768, -128),
+                6 =&gt; rand.Next(65536, int.MaxValue),
+                _ =&gt; rand.Next(int.MinValue, -32768),
+            },
+        };
+    }
+}
+</code></pre>
+<p>Small(-32~127の範囲に収まる)も多いだろうなあ、とは思いますが、まぁMixedのケースも全然いっぱいあるだろうということで、そこのバランスをとっていきたいですね。FixintFirstは、まさにそのfixintのレンジのifを最初に入れることで、Smallだけは絶対に速いというfastpathになっています。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// Candidate 3: single-compare fast path for fixint [-32, 127] (the dominant case in typical
+// msgpack payloads), everything else in a non-inlined slow path
+[MethodImpl(MethodImplOptions.AggressiveInlining)]
+public static bool TryWriteInt32FixintFirst(Span&lt;byte&gt; destination, int value, out int bytesWritten)
+{
+    if ((uint)(value + 32) &lt;= 159 &amp;&amp; destination.Length &gt;= 1)
+    {
+        MemoryMarshal.GetReference(destination) = unchecked((byte)value);
+        bytesWritten = 1;
+        return true;
+    }
+    return TryWriteInt32MultiByte(destination, value, out bytesWritten);
+}
+</code></pre>
+<p>ちなみに↑の-32~127のレンジという処理が <code>if ((uint)(value + 32) &lt;= 159 &amp;&amp; destination.Length &gt;= 1)</code> というお洒落なif一発におさめているのは、地味に特筆すべき点だと思っています。こういうのシレッと含ませてくれると感心しちゃいますよね。</p>
+<p>さて、とりあえず重点を置きたいのはMixedの数値なので、それをRound別にチェックしてみます。</p>
+<p>| Round | 実装                 |        Mean | asm / カウンタから見つけた欠陥 → 次の一手                                                                                         |
+| ----- | ------------------ | ----------: | ----------------------------------------------------------------------------------------------------------------- |
+| 1     | Cascade (baseline) |     8.53 ns | if-else 連鎖。分岐 8/op・ミス 1/op — ミスペナルティ(≈13サイクル)が支配 → 分岐自体を消すしかない                                                    |
+| 1     | CascadeUnsafe      |     8.27 ns | Slice・個別 store を ref + unaligned store に統合(コード 426→331B)。しかし分岐構造が同じでミスも 1/op のまま → 命令数削減では効かないと確定                 |
+| 1     | FixintFirst        |     9.24 ns | fixint を1比較で先行(Small なら 0.69 ns)。Mixed ではその先行分岐自体がミス源 → 分布依存が極端                                                   |
+| 1     | BranchlessTable    |     1.72 ns | lzcnt+66エントリ表で分岐レス達成・ミス 0。ただし asm に表の境界チェック(<code>cmp r11d,42; jae RNGCHKFAIL</code>)と <code>sign*33</code> の乗算相当が残存 → 64エントリ表+Unsafe 化 |
+| 計測修正  | (全実装)              |           — | Count=1000 では Mixed でも Mispredictions/Op=0 — Zen 5 予測器が固定配列の分岐パターンを丸ごと記憶していた → Count=100,000 に増量                  |
+| 2     | <strong>Branchless2</strong>    | <strong>1.64 ns</strong> | 境界チェック消滅、index 計算が <code>shr+and+or</code> に。ホットパス分岐 3/op(全て予測可能)。残るは lzcnt→表ロード→movbe の直列依存チェーンで可変長エンコーダに固有 → <strong>収束</strong>        |
+| 2     | Hybrid             |     2.52 ns | Branchless2 の前に fixint 1比較(Small 0.70 ns)。Mixed では先行分岐が ~0.4 ミス/op → 分布が小整数支配と分かっているときだけ選ぶ                        |</p>
+<p>まず感心するところは、ベンチマークのパラメータとして再そっはCount = 1000だったのですが、<code>Mispredictions/Op=0</code> という計測結果が出ていたので 「Zen 5 予測器が固定配列の分岐パターンを丸ごと記憶していた → Count=100,000 に増量」という対処をしたことです。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// large enough that the branch predictor cannot memorize the repeating sequence
+// (with 1000 values, Zen 5 learned the whole pattern: BranchMispredictions/Op was 0 even for Mixed)
+const int Count = 100_000;
+    
+[Benchmark(OperationsPerInvoke = Count)]
+public int Cascade()
+</code></pre>
+<p>この辺も <code>Mispredictions/Op</code> の計測を入れていたからこそ素早く自動で認知して対応できたわけで、そうじゃなければ進行不能になる可能性がありました。</p>
+<p>さて、コードのチェックに入りたいのですが、if分岐の最速化対応は手コードだとあんまやれることがないんですが、AIはブランチレスコードを2パターン作ってくれました。最速案のBranchless2を見てみます。</p>
+<pre data-pagefind-ignore="all"><code class="language-csharp">// Round 2: significant bits of a non-negative int are 0..31, never 32, so a 64-entry table
+// indexed by ((value &gt;&gt;&gt; 26) &amp; 32) | bits works — single OR instead of imul, and the
+// power-of-two size lets us drop the bounds check via Unsafe
+static ReadOnlySpan&lt;uint&gt; Formats64 =&gt;
+[
+    // non-negative: bits 0..7 fixint, 8 uint8, 9..16 uint16, 17..31 uint32
+    Fix1, Fix1, Fix1, Fix1, Fix1, Fix1, Fix1, Fix1,
+    U8,
+    U16, U16, U16, U16, U16, U16, U16, U16,
+    U32, U32, U32, U32, U32, U32, U32, U32, U32, U32, U32, U32, U32, U32, U32,
+    // negative (bits of ~value): 0..5 fixint, 6..7 int8, 8..15 int16, 16..31 int32
+    Fix1, Fix1, Fix1, Fix1, Fix1, Fix1,
+    I8, I8,
+    I16, I16, I16, I16, I16, I16, I16, I16,
+    I32, I32, I32, I32, I32, I32, I32, I32, I32, I32, I32, I32, I32, I32, I32, I32,
+];
+
+[MethodImpl(MethodImplOptions.AggressiveInlining)]
+public static bool TryWriteInt32Branchless2(Span&lt;byte&gt; destination, int value, out int bytesWritten)
+{
+    if (destination.Length &gt;= 5)
+    {
+        int x = value ^ (value &gt;&gt; 31);
+        int bits = 32 - BitOperations.LeadingZeroCount((uint)x); // 0..31
+        int idx = ((value &gt;&gt;&gt; 26) &amp; 32) | bits;
+        uint e = Unsafe.Add(ref MemoryMarshal.GetReference(Formats64), idx);
+        int len = (int)(e &amp; 0xff);
+        ref byte d = ref MemoryMarshal.GetReference(destination);
+        d = (byte)((e &gt;&gt; 8) | ((uint)value &amp; (e &gt;&gt; 16)));
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref d, 1), BinaryPrimitives.ReverseEndianness((uint)value &lt;&lt; ((5 - len) * 8)));
+        bytesWritten = len;
+        return true;
+    }
+    return TryWriteInt32Cascade(destination, value, out bytesWritten);
+}
+</code></pre>
+<p>こういうの妥当かどうかって全然判断つかないですよね正直。GeminiとかChatGPTにも投げて、ヨシといってるんならもうヨシということにしようか、みたいな感じですらあります（妥当でしたのでヨシ）</p>
+<p>と、いうわけでmixedのシチュエーションで 8.53 nsが 1.64 ns に、超高速化されたということになります。これをそのまま採用するかどうかはともかくとして、改めて興味深い結果が得られました。持ち帰って検討させていただきます（？）</p>
+<h2>AI時代のコーディング</h2>
+<p>SumにせよMessagePackのTryWriteIntにせよ、人間を遥かに超えてるのは間違いない。Sumのforループ高速化はカンニング疑惑が拭えなかったわけですが、ブランチレスのMessagePack Writeのコードは世の中にはないと思うので、Fableがちゃんと自力で導出したコードだといえます。この結果はOpusでは得られてなかったので、個人的にはFableが閾値超えてきたな、と思いました。今までは解析は勿論AIの強みだけど書かせるとイマイチだなー、と思ってたんですが、Fableは分析力が更に増したせいなのか、書き力も高くなっているぞ、と。少なくともこの手の関数単位みたいな超スモール領域ではコーディング力に圧倒されてしまう。人間のやることは雰囲気を整えるのと、トレードオフに対してどちらのハンコを押すか決めるぐらいしかない。</p>
+<p>ただし、じゃあアプリケーション全体、ライブラリ全体をまるっと作らせて満足いくコードが仕上がってくるかというと、そこはまだまだNoではある。単純にコンテキストの問題もあるし、複雑性が桁違いでもあるし、ただ、AIの性能がめちゃくちゃ上がってそこを克服したとしても、ライブラリ全体の作りが満足いくかどうかは、もう感性の世界でもあるので、気に入るか気に入らないかの領域であり、受け入れるか受け入れないか、といったところではある。AIがどれだけ進化しても自分の100%の好みなものをポン出しで生成することは絶対ないわけなので、ひたすら自分好みにしようとする不毛な応酬をするぐらいなら、心折れて、AIの出した、まぁ動くコードを諦めて受け入れるしかない、にはなりそう。</p>
+<p>ようするところオーナーシップが持てなくなってきているんですね、コードから。短期的には動けばいい、んですが中長期的にはモチベーションに大きく影響するので、単純な受け入れは結構危険だと思っています。それでも自分で吟味して生成したコードはいいんです、<code>TryWriteInt32Branchless2</code> なんかは自分が生成したコードなら受け入れるでしょう。でも、これがPRですごいパフォーマンス改善のコードなんです！と来た時にはどう対応できるかな、と。多分、拒絶しますね。受け入れたら受け入れたで、もうそのあたりは見たくない、になります。</p>
+<p>会社のプロダクトだったら、アプリケーションだったら、コードへの愛着に関しては捨てて、プロダクトに向き合うことでオーナーシップを担保していかなければならない。なんだったら、そのほうが理想的でしょ？といえるかもしれません（個人的には、色々な職種や見てる領域によって大きなプロダクトは成り立つので、エンジニアがコードへの関心が占める割合が高いのは、悪いことではないと思っていますが）。実際私も個人アプリとか、こないだはAndroidアプリを作って公開しましたが、そういうのはコードはどうでもいいしほとんど見てなくて、アプリケーションの出来、ルック＆フィールが全てでした。</p>
+<p>けれど、OSSライブラリは100%コードの世界なので、ここを捨ててしまうと、なにもないんですね、なにも残りません。実際、ちょっとやや虚無感を抱き始めているところが無きにしも非ずで、コミュニケーション取っていい機能できたんですよーっていうんで見てみたらAIプルリクですねこれ、なんていうのがあると、どうしても見る気が起きなくなるし、セキュリティチェックしましたー、は大事だしいいんですがセットのAI修正コードの山です、というのはかなり厳しいものがあった。モチベーションがぽきぽき折れてきます。</p>
+<p>というわけで、とても複雑な気持ちを抱えています。</p>
+<p>それはそれとして、何が作りたいか、というと、全てが研ぎ澄まされた究極のライブラリが作りたいという気持ちがあり、Fableが超強力な武器なのは間違いないわけです。というか、なんだったら今まで公開している今のすべてのコードをむしろ恥じます。全部作り直したい、なんだったら今までのコードは恥なので見たくない（？）とすら思いかねないところもあります。</p>
+<h2>まとめ</h2>
+<p>この記事はAI補助ゼロで100%オーガニックな手書きで作られています。文章に関しては本当にAIベースのものが好きじゃないので、それこそClaude Codeにベンチマーク取らせたわけだから、いい感じにブログになるように整形してよ、といえば、まぁできなくはない、できなくはないんですが、それは血が通ってない面白みも少ない（ないとは言いませんが）記事だなあ、と思ってしまうわけです。ノイズだらけ、雑味だらけのこの文章が一周回ってよく思えてきませんか……！？塩化ナトリウム99%みたいな文章を摂取してる場合じゃあないんです、時代は天然塩。</p>
+<p>で、まとめとしては、改めて自分のバイブルである美味しんぼに立ち返って、究極 vs 至高として、究極のライブラリをまずは一品出すところからなんじゃあないでしょうか。の前に、AI時代到来への心の整理がようやくついてきたので（？）各種OSSのこれからについて一つ一つ決めていきたいな、と思います。しんみりしちゃった。いや、どちらかというとワクワクしてるんですよ……！？</p>
+</div>
+<h1 data-pagefind-sort="date:2026-06-24" data-pagefind-meta="published:2026-06-24"><a href="https://neue.cc/2026/06/24_superdotnetnew.html">C# Kaigi 2026基調講演します！と、.NET for AndroidとVibe Coding</a></h1>
 <ul class="date"><li>2026-06-24</li></ul>
 <div class="entry_body"><p><a href="https://csharpkaigi.net/">C# Kaigi 2026</a>というイベントが2026年9月19日 (土)に開催されます！C#er のための C# 特化型カンファレンス、ついに開催！おー。ほー。知らんかった。シランカッタデス。私はnot運営です。ただ、C#はカンファレンスがなかったし、MSがやるものもすっかりAzure一色、そして今やAI一色になって寂しい限りなので、開催はとても嬉しいです。企画に感謝。そして、この第一回が成功して、長く、大きく続いていくといいなぁ。</p>
 <p>そんなわけで、貢献するためにもセッションのプロポーザル書くかなあ、と思ってたのですが、僭越ながら基調講演に抜擢していただきました！基調講演のタイトルは「C#の現在地 進化の歴史と、AI時代の.NET Everywhere」にします、しました！第一回だしまぁ歴史はやっぱ外せないのかな、ではありつつも、別に中の人でもないしカタログ並べて紹介してもしょうがない。私は昔から、今もC#に魅力を感じ続けているわけで、その時々で何に魅力を感じて使い続けているのか、そんな外側からの目線を話せたらいいかなあと思っています。</p>
@@ -1657,474 +2184,6 @@ Provides an efficient allocation free async/await integration for Unity.</li>
 <p>期間中で言うと<a href="https://github.com/Cysharp/R3">R3</a>が大型タイトル（？）です。また、Updateのほうも大型リニューアルとして<a href="https://github.com/Cysharp/ZLogger">ZLogger v2</a>は相当力の入ったものになっています。今年の範囲だと、こないだ出した<a href="https://github.com/Cysharp/ConsoleAppFramework">ConsoleAppFramework v5</a>や、近いうちにリリースされる（はず）の<a href="https://github.com/MessagePack-CSharp/MessagePack-CSharp">MessagePack for C# v3</a>といった計画も控えています。なお、<a href="https://github.com/Cysharp/MagicOnion">MagicOnion</a>は現在メンテナーじゃないので実績に含めてはいないのですが、引き続きアクティブに開発されています！</p>
 <p>ところで、このサイトも地味に更新されていて（自作のC#製静的サイトジェネレーターで作られています、ハンドメイド！）、ついに全文検索が搭載されました！上のほうのインプットボックスがそれになっているので、ぜひ試してみてください。ちょっと引っ掛かり方が変な可能性も高いですが、そこは検索ライブラリの仕様なので、いつか改善されるでしょう。多分きっと。</p>
 </div>
-<h1 data-pagefind-sort="date:2024-06-13" data-pagefind-meta="published:2024-06-13"><a href="https://neue.cc/2024/06/13_ConsoleAppFramework_v5.html">ConsoleAppFramework v5 - ゼロオーバーヘッド・Native AOT対応のC#用CLIフレームワーク</a></h1>
-<ul class="date"><li>2024-06-13</li></ul>
-<div class="entry_body"><p><a href="https://github.com/Cysharp/ConsoleAppFramework">ConsoleAppFramework</a>の完全に新しいバージョンをリリースしました。完全に設計しなおして実装も完全に作り直された、何もかもが新しいフレームワークになっています。設計指針として「Zero Dependency, Zero Overhead, Zero Reflection, Zero Allocation, AOT Safe」を掲げ、もちろん、他を圧倒的に引き離すパフォーマンスを実現しています。</p>
-<p><img src="https://github.com/Cysharp/ConsoleAppFramework/assets/46207/db4bf599-9fe0-4ce4-801f-0003f44d5628" alt="image" /></p>
-<p>これはコールドスタートアップ・ウォームアップなしでのベンチマークとなっていて、CLIアプリケーションでの実際での利用に最も即したものだと考えています。System.CommandLineと比較すれば280倍！メモリアロケーション量もほかのフレームワークの100~1000倍少なくなっています(表示されている400Bはほぼシステム自体のallocなのでフレームワーク自体は0です)。</p>
-<p>このパフォーマンスは、全てをSource Generatorで生成することで実現しました。例えば以下のようなコード。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">using ConsoleAppFramework;
-
-// args: ./cmd --foo 10 --bar 20
-ConsoleApp.Run(args, (int foo, int bar) =&gt; Console.WriteLine($&quot;Sum: {foo + bar}&quot;));
-</code></pre>
-<p>ConsoleAppFrameworkはSource GeneratorがRunで与えられているラムダ式の引数を解析して、Runメソッドそのものを生成します。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">internal static partial class ConsoleApp
-{
-    // Generate the Run method itself with arguments and body to match the lambda expression
-    public static void Run(string[] args, Action&lt;int, int&gt; command)
-    {
-        // code body
-    }
-}
-</code></pre>
-<p>通常C#のSource Generatorは属性をクラスかメソッドに与えて、それを元に生成されますが、ConsoleAppFrameworkはメソッドの呼び出しを監視して生成のキーにしています。これはRustのマクロから発想を得ていて、Rustには<a href="https://doc.rust-lang.org/book/ch19-06-macros.html">Attribute-like macros and Function-like macros</a>といったような分類がありますが、今回のやりかたはFunction-likeなスタイルと言えるでしょう。</p>
-<p>実際の生成されるコード全体は以下のようなものになります。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">internal static partial class ConsoleApp
-{
-    public static void Run(string[] args, Action&lt;int, int&gt; command)
-    {
-        if (TryShowHelpOrVersion(args, 2, -1)) return;
-
-        var arg0 = default(int);
-        var arg0Parsed = false;
-        var arg1 = default(int);
-        var arg1Parsed = false;
-
-        try
-        {
-            for (int i = 0; i &lt; args.Length; i++)
-            {
-                var name = args[i];
-
-                switch (name)
-                {
-                    case &quot;--foo&quot;:
-                    {
-                        if (!TryIncrementIndex(ref i, args.Length) || !int.TryParse(args[i], out arg0)) { ThrowArgumentParseFailed(&quot;foo&quot;, args[i]); }
-                        arg0Parsed = true;
-                        break;
-                    }
-                    case &quot;--bar&quot;:
-                    {
-                        if (!TryIncrementIndex(ref i, args.Length) || !int.TryParse(args[i], out arg1)) { ThrowArgumentParseFailed(&quot;bar&quot;, args[i]); }
-                        arg1Parsed = true;
-                        break;
-                    }
-                    default:
-                        // omit...(case-insensitive compare codes)
-                        ThrowArgumentNameNotFound(name);
-                        break;
-                }
-            }
-            if (!arg0Parsed) ThrowRequiredArgumentNotParsed(&quot;foo&quot;);
-            if (!arg1Parsed) ThrowRequiredArgumentNotParsed(&quot;bar&quot;);
-
-            command(arg0!, arg1!);
-        }
-        catch (Exception ex)
-        {
-            Environment.ExitCode = 1;
-            if (ex is ValidationException or ArgumentParseFailedException)
-            {
-                LogError(ex.Message);
-            }
-            else
-            {
-                LogError(ex.ToString());
-            }
-        }
-    }
-
-    static partial void ShowHelp(int helpId)
-    {
-        Log(&quot;&quot;&quot;
-Usage: [options...] [-h|--help] [--version]
-
-Options:
-  --foo &lt;int&gt;     (Required)
-  --bar &lt;int&gt;     (Required)
-&quot;&quot;&quot;);
-    }
-}
-</code></pre>
-<p>特にひねりもなさそうなド直球ドシンプルなコードに見えるのではないでしょうか。それが大事です！単純なコードであればあるほど速い！フレームワークなのに単純、だから速い。というのが目指している姿です。余計なコードはいっさいなく、メソッド本体に全ての処理が集約されているので、フレームワークとしてゼロ・オーバーヘッド、最適化した手書きコードと同等の速度を実現しました。</p>
-<p>CLIアプリケーションは通常、コールドスタートからの単発の実行になるため、動的コード生成(IL.EmitやExpression.Compile)やキャッシュ(ArrayPoolやDictionary生成による以降のマッチング高速化)が効きにくい分野です。それらを作ったほうがオーバーヘッドが大きいですから。かといってリフレクションなどをそのまま使うのは、それはそれで低速です。ConsoleAppFrameworkは全ての必要な処理をインライン生成することによって、単発実行での速度が圧倒的に高速化されています。</p>
-<p>リフレクションもないのでNative AOTとの親和性も圧倒的に高く、コールドスタートアップ速度におけるC#の欠点は一切なくなります。</p>
-<p>もう一つ特徴として、<code>ConsoleApp</code>クラスを含めて、全てがSource Generatorによって生成されるために、ConsoleAppFramework自体も含めて依存が全くありません。</p>
-<p>コンソールアプリケーションを作るシチュエーションは多用です。多数の依存を持った大きなバッチアプリケーションの場合もあれば、超単機能の小さなコマンドの場合もあります。小さなコマンドを作りたい時には、少しも追加の依存を入れたくはないでしょう。それこそ <code>Microsoft.Extensions.Hosting</code> を参照すると、それだけで数十個の依存DLLが追加されてしまいます！ConsoleAppFrameworkなら、自身も含めて依存ゼロです。</p>
-<p>依存ゼロの良いところは明らかにバイナリサイズが小さくなることです。特にNative AOTではバイナリサイズは気になるところですが、ConsoleAppFrameworkなら追加のコストはほぼゼロです。</p>
-<p>そしてもちろん、単機能ではフレームワークとしては物足りない、ということで以下のような機能が実現されています。十分に充実した機能群は、他のフレームワークと比べても全く見劣りしないはずです。</p>
-<ul>
-<li>SIGINT/SIGTERM(Ctrl+C) handling with gracefully shutdown via <code>CancellationToken</code></li>
-<li>Filter(middleware) pipeline to intercept before/after execution</li>
-<li>Exit code management</li>
-<li>Support for async commands</li>
-<li>Registration of multiple commands</li>
-<li>Registration of nested commands</li>
-<li>Setting option aliases and descriptions from code document comment</li>
-<li><code>System.ComponentModel.DataAnnotations</code> attribute-based Validation</li>
-<li>Dependency Injection for command registration by type and public methods</li>
-<li><code>Microsoft.Extensions</code>(Logging, Configuration, etc...) integration</li>
-<li>High performance value parsing via <code>ISpanParsable&lt;T&gt;</code></li>
-<li>Parsing of params arrays</li>
-<li>Parsing of JSON arguments</li>
-<li>Help(<code>-h|--help</code>) option builder</li>
-<li>Default show version(<code>--version</code>) option</li>
-</ul>
-<p>生成されるコードはモジュール化されていて、コードが使用する機能によって変化し、常にその機能の実現において最小のコードが生成されるようになっています。それにより多機能と高速さを両立しています。また、どの機能も最速で実行できるよう念入りに調整してあるため、全機能が有効化されてもなお、他とは比較にならないほどに高速です。</p>
-<p>余談ですが、デリゲートはデリゲート生成というアロケーションがあります。つまり真のゼロアロケーション・ゼロオーバーヘッドじゃないじゃん、と言うことができます。しかし、ちゃんとConsoleAppFrameworkは真のゼロアロケーションを実現する仕組みもちゃんと用意されています。以下のように静的関数をfunction pointerとして渡してください。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">unsafe
-{
-    ConsoleApp.Run(args, &amp;Sum);
-}
-
-static void Sum(int x, int y) =&gt; Console.Write(x + y);
-</code></pre>
-<p>すると、以下のような <code>delegate* managed&lt;&gt;</code> （あまり見慣れないと思いますが、managed function pointerという言語機能がC#には追加されているのです）の引数を持ったメソッドの実体を生成します。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public static unsafe void Run(string[] args, delegate* managed&lt;int, int, void&gt; command)
-</code></pre>
-<p>これならもう完全に文句なくゼロアロケーション・ゼロオーバーヘッドです！</p>
-<p>実用的には別にデリゲートでも全く関係ないレベルですが、完全に完璧を目指す執拗な姿勢により、対応を入れました。これでどの角度からも絶対に文句は付けられないでしょう。</p>
-<h2>高速な値変換</h2>
-<p>文字列からC#の値に変換する最速の手段はなんでしょうか？intだったら <code>int.TryParse</code> ですよね。では、他は？intは決め打ちだからいいとして、string -&gt; T(あるいはobject)を汎用的にするには？というと少し難しい話になってきて、昔は<a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.componentmodel.typeconverter?view=net-8.0">TypeConverter</a>というものが使われてきました。もちろん、パフォーマンスは悪いです。</p>
-<p>あるいは最近はJsonSerializerが標準搭載されているから、それに丸投げしてみるというのもアリでしょう。もちろん、パフォーマンスは決して良くはありません。特にコールドスタートアップで考えるとJsonSerializerのキャッシュ処理が必要になってきて、単発実行においてはかなりのオーバーヘッドが足されてしまいます。</p>
-<p>ConsoleAppFrameworkでは<a href="https://learn.microsoft.com/en-us/dotnet/api/system.iparsable-1?view=net-8.0">IParsable</a>, <a href="https://learn.microsoft.com/en-us/dotnet/api/system.ispanparsable-1?view=net-8.0">ISpanParsable</a>を採用しています。これは .NET 7から追加され、C# 11で追加されたstatic abstract interfaceが使用されています。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public interface IParsable&lt;TSelf&gt; where TSelf : IParsable&lt;TSelf&gt;?
-{
-	static abstract TSelf Parse(string s, IFormatProvider? provider);
-	static abstract bool TryParse([NotNullWhen(true)] string? s, IFormatProvider? provider, [MaybeNullWhen(returnValue: false)] out TSelf result);
-}
-</code></pre>
-<p>C# 11になってようやく汎用的な 「文字列 -&gt; 値」変換処理が実現するようになったのです！ ConsoleAppFrameworkでは .NET 8/C# 12 を最小実行可能環境としているため、問答無用で採用しました。HalfやInt128などの .NET 8で登場した新しい型や、自分で定義する方も<code>IParsable&lt;T&gt;</code>を実装すればそれを使って高速に処理されます！</p>
-<p>とはいえ、intなどの基本型はそもそもSource Generatorがintであることを知っているので、直接int.TryParseのように直接実行されるようになっていたりはします。</p>
-<p>なお、値のバインディングに関してはparams arrayやデフォルト値にも対応しています。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">ConsoleApp.Run(args, (
-    [Argument]DateTime dateTime,  // Argument
-    [Argument]Guid guidvalue,     // 
-    int intVar,                   // required
-    bool boolFlag,                // flag
-    MyEnum enumValue,             // enum
-    int[] array,                  // array
-    MyClass obj,                  // object
-    string optional = &quot;abcde&quot;,    // optional
-    double? nullableValue = null, // nullable
-    params string[] paramsArray 
-    ) =&gt; { });
-</code></pre>
-<p>ちょうどC# 12から<a href="https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/lambda-expressions#input-parameters-of-a-lambda-expression">ラムダ式にデフォルト値やparamsが使用できるようになりました</a>、ということが反映されています。</p>
-<h2>ドキュメントコメントによる定義</h2>
-<p>DescriptionやAliasの追加は、今までは、あるいは他のフレームワークでは属性を使って記述していました。しかし、それは少しメソッドの各パラメーターに属性、更にかなり長めの文字列を付与するのは、メソッドとしてかなり読みづらくなります。</p>
-<p>そこでConsoleAppFrameworkではドキュメントコメントを活用することにしました。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">class Commands
-{
-    /// &lt;summary&gt;
-    /// Display Hello.
-    /// &lt;/summary&gt;
-    /// &lt;param name=&quot;message&quot;&gt;-m, Message to show.&lt;/param&gt;
-    public static void Hello(string message) =&gt; Console.Write($&quot;Hello, {message}&quot;);
-}
-</code></pre>
-<p>これは</p>
-<pre data-pagefind-ignore="all"><code class="language-txt">Usage: [options...] [-h|--help] [--version]
-
-Display Hello.
-
-Options:
-  -m|--message &lt;string&gt;    Message to show. (Required)
-</code></pre>
-<p>というコマンドになります。ドキュメントコメントであれば、多くの引数があっても自然な見た目を保つことが可能です。この手法が取れるのはSource Generatorで生成するため.xmlは不要でコードから直接読み取れることの強みでもありますね。（ただしSource Generatorでドキュメントコメントをあらゆる環境で読み取れるようにするには若干のハックが必要でした）</p>
-<h2>複数コマンドの追加</h2>
-<p><code>ConsoleApp.Run</code>は単独コマンドのためのショートカットでしたが、複数のコマンドやネストされているサブコマンドの追加も可能です。例えば以下のような設定を行った場合の生成を例を見ていきます。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">var app = ConsoleApp.Create();
-
-app.Add(&quot;foo&quot;, () =&gt; { });
-app.Add(&quot;foo bar&quot;, (int x, int y) =&gt; { });
-app.Add(&quot;foo bar barbaz&quot;, (DateTime dateTime) =&gt; { });
-app.Add(&quot;foo baz&quot;, async (string foo = &quot;test&quot;, CancellationToken cancellationToken = default) =&gt; { });
-
-app.Run(args);
-</code></pre>
-<p>このコードのAddは、まず以下のように展開されます。Source Generatorが全てのAddされるラムダ式の型を知っているので、それぞれ固有の型を持ったフィールドに割り当てます。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">partial struct ConsoleAppBuilder
-{
-    Action command0 = default!;
-    Action&lt;int, int&gt; command1 = default!;
-    Action&lt;global::System.DateTime&gt; command2 = default!;
-    Func&lt;string, global::System.Threading.CancellationToken, Task&gt; command3 = default!;
-
-    partial void AddCore(string commandName, Delegate command)
-    {
-        switch (commandName)
-        {
-            case &quot;foo&quot;:
-                this.command0 = Unsafe.As&lt;Action&gt;(command);
-                break;
-            case &quot;foo bar&quot;:
-                this.command1 = Unsafe.As&lt;Action&lt;int, int&gt;&gt;(command);
-                break;
-            case &quot;foo bar barbaz&quot;:
-                this.command2 = Unsafe.As&lt;Action&lt;global::System.DateTime&gt;&gt;(command);
-                break;
-            case &quot;foo baz&quot;:
-                this.command3 = Unsafe.As&lt;Func&lt;string, global::System.Threading.CancellationToken, Task&gt;&gt;(command);
-                break;
-            default:
-                break;
-        }
-    }
-}
-</code></pre>
-<p>これによりDelegateを保持しておくための配列や、DelegateのままInvokeするリフレクション/ボクシングが防げています。</p>
-<p>Runでは、<code>string[] args</code>からコマンドを選択するために定数文字列のswitchが埋め込まれます。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">partial void RunCore(string[] args)
-{
-    if (args.Length == 0)
-    {
-        ShowHelp(-1);
-        return;
-    }
-    switch (args[0])
-    {
-        case &quot;foo&quot;:
-            if (args.Length == 1)
-            {
-                RunCommand0(args, args.AsSpan(1), command0);
-                return;
-            }
-            switch (args[1])
-            {
-                case &quot;bar&quot;:
-                    if (args.Length == 2)
-                    {
-                        RunCommand1(args, args.AsSpan(2), command1);
-                        return;
-                    }
-                    switch (args[2])
-                    {
-                        case &quot;barbaz&quot;:
-                            RunCommand2(args, args.AsSpan(3), command2);
-                            break;
-                        default:
-                            RunCommand1(args, args.AsSpan(2), command1);
-                            break;
-                    }
-                    break;
-                case &quot;baz&quot;:
-                    RunCommand3(args, args.AsSpan(2), command3);
-                    break;
-                default:
-                    RunCommand0(args, args.AsSpan(1), command0);
-                    break;
-            }
-            break;
-        default:
-            ShowHelp(-1);
-            break;
-    }
-}
-</code></pre>
-<p>C#で文字列から特定のコードにジャンプする最速の手段は、switchで文字列定数を使うことです。展開されるアルゴリズムは何度か修正されていて、C# 12では<a href="https://github.com/dotnet/roslyn/issues/56374">Performance: faster switch over string objects · Issue #56374 · dotnet/roslyn</a>として、まず長さをチェックした後に、差が存在する1文字だけを絞るといった形でマッチさせます。</p>
-<p><code>Dictionary&lt;string, T&gt;</code>からのマッチなどよりも高速で初期化時間もアロケーションもないのが、C#コンパイラの助けを借りれる強みであり、そうした処理ができるのはC#コードそのものを出力するSource Generator方式だけです。なので絶対に最速なわけです。</p>
-<h2>DIとCancellationTokenとライフタイム</h2>
-<p>引数にはコマンドのパラメーターとして有効になるもの以外に、DI経由で渡したいもの(例えば<code>ILogger&lt;T&gt;</code>や<code>Option&lt;T&gt;</code>など)や、特別扱いする型として<code>ConsoleAppContext</code>と<code>CancellationToken</code>を定義することができます。</p>
-<p>DIによる受取は、コンソールアプリケーションがASP.NETのプロジェクトなどと設定ファイルを共有したいようなシチュエーションで有効でしょう。そうした場合のために、 Microsoft.Extensions.Hosting と連動させることが可能です。</p>
-<p>また、<code>CancellationToken</code>を渡した場合は、SIGINT/SIGTERM/SIGKILL(Ctrl+C)をフックするコンソールアプリケーションとしてのライフタイム管理が働くようになります。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">await ConsoleApp.RunAsync(args, async (int foo, CancellationToken cancellationToken) =&gt;
-{
-    await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
-    Console.WriteLine($&quot;Foo: {foo}&quot;);
-});
-</code></pre>
-<p>上記のコードは以下のように展開されます。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">using var posixSignalHandler = PosixSignalHandler.Register(ConsoleApp.Timeout);
-var arg0 = posixSignalHandler.Token;
-
-await Task.Run(() =&gt; command(arg0!)).WaitAsync(posixSignalHandler.TimeoutToken);
-</code></pre>
-<p>.NET 6から追加された<a href="https://learn.microsoft.com/en-us/dotnet/api/system.runtime.interopservices.posixsignalregistration?view=net-8.0">PosixSignalRegistration</a>を使って、SIGINT/SIGTERM/SIGKILLがフックし、CancellationTokenをキャンセルの状態にします。と同時に、即時終了を抑制します(通常Ctrl + Cを押すと即座にAbortされますが、Abortされなくなります)。</p>
-<p>それによりアプリケーションがCancellationTokenを正常にハンドリングする余地を残しています。</p>
-<p>ただしCancellationTokenをハンドリングしないと終了命令を無視するだけになってしまい、それはそれで困るので、強制的に終了するタイムアウト時間が設けられています。デフォルトでは5秒に設定されていますが、これは <code>ConsoleApp.Timeout</code> プロパティで自由に変更できます。もし強制終了をオフにしたい場合は <code>ConsoleApp.Timeout = Timeout.InfiniteTimeSpan</code> を指定すると良いでしょう。</p>
-<p><a href="https://learn.microsoft.com/ja-jp/dotnet/api/system.threading.tasks.task.waitasync?view=net-8.0">Task.WaitAsync</a>は .NET 6 からです。TimeSpanを渡す以外に、CancellationTokenを渡すことも可能なので、単純な数秒後ではなく、WaitAsyncの発火するタイミングをPosixSignalRegistrationが発火した後にTimeout後、といった条件を作ることができました。</p>
-<h2>フィルターパイプライン</h2>
-<p>実行の前後をフックする仕組みとしてConsoleAppFrameworkではFilterを採用しています。ミドルウェアパターンとも呼ばれて、特にasync/awaitが使える言語ではよく見かけるパターンだと思います。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">internal class NopFilter(ConsoleAppFilter next) : ConsoleAppFilter(next) // ctor needs `ConsoleAppFilter next` and call base(next)
-{
-    // implement InvokeAsync as filter body
-    public override async Task InvokeAsync(ConsoleAppContext context, CancellationToken cancellationToken)
-    {
-        try
-        {
-            /* on before */
-            await Next.InvokeAsync(context, cancellationToken); // invoke next filter or command body
-            /* on after */
-        }
-        catch
-        {
-            /* on error */
-            throw;
-        }
-        finally
-        {
-            /* on finally */
-        }
-    }
-}
-</code></pre>
-<p>この設計パターンは本当に優れていて、実行をフックしたいような仕組みを用意したい場合は、このパターンを採用することを絶対にお薦めします。GoFの時代にasync/awaitがあったら、重要なデザインパターンとして載っていたことでしょう。</p>
-<p>ReadMeにはフィルターでできることとして、実行時間のロギング・ExitCodeのカスタマイズ・多重実行禁止・認証処理などを紹介しています。<code>Task InvokeAsync</code>一つで様々な処理を実現できる素晴らしさ。誰がこのパターンを最初に発見したんでしょうね？</p>
-<p>フィルターの設計にも色々な手法があるのですが、ConsoleAppFrameworkでは最もパフォーマンスの出る方法を選びました。コンストラクターでNextを受け取ることと、コードジェネレート時に静的に全ての利用するフィルターが決定するので（動的な追加は許可していません）、全てを埋め込んで組み立てています。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">app.UseFilter&lt;NopFilter&gt;();
-app.UseFilter&lt;NopFilter&gt;();
-app.UseFilter&lt;NopFilter&gt;();
-app.UseFilter&lt;NopFilter&gt;();
-app.UseFilter&lt;NopFilter&gt;();
-
-// The above code will generate the following code:
-
-sealed class Command0Invoker(string[] args, Action command) : ConsoleAppFilter(null!)
-{
-    public ConsoleAppFilter BuildFilter()
-    {
-        var filter0 = new NopFilter(this);
-        var filter1 = new NopFilter(filter0);
-        var filter2 = new NopFilter(filter1);
-        var filter3 = new NopFilter(filter2);
-        var filter4 = new NopFilter(filter3);
-        return filter4;
-    }
-
-    public override Task InvokeAsync(ConsoleAppContext context, CancellationToken cancellationToken)
-    {
-        return RunCommand0Async(context.Arguments, args, command, context, cancellationToken);
-    }
-}
-</code></pre>
-<p>これにより、中間の配列のアロケーションや、ラムダ式のキャプチャのアロケーションは発生せず、フィルターの個数 + 1(メソッド本体のラップ)の追加のアロケーションのみが追加のコストとなります。また、戻り値のTaskは、同期的に完了する場合はTask.Completed相当のものが使われることになるため、これをValueTaskにする必要はありません。</p>
-<p>コンストラクターでNextを受け取ってbaseに渡すだけのコードも、primary constructorのお陰で簡単に書けるようになりました。</p>
-<h2>コマンドライン引数の構文について</h2>
-<p>コマンドライン引数はスペース区切りで<code>string[] args</code>に渡されるということ以外は、完全に自由です。なんとなく <code>--</code>や<code>-</code>がパラメーター識別子だと思われていますが、実際はなんでもいいし、なんだったらWindowsは<code>/</code>が使われることも多かった。</p>
-<p>とはいえ、ある程度標準的なルールは存在します。代表的なものは<a href="https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap12.html">POSIX規格</a>と、その拡張である<a href="https://www.gnu.org/prep/standards/html_node/Command_002dLine-Interfaces.html">GNU Coding Standards</a>でしょうか。ConsoleAppFrameworkでも、POSIX規格にある程度は従いつつ、GNU Coding Stadardsで定義されている <code>--version</code> と <code>--help</code> を組み込みのオプションとしています。名前も <code>--lower-kebab-case</code> がデフォルトです。</p>
-<p>「ある程度」というのは、つまり、完全に従っているというわけではありません。規格にせよ伝統的な慣習にせよ、古いルールは現代的な観点から許容すべきでないルールも少なくありません。例えば<code>-x</code>と<code>-X</code>が区別されて異なる挙動をするというのは絶対にナシでしょう。あるいは広く使われているものでもバンドリング、<code>-fdx</code>は<code>-f</code>, <code>-d</code>, <code>-x</code>と解釈されるといったものも、あまり良いとは思えません。バンドリングに関しては、パフォーマンス上でも、パース処理を複雑化させるため問題があります。</p>
-<p>ConsoleAppFrameworkで優先しているのはパフォーマンスであるため、パフォーマンス上問題を引き起こす可能性のあるルールに関しては採用していません。大文字小文字の区別はしないようにしていますが、これは小文字のマッチングを先に行った後、フォールバックとしてcase-insensitiveのマッチングを行うため、実用上のパフォーマンスの低下は起こらないと考えています。</p>
-<p><a href="https://learn.microsoft.com/ja-jp/dotnet/standard/commandline/syntax">System.CommandLine のコマンド ライン構文の概要 - .NET | Microsoft Learn</a>を見ると、System.CommandLineがかなり柔軟な構文解釈を可能にしていることがわかるでしょう。それはとても良いことです！良いことではあるのですが、パフォーマンス劣化を引き起こしているなら問題です。そして実際、System.CommandLineの性能はベンチマーク結果から明らかなとおり、非常に悪い。これはちょっといただけません。</p>
-<p>迷走を続けている<a href="https://github.com/dotnet/command-line-api">System.CommandLine</a>は、どうやら再度分解されて実装を変更するようです。<a href="https://github.com/dotnet/command-line-api/issues/2338">Resetting System.CommandLine</a>ということで、POSIX規格のパーサーとしての小さなコアを.NET 9 あるいは .NET 10で標準採用されることを目指している、ようです。</p>
-<p>もしそれらが標準採用されたとしても、パフォーマンスの観点からは、ConsoleAppFrameworkを超えることは絶対にないでしょう。</p>
-<h2>v4からの互換性について</h2>
-<p>破壊的変更！破壊的変更を厭わないことはいいことです、イノベーションを妨げない、常に先端的であり続けるために必要なことです。C#の先端を走り続けるのはCysharpのアイデンティティでもあります。と、同時に、もちろん大迷惑なことです。今回の v4 -&gt; v5 に関しては .NET Frameworkから.NET Coreに変わったような、 ASP.NET から ASP.NET Coreに変わったような、そんな変革なのでしょうがない、どうしても必要な変化だったのだ……。</p>
-<p>ただし、実際のところは別にそこまで大きく変わっているわけではなかったりもします。名前変換処理(lower-kebab-case)のロジックは同じものを使っているため、名前がズレてしまうといったこともないので、コンパイルエラー出たメソッド名をマッピングするだけ、ではあります。そのぐらいのことはよくある、よね？</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">var app = ConsoleApp.Create(args); app.Run(); -&gt; var app = ConsoleApp.Create(); app.Run(args);
-app.AddCommand/AddSubCommand -&gt; app.Add(string commandName)
-app.AddRootCommand -&gt; app.Add(&quot;&quot;)
-app.AddCommands&lt;T&gt; -&gt; app.Add&lt;T&gt;
-app.AddSubCommands&lt;T&gt; -&gt; app.Add&lt;T&gt;(string commandPath)
-app.AddAllCommandType -&gt; NotSupported(use Add&lt;T&gt; manually)
-[Option(int index)] -&gt; [Argument]
-[Option(string shortName, string description)] -&gt; Xml Document Comment
-ConsoleAppFilter.Order -&gt; NotSupported(global -&gt; class -&gt; method declrative order)
-ConsoleAppOptions.GlobalFilters -&gt; app.UseFilter&lt;T&gt;
-</code></pre>
-<p>全体的には、より単純化された、ようするに「良くなった」と思ってもらえる仕様変更だとは思います。</p>
-<p>また、標準で <code>Microsoft.Extensions.Hosting</code> に乗っからなくなったというのは大きな違いですが、これは一行追加するだけで解決します。Hostingの上に乗っかるというのは、つまりはHostingで生成するServiceProviderを使う、それだけのことなのだ、と。実際はLifetime管理もありますが、それはConsoleAppFrameworkが自前でやっているので、DIのためのServiceProviderだけ渡してやれば実用上の違いはありません。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">using var host = Host.CreateDefaultBuilder().Build(); // use using for host lifetime
-ConsoleApp.ServiceProvider = host.ServiceProvider;
-</code></pre>
-<p>v4では<code>ConsoleAppBase</code>を継承させていましたが、v5ではPOCOでよくなりました。代わりに<code>ConsoleAppContext</code>や<code>CancellationToken</code>に関してはコンストラクタインジェクションで受け取ってください。これも、C# 12のprimary constructorのお陰でそんなに手間じゃなくなりました。これもベースクラスを必要とする仕組みをやめた理由の一つになります。</p>
-<h2>真のIncremental Generator</h2>
-<p>Incremental Generatorって、ただたんに何も考えずに作るとIncrementalにならないのです。というのは知識として知ってはいたのですが、今まで見て見ぬふりをしていました！ありがたいことに指摘が入ったので、重い腰を上げてちゃんと抜本的な対応を取ることにしました。</p>
-<p>まず最初にやらなければならないのは、Incrementalであるかどうかを視認できるようにすることです。普通に動かしていても内部状態は全く見えないので、ユニットテストで状態をチェックできるようにすることが大事です。例えばこんなユニットテストが書かれています。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">    [Fact]
-    public void RunLambda()
-    {
-        var step1 = &quot;&quot;&quot;
-using ConsoleAppFramework;
-
-ConsoleApp.Run(args, int () =&gt; 0);
-&quot;&quot;&quot;;
-
-        var step2 = &quot;&quot;&quot;
-using ConsoleAppFramework;
-
-ConsoleApp.Run(args, int () =&gt; 100); // body change
-
-Console.WriteLine(&quot;foo&quot;); // unrelated line
-&quot;&quot;&quot;;
-
-        var step3 = &quot;&quot;&quot;
-using ConsoleAppFramework;
-
-ConsoleApp.Run(args, int (int x, int y) =&gt; 100); // change signature
-
-Console.WriteLine(&quot;foo&quot;);
-&quot;&quot;&quot;;
-
-        var reasons = CSharpGeneratorRunner.GetIncrementalGeneratorTrackedStepsReasons(&quot;ConsoleApp.Run.&quot;, step1, step2, step3);
-
-        reasons[0][0].Reasons.Should().Be(&quot;New&quot;);
-        reasons[1][0].Reasons.Should().Be(&quot;Unchanged&quot;);
-        reasons[2][0].Reasons.Should().Be(&quot;Modified&quot;);
-
-        VerifySourceOutputReasonIsCached(reasons[1]);
-        VerifySourceOutputReasonIsNotCached(reasons[2]);
-    }
-</code></pre>
-<p>Incremental Generatorは <code>trackIncrementalGeneratorSteps: true</code> というオプションを渡してDriverを動かすと、各ステップの状態の結果が見えるようになります。<code>IncrementalStepRunReason</code>には<code>New</code>, <code>Unchanged</code>, <code>Modified</code>, <code>Cached</code>, <code>Removed</code> という状態があり、最終出力の手前が<code>Unchanged</code>か<code>Cached</code>なら、出力処理がスキップされます。</p>
-<p>上のユニットテストではstep2では出力コードに変更のない箇所に変更が加わっただけなので、Unchangedです。なので最終段ではCachedになっていました。step3は再生成が必要な変更が加わっているのでModifiedとなり、ソースコード生成処理まで走ります。</p>
-<p><code>IncrementalStepRunReason</code>は<code>TrackedSteps</code>から取り出すことが出来るのですが、そのままだとちょっと読みづらすぎるので、確認しやすいように整形しています、というのが<code>GetIncrementalGeneratorTrackedStepsReasons</code>というユーティリティメソッドです。</p>
-<pre data-pagefind-ignore="all"><code class="language-csharp">public static (string Key, string Reasons)[][] GetIncrementalGeneratorTrackedStepsReasons(string keyPrefixFilter, params string[] sources)
-{
-    var parseOptions = new CSharpParseOptions(LanguageVersion.CSharp12); // 12
-    var driver = CSharpGeneratorDriver.Create(
-        [new ConsoleAppGenerator().AsSourceGenerator()],
-        driverOptions: new GeneratorDriverOptions(IncrementalGeneratorOutputKind.None, trackIncrementalGeneratorSteps: true))
-        .WithUpdatedParseOptions(parseOptions);
-
-    var generatorResults = sources
-        .Select(source =&gt;
-        {
-            var compilation = baseCompilation.AddSyntaxTrees(CSharpSyntaxTree.ParseText(source, parseOptions));
-            driver = driver.RunGenerators(compilation);
-            return driver.GetRunResult().Results[0];
-        })
-        .ToArray();
-
-    var reasons = generatorResults
-        .Select(x =&gt; x.TrackedSteps
-            .Where(x =&gt; x.Key.StartsWith(keyPrefixFilter) || x.Key == &quot;SourceOutput&quot;)
-            .Select(x =&gt;
-            {
-                if (x.Key == &quot;SourceOutput&quot;)
-                {
-                    var values = x.Value.Where(x =&gt; x.Inputs[0].Source.Name?.StartsWith(keyPrefixFilter) ?? false);
-                    return (
-                        x.Key,
-                        Reasons: string.Join(&quot;, &quot;, values.SelectMany(x =&gt; x.Outputs).Select(x =&gt; x.Reason).ToArray())
-                    );
-                }
-                else
-                {
-                    return (
-                        Key: x.Key.Substring(keyPrefixFilter.Length),
-                        Reasons: string.Join(&quot;, &quot;, x.Value.SelectMany(x =&gt; x.Outputs).Select(x =&gt; x.Reason).ToArray())
-                    );
-                }
-            })
-            .OrderBy(x =&gt; x.Key)
-            .ToArray())
-        .ToArray();
-
-    return reasons;
-}
-</code></pre>
-<p>ごちゃごちゃしてよくわからないという感じですが、つまりそのままだと本当によくわからない代物ということで。Keyに関しては各ステップで <code>.WithTrackingName(&quot;ConsoleApp.Run.0_CreateSyntaxProvider&quot;)</code> のような命名規則で付与しています。TrackedStepsが<code>ImmutableDictionary</code>のため列挙の順番が順不同でイマイチ確認しづらいので、番号振ってソートするようにしました。また、複数のRegisterSourceOutputが走っていると(ConsoleAppFrameworkではRun系とBuilder系の2種が動いてる)混線してわかりづらくなるため、keyPrefixとしてフィルタリングするようにしています。</p>
-<p>注意すべき点とか、いい感じに作る方法とか、色々説明しておかなければならないことが多いのですが、めちゃくちゃ長くなるので、それはまたの機会ということで……！</p>
-<h2>まとめ</h2>
-<p>もともとConsoleAppFrameworkはCysharpの製品ラインでは珍しく、パフォーマンスを重視していたわけではない、という成り立ちがあります。どちらかというと機能面、当時それなりに珍しかったHostingと融合してCLIフレームワークを作るといったコンセプトの立証を主軸に作り上げ、そして一定の成果を挙げました。何回かの改修でHelpがリッチになったりMinimal APIっぽく書けるようになったりもしましたが、どうしても古くささが目立ってきました。</p>
-<p>特に<a href="https://github.com/mayuki/Cocona">Cocona</a>は、ConsoleAppFrameworkの影響を受けつつも、より柔軟で、より強力な機能を備えていてとても素晴らしいライブラリです。このままではConsoleAppFrameworkはただの劣化版ではないか、という意識もありました。自信をもってベストであると薦められないのは心苦しい。というかCoconaを作っているのはCysharpの同僚ですしですの。</p>
-<p>なので、今回APIの幾つかは逆にCoconaからの影響を受けつつ(<code>[Argument]</code>など)、全く異なるキャラクターを持ったフレームワークとなるように腐心しました。パースについての項目で説明したように、ConsoleAppFramework v5は柔軟性をある程度犠牲にしているため、豊富な機能が必要ならば、System.CommandLineやCoconaを使用することをお薦めします。</p>
-<p>また、パフォーマンスの観点から言うと、本体の実行時間が長ければ長いほどフレームワークのオーバーヘッドなんてどうでもよくはなります。10分、1分、いや、10秒ぐらいかかる処理であるなら、フレームワーク部分が1msだろうと50msだろうと誤差みたいなものでしょう。それはそもそもJITコンパイルにも言えることではありますが。とはいえ、Native AOTだのコールドスタートアップ速度だのがやいやい言われる昨今では、別にそんなもの無視できる程度の話だろう、と一刀両断できるわけでもなく、早いに越したことはないのは間違いないとも言えます。</p>
-<p>パフォーマンスや依存性なしといったメリットはもちろんですが、アプローチや設計面でも特異で面白いものになっていると思いますので、是非お試しください！もちろん、実用性もめちゃくちゃ高く、文句なしに必須ライブラリと考えてもらってもいいのではないでしょうか！</p>
-</div>
 <a href="https://neue.cc/2">| Next</a>
 </div>
         <div id="side" data-pagefind-ignore="all">
@@ -2147,6 +2206,7 @@ GitHub:<a href="https://github.com/neuecc/">neuecc</a>
 <h3>Archive</h3>
 <div class="side_body">
 <ul>
+<li><a href="https://neue.cc/2026/07/">2026-07</a>
 <li><a href="https://neue.cc/2026/06/">2026-06</a>
 <li><a href="https://neue.cc/2026/03/">2026-03</a>
 <li><a href="https://neue.cc/2025/12/">2025-12</a>

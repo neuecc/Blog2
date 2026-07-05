@@ -5,7 +5,541 @@
     <link>http://neue.cc/</link>
     <description>C# Technical Blog</description>
     <language>ja</language>
-    <lastBuildDate>Wed, 24 Jun 2026 19:02:25 +0900</lastBuildDate>
+    <lastBuildDate>Mon, 06 Jul 2026 04:50:52 +0900</lastBuildDate>
+    <item>
+      <guid isPermaLink="true">https://neue.cc/2026/07/06_highperformancecode_with_ai.html</guid>
+      <link>https://neue.cc/2026/07/06_highperformancecode_with_ai.html</link>
+      <title>AI時代におけるC#でのBenchmarkDotNetを使った最速コードの書き方</title>
+      <description>&lt;h1 data-pagefind-sort="date:2026-07-06" data-pagefind-meta="published:2026-07-06"&gt;&lt;a href="https://neue.cc/2026/07/06_highperformancecode_with_ai.html"&gt;AI時代におけるC#でのBenchmarkDotNetを使った最速コードの書き方&lt;/a&gt;&lt;/h1&gt;
+&lt;ul class="date"&gt;&lt;li&gt;2026-07-06&lt;/li&gt;&lt;/ul&gt;
+&lt;div class="entry_body"&gt;&lt;p&gt;&lt;img src="/article_img/20260706_1.png" alt="" /&gt;&lt;/p&gt;
+&lt;p&gt;AI時代においてテストが、AI Agentがループを回すための足腰として重要なように、プロファイラーも思考のための素材を与えるという点で重要です。従来は、基本的には &lt;code&gt;Mean&lt;/code&gt; と &lt;code&gt;Allocated&lt;/code&gt; を見るぐらいでしたが、どうせAIが読むんだったら、与えられる情報は多ければ多いほどいい、ということで &lt;code&gt;JIT Disassembler&lt;/code&gt; や &lt;code&gt;BranchMispredictions/Op&lt;/code&gt; も追加していきましょう、デフォルトで。というお話です。この記事では最後にMessagePack for C#の整数値のWriteを改善する例を紹介しますが、asmや分岐予測のデータを元にして、Fableは人間（私）を遥かに超えるコードを生成してくれました。&lt;/p&gt;
+&lt;p&gt;&lt;img src="/article_img/20260706_2.png" alt="" /&gt;&lt;/p&gt;
+&lt;p&gt;↑なんと4倍速の余地がある。&lt;/p&gt;
+&lt;p&gt;なにせAIはこの手の解析は得意技ですから！得意技というのもあるのですが、「なぜそのコードが速くなったのか」を理解するためには、元コード, Mean, Allocatedだけでは証拠が足りないのです。証拠が足りないと、理由付けは推測でしかなくて、外れることがある。それでは改善ループは進まない、これは別に熟練した人間でも、AIであっても変わらない話であり、人間だけがやってきた今までは、なんとなくの理由付けで済ませて、それで終わらせていたことも多くありました。AIなら機械語を解析するコストはゼロなので、押し付けられるコンテキストは可能な限り押し付けてやりましょう。&lt;/p&gt;
+&lt;p&gt;手法の説明をするにあたって、&lt;code&gt;Skill&lt;/code&gt; だの &lt;code&gt;AGENTS.md&lt;/code&gt;だのは、賞味期限も短いので特に書くことでもないと思っています。新しいモデルが来るたびにゲームチェンジでゲームエンドして手のひらクルクルしててどうするの？小手先のスキル・ハーネスも色々ありますが、やはり賞味期限が短く感じます。別にAI驚き屋が言うような、AIを今すぐ使いこなさなければ乗り遅れる、なんてこたぁないんですよね。明らかに去年よりも、いや、半年前よりも使いこなすのがイージーになってきているので、手のひらクルクルしてる時間を真剣に生きたほうがいいですよ絶対……！&lt;/p&gt;
+&lt;p&gt;Fable 5も出ましたし、&lt;a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5"&gt;Anthrorpic公式のFable 5のプロンプトガイド&lt;/a&gt;にもありますが、過剰な指示よりも簡潔に要点絞って方向性を合わせるほうがいいかなあ、と思います。で、これってプロンプトエンジニアリングやハーネス作りに血道をあげるよりは、ずっとイージー度合いが高まっているわけですよね。そして的確な指示を行うには的確な理解力が必要になる、それはプロダクトであれば深いドメイン知識であったりプラットフォームへの理解であったり、ライブラリであれば言語や環境への理解が大事なわけです。たとえAIのほうが知識があったとしても、方向性を示せなければ、真に求めるものを得るのはランダムなガチャを引いて当たりを手にすることを祈るようなものであり、実現は難しいのです。&lt;/p&gt;
+&lt;h2&gt;最速のSum&lt;/h2&gt;
+&lt;p&gt;まずはベンチマークの骨組みから、ということで簡単な指示を与えて作らせます。&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code&gt;C#でbenchmarkdotnetを使って小さな関数を、なにが最速なのかを確認しながら、AIが結果を読み取って最適なコードを見つける仕組みを作りたい。実行速度だけじゃなくて、JIT結果の機械語のdisassembleとその解析も行ってください。
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;もう少し短くてもいいかなという感じですが、短くしすぎて外してやり取りの往復するのはダルいので、このぐらいで。手順や解析のポイントなんかはAIが自分で作り出して文章化して膨らませてくれるわけだから、秘伝のSkillはいらないかな、と思います。どちらかというと用途別のオーダーメイドなほうがいいとすら思っているので、あれこれ足してコンテキスト汚染するよりも、簡潔なところから、簡潔さを維持しながら育てていくべきではないかな、と。大きなアプリケーションであれば、最終的に固有情報がみっちりかかれた代物が出来上がるかもしれませんが、それはそれで、ようするにオーダーメイドの一点ものが出来上がったということで、とても良いことです。&lt;/p&gt;
+&lt;p&gt;さて、とりあえずのサンプルとしてAIはSumのベンチマークを作ってきました。これはOpusでもFableでもそうだったし、わかりやすいので、いい例だとは思います。もし作ってこないようだったらSumのベンチマーク作って、とプロンプトに足しておけばいいでしょう。&lt;/p&gt;
+&lt;p&gt;Baselineのコードは、シンプルな配列のSumのfor loopです。&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;[Benchmark(Baseline = true)]
+public int ForLoop()
+{
+	var d = data;
+	int sum = 0;
+	for (int i = 0; i &amp;lt; d.Length; i++)
+	{
+		sum += d[i];
+	}
+	return sum;
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;結果はこうです。&lt;/p&gt;
+&lt;p&gt;| Method              |      Mean |
+| ------------------- | --------: |
+| ForLoop             | 211.31 ns |
+| ForEachLoop         | 211.44 ns |
+| LinqSum             |  59.42 ns |
+| VectorSimd          |  36.42 ns |
+| TensorPrimitivesSum |  13.54 ns |
+| VectorRef           |  32.44 ns |
+| Vector512Unrolled   |  22.05 ns |
+| Vector512Final      |  18.36 ns |&lt;/p&gt;
+&lt;p&gt;SIMDにして速くなりましたー、みたいなのは当然かな、と思うのですが、なんか色々やってくれてますね。これは、理屈としてはAIがasmを見ながら3 roundで最適化処理をかけていったという体になります。&lt;/p&gt;
+&lt;p&gt;| Round | 実装                   | Mean      | asm から見つけた欠陥 → 次の一手                                        |
+| ----- | -------------------- | --------- | ---------------------------------------------------------- |
+| 1     | ForLoop (baseline)   | 203 ns    | 未ベクトル化                                                     |
+| 1     | VectorSimd           | 33 ns     | Slice の範囲チェックが毎反復残存 → ref ベース化                             |
+| 2     | Vector512Unrolled    | 19 ns     | &lt;code&gt;movsxd&lt;/code&gt; が毎ロード前に挿入、端数がスカラー → nuint 化+マスク端数                 |
+| 3     | &lt;strong&gt;Vector512Final&lt;/strong&gt;   | &lt;strong&gt;18 ns&lt;/strong&gt; | メインループが純粋な &lt;code&gt;vpaddd zmm&lt;/code&gt;×4、端数も AVX-512 マスクレジスタ処理。手書きの理想形に到達 |
+| —     | TensorPrimitives.Sum | 13 ns     | 天井(64B アラインメント調整+8段アンロール)                                  |&lt;/p&gt;
+&lt;p&gt;この結果は究極で、これ以上言えることはなんもありません。ちなみにOpusではここまでたどり着かなかったので、やはりFableは強力だな、と思いました。&lt;/p&gt;
+&lt;p&gt;さて、コードを見ていきましょう。SIMD化はシンプルな話で、通常だと手書きでもこのぐらいは書くし、このぐらいでいっか、で終わらせるところです。&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;[Benchmark]
+public int VectorSimd()
+{
+	var d = data.AsSpan();
+	var acc = Vector&amp;lt;int&amp;gt;.Zero;
+	int i = 0;
+	for (; i &amp;lt;= d.Length - Vector&amp;lt;int&amp;gt;.Count; i += Vector&amp;lt;int&amp;gt;.Count)
+	{
+		acc += new Vector&amp;lt;int&amp;gt;(d.Slice(i));
+	}
+	int sum = Vector.Sum(acc);
+	for (; i &amp;lt; d.Length; i++)
+	{
+		sum += d[i];
+	}
+	return sum;
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;今回の試行ではその先へもグイグイ進んで、Round3の最終形は、アンロール頑張りました。&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;// Round 3: nuint indexing (kills movsxd) + masked vector tail (kills scalar remainder loop)
+[Benchmark]
+public int Vector512Final()
+{
+	ref int p = ref MemoryMarshal.GetArrayDataReference(data);
+	nuint length = (nuint)data.Length;
+	nuint vc = (nuint)Vector512&amp;lt;int&amp;gt;.Count;
+
+	if (!Vector512.IsHardwareAccelerated || length &amp;lt; vc)
+	{
+		int s = 0;
+		for (nuint j = 0; j &amp;lt; length; j++)
+		{
+			s += Unsafe.Add(ref p, j);
+		}
+		return s;
+	}
+
+	var acc0 = Vector512&amp;lt;int&amp;gt;.Zero;
+	var acc1 = Vector512&amp;lt;int&amp;gt;.Zero;
+	var acc2 = Vector512&amp;lt;int&amp;gt;.Zero;
+	var acc3 = Vector512&amp;lt;int&amp;gt;.Zero;
+	nuint i = 0;
+	if (length &amp;gt;= vc * 4)
+	{
+		nuint lastBlock = length - vc * 4;
+		for (; i &amp;lt;= lastBlock; i += vc * 4)
+		{
+			acc0 += Vector512.LoadUnsafe(ref p, i);
+			acc1 += Vector512.LoadUnsafe(ref p, i + vc);
+			acc2 += Vector512.LoadUnsafe(ref p, i + vc * 2);
+			acc3 += Vector512.LoadUnsafe(ref p, i + vc * 3);
+		}
+	}
+	for (nuint lastVector = length - vc; i &amp;lt;= lastVector; i += vc)
+	{
+		acc0 += Vector512.LoadUnsafe(ref p, i);
+	}
+	if (i &amp;lt; length)
+	{
+		// overlapping load of the final vector, masking out already-summed lanes
+		nuint offset = length - vc;
+		var lane = Vector512&amp;lt;int&amp;gt;.Indices + Vector512.Create((int)offset);
+		var mask = Vector512.GreaterThanOrEqual(lane, Vector512.Create((int)i));
+		acc1 += mask &amp;amp; Vector512.LoadUnsafe(ref p, offset);
+	}
+	return Vector512.Sum((acc0 + acc1) + (acc2 + acc3));
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;こうしたラウンドの進行に欠かせなかったのが BenchmarkDotNetの &lt;code&gt;DisassemblyDiagnoser&lt;/code&gt; で、ベンチ実行結果のasmを取得してくれます。&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;var config = ManualConfig.Create(DefaultConfig.Instance)
+    .AddJob(Job.ShortRun) // 3 warmup + 3 iterations, fast feedback loop for AI iteration
+    .AddDiagnoser(MemoryDiagnoser.Default)
+    .AddDiagnoser(new DisassemblyDiagnoser(new DisassemblyDiagnoserConfig(
+        maxDepth: 3,
+        printSource: true,
+        exportGithubMarkdown: true,
+        exportCombinedDisassemblyReport: true)))
+    .AddExporter(JsonExporter.Full);
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;これによってシンプルなfor-loopの結果から&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-assembly"&gt;; SumBenchmark.ForLoop()
+;         var d = data;
+;         ^^^^^^^^^^^^^
+;         int sum = 0;
+;         ^^^^^^^^^^^^
+;         for (int i = 0; i &amp;lt; d.Length; i++)
+;              ^^^^^^^^^
+;             sum += d[i];
+;             ^^^^^^^^^^^^
+;         return sum;
+;         ^^^^^^^^^^^
+       mov       rax,[rcx+8]
+       xor       ecx,ecx
+       mov       edx,[rax+8]
+       test      edx,edx
+       jle       short M00_L01
+       add       rax,10
+M00_L00:
+       add       ecx,[rax]
+       add       rax,4
+       dec       edx
+       jne       short M00_L00
+M00_L01:
+       mov       eax,ecx
+       ret
+; Total bytes of code 30
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;ここまで機械語の命令を見て自律的な改善を試行してくれます。&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-assembly"&gt;; SumBenchmark.Vector512Final()
+;         ref int p = ref MemoryMarshal.GetArrayDataReference(data);
+;         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;         nuint length = (nuint)data.Length;
+;         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;         nuint vc = (nuint)Vector512&amp;lt;int&amp;gt;.Count;
+;         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;         if (!Vector512.IsHardwareAccelerated || length &amp;lt; vc)
+;         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;             int s = 0;
+;             ^^^^^^^^^^
+;             for (nuint j = 0; j &amp;lt; length; j++)
+;                  ^^^^^^^^^^^
+;                 s += Unsafe.Add(ref p, j);
+;                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+;             return s;
+;             ^^^^^^^^^
+;         var acc0 = Vector512&amp;lt;int&amp;gt;.Zero;
+;         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;         var acc1 = Vector512&amp;lt;int&amp;gt;.Zero;
+;         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;         var acc2 = Vector512&amp;lt;int&amp;gt;.Zero;
+;         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;         var acc3 = Vector512&amp;lt;int&amp;gt;.Zero;
+;         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;         nuint i = 0;
+;         ^^^^^^^^^^^^
+;         if (length &amp;gt;= vc * 4)
+;         ^^^^^^^^^^^^^^^^^^^^^
+;             nuint lastBlock = length - vc * 4;
+;             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;                 acc0 += Vector512.LoadUnsafe(ref p, i);
+;                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;                 acc1 += Vector512.LoadUnsafe(ref p, i + vc);
+;                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;                 acc2 += Vector512.LoadUnsafe(ref p, i + vc * 2);
+;                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;                 acc3 += Vector512.LoadUnsafe(ref p, i + vc * 3);
+;                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;             for (; i &amp;lt;= lastBlock; i += vc * 4)
+;                                    ^^^^^^^^^^^
+;         for (nuint lastVector = length - vc; i &amp;lt;= lastVector; i += vc)
+;              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;             acc0 += Vector512.LoadUnsafe(ref p, i);
+;             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;         if (i &amp;lt; length)
+;         ^^^^^^^^^^^^^^^
+;             nuint offset = length - vc;
+;             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;             var lane = Vector512&amp;lt;int&amp;gt;.Indices + Vector512.Create((int)offset);
+;             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;             acc1 += mask &amp;amp; Vector512.LoadUnsafe(ref p, offset);
+;             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+;         return Vector512.Sum((acc0 + acc1) + (acc2 + acc3));
+;         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       mov       rax,[rcx+8]
+       mov       rcx,rax
+       cmp       [rcx],cl
+       add       rcx,10
+       mov       edx,[rax+8]
+       cmp       rdx,10
+       jb        near ptr M00_L05
+       vxorps    ymm0,ymm0,ymm0
+       vxorps    ymm1,ymm1,ymm1
+       vxorps    ymm2,ymm2,ymm2
+       vxorps    ymm3,ymm3,ymm3
+       xor       eax,eax
+       cmp       rdx,40
+       jb        short M00_L01
+       lea       r8,[rdx-40]
+M00_L00:
+       vpaddd    zmm0,zmm0,[rcx+rax*4]
+       vpaddd    zmm1,zmm1,[rcx+rax*4+40]
+       vpaddd    zmm2,zmm2,[rcx+rax*4+80]
+       vpaddd    zmm3,zmm3,[rcx+rax*4+0C0]
+       add       rax,40
+       cmp       rax,r8
+       jbe       short M00_L00
+M00_L01:
+       mov       r8,rdx
+       sub       r8,10
+       mov       r10,r8
+       cmp       rax,r10
+       ja        short M00_L03
+M00_L02:
+       vpaddd    zmm0,zmm0,[rcx+rax*4]
+       add       rax,10
+       cmp       rax,r10
+       jbe       short M00_L02
+M00_L03:
+       cmp       rax,rdx
+       jae       short M00_L04
+       vpbroadcastd zmm4,r8d
+       vpaddd    zmm4,zmm4,[7FFB6613A480]
+       vpbroadcastd zmm5,eax
+       vpcmpnltd k1,zmm4,zmm5
+       vpmovm2d  zmm4,k1
+       vpandd    zmm4,zmm4,[rcx+r8*4]
+       vpaddd    zmm1,zmm4,zmm1
+M00_L04:
+       vpaddd    zmm0,zmm0,zmm1
+       vpaddd    zmm1,zmm2,zmm3
+       vpaddd    zmm0,zmm1,zmm0
+       vmovaps   zmm1,zmm0
+       vextracti32x8 ymm0,zmm0,1
+       vpaddd    ymm0,ymm0,ymm1
+       vmovaps   ymm1,ymm0
+       vextracti128 xmm0,ymm0,1
+       vpaddd    xmm0,xmm0,xmm1
+       vpsrldq   xmm1,xmm0,8
+       vpaddd    xmm0,xmm1,xmm0
+       vpsrldq   xmm1,xmm0,4
+       vpaddd    xmm0,xmm1,xmm0
+       vmovd     eax,xmm0
+       vzeroupper
+       ret
+M00_L05:
+       xor       eax,eax
+       xor       r8d,r8d
+       inc       rdx
+       jmp       short M00_L07
+M00_L06:
+       add       eax,[rcx+r8]
+       add       r8,4
+M00_L07:
+       dec       rdx
+       jne       short M00_L06
+       vzeroupper
+       ret
+; Total bytes of code 280
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;人間がこれ見て解析進めようというのは骨が折れるし、あらゆるベンチマークで丁寧な解析を実行することは現実的ではないんですが、AIに与える分にはコストゼロで強力な武器となってくれます。マイクロベンチマーク実行時にDisassemblyを含めるのは新時代の常識といえるでしょう。&lt;/p&gt;
+&lt;p&gt;なお、オチは .NET 11の&lt;a href="https://learn.microsoft.com/en-us/dotnet/api/system.numerics.tensors.tensorprimitives.sum"&gt;TensorPrimitive.Sum&lt;/a&gt;最強理論でした。たった一行で圧倒的最速！&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;[Benchmark]
+public int TensorPrimitivesSum() =&amp;gt; TensorPrimitives.Sum&amp;lt;int&amp;gt;(data);
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;コードは&lt;a href="https://github.com/dotnet/dotnet/blob/f7b4c5716faaee8fb8a289aed29118cad955c45f/src/runtime/src/libraries/System.Numerics.Tensors/src/System/Numerics/Tensors/netcore/Common/TensorPrimitives.IAggregationOperator.cs#L513-L693"&gt;TensorPrimitives.IAggregationOperator.Vectorized512&lt;/a&gt;で見ることができますが、AIの書いたVector512Finalに近いです。しかし更に一層ゴリゴリのコードが書かれているということで、ある意味、AIの思考の正しさが証明されていることでもあります。もちろんFableがこの「答えを知っている」可能性も大いにあり得るので、こういった汎用的な問題だけで真の思考力、応用力を測ることは不可能ではありますが。&lt;/p&gt;
+&lt;h2&gt;MessagePackのWrite性能を改善する&lt;/h2&gt;
+&lt;p&gt;分岐予測の診断の例も入れたいので、MessagePackのWriteの例を出します。Readはより難しくて見応えがあるんですが、Writeのほうがシンプルなので例としてはいいかな、と。&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-txt"&gt;次のベンチマークとして、MessagePackのエンコーダーのパフォーマンス改善をしたい。`BinaryPrimitives.TryWriteInt32LittleEndian()`のように`TryWriteInt32()`の実装候補を出して性能改善していってください。
+
+public static class MessagePackPrimitives
+{
+    public static bool TryWriteInt32(Span&amp;lt;byte&amp;gt; destination, int value, out int bytesWritten)
+    {        
+    }
+}
+
+分岐予測に関しても正確な計測をしたいので  HardwareCounter.BranchMispredictions, HardwareCounter.BranchInstructions も診断情報に追加してください。Windowsで、管理者権限で起動しているので取得実行できるはずです。
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;今回、分岐があることを知っているので最初から指示に入れていますが、そうでなければコード見て確認して追加してもいいかもしれません。いずれにせよ相談（こちらからの明確な指示）がないと入れてくれることはない（と思う）ので、この辺も「AI時代の指示力」といったところでしょうか。&lt;/p&gt;
+&lt;p&gt;なお、HardwareCounterの実行には管理者権限が必要になり、Cursorの場合は子プロセスに権限を引き継いでくれていたのですが、Claude Code のシェルは管理者権限を継承してくれませんでした。一応、Claude(Fable)が「UAC 経由で実行する(ユーザーに UAC 許可を依頼)」という形で解消してくれたので、全自動とはいかない（UAC許可を押す必要あり）のですが、問題なく解決はしてくれました。&lt;/p&gt;
+&lt;p&gt;さて、ベースラインのコードはこれになります。&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;// Candidate 1 (baseline): straightforward if-else cascade, MessagePackWriter.WriteInt32 style
+[MethodImpl(MethodImplOptions.AggressiveInlining)]
+public static bool TryWriteInt32Cascade(Span&amp;lt;byte&amp;gt; destination, int value, out int bytesWritten)
+{
+	if (value &amp;gt;= 0)
+	{
+		if (value &amp;lt;= 127)
+		{
+			if (destination.Length &amp;lt; 1) goto Fail;
+			destination[0] = (byte)value;
+			bytesWritten = 1;
+			return true;
+		}
+		if (value &amp;lt;= 255)
+		{
+			if (destination.Length &amp;lt; 2) goto Fail;
+			destination[0] = UInt8Code;
+			destination[1] = (byte)value;
+			bytesWritten = 2;
+			return true;
+		}
+		if (value &amp;lt;= 65535)
+		{
+			if (destination.Length &amp;lt; 3) goto Fail;
+			destination[0] = UInt16Code;
+			BinaryPrimitives.WriteUInt16BigEndian(destination.Slice(1), (ushort)value);
+			bytesWritten = 3;
+			return true;
+		}
+		if (destination.Length &amp;lt; 5) goto Fail;
+		destination[0] = UInt32Code;
+		BinaryPrimitives.WriteUInt32BigEndian(destination.Slice(1), (uint)value);
+		bytesWritten = 5;
+		return true;
+	}
+	else
+	{
+		if (value &amp;gt;= -32)
+		{
+			if (destination.Length &amp;lt; 1) goto Fail;
+			destination[0] = unchecked((byte)value);
+			bytesWritten = 1;
+			return true;
+		}
+		if (value &amp;gt;= sbyte.MinValue)
+		{
+			if (destination.Length &amp;lt; 2) goto Fail;
+			destination[0] = Int8Code;
+			destination[1] = unchecked((byte)value);
+			bytesWritten = 2;
+			return true;
+		}
+		if (value &amp;gt;= short.MinValue)
+		{
+			if (destination.Length &amp;lt; 3) goto Fail;
+			destination[0] = Int16Code;
+			BinaryPrimitives.WriteInt16BigEndian(destination.Slice(1), (short)value);
+			bytesWritten = 3;
+			return true;
+		}
+		if (destination.Length &amp;lt; 5) goto Fail;
+		destination[0] = Int32Code;
+		BinaryPrimitives.WriteInt32BigEndian(destination.Slice(1), value);
+		bytesWritten = 5;
+		return true;
+	}
+Fail:
+	bytesWritten = 0;
+	return false;
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;やっていることは単純で、if連打しているだけです。MessagePackのintの仕様としてはint(4バイト)を「1バイトの種類コード+値」として、1~5バイトの可変で保存します。-32~127は1バイト(positive fixint, negative fixint)、255までは2バイト(uint8tag + 値)、65535までは……、といったような分岐で書き込みます。&lt;/p&gt;
+&lt;p&gt;さて、ベンチマークの結果はこうなっています。&lt;/p&gt;
+&lt;p&gt;| Method          | Distribution |          Mean | BranchMispredictions/Op | BranchInstructions/Op | Code Size |
+| --------------- | ------------ | ------------: | ----------------------: | --------------------: | --------: |
+| &lt;strong&gt;Cascade&lt;/strong&gt;     | &lt;strong&gt;Large&lt;/strong&gt;    | &lt;strong&gt;4.1720 ns&lt;/strong&gt; |                   &lt;strong&gt;0&lt;/strong&gt; |                 &lt;strong&gt;9&lt;/strong&gt; | &lt;strong&gt;426 B&lt;/strong&gt; |
+| CascadeUnsafe   | Large        |     3.9454 ns |                       0 |                     8 |     331 B |
+| FixintFirst     | Large        |     5.3299 ns |                       0 |                    11 |     371 B |
+| BranchlessTable | Large        |     1.7388 ns |                       0 |                     4 |     459 B |
+| Branchless2     | Large        |     1.7022 ns |                       0 |                     3 |     442 B |
+| Hybrid          | Large        |     1.8189 ns |                       0 |                     4 |     471 B |
+|                 |              |               |                         |                       |           |
+| &lt;strong&gt;Cascade&lt;/strong&gt;     | &lt;strong&gt;Mixed&lt;/strong&gt;    | &lt;strong&gt;8.5328 ns&lt;/strong&gt; |                   &lt;strong&gt;1&lt;/strong&gt; |                 &lt;strong&gt;8&lt;/strong&gt; | &lt;strong&gt;439 B&lt;/strong&gt; |
+| CascadeUnsafe   | Mixed        |     8.2713 ns |                       1 |                     8 |     336 B |
+| FixintFirst     | Mixed        |     9.2350 ns |                       1 |                    10 |     384 B |
+| BranchlessTable | Mixed        |     1.7210 ns |                       0 |                     4 |     459 B |
+| Branchless2     | Mixed        |     1.6376 ns |                       0 |                     3 |     442 B |
+| Hybrid          | Mixed        |     2.5156 ns |                       0 |                     4 |     474 B |
+|                 |              |               |                         |                       |           |
+| &lt;strong&gt;Cascade&lt;/strong&gt;     | &lt;strong&gt;Small&lt;/strong&gt;    | &lt;strong&gt;1.9931 ns&lt;/strong&gt; |                   &lt;strong&gt;0&lt;/strong&gt; |                 &lt;strong&gt;5&lt;/strong&gt; | &lt;strong&gt;404 B&lt;/strong&gt; |
+| CascadeUnsafe   | Small        |     1.3937 ns |                       0 |                     5 |     309 B |
+| FixintFirst     | Small        |     0.6945 ns |                       0 |                     4 |     171 B |
+| BranchlessTable | Small        |     1.7197 ns |                       0 |                     4 |     459 B |
+| Branchless2     | Small        |     1.6388 ns |                       0 |                     3 |     442 B |
+| Hybrid          | Small        |     0.7017 ns |                       0 |                     4 |     450 B |&lt;/p&gt;
+&lt;p&gt;というわけで、上のシンプルなコード(Cascade)よりも良い結果が出せています。&lt;/p&gt;
+&lt;p&gt;で、まず、ベンチマーク結果をチェックする場合は、ベンチマークコードのチェックが必須です。ベンチマークは、与える値によって結果がかなり変わります。例えばJsonSerializerのパフォーマンステストをするときに、ASCIIだけのものと、日本語交じりのものとでは、性能が全然変わってきたりします(UTF8エンコーディングのfastpathへの入り方が違う)。というわけで、ちゃんと網羅しているかどうかを確認することは重要です。で、人間がベンチマークを書くとパラメータの網羅性が雑になったりすることが多々ある、少なくとも私は網羅どころか単一パラメータだけで済ませていることも多かったのですが、やはりここはAI時代なのでちゃんと網羅しているものを生成してもらいましょう。またはAIの性能が低いと網羅してくれてない場合もありうるので、ここは人間が、「何をテストしようとしているのか」の確認はすべきだと思っています。AI時代はコードなんて見ないとか言ってる場合じゃないんです。&lt;/p&gt;
+&lt;p&gt;今回はintの値によってifの回数とかも変わってきて、それが性能差になるので、Small, Large, Mixedとしてパターンを作っています。&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;// Small: all fixint (perfectly predictable branch)
+// Mixed: format class chosen at random per element (worst case for branch prediction)
+// Large: all 5-byte int32/uint32
+[Params(&amp;quot;Small&amp;quot;, &amp;quot;Mixed&amp;quot;, &amp;quot;Large&amp;quot;)]
+public string Distribution = &amp;quot;Mixed&amp;quot;;
+
+[GlobalSetup]
+public void Setup()
+{
+    var rand = new Random(42);
+    values = new int[Count];
+    buffer = new byte[Count * 5];
+    for (int i = 0; i &amp;lt; Count; i++)
+    {
+        values[i] = Distribution switch
+        {
+            &amp;quot;Small&amp;quot; =&amp;gt; rand.Next(-32, 128),
+            &amp;quot;Large&amp;quot; =&amp;gt; rand.Next(2) == 0 ? rand.Next(65536, int.MaxValue) : rand.Next(int.MinValue, -32768),
+            _ =&amp;gt; rand.Next(8) switch
+            {
+                0 =&amp;gt; rand.Next(0, 128),
+                1 =&amp;gt; rand.Next(-32, 0),
+                2 =&amp;gt; rand.Next(128, 256),
+                3 =&amp;gt; rand.Next(-128, -32),
+                4 =&amp;gt; rand.Next(256, 65536),
+                5 =&amp;gt; rand.Next(-32768, -128),
+                6 =&amp;gt; rand.Next(65536, int.MaxValue),
+                _ =&amp;gt; rand.Next(int.MinValue, -32768),
+            },
+        };
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Small(-32~127の範囲に収まる)も多いだろうなあ、とは思いますが、まぁMixedのケースも全然いっぱいあるだろうということで、そこのバランスをとっていきたいですね。FixintFirstは、まさにそのfixintのレンジのifを最初に入れることで、Smallだけは絶対に速いというfastpathになっています。&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;// Candidate 3: single-compare fast path for fixint [-32, 127] (the dominant case in typical
+// msgpack payloads), everything else in a non-inlined slow path
+[MethodImpl(MethodImplOptions.AggressiveInlining)]
+public static bool TryWriteInt32FixintFirst(Span&amp;lt;byte&amp;gt; destination, int value, out int bytesWritten)
+{
+    if ((uint)(value + 32) &amp;lt;= 159 &amp;amp;&amp;amp; destination.Length &amp;gt;= 1)
+    {
+        MemoryMarshal.GetReference(destination) = unchecked((byte)value);
+        bytesWritten = 1;
+        return true;
+    }
+    return TryWriteInt32MultiByte(destination, value, out bytesWritten);
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;ちなみに↑の-32~127のレンジという処理が &lt;code&gt;if ((uint)(value + 32) &amp;lt;= 159 &amp;amp;&amp;amp; destination.Length &amp;gt;= 1)&lt;/code&gt; というお洒落なif一発におさめているのは、地味に特筆すべき点だと思っています。こういうのシレッと含ませてくれると感心しちゃいますよね。&lt;/p&gt;
+&lt;p&gt;さて、とりあえず重点を置きたいのはMixedの数値なので、それをRound別にチェックしてみます。&lt;/p&gt;
+&lt;p&gt;| Round | 実装                 |        Mean | asm / カウンタから見つけた欠陥 → 次の一手                                                                                         |
+| ----- | ------------------ | ----------: | ----------------------------------------------------------------------------------------------------------------- |
+| 1     | Cascade (baseline) |     8.53 ns | if-else 連鎖。分岐 8/op・ミス 1/op — ミスペナルティ(≈13サイクル)が支配 → 分岐自体を消すしかない                                                    |
+| 1     | CascadeUnsafe      |     8.27 ns | Slice・個別 store を ref + unaligned store に統合(コード 426→331B)。しかし分岐構造が同じでミスも 1/op のまま → 命令数削減では効かないと確定                 |
+| 1     | FixintFirst        |     9.24 ns | fixint を1比較で先行(Small なら 0.69 ns)。Mixed ではその先行分岐自体がミス源 → 分布依存が極端                                                   |
+| 1     | BranchlessTable    |     1.72 ns | lzcnt+66エントリ表で分岐レス達成・ミス 0。ただし asm に表の境界チェック(&lt;code&gt;cmp r11d,42; jae RNGCHKFAIL&lt;/code&gt;)と &lt;code&gt;sign*33&lt;/code&gt; の乗算相当が残存 → 64エントリ表+Unsafe 化 |
+| 計測修正  | (全実装)              |           — | Count=1000 では Mixed でも Mispredictions/Op=0 — Zen 5 予測器が固定配列の分岐パターンを丸ごと記憶していた → Count=100,000 に増量                  |
+| 2     | &lt;strong&gt;Branchless2&lt;/strong&gt;    | &lt;strong&gt;1.64 ns&lt;/strong&gt; | 境界チェック消滅、index 計算が &lt;code&gt;shr+and+or&lt;/code&gt; に。ホットパス分岐 3/op(全て予測可能)。残るは lzcnt→表ロード→movbe の直列依存チェーンで可変長エンコーダに固有 → &lt;strong&gt;収束&lt;/strong&gt;        |
+| 2     | Hybrid             |     2.52 ns | Branchless2 の前に fixint 1比較(Small 0.70 ns)。Mixed では先行分岐が ~0.4 ミス/op → 分布が小整数支配と分かっているときだけ選ぶ                        |&lt;/p&gt;
+&lt;p&gt;まず感心するところは、ベンチマークのパラメータとして再そっはCount = 1000だったのですが、&lt;code&gt;Mispredictions/Op=0&lt;/code&gt; という計測結果が出ていたので 「Zen 5 予測器が固定配列の分岐パターンを丸ごと記憶していた → Count=100,000 に増量」という対処をしたことです。&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;// large enough that the branch predictor cannot memorize the repeating sequence
+// (with 1000 values, Zen 5 learned the whole pattern: BranchMispredictions/Op was 0 even for Mixed)
+const int Count = 100_000;
+    
+[Benchmark(OperationsPerInvoke = Count)]
+public int Cascade()
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;この辺も &lt;code&gt;Mispredictions/Op&lt;/code&gt; の計測を入れていたからこそ素早く自動で認知して対応できたわけで、そうじゃなければ進行不能になる可能性がありました。&lt;/p&gt;
+&lt;p&gt;さて、コードのチェックに入りたいのですが、if分岐の最速化対応は手コードだとあんまやれることがないんですが、AIはブランチレスコードを2パターン作ってくれました。最速案のBranchless2を見てみます。&lt;/p&gt;
+&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;// Round 2: significant bits of a non-negative int are 0..31, never 32, so a 64-entry table
+// indexed by ((value &amp;gt;&amp;gt;&amp;gt; 26) &amp;amp; 32) | bits works — single OR instead of imul, and the
+// power-of-two size lets us drop the bounds check via Unsafe
+static ReadOnlySpan&amp;lt;uint&amp;gt; Formats64 =&amp;gt;
+[
+    // non-negative: bits 0..7 fixint, 8 uint8, 9..16 uint16, 17..31 uint32
+    Fix1, Fix1, Fix1, Fix1, Fix1, Fix1, Fix1, Fix1,
+    U8,
+    U16, U16, U16, U16, U16, U16, U16, U16,
+    U32, U32, U32, U32, U32, U32, U32, U32, U32, U32, U32, U32, U32, U32, U32,
+    // negative (bits of ~value): 0..5 fixint, 6..7 int8, 8..15 int16, 16..31 int32
+    Fix1, Fix1, Fix1, Fix1, Fix1, Fix1,
+    I8, I8,
+    I16, I16, I16, I16, I16, I16, I16, I16,
+    I32, I32, I32, I32, I32, I32, I32, I32, I32, I32, I32, I32, I32, I32, I32, I32,
+];
+
+[MethodImpl(MethodImplOptions.AggressiveInlining)]
+public static bool TryWriteInt32Branchless2(Span&amp;lt;byte&amp;gt; destination, int value, out int bytesWritten)
+{
+    if (destination.Length &amp;gt;= 5)
+    {
+        int x = value ^ (value &amp;gt;&amp;gt; 31);
+        int bits = 32 - BitOperations.LeadingZeroCount((uint)x); // 0..31
+        int idx = ((value &amp;gt;&amp;gt;&amp;gt; 26) &amp;amp; 32) | bits;
+        uint e = Unsafe.Add(ref MemoryMarshal.GetReference(Formats64), idx);
+        int len = (int)(e &amp;amp; 0xff);
+        ref byte d = ref MemoryMarshal.GetReference(destination);
+        d = (byte)((e &amp;gt;&amp;gt; 8) | ((uint)value &amp;amp; (e &amp;gt;&amp;gt; 16)));
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref d, 1), BinaryPrimitives.ReverseEndianness((uint)value &amp;lt;&amp;lt; ((5 - len) * 8)));
+        bytesWritten = len;
+        return true;
+    }
+    return TryWriteInt32Cascade(destination, value, out bytesWritten);
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;こういうの妥当かどうかって全然判断つかないですよね正直。GeminiとかChatGPTにも投げて、ヨシといってるんならもうヨシということにしようか、みたいな感じですらあります（妥当でしたのでヨシ）&lt;/p&gt;
+&lt;p&gt;と、いうわけでmixedのシチュエーションで 8.53 nsが 1.64 ns に、超高速化されたということになります。これをそのまま採用するかどうかはともかくとして、改めて興味深い結果が得られました。持ち帰って検討させていただきます（？）&lt;/p&gt;
+&lt;h2&gt;AI時代のコーディング&lt;/h2&gt;
+&lt;p&gt;SumにせよMessagePackのTryWriteIntにせよ、人間を遥かに超えてるのは間違いない。Sumのforループ高速化はカンニング疑惑が拭えなかったわけですが、ブランチレスのMessagePack Writeのコードは世の中にはないと思うので、Fableがちゃんと自力で導出したコードだといえます。この結果はOpusでは得られてなかったので、個人的にはFableが閾値超えてきたな、と思いました。今までは解析は勿論AIの強みだけど書かせるとイマイチだなー、と思ってたんですが、Fableは分析力が更に増したせいなのか、書き力も高くなっているぞ、と。少なくともこの手の関数単位みたいな超スモール領域ではコーディング力に圧倒されてしまう。人間のやることは雰囲気を整えるのと、トレードオフに対してどちらのハンコを押すか決めるぐらいしかない。&lt;/p&gt;
+&lt;p&gt;ただし、じゃあアプリケーション全体、ライブラリ全体をまるっと作らせて満足いくコードが仕上がってくるかというと、そこはまだまだNoではある。単純にコンテキストの問題もあるし、複雑性が桁違いでもあるし、ただ、AIの性能がめちゃくちゃ上がってそこを克服したとしても、ライブラリ全体の作りが満足いくかどうかは、もう感性の世界でもあるので、気に入るか気に入らないかの領域であり、受け入れるか受け入れないか、といったところではある。AIがどれだけ進化しても自分の100%の好みなものをポン出しで生成することは絶対ないわけなので、ひたすら自分好みにしようとする不毛な応酬をするぐらいなら、心折れて、AIの出した、まぁ動くコードを諦めて受け入れるしかない、にはなりそう。&lt;/p&gt;
+&lt;p&gt;ようするところオーナーシップが持てなくなってきているんですね、コードから。短期的には動けばいい、んですが中長期的にはモチベーションに大きく影響するので、単純な受け入れは結構危険だと思っています。それでも自分で吟味して生成したコードはいいんです、&lt;code&gt;TryWriteInt32Branchless2&lt;/code&gt; なんかは自分が生成したコードなら受け入れるでしょう。でも、これがPRですごいパフォーマンス改善のコードなんです！と来た時にはどう対応できるかな、と。多分、拒絶しますね。受け入れたら受け入れたで、もうそのあたりは見たくない、になります。&lt;/p&gt;
+&lt;p&gt;会社のプロダクトだったら、アプリケーションだったら、コードへの愛着に関しては捨てて、プロダクトに向き合うことでオーナーシップを担保していかなければならない。なんだったら、そのほうが理想的でしょ？といえるかもしれません（個人的には、色々な職種や見てる領域によって大きなプロダクトは成り立つので、エンジニアがコードへの関心が占める割合が高いのは、悪いことではないと思っていますが）。実際私も個人アプリとか、こないだはAndroidアプリを作って公開しましたが、そういうのはコードはどうでもいいしほとんど見てなくて、アプリケーションの出来、ルック＆フィールが全てでした。&lt;/p&gt;
+&lt;p&gt;けれど、OSSライブラリは100%コードの世界なので、ここを捨ててしまうと、なにもないんですね、なにも残りません。実際、ちょっとやや虚無感を抱き始めているところが無きにしも非ずで、コミュニケーション取っていい機能できたんですよーっていうんで見てみたらAIプルリクですねこれ、なんていうのがあると、どうしても見る気が起きなくなるし、セキュリティチェックしましたー、は大事だしいいんですがセットのAI修正コードの山です、というのはかなり厳しいものがあった。モチベーションがぽきぽき折れてきます。&lt;/p&gt;
+&lt;p&gt;というわけで、とても複雑な気持ちを抱えています。&lt;/p&gt;
+&lt;p&gt;それはそれとして、何が作りたいか、というと、全てが研ぎ澄まされた究極のライブラリが作りたいという気持ちがあり、Fableが超強力な武器なのは間違いないわけです。というか、なんだったら今まで公開している今のすべてのコードをむしろ恥じます。全部作り直したい、なんだったら今までのコードは恥なので見たくない（？）とすら思いかねないところもあります。&lt;/p&gt;
+&lt;h2&gt;まとめ&lt;/h2&gt;
+&lt;p&gt;この記事はAI補助ゼロで100%オーガニックな手書きで作られています。文章に関しては本当にAIベースのものが好きじゃないので、それこそClaude Codeにベンチマーク取らせたわけだから、いい感じにブログになるように整形してよ、といえば、まぁできなくはない、できなくはないんですが、それは血が通ってない面白みも少ない（ないとは言いませんが）記事だなあ、と思ってしまうわけです。ノイズだらけ、雑味だらけのこの文章が一周回ってよく思えてきませんか……！？塩化ナトリウム99%みたいな文章を摂取してる場合じゃあないんです、時代は天然塩。&lt;/p&gt;
+&lt;p&gt;で、まとめとしては、改めて自分のバイブルである美味しんぼに立ち返って、究極 vs 至高として、究極のライブラリをまずは一品出すところからなんじゃあないでしょうか。の前に、AI時代到来への心の整理がようやくついてきたので（？）各種OSSのこれからについて一つ一つ決めていきたいな、と思います。しんみりしちゃった。いや、どちらかというとワクワクしてるんですよ……！？&lt;/p&gt;
+&lt;/div&gt;</description>
+      <pubDate>Mon, 06 Jul 2026 00:00:00 +0900</pubDate>
+      <a10:updated>2026-07-06T00:00:00+09:00</a10:updated>
+    </item>
     <item>
       <guid isPermaLink="true">https://neue.cc/2026/06/24_superdotnetnew.html</guid>
       <link>https://neue.cc/2026/06/24_superdotnetnew.html</link>
@@ -1109,135 +1643,6 @@ public class MyCommands
 &lt;/div&gt;</description>
       <pubDate>Mon, 16 Dec 2024 00:00:00 +0900</pubDate>
       <a10:updated>2024-12-16T00:00:00+09:00</a10:updated>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://neue.cc/2024/12/06_MessagePack_v3.html</guid>
-      <link>https://neue.cc/2024/12/06_MessagePack_v3.html</link>
-      <title>SourceGenerator対応のMessagePack for C# v3リリースと今後について</title>
-      <description>&lt;h1 data-pagefind-sort="date:2024-12-06" data-pagefind-meta="published:2024-12-06"&gt;&lt;a href="https://neue.cc/2024/12/06_MessagePack_v3.html"&gt;SourceGenerator対応のMessagePack for C# v3リリースと今後について&lt;/a&gt;&lt;/h1&gt;
-&lt;ul class="date"&gt;&lt;li&gt;2024-12-06&lt;/li&gt;&lt;/ul&gt;
-&lt;div class="entry_body"&gt;&lt;p&gt;先月&lt;a href="https://github.com/MessagePack-CSharp/MessagePack-CSharp"&gt;MessagePack for C#プロジェクト&lt;/a&gt;は &lt;a href="https://dotnetfoundation.org/"&gt;.NET Foundation&lt;/a&gt;に参加しました！より安定した視点で利用していただけるという一助になればいいと思っています。&lt;/p&gt;
-&lt;p&gt;そして、長く開発を続けていたメジャーバージョンアップ、v3がリリースされました。コア部分はv2とはほぼ変わらずですが、Source Generatorを全面的に導入しています。引き続きIL動的生成も存在するため、IL動的生成とSource Generatorのハイブリッドなシリアライザーとなります。v3にはSource GeneratorとAnalyzerがビルトインで同梱されていて、今までのコードはv3でコンパイルするだけで自動的にSource Generator化されます。v2 -&amp;gt; v3アップデートでSource Generator対応するために追加でユーザーがコードを記述する必要はありません！&lt;/p&gt;
-&lt;p&gt;挙動を詳しく見ていきましょう。例えば、&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;[MessagePackObject]
-public class MyTestClass
-{
-    [Key(0)]
-    public int MyProperty { get; set; }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;というコードを書くと、自動的に以下のコードがSource Generatorによって内部的に生成されます。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;partial class GeneratedMessagePackResolver
-{
-    internal sealed class MyTestClassFormatter : IMessagePackFormatter&amp;lt;MyTestClass&amp;gt;
-    {
-        public void Serialize(ref MessagePackWriter writer, MyTestClass value, MessagePackSerializerOptions options)
-        {
-            if (value == null)
-            {
-                writer.WriteNil();
-                return;
-            }
-
-            writer.WriteArrayHeader(1);
-            writer.Write(value.MyProperty);
-        }
-
-        public MyTestClass Deserialize(ref MessagePackReader reader, MessagePackSerializerOptions options)
-        {
-            if (reader.TryReadNil())
-            {
-                return null;
-            }
-
-            options.Security.DepthStep(ref reader);
-            var length = reader.ReadArrayHeader();
-            var ____result = new MyTestClass();
-
-            for (int i = 0; i &amp;lt; length; i++)
-            {
-                switch (i)
-                {
-                    case 0:
-                        ____result.MyProperty = reader.ReadInt32();
-                        break;
-                    default:
-                        reader.Skip();
-                        break;
-                }
-            }
-
-            reader.Depth--;
-            return ____result;
-        }
-    }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;また、このGeneratedMessagePackResolverはデフォルトのオプション(StandardResolverなど)に最初から登録されているため、&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;public static readonly IFormatterResolver[] DefaultResolvers = [
-    BuiltinResolver.Instance,
-    AttributeFormatterResolver.Instance,
-    SourceGeneratedFormatterResolver.Instance, // here
-    ImmutableCollection.ImmutableCollectionResolver.Instance,
-    CompositeResolver.Create(ExpandoObjectFormatter.Instance),
-    DynamicGenericResolver.Instance, // only enable for RuntimeFeature.IsDynamicCodeSupported
-    DynamicUnionResolver.Instance];
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;ユーザーコードのアセンブリに含まれているシリアライズ対象クラスは、Source Generatorによって生成されたコードが優先的に使われることになります。GeneratedMessagePackResolverは既定の名前空間や名前を変えたり、生成フォーマッターをmapベースに変更するなど、幾つかのカスタマイズポイントも用意されています。より詳しくは新しいドキュメントを見てください。また、v2 -&amp;gt; v3の変更箇所の詳細を知りたい人は&lt;a href="https://github.com/MessagePack-CSharp/MessagePack-CSharp/blob/develop/doc/migrating_v2-v3.md"&gt;Migration Guide v2 -&amp;gt; v3&lt;/a&gt;をチェックしてください。&lt;/p&gt;
-&lt;p&gt;Unityにおいては導入方法が大きく変わりました。コアライブラリは .NET 版と共通になりNuGetからのインストールが必要となります。そのうえでUPMでUnity用の追加コードをダウンロードする必要があります。詳しくは&lt;a href="https://github.com/MessagePack-CSharp/MessagePack-CSharp/#unity-support"&gt;MessagePack-CSharp#unity-support&lt;/a&gt;のセクションを確認してください。&lt;/p&gt;
-&lt;p&gt;.unitypackageの提供は廃止されています。また、IL2CPP対応のために要求していたmpcはなくなりました。完全にSource Generatorに移行されます。そのため、Unityのサポートバージョンは &lt;code&gt;2022.3.12f1&lt;/code&gt; からとなります。Source Generatorに関してはNuGetForUnityでのコアライブラリインストール時に自動的に有効化されるため、追加の作業は必要ありません。&lt;/p&gt;
-&lt;h2&gt;History and Next&lt;/h2&gt;
-&lt;p&gt;MessagePack for C#のオリジナル(v1)は私(Yoshifumi Kawai/@neuecc)によって、2017年にリリースしました。当時開発していたゲームのパフォーマンス問題を解決するために、2016年時点で存在していた(バイナリ)シリアライザーでは需要を満たせなかったため、パフォーマンスを最重要視したバイナリシリアライザーとして作成しました。合わせて、同じくネットワークシステムとして作成したgRPCベースのRPCフレームワーク&lt;a href="https://github.com/Cysharp/MagicOnion"&gt;MagicOnion&lt;/a&gt;もリリースしています。&lt;/p&gt;
-&lt;p&gt;v1リリース当時は&lt;code&gt;byte[]&lt;/code&gt;のみを対象としていましたが、&lt;code&gt;Span&amp;lt;T&amp;gt;&lt;/code&gt;や&lt;code&gt;IBufferWriter&amp;lt;T&amp;gt;&lt;/code&gt;など、.NETには次々と新しいI/O系のAPIが追加されていったため、v2ではそれらに焦点を当てた新しいデザインが導入されました。この実装はMicrosoftのEngineerである&lt;a href="https://github.com/AArnott"&gt;Andrew Arnott / @AArnott&lt;/a&gt;氏によって主導され、リリースしています。&lt;/p&gt;
-&lt;p&gt;以降、共同のメンテナンス体制として、そして私の個人リポジトリ(neuecc/MessagePack-CSharp)からオーガナイゼーション(MessagePack-CSharp/MessagePack-CSharp)して今に至ります。Visual Studio内部での利用や&lt;a href="https://learn.microsoft.com/en-us/aspnet/core/signalr/messagepackhubprotocol"&gt;SignalRのバイナリープロトコル&lt;/a&gt;、Blazor Serverのプロトコルなど大きなMicrosoftのプロダクトでも使用され、GitHubでのスター数は.NETのバイナリーシリアライザーとしては最も大きなスターを集めています。&lt;a href="https://learn.microsoft.com/en-us/dotnet/standard/serialization/binaryformatter-migration-guide/"&gt;.NET 9で廃止されたBinaryFormatter&lt;/a&gt;の移行先の一つとしても推奨されています。&lt;/p&gt;
-&lt;p&gt;v3ではSource Generatorに対応することで、より高いパフォーマンスと柔軟性、AOT対応への第一段階に踏み出すことができました。&lt;/p&gt;
-&lt;p&gt;MessagePack for C#プロジェクトは大きな成功を収めたと考えていますが、しかし現在、AArnott氏は個人の新しいMessagePackプロジェクトの開発を開始しています。私もその間、&lt;a href="https://github.com/Cysharp/MemoryPack"&gt;MemoryPack&lt;/a&gt;という異なるフォーマットのシリアライザーをリリースしています。そのため、MessagePack for C#の今後と、その特性について、ある程度説明する必要があると思います。&lt;/p&gt;
-&lt;p&gt;引き続きメンテナンス体制は2人だと考えていますが、アクティブな活動に関しては、再び私が担うことになるかもしれません。私はMessagePackとMemoryPackとでは異なる性質を持ったフォーマットであるため、どちらも重要であるという認識で動いています。オリジナルの実装であるMessagePack for C#も気に入ってますし、現在においても決して引けを取ることのないものだと思っています。&lt;/p&gt;
-&lt;p&gt;AArnott氏の別のMessagePackシリアライザーとは根本的な哲学が若干異なります。その点で、私はそれはより良く改善されたシリアライザーではなく、別の個性のシリアライザーだと認識しています。そこで、違いについて説明させてください。&lt;/p&gt;
-&lt;h2&gt;Binary spec, default settings and performance&lt;/h2&gt;
-&lt;p&gt;シリアライザーのパフォーマンスに重要なのは、「仕様と実装」の両方です。例えばテキストフォーマットのJSONよりもバイナリフォーマットのほうが一般的には速いでしょう。しかし、よくできたJSONシリアライザーは、中途半端な実装のバイナリシリアライザーよりも高速です（私はそれを&lt;a href="https://github.com/neuecc/Utf8Json"&gt;Utf8Json&lt;/a&gt;というシリアライザーを作成することで実証したことがあります）。なので、仕様も大事だし、実装も大事です。どちらも兼ねることができれば、それがベストなパフォーマンスのシリアライザーとなります。&lt;/p&gt;
-&lt;p&gt;&lt;a href="https://msgpack.org/"&gt;MessagePackのバイナリ仕様&lt;/a&gt;は &amp;quot;It's like JSON. but fast and small.&amp;quot; を標語にしている通り、JSONのバイナリ化としてあらわされています。ところが、MessagePack for C#のデフォルトは必ずしもJSON likeを狙っているわけではありません。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;[MessagePackObject]
-public class MsgPackSchema
-{
-    [Key(0)]
-    public bool Compact { get; set; }
-    [Key(1)]
-    public int Schema { get; set; }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;このクラスをシリアライズした場合は、JSONで表現すると&lt;code&gt;[true, 0]&lt;/code&gt;のようになります。これはオブジェクトをarrayベースでシリアライズしているからで、mapベースでシリアライズすると&lt;code&gt;{&amp;quot;Compact&amp;quot;:true,&amp;quot;Schema&amp;quot;:0}&lt;/code&gt;のような表現になります。&lt;/p&gt;
-&lt;p&gt;arrayベースの利点は見た通りに、バイナリ容量として、よりコンパクトになります。容量がコンパクトなことは処理量が少なくなるためシリアライズの速度にも良い影響を与えます。また、デシリアライズにおいては、文字列を比較してデシリアライズするプロパティを探索する必要がなくなるため、より高速なデシリアライズ速度が期待できます。&lt;/p&gt;
-&lt;p&gt;なお、arrayベースのシリアライズはMessagePackの仕様策定者である Sadayuki Furuhashi 氏によるリファレンス実装であるmsgpack-javaなどでも採用されているため、決して異端のやり方というわけではありません。&lt;/p&gt;
-&lt;p&gt;MessagePack-CSharpではJSONライクなmapベースでシリアライズしたい場合は&lt;code&gt;[MessagePackObject(true)]&lt;/code&gt;と記述することができます。また、Source Generatorの場合はResolver単位でオーバーライドして強制的にmapベースにすることも可能です。&lt;/p&gt;
-&lt;pre data-pagefind-ignore="all"&gt;&lt;code class="language-csharp"&gt;[MessagePackObject(keyAsPropertyName: true)]
-public class MsgPackSchema
-{
-    public bool Compact { get; set; }
-    public int Schema { get; set; }
-}
-&lt;/code&gt;&lt;/pre&gt;
-&lt;p&gt;mapの利点は、柔軟なスキーマエボリューションの実現と、他言語との疎通する際にコミュニケーションが取りやすいこと、バイナリそのものの自己記述性が高いことです。デメリットは容量とパフォーマンスへの悪影響、特にオブジェクトの配列においては一要素毎にプロパティ名が含まれることになってしまい、かなりの無駄となります。&lt;/p&gt;
-&lt;p&gt;デフォルトをarrayにしているのは、コンパクトさとパフォーマンスの追求のためです。私はMessagePackをJSON likeの前に、高いパフォーマンスを実現可能なバイナリ仕様として考えました。もちろん、mapも重要なので、その上で比較的簡単にmapモードを実現するために属性に&lt;code&gt;(true)&lt;/code&gt;を追加するだけで可能にしました。&lt;/p&gt;
-&lt;p&gt;arrayモードの場合はKey属性を全てのプロパティに付与する必要があります。これは、例えばProtocol Buffersなどでも数値タグを必要とするように、プロパティ名そのものをキーとするわけではなければ、必須だと考えています。もちろん、連番で自動採番させることも可能ですが、バイナリフォーマットのキーを暗黙的に処理するのはリスクが大きすぎる(順番を弄ったりするだけでバイナリ互換性が壊れることになる)と判断しています。つまり、明示的がデフォルト、ということです。大きなプロジェクト開発ではシニアメンバーからジュニアメンバーまでコードを触ることになるでしょう、全てを理解している人だけがコードを触るわけではありません。なので、暗黙的な挙動は避けるべきで、明示的にすべきだという強い意志で、この設計を選んでいます。&lt;/p&gt;
-&lt;p&gt;ただしKeyを全てのプロパティに付与する作業はとても苦痛です(私はMessagePack-CSharp開発以前には、DataContractやprotobuf-netで辛い思いをしました)。そこで、Analyzer + Code Fixによって、自動的に付与する機能を用意しました。これにより明示的であることの苦痛は和らげられ、良いとこどりができているのだと考えています。&lt;/p&gt;
-&lt;p&gt;別のMessagePackシリアライザーのデフォルトはmapのようです。これは&lt;a href="https://github.com/eiriktsarpalis/PolyType"&gt;PolyType&lt;/a&gt;というSource Generatorベースのライブラリ作成のための抽象化ライブラリがベースとしているためでもあり、また、そちらのほうを好んでいるという明示的な判断でもあるようです。&lt;/p&gt;
-&lt;p&gt;「デフォルト」はライブラリで一つしか選べません。どちらのモードで処理することができたとしても、「デフォルト」はただ一つです。改めて言うと、私はバイナリフォーマットとしての「コンパクトとパフォーマンス」を好み、優先しています。&lt;/p&gt;
-&lt;p&gt;皆さんはPolyTypeについて初めて知ったかもしれません。私はPolyTypeはあまり好意的には考えていません。ちょっとしたものを作るには非常に便利だとは思いますが、ベストなパフォーマンスを狙ったり、ベストなアイディアを表現するには、抽象層であることの制限が大きすぎると考えています。なので、MessagePack for C#で採用することはありませんし、他の何かを作る際にも採用することはないでしょう。&lt;/p&gt;
-&lt;h2&gt;Unity(multiplatform) Support&lt;/h2&gt;
-&lt;p&gt;MessagePack for C#ではv1の時代からゲームエンジンUnityの1st classのサポートを実行してきました。これは私が&lt;a href="https://en.wikipedia.org/wiki/Cygames"&gt;Cygames&lt;/a&gt;という日本のゲーム会社の関連会社(&lt;a href="https://cysharp.com/"&gt;Cysharp&lt;/a&gt;)のCEOを務めていて、ビデオゲームインダストリーと関係性が深いという都合もあります。自分たちで実際にUnityで動くものを作り、使ってきました。もちろん、サーバーサイドやデスクトップアプリケーションでも使っています。&lt;/p&gt;
-&lt;p&gt;UnityにはIL2CPPという独自のAOTシステムがあり、特にiOSなどモバイルプラットフォームでのリリースには必須なのですが、それもSource Generatorが存在しなかった時代から、mpcというRoslynを使ったコードジェネレートツールを作り、提供してきました。数百のモバイルゲームでMessagePackが使われているのは、これら私の熱心なサポートのお陰といっても過言ではないでしょう。v3ではついにSource Generatorベースになったことにより、ワークフローが大きく簡易化されることとなります！&lt;/p&gt;
-&lt;p&gt;一般的に、.NETコミュニティにおいてはUnityサポートはかなり軽視されていました。また、外から見ているとMicrosoftやMicrosoftの従業員もそのようで、自社のプラットフォーム以外への関心は薄そうです。こうした態度は、あまり好ましいとは思っていませんし、せっかくの .NET の可能性を狭めていることにもなっています。Xamarinがうまく成長軌道に乗らなかったのも、そのようなMicrosoft自体の冷たい視線のせいだとも思っています。&lt;/p&gt;
-&lt;p&gt;私は、私の作るライブラリはなるべくUnityにもしっかり対応できるように気を付けて作っています（最新は新しいReactive Extensionsライブラリーである&lt;a href="https://github.com/Cysharp/R3"&gt;Cysharp/R3&lt;/a&gt;）。別のMessagePackシリアライザーに関しては、あまりしっかりした対応はされなさそうですが……。&lt;/p&gt;
-&lt;h2&gt;Beyond v3&lt;/h2&gt;
-&lt;p&gt;v3のNative AOT Supportは完全ではありません。Source Generatorにするだけでは完全なNative AOT対応とはならないのは難しいところです。これはUnityのAOTであるIL2CPPでは完璧に動作しているだけに、正直不可解なことでもあり、また、Microsoftのよくない癖が出ているな、とも思っています。つまり、完璧な対応をするために、複雑なものを提供している。それが現在のNative AOTです。複雑怪奇な属性やフローは、理解できるところもありますが、もう少し簡略化すべきだったと思います。まぁ、もう修正されることもないのでしょうが……。&lt;/p&gt;
-&lt;p&gt;パフォーマンス面でもv1からv2で退化してしまった点もあるので、最新の知見を元に、実装面での改善を施す必要があります。特にReadOnlySequenceの利用幅が大きいことは、かなりの制約を生み出していて、不満があります。&lt;/p&gt;
-&lt;p&gt;.NET 9でPipeReader/PipeWriterが標準化されたことによる、より良い非同期APIや、パフォーマンスを両立したストリーミング対応というのも、大きなトピックとなるかもしれません。&lt;/p&gt;
-&lt;p&gt;MessagePack for C#は広く使われているが故に、破壊的変更はしづらいし、互換性の維持は最重要トピックスです。しかし、世の中が変わっていく以上、進化しないことを選んだら、それは滅びる道でしかありません。やれることはまだまだあると思っていますので、.NETにおける最先端の、最高のバイナリシリアライザーであり続けたいと思っています（&lt;a href="https://github.com/Cysharp/MemoryPack"&gt;MemoryPack&lt;/a&gt;もね……！)&lt;/p&gt;
-&lt;p&gt;まずは、v3のSource Generatorをぜひ試してみてください。皆の力でより良いものを作っていけるというのも、OSSの良さだと思っています。&lt;/p&gt;
-&lt;/div&gt;</description>
-      <pubDate>Fri, 06 Dec 2024 00:00:00 +0900</pubDate>
-      <a10:updated>2024-12-06T00:00:00+09:00</a10:updated>
     </item>
   </channel>
 </rss>
