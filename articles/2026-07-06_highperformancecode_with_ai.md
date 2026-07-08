@@ -537,7 +537,7 @@ public static bool TryWriteInt32FixintFirst(Span<byte> destination, int value, o
 | 2     | Hybrid             |     2.52 ns | Branchless2 の前に fixint 1比較(Small 0.70 ns)。Mixed では先行分岐が ~0.4 ミス/op → 分布が小整数支配と分かっているときだけ選ぶ                        |
 ```
 
-まず感心するところは、ベンチマークのパラメータとして再そっはCount = 1000だったのですが、`Mispredictions/Op=0` という計測結果が出ていたので 「Zen 5 予測器が固定配列の分岐パターンを丸ごと記憶していた → Count=100,000 に増量」という対処をしたことです。
+まず感心するところは、ベンチマークのパラメータとして最初はCount = 1000だったのですが、`Mispredictions/Op=0` という計測結果が出ていたので 「Zen 5 予測器が固定配列の分岐パターンを丸ごと記憶していた → Count=100,000 に増量」という対処をしたことです。
 
 ```csharp
 // large enough that the branch predictor cannot memorize the repeating sequence
