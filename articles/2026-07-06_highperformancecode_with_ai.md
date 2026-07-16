@@ -100,49 +100,49 @@ public int VectorSimd()
 [Benchmark]
 public int Vector512Final()
 {
-	ref int p = ref MemoryMarshal.GetArrayDataReference(data);
-	nuint length = (nuint)data.Length;
-	nuint vc = (nuint)Vector512<int>.Count;
+    ref int p = ref MemoryMarshal.GetArrayDataReference(data);
+    nuint length = (nuint)data.Length;
+    nuint vc = (nuint)Vector512<int>.Count;
 
-	if (!Vector512.IsHardwareAccelerated || length < vc)
-	{
-		int s = 0;
-		for (nuint j = 0; j < length; j++)
-		{
-			s += Unsafe.Add(ref p, j);
-		}
-		return s;
-	}
+    if (!Vector512.IsHardwareAccelerated || length < vc)
+    {
+        int s = 0;
+        for (nuint j = 0; j < length; j++)
+        {
+            s += Unsafe.Add(ref p, j);
+        }
+        return s;
+    }
 
-	var acc0 = Vector512<int>.Zero;
-	var acc1 = Vector512<int>.Zero;
-	var acc2 = Vector512<int>.Zero;
-	var acc3 = Vector512<int>.Zero;
-	nuint i = 0;
-	if (length >= vc * 4)
-	{
-		nuint lastBlock = length - vc * 4;
-		for (; i <= lastBlock; i += vc * 4)
-		{
-			acc0 += Vector512.LoadUnsafe(ref p, i);
-			acc1 += Vector512.LoadUnsafe(ref p, i + vc);
-			acc2 += Vector512.LoadUnsafe(ref p, i + vc * 2);
-			acc3 += Vector512.LoadUnsafe(ref p, i + vc * 3);
-		}
-	}
-	for (nuint lastVector = length - vc; i <= lastVector; i += vc)
-	{
-		acc0 += Vector512.LoadUnsafe(ref p, i);
-	}
-	if (i < length)
-	{
-		// overlapping load of the final vector, masking out already-summed lanes
-		nuint offset = length - vc;
-		var lane = Vector512<int>.Indices + Vector512.Create((int)offset);
-		var mask = Vector512.GreaterThanOrEqual(lane, Vector512.Create((int)i));
-		acc1 += mask & Vector512.LoadUnsafe(ref p, offset);
-	}
-	return Vector512.Sum((acc0 + acc1) + (acc2 + acc3));
+    var acc0 = Vector512<int>.Zero;
+    var acc1 = Vector512<int>.Zero;
+    var acc2 = Vector512<int>.Zero;
+    var acc3 = Vector512<int>.Zero;
+    nuint i = 0;
+    if (length >= vc * 4)
+    {
+        nuint lastBlock = length - vc * 4;
+        for (; i <= lastBlock; i += vc * 4)
+        {
+            acc0 += Vector512.LoadUnsafe(ref p, i);
+            acc1 += Vector512.LoadUnsafe(ref p, i + vc);
+            acc2 += Vector512.LoadUnsafe(ref p, i + vc * 2);
+            acc3 += Vector512.LoadUnsafe(ref p, i + vc * 3);
+        }
+    }
+    for (nuint lastVector = length - vc; i <= lastVector; i += vc)
+    {
+        acc0 += Vector512.LoadUnsafe(ref p, i);
+    }
+    if (i < length)
+    {
+        // overlapping load of the final vector, masking out already-summed lanes
+        nuint offset = length - vc;
+        var lane = Vector512<int>.Indices + Vector512.Create((int)offset);
+        var mask = Vector512.GreaterThanOrEqual(lane, Vector512.Create((int)i));
+        acc1 += mask & Vector512.LoadUnsafe(ref p, offset);
+    }
+    return Vector512.Sum((acc0 + acc1) + (acc2 + acc3));
 }
 ```
 
